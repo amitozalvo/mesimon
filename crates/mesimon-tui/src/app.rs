@@ -7,7 +7,7 @@ mod images;
 mod summary;
 mod tiers;
 
-pub use summary::{NoteSummary, SummaryPulse, TicketSummary};
+pub use summary::{NoteSummary, SummaryPulse, SummaryRow, TicketSummary};
 pub use tiers::{TierField, TierRow};
 
 use std::cell::Cell;
@@ -2094,6 +2094,15 @@ impl App {
             || self.board.crown.is_some_and(|id| self.crowning_ms(id).is_some())
             || self.striking()
             || self.summary_pulsing()
+            || self.settings_striking()
+    }
+
+    /// Is the Appearance page's preview striking (T-717)? While its page
+    /// is on screen with the lightning on, the strike loops.
+    fn settings_striking(&self) -> bool {
+        self.motion()
+            && self.settings_section == keymap::SettingsSection::Appearance
+            && matches!(self.mode, Mode::Sections | Mode::Settings { .. })
     }
 
     /// Does the board draw the crown's lightning (T-544)? The person's
@@ -5494,7 +5503,6 @@ impl App {
             usage_resets_word: self.prefs.usage_resets.name(),
             usage_claude: self.prefs.usage_claude,
             usage_codex: self.prefs.usage_codex,
-            usage_summary: crate::ui::usage::summary(self),
             usage_reading: !self.usage.reading.is_empty(),
             card_cost: self.prefs.card_corner == crate::prefs::CardCorner::Cost,
             summary_word: self.prefs.summary.key(),
@@ -5933,13 +5941,6 @@ impl App {
                 } else {
                     "the machine's settings ∙ b sets one for this board".into()
                 };
-            }
-            // The Usage dialog's `s`: Settings, open on the line's own page,
-            // whose Esc is the section list as anywhere else in the dialog.
-            Verb::SettingsUsage => {
-                self.settings_board_scope = false;
-                self.settings_section = keymap::SettingsSection::Usage;
-                self.mode = Mode::Settings { idx: 0 };
             }
             // The quota (T-327): the dialog reads again on opening when the
             // reading is older than a turn's worth, and `r` asks outright.
@@ -7466,6 +7467,10 @@ impl App {
                 let all = keymap::SettingsSection::ALL;
                 let at = step(self.settings_section.index(), all.len(), down);
                 self.settings_section = all[at];
+                // The Usage page opens on the quota: read it if it is old.
+                if self.settings_section == keymap::SettingsSection::Usage {
+                    self.refresh_usage(true);
+                }
             }
             Scope::Settings => {
                 if verb == Verb::CursorLeft {
@@ -7784,7 +7789,7 @@ impl App {
                 self.settings_board_scope = false;
                 self.mode = Mode::Menu { idx: self.menu_row(Verb::Settings) };
             }
-            Scope::Usage => self.mode = Mode::Menu { idx: self.menu_row(Verb::Usage) },
+            Scope::Usage => self.return_to_settings(Verb::Usage),
             Scope::Prompts => self.return_to_settings(Verb::AgentPrompts),
             Scope::Tiers => self.return_to_settings(Verb::Tiers),
             // Back to the list, on the tier the page was about.
@@ -17302,9 +17307,10 @@ mod tests {
         }
         assert_eq!(app.prefs.usage_line, crate::prefs::UsageLine::Off);
         assert!(sent_contains(&sent, "SetUsageWants { claude: false, codex: false }"));
-        // The dialog: nothing read yet, so opening it asks.
+        // The dialog, the Usage page's door: nothing read yet, so opening
+        // it asks.
         let ctx = app.ctx();
-        app.dispatch(Verb::Usage, Key::Enter, Scope::Menu, &ctx).unwrap();
+        app.dispatch(Verb::Usage, Key::Enter, Scope::Settings, &ctx).unwrap();
         assert!(matches!(app.mode, Mode::Usage { .. }));
         assert_eq!(app.scope(), Scope::Usage);
         assert!(sent_contains(&sent, "RefreshUsage { claude: true, codex: false }"));
@@ -17318,15 +17324,19 @@ mod tests {
         app.usage.claude.tried_at_ms = mesimon_core::clock::now_ms();
         let ctx = app.ctx();
         app.dispatch(Verb::Back, Key::Esc, Scope::Usage, &ctx).unwrap();
-        assert!(matches!(app.mode, Mode::Menu { idx } if idx == app.menu_row(Verb::Usage)));
-        let ctx = app.ctx();
-        app.dispatch(Verb::Usage, Key::Enter, Scope::Menu, &ctx).unwrap();
-        assert_eq!(asks(), before + 1);
-        // `s` is the line's settings.
-        let ctx = app.ctx();
-        app.dispatch(Verb::SettingsUsage, Key::Char('s'), Scope::Usage, &ctx).unwrap();
         assert_eq!(app.settings_section, keymap::SettingsSection::Usage);
-        assert!(matches!(app.mode, Mode::Settings { .. }));
+        assert_eq!(app.mode, Mode::Settings { idx: app.settings_row(Verb::Usage) }, "its door");
+        let ctx = app.ctx();
+        app.dispatch(Verb::Usage, Key::Enter, Scope::Settings, &ctx).unwrap();
+        assert_eq!(asks(), before + 1);
+        // The page itself reads on `r`, as the dialog does.
+        app.mode = Mode::Settings { idx: 0 };
+        app.usage.claude.tried_at_ms = 0;
+        let ctx = app.ctx();
+        assert_eq!(
+            keymap::resolve(Scope::Settings, Key::Char('r'), &ctx),
+            Some(Verb::UsageRefresh)
+        );
     }
 
     /// The status line row (T-264) writes the preference AND tells the
@@ -22653,15 +22663,12 @@ mod tests {
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.mode, Mode::Menu { .. }));
         assert!(!app.settings_board_scope, "out of the dialog, out of the scope");
-        app.settings_board_scope = true;
-        app.mode = Mode::Usage { idx: 0 };
-        let ctx = app.ctx();
-        app.dispatch(Verb::SettingsUsage, Key::Char('s'), Scope::Usage, &ctx).unwrap();
-        assert_eq!(app.settings_section, keymap::SettingsSection::Usage);
-        assert_eq!(app.mode, Mode::Settings { idx: 0 });
-        assert!(!app.settings_board_scope);
+        // `,` opens it from the board, on the machine's settings.
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.mode, Mode::Sections, "Esc is the section list, as anywhere in it");
+        app.settings_board_scope = true;
+        press(&mut app, ',');
+        assert_eq!(app.mode, Mode::Sections);
+        assert!(!app.settings_board_scope);
     }
     fn queued_picture(
         app: &mut App,

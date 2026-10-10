@@ -793,6 +793,12 @@ fn golden_settings_120() {
     }
     assert!(rows.iter().any(|r| r.contains("dark and light")), "the slots: {rows:#?}");
     golden("settings_120x30", &rows);
+    // The list stands on its own painted ground, the page on the dialog's.
+    let buf = cells(&app, 120, 30);
+    let (x, y) = spot_of(&rows, "Crown");
+    let panel = app.theme.hover_bg().expect("truecolor has a halfway");
+    assert_eq!(buf[(x, y)].bg, panel, "the list's ground");
+    assert_eq!(buf[(x + 30, y)].bg, app.theme.bg.expect("painted"), "the page's");
     let narrow = render(&app, 60, 20);
     assert!(!narrow.iter().any(|r| r.contains("dark and light")), "the list alone: {narrow:#?}");
     golden("settings_60x20", &narrow);
@@ -827,6 +833,7 @@ fn golden_settings_groups_fit_short_and_wide_terminals() {
     for section in SettingsSection::ALL.into_iter().skip(1) {
         let name = section.name().to_lowercase();
         let mut app = app_graphite(fixture_archived());
+        app.now = settled_strike;
         app.settings_section = section;
         let count = mesimon_core::keymap::settings_items(&app.ctx()).len();
         for (w, h) in [(60, 20), (120, 30)] {
@@ -850,6 +857,52 @@ fn golden_settings_groups_fit_short_and_wide_terminals() {
             }
         }
     }
+}
+
+/// A clock the Appearance preview's strike loop reads as past its bolt:
+/// the moved card's word stands and nothing moves, so a golden holds.
+fn settled_strike() -> u64 {
+    3_000
+}
+
+/// The Appearance preview's strike (T-717): with the lightning on, the
+/// bolt runs from the crowned card's mark to the moved card while the loop
+/// is early, and the moved card says what was done once it has landed;
+/// with it off, the word stands and no bolt is drawn. Both crown cards
+/// wear the crown's tint either way.
+#[test]
+fn the_appearance_preview_strikes_on_a_loop() {
+    fn early() -> u64 {
+        400
+    }
+    let braille = |app: &App| {
+        let buf = cells(app, 120, 30);
+        (0..30u16).any(|y| {
+            (0..120u16).any(|x| {
+                buf[(x, y)]
+                    .symbol()
+                    .chars()
+                    .next()
+                    .is_some_and(|c| ('\u{2801}'..='\u{28FF}').contains(&c))
+            })
+        })
+    };
+    let mut app = app_graphite(fixture_archived());
+    app.settings_section = mesimon_core::keymap::SettingsSection::Appearance;
+    app.mode = Mode::Sections;
+    app.now = early;
+    assert!(app.animating(), "the page asks for fast frames while it strikes");
+    assert!(braille(&app), "the bolt is on its way");
+    app.now = settled_strike;
+    assert!(!braille(&app), "the bolt has cooled");
+    assert!(render(&app, 120, 30).iter().any(|r| r.contains("♛ moved")), "the word stands");
+    app.seed_pref(|p| p.crown_lightning = false);
+    app.now = early;
+    assert!(!braille(&app), "off, no bolt");
+    assert!(!app.animating());
+    let rows = render(&app, 120, 30);
+    assert!(rows.iter().any(|r| r.contains("♛ moved")), "off, the word stands: {rows:#?}");
+    assert!(rows.iter().any(|r| r.contains("♛ Plan the beta")), "{rows:#?}");
 }
 
 /// The Terminal list (T-492) with the title on, so its two gated rows
@@ -912,6 +965,7 @@ fn golden_settings_behaviour_board_120() {
 #[test]
 fn golden_settings_appearance_board_60() {
     let mut app = app_graphite(fixture_archived());
+    app.now = settled_strike;
     app.settings_section = mesimon_core::keymap::SettingsSection::Appearance;
     app.settings_board_scope = true;
     app.mode = Mode::Settings { idx: app.settings_row(mesimon_core::keymap::Verb::StatusLine) };
@@ -10110,12 +10164,10 @@ fn golden_usage_dialog() {
     assert!(all.contains("week, Fable        64%   resets Sat 08:00"), "{all}");
     assert!(all.contains("experimental"), "{all}");
     assert!(all.contains("sign-in expired ∙ run codex login in a shell, then r"), "{all}");
-    assert!(all.contains("r read now ∙ s settings ∙ esc back"), "{all}");
+    assert!(all.contains("r read now ∙ esc back"), "{all}");
     assert!(all.contains("24 hours $3.40 ∙ 7 days $12.52 ∙ 30 days $12.52"), "{all}");
     assert!(all.contains("unpriced   300k tokens"), "{all}");
     golden("usage_dialog_120x30", &rows);
-    // The menu row answers before it is opened.
-    assert_eq!(crate::ui::usage::summary(&app), "claude Fable 64% ∙ codex signed out");
     // The rows are the costliest first, and Enter opens the one under the
     // cursor.
     let order: Vec<_> = app.costly_tickets().iter().map(|c| c.ticket).collect();
@@ -10143,14 +10195,29 @@ fn a_fresh_reading_is_read_just_now() {
     assert_eq!(crate::text::age_ago(USAGE_NOW, USAGE_NOW - 120_000), "2m ago");
 }
 
+/// Settings › Usage (T-717, where the menu's Usage row went): each
+/// provider's windows or why it has none, this board's estimate, then the
+/// door to the detail dialog and the line's rows. The dialog's Esc comes
+/// back to its row.
 #[test]
 fn golden_usage_settings() {
-    let mut app = app_graphite(fixture(false));
+    use mesimon_core::usage::Severity;
+    let mut app = usage_app(14.0, Severity::Normal);
+    app.costs = cost_fixture();
     app.settings_section = mesimon_core::keymap::SettingsSection::Usage;
     app.mode = Mode::Settings { idx: 0 };
     let rows = render(&app, 120, 30);
-    assert!(rows.iter().any(|r| r.contains("Show") && r.contains("near a limit")), "{rows:?}");
+    let all = rows.join("\n");
+    assert!(all.contains("5h 14% ∙ week 63% ∙ Fable 64%"), "{all}");
+    assert!(all.contains("24 hours $3.40 ∙ 7 days $12.52 ∙ 30 days $12.52"), "{all}");
+    assert!(rows.iter().any(|r| r.contains("Show") && r.contains("near a limit")), "{all}");
+    assert!(all.contains("r read now"), "{all}");
     golden("usage_settings_120x30", &rows);
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    assert!(matches!(app.mode, Mode::Usage { idx: 0 }), "{:?}", app.mode);
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    assert_eq!(app.mode, Mode::Settings { idx: 0 }, "back on the door");
 }
 
 /// The top row's `h`/`l` off either end step down onto the column drawn

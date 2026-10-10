@@ -75,6 +75,22 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
             ),
         },
     );
+    // The section list stands on a ground of its own, the whole height of
+    // the frame: painted, never drawn (L1). Halfway from the page to the
+    // cursor's surface where the profile has a halfway; else one painted
+    // column of the cursor's surface between the list and the page.
+    if wide {
+        let ground = |f: &mut Frame, r: Rect, c: ratatui::style::Color| {
+            f.buffer_mut().set_style(r, Style::default().bg(c));
+        };
+        match (theme.hover_bg(), theme.selected_bg) {
+            (Some(panel), _) => ground(f, Rect { width: NAV_W + 1, ..inner }, panel),
+            (None, Some(rule)) => {
+                ground(f, Rect { x: inner.x + NAV_W + 1, width: 1, ..inner }, rule)
+            }
+            (None, None) => {}
+        }
+    }
     // A row of air under the title where the height allows, for both
     // halves alike, so the list and the page start on one line.
     let inner = if inner.height >= 16 {
@@ -160,8 +176,11 @@ fn draw_page(f: &mut Frame, app: &App, area: Rect) {
     };
     let width = usize::from(area.width);
     let body_h = usize::from(area.height.saturating_sub(2));
-    // Every row and heading as a line; `at` is each row's line.
+    // The name column, and a column per option across every row, so the
+    // page's values line up as a table does.
     let name_w = items.iter().map(|m| (m.label)(&ctx).width()).max().unwrap_or(0).min(NAME_W);
+    let cols = option_columns(items.iter().filter_map(|m| keymap::value(m.verb, &ctx)));
+    // Every row and heading as a line; `at` is each row's line.
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut at: Vec<usize> = Vec::new();
     for (i, item) in items.iter().enumerate() {
@@ -172,18 +191,11 @@ fn draw_page(f: &mut Frame, app: &App, area: Rect) {
             lines.push(Line::from(Span::styled(heading.to_string(), theme.dim3())));
         }
         at.push(lines.len());
-        lines.push(row_line(app, &ctx, item, name_w, width, cursor == Some(i)));
+        lines.push(row_line(app, &ctx, item, name_w, &cols, width, cursor == Some(i)));
     }
     // The preview goes first, and only where every row still fits under it.
-    let preview = preview(app, width)
-        .map(|mut p| {
-            while p.last().is_some_and(|l| l.width() == 0) {
-                p.pop();
-            }
-            p
-        })
-        .filter(|p| p.len() + 1 + lines.len() <= body_h);
-    let top = preview.as_ref().map_or(0, |p| p.len() + 1);
+    let preview = preview(app, width).filter(|p| usize::from(p.height) + 1 + lines.len() <= body_h);
+    let top = preview.as_ref().map_or(0, |p| usize::from(p.height) + 1);
     let room = body_h - top;
     // A window over the rows that keeps the cursor's row in it.
     let first = match cursor {
@@ -198,14 +210,14 @@ fn draw_page(f: &mut Frame, app: &App, area: Rect) {
         }
     }
     drop(hits);
-    let mut shown: Vec<Line<'static>> = preview
-        .map(|mut p| {
-            p.push(Line::default());
-            p
-        })
-        .unwrap_or_default();
-    shown.extend(lines.into_iter().skip(first).take(room));
-    f.render_widget(Paragraph::new(shown), Rect { height: body_h as u16, ..area });
+    if let Some(p) = preview {
+        (p.draw)(f, Rect { height: p.height, ..area });
+    }
+    let rows = Rect { y: area.y + top as u16, height: room as u16, ..area };
+    f.render_widget(
+        Paragraph::new(lines.into_iter().skip(first).take(room).collect::<Vec<_>>()),
+        rows,
+    );
     // The selected row's one line, at the foot, revealed when it is long.
     if let Some(c) = cursor {
         let detail = keymap::item_detail(items[c], &ctx);
@@ -215,6 +227,31 @@ fn draw_page(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+/// The cells each option column takes on a page: a switch is its first
+/// column, a choice's options are its columns in order, each wide enough
+/// for its widest mark and word.
+fn option_columns(values: impl Iterator<Item = Value>) -> Vec<usize> {
+    let mut cols: Vec<usize> = Vec::new();
+    let mut take = |i: usize, w: usize| {
+        if cols.len() <= i {
+            cols.resize(i + 1, 0);
+        }
+        cols[i] = cols[i].max(w);
+    };
+    for v in values {
+        match v {
+            Value::Switch(_) => take(0, "○ off".width()),
+            Value::Choice { options, .. } => {
+                for (i, o) in options.iter().enumerate() {
+                    take(i, o.width() + 2);
+                }
+            }
+            Value::Word(_) | Value::Door(_) => {}
+        }
+    }
+    cols
+}
+
 /// One row: its name, its value at the value column, and in board scope
 /// where the value comes from, at the right edge (T-361).
 fn row_line(
@@ -222,6 +259,7 @@ fn row_line(
     ctx: &keymap::Ctx,
     item: &MenuItem,
     name_w: usize,
+    cols: &[usize],
     width: usize,
     selected: bool,
 ) -> Line<'static> {
@@ -245,7 +283,7 @@ fn row_line(
     let on = Style::default().fg(ramp.base).add_modifier(Modifier::BOLD);
     let off = Style::default().fg(ramp.dim2);
     if let Some(value) = keymap::value(item.verb, ctx) {
-        spans.extend(value_spans(app, &value, room, on, off));
+        spans.extend(value_spans(app, &value, cols, room, on, off));
     }
     let used: usize = super::spans_width(&spans);
     if let Some(t) = tag {
@@ -259,10 +297,21 @@ fn row_line(
     Line::from(spans).style(ground)
 }
 
+/// Columns between two options.
+const OPTION_GAP: usize = 3;
+
 /// A value in `room` cells: a switch's word with its mark, every option of
-/// a choice with the chosen one marked (or the chosen one alone where they
-/// do not all fit), a word, or a door's word and its `›`.
-fn value_spans(app: &App, value: &Value, room: usize, on: Style, off: Style) -> Vec<Span<'static>> {
+/// a choice with the chosen one marked, each in its page column (or the
+/// chosen one alone where they do not all fit), a word, or a door's word
+/// and its `›`.
+fn value_spans(
+    app: &App,
+    value: &Value,
+    cols: &[usize],
+    room: usize,
+    on: Style,
+    off: Style,
+) -> Vec<Span<'static>> {
     let tier = app.theme.glyph_tier();
     let (set, unset) = if tier == Tier::Ascii { ("*", "-") } else { ("●", "○") };
     let fit = |s: &str| truncate(s, room);
@@ -270,22 +319,23 @@ fn value_spans(app: &App, value: &Value, room: usize, on: Style, off: Style) -> 
         Value::Switch(true) => vec![Span::styled(fit(&format!("{set} on")), on)],
         Value::Switch(false) => vec![Span::styled(fit(&format!("{unset} off")), off)],
         Value::Choice { options, at } => {
-            let all: usize = options.iter().map(|o| o.width() + 2).sum::<usize>()
-                + 3 * options.len().saturating_sub(1);
+            let col = |i: usize| cols.get(i).copied().unwrap_or(0);
+            let all: usize = (0..options.len()).map(col).sum::<usize>()
+                + OPTION_GAP * options.len().saturating_sub(1);
             if all > room {
                 let chosen = options.get(*at).copied().unwrap_or_default();
                 return vec![Span::styled(fit(chosen), on)];
             }
             let mut spans = Vec::new();
             for (i, o) in options.iter().enumerate() {
-                if i > 0 {
-                    spans.push(Span::raw("   "));
-                }
-                if i == *at {
-                    spans.push(Span::styled(format!("{set} {o}"), on));
+                let word = if i == *at { format!("{set} {o}") } else { format!("{unset} {o}") };
+                let pad = if i + 1 < options.len() {
+                    col(i).saturating_sub(word.width()) + OPTION_GAP
                 } else {
-                    spans.push(Span::styled(format!("{unset} {o}"), off));
-                }
+                    0
+                };
+                spans.push(Span::styled(word, if i == *at { on } else { off }));
+                spans.push(Span::raw(" ".repeat(pad)));
             }
             spans
         }
@@ -301,17 +351,34 @@ fn value_spans(app: &App, value: &Value, room: usize, on: Style, off: Style) -> 
     }
 }
 
-/// What the section's rows do, drawn small at the top of its page: the
-/// card and the pane's bar (Appearance), the banner (Notifications), the
-/// tab (Terminal), the quota line (Usage). `None` for a section with
-/// nothing to picture.
-fn preview(app: &App, width: usize) -> Option<Vec<Line<'static>>> {
+/// What draws a preview into the rows it was given.
+type PaintFn<'a> = Box<dyn Fn(&mut Frame, Rect) + 'a>;
+
+/// A section's preview: how many rows it takes, and what draws it there.
+struct Preview<'a> {
+    height: u16,
+    draw: PaintFn<'a>,
+}
+
+/// What the section's rows do, drawn at the top of its page: two cards and
+/// an agent's pane (Appearance), the banner (Notifications), the tab
+/// (Terminal), the quota itself (Usage). `None` for a section with nothing
+/// to picture.
+fn preview(app: &App, width: usize) -> Option<Preview<'_>> {
     match app.settings_section {
         SettingsSection::Appearance => Some(appearance(app, width)),
-        SettingsSection::Notifications => Some(banner(app, width)),
-        SettingsSection::Terminal => Some(tab(app, width)),
-        SettingsSection::Usage => Some(quota(app, width)),
+        SettingsSection::Notifications => Some(lines_preview(banner(app, width))),
+        SettingsSection::Terminal => tab(app, width),
+        SettingsSection::Usage => Some(lines_preview(super::usage::readout(app, width))),
         _ => None,
+    }
+}
+
+/// A preview that is lines of text.
+fn lines_preview(lines: Vec<Line<'static>>) -> Preview<'static> {
+    Preview {
+        height: lines.len() as u16,
+        draw: Box::new(move |f, at| f.render_widget(Paragraph::new(lines.clone()), at)),
     }
 }
 
@@ -322,55 +389,198 @@ fn padded(mut spans: Vec<Span<'static>>, width: usize, ground: Style) -> Vec<Spa
     spans
 }
 
-/// A card as the board draws the cursor's, with its corner and its summary
-/// as the rows set them, beside an agent's pane with tmux's bar at the top
-/// or the bottom.
-fn appearance(app: &App, width: usize) -> Vec<Line<'static>> {
-    let theme = &app.theme;
+/// A ticket the previews draw: the board's own cards are never borrowed,
+/// so a preview says the same on every board.
+fn sample_ticket(n: u128, key: &str, title: &str) -> mesimon_core::board::Ticket {
+    mesimon_core::board::Ticket {
+        id: ulid::Ulid::from(n),
+        short_key: key.into(),
+        title: title.into(),
+        column: String::new(),
+        order: String::new(),
+        created_at: String::new(),
+        created_by: String::new(),
+        created_from: None,
+        entered_at: None,
+        previous_column: None,
+        picked: None,
+        woke_at: None,
+        manual_merge: false,
+        execution_policy: Default::default(),
+        tier: None,
+        import_origin: None,
+        envelope: None,
+        raised: None,
+        workspace: None,
+        tags: Vec::new(),
+        notes: Vec::new(),
+        archived: None,
+    }
+}
+
+/// How long one strike of the preview's loop takes, bolt to rest.
+const STRIKE_LOOP_MS: u64 = 3_600;
+
+/// Appearance, as the board draws it: the crowned card, the cursor's, with
+/// its summary and its corner as the rows set them; a card the crown just
+/// moved, the bolt striking it on a loop while the lightning is on; and an
+/// agent's pane with tmux's bar at its top or its bottom. Both crown cards
+/// wear the crown's tint either way.
+fn appearance(app: &App, width: usize) -> Preview<'_> {
+    use crate::ui::{CrownMark, Land};
     let p = &app.prefs;
-    let card_w = 40.min(width);
-    let lit = theme.selected_row();
-    let title_style = {
-        let s = lit.fg(theme.sel.base).add_modifier(Modifier::BOLD);
-        match (p.summary, theme.summary_under(true, false)) {
-            (crate::prefs::SummaryShow::Full, Some(u)) => s.patch(u),
-            _ => s,
-        }
+    let card_w: u16 = if width >= 56 { 26 } else { (width.saturating_sub(2) / 2) as u16 };
+    let pane_x = 2 * card_w + 2 + 3;
+    let pane = usize::from(pane_x) + 24 <= width;
+    // The cursor card opens to its summary rows, which set the height.
+    let shows = p.summary != crate::prefs::SummaryShow::None;
+    let height = if shows { 6 } else { 4 };
+    Preview {
+        height,
+        draw: Box::new(move |f, at| {
+            let theme = &app.theme;
+            let crowned = sample_ticket(1, "T-1", "Plan the beta");
+            let moved = sample_ticket(2, "T-2", "Fix the parser");
+            let caption = |f: &mut Frame, x: u16, words: &str| {
+                let r = Rect { x: at.x + x, y: at.y, width: card_w, height: 1 };
+                f.render_widget(Paragraph::new(Span::styled(words.to_string(), theme.dim3())), r);
+            };
+            caption(f, 0, "the crowned card");
+            caption(f, card_w + 2, "a card it moved");
+            let row = at.y + 2;
+            let left = Rect { x: at.x, y: row, width: card_w, height: at.bottom() - row };
+            let right = Rect { x: at.x + card_w + 2, ..left };
+            // Lightning on: the strike loops, the word landing as the bolt
+            // arrives. Off: the word stands. On the app's clock, so a test
+            // can hold it still.
+            let t = (app.now)() % STRIKE_LOOP_MS;
+            let land = app
+                .motion()
+                .then(|| Land {
+                    kind: crate::theme::LandKind::of("moved"),
+                    ms: t as i64 - crate::strike::LEADER_MS as i64,
+                })
+                .filter(|l| l.ms < crate::theme::CROWN_LIT_MS as i64);
+            let holder =
+                sample_card(app, card_w, &crowned, true, CrownMark::Holder { sweep: None });
+            let touched = CrownMark::Touched { action: "moved", land };
+            let struck = sample_card(app, card_w, &moved, false, touched);
+            f.render_widget(Paragraph::new(holder), left);
+            f.render_widget(Paragraph::new(struck), right);
+            // The bolt, from the crown's mark to the moved card's title,
+            // arcing through the row above them.
+            if app.motion() {
+                let bar = crate::tags::BAR_WIDTH as u16 + 1;
+                let dots = crate::strike::bolt(
+                    0x5EED,
+                    &[(left.x + bar, row), (right.x + bar, row)],
+                    at.y + 1,
+                );
+                let skip = |_x: u16, y: u16| y == row;
+                let sky = Rect { x: at.x, y: at.y + 1, width: 2 * card_w + 2, height: 2 };
+                crate::strike::paint(f.buffer_mut(), sky, theme, &[(dots, t)], &skip);
+            }
+            // The pane, its own small frame, the bar where the row puts it.
+            if pane {
+                let pr = Rect {
+                    x: at.x + pane_x,
+                    y: at.y + 1,
+                    width: (at.width - pane_x).min(36),
+                    height: 4,
+                };
+                let inner = dialog::frame(
+                    f,
+                    app,
+                    pr,
+                    None,
+                    &theme.rest,
+                    dialog::Edges {
+                        title: vec![Span::styled("an agent's pane", theme.dim3())],
+                        tail: Vec::new(),
+                    },
+                );
+                app.hits.borrow_mut().join_top();
+                let w = usize::from(inner.width);
+                let lit = theme.selected_row();
+                let bar = Line::from(padded(
+                    vec![Span::styled(" T-2 Fix the parser", lit.fg(theme.sel.dim1))],
+                    w,
+                    lit,
+                ));
+                let dot = glyph(app, "⏺", "*");
+                let text =
+                    Line::from(Span::styled(format!(" {dot} Reading src/osc.rs"), theme.dim2()));
+                let lines = if app.prefs.status_top { vec![bar, text] } else { vec![text, bar] };
+                f.render_widget(Paragraph::new(lines), inner);
+            }
+        }),
+    }
+}
+
+/// A sample card as the board draws it, `width` cells wide, with the
+/// corner, the summary and its underline as the Appearance rows set them;
+/// the cursor's card opens to its summary rows.
+fn sample_card(
+    app: &App,
+    width: u16,
+    ticket: &mesimon_core::board::Ticket,
+    selected: bool,
+    crown: crate::ui::CrownMark<'_>,
+) -> Vec<Line<'static>> {
+    use crate::app::{SummaryRow, TicketSummary};
+    let p = &app.prefs;
+    let shows = p.summary != crate::prefs::SummaryShow::None;
+    let row = |line: usize, text: &str, done: Option<bool>| SummaryRow {
+        note: ticket.id,
+        line,
+        text: text.into(),
+        done,
+    };
+    let summary = TicketSummary {
+        rows: vec![
+            row(1, "one pass over the reply", None),
+            row(2, "read the reply", Some(true)),
+            row(3, "parse it", Some(false)),
+        ],
+        count: mesimon_core::summary::Count { done: 1, total: 2 },
     };
     let corner = if p.card_corner == crate::prefs::CardCorner::Cost { "$1.84" } else { "3h" };
-    let title = truncate("Fix the OSC reply parser", card_w.saturating_sub(4 + corner.width()));
-    let bar = glyph(app, "▎ ", "| ");
-    let mut card = vec![Span::styled(bar, lit.fg(theme.pip(6))), Span::styled(title, title_style)];
-    card = padded(card, card_w.saturating_sub(corner.width() + 1), lit);
-    card.push(Span::styled(corner.to_string(), lit.fg(theme.sel.dim2)));
-    card.push(Span::styled(" ", lit));
-    let summary = if p.summary == crate::prefs::SummaryShow::None {
-        Vec::new()
-    } else {
-        let tick = glyph(app, "✓", "v");
-        vec![Span::styled(format!("  {tick} read the reply ∙ parse it in one pass"), theme.dim2())]
+    let ctx = super::card::CardCtx {
+        theme: &app.theme,
+        width,
+        now_ms: (app.now)(),
+        spin: app.spin_frame(),
+        names_key: false,
     };
-    let mut lines = vec![card, padded(summary, card_w, Style::default()), Vec::new()];
-    // The pane, beside the card where the page is wide enough for both.
-    let pane_x = card_w + 4;
-    if width >= pane_x + 24 {
-        let pane_w = (width - pane_x).min(36);
-        let bar = padded(
-            vec![Span::styled(" T-12 Fix the OSC parser", lit.fg(theme.sel.dim1))],
-            pane_w,
-            lit,
-        );
-        let dot = glyph(app, "⏺", "*");
-        let text = vec![Span::styled(format!(" {dot} Reading src/osc.rs"), theme.dim2())];
-        let (top, mid, low) =
-            if p.status_top { (bar, text, Vec::new()) } else { (Vec::new(), text, bar) };
-        for (line, part) in lines.iter_mut().zip([top, mid, low]) {
-            let used = super::spans_width(line);
-            line.push(Span::raw(" ".repeat(pane_x.saturating_sub(used))));
-            line.extend(part);
-        }
-    }
-    lines.into_iter().map(Line::from).collect()
+    super::card::render(
+        &ctx,
+        ticket,
+        &[],
+        false,
+        None,
+        selected,
+        false,
+        false,
+        None,
+        selected && shows,
+        None,
+        &[],
+        false,
+        false,
+        false,
+        None,
+        false,
+        None,
+        None,
+        None,
+        crown,
+        None,
+        Some(corner.to_string()),
+        shows.then_some(&summary),
+        None,
+        None,
+        p.summary == crate::prefs::SummaryShow::Full,
+    )
 }
 
 /// A banner as the rows would post it: who posts it, the words, and the
@@ -410,63 +620,99 @@ fn banner(app: &App, width: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// The terminal's tab as the rows set it, from this board as it stands:
-/// its title, the ring, the needs-you colour, and the subtitle under it.
-fn tab(app: &App, width: usize) -> Vec<Line<'static>> {
-    let theme = &app.theme;
-    let p = &app.prefs;
-    let needs_you = app.board.needs_you_count();
-    let working = app.board.sessions.iter().filter(|s| crate::glyphs::is_working(s)).count();
-    let w = 48.min(width);
-    let colour = p.tab_color != crate::prefs::TabColor::Off && needs_you > 0;
-    // The whole tab in the needs-you colour while it stands, else the
-    // theme's band, else the terminal's own (the page's ground here).
-    let ground = if colour && p.tab_color == crate::prefs::TabColor::Tab {
-        theme.attn_row()
-    } else if p.tab_theme {
-        theme.selected_row().fg(theme.sel.base)
-    } else {
-        theme.base()
-    };
-    let mut head = vec![Span::styled(" ", ground)];
-    if p.tab_progress {
-        let ring = if needs_you > 0 {
-            glyph(app, "◉ ", "! ")
-        } else if working > 0 {
-            glyph(app, "◔ ", "* ")
-        } else {
-            glyph(app, "○ ", "- ")
-        };
-        head.push(Span::styled(ring, ground));
+/// The terminal's tab bar as the rows set it, from this board: the tab as
+/// it stands now and the same tab while a ticket needs you, side by side,
+/// each with what this terminal can show of it — the icon, the ring, the
+/// needs-you dot or colour, the title and the subtitle. `None` where the
+/// page is too narrow for one tab.
+fn tab(app: &App, width: usize) -> Option<Preview<'_>> {
+    const TAB_W: usize = 40;
+    if width < TAB_W {
+        return None;
     }
-    if colour && p.tab_color == crate::prefs::TabColor::Dot {
-        head.push(Span::styled(glyph(app, "● ", "* "), ground.patch(theme.attn_text())));
-    }
-    let title = app.tab_title().unwrap_or_else(|| "the terminal's own title".into());
-    head.push(Span::styled(
-        truncate(&title, w.saturating_sub(6)),
-        ground.add_modifier(Modifier::BOLD),
-    ));
-    let mut lines = vec![Line::from(padded(head, w, ground))];
-    if p.tab_subtitle {
-        let sub = crate::title::subtitle(needs_you, working);
-        let sub = if sub.is_empty() { "nothing needs you".to_string() } else { sub };
-        lines.push(Line::from(padded(vec![Span::styled(format!(" {sub}"), ground)], w, ground)));
-    }
-    lines
+    let two = width >= 2 * TAB_W + 2;
+    Some(Preview {
+        height: 4,
+        draw: Box::new(move |f, at| {
+            let now = app.board.needs_you_count();
+            let working =
+                app.board.sessions.iter().filter(|s| crate::glyphs::is_working(s)).count();
+            draw_tab(f, app, Rect { width: TAB_W as u16, ..at }, now, working, "now");
+            if two {
+                let x = at.x + TAB_W as u16 + 2;
+                let r = Rect { x, width: TAB_W as u16, ..at };
+                draw_tab(f, app, r, now.max(1), working, "when a ticket needs you");
+            }
+        }),
+    })
 }
 
-/// The quota line as it would stand above the keys now.
-fn quota(app: &App, width: usize) -> Vec<Line<'static>> {
+/// One tab, framed: on the tab's own colour, the icon, the progress ring,
+/// the dot, the title; the subtitle under it; `caption` in its edge.
+fn draw_tab(f: &mut Frame, app: &App, at: Rect, needs_you: usize, working: usize, caption: &str) {
     let theme = &app.theme;
-    let line = super::usage::line(app, width);
-    if !line.is_empty() {
-        return vec![Line::from(line)];
-    }
-    let why = match app.prefs.usage_line {
-        crate::prefs::UsageLine::Off => "nothing above the keys",
-        crate::prefs::UsageLine::Near => "quiet until a provider nears a limit",
-        _ => "no reading yet",
+    let p = &app.prefs;
+    let ctx = app.ctx();
+    // What iTerm2 3.7's session status draws, and iTerm2's own colours.
+    let status = ctx.iterm2 && ctx.iterm2_status;
+    let whole = ctx.iterm2 && p.tab_color == crate::prefs::TabColor::Tab && needs_you > 0;
+    let dot = status && p.tab_color == crate::prefs::TabColor::Dot && needs_you > 0;
+    let surface = if whole {
+        Some(theme.attn)
+    } else if ctx.iterm2 && p.tab_theme {
+        theme.selected_bg
+    } else {
+        None
     };
-    vec![Line::from(Span::styled(why, theme.dim3()))]
+    let ink = if whole { Style::default().fg(theme.attn_ink) } else { theme.base() };
+    let inner = dialog::frame(
+        f,
+        app,
+        at,
+        surface,
+        &theme.rest,
+        dialog::Edges {
+            title: Vec::new(),
+            tail: vec![Span::styled(caption.to_string(), theme.dim3())],
+        },
+    );
+    app.hits.borrow_mut().join_top();
+    let mut head: Vec<Span<'static>> = vec![Span::raw(" ")];
+    if status && p.tab_icon {
+        head.push(Span::styled(format!("{} ", glyph(app, "ש", "S")), ink));
+    }
+    if p.tab_progress {
+        let ring = if needs_you > 0 {
+            Span::styled(format!("{} ", glyph(app, "◉", "!")), Style::default().fg(theme.err))
+        } else if working > 0 {
+            let spin = ["◐", "◓", "◑", "◒"][app.spin_frame() % 4];
+            Span::styled(format!("{} ", glyph(app, spin, "*")), ink)
+        } else {
+            Span::styled(format!("{} ", glyph(app, "○", "-")), ink)
+        };
+        head.push(ring);
+    }
+    if dot {
+        head.push(Span::styled(format!("{} ", glyph(app, "●", "*")), theme.attn_text()));
+    }
+    let title = if p.tab_title.is_on() {
+        crate::title::board(
+            &app.board_name(),
+            p.tab_title == crate::prefs::TabTitle::Mesimon,
+            p.tab_title_needs_you.then_some(needs_you),
+        )
+    } else {
+        "the terminal's own title".to_string()
+    };
+    let used = super::spans_width(&head);
+    head.push(Span::styled(
+        truncate(&title, usize::from(inner.width).saturating_sub(used + 1)),
+        ink.add_modifier(Modifier::BOLD),
+    ));
+    let mut lines = vec![Line::from(head)];
+    if status && p.tab_subtitle {
+        let sub = crate::title::subtitle(needs_you, working);
+        lines.push(Line::from(Span::styled(format!(" {sub}"), ink)));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
 }

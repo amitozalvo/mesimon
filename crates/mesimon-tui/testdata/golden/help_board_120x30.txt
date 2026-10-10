@@ -15,13 +15,13 @@
    │                                   ^o        crown                                   $         show costs       │
    │                                   tab       describe                                                           │
    │                                   n         note                                  APP                          │
-   │                                   ^t        tags                                    esc       menu             │
-   │                                   a         archive                                 q         quit             │
-   │                                   z         snooze                                  ?         keys             │
-   │                                   d         delete                                  ^L        redraw           │
+   │                                   ^t        tags                                    ,         settings         │
+   │                                   a         archive                                 esc       menu             │
+   │                                   z         snooze                                  q         quit             │
+   │                                   d         delete                                  ?         keys             │
+   │                                                                                     ^L        redraw           │
    │                                                                                     ^Z        suspend mesimon  │
    ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
 
 
 

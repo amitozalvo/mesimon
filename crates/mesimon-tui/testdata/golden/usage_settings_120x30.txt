@@ -2,29 +2,29 @@
 
     TO╭─ SETTINGS ───────────────────────────────────────────────────────────────────────────────────────────────╮   1
       │                                                                                                          │
-    De│  Theme              quiet until a provider nears a limit                                                 │ >1y
+    De│  Theme              claude      5h 14% ∙ week 63% ∙ Fable 64%   read 2m ago                              │ >1y
+      │                     codex       signed out                                                               │
+    Ke│  Appearance         this board  24 hours $3.40 ∙ 7 days $12.52 ∙ 30 days $12.52   an estimate            │
       │                                                                                                          │
-    Ke│  Appearance          Show                near a limit                                                    │
+      │  Notifications       Details             pace and cost ›                                                 │
       │                                                                                                          │
-      │  Notifications      WINDOWS                                                                              │
-      │                      5-hour window       ● on                                                            │
-      │  Behaviour           Weekly window       ● on                                                            │
-      │                      Per-model windows   ● on                                                            │
-      │  Agents              Reset times         ● near a limit   ○ always   ○ never                             │
-      │                                                                                                          │
-      │  Crown              PROVIDERS                                                                            │
-      │                      Claude              ● on                                                            │
-      │  Terminal            Codex               ● on                                                            │
-      │                                                                                                          │
+      │  Behaviour          QUOTA LINE                                                                           │
+      │                      Show                near a limit                                                    │
+      │  Agents                                                                                                  │
+      │                     WINDOWS                                                                              │
+      │  Crown               5-hour window       ● on                                                            │
+      │                      Weekly window       ● on                                                            │
+      │  Terminal            Per-model windows   ● on                                                            │
+      │                      Reset times         ● near a limit   ○ always   ○ never                             │
       │▎ Usage                                                                                                   │
+      │                     PROVIDERS                                                                            │
+      │                      Claude              ● on                                                            │
+      │                      Codex               ● on                                                            │
       │                                                                                                          │
       │                                                                                                          │
       │                                                                                                          │
       │                                                                                                          │
-      │                                                                                                          │
-      │                                                                                                          │
-      │                                                                                                          │
-      │                     silent until a provider warns                                                        │
-      ╰──────────────────────────────────────────────────────────────── jk select ∙ enter change ∙ esc sections ─╯
+      │                     every window's reset, the week's pace, this board's cost by ticket                   │
+      ╰─────────────────────────────────────────────────── jk select ∙ enter change ∙ r read now ∙ esc sections ─╯
 
  SETTINGS                                                                                                        ? keys

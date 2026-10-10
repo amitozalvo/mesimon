@@ -1,7 +1,6 @@
  BOARD   mesimon › kanban-tui   6 tickets
   ╭─ SETTINGS ∙ USAGE ───────────────────────────────────╮
   │                                                      │
-  │  Details             pace and cost ›                 │
   │                                                      │
   │ QUOTA LINE                                           │
   │  Show                near a limit                    │
@@ -14,7 +13,8 @@
   │                                                      │
   │ PROVIDERS                                            │
   │  Claude              ● on                            │
+  │  Codex               ● on                            │
   │                                                      │
-  │ every window's reset, the week's pace, this board's~ │
+  │ a session's own reports, else a quiet app-server     │
   ╰────────────── jk select ∙ enter change ∙ r read now ─╯
  SETTINGS                                            ? keys

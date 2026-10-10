@@ -11,12 +11,12 @@
       │  Behaviour                                                                                               │
       │                     WHEN                                                                                 │
       │  Agents              A turn finishes               ● on                                                  │
-      │                      While the board is in front   ○ banner   ● sound only                               │
-      │  Crown               In the agent's own pane       ○ said   ● silent                                     │
+      │                      While the board is in front   ○ banner    ● sound only                              │
+      │  Crown               In the agent's own pane       ○ said      ● silent                                  │
       │                      Crown's agents                ○ you too   ● the crown                               │
       │  Terminal                                                                                                │
       │                     BANNER                                                                               │
-      │  Usage               The agent's words             ● quoted   ○ withheld                                 │
+      │  Usage               The agent's words             ● quoted    ○ withheld                                │
       │                      Dock bounce                   ○ off                                                 │
       │                                                                                                          │
       │                     SOUND                                                                                │

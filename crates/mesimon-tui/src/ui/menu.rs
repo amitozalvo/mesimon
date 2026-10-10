@@ -442,8 +442,28 @@ fn draw_list(
 ) {
     let ctx = app.frame_ctx();
     let mark = crate::glyphs::suggest_mark(app.theme.glyph_tier());
+    // The suggestions sort first (`menu_items`) and stand as a group of
+    // their own under a heading, a blank line between them and the rest
+    // (T-717). Headings are lines of the drawing, not rows of the list:
+    // the cursor's `idx` moves past every one drawn above it.
+    let offered = items.iter().take_while(|m| keymap::is_suggested(m.verb, &ctx)).count();
+    let heading = |head: &str| ListRow {
+        lead: String::new(),
+        head: head.to_string(),
+        right: String::new(),
+        detail: None,
+        heading: true,
+    };
     let mut rows: Vec<ListRow> = Vec::new();
-    for item in items {
+    let mut at = idx;
+    if offered > 0 {
+        rows.push(heading("SUGGESTED"));
+        at += 1 + usize::from(idx >= offered && offered < items.len());
+    }
+    for (i, item) in items.iter().enumerate() {
+        if offered > 0 && i == offered {
+            rows.push(heading(""));
+        }
         rows.push(ListRow {
             lead: if keymap::is_suggested(item.verb, &ctx) {
                 format!(" {mark} ")
@@ -456,5 +476,5 @@ fn draw_list(
             heading: false,
         });
     }
-    dialog::list(f, app, name, false, scope, idx, &rows);
+    dialog::list(f, app, name, false, scope, at, &rows);
 }

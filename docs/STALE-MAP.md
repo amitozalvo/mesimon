@@ -23348,3 +23348,32 @@ broadcasts after `crown_touched`. Audit of the other arms: `sleep_agent` (`persi
 only) and `tag_ticket` on a tag already worn (no change, no broadcast) had the same gap and
 broadcast the same way; the rest reach `with_ticket`, `persist_and_notify` or their own
 `broadcast`. A new arm that calls `crown_touched` must reach a broadcast on its success path.
+
+## Settings, the author's first pass (T-717, 2026-10-10)
+
+Options now sit in page-wide columns
+(`option_columns`): each option's column is as wide as the widest option at that place on the
+page, so the radio marks line up down the page. `,` opens Settings from the board and a ticket
+page (overlay-only; the menu row names it). The menu's suggestions stand under a `SUGGESTED`
+heading with a blank line before the rest. The section list stands on a painted ground,
+`Theme::hover_bg`, or a one-column rule of the cursor's surface where the profile has no
+halfway: painted, never drawn (L1).
+
+The Appearance preview draws the board's own cards (`card::render` on two sample tickets): the
+crowned card, the cursor's, with its summary and corner as the rows set them, and a card the
+crown moved. Both wear the crown's tint in either mode, as on the board. With the lightning on,
+the real bolt (`strike::bolt`, `strike::paint`) loops between them every 3.6 s and the moved
+card's word lands with it (`App::settings_striking` keeps the frames fast while the page is
+up). The loop reads `App::now`, so a test pins it (`settled_strike`). An agent's pane, its own
+recorded frame, carries tmux's bar at the top or the bottom.
+
+The Terminal preview draws the tab as a tab: one framed tab as the board stands now, and the
+same tab while a ticket needs you, each on the colour iTerm2 would give it and with only what
+this terminal shows. The icon, the dot and the subtitle need iTerm2 3.7's session status, so
+an older iTerm2 sees none of them in the preview either.
+
+**The Usage dialog left the menu.** Settings › Usage opens on the quota itself
+(`usage::readout`: each provider's windows on one line, or why it has none, and this board's
+estimate), `r` reads again, and its first row, `Details`, is the old dialog (resets, pace, the
+costliest tickets), whose Esc returns to that row. The menu row's headline words
+(`usage::summary`, `Ctx::usage_summary`) and the dialog's `s` went with it.

@@ -2,22 +2,22 @@
 
     TO╭─ SETTINGS ───────────────────────────────────────────────────────────────────────────────────────────────╮   0
       │                                                                                                          │
-    De│  Theme               mesimon ∙ kanban-tui                                                                │
-      │                      2 working                                                                           │
-    Ke│  Appearance                                                                                              │
+    De│  Theme              ╭──────────────────────────────────────╮  ╭──────────────────────────────────────╮   │
+      │                     │ mesimon ∙ kanban-tui                 │  │ mesimon ∙ kanban-tui                 │   │
+    Ke│  Appearance         │                                      │  │                                      │   │
+      │                     ╰──────────────────────────────── now ─╯  ╰──────────── when a ticket needs you ─╯   │
+      │  Notifications                                                                                           │
       │                     TITLE                                                                                │
-      │  Notifications       Tab title                  ○ off   ○ project   ● mesimon ∙ project                  │
+      │  Behaviour           Tab title                  ○ off   ○ project   ● mesimon ∙ project                  │
       │                      Counts who needs you       ○ off                                                    │
-      │  Behaviour           Follows the open session   ● on                                                     │
+      │  Agents              Follows the open session   ● on                                                     │
       │                                                                                                          │
-      │  Agents             TAB                                                                                  │
+      │  Crown              TAB                                                                                  │
       │                      Progress ring              ○ off                                                    │
-      │  Crown               Colour from the theme      ● on                                                     │
-      │                      Colour when needs you      ○ off   ○ dot   ● whole tab                              │
-      │▎ Terminal            Subtitle                   ● on                                                     │
+      │▎ Terminal            Colour from the theme      ● on                                                     │
+      │                      Colour when needs you      ○ off   ○ dot       ● whole tab                          │
+      │  Usage               Subtitle                   ● on                                                     │
       │                      Icon                       ● on                                                     │
-      │  Usage                                                                                                   │
-      │                                                                                                          │
       │                                                                                                          │
       │                                                                                                          │
       │                                                                                                          │

@@ -4,11 +4,11 @@
   │ WHEN                                                 │
   │  A turn finishes               ● on                  │
   │  While the board is in front   sound only            │
-  │  In the agent's own pane       ○ said   ● silent     │
+  │  In the agent's own pane       silent                │
   │  Crown's agents                the crown             │
   │                                                      │
   │ BANNER                                               │
-  │  The agent's words             ● quoted   ○ withheld │
+  │  The agent's words             quoted                │
   │  Dock bounce                   ○ off                 │
   │                                                      │
   │ SOUND                                                │

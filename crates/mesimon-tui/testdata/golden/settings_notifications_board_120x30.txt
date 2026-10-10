@@ -11,12 +11,12 @@
       │  Behaviour                                                                                               │
       │                     WHEN                                                                                 │
       │  Agents              A turn finishes               ● on                                       inherited  │
-      │                      While the board is in front   ○ banner   ● sound only                    inherited  │
-      │  Crown               In the agent's own pane       ○ said   ● silent                          inherited  │
+      │                      While the board is in front   ○ banner    ● sound only                   inherited  │
+      │  Crown               In the agent's own pane       ○ said      ● silent                       inherited  │
       │                      Crown's agents                ○ you too   ● the crown                    inherited  │
       │  Terminal                                                                                                │
       │                     BANNER                                                                               │
-      │  Usage               The agent's words             ● quoted   ○ withheld                      inherited  │
+      │  Usage               The agent's words             ● quoted    ○ withheld                     inherited  │
       │                      Dock bounce                   ○ off                                      inherited  │
       │                                                                                                          │
       │                     SOUND                                                                                │

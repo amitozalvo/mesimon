@@ -21,7 +21,7 @@
                            │     T-1 Decay treatments                   $0.42   48k tokens  │
                            │     T-5 Grapheme truncation            unpriced   300k tokens  │
                            │                                                                │
-                           ╰── jk select ∙ enter open ∙ r read now ∙ s settings ∙ esc back ─╯
+                           ╰─────────────── jk select ∙ enter open ∙ r read now ∙ esc back ─╯
 
 
 

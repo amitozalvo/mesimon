@@ -1,6 +1,6 @@
 //! The subscription quota on the board (T-327): the line on the right of the
-//! row above the keys, the Usage dialog the menu opens, and the menu row's
-//! own summary.
+//! row above the keys, the readout on Settings › Usage, and the detail
+//! dialog behind it.
 //!
 //! Every percentage is the provider's, and the line never grades one: a
 //! window is grey while its provider calls it normal, and the provider's
@@ -240,23 +240,92 @@ pub(super) fn line(app: &App, room: usize) -> Vec<Span<'static>> {
     Vec::new()
 }
 
-/// The menu row's words (`claude Fable 64% ∙ codex signed out`): each
-/// provider the settings name, by its headline or by why it has none.
-pub(crate) fn summary(app: &App) -> String {
+/// Settings › Usage's readout (T-717): each provider the settings name on
+/// one line — every window it reports and when the warm ones reset, or why
+/// there is nothing — then this board's estimate. The detail dialog has the
+/// rest: every reset, the week's pace, the tickets.
+pub(super) fn readout(app: &App, width: usize) -> Vec<Line<'static>> {
+    let theme = &app.theme;
     let now = (app.now)();
-    let mut parts = Vec::new();
+    let mut lines = Vec::new();
+    let name_w = 12;
+    let head = |word: &str| Span::styled(format!("{word:<name_w$}"), theme.base());
     for provider in Provider::ALL {
         if !enabled(&app.prefs, provider) {
             continue;
         }
         let u = app.usage.get(provider);
-        if let Some(problem) = &u.problem {
-            parts.push(format!("{} {}", provider.word(), problem.short()));
-        } else if let Some(w) = u.reading.as_ref().and_then(|r| hottest(&live(r, now))) {
-            parts.push(format!("{} {} {}", provider.word(), clean(&w.label), w.percent_word()));
+        let mut spans = vec![head(provider.word())];
+        if app.usage.reading.contains(&provider) {
+            spans.push(Span::styled("reading", theme.dim2()));
+        } else if let Some(problem) = &u.problem {
+            spans.push(Span::styled(clean(problem.short()), theme.dim2()));
+        } else if let Some(r) = &u.reading {
+            let windows = live(r, now);
+            if windows.is_empty() {
+                spans.push(Span::styled("no windows reported", theme.dim2()));
+            }
+            for (i, win) in windows.iter().enumerate() {
+                if i > 0 {
+                    spans.push(Span::styled(" ∙ ", theme.dim3()));
+                }
+                let ink = if hot(win) { theme.base() } else { theme.dim2() };
+                spans.push(Span::styled(
+                    format!("{} {}", clean(&win.label), win.percent_word()),
+                    ink,
+                ));
+                if let Some(at) = win.resets_at_ms.filter(|_| hot(win)) {
+                    spans.push(Span::styled(format!(" resets {}", reset_word(app, at)), ink));
+                }
+            }
+            spans.push(Span::styled(
+                format!("   read {}", crate::text::age_ago(now, r.read_at_ms)),
+                theme.dim3(),
+            ));
+        } else {
+            spans.push(Span::styled("not read yet ∙ r reads it", theme.dim2()));
+        }
+        lines.push(fit_line(spans, width));
+    }
+    use mesimon_core::cost::usd_word;
+    let (day, week, month) =
+        app.costs.iter().fold((0.0, 0.0, 0.0), |(d, w, m), c| (d + c.day, w + c.week, m + c.month));
+    let board = if app.costs.is_empty() {
+        vec![head("this board"), Span::styled("nothing counted yet", theme.dim2())]
+    } else {
+        vec![
+            head("this board"),
+            Span::styled(
+                format!(
+                    "24 hours {} ∙ 7 days {} ∙ 30 days {}",
+                    usd_word(day),
+                    usd_word(week),
+                    usd_word(month)
+                ),
+                theme.dim2(),
+            ),
+            Span::styled("   an estimate", theme.dim3()),
+        ]
+    };
+    lines.push(fit_line(board, width));
+    lines
+}
+
+/// `spans` cut to `width` cells, the span that crosses the edge cut short.
+fn fit_line(spans: Vec<Span<'static>>, width: usize) -> Line<'static> {
+    let mut out = Vec::new();
+    let mut used = 0;
+    for s in spans {
+        let w = s.content.width();
+        if used + w <= width {
+            used += w;
+            out.push(s);
+        } else {
+            out.push(Span::styled(truncate(&s.content, width - used), s.style));
+            break;
         }
     }
-    parts.join(" ∙ ")
+    Line::from(out)
 }
 
 /// The width a window's label column takes in the dialog.

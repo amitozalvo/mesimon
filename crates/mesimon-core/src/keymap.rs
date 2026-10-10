@@ -583,15 +583,14 @@ pub enum Verb {
     /// The notifications row for who posts the banner (T-676): mesimon's
     /// helper or the terminal.
     NotifyVia,
-    /// The subscription quota (T-327). `Usage` is the menu row that opens
-    /// the dialog; `UsageRefresh` its `r`, which reads every provider the
-    /// settings name now; `SettingsUsage` the dialog's `s`, which opens
-    /// Settings on its Usage section. The seven after it are those rows, each a
-    /// `prefs.json` key, per machine: what the line shows, its three
-    /// windows, when it names a reset, and its two providers.
+    /// The subscription quota (T-327). `Usage` is the Settings › Usage row
+    /// that opens the detail dialog (a menu row until T-717); `UsageRefresh`
+    /// its `r` and the page's, which reads every provider the settings name
+    /// now. The seven after it are the page's rows, each a `prefs.json`
+    /// key, per machine: what the line shows, its three windows, when it
+    /// names a reset, and its two providers.
     Usage,
     UsageRefresh,
-    SettingsUsage,
     /// `$` on the board, and the Usage settings' last row: a card's corner
     /// shows the ticket's estimated cost rather than its age.
     CardCorner,
@@ -1034,7 +1033,8 @@ impl SettingsSection {
             | Verb::TabColor
             | Verb::TabSubtitle
             | Verb::TabIcon => Self::Terminal,
-            Verb::UsageShow
+            Verb::Usage
+            | Verb::UsageShow
             | Verb::UsageFiveHour
             | Verb::UsageWeekly
             | Verb::UsageModel
@@ -1454,9 +1454,6 @@ pub struct Ctx {
     pub usage_resets_word: &'static str,
     pub usage_claude: bool,
     pub usage_codex: bool,
-    /// The menu row's own words for the quota: each provider's headline, or
-    /// why it has none (`claude Fable 64% ∙ codex signed out`).
-    pub usage_summary: String,
     /// A read is in flight: `r` would only start a second.
     pub usage_reading: bool,
     /// The cards' corner shows each ticket's cost, not its age (`$`).
@@ -1940,6 +1937,19 @@ static GLOBAL: &[Binding] = &[
 ];
 
 static BOARD: &[Binding] = &[
+    // `,` opens Settings (T-717), the shortcut many apps give their
+    // preferences; overlay-only, since the menu's row names it already.
+    Binding {
+        keys: &[Key::Char(',')],
+        verb: Verb::Settings,
+        show: ",",
+        hint: |_| "settings",
+        avail: always,
+        class: Class::Plain,
+        group: Group::App,
+        mutates: false,
+        prio: 0,
+    },
     Binding {
         keys: &[Key::Ctrl('y')],
         verb: Verb::SendQueuedAsk,
@@ -2743,6 +2753,19 @@ static BOARD: &[Binding] = &[
 ];
 
 static TICKET: &[Binding] = &[
+    // `,` opens Settings (T-717), the shortcut many apps give their
+    // preferences; overlay-only, since the menu's row names it already.
+    Binding {
+        keys: &[Key::Char(',')],
+        verb: Verb::Settings,
+        show: ",",
+        hint: |_| "settings",
+        avail: always,
+        class: Class::Plain,
+        group: Group::App,
+        mutates: false,
+        prio: 0,
+    },
     Binding {
         keys: &[Key::Ctrl('y')],
         verb: Verb::SendQueuedAsk,
@@ -3862,6 +3885,18 @@ static SETTING_ROWS: &[Binding] = &[
         mutates: false,
         prio: 0,
     },
+    // The Usage page's readout reads again on `r`, as its dialog's does.
+    Binding {
+        keys: &[Key::Char('r')],
+        verb: Verb::UsageRefresh,
+        show: "r",
+        hint: |c| if c.usage_reading { "reading" } else { "read now" },
+        avail: |c| c.settings_section == SettingsSection::Usage && !c.usage_reading,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 25,
+    },
     Binding {
         keys: &[Key::Enter],
         verb: Verb::Act,
@@ -4462,22 +4497,6 @@ static MENU_ITEMS: &[MenuItem] = &[
         avail: |c| c.teams || c.mesophon,
         key: "",
     },
-    // The subscription quota (T-327): the row names each provider's
-    // headline, so the menu answers "how much is left" before it is opened;
-    // the dialog behind it has every window and its reset.
-    MenuItem {
-        verb: Verb::Usage,
-        label: |c| {
-            if c.usage_summary.is_empty() {
-                "Usage".into()
-            } else {
-                format!("Usage: {}", c.usage_summary)
-            }
-        },
-        detail: |_| "your plan's quota windows, and when each resets".into(),
-        avail: always,
-        key: "",
-    },
     // The door to the preferences. Never a suggestion — a setting is not
     // something worth doing right now — and it names what is behind it, so
     // nobody opens it to find out.
@@ -4485,11 +4504,10 @@ static MENU_ITEMS: &[MenuItem] = &[
         verb: Verb::Settings,
         label: |_| "Settings".into(),
         // Names what is behind the door, and fits the row: the detail's
-        // budget is 56 cells, so it names the five sections and not the rows
-        // that sit at the root beside them.
-        detail: |_| "appearance, notifications, behaviour, agents, terminal".into(),
+        // budget is 56 cells, so it names some of the eight sections.
+        detail: |_| "theme, notifications, agents, crown, usage".into(),
         avail: always,
-        key: "",
+        key: ",",
     },
     // What this build is, in its own words. Never a
     // suggestion either — the header's update chip is the one that says a
@@ -4518,6 +4536,16 @@ static MENU_ITEMS: &[MenuItem] = &[
 /// none is ever a suggestion (`every_suggestion_is_a_menu_row` holds them
 /// apart).
 static SETTINGS_ITEMS: &[MenuItem] = &[
+    // The quota's detail dialog (T-327), a door on the Usage page since
+    // T-717, which opens on each provider's windows: behind it, the pace of
+    // the headline week and this board's cost by ticket.
+    MenuItem {
+        verb: Verb::Usage,
+        label: |_| "Details".into(),
+        detail: |_| "every window's reset, the week's pace, this board's cost by ticket".into(),
+        avail: always,
+        key: "",
+    },
     // Holding the machine awake (T-288). It sits under BEHAVIOUR, beside the
     // merge train: appearance is what the board shows and says, and this is
     // something it DOES outside its own window while it is open — dying with
@@ -5350,6 +5378,7 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::TabIcon,
         ],
         SettingsSection::Usage => &[
+            Verb::Usage,
             Verb::UsageShow,
             Verb::UsageFiveHour,
             Verb::UsageWeekly,
@@ -5379,6 +5408,7 @@ pub fn settings_heading(verb: Verb) -> Option<&'static str> {
         Verb::NotifySoundNeedsYou => Some("SOUND"),
         Verb::SnoozeQuiet => Some("SNOOZE"),
         Verb::MergeTrain => Some("AUTO MERGE"),
+        Verb::UsageShow => Some("QUOTA LINE"),
         Verb::TabTitle => Some("TITLE"),
         Verb::TabProgress => Some("TAB"),
         Verb::UsageFiveHour => Some("WINDOWS"),
@@ -5471,6 +5501,7 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
         },
         Verb::TabSubtitle => Value::Switch(c.tab_subtitle),
         Verb::TabIcon => Value::Switch(c.tab_icon),
+        Verb::Usage => Value::Door("pace and cost".into()),
         Verb::UsageShow => Value::Word(or(c.usage_line_word, "near a limit").into()),
         Verb::UsageFiveHour => Value::Switch(c.usage_5h),
         Verb::UsageWeekly => Value::Switch(c.usage_week),
@@ -5982,17 +6013,6 @@ static USAGE: &[Binding] = &[
         group: Group::Navigate,
         mutates: false,
         prio: 20,
-    },
-    Binding {
-        keys: &[Key::Char('s')],
-        verb: Verb::SettingsUsage,
-        show: "s",
-        hint: |_| "settings",
-        avail: always,
-        class: Class::Plain,
-        group: Group::Navigate,
-        mutates: false,
-        prio: 30,
     },
     Binding {
         keys: &[Key::Char('q'), Key::Esc],
@@ -9429,13 +9449,18 @@ mod tests {
             Verb::SleepAllDone,
             Verb::ArchiveAllDone,
             Verb::Sharing,
-            Verb::Usage,
             Verb::Settings,
             Verb::ReleaseNotes,
             Verb::Quit,
         ] {
             assert!(verbs.contains(&v), "{v:?} missing from the menu: {verbs:?}");
         }
+        // The quota's dialog is Settings › Usage's door (T-717), and `,`
+        // opens Settings from the board.
+        assert!(!verbs.contains(&Verb::Usage));
+        let usage = Ctx { settings_section: SettingsSection::Usage, ..ctx.clone() };
+        assert_eq!(settings_items(&usage).first().map(|m| m.verb), Some(Verb::Usage));
+        assert_eq!(resolve(Scope::Board, Key::Char(','), &ctx), Some(Verb::Settings));
         // The preferences are one level down, in the Settings dialog's
         // sections, and not in the menu proper: a menu row is an action or a
         // door. Theme's page is the picker and has no rows.

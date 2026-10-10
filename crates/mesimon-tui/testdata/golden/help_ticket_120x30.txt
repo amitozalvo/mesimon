@@ -14,10 +14,10 @@
                  │                                 r         rename        x         sleep           │
                  │                                 n         describe                                │
                  │                                 N         new note    APP                         │
-                 │                                 ^t        tags          ?         keys            │
-    ● working    │                                 a         archive       ^L        redraw          │
-    nothing said │                                 z         snooze        ^Z        suspend mesimon │
-                 │                                 d         delete                                  │
+                 │                                 ^t        tags          ,         settings        │
+    ● working    │                                 a         archive       ?         keys            │
+    nothing said │                                 z         snooze        ^L        redraw          │
+                 │                                 d         delete        ^Z        suspend mesimon │
                  ╰───────────────────────────────────────────────────────────────────────────────────╯
 
 

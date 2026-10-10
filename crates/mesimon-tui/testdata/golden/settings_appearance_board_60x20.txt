@@ -1,17 +1,17 @@
  BOARD   mesimon › kanban-tui   6 tickets
   ╭─ SETTINGS ∙ APPEARANCE ∙ THIS BOARD ─────────────────╮
   │                                                      │
-  │ ▎ Fix the OSC reply parser           3h              │
-  │   ✓ read the reply ∙ parse it in one pass            │
+  │ the crowned card           a card it moved           │
   │                                                      │
-  │  Status line        ○ top   ● bottom        machine  │
+  │    ♛ Plan the beta    3h      Fix the pars~ ♛ moved  │
+  │     -  one pass over th~                             │
+  │    [ ] parse it                                      │
+  │    [✓] read the reply                                │
+  │                                                      │
+  │  Status line        ○ top         ● bottom  machine  │
   │  Crown's actions    ● lightning   ○ still   machine  │
   │  Summary on cards   full                    machine  │
-  │  Card corner        ● age   ○ cost          machine  │
-  │                                                      │
-  │                                                      │
-  │                                                      │
-  │                                                      │
+  │  Card corner        ● age         ○ cost    machine  │
   │                                                      │
   │                                                      │
   │                                                      │

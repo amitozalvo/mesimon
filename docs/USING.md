@@ -108,7 +108,7 @@ mesimon
 
 On the board: `o` adds a ticket, `space` opens its page, `enter` goes to its agent (or opens the
 page when it has none), `HJKL` moves the card (`>` or `<` twice does too), `p` shows each agent's
-latest reply under its card, `q` quits.
+latest reply under its card, `,` opens Settings, `q` quits.
 
 `/` searches. Type any part of a ticket's title, its key, its column or a tag it wears and the
 list narrows as you go; `ctrl-n` / `ctrl-p` walk it, `enter` puts the cursor on that card, `esc`
@@ -468,12 +468,13 @@ awake until you leave or go quiet for that long. On disk this is the column's
 When Claude Code or Codex says a quota window is close to its limit, the board says so on the
 right of the row above the keys: `claude 5h 86% resets 17:50`. The numbers are the provider's
 own, the same ones Claude Code's `/usage` and Codex's `/status` show, and the line stays grey;
-it is silent while every window is calm. **Esc › Usage** shows every window with its reset
-time, how old the reading is, and why a provider has none (signed out, an API key with no plan
-limits, a CLI too old to say). Its pace row is mesimon's own straight-line guess at where the
-week ends up, and it is labelled experimental. `r` reads again now.
+it is silent while every window is calm. **Settings › Usage** opens on every window each
+provider reports, how old the reading is, and why a provider has none (signed out, an API key
+with no plan limits, a CLI too old to say); `r` reads again now. Its **Details** row adds each
+window's reset time and a pace row, mesimon's own straight-line guess at where the week ends up,
+labelled experimental.
 
-**Settings › Usage** decides what the line shows: near a limit (the default), every window,
+The rest of **Settings › Usage** decides what the line shows: near a limit (the default), every window,
 each provider's headline, or nothing. It also picks which windows it may use (the 5-hour
 window, the week, per-model weeks such as Fable or Codex-Spark), when it names a reset time,
 and whether Claude and Codex are read at all.
@@ -493,8 +494,8 @@ Each ticket also says what its agents have cost, as mesimon's estimate: the toke
 transcript its sessions held (subagents included), at each model's published API price. A plan
 subscriber pays none of that; it is what the same work would cost on the API. `$` on the board
 switches every card's corner from its age to its cost and back; while the cards show their cost,
-the ticket page's facts line shows it too (`∙ $4.20`). **Esc › Usage** shows the board's last 24
-hours, 7 days and 30 days and its costliest tickets (Enter opens one). Codex models have no
+the ticket page's facts line shows it too (`∙ $4.20`). **Settings › Usage** shows the board's
+last 24 hours, 7 days and 30 days, and its **Details** row the costliest tickets (Enter opens one). Codex models have no
 published price in this build, so a Codex ticket shows its tokens instead. Counting starts with this version: an
 older ticket counts what its current sessions' transcripts hold. On Claude Code 2.1.287 or newer,
 a session's turns are counted from Claude Code's own report of each turn, and its transcript is

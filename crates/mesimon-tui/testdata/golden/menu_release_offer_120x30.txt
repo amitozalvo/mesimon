@@ -5,18 +5,18 @@
     Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
 
     Keymap validator      >╭─ MENU ─────────────────────────────────────────────────────────╮
+                           │ SUGGESTED                                                      │
                            │ ◦ Install v0.1.0-alpha.5                                       │
                            │     downloads and verifies it ∙ nothing restarts yet           │
+                           │                                                                │
                            │   External sessions                                            │
                            │     agent sessions in this repo that mesimon did not start     │
                            │   Archived tickets                                             │
                            │     off the board, still here                                  │
                            │   Sharing: not signed in                                       │
                            │     sign in to a relay to share this board or join one         │
-                           │   Usage                                                        │
-                           │     your plan's quota windows, and when each resets            │
-                           │   Settings                                                     │
-                           │     appearance, notifications, behaviour, agents, terminal     │
+                           │   Settings                                                   , │
+                           │     theme, notifications, agents, crown, usage                 │
                            │   Release notes                                                │
                            │     what changed in each version, newest first                 │
                            │   Quit mesimon                                               q │

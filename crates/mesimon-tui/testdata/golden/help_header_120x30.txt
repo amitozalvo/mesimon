@@ -8,12 +8,12 @@
 
              ╭─ KEYS ∙ board ─────────────────────────────────────────────────────────────────────────────╮
              │ MOVE AROUND                    VIEW                            APP                         │
-             │   hjkl      move around          !         terminal              esc       menu            │
-             │   enter     column settings      p         show replies          q         quit            │
-             │   /         search               P         show every reply      ?         keys            │
-             │                                  $         show costs            ^L        redraw          │
-             │ TICKETS                                                          ^Z        suspend mesimon │
-             │   o         new ticket                                                                     │
+             │   hjkl      move around          !         terminal              ,         settings        │
+             │   enter     column settings      p         show replies          esc       menu            │
+             │   /         search               P         show every reply      q         quit            │
+             │                                  $         show costs            ?         keys            │
+             │ TICKETS                                                          ^L        redraw          │
+             │   o         new ticket                                           ^Z        suspend mesimon │
              │   HJKL      move column                                                                    │
              │   O         new column                                                                     │
              │   r         rename column                                                                  │
