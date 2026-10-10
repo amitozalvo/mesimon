@@ -10439,3 +10439,40 @@ fn a_click_off_a_dialog_spares_a_field_being_typed() {
     click(&mut app, (0, 10));
     assert!(matches!(app.mode, Mode::Tiers { naming: Some(_), .. }), "the field stays");
 }
+
+/// The hover peek: a card the pointer rests on floats its latest reply over
+/// the cards below it — they stay where they are, under it — and a key
+/// puts the board back.
+#[test]
+fn a_card_the_pointer_rests_on_floats_its_reply() {
+    use ratatui::crossterm::event::MouseEventKind;
+    let path = write_transcript("hover-peek", &reply_record("Rebased and green."));
+    let mut b = fixture(false);
+    attach_transcript(&mut b, &path);
+    let mut app = app_graphite(b);
+    let lines = render(&app, 120, 30);
+    let at = spot_of(&lines, "Fix OSC");
+    let below = spot_of(&lines, "Adopt drawer");
+    mouse(&mut app, MouseEventKind::Moved, at);
+    let swept = render(&app, 120, 30);
+    assert!(!swept.iter().any(|l| l.contains("Rebased and green")), "not while sweeping");
+
+    let past = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    app.hover.set(app.hover.get().map(|(t, _)| (t, past)));
+    let rested = render(&app, 120, 30);
+    assert_eq!(spot_of(&rested, "Fix OSC"), at, "the card stays where it was");
+    let reply = spot_of(&rested, "Rebased and green");
+    assert!(reply.1 > at.1, "the reply floats under the card: {rested:#?}");
+    assert!(!rested[below.1 as usize].contains("Adopt drawer"), "over the card below");
+    // The float is the card's, so the pointer on its reply keeps it up.
+    mouse(&mut app, MouseEventKind::Moved, (reply.0, reply.1));
+    assert!(app.hover_peek().is_some(), "still resting on the same card");
+
+    app.on_key(
+        ratatui::crossterm::event::KeyCode::Char('j'),
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    )
+    .expect("key");
+    assert!(app.hover_peek().is_none(), "a key gives the board back");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}

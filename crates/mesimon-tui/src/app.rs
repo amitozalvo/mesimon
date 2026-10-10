@@ -692,6 +692,10 @@ fn history_field(text: &str) -> EditBuffer {
 }
 
 /// One step through a list of `n` rows, clamped at both ends.
+/// How long the pointer rests on a card before its reply floats (T-716):
+/// long enough that sweeping across the board floats nothing.
+const HOVER_PEEK: Duration = Duration::from_millis(400);
+
 /// Rows a reading zone moves per notch of the wheel (T-716): a notch is a
 /// small gesture, and one row a notch reads as stuck.
 const WHEEL_ROWS: isize = 3;
@@ -1668,6 +1672,10 @@ pub struct App {
     /// Where the pointer last moved to, for the hover. `None` until the
     /// terminal reports a move, and again once the terminal loses focus.
     pub pointer: Cell<Option<(u16, u16)>>,
+    /// What the pointer rests on and since when, for the hover peek: a
+    /// card the pointer has stayed on for `HOVER_PEEK` floats its latest
+    /// reply. A key clears it — the keyboard has the board again.
+    pub hover: Cell<Option<(crate::mouse::Target, Instant)>>,
     /// This frame's `Ctx`, built on the first `frame_ctx` read and shared
     /// by every draw fn after it (T-255): a board frame used to build it
     /// three times and a ticket-page frame six, each build a sort and a
@@ -1975,6 +1983,7 @@ impl App {
             frames: std::cell::RefCell::new(Vec::new()),
             hits: std::cell::RefCell::new(crate::mouse::Map::default()),
             pointer: Cell::new(None),
+            hover: Cell::new(None),
             frame_ctx: std::cell::RefCell::new(None),
             columns_sorted,
             mascot: std::cell::RefCell::new(None),
@@ -2975,6 +2984,7 @@ impl App {
                 self.saw_focus(false);
                 // The pointer went with the focus: no hover on a board
                 // nobody is pointing at.
+                self.hover.set(None);
                 return Ok(self.pointer.take().is_some() || dirty);
             }
             _ => return Ok(dirty),
@@ -3023,6 +3033,9 @@ impl App {
             crate::osc::Feed::Swallowed => return Ok(false),
             crate::osc::Feed::Pass(keys) => keys,
         };
+        // The keyboard has the board: a peek the pointer floated goes, and
+        // comes back only when the pointer moves again.
+        self.hover.set(None);
         self.person(|app| {
             for (code, mods) in keys {
                 app.handle_key(code, mods)?;
@@ -3081,6 +3094,13 @@ impl App {
         let at = (ev.column, ev.row);
         match ev.kind {
             MouseEventKind::Moved | MouseEventKind::Drag(_) => {
+                let target = match self.hits.borrow().at(at.0, at.1) {
+                    crate::mouse::Hit::Spot(s) => Some(s.target),
+                    _ => None,
+                };
+                if self.hover.get().map(|(t, _)| t) != target {
+                    self.hover.set(target.map(|t| (t, Instant::now())));
+                }
                 Ok(self.pointer.replace(Some(at)) != Some(at))
             }
             MouseEventKind::Down(MouseButton::Left) => {
@@ -3179,6 +3199,20 @@ impl App {
             app.tag_clamp();
             Ok(())
         })
+    }
+
+    /// The card whose reply floats under the pointer (T-716): one the
+    /// pointer has rested on for `HOVER_PEEK`, on a board at rest. The draw
+    /// floats it over the cards below rather than opening the card in
+    /// place, which would move every card under the pointer.
+    pub(crate) fn hover_peek(&self) -> Option<ulid::Ulid> {
+        if !self.prefs.mouse || !self.board_at_rest() || !matches!(self.mode, Mode::Normal) {
+            return None;
+        }
+        match self.hover.get()? {
+            (crate::mouse::Target::Card(id), since) if since.elapsed() >= HOVER_PEEK => Some(id),
+            _ => None,
+        }
     }
 
     /// The board's own scope is up: no field, chord or dialog over it.

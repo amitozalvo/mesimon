@@ -6,7 +6,7 @@ use mesimon_core::board::{SessionRecord, SessionState, Ticket};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
@@ -166,6 +166,10 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     let mut groups: Vec<Group> = Vec::new();
     // `left`: this is the trail a card the crown moved out left behind
     // (T-544), drawn in the move trail's look and with no crown mark.
+    // The card the pointer rests on, opened, to float over the cards below
+    // it (T-716): its id and its open lines.
+    let hovered = app.hover_peek();
+    let mut float: Option<(ulid::Ulid, Vec<Line<'static>>)> = None;
     let mut push_card = |t: &Ticket, selected: bool, held: bool, left: bool| {
         let sessions = ticket_sessions(app, t.id);
         let waiting = card::needs_you(t, &sessions);
@@ -194,7 +198,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         let open = !left && (app.peek_all || (selected && app.peek_showing(t.id)));
         // Transcript peek: the cursor card's highest-precedence session that
         // has a transcript (bash never does) — read through the draw cache.
-        let peek = if open {
+        let peek_of = || {
             let mut ranked: Vec<&&SessionRecord> = sessions.iter().collect();
             ranked.sort_by_key(|s| (mesimon_core::attention::rank(&s.state), s.id));
             ranked.iter().find(|s| crate::peek::preview_path(s).is_some()).and_then(|s| {
@@ -207,9 +211,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                     std::rc::Rc::new(crate::peek::Peek { activity: None, ..(*pk).clone() })
                 })
             })
-        } else {
-            None
         };
+        let peek = if open { peek_of() } else { None };
         let wt = app.wt_item(t.id);
         // Has the agent said something the cursor has not been here for?
         // The done mark decays on it. Never for the cursor card or the move
@@ -240,7 +243,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         } else {
             Vec::new()
         };
-        let mut lines = card::render(
+        let render = |open: bool, peek: Option<&crate::peek::Peek>| {
+            card::render(
             &ctx,
             t,
             &sessions,
@@ -251,7 +255,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             trail,
             mq,
             open,
-            peek.as_deref(),
+            peek,
             &painted,
             app.doomed(t.id),
             app.archiving(t.id),
@@ -268,7 +272,17 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             (!summary_keys.is_empty()).then_some((summary_keys.as_slice(), &*keys_ctx)),
             app.summary_pulse(t.id),
             app.prefs.summary == crate::prefs::SummaryShow::Full,
-        );
+        )
+        };
+        let mut lines = render(open, peek.as_deref());
+        // Resting under the pointer and closed: the open card floats, and
+        // only when there is a reply to read — an open card with no reply
+        // says nothing the closed one did not.
+        if !open && !left && hovered == Some(t.id) {
+            if let Some(pk) = peek_of() {
+                float = Some((t.id, render(true, Some(&pk))));
+            }
+        }
         // The card is drawn WHOLE first — glyph, title, sessions, peek — and
         // the field is added under it. That order is the point: what you are
         // about to talk to stays legible while you type at it.
@@ -733,6 +747,26 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                     spots.cards.push(spot);
                 }
             }
+        }
+    }
+    // The hover peek (T-716): the card the pointer rests on, open, drawn
+    // over its own place and the cards below it — nothing moves under the
+    // pointer — on the hover's ground, down to the column's last body row.
+    // It is the card's spot while it floats, so the pointer stays on it.
+    if let Some((id, rows)) = float {
+        let top = card_starts
+            .iter()
+            .find(|c| c.2 == id && !c.4 && c.0 >= content_start && c.0 < content_end)
+            .map(|c| area.y + head_rows as u16 + (top_cue_rows + c.0 - content_start) as u16);
+        let floor = area.bottom().saturating_sub(2);
+        if let Some(y) = top.filter(|y| *y < floor) {
+            let height = (rows.len() as u16 + 1).min(floor - y);
+            let rect = Rect { x: area.x, y, width: area.width, height };
+            let ground = theme.hover_bg().or(theme.selected_bg).or(theme.bg);
+            f.render_widget(Clear, rect);
+            let style = ground.map(|g| Style::default().bg(g)).unwrap_or_default();
+            f.render_widget(Paragraph::new(rows).style(style), rect);
+            app.hits.borrow_mut().record(rect, crate::mouse::Target::Card(id));
         }
     }
     if let Some((line, x)) = edit_at {
