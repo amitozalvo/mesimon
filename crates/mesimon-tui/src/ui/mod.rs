@@ -72,8 +72,15 @@ pub fn draw(f: &mut Frame, app: &App) {
     // click presses, and the hover lights what the pointer is over.
     let mut hits = app.hits.borrow_mut();
     crate::mouse::scrape_hints(f.buffer_mut(), &mut hits);
-    if let (true, Some(at)) = (app.prefs.mouse, app.pointer.get()) {
-        crate::mouse::paint_hover(f.buffer_mut(), &hits, at, &app.theme);
+    match (app.prefs.mouse, app.selection.get(), app.pointer.get()) {
+        // A drag is selecting text: what it covers is what the release
+        // copies, read off the frame it was made on.
+        (true, Some((a, b)), _) => {
+            *app.selected_text.borrow_mut() =
+                crate::mouse::paint_selection(f.buffer_mut(), a, b, &app.theme);
+        }
+        (true, None, Some(at)) => crate::mouse::paint_hover(f.buffer_mut(), &hits, at, &app.theme),
+        _ => {}
     }
 }
 

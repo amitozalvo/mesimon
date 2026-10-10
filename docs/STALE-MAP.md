@@ -23253,3 +23253,19 @@ halves, a typed field spared), `keymap::a_click_presses_a_hint_only_when_it_name
 to enter").** `App::point_row` walks to the row and presses Enter in the same click, in every
 list dialog. Two-press rows keep their second press. The External drawer only walks: its Enter
 adopts a session started elsewhere. Cards, rail rows, tags and files keep select-then-act.
+
+**Text selection on the board (same day, the author: "we need to be able to select text").**
+Mouse reporting hands every drag to the board, so the terminal no longer selects without ⌥
+(iTerm2) or shift. The board selects instead: a left press is remembered, a drag paints the
+cells from it to the pointer in reading order on the cursor's surface (`mouse::paint_selection`,
+bold where the profile paints none) and reads their text off the frame into
+`App::selected_text`; the release copies it through `clipboard::copy_status` ("selection
+copied"). A click therefore acts on release, at the press's cell, so the press that starts a
+drag never presses anything.
+
+**The hover peek (same day, the author: "peek on hover").** A card the pointer rests on for
+400 ms (`HOVER_PEEK`), closed and with a reply to read, is drawn open over its own place and the
+cards below it, on the hover ground, down to the column's last body row; it is the card's spot
+while it floats, so the pointer can read down it. Opening it in place was refuted on paper: the
+cards below would move under the pointer, which then lands on another card and moves them
+again. A key clears the dwell (`App::hover`); the next move starts it over.

@@ -1676,6 +1676,14 @@ pub struct App {
     /// card the pointer has stayed on for `HOVER_PEEK` floats its latest
     /// reply. A key clears it — the keyboard has the board again.
     pub hover: Cell<Option<(crate::mouse::Target, Instant)>>,
+    /// Where the left button went down, until it comes up: a release in the
+    /// same cell is a click, a drag in between is a text selection.
+    press_at: Cell<Option<(u16, u16)>>,
+    /// The text selection a drag is making (T-716): where it began and where
+    /// the pointer is. The draw paints it and reads its text into
+    /// `selected_text`; the release copies that.
+    pub selection: Cell<Option<(crate::mouse::At, crate::mouse::At)>>,
+    pub selected_text: std::cell::RefCell<String>,
     /// This frame's `Ctx`, built on the first `frame_ctx` read and shared
     /// by every draw fn after it (T-255): a board frame used to build it
     /// three times and a ticket-page frame six, each build a sort and a
@@ -1984,6 +1992,9 @@ impl App {
             hits: std::cell::RefCell::new(crate::mouse::Map::default()),
             pointer: Cell::new(None),
             hover: Cell::new(None),
+            press_at: Cell::new(None),
+            selection: Cell::new(None),
+            selected_text: std::cell::RefCell::new(String::new()),
             frame_ctx: std::cell::RefCell::new(None),
             columns_sorted,
             mascot: std::cell::RefCell::new(None),
@@ -3093,6 +3104,12 @@ impl App {
         }
         let at = (ev.column, ev.row);
         match ev.kind {
+            MouseEventKind::Drag(MouseButton::Left) => {
+                self.pointer.set(Some(at));
+                let Some(from) = self.press_at.get() else { return Ok(false) };
+                self.selection.set((from != at).then_some((from, at)));
+                Ok(true)
+            }
             MouseEventKind::Moved | MouseEventKind::Drag(_) => {
                 let target = match self.hits.borrow().at(at.0, at.1) {
                     crate::mouse::Hit::Spot(s) => Some(s.target),
@@ -3103,9 +3120,28 @@ impl App {
                 }
                 Ok(self.pointer.replace(Some(at)) != Some(at))
             }
+            // A click acts on release, the way a button does, so the press
+            // that starts a selection never presses anything.
             MouseEventKind::Down(MouseButton::Left) => {
                 self.pointer.set(Some(at));
-                self.click(at)
+                self.press_at.set(Some(at));
+                Ok(self.selection.take().is_some())
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                let from = self.press_at.take();
+                if let Some((a, b)) = self.selection.take() {
+                    if a != b {
+                        let text = std::mem::take(&mut *self.selected_text.borrow_mut());
+                        if !text.trim().is_empty() {
+                            self.status = crate::clipboard::copy_status("selection", &text);
+                        }
+                        return Ok(true);
+                    }
+                }
+                match from {
+                    Some(from) => self.click(from),
+                    None => Ok(false),
+                }
             }
             MouseEventKind::ScrollDown => self.wheel(at, 1),
             MouseEventKind::ScrollUp => self.wheel(at, -1),
@@ -6582,7 +6618,7 @@ impl App {
             Verb::Mouse => {
                 let on = !self.prefs.mouse;
                 let word = if on {
-                    "the board reads the mouse ∙ ⌥ or shift held selects text"
+                    "the board reads the mouse ∙ a drag selects and copies text"
                 } else {
                     "the mouse is the terminal's again"
                 };

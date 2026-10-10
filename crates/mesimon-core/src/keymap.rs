@@ -4700,14 +4700,14 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // The mouse (T-716). On by default: a click puts the cursor where it
     // lands and a second click acts, the wheel walks, a click off a dialog
     // closes it. Reading the mouse takes the terminal's own text selection,
-    // which most terminals hand back while ⌥ or shift is held — and off is
-    // for whoever would rather have it back outright.
+    // so a drag selects on the board and copies on release — and off is for
+    // whoever would rather have the terminal's own back outright.
     MenuItem {
         verb: Verb::Mouse,
         label: |c| if c.mouse { "Mouse: on".into() } else { "Mouse: off".into() },
         detail: |c| {
             if c.mouse {
-                "⌥ or shift held lets the terminal select text".into()
+                "a drag selects text and copies it".into()
             } else {
                 "keys only ∙ the terminal selects text as usual".into()
             }

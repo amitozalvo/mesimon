@@ -10239,6 +10239,7 @@ fn mouse(app: &mut App, kind: ratatui::crossterm::event::MouseEventKind, at: (u1
 fn click(app: &mut App, at: (u16, u16)) {
     use ratatui::crossterm::event::{MouseButton, MouseEventKind};
     mouse(app, MouseEventKind::Down(MouseButton::Left), at);
+    mouse(app, MouseEventKind::Up(MouseButton::Left), at);
 }
 
 /// A click lands the cursor on a card; a click on the cursor's card opens
@@ -10475,4 +10476,27 @@ fn a_card_the_pointer_rests_on_floats_its_reply() {
     .expect("key");
     assert!(app.hover_peek().is_none(), "a key gives the board back");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// A drag selects text and the release copies it — the terminal's own
+/// selection is what reading the mouse takes, so the board gives it back.
+/// The press that starts a drag presses nothing.
+#[test]
+fn a_drag_selects_text_and_the_release_copies_it() {
+    use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+    let mut app = app_graphite(fixture(false));
+    let lines = render(&app, 120, 30);
+    let at = spot_of(&lines, "Grapheme truncation");
+    let before = app.selected_ticket().map(|t| t.id);
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), at);
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), (at.0 + 8, at.1));
+    let buf = cells(&app, 120, 30);
+    assert_eq!(buf[(at.0 + 4, at.1)].bg, app.theme.selected_bg.expect("painted"), "lit");
+    assert_eq!(app.selected_text.borrow().as_str(), "Grapheme");
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), (at.0 + 8, at.1));
+    let copied = crate::clipboard::COPIED.with(|c| c.borrow().last().cloned());
+    assert_eq!(copied.as_deref(), Some("Grapheme"));
+    assert_eq!(app.status, "selection copied");
+    assert_eq!(app.selected_ticket().map(|t| t.id), before, "a drag is not a click");
+    assert!(app.selection.get().is_none());
 }

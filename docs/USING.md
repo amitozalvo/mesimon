@@ -282,9 +282,14 @@ click outside a dialog closes it, the way `esc` does: the note editor asks first
 unsaved text, and a field being typed into (a column's name, a tag's) keeps the dialog open. The wheel walks the column or list under the pointer, and scrolls the
 ticket page's preview, the diff and the release notes. Whatever the pointer is over lights up.
 
-While the board reads the mouse, the terminal selects text only with a modifier held: `⌥`
-(Option) in iTerm2, `shift` in most others. Settings › Behaviour › `Mouse` turns it off and
-gives the terminal its selection back.
+Drag to select text: the selection is copied when you let go, and the footer says so. A
+click acts when the button comes up, so the press that starts a drag presses nothing. The
+terminal's own selection still works with a modifier held: `⌥` (Option) in iTerm2, `shift` in
+most others. Settings › Behaviour › `Mouse` turns the mouse off and gives the terminal its
+selection back.
+
+Rest the pointer on a card for a moment and its latest reply floats over the cards below it;
+any key or moving off the card puts the board back.
 
 ## Agents and follow-ups
 

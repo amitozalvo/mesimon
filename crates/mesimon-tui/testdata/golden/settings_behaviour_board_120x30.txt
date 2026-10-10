@@ -20,7 +20,7 @@
                            │   Follow-ups: Queue                                            │
                            │     Queue waits for the agent's idle ∙ Steer sends now         │
                            │   Mouse: on                                                    │
-                           │     (machine) ∙ ⌥ or shift held lets the terminal select text  │
+                           │     (machine) ∙ a drag selects text and copies it              │
                            ╰────────────── jk select ∙ enter choose ∙ b machine ∙ esc back ─╯
 
 

@@ -15,6 +15,6 @@
   │   Follow-ups: Queue                                  │
   │     Queue waits for the agent's idle ∙ Steer sends ~ │
   │   Mouse: on                                          │
-  │     ⌥ or shift held lets the terminal select text    │
+  │     a drag selects text and copies it                │
   ╰─ jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
  SETTINGS                                            ? keys
