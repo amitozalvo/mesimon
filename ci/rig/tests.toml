@@ -59,7 +59,9 @@
 #              ticket's key), summary:<done>/<total> (T-710: the worker's own notes carry a
 #              `Summary` section with that many boxes ticked of that many,
 #              read as the card reads them; the observed line names the
-#              headings it used instead),
+#              headings it used instead), boxes_free:<w1,w2,...> (T-727: no
+#              box of those notes' Summary holds any of the words, case
+#              aside; a plain row may),
 #              mod_report:<event>:<reason> (a report the worker's mod relayed),
 #              prompts:N (user prompts in its transcript, a background
 #              task's notification not counted), held (its second prompt
@@ -587,6 +589,20 @@ checks = ["road:mod", "started_by_crown", "tools:write_note", "summary:2/3", "re
 
   [[test.steps]]
   crown = "S1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: S1 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: S1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
+id = "S2"
+title = "S2 · write three files in this worktree and keep this ticket's card showing how far along it is: do the steps below"
+workspace = "worktree"
+brief = "Three stages, in order: write a file alpha.txt holding the word alpha; write a file beta.txt holding the word beta; write a file gamma.txt holding the word gamma. Put the stages on this ticket's card as the board shows progress, and keep the card current as each stage lands. When the three files are written, reply with the single word written and end your turn. Read no other file, run no command and commit nothing: the branch is the board's to merge."
+brief_file = "gamma"
+expect = "a worker asked to show a staged job's progress on the card puts one box per stage and nothing for what the board does by itself (the brief names the merge as the board's, and the worker's own get_ticket says who merges), and leaves no box open when it reports done: its own note carries a Summary section with three boxes, all ticked, none naming the merge, the rebase or a commit; gamma.txt holds gamma and the worker answers written. The criterion is get_ticket's summary line and write_note's description (T-727): the first wording, \"progress worth seeing\", gave one worker a box for the merge and another a finished job with open boxes."
+checks = ["road:mod", "started_by_crown", "tools:write_note", "summary:3/3", "boxes_free:merge,rebase,commit", "file:gamma.txt", "reply:written"]
+
+  [[test.steps]]
+  crown = "S2: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: S2 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: S2 seen."
   until = { stops = 1, state = "idle" }
   wake = true
 

@@ -1437,6 +1437,29 @@ Reply with the single word ready and end your turn."""
                     have = f"{sum(boxes)}/{len(boxes)}"
                     check(c, have == want, f"{have} boxes, {plain} plain row(s): "
                           + "; ".join(f"[{'x' if d else ' '}] {t[:24]}" if d is not None else f"- {t[:24]}" for d, t in found))
+            elif name == "boxes_free":
+                # T-727: no box of the worker's own Summary names what the
+                # board does by itself. Boxes alone: a plain row may say
+                # who merges.
+                words = [w.strip().lower() for w in arg.split(",") if w.strip()]
+                ticket = self.ticket(board, tid)
+                notes = [n for n in ticket.get("notes", []) if str(n.get("created_by", "")).startswith("agent:")]
+                boxes, hits = [], []
+                for n in notes:
+                    path = os.path.join(self.repo, ".mesimon", "board", "tickets", key, "notes", f"{n['id']}.md")
+                    try:
+                        with open(path, encoding="utf-8") as f:
+                            got, _ = summary_rows(f.read())
+                    except OSError:
+                        continue
+                    for done, text in got:
+                        if done is None:
+                            continue
+                        boxes.append(text)
+                        if any(w in text.lower() for w in words):
+                            hits.append(text)
+                check(c, boxes and not hits, "; ".join(f"[{t[:30]}]" for t in hits) if hits
+                      else (f"{len(boxes)} box(es), none names " + ", ".join(words) if boxes else "no box"))
             elif name == "exists" or name == "absent":
                 there = os.path.exists(os.path.join(rec["cwd"], arg))
                 check(c, there == (name == "exists"), f"{arg} {'exists' if there else 'absent'}")

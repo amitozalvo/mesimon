@@ -231,11 +231,22 @@ pub const WORKTREE_INIT_ABOUT: &str = "A script at the repository's root, run on
 /// on the ticket" learns the heading and the box spelling from its own tool
 /// result. `write_note`'s description says it in fewer bytes; an agent that
 /// went looking for the convention in the plugin's files found neither.
+///
+/// What a box is (T-727): "progress worth seeing" gave one worker eight
+/// boxes and the next one, a box for the merge the board does by itself,
+/// and a finished job with its boxes still open. A box is one stage of the
+/// job as the person would watch for it, or a step only a person can take;
+/// the board's own doings are none; an open box reads as work left, so a
+/// finished job leaves none. Said once here, in the agent's own first tool
+/// result, and in fewer words on `write_note`.
 pub const SUMMARY_ABOUT: &str = "A note section headed `Summary` is what the ticket's card \
      shows: a plain line is read first, as the one-line summary, and a `- [ ] …` item is a box \
-     the person ticks on the board, counted as progress. What the person needs at a glance: a \
-     task that is theirs, progress worth seeing from the board; a working list stays under \
-     another heading.";
+     the person ticks on the board, counted as progress. A box is one stage of the job as the \
+     person would watch for it from the board, or a step only a person can take (run the \
+     pipeline, ship it); a job without such stages has the plain line alone. Nothing the board \
+     does or shows by itself is a box: the merge, the rebase, the card's move. An open box \
+     reads as work left, so a stage's box is ticked as the stage lands and a finished job \
+     leaves none open. A working list stays under another heading.";
 
 /// What the ticket's own key is to the person (T-715), on a session's read
 /// of its own ticket (`key_about`): everything the session says is read
@@ -460,13 +471,19 @@ pub fn tools() -> Vec<Value> {
             // benefit the user": a task that is theirs, progress worth
             // seeing from the board, something important at a glance. The
             // sentences before it were tightened to make the room.
+            // T-727 says what a box is (one stage of the job, ticked as it
+            // lands, or a person's step) and what it is not (the board's
+            // own merge or move): "progress worth seeing" was read as every
+            // step by one worker and as nothing by the next, and "merge the
+            // MR" as the example of a person's task primed a box for the
+            // merge the board does by itself.
             "description": "Creates a markdown note on the ticket (with key, another's: \
                             crown only) or replaces one. The first note is the description; \
                             empty deletes; over 32 KiB is refused. A plan from plan mode is \
                             already a note. Lines under a `Summary` heading show on the \
-                            card, `- [ ]` boxes as progress: what the person needs at a \
-                            glance, a task that is theirs (merge the MR, run a pipeline) \
-                            or progress worth seeing; working lists stay under other \
+                            card, `- [ ]` boxes as progress: one per stage of the job, \
+                            ticked as each lands, or a step only a person can take; none \
+                            for the board's own merge or move; working lists under other \
                             headings.",
             "inputSchema": {
                 "type": "object",
@@ -2504,6 +2521,9 @@ mod tests {
     /// convention and got it wrong. The heading and the box's spelling are
     /// in the tool that writes the note and in the line every `get_ticket`
     /// carries, and the read names the field so the model knows to look.
+    /// T-727: both say what a box is — one stage of the job, ticked as it
+    /// lands, or a person's own step — and that the board's own merge is
+    /// none; the "merge the MR" example that primed a merge box is gone.
     #[test]
     fn the_summary_convention_is_in_the_tools() {
         let registry = tools();
@@ -2511,10 +2531,25 @@ mod tests {
         let description = write["description"].as_str().unwrap();
         assert!(description.contains("`Summary` heading"), "{description}");
         assert!(description.contains("`- [ ]`"), "the box is spelled: {description}");
+        for words in ["one per stage of the job", "ticked as each lands", "only a person can take"] {
+            assert!(description.contains(words), "write_note says {words:?}: {description}");
+        }
+        assert!(description.contains("none for the board's own merge or move"), "{description}");
+        assert!(!description.contains("merge the MR"), "the merge is the board's: {description}");
         let read = registry.iter().find(|t| t["name"] == "get_ticket").unwrap();
         assert!(read["description"].as_str().unwrap().contains("the summary"));
         assert!(SUMMARY_ABOUT.contains("`Summary`"));
         assert!(SUMMARY_ABOUT.contains("`- [ ] …`"));
+        for words in [
+            "one stage of the job",
+            "only a person can take",
+            "Nothing the board does or shows by itself is a box: the merge, the rebase, the card's move",
+            "ticked as the stage lands",
+            "a finished job leaves none open",
+        ] {
+            assert!(SUMMARY_ABOUT.contains(words), "summary.about says {words:?}");
+        }
+        assert!(!SUMMARY_ABOUT.contains("progress worth seeing"), "the vague criterion is gone");
     }
 
     /// T-582: a plan the crown would change stays a person's, said in the
