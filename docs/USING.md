@@ -272,9 +272,11 @@ own tmux.
 
 ## The mouse
 
-The board reads the mouse. A click puts the cursor on a card, a column's header, a list row, a
-rail row, a tag or a file; a click on the one the cursor is already on acts on it, so a
-double-click opens a card's page, focuses a session or toggles a setting. A key hint is a
+The board reads the mouse. A click on a menu or list row is that row's `enter`: it opens,
+toggles or chooses at once (a row that asks for `enter` twice still does; the External drawer
+only moves to the row). A click puts the cursor on a card, a column's header, a rail row, a tag
+or a file, and a click on the one the cursor is already on acts on it, so a double-click opens a
+card's page or focuses a session. A key hint is a
 button: `? keys` in the footer opens the key list, `enter` on a dialog's edge presses Enter. A
 click outside a dialog closes it, the way `esc` does: the note editor asks first when it holds
 unsaved text, and a field being typed into (a column's name, a tag's) keeps the dialog open. The wheel walks the column or list under the pointer, and scrolls the

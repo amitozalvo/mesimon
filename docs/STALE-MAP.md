@@ -23241,11 +23241,15 @@ indexed profile has no authored halfway and gets the ink alone. Not a second sur
 sense: it exists only under the pointer.
 
 **Refuted / left.** Underline for hover (SGR 4 already carries tags and the summary's progress).
-Single-click activation in menus (a stray click would toggle a setting; select-then-act keeps the
-detail line readable first). Placing the text cursor by click inside a field, and dragging a card
+Placing the text cursor by click inside a field, and dragging a card
 between columns, are not built.
 
 Tests: `mouse.rs` (layers, joined frames, hint scraping), `ui::tests` (card select/open, hint
 click, dialog close and row pick-then-act, wheel, hover, tag picker, rail, diff files, search
 halves, a typed field spared), `keymap::a_click_presses_a_hint_only_when_it_names_one_move`,
 `prefs::mouse_defaults_on_and_round_trips`.
+
+**A menu row acts on one click (same day, the author's ask: "menu click instead of double click
+to enter").** `App::point_row` walks to the row and presses Enter in the same click, in every
+list dialog. Two-press rows keep their second press. The External drawer only walks: its Enter
+adopts a session started elsewhere. Cards, rail rows, tags and files keep select-then-act.

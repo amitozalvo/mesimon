@@ -10268,10 +10268,10 @@ fn a_click_on_a_drawn_hint_presses_its_key() {
     assert!(!app.help);
 }
 
-/// A click off a dialog is its Esc; inside it, a row's first click puts
-/// the cursor there and a second acts on it.
+/// A click off a dialog is its Esc; inside it, a click on a row is that
+/// row's Enter, as in any menu.
 #[test]
-fn a_click_off_a_dialog_closes_it_and_a_row_is_picked_then_acted_on() {
+fn a_click_off_a_dialog_closes_it_and_a_row_click_is_its_enter() {
     let mut app = app_graphite(fixture(false));
     app.mode = Mode::Menu { idx: 0 };
     render(&app, 120, 30);
@@ -10284,14 +10284,24 @@ fn a_click_off_a_dialog_closes_it_and_a_row_is_picked_then_acted_on() {
     click(&mut app, at);
     let row = app.settings_row(mesimon_core::keymap::Verb::Mouse);
     assert!(matches!(app.mode, Mode::Settings { idx } if idx == row), "walked to the row");
-    assert!(app.prefs.mouse, "the first click only selects");
-    render(&app, 120, 30);
-    click(&mut app, at);
-    assert!(!app.prefs.mouse, "the second toggles: {}", app.status);
+    assert!(!app.prefs.mouse, "and toggled it in one click: {}", app.status);
     // And off, the board no longer reads the mouse at all.
     render(&app, 120, 30);
     click(&mut app, (0, 10));
     assert!(matches!(app.mode, Mode::Settings { .. }));
+}
+
+/// The External drawer is the one list a click only walks: its Enter takes
+/// over a session started elsewhere, which takes a second click.
+#[test]
+fn a_click_in_the_drawer_only_walks() {
+    let mut app = app_graphite(fixture(false));
+    app.external = vec![external_item(1), external_item(2)];
+    app.mode = Mode::External { idx: 0 };
+    let lines = render(&app, 120, 30);
+    let second = app.external[1].name.clone().expect("named");
+    click(&mut app, spot_of(&lines, &second));
+    assert!(matches!(app.mode, Mode::External { idx: 1 }), "walked, nothing adopted");
 }
 
 /// The wheel walks the column under the pointer, and never climbs off the
@@ -10392,8 +10402,8 @@ fn a_click_opens_a_diff_file() {
     assert_eq!(app.diff.as_ref().map(|d| d.file_idx), Some(2));
 }
 
-/// The search picker: its rows pick as any list's do, and its preview is
-/// part of it — a click there is inside, not a click away.
+/// The search picker: its preview is part of it — a click there is inside,
+/// not a click away — and a click on a row is the row's Enter.
 #[test]
 fn the_search_picker_takes_clicks_on_both_halves() {
     let mut app = app_graphite(fixture(false));
@@ -10402,18 +10412,20 @@ fn the_search_picker_takes_clicks_on_both_halves() {
         s.hits = mesimon_core::search::Searcher::new().rank(&app.board, "", true);
     }
     let lines = render(&app, 120, 30);
-    let second = match &app.mode {
-        Mode::Search(s) => s.hits[1].key.text.clone(),
+    let (second, id) = match &app.mode {
+        Mode::Search(s) => (s.hits[1].key.text.clone(), s.hits[1].id),
         _ => unreachable!(),
     };
-    let at = spot_of(&lines, &format!(" {second} "));
-    click(&mut app, (at.0 + 1, at.1));
-    assert!(matches!(&app.mode, Mode::Search(s) if s.idx == 1), "the row is picked");
     let frames = app.frames.borrow().clone();
     assert_eq!(frames.len(), 2, "a list and a preview");
     let preview = frames[1];
     click(&mut app, (preview.x + 2, preview.y + 2));
     assert!(matches!(&app.mode, Mode::Search(_)), "the preview is inside the picker");
+    render(&app, 120, 30);
+    let at = spot_of(&lines, &format!(" {second} "));
+    click(&mut app, (at.0 + 1, at.1));
+    assert!(!matches!(&app.mode, Mode::Search(_)), "picked and closed in one click");
+    assert_eq!(app.selected_ticket().map(|t| t.id), Some(id));
 }
 
 /// A click off a dialog whose row is being typed into keeps the words: Esc

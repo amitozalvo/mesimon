@@ -3210,16 +3210,19 @@ impl App {
         }
     }
 
-    /// A click on a list row: Enter on the row the cursor is on, else the
+    /// A click on a list row is that row's Enter, as a menu's is: the
     /// cursor walks there by the list's own ↓ and ↑ — so a theme previews,
     /// a heading is stepped over and nothing a key does on the way is
-    /// skipped.
+    /// skipped — and Enter is pressed on it. A row whose Enter is a
+    /// two-press confirmation still asks for the second click. The
+    /// External drawer is the one list a click only walks: its Enter takes
+    /// over a session somebody started elsewhere, which is not a stray
+    /// click's to do.
     fn point_row(&mut self, to: usize) -> Result<bool> {
         let Some(from) = self.list_idx() else { return Ok(false) };
-        if from == to {
-            return self.press(&[Key::Enter]);
-        }
+        let act = from == to || !matches!(self.mode, Mode::External { .. });
         let step = crate::keys::from_key(if to > from { Key::Down } else { Key::Up });
+        let enter = crate::keys::from_key(Key::Enter);
         self.person(|app| {
             let mut now = from;
             while now != to {
@@ -3228,6 +3231,9 @@ impl App {
                     Some(next) if next != now => now = next,
                     _ => break,
                 }
+            }
+            if act && now == to {
+                app.handle_key(enter.0, enter.1)?;
             }
             Ok(())
         })
