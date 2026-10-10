@@ -47,6 +47,10 @@ in the Esc menu under `Release notes` and on GitHub.
 
 ### Fixed
 
+- **A ticket's brief is no longer lost when the daemon restarts just after
+  its agent launches.** The brief is kept and sent again once the agent is
+  at its prompt; if it cannot be sent, the card shows `brief not sent` with
+  the resend. The crown is not told such a worker has finished.
 - **The crown's lightning now strikes a card when the crown watches it or
   puts its agent to sleep.** Before, the bolt was skipped unless something
   else on the board changed at the same moment.
