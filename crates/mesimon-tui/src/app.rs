@@ -3685,7 +3685,14 @@ impl App {
         let e = self.spoke.get(&ticket)?;
         let peek = self.peek_cache.peek_for(e.kind, &e.path)?;
         let words = crate::text::one_line(peek.text.as_deref()?);
-        let ago = mesimon_core::clock::now_ms().saturating_sub(e.since_ms);
+        // The draw's read can be ahead of the scan that starts the reveal's
+        // clock (T-725): words the entry has not stamped yet are a reveal
+        // not begun, nothing written, never the settled ink.
+        let ago = if peek.reply_key.is_some_and(|k| k != e.key) {
+            0
+        } else {
+            mesimon_core::clock::now_ms().saturating_sub(e.since_ms)
+        };
         (!words.is_empty()).then_some((words, ago))
     }
 
@@ -3769,6 +3776,30 @@ impl App {
         changed
     }
 
+    /// Between the scans, every card showing a new-reply row (T-725): one
+    /// whose draw-side read already holds a newer reply than its entry is
+    /// scanned now, so the reveal starts on the next frame rather than up
+    /// to a scan late, the row blank meanwhile (`fresh_reply`). The read is
+    /// the draw's own windowed one, so this costs nothing the frame does
+    /// not already pay.
+    fn restamp_spoke(&mut self) -> bool {
+        let behind: Vec<ulid::Ulid> = self
+            .spoke
+            .iter()
+            .filter(|(_, e)| e.key != e.seen)
+            .filter(|(_, e)| {
+                self.peek_cache
+                    .peek_for(e.kind, &e.path)
+                    .is_some_and(|p| p.reply_key.is_some_and(|k| k != e.key))
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for &t in &behind {
+            self.scan_ticket(t);
+        }
+        !behind.is_empty()
+    }
+
     /// The cursor is on `ticket` (or its page is open): whatever its agent
     /// has said is seen. Returns whether that cleared a mark.
     fn ack_spoke(&mut self, ticket: ulid::Ulid) -> bool {
@@ -3800,6 +3831,8 @@ impl App {
         if self.spoke_polled.is_none_or(|t| t.elapsed() >= SPOKE_EVERY) {
             self.spoke_polled = Some(Instant::now());
             changed |= self.scan_spoke();
+        } else {
+            changed |= self.restamp_spoke();
         }
         if let Some(t) = subject {
             changed |= self.ack_spoke(t);
@@ -15123,6 +15156,33 @@ mod tests {
         assert!(!app.poll_spoke());
         assert!(!app.scan_spoke());
         assert!(!app.spoke_unseen(t3));
+        let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+    }
+
+    /// T-725: a reply the draw reads before the scan has stamped it is a
+    /// reveal not begun, never the settled row, and the next tick stamps it
+    /// rather than the next scan.
+    #[test]
+    fn a_reply_ahead_of_its_scan_waits_for_its_reveal() {
+        let (mut app, path) = app_with_speaker("ahead");
+        let t3 = ulid::Ulid(3);
+        assert!(app.poll_spoke());
+        app.spoke.get_mut(&t3).expect("entry").since_ms = 0;
+        let (words, ago) = app.fresh_reply(t3).expect("the seed reply's row");
+        assert_eq!(words, "hello");
+        assert!(ago >= crate::theme::REPLY_REVEAL_MS, "settled");
+        append(&path, &reply_line("a2", "done the thing"));
+        // The frame's read lands first.
+        app.peek_cache.peek_fresh(SessionKind::Claude, &path.to_string_lossy());
+        let (words, ago) = app.fresh_reply(t3).expect("the new reply's row");
+        assert_eq!(words, "done the thing");
+        assert_eq!(ago, 0, "not one cell written before the reveal starts");
+        // Inside the scan's second: the tick stamps it all the same.
+        assert!(app.poll_spoke(), "the stamp is a redraw");
+        let (_, ago) = app.fresh_reply(t3).expect("row");
+        assert!(ago < crate::theme::REPLY_REVEAL_MS, "the reveal is running: {ago}");
+        assert!(app.reply_revealing());
+        assert!(!app.poll_spoke(), "stamped once");
         let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
     }
 

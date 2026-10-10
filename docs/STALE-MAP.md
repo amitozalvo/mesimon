@@ -23509,3 +23509,17 @@ Tests: `attention::tests::a_busy_session_file_moves_nothing`, `StatusFileBusy` i
 `background_frames_keep_a_park_alive`, and
 `recovery_tests::a_busy_session_file_proves_a_park_once_a_minute` (first look proves, a minute
 apart, `idle` proves nothing, a finished turn is never polled).
+
+## A new reply is not drawn before its fade begins (T-725, 2026-10-10, "next message shown on ticket preview before starting the transition")
+
+A resting card already showing an unseen reply flashed the next reply whole for up to a second,
+blanked it, then faded it in. The row's words come from the draw's read of the transcript
+(`PeekCache::peek_for`, re-stated every 250 ms), but the reveal's clock (`Spoke::since_ms`) was
+stamped only by the 1 s scan: in between, the new words drew at the old clock, long settled.
+
+**Words the entry has not stamped are a reveal not begun** (`App::fresh_reply`: a draw-side
+`reply_key` ahead of the entry's key reads as `ago` 0, every cell blank), and **every tick
+between scans stamps such a card** (`App::restamp_spoke`, over unseen entries only, on the
+draw's own windowed read), so the blank lasts a tick, not a scan.
+
+Test: `app::tests::a_reply_ahead_of_its_scan_waits_for_its_reveal`.
