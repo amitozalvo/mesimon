@@ -5224,7 +5224,8 @@ fn a_hand_merge_of_a_crown_started_worker_tells_it_by_itself() {
 }
 
 /// The crown watches a ticket it did not start (T-712): a person's worker on
-/// a worktree. Unwatched, its delivery wakes nobody (T-527's rule). The
+/// a worktree. Unwatched, its delivery wakes nobody (T-527's rule). The row
+/// is on by default (T-732) and its off is written to `columns.toml`; the
 /// watch is refused while Settings → Agents → Crown watches tickets is off,
 /// in words naming the row, and on the crown's own ticket; on, the watched
 /// ticket's delivery, finished turn and raised hand wake the crown with the
@@ -5329,7 +5330,12 @@ fn the_crown_watches_a_ticket_a_person_started() {
     assert!(lines_with(&worker).is_empty(), "{}", std::fs::read_to_string(&got).unwrap());
 
     // ---- 2. the row is off: refused in words naming it, nothing watched -----
-    assert!(!c.board().crown_watches, "off by default");
+    assert!(c.board().crown_watches, "on by default");
+    assert!(matches!(c.request(Command::SetCrownWatches { on: false }), Response::Ok));
+    assert!(!c.board().crown_watches);
+    assert!(!mesimon_daemon::store::read_columns_scalars(&h.paths).crown_watches);
+    let file = std::fs::read_to_string(h.paths.board_dir.join("board/columns.toml")).unwrap();
+    assert!(file.contains("crown_watches = false"), "{file}");
     match watch(&mut c, &kw, false) {
         Response::Err { message } => assert_eq!(message, off_words),
         other => panic!("a watch while the row is off: {other:?}"),

@@ -16528,8 +16528,8 @@ mod tests {
         assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownArchives")).count(), 2);
     }
 
-    /// The crown's watch switch (T-712) is OFF on a fresh board, sits under
-    /// the archives row, and toggles through its own board command.
+    /// The crown's watch switch (T-712) is ON on a fresh board (T-732), sits
+    /// under the archives row, and toggles through its own board command.
     #[test]
     fn crown_watches_setting_toggles_through_board_command() {
         let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
@@ -16537,15 +16537,15 @@ mod tests {
         let idx = app.settings_row(Verb::CrownWatches);
         assert_eq!(idx, app.settings_row(Verb::CrownArchives) + 1, "under the archives row");
         app.mode = Mode::Settings { idx };
-        assert!(!app.board.crown_watches && !app.ctx().crown_watches, "off by default");
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(app.board.crown_watches && app.ctx().crown_watches);
-        assert!(app.status.contains("wakes it as its own workers do"), "{}", app.status);
-        assert_eq!(app.mode, Mode::Settings { idx });
+        assert!(app.board.crown_watches && app.ctx().crown_watches, "on by default");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(!app.board.crown_watches && !app.ctx().crown_watches);
         assert!(!app.board.crown_archives, "the archives switch is its own");
         assert!(app.status.contains("hears only of the agents it started"), "{}", app.status);
+        assert_eq!(app.mode, Mode::Settings { idx });
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.board.crown_watches && app.ctx().crown_watches);
+        assert!(app.status.contains("wakes it as its own workers do"), "{}", app.status);
         assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownWatches")).count(), 2);
     }
 

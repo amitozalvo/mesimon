@@ -4,7 +4,7 @@
   │  Starts agents      3 at once                        │
   │  Mode               ● autonomous   ○ supervised      │
   │  Archives tickets   ○ off                            │
-  │  Watches tickets    ○ off                            │
+  │  Watches tickets    ● on                             │
   │                                                      │
   │                                                      │
   │                                                      │

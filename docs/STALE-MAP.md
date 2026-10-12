@@ -23630,3 +23630,23 @@ no longer reads it as a finish.
 Tests: `recovery_tests::a_quiet_tail_claude_code_calls_busy_seeds_no_idle_after_a_restart` and
 `crown_e2e::a_turn_thinking_across_a_restart_is_not_heard_as_finished` (fails at its second phase
 without the crown half).
+
+## The crown watches tickets by default (T-732, 2026-10-12, "crown can watch tickets on by default")
+
+T-712 shipped Settings → Crown → **Watches tickets** off, T-590's shape. It is now **on by
+default**: `Board::crown_watches` defaults true in `Board::default`, `ColumnsScalars::default`
+and both serde reads (`#[serde(default = "yes")]`, the `mcp_tools` shape), so a new board and a
+`columns.toml` without the key let the crown watch. A watch is only ever asked for by a person's
+words to the crown, and it sends the watched agent nothing, so the switch guards the crown's
+turns rather than anything a person owns.
+
+**A board that already wrote `crown_watches = false` keeps it** — every beta.4 board, since the
+scalar is written either way. The author's call: new boards only, no one-time flip (T-610's
+shape was offered and declined), because a written `false` cannot be told from a person's off.
+No schema bump: a build before T-712 has no watch, and T-712's build reads the written value.
+
+Tests: `board::tests::crown_watches_defaults_on_and_an_off_is_kept`,
+`store::tests::crown_watches_is_on_unless_the_file_says_off`,
+`app::tests::crown_watches_setting_toggles_through_board_command`, the two `settings_crown`
+goldens, and `crown_e2e::the_crown_watches_a_ticket_a_person_started` (on at boot, the off
+written to the file before the refusal).

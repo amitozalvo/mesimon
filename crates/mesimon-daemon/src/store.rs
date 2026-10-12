@@ -150,11 +150,12 @@ struct ColumnsFile {
     #[serde(default)]
     crown_archives: bool,
     /// The crown watches tickets it did not start (`Board::crown_watches`,
-    /// T-712). Absent means OFF, written either way, no bump: T-590's
-    /// argument once more — an older build has no watch to hand its crown,
-    /// and back on this build a dropped key reads off, which only ends the
-    /// watches.
-    #[serde(default)]
+    /// T-712). Absent means ON since T-732 — a new board, and every file
+    /// before the field — and it is written either way, so an off survives;
+    /// a beta.4 file's written `false` stays off. No bump: a build before
+    /// T-712 has no watch to hand its crown, and T-712's own build reads the
+    /// written value, never the default.
+    #[serde(default = "yes")]
     crown_watches: bool,
     /// Whether the starter tags were offered (`Board::tags_seeded`). A scalar,
     /// so it sits here, before the tables. Absent on every file written
@@ -819,7 +820,7 @@ impl Default for ColumnsScalars {
             crown_budget: mesimon_core::board::DEFAULT_CROWN_BUDGET,
             crown_mode: CrownMode::default(),
             crown_archives: false,
-            crown_watches: false,
+            crown_watches: true,
             mcp_tools: true,
 
             system_prompt: false,
@@ -1291,11 +1292,10 @@ mod tests {
         cleanup(&dir, &paths);
     }
 
-    /// T-712: the crown's watch switch rides the same shape — absent reads
-    /// off in the daemon and in doctor, an on survives a save, an off is
-    /// written.
+    /// T-732: the crown's watch switch — absent reads on in the daemon and
+    /// in doctor, an off survives a save, an on is written.
     #[test]
-    fn crown_watches_is_off_unless_the_file_says_on() {
+    fn crown_watches_is_on_unless_the_file_says_off() {
         let (dir, paths) = scratch("crownwatches");
         let cols = dir.join(".mesimon/board/columns.toml");
         write(
@@ -1305,21 +1305,21 @@ mod tests {
                  [[columns]]\nname = \"TODO\"\norder = \"a0\"\n"
             ),
         );
-        assert!(!read_columns_scalars(&paths).crown_watches, "doctor reads it off");
+        assert!(read_columns_scalars(&paths).crown_watches, "doctor reads it on");
         let l = load(&paths).unwrap();
-        assert!(!l.board.crown_watches, "an older file leaves the crown hearing of its own");
+        assert!(l.board.crown_watches, "an older file lets the crown watch");
         assert!(l.board.crown_archives, "the scalar beside it survives");
-        let mut on = l.board;
-        on.crown_watches = true;
-        save_columns(&paths, &on).unwrap();
+        let mut b = l.board;
+        b.crown_watches = false;
+        save_columns(&paths, &b).unwrap();
         let text = std::fs::read_to_string(&cols).unwrap();
-        assert!(text.contains("crown_watches = true"), "{text}");
-        assert!(load(&paths).unwrap().board.crown_watches, "an on is kept");
-        assert!(read_columns_scalars(&paths).crown_watches);
-        on.crown_watches = false;
-        save_columns(&paths, &on).unwrap();
+        assert!(text.contains("crown_watches = false"), "{text}");
+        assert!(!load(&paths).unwrap().board.crown_watches, "an off is kept");
+        assert!(!read_columns_scalars(&paths).crown_watches);
+        b.crown_watches = true;
+        save_columns(&paths, &b).unwrap();
         let text = std::fs::read_to_string(&cols).unwrap();
-        assert!(text.contains("crown_watches = false"), "written either way: {text}");
+        assert!(text.contains("crown_watches = true"), "written either way: {text}");
         cleanup(&dir, &paths);
     }
 

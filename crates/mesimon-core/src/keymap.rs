@@ -4973,11 +4973,11 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
-    // Whether the crown may watch a ticket it did not start (T-712). Off by
-    // default: `watch_ticket` is refused and the crown hears only of the
-    // agents it started. On, a watched ticket's delivery, finished turn,
-    // raised hand and merge wake it, and nothing is sent to that agent.
-    // Off again ends every watch.
+    // Whether the crown may watch a ticket it did not start (T-712). On by
+    // default (T-732): a watched ticket's delivery, finished turn, raised
+    // hand and merge wake it, and nothing is sent to that agent. Off,
+    // `watch_ticket` is refused, the crown hears only of the agents it
+    // started, and every watch ends.
     MenuItem {
         verb: Verb::CrownWatches,
         label: |_| "Watches tickets".into(),

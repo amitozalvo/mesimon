@@ -2045,11 +2045,15 @@ pub struct Board {
     /// The crown watches (T-712): `watch_ticket`, which has the board wake
     /// the crown for a ticket a person started as it does for one the crown
     /// started, is refused while this is off, and every watch ends when it
-    /// is turned off. OFF by default, T-590's shape: a watch spends the
-    /// crown's turns on tickets it was not asked about, and the person
-    /// decides per board whether it may. A build that drops it has no watch
-    /// to give back, so no schema bump.
-    #[serde(default)]
+    /// is turned off. ON by default (T-732, the author: "crown can watch
+    /// tickets on by default"): a watch is asked for by a person's words to
+    /// the crown, it sends the watched agent nothing, and the person still
+    /// turns it off per board. An absent key reads on, the `mcp_tools`
+    /// shape; a board that already wrote `false` keeps it (the author's call:
+    /// new boards only). A build that drops it has no watch to give back,
+    /// and one that reads it (T-712's) reads only what the file says, so no
+    /// schema bump.
+    #[serde(default = "yes")]
     pub crown_watches: bool,
     /// Counter feeding short keys (T-1, T-2, …).
     pub next_key: u64,
@@ -2223,7 +2227,7 @@ impl Default for Board {
             crown_budget: DEFAULT_CROWN_BUDGET,
             crown_mode: CrownMode::default(),
             crown_archives: false,
-            crown_watches: false,
+            crown_watches: true,
             next_key: 0,
             tags: Vec::new(),
             tags_seeded: false,
@@ -3172,16 +3176,16 @@ mod tests {
         assert!(serde_json::from_value::<Board>(wire).unwrap().crown_archives);
     }
 
-    /// T-712: a board from before the field leaves the crown hearing only of
-    /// the agents it started, and one that turned watching on keeps it on.
+    /// T-732: a fresh board and one from before the field let the crown
+    /// watch, and one that turned watching off keeps it off.
     #[test]
-    fn crown_watches_defaults_off_and_an_on_is_kept() {
-        assert!(!Board::default().crown_watches);
+    fn crown_watches_defaults_on_and_an_off_is_kept() {
+        assert!(Board::default().crown_watches);
         let mut wire = serde_json::to_value(Board::default()).unwrap();
         wire.as_object_mut().unwrap().remove("crown_watches");
-        assert!(!serde_json::from_value::<Board>(wire.clone()).unwrap().crown_watches);
-        wire["crown_watches"] = serde_json::json!(true);
-        assert!(serde_json::from_value::<Board>(wire).unwrap().crown_watches);
+        assert!(serde_json::from_value::<Board>(wire.clone()).unwrap().crown_watches);
+        wire["crown_watches"] = serde_json::json!(false);
+        assert!(!serde_json::from_value::<Board>(wire).unwrap().crown_watches);
     }
 
     /// T-543: a column opts its tickets into the idle park, taking an agent

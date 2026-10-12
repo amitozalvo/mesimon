@@ -847,8 +847,8 @@ fn crown_archives(on: bool) -> Record {
     }
 }
 
-/// Whether the crown watches tickets it did not start (T-712): off by
-/// default, printed either way.
+/// Whether the crown watches tickets it did not start (T-712): on by
+/// default (T-732), printed either way.
 fn crown_watches(on: bool) -> Record {
     if on {
         rec(Level::Note, "crown watches", "on - the crown may watch tickets it did not start")
