@@ -1075,12 +1075,7 @@ mod recovery_tests {
             "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}));
         let now = mesimon_core::clock::now_ms();
         let quiet = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
-        std::fs::File::options()
-            .write(true)
-            .open(&history.0)
-            .unwrap()
-            .set_modified(quiet)
-            .unwrap();
+        std::fs::File::options().write(true).open(&history.0).unwrap().set_modified(quiet).unwrap();
         let file = History::new();
         let mut record = record(SessionState::Unknown { reason: UnknownReason::DaemonRestarted });
         record.transcript_path = Some(history.0.display().to_string());

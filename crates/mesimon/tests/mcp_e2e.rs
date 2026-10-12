@@ -268,6 +268,45 @@ fn agent_board_tools_tier_and_collisions() {
         t["allowed_columns"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
     assert!(!allowed.contains(&t["column"].as_str().unwrap()), "current column is not a move");
     assert!(allowed.contains(&"REVIEW"));
+    // T-735: a column holding out unticked summary boxes is not offered to a
+    // ticket with one, and refuses it if asked; off, it is offered again.
+    let set_ticked = |c: &mut TestClient, on| {
+        let board = board_of(c.request(Command::Snapshot));
+        let mut settings = board.column("REVIEW").unwrap().settings.clone();
+        settings.requires_ticked = on;
+        assert!(matches!(
+            c.request(Command::SetColumnSettings { name: "REVIEW".into(), settings }),
+            Response::Ok
+        ));
+    };
+    let allowed_now = |shim: &mut Shim| -> Vec<String> {
+        let t = shim.call_ok("get_ticket", json!({}));
+        t["allowed_columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().into())
+            .collect()
+    };
+    let boxed = match c.request(Command::WriteNote {
+        ticket,
+        note: None,
+        text: "## Summary\n- [ ] left\n".into(),
+        rev: None,
+    }) {
+        Response::NoteWritten { note: Some(id) } => id,
+        other => panic!("note write failed: {other:?}"),
+    };
+    set_ticked(&mut c, true);
+    assert!(!allowed_now(&mut shim).contains(&"REVIEW".to_string()));
+    let msg = shim.call_err("move_ticket", json!({"to_column": "REVIEW"}));
+    assert!(msg.contains("1 summary box is unticked"), "{msg}");
+    set_ticked(&mut c, false);
+    assert!(allowed_now(&mut shim).contains(&"REVIEW".to_string()));
+    assert!(matches!(
+        c.request(Command::WriteNote { ticket, note: Some(boxed), text: String::new(), rev: None }),
+        Response::NoteWritten { .. }
+    ));
     // T-376: the current column's own rules ride along, so the agent can see
     // what the board will do by itself and leave that move to the board.
     assert_eq!(t["column"], "TODO");

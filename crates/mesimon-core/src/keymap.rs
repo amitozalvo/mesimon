@@ -513,6 +513,8 @@ pub enum Verb {
     /// The column's idle park (T-543): Enter cycles `COLUMN_SLEEP_MINUTES`.
     ColumnSleepAfter,
     ColumnRequiresMerge,
+    /// The column's summary-box gate (T-735): entry and an archive from it.
+    ColumnRequiresTicked,
     ColumnReclaim,
     ColumnTrain,
     /// Open the release notes from the menu. Same argument, read even less
@@ -1598,6 +1600,8 @@ pub struct Ctx {
     /// The column's own idle park in minutes; zero is off (T-543).
     pub col_sleep_after: u32,
     pub col_requires_merge: bool,
+    /// `ColumnSettings::requires_ticked` (T-735).
+    pub col_requires_ticked: bool,
     pub col_train_word: &'static str,
     /// Live tickets in the dialog's column: a delete is refused while any.
     pub col_live: usize,
@@ -5835,6 +5839,15 @@ static COLUMN_ITEMS: &[MenuItem] = &[
         key: "",
     },
     MenuItem {
+        verb: Verb::ColumnRequiresTicked,
+        label: |c| {
+            format!("Entry needs every summary box ticked: {}", yes_no(c.col_requires_ticked))
+        },
+        detail: |_| "an unticked box also keeps the card from being archived here".into(),
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    MenuItem {
         verb: Verb::ColumnReclaim,
         label: |c| format!("Offer: {}", or(c.col_offers_word, "off")),
         detail: |_| "for finished tickets here: sleep their agents, archive them, or both".into(),
@@ -9027,7 +9040,7 @@ mod tests {
         let fresh = Ctx { col_new: true, ..Default::default() };
         let rows: Vec<Verb> = column_items(&fresh).iter().map(|m| m.verb).collect();
         assert_eq!(rows, vec![Verb::ColumnName]);
-        assert_eq!(column_items(&other).len(), 8);
+        assert_eq!(column_items(&other).len(), 9);
         assert!(!column_items(&other).iter().any(|m| m.verb == Verb::ColumnName));
         let agents = Ctx { column_agents: true, ..Default::default() };
         assert_eq!(

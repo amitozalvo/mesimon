@@ -5362,6 +5362,7 @@ impl App {
             col_on_done: cs.on_done.clone().unwrap_or_default(),
             col_sleep_after: cs.sleep_after_minutes,
             col_requires_merge: cs.requires_merge,
+            col_requires_ticked: cs.requires_ticked,
             col_train_word: cs.train.word(),
             col_live: col_tickets.len(),
             col_plan_able: col.is_some_and(|c| self.column_plan_able(&c.name)),
@@ -7308,6 +7309,9 @@ impl App {
             }
             Verb::ColumnRequiresMerge => {
                 self.set_column(|s| s.requires_merge = !s.requires_merge)?
+            }
+            Verb::ColumnRequiresTicked => {
+                self.set_column(|s| s.requires_ticked = !s.requires_ticked)?
             }
             Verb::ColumnReclaim => self.set_column(|s| s.offers = Some(s.offers().next()))?,
             Verb::ColumnTrain => self.set_column(|s| s.train = s.train.next())?,
@@ -16976,6 +16980,29 @@ mod tests {
         assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetColumnSettings")).count(), 6);
         app.board_mut().agent_provider = mesimon_core::board::AgentProvider::Codex;
         assert!(row(&app).is_none(), "nothing parks a Codex agent here");
+    }
+
+    /// T-735: the summary-box gate is a column row, off until a person turns
+    /// it on, and a toggle on the wire either way.
+    #[test]
+    fn column_ticked_gate_toggles_on_the_wire() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let idx = keymap::column_items(&app.ctx())
+            .iter()
+            .position(|m| m.verb == Verb::ColumnRequiresTicked)
+            .unwrap();
+        assert!(!app.ctx().col_requires_ticked, "off by default");
+        if let Mode::ColumnSettings { idx: i, .. } = &mut app.mode {
+            *i = idx;
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.board.column("todo").unwrap().settings.requires_ticked);
+        assert!(app.ctx().col_requires_ticked);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!app.board.column("todo").unwrap().settings.requires_ticked);
+        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetColumnSettings")).count(), 2);
     }
 
     /// The OS flipped (T-485): the watch's channel says so, and the board

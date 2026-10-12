@@ -7026,18 +7026,24 @@ impl Daemon {
     /// It excludes the current column (a move to where it already is is not a
     /// move) and any column whose gate would refuse — so a ticket with an
     /// unmerged worktree does not advertise a `requires_merge` column and
-    /// then refuse it.
+    /// then refuse it, nor one with an unticked summary box a
+    /// `requires_ticked` column (T-735).
     fn agent_allowed_columns(&self, id: ulid::Ulid) -> Vec<String> {
         let Some(t) = self.board.ticket(id) else { return Vec::new() };
         if self.agent_tools_for(id) < AgentTools::Full {
             return Vec::new();
         }
         let unmerged = self.ticket_unmerged(id);
+        // Read only when some column asks: a board with the gate off reads
+        // no note here.
+        let unticked = self.board.columns.iter().any(|c| c.settings.requires_ticked)
+            && self.open_boxes(id) > 0;
         self.board
             .sorted_columns()
             .into_iter()
             .filter(|c| c.name != t.column)
             .filter(|c| !(unmerged && c.settings.requires_merge))
+            .filter(|c| !(unticked && c.settings.requires_ticked))
             .map(|c| c.name.clone())
             .collect()
     }
@@ -7501,6 +7507,15 @@ impl Daemon {
             && self.ticket_unmerged(id)
         {
             return Err(format!("worktree unmerged — merge before {dest}"));
+        }
+        // Its summary-box twin (T-735), off unless a person turned it on:
+        // the card's open box says work is left, so the column refuses it.
+        if self.board.column(dest).is_some_and(|c| c.settings.requires_ticked) {
+            if let Some(message) =
+                open_boxes_refusal(self.open_boxes(id), &format!("before {dest}"))
+            {
+                return Err(message);
+            }
         }
         if let Decision::Deny { reason } =
             authorize(by, &Action::MoveTicket, &Resource::Ticket { id })
@@ -8438,9 +8453,10 @@ impl Daemon {
     /// what the keystroke would refuse) and are untouched past the hour:
     /// sleeping sessions all asleep that long, or — with no live sessions at
     /// all (none, or exited corpses only) — the newest of created_at and any
-    /// corpse's last change that old — and no summary box left unticked
-    /// (T-713: the archive refuses one, so the offer never names it). A
-    /// board scan plus one small note read per ticket that passed the rest
+    /// corpse's last change that old — and, where the column asks
+    /// (`requires_ticked`, T-735), no summary box left unticked (the archive
+    /// refuses one, so the offer never names it). A board scan plus one
+    /// small note read per such ticket that passed the rest
     /// (a ticket younger than the threshold costs no read), no forks, on the
     /// 1 s bucket after a board change and once a minute otherwise
     /// (`ARCHIVE_TICKS`) — never the RSS bucket, whose no-pane early-return
@@ -8481,7 +8497,7 @@ impl Daemon {
                 }
             })
             // Last, so only a ticket the cheap gates passed costs a read.
-            .filter(|t| self.open_boxes(t.id) == 0)
+            .filter(|t| !self.archive_held(t))
             .map(|t| t.id)
             .collect()
     }
@@ -11525,8 +11541,12 @@ impl Daemon {
         if self.board.ticket_awake_sessions(id) > 0 {
             return Response::Err { message: "sessions still awake — sleep them first".into() };
         }
-        if let Some(message) = open_boxes_refusal(self.open_boxes(id)) {
-            return Response::Err { message };
+        let column = self.board.ticket(id).map(|t| t.column.clone()).unwrap_or_default();
+        if self.board.column(&column).is_some_and(|c| c.settings.requires_ticked) {
+            let what = format!("to archive from {column}");
+            if let Some(message) = open_boxes_refusal(self.open_boxes(id), &what) {
+                return Response::Err { message };
+            }
         }
         self.archive_one(id, now_iso(), by.note_author());
         // Re-price now — a taken offer must not linger until the next bucket.
@@ -11535,11 +11555,22 @@ impl Daemon {
         Response::Ok
     }
 
+    /// Whether the ticket's column keeps it on the board over an unticked
+    /// summary box (`requires_ticked`, T-735) — the offer's half of the
+    /// archive's gate. T-713 held every archive with no switch; only a column
+    /// a person turned it on for holds one now. Reads notes only for such a
+    /// column.
+    fn archive_held(&self, t: &Ticket) -> bool {
+        self.board.column(&t.column).is_some_and(|c| c.settings.requires_ticked)
+            && self.open_boxes(t.id) > 0
+    }
+
     /// The boxes still unticked in the ticket's `Summary` sections (T-713),
     /// over every note, read from disk as `get_ticket` reads them. What the
-    /// card counts as left to do: a ticket that holds one is not finished,
-    /// so the archive refuses it and the offer never prices it. A snooze is
-    /// a return and is not asked. A note that cannot be read counts nothing.
+    /// card counts as left to do: a `requires_ticked` column (T-735) refuses
+    /// a ticket holding one at its door and keeps it from the archive and
+    /// the offer. A snooze is a return and is not asked. A note that cannot
+    /// be read counts nothing.
     fn open_boxes(&self, id: ulid::Ulid) -> usize {
         let Some(t) = self.board.ticket(id) else { return 0 };
         t.notes
@@ -14816,13 +14847,15 @@ fn mod_bridge_wait_ms() -> u64 {
 }
 
 /// Test seam only — e2e cannot wait out the real hour.
-/// The archive's refusal over unticked summary boxes (T-713), one wording
-/// for every road: `a a`, the crown's `archive_ticket`.
-fn open_boxes_refusal(open: usize) -> Option<String> {
+/// The refusal over unticked summary boxes (T-713, T-735), one wording for
+/// every road — a move into a `requires_ticked` column, `a a`, the crown's
+/// `archive_ticket` — with `what` saying which: `before DONE`, `to archive
+/// from DONE`.
+fn open_boxes_refusal(open: usize, what: &str) -> Option<String> {
     match open {
         0 => None,
-        1 => Some("1 summary box is unticked — tick it or take it out first".into()),
-        n => Some(format!("{n} summary boxes are unticked — tick them or take them out first")),
+        1 => Some(format!("1 summary box is unticked — tick it or take it out {what}")),
+        n => Some(format!("{n} summary boxes are unticked — tick them or take them out {what}")),
     }
 }
 

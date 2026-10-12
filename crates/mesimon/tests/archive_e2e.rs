@@ -1,7 +1,8 @@
 //! Archive (T-46): the gate refuses awake sessions, the header suggestion
 //! prices an all-asleep DONE ticket past the (shrunk) hour, archive survives
 //! the disk round-trip, the refusal guards hold, restore lands in the same
-//! column. Real tmux, in-process daemon, stub agent.
+//! column, and a column's summary-box gate (T-735) holds an unticked ticket
+//! only while it is on. Real tmux, in-process daemon, stub agent.
 
 // Integration-test crate: `allow-unwrap-in-tests` only reaches items marked
 // #[test], not the helpers beside them, so the D26 exemption is stated here.
@@ -162,8 +163,10 @@ fn archive_gates_suggests_and_restores() {
         std::thread::sleep(Duration::from_millis(200));
     }
 
-    // 2b. A summary box left unticked (T-713): the offer drops the ticket
-    // and the archive refuses it; ticked, it is offered again.
+    // 2b. A summary box left unticked (T-713, T-735) holds a ticket only
+    // where its column asks (`requires_ticked`, off by default, DONE too):
+    // there the offer drops it, the archive refuses it, and so does the
+    // column's door; ticked, it is offered again.
     let wait_archive = |c: &mut TestClient, archive| {
         let deadline = Instant::now() + Duration::from_secs(6);
         loop {
@@ -175,28 +178,47 @@ fn archive_gates_suggests_and_restores() {
             std::thread::sleep(Duration::from_millis(100));
         }
     };
-    let empty = board.tickets.iter().find(|t| t.title == "empty").unwrap().id;
-    let note = match c.request(Command::WriteNote {
-        ticket: empty,
-        note: None,
-        text: "## Summary\n- [x] done\n- [ ] left\n".into(),
+    let set_ticked = |c: &mut TestClient, on| {
+        let (board, _) = snapshot_of(c.request(Command::Snapshot));
+        let mut settings = board.column("DONE").unwrap().settings.clone();
+        settings.requires_ticked = on;
+        assert!(matches!(
+            c.request(Command::SetColumnSettings { name: "DONE".into(), settings }),
+            Response::Ok
+        ));
+    };
+    let summary = |c: &mut TestClient, id, note, text: &str| match c.request(Command::WriteNote {
+        ticket: id,
+        note,
+        text: text.into(),
         rev: None,
     }) {
-        Response::NoteWritten { note: Some(id) } => id,
+        Response::NoteWritten { note } => note,
         other => panic!("note write failed: {other:?}"),
     };
+    let empty = board.tickets.iter().find(|t| t.title == "empty").unwrap().id;
+    let move_to = |c: &mut TestClient, column: &str| {
+        c.request(Command::MoveTicket { id: empty, column: column.into(), before: None })
+    };
+    assert!(!board.column("DONE").unwrap().settings.requires_ticked, "off by default");
+    let note = summary(&mut c, empty, None, "## Summary\n- [x] done\n- [ ] left\n");
+    set_ticked(&mut c, true);
     wait_archive(&mut c, 1);
-    err_containing(c.request(Command::ArchiveTicket { id: empty }), "1 summary box is unticked");
-    assert!(matches!(
-        c.request(Command::WriteNote {
-            ticket: empty,
-            note: Some(note),
-            text: "## Summary\n- [x] done\n- [x] left\n".into(),
-            rev: None,
-        }),
-        Response::NoteWritten { .. }
-    ));
+    err_containing(
+        c.request(Command::ArchiveTicket { id: empty }),
+        "1 summary box is unticked — tick it or take it out to archive from DONE",
+    );
+    assert!(matches!(move_to(&mut c, "TODO"), Response::Ok), "leaving is never held");
+    err_containing(
+        move_to(&mut c, "DONE"),
+        "1 summary box is unticked — tick it or take it out before DONE",
+    );
+    summary(&mut c, empty, note, "## Summary\n- [x] done\n- [x] left\n");
+    assert!(matches!(move_to(&mut c, "DONE"), Response::Ok));
     wait_archive(&mut c, 2);
+    // Turned off, an unticked box holds nothing: step 6's X takes it.
+    set_ticked(&mut c, false);
+    summary(&mut c, empty, note, "## Summary\n- [x] done\n- [ ] left again\n");
 
     // 3. Archive: field on disk, off the board's columns, offer re-priced.
     assert!(matches!(c.request(Command::ArchiveTicket { id: cold }), Response::Ok));

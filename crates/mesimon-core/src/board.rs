@@ -1206,10 +1206,10 @@ impl CodexApproval {
 /// on a ticket is a field here, read off the ticket's column through
 /// `Board::column` and never off a column NAME: `on_working`/`on_done` ARE
 /// automove, `train` is the merge train's reach, `requires_merge` is the
-/// DONE gate, `reclaim` is the sleep/archive offer. The defaults are what a
-/// column with no template settings did before: nothing moves, tools full,
-/// mode inherited, train off. Each default is skipped on disk so a file
-/// says only what was chosen.
+/// DONE gate (`requires_ticked` its summary-box twin), `reclaim` is the
+/// sleep/archive offer. The defaults are what a column with no template
+/// settings did before: nothing moves, tools full, mode inherited, train
+/// off. Each default is skipped on disk so a file says only what was chosen.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ColumnSettings {
     /// What the column is for, in the user's words (T-467): one line,
@@ -1246,6 +1246,11 @@ pub struct ColumnSettings {
     /// Entry is refused while the ticket's worktree branch is unmerged.
     #[serde(default, skip_serializing_if = "is_false")]
     pub requires_merge: bool,
+    /// Entry, and an archive from here, are refused while a `Summary` box on
+    /// the ticket is unticked (T-735; T-713 refused every archive, with no
+    /// switch). Off on every column, the template's DONE too.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub requires_ticked: bool,
     /// The header's sleep and archive offers, `X` and `Z` price this column.
     #[serde(default, skip_serializing_if = "is_false")]
     pub reclaim: bool,
@@ -1320,6 +1325,9 @@ impl ColumnSettings {
         }
         if self.requires_merge {
             out.push("entry needs a merged branch".into());
+        }
+        if self.requires_ticked {
+            out.push("entry and archive need every summary box ticked".into());
         }
         if self.offers() != ColumnOffers::Off {
             out.push(format!("offers {}", self.offers().word()));

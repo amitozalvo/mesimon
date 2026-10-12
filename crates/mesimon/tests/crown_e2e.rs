@@ -2247,12 +2247,7 @@ fn a_turn_thinking_across_a_restart_is_not_heard_as_finished() {
     .unwrap();
     let quiet = || {
         let ago = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
-        std::fs::File::options()
-            .write(true)
-            .open(&transcript)
-            .unwrap()
-            .set_modified(ago)
-            .unwrap();
+        std::fs::File::options().write(true).open(&transcript).unwrap().set_modified(ago).unwrap();
     };
     drop(c);
     let worker = format!("{kw} \"{title}\"");

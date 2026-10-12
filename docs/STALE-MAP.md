@@ -23688,3 +23688,29 @@ naming the watch; watched: queued with `sends`, held again by the unwatch and ne
 watched again: sent now, and the answering turn wakes the crown); `mcp::tests` on the three
 texts; the rig's W1 (a person's `person_start`, a bare "wait for it", then a bare "tell its
 agent": `watch_ticket`, `ask_agent`, replies one then two).
+
+## T-735: the summary-box gate is a column setting, off by default (2026-10-12)
+
+**The report.** T-713 refused every archive over an unticked summary box with no switch, "silently
+always enabled, can't be turned off, too aggressive"; the ask was the same rule for a move into
+DONE too, off by default, set per column.
+
+**Built.** `ColumnSettings::requires_ticked`, the `requires_merge` twin: the column dialog's
+`Entry needs every summary box ticked` row (`Verb::ColumnRequiresTicked`), off on every column,
+the template's DONE included. Where it is on, `place_ticket` refuses entry (`1 summary box is
+unticked — tick it or take it out before DONE`, every mover), `agent_allowed_columns` leaves the
+column out of `get_ticket`'s list, and `archive_ticket` and the offer's `archive_candidates`
+(`archive_held`) hold a ticket sitting in it (`… to archive from DONE`). Leaving is never held. A
+column with the switch off reads no note; `open_boxes` is unchanged. The archive is gated by the
+ticket's own column and not by a second board-wide switch: the offer only ever prices archive
+columns, and one row says both halves (the detail line names the archive).
+
+**Schema.** `COLUMNS_SCHEMA` 7: a v6 build would drop the key on its next write and let an agent
+or an automove into a column a person closed — the constant's widening reason.
+
+**Kept.** `archive_ticket`'s tool text says the refusal is the column's. No rig test, T-713's
+reason: the rig's crown never archives, and the gate is the daemon's whatever a model does.
+
+Tests: `archive_e2e` step 2b (off by default; on, the offer drops the ticket and the archive and
+the door refuse it; ticked, both pass; off again, X takes it unticked); `mcp_e2e` (the column
+leaves `allowed_columns` and `move_ticket` is refused); `column_ticked_gate_toggles_on_the_wire`.

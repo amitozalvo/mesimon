@@ -644,8 +644,8 @@ pub fn tools() -> Vec<Value> {
                             it: Crown archives tickets, off unless a person turned it on), or \
                             with restore brings an archived one back to its column. Refused \
                             while that is off, while a session on it is awake (sleep_agent \
-                            parks one the crown started), or while a box in its summary is \
-                            unticked. Agents cannot delete a ticket; this \
+                            parks one the crown started), or while its column holds \
+                            out an unticked summary box. Agents cannot delete a ticket; this \
                             is the reversible form, and the person can restore it too.",
             "inputSchema": {
                 "type": "object",
@@ -2534,7 +2534,8 @@ mod tests {
         let description = write["description"].as_str().unwrap();
         assert!(description.contains("`Summary` heading"), "{description}");
         assert!(description.contains("`- [ ]`"), "the box is spelled: {description}");
-        for words in ["one per stage of the job", "ticked as each lands", "only a person can take"] {
+        for words in ["one per stage of the job", "ticked as each lands", "only a person can take"]
+        {
             assert!(description.contains(words), "write_note says {words:?}: {description}");
         }
         assert!(description.contains("none for the board's own merge or move"), "{description}");
