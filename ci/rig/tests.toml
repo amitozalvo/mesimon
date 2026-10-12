@@ -39,6 +39,7 @@
 #              wakes nobody, so that step ends when the crown is quiet.
 #   checks     what the verdict reads, each a name `ci/rig.py` defines:
 #              road:<mod|hooks>, plugin_dir, no_plugin_dir, started_by_crown,
+#              started_by_person (the rig step `person_start` started it, W1),
 #              cwd:<worktree|checkout>, first_prompt, words:<w1,w2,...> (the
 #              card words seen, in order), hooks:<E1,E2,...> (hook frames the
 #              daemon ingested), mod_alone, claude_road_mod, crown:<cmd>
@@ -73,7 +74,9 @@
 #   siblings   more tickets the test files beside its own ({key2}, {key3}
 #              in a step), each with the same brief and every check run on
 #              each.
-#   rig steps  the turn roads add: `prompt` (the person's words to the
+#   rig steps  W1 adds `person_start` (the person starts the test's agent
+#              in its workspace; the step ends at its first turn's end).
+#              The turn roads add: `prompt` (the person's words to the
 #              worker while its turn runs, `text`, sent once it has worked
 #              `after` seconds), `press_enter` (the person answers the
 #              worker's dialog in its pane), `resend` (the person's resend of
@@ -616,5 +619,25 @@ checks = ["road:mod", "started_by_crown", "tools:get_ticket", "no_own_key", "rep
 
   [[test.steps]]
   crown = "K1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: K1 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: K1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
+id = "W1"
+title = "W1 · a ticket a person started takes the crown's words once the crown watches it: do the steps below"
+workspace = "worktree"
+brief = "Reply with the single word one and end your turn. Read no file and run no command."
+expect = "the person starts the agent; asked to wait for its ticket, the crown watches it (watch_ticket, T-712) and ends its turn; asked to tell its agent something, the crown's ask_agent reaches that agent with no person's send, as it reaches an agent the crown started (T-734), and the turn that takes the words wakes the crown: the worker replies one, then two."
+checks = ["road:mod", "started_by_person", "crown:watch_ticket", "crown:ask_agent", "replies:one,two"]
+
+  [[test.steps]]
+  rig = "person_start"
+
+  [[test.steps]]
+  crown = "W1: the person started {key}'s agent themselves. Wait for {key} to finish, and end your turn now with the single line: W1 waiting."
+  until = { state = "idle" }
+
+  [[test.steps]]
+  crown = "W1: tell {key}'s agent: Reply with the single word two and end your turn. Then end your turn with the single line: W1 asked. When the board wakes you because {key}'s agent finished, end your turn with the single line: W1 seen."
   until = { stops = 1, state = "idle" }
   wake = true

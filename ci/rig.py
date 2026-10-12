@@ -671,6 +671,10 @@ class Rig:
         # supervised, each waits on its card for a person's ^y.
         if board.get("crown_mode", "autonomous") != "autonomous":
             self.wire.set_crown_mode("autonomous")
+        # The crown may watch a ticket a person started (T-712, W1); a board
+        # from before T-732 wrote it off.
+        if not board.get("crown_watches", True):
+            self.wire.set_crown_watches(True)
         say(f"  tier {TIER_NAME} ({spec['model']}, effort {TIER_EFFORT}) is the board's default; "
             f"the crown is autonomous")
 
@@ -1029,6 +1033,26 @@ Reply with the single word ready and end your turn."""
                 return False
             self.log(f"the person's prompt to a working {test['key']}: {r.get('resp')}")
             return True
+        if what == "person_start":
+            # The person starts the test's agent themselves (W1, T-734): the
+            # composer's Shift+Enter, in the test's workspace, and the step
+            # ends at that agent's first turn's end.
+            self.wire.set_workspace(test["ticket"], test["workspace"])
+            mark = len(self.feed_lines)
+            r = self.wire.spawn(test["ticket"], "claude", submit_prompt=True)
+            self.log(f"the person started {test['key']}: {r.get('resp')}")
+
+            def first_turn():
+                rec = self.agent_of(self.board(), test["ticket"])
+                return rec and word_of(rec["state"]) == "idle" and any(
+                    l.get("kind") == "hook" and l.get("event") == "Stop"
+                    for l in self.worker_lines(rec["id"], mark))
+
+            if not self.wait_for("the person's agent's first turn", first_turn, STEP_TIMEOUT,
+                                 self.watch):
+                record["failures"].append("the person's agent never finished its first turn")
+                return False
+            return True
         if what == "press_enter":
             # The person answers the worker's dialog in its pane (D4): Enter
             # on the row the cursor rests on, the first. The worker's turn
@@ -1265,6 +1289,8 @@ Reply with the single word ready and end your turn."""
             elif name == "no_plugin_dir":
                 check(c, "--plugin-dir" not in rec["argv"], "no --plugin-dir in argv"
                       if "--plugin-dir" not in rec["argv"] else "--plugin-dir in argv")
+            elif name == "started_by_person":
+                check(c, rec.get("started_by") is None, f"started by {rec.get('started_by')}")
             elif name == "started_by_crown":
                 check(c, rec.get("started_by") == self.crown, f"started by {rec.get('started_by')}")
             elif name == "cwd":

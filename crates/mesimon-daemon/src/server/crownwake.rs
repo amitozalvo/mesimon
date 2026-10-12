@@ -77,7 +77,9 @@
 //! for. A watched ticket is heard delivered, finished, raised and merged,
 //! and the watch ends at the merge; its question and its plan stay the
 //! person's (the crown cannot answer a person's agent), and so does its
-//! lingering (the crown cannot ask it). `crown_hears` is the one claim.
+//! lingering: the crown's words do reach a watched agent (T-734), but a
+//! person's agent's background tasks are the person's to end.
+//! `crown_hears` is the one claim.
 
 use super::*;
 use serde::{Deserialize, Serialize};
@@ -1375,6 +1377,7 @@ impl Daemon {
         // A watch ends at the merge (T-712): the wait it was for is over,
         // and the line that says so is its last.
         if landed && self.crown_watched.remove(&worker) {
+            self.hold_unwatched_sends(worker);
             self.feed.board("automation", "watch_ended", Some(worker));
         }
         self.feed.crown_wake(crown, worker, cause.word());

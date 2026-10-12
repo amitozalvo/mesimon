@@ -5490,8 +5490,71 @@ fn the_crown_watches_a_ticket_a_person_started() {
         Response::Err { message } => assert_eq!(message, off_words),
         other => panic!("a watch after the row went off: {other:?}"),
     }
-    // Nothing of the crown's reached W's pane: its only words there are
-    // the wake lines, which name W and land at the crown.
+
+    // ---- 10. the crown's words (T-734): held for the person unwatched, -----
+    // sent as to a worker it started while watched, held again at the end
+    let ask = |c: &mut TestClient, text: &str, deliver: Deliver| {
+        let v = read(c, sa, &kw).unwrap();
+        match c.send(
+            Principal::Agent { session: sa },
+            Command::AgentAskTicket {
+                key: kw.clone(),
+                text: text.into(),
+                seen: v.seen,
+                plan: false,
+                deliver,
+            },
+        ) {
+            Response::AgentAsked { road, held_because, .. } => {
+                (road.unwrap(), held_because.unwrap_or_default())
+            }
+            other => panic!("ask_agent: {other:?}"),
+        }
+    };
+    let row = |c: &mut TestClient| {
+        pending_of(c, Some(w)).into_iter().find(|p| p.is_queued_ask() && !p.in_flight)
+    };
+    let landed = |needle: &str| std::fs::read_to_string(&got).unwrap_or_default().contains(needle);
+    assert!(matches!(c.request(Command::SetCrownWatches { on: true }), Response::Ok));
+    assert!(c.board().crown_mode.sends(), "autonomous by default");
+    let (road, why) = ask(&mut c, "mesimon-probe-95 held", Deliver::Idle);
+    assert_eq!(road, AskRoad::HeldForPerson);
+    assert!(why.contains("a person started this agent"), "{why}");
+    assert!(!row(&mut c).expect("held on W's card").sends);
+    // Watched: the queue takes the words, as for a worker the crown started.
+    assert!(matches!(watch(&mut c, &kw, false), Response::AgentTicket { .. }));
+    start(&mut c, ws);
+    let (road, _) = ask(&mut c, "mesimon-probe-96 queued", Deliver::Idle);
+    assert_eq!(road, AskRoad::Queued, "a busy agent takes them at its idle");
+    assert!(row(&mut c).expect("queued on W's card").sends);
+    // The unwatch hands the waiting words back to the person.
+    assert!(matches!(watch(&mut c, &kw, true), Response::AgentTicket { .. }));
+    assert!(!row(&mut c).expect("still on W's card").sends, "held again");
+    hook_send(&hook_sock, &ws.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    settle();
+    assert!(!landed("mesimon-probe-96"), "held words do not go on their own");
+    assert!(matches!(
+        c.request(Command::TakeQueuedAsk { ticket: w }),
+        Response::PromptTakenBack { .. }
+    ));
+    // Watched again, an idle agent takes words sent now, and the turn that
+    // answers wakes the crown as a started worker's does.
+    assert!(matches!(watch(&mut c, &kw, false), Response::AgentTicket { .. }));
+    let (road, _) = ask(&mut c, "mesimon-probe-97 now", Deliver::Now);
+    assert_eq!(road, AskRoad::SentNow);
+    wait_until(std::time::Duration::from_secs(5), "the words in W's pane", || {
+        landed("mesimon-probe-97 now")
+    });
+    assert!(row(&mut c).is_none(), "nothing parked");
+    hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"x"}"#);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(20), "the answer's wake on the crown", || {
+        landed(&format!("{worker} answered your ask"))
+    });
+
+    // Nothing of the crown's reached W's pane but its asks: its other words
+    // there are the wake lines, which name W and land at the crown.
     let feed = std::fs::read_to_string(&feed_path).unwrap();
     assert!(!feed.contains("mesimon-probe-93"), "the feed never carries the words:\n{feed}");
 }

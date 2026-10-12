@@ -48,10 +48,10 @@ can see which ticket it is on and what it is about. One ticket per board can wea
 workspace of and start an agent on the other tickets, archive them where you turn on
 *Settings › Crown › Archives tickets* (off by default), put an idle agent it
 started to sleep, merge a worktree branch where the merge train will not, under autonomous
-mode, and watch a ticket you started where you turn on *Settings › Crown › Watches
-tickets* (off by default), which sends that ticket's news to the crown and nothing to its
-agent, each edit checked against the ticket as the agent last read it and lit on the card
-as it happens. Starts are capped by a per-board budget (Settings › Crown, three by default),
+mode, and watch a ticket you started where *Settings › Crown › Watches tickets* lets it
+(on by default), which sends that ticket's news to the crown and lets the crown's words
+reach its agent as they reach one the crown started, each edit checked against the ticket
+as the agent last read it and lit on the card as it happens. Starts are capped by a per-board budget (Settings › Crown, three by default),
 a ticket the crown started can never itself be crowned, and an agent you started is yours
 alone to sleep. *Settings › Crown › Mode* is autonomous by default: words the crown
 leaves for an agent it started reach that agent once it is idle, and the crown may answer a
@@ -59,7 +59,7 @@ question that agent stops on, typed into that agent's dialog, or accept a plan t
 agent stops on, with one Enter on the plan dialog's first row (`♛ accepted plan`), each shown
 on its card and in the activity feed. Supervised keeps them for you: the crown's words wait on
 the card until you send them, and every question and plan waits for you. Words for an agent
-you started wait for you under either mode. A plan it would change, a question about secrets, spend,
+you started wait for you under either mode, unless the crown watches its ticket. A plan it would change, a question about secrets, spend,
 anything destructive or beyond the brief is raised to you, and every other stop, and every
 question or plan from an agent you started, still waits for you. Only you can
 crown a ticket; an agent that asks for it is told to ask you.

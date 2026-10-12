@@ -23650,3 +23650,41 @@ Tests: `board::tests::crown_watches_defaults_on_and_an_off_is_kept`,
 `app::tests::crown_watches_setting_toggles_through_board_command`, the two `settings_crown`
 goldens, and `crown_e2e::the_crown_watches_a_ticket_a_person_started` (on at boot, the off
 written to the file before the refusal).
+
+## The crown's words reach a ticket it watches (T-734, 2026-10-12, "crown should be able to take control over tickets it watched")
+
+**The ask.** "allow to send messages to it, as if it was started by it." T-712's watch was a
+listener only: the crown heard a person's worker deliver, finish, raise its hand and merge,
+and its `ask_agent` on that worker was still held for the person's `^y` (`crown_ask_hold`'s
+provenance clause, T-539), so a crown told "wait for T-x, then tell it Y" could only park Y on
+the card.
+
+**Built.** `crown_ask_hold`'s provenance clause passes when `Daemon::crown_watched` holds the
+ticket: under autonomous mode the crown's words go by the same road as to an agent it started
+(idle, now or immediately; the wake and budget clauses unchanged, so a parked watched agent
+still needs a free seat to be woken). The turn that takes them already woke the crown
+(`answered your ask` is heard for any worker). A watch is asked for by the person's words to
+the crown, so it is the person's hand-over of that ticket. **When a watch ends** — unwatch, the
+merge, the ticket leaving the board, the row turned off — words still waiting on that ticket go
+back to a person's send (`hold_unwatched_sends`, unless the crown started the agent); a new
+crown already holds every send (`hold_crown_sends`). The held words name the road: "a person
+started this agent, and a person sends it words (^y on its card) unless the crown watches its
+ticket (watch_ticket)".
+
+**Not widened.** `answer_agent`, `accept_plan`, `sleep_agent`, the merged notice and the
+person's banners still read `started_by` alone: the ask was for words, and a question, a plan
+or a park on a person's agent stays the person's. A watched ticket's lingering is still not
+heard (the person's background tasks are the person's to end).
+
+**The words.** `ask_agent`'s description says an agent the crown started "or whose ticket it
+watches" gets them as deliver says (at the cap, so its `key` and `seen` blurbs went, as
+`watch_ticket`'s did); `watch_ticket`'s says the agent gets ask_agent's words and nothing more,
+and now reads "on unless a person turned it off" (T-732 left it saying off); `CROWN_WAKES`
+says the same. `docs/USING.md` and promise 3's crown list say it, and both now read the row as
+on by default.
+
+Tests: `crown_e2e::the_crown_watches_a_ticket_a_person_started` step 10 (unwatched: held,
+naming the watch; watched: queued with `sends`, held again by the unwatch and never sent;
+watched again: sent now, and the answering turn wakes the crown); `mcp::tests` on the three
+texts; the rig's W1 (a person's `person_start`, a bare "wait for it", then a bare "tell its
+agent": `watch_ticket`, `ask_agent`, replies one then two).

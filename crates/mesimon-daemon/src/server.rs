@@ -1868,8 +1868,9 @@ struct QueuedAsk {
     /// the crown may ask again.
     by: Option<ulid::Ulid>,
     /// The crown's ask goes by the queue like a person's (T-550): the
-    /// board's crown mode is autonomous and the crown started this agent, so
-    /// `drain_queue` delivers it once the agent is idle. False on every
+    /// board's crown mode is autonomous and the crown started this agent or
+    /// watches its ticket (T-734), so `drain_queue` delivers it once the
+    /// agent is idle. False on every
     /// person's ask; set by the crown's handler after `park_ask`.
     sends: bool,
     /// Accept the agent's plan on the way (T-420): when the pane it was
@@ -5992,6 +5993,7 @@ impl Daemon {
                     if !self.crown_watched.remove(&target) {
                         return Response::Err { message: format!("{key} is not watched") };
                     }
+                    self.hold_unwatched_sends(target);
                     "unwatched"
                 } else {
                     if self.board.started_by_crown(target) {
@@ -6229,7 +6231,9 @@ impl Daemon {
     /// when the queue delivers it (T-550). In order: the board's switch;
     /// the agent's provenance — the one who started an agent is the one who
     /// steers it (T-539), so a person's agent waits for its person whatever
-    /// the switch says; and for a parked agent, the budget. Words to a
+    /// the switch says, unless the crown watches its ticket (T-734): a
+    /// watch is the person's hand-over of that ticket to the crown; and for
+    /// a parked agent, the budget. Words to a
     /// sleeping agent wake it, and a wake on the crown's word spends what a
     /// start spends, so it needs a free seat and holds one while it waits
     /// (`crown_seats`). And a wake on the shared checkout waits while
@@ -6250,9 +6254,13 @@ impl Daemon {
                     .into(),
             );
         }
-        if self.board.live_agent(target).is_none_or(|rec| rec.started_by.is_none()) {
+        if self.board.live_agent(target).is_none_or(|rec| rec.started_by.is_none())
+            && !self.crown_watched.contains(&target)
+        {
             return Some(
-                "a person started this agent, and a person sends it words (^y on its card)".into(),
+                "a person started this agent, and a person sends it words (^y on its card) \
+                 unless the crown watches its ticket (watch_ticket)"
+                    .into(),
             );
         }
         if let QueuedSeat::Wake(id) = seat {
@@ -6584,6 +6592,7 @@ impl Daemon {
     /// watch (T-712): nothing more will happen to it.
     fn drop_crown_if(&mut self, id: ulid::Ulid) {
         if self.crown_watched.remove(&id) {
+            self.hold_unwatched_sends(id);
             self.feed.board("automation", "watch_ended", Some(id));
         }
         if self.board.crown == Some(id) {
@@ -6601,6 +6610,18 @@ impl Daemon {
     /// ending ends the road; the words stay on the card for `^y` or `^u`.
     fn hold_crown_sends(&mut self) {
         for q in self.queued.iter_mut().filter(|q| q.sends) {
+            q.sends = false;
+        }
+    }
+
+    /// A watch ended (T-734): the crown's words still waiting on `ticket`
+    /// were sent on the watch's say-so, so they go back to a person's send
+    /// — unless the crown started its agent, whose words never needed it.
+    fn hold_unwatched_sends(&mut self, ticket: ulid::Ulid) {
+        if self.board.live_agent(ticket).is_some_and(|rec| rec.started_by.is_some()) {
+            return;
+        }
+        for q in self.queued.iter_mut().filter(|q| q.ticket == ticket && q.sends) {
             q.sends = false;
         }
     }
@@ -11823,7 +11844,9 @@ impl Daemon {
         if self.board.crown_watches != on {
             self.board.crown_watches = on;
             if !on && !self.crown_watched.is_empty() {
-                self.crown_watched.clear();
+                for id in std::mem::take(&mut self.crown_watched) {
+                    self.hold_unwatched_sends(id);
+                }
                 self.feed.board("automation", "crown_watch_dropped", self.board.crown);
             }
             self.persist_and_notify();

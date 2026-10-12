@@ -395,12 +395,14 @@ restore an archived one. While it is off, the crown is refused in words that nam
 moves a finished ticket to DONE instead; you decide when the card leaves the board and when its
 merged worktree is reclaimed. Turned off, it holds from the crown's next call.
 
-**Settings › Crown › Watches tickets** (off by default) lets the crown watch a ticket you
+**Settings › Crown › Watches tickets** (on by default) lets the crown watch a ticket you
 started yourself. The board then wakes the crown for that ticket as it does for the agents the
 crown started: when it delivers, finishes a turn, raises its hand or is merged, one sentence
-saying so is sent into the crown's session, and the watch ends at the merge. Nothing is sent to
-that ticket's agent, which stays yours: its questions and plans wait for you, and the crown
-cannot answer, park or merge it. Tell the crown to wait for a ticket and it watches that ticket
+saying so is sent into the crown's session, and the watch ends at the merge. While it watches,
+words the crown leaves for that ticket's agent go to it as they go to an agent the crown
+started (under autonomous mode) instead of waiting for your `^y`; when the watch ends, words
+still waiting go back to you. The agent otherwise stays yours: its questions and plans wait for
+you, and the crown cannot answer, park or merge it. Tell the crown to wait for a ticket and it watches that ticket
 and ends its turn instead of polling, which would hold the merge train. While the row is off, the
 crown is refused in words that name it, and says so to you. Turned off, every watch ends.
 

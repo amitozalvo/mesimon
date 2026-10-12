@@ -473,8 +473,9 @@ no tag registry writes, no session read at any tier. The crown's keyed tools are
 exceptions; its `archive_ticket` is further gated by a board switch a person turns on
 (`Board::crown_archives`, T-590, off by default), and its `watch_ticket` by one a person may
 turn off (`Board::crown_watches`, T-712, on by default since T-732), which has the board wake
-the crown for a person's ticket and sends that ticket's agent nothing. `authorize()` is real for `Agent`:
-`Resource::Session` is denied outright and so is `Mutate` on `Resource::Board`.
+the crown for a person's ticket and lets the crown's `ask_agent` reach its agent as one it
+started (T-734). `authorize()` is real for `Agent`: `Resource::Session` is denied outright and
+so is `Mutate` on `Resource::Board`.
 
 **Schema evolution.** Every new `SessionRecord` field must be `#[serde(default)]` — the defaults
 *are* the migration (back-compat fixture test in `core/src/board.rs`). A parse error

@@ -196,8 +196,9 @@ pub const CROWN_WAKES: &str = concat!(
      A ticket a person started wakes this session only once watched: where Settings → Agents \
      → Crown watches tickets is on, watch_ticket on it has the board wake this session when it \
      delivers, finishes a turn, raises its hand or is merged, as for an agent the crown \
-     started, and the watch ends at the merge or with unwatch; its question or plan stays the \
-     person's, and nothing is sent to its agent. Asked to wait for such a ticket, the crown \
+     started, and the watch ends at the merge or with unwatch. While it stands, ask_agent's \
+     words reach its agent as they reach one the crown started; its question or plan stays the \
+     person's, and the board sends its agent nothing else. Asked to wait for such a ticket, the crown \
      watches it and ends its turn: a loop that polls keeps this session busy, which holds the \
      merge train and the wake itself. ",
     crown_tiers!(),
@@ -719,21 +720,22 @@ pub fn tools() -> Vec<Value> {
         // its card until a person sends them. The direct prompt stays in the
         // never-tier; this is its road through a person — or, on a board
         // whose crown mode is autonomous (T-610), through the queue to an
-        // agent the crown started (T-550).
+        // agent the crown started (T-550) or whose ticket it watches (T-734).
+        // At the cap: `key` and `seen` read as every keyed sibling's.
         json!({
             "name": "ask_agent",
             "description": "Queues words on another ticket's card for its agent (crown \
                             only). A person sends (^y) or takes back (^u); if the crown is \
-                            autonomous, an agent it started gets them as deliver says (road says \
-                            which). Refused with no agent, on this session's ticket, or \
+                            autonomous, an agent it started or whose ticket it watches gets them \
+                            as deliver says (road says which). Refused with no agent, on this session's ticket, or \
                             at once at a dialog. The turn taking them wakes this session at \
                             its end.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "key": { "type": "string", "description": "A list_board key." },
+                    "key": { "type": "string" },
                     "text": { "type": "string", "description": "Words a person would type." },
-                    "seen": { "type": "string", "description": "get_ticket's seen stamp." },
+                    "seen": { "type": "string" },
                     "plan": { "type": "boolean", "description": "Optional. True: plan mode." },
                     "deliver": { "type": "string", "description": "Optional: idle (default), now, immediately." },
                 },
@@ -829,11 +831,12 @@ pub fn tools() -> Vec<Value> {
             // the crown started) are in words, and `key` and `seen` read as
             // every keyed sibling's.
             "description": "Watches another mesimon ticket (crown only, if the board lets \
-                            it: Crown watches tickets, off unless a person turned it on), \
+                            it: Crown watches tickets, on unless a person turned it off), \
                             one a person started: the board then wakes this session when \
                             it delivers, finishes a turn, raises its hand or is merged, as \
                             for an agent the crown started; the watch ends at the merge or \
-                            with unwatch. Its agent gets nothing; its question or plan \
+                            with unwatch. Its agent gets ask_agent's words as one the \
+                            crown started does, nothing more; its question or plan \
                             stays the person's. Asked to wait for a ticket, the crown \
                             watches it and ends its turn: a loop that polls holds the \
                             merge train.",
@@ -2675,7 +2678,8 @@ mod tests {
         for words in [
             "crown only",
             "Crown watches tickets",
-            "off unless a person turned it on",
+            "on unless a person turned it off",
+            "gets ask_agent's words as one the crown started does",
             "delivers, finishes a turn, raises its hand or is merged",
             "ends at the merge or with unwatch",
             "a loop that polls holds the merge train",
@@ -2688,6 +2692,7 @@ mod tests {
             "Settings → Agents → Crown watches tickets is on",
             "watch_ticket on it has the board wake this session",
             "its question or plan stays the person's",
+            "ask_agent's words reach its agent as they reach one the crown started",
             "watches it and ends its turn",
         ] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
