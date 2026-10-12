@@ -23780,3 +23780,21 @@ in `worktrees.json`, so it reads untouched and every reader agrees. No new field
 rebase between two samples) still reads merged, and so does a rebase made while no daemon ran,
 which has no previous sample. A turn's own look (`Look::run`) judges from the binding as it
 stands, so it is right once the sample has moved the base and not before.
+
+
+## T-741: a list dialog's cut row reads whole above the footer (2026-10-12)
+
+**The ask.** A long checklist item (the SUMMARY dialog) or link (LINKS) was cut at the dialog's
+64 cells, and the marquee walks it too slowly to read. The board already names the cursor card
+in full on the row above the footer (`chrome::hover_line`, T-471); the person asked for the same
+on the dialogs.
+
+**Built.** `dialog::list`, which every list dialog draws through, writes the cursor row's words
+across the whole row above the footer (`whole_row`) while that row is cut: the words the row
+reveals (its head, or a two-line list's detail), else a cut head. Same inset and ink as the
+hover row; a text past even the terminal's width reveals on the row's own `menu_marquee` clock.
+A row that fits leaves the row to what was there. A list as tall as the screen now stops one
+row short of it, so the dialog never covers its own line; no golden moved. Over the ticket page
+the line lands on the zone's last row, which the dialog's modal anyway. The pointer's row is not
+read: the board's row names the cursor's card, and two reveals keyed on different words would
+reset one clock every frame.

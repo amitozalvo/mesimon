@@ -206,7 +206,11 @@ pub(super) fn list(
     let per = if tall { 2 } else { 1 };
     let height = |r: &ListRow| if r.heading { 1 } else { per };
     let wanted = u16::try_from(rows.iter().map(height).sum::<usize>()).unwrap_or(u16::MAX);
-    let area = centred(f.area(), wanted, MAX_W);
+    let mut area = centred(f.area(), wanted, MAX_W);
+    // The row above the footer stays the frame's (`whole_row`): a list as
+    // tall as the screen gives it up, and scrolls one row sooner.
+    let whole_y = f.area().bottom().saturating_sub(2);
+    area.height = area.height.min(whole_y.saturating_sub(area.y)).max(3);
     // The window, in lines: the cursor's row, about half the room above it,
     // the rest below, and above again where the list ends first. With every
     // row one height this is the row arithmetic it replaced; a heading
@@ -246,6 +250,21 @@ pub(super) fn list(
             tail: keys(app, scope, &theme.rest, inner_w.saturating_sub(4)),
         },
     );
+    // The right edge keeps one cell of margin after it.
+    let edge = |row: &ListRow| if row.right.is_empty() { 0 } else { row.right.width() + 1 };
+    // What the cursor's row cut, whole: the words it reveals (its head, or
+    // in a two-line list its detail), else a cut head.
+    let cursor = &rows[idx];
+    let head_cut = cursor.head.width() > inner_w.saturating_sub(cursor.lead.width() + edge(cursor));
+    let detail_cut =
+        cursor.detail.as_deref().filter(|d| tall && d.width() > inner_w.saturating_sub(6));
+    let whole = match (tall, detail_cut) {
+        (true, Some(d)) => Some(d),
+        _ => head_cut.then_some(cursor.head.as_str()),
+    };
+    if let Some(text) = whole {
+        whole_row(f, app, whole_y, text);
+    }
     let mut lines: Vec<Line<'static>> = Vec::new();
     // Each drawn row is the mouse's to pick (T-716), by the cursor's own
     // count: the rows a cursor can stand on, headings skipped.
@@ -278,8 +297,7 @@ pub(super) fn list(
         };
         let row_style = if selected { theme.selected_row() } else { Style::default() };
         let lead_style = if selected { style } else { theme.dim3() };
-        // The right edge keeps one cell of margin after it.
-        let edge = if row.right.is_empty() { 0 } else { row.right.width() + 1 };
+        let edge = edge(row);
         // The cursor's head reveals what a cut hides, the board card
         // title's way (T-702); a two-line list reveals its detail instead,
         // since the two would share one clock.
@@ -314,6 +332,26 @@ pub(super) fn list(
         }
     }
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The cursor row's words in full across the row above the footer (T-741),
+/// the board's hover row's place and its register (`chrome::hover_line`):
+/// a dialog is at most `MAX_W` wide and the frame is the terminal's, so a
+/// checklist item or a link the row cut reads whole without waiting on the
+/// marquee. Past even that width it reveals on the row's own clock.
+fn whole_row(f: &mut Frame, app: &App, y: u16, text: &str) {
+    let screen = f.area();
+    let rect = Rect { x: screen.x, y, width: screen.width, height: 1 };
+    f.render_widget(Clear, rect);
+    if let Some(bg) = app.theme.bg {
+        f.render_widget(Block::default().style(Style::default().bg(bg)), rect);
+    }
+    // One cell of page padding at each edge, the advisory row's inset.
+    let words = reveal(app, text, (screen.width as usize).saturating_sub(2));
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(format!(" {words}"), app.theme.dim1()))),
+        rect,
+    );
 }
 
 /// The selected row's detail (or, in a one-line list, its head),

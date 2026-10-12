@@ -6163,6 +6163,28 @@ fn the_cursors_links_row_scrolls_its_cut_into_view() {
     assert!(row(&app).contains("browse/ABC-123│"), "walked to the end: {}", row(&app));
 }
 
+/// A row the dialog cut reads whole on the row above the footer (T-741),
+/// over the board and over the ticket page, and a row that fits leaves it
+/// to what was there.
+#[test]
+fn the_cursors_cut_row_reads_whole_above_the_footer() {
+    let head = "url    the Jira ticket ∙ https://jira.example.com/browse/ABC-123";
+    for page in [false, true] {
+        let mut app = app_links();
+        if page {
+            app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+        }
+        let Mode::Links { idx, .. } = &mut app.mode else { unreachable!() };
+        *idx = 0;
+        let rows = render(&app, 120, 30);
+        assert_eq!(rows[28].trim(), head, "page {page}: {}", rows[28]);
+        let Mode::Links { idx, .. } = &mut app.mode else { unreachable!() };
+        *idx = 1;
+        let rows = render(&app, 120, 30);
+        assert!(!rows[28].contains("url    "), "page {page}: {}", rows[28]);
+    }
+}
+
 /// The ticket page does NOT name `^k` on its state row (T-312) — not with a
 /// link fetched, not without one. `?` is the key's one home, the way `!`'s
 /// is (T-277); the state row says what the ticket is.
