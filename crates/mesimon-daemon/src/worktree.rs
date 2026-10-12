@@ -1844,6 +1844,35 @@ impl RepoFlags {
             content: f.seen.clone(),
         }
     }
+
+    /// The branch came to its base with nothing of its own (T-740): a
+    /// worker's `git rebase main` or `git pull` on a branch with no commits.
+    /// Ancestry reads that as merged, since the tip left the creation base,
+    /// and the crown heard a delivery from a worker still in its first turn.
+    /// Between two samples the leg was untouched and nothing ahead, its tip
+    /// moved, nothing is ahead now, and the base stood still: a merge moves
+    /// the base, this moves the branch. A base that moved in the same window
+    /// is a merge this cannot tell apart, and stays one.
+    pub fn came_to_base(old: &RepoFlags, new: &RepoFlags) -> bool {
+        !old.touched()
+            && !old.merged
+            && old.ahead == 0
+            && !new.tip.is_empty()
+            && new.tip != old.tip
+            && new.merged
+            && new.merged_in.is_empty()
+            && new.ahead == 0
+            && !old.base_tip.is_empty()
+            && new.base_tip == old.base_tip
+    }
+
+    /// Take the tip as the leg's creation base: untouched again, its flags
+    /// what a branch freshly cut there reads.
+    pub fn rebase_on_tip(&mut self) {
+        self.base_oid = self.tip.clone();
+        self.merged = false;
+        self.needs_rebase = self.tip != self.base_tip;
+    }
 }
 
 /// The merge state as the agent tools spell it — `get_ticket`'s
@@ -2607,6 +2636,74 @@ mod tests {
         let other = r.flags("other", None, None);
         assert!(!other.merged && other.needs_rebase, "the branch nobody merged is untouched");
         assert!(content_merged(&r.dir, "other", "main", 0).is_none());
+    }
+
+    /// The board's case (T-740): a worker rebased its branch before it had
+    /// a commit, ancestry read it merged, and the crown heard a delivery
+    /// from a worker still in its first turn. The base stood still between
+    /// the two samples, so the branch came to it; a landing moves the base.
+    #[test]
+    fn a_branch_that_came_to_its_base_is_not_merged() {
+        let Some(r) = Repo::new("came-to-base") else { return };
+        let cut = branch_tip(&r.dir, "main");
+        r.run(&["branch", "empty"]);
+        r.run(&["branch", "work"]);
+        let sample = |branch: &str, base_oid: &str| -> RepoFlags {
+            let inputs = vec![FlagInput {
+                ticket: ulid::Ulid(1),
+                branch: branch.into(),
+                base_oid: base_oid.into(),
+                seen: None,
+            }];
+            let got = compute_flags(&r.dir, "main", None, &inputs);
+            let f = &got.flags[0];
+            RepoFlags {
+                name: String::new(),
+                base: "main".into(),
+                base_tip: got.base_tip.clone(),
+                base_oid: base_oid.into(),
+                tip: f.tip.clone(),
+                ahead: f.ahead,
+                merged: f.merged,
+                needs_rebase: f.needs_rebase,
+                conflict: false,
+                merged_in: f.merged_in.clone(),
+                merged_oid: f.merged_oid.clone(),
+                content: f.seen.clone(),
+            }
+        };
+        // Another ticket lands; both branches are sampled behind it.
+        r.commit("other.txt", "other\n", "another ticket");
+        let before = sample("empty", &cut);
+        assert!(!before.merged && before.needs_rebase);
+
+        r.run(&["checkout", "-q", "empty"]);
+        r.run(&["rebase", "-q", "main"]);
+        r.run(&["checkout", "-q", "main"]);
+        let mut after = sample("empty", &cut);
+        assert!(after.merged, "ancestry alone reads the rebased branch merged");
+        assert!(RepoFlags::came_to_base(&before, &after));
+        after.rebase_on_tip();
+        assert!(!after.merged && !after.needs_rebase && !after.touched());
+        assert!(!sample("empty", &after.base_oid).merged, "and the next sample agrees");
+
+        // A landing inside one sample window: rebase, commit, fast-forward.
+        let before = sample("work", &cut);
+        r.run(&["checkout", "-q", "work"]);
+        r.run(&["rebase", "-q", "main"]);
+        r.commit("w.txt", "work\n", "the work");
+        r.run(&["checkout", "-q", "main"]);
+        r.run(&["merge", "-q", "--ff-only", "work"]);
+        let after = sample("work", &cut);
+        assert!(after.merged);
+        assert!(!RepoFlags::came_to_base(&before, &after), "the base moved: a merge");
+        // And a merged branch that later follows its base stays merged.
+        r.commit("next.txt", "next\n", "the next ticket");
+        let moved_on = sample("work", &cut);
+        r.run(&["checkout", "-q", "work"]);
+        r.run(&["rebase", "-q", "main"]);
+        r.run(&["checkout", "-q", "main"]);
+        assert!(!RepoFlags::came_to_base(&moved_on, &sample("work", &cut)));
     }
 
     /// The other forge button: every commit replayed on the base. The

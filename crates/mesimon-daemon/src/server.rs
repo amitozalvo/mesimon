@@ -13199,6 +13199,7 @@ impl Daemon {
         self.wt_conflicts = conflicts;
         // Per ticket, its legs in binding order.
         let base = self.base_branch.clone().unwrap_or_default();
+        let mut rebased = false;
         let tickets: Vec<ulid::Ulid> = self
             .worktrees
             .keys()
@@ -13234,6 +13235,31 @@ impl Daemon {
             if legs.is_empty() {
                 continue;
             }
+            // A branch that came to its base with no work of its own is cut
+            // there again, on disk too, so the card, the DONE gate, the train
+            // and the crown all read it unmerged (T-740).
+            let mut moved: Vec<(String, String)> = Vec::new();
+            if let Some(old) = self.wt_repos.get(&t) {
+                for n in &mut legs {
+                    let was = old.iter().find(|o| o.name == n.name);
+                    if was.is_some_and(|o| worktree::RepoFlags::came_to_base(o, n)) {
+                        n.rebase_on_tip();
+                        moved.push((n.name.clone(), n.tip.clone()));
+                    }
+                }
+            }
+            if !moved.is_empty() {
+                if let Some(b) = self.worktrees.get_mut(&t) {
+                    for (name, tip) in moved {
+                        if !b.is_workspace() {
+                            b.base_oid = tip;
+                        } else if let Some(r) = b.repos.iter_mut().find(|r| r.name == name) {
+                            r.base_oid = tip;
+                        }
+                    }
+                }
+                rebased = true;
+            }
             let a = worktree::aggregate(&legs);
             let was = self.wt_agg.get(&t).map(|w| w.merged);
             // Unmerged to merged is a landing, whoever made it (T-527). A
@@ -13261,6 +13287,9 @@ impl Daemon {
             changed |= !same_legs;
             self.wt_repos.insert(t, legs);
             self.wt_fresh.insert(t, seq);
+        }
+        if rebased {
+            self.persist_worktrees();
         }
         let tickets: Vec<ulid::Ulid> = self.worktrees.keys().copied().collect();
         for tid in tickets {

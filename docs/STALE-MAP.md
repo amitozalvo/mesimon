@@ -23756,3 +23756,27 @@ own environment; the author's `zsh -l -i` capture takes 0.23–0.36 s and the e2
 before the sleep: a fact the stub states, never a timer. 20/20 on the hooks road, 5/5 on the
 mod road after. No CHANGELOG entry: a person sees nothing.
 
+
+## T-740: a branch rebased before its first commit read merged (2026-10-12)
+
+**The report.** On a crowned board, T-31's worker was in its first turn when the crown woke for
+it as `delivered`, `merge_state merged`. The worker had run `git rebase main` on a branch with
+no commits: the branch was cut at `79e5bae`, main had since taken another ticket's
+`7dbf6da`, and the rebase moved the branch there with nothing ahead.
+
+**The cause.** `compute_flags` calls a branch merged when its tip has left the creation base
+(`base_oid`) and nothing is ahead. That test is how a fresh branch was told from a landed one
+(dogfood 2026-08-30), and a branch that came to its base with no work passes it too. The card,
+the DONE gate and the train read the same flag; the crown's `hear_merges` is what made it loud.
+In git the two states are the same graph: an ff merge and an empty branch fast-forwarded to
+the base both leave `base == tip`. Only the order of events tells them apart.
+
+**Built.** `absorb_worktree_flags` compares each leg with its previous sample
+(`RepoFlags::came_to_base`): untouched and nothing ahead before; tip moved, nothing ahead and
+read merged by ancestry now; and the base tip the same in both. A merge moves the base, this
+moves the branch. Such a leg is cut there again: its `base_oid` becomes the tip, in memory and
+in `worktrees.json`, so it reads untouched and every reader agrees. No new field, no schema bump.
+**What it cannot see.** A base that moved in the same sample window (another landing and this
+rebase between two samples) still reads merged, and so does a rebase made while no daemon ran,
+which has no previous sample. A turn's own look (`Look::run`) judges from the binding as it
+stands, so it is right once the sample has moved the base and not before.
