@@ -33,8 +33,11 @@ use mesimon_core::board::{ExitReason, SessionKind, SessionState};
 use mesimon_core::command::{Command, Response};
 
 /// Ignores SIGTERM (the children inherit the disposition), so the sleep's
-/// signal leaves it standing until the wake's kill-session SIGHUPs it.
-const STUB: &str = "#!/bin/sh\ntrap '' TERM\nwhile true; do sleep 1; done\n";
+/// signal leaves it standing until the wake's kill-session SIGHUPs it. The
+/// `armed` file beside it is written once the trap is set: the sleep's
+/// SIGTERM may go only after it exists (T-738, at the sleep).
+const STUB: &str =
+    "#!/bin/sh\ntrap '' TERM\n: > \"$(dirname \"$0\")/armed\"\nwhile true; do sleep 1; done\n";
 
 fn pane_pid(sock: &std::path::Path, sid16: &str) -> i32 {
     let out =
@@ -114,6 +117,17 @@ fn wake_over_a_dying_pane_is_not_elsewhere_and_its_stragglers_do_not_land() {
         format!(r#"{{"sessionId":"{sid}","pid":{old_pid},"cwd":"{}"}}"#, h.repo.display()),
     )
     .unwrap();
+
+    // The stub's first line runs only once macOS is done looking at the file
+    // (T-738): the test binary writes the stub under provenance tracking, so
+    // its first exec is held for a Gatekeeper scan — 0.2–0.7 s on an idle
+    // machine, seconds under the suite's load, and nothing of mesimon's,
+    // with `ps` already naming `/bin/sh claude-stub.sh` at 0 CPU. A SIGTERM
+    // sent before `trap` has run kills the stub at the gate, and the test's
+    // premise with it. The marker is the fact; a timer would be a guess.
+    wait_until(Duration::from_secs(30), "the stub to arm its trap", || {
+        h.dir.join("armed").exists()
+    });
 
     // ---- x: sleep. The process ignores the SIGTERM and stays up. ---------
     assert!(matches!(c.request(Command::SleepSession { id: sid }), Response::Ok));

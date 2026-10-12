@@ -710,6 +710,13 @@ will not show up in our tests until they break something.
   binary (`/bin/ls`) is refused with no prompt, and a binary that sits under `~/Documents`
   (the dev tree's vendored tmux, under `MESIMON_TMUX_BIN`) asks on its first start because it
   page-faults its own text. `tmux -S <sock> run-shell 'ls <repo>'` is the diagnosis.
+- **A file written from a Claude Code session carries `com.apple.provenance`, and Gatekeeper
+  scans such an executable at its first exec** (T-738): the stub an e2e writes is held 0.2–0.7 s
+  before its first line on an idle machine and seconds under the suite's load, `ps` already
+  naming `/bin/sh claude-stub.sh` at 0 CPU — nothing of mesimon's. `xattr -d` returns 0 and
+  removes nothing. A test that signals a stub waits for a fact the stub writes, never a timer.
+  The installed `claude` and a released `mesimon` are assessed once and cached: a real launch
+  pays nothing (measured, 60–70 ms pane to answer).
 
 ## Test infrastructure
 

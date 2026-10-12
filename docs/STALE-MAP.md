@@ -23718,3 +23718,41 @@ reason: the rig's crown never archives, and the gate is the daemon's whatever a 
 Tests: `archive_e2e` step 2b (off by default; on, the offer drops the ticket and the archive and
 the door refuse it; ticked, both pass; off again, X takes it unticked); `mcp_e2e` (the column
 leaves `allowed_columns` and `move_ticket` is refused); `column_ticked_gate_toggles_on_the_wire`.
+
+## T-738: a hooks-road launch stalls ~2 s before the agent runs (2026-10-12)
+
+**The report.** `wake_straggler_e2e` failed 40% of runs alone on the hooks road: the stub's
+pane was `/bin/sh claude-stub.sh` at 0 CPU 1.8 s after the spawn, its first line never run, so
+the sleep's SIGTERM landed before `trap '' TERM` and the stub died. A bisect named T-729. Blocked
+the v0.1.0-beta.5 release.
+
+**The cause, measured.** macOS, not mesimon. A process timeline at 20 ms beside `log stream` of
+syspolicyd: the stub's `/bin/sh` appears while `GK performScan` on the stub's own path is in
+flight and forks its first `sleep` 60 ms after `GK evaluateScanResult`. Every file a Claude Code
+session's process tree writes carries `com.apple.provenance` (the test binary, the stub it
+writes, the daemon it builds), and Gatekeeper evaluates such an executable at its first exec:
+0.2–0.7 s for a fresh two-line script on an idle machine, every time (a new file each run), and
+`xattr -d com.apple.provenance` returns 0 and leaves the xattr. Under the release suite's parallel
+e2es and other agents' builds, one syspolicyd serves every scan, and the hold runs to seconds —
+the reporter's 1.8 s. The e2e daemon's own exec is scanned too, 1.0–2.3 s per run here (the test
+binary and the pane's `mesimon exec` are not; the cache's key was not chased), inside the
+harness's 5 s socket wait. Both are the load flakes' floor (`e2e-flakes-under-parallel-load`).
+
+**T-729 was not it.** Its code runs on a `Running` record past the quiet threshold
+(`claude_busy`) or the status probe; this test's record is `Running` for milliseconds and the
+sessions dir is empty then. 30 runs on T-729's tree passed here before any change, 10 more from
+the main checkout; the bisect's steps each rebuilt the tree, and the hold is syspolicyd's, not
+the commit's.
+
+**Not the product.** The real `claude` (2.1.296, signed, provenance-marked too) launched through
+a private pane and `mesimon exec` three times under the same log: 60–70 ms from `new-session` to
+its answer, no scan of either binary — an installed binary is assessed once and cached. The
+other symptom in the report, `shellenv.env: No such file`, is the designed window at daemon
+start (`exec.rs`, the boot comment): a spawn before the first capture lands keeps the daemon's
+own environment; the author's `zsh -l -i` capture takes 0.23–0.36 s and the e2e's `/bin/sh`
+10 ms, and it only widened the race in the test. Unchanged.
+
+**Built.** The stub writes `armed` beside itself after `trap`, and the test waits for that file
+before the sleep: a fact the stub states, never a timer. 20/20 on the hooks road, 5/5 on the
+mod road after. No CHANGELOG entry: a person sees nothing.
+
