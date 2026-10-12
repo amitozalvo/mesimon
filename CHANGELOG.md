@@ -6,6 +6,51 @@ notes, and the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-beta.5 — 2026-10-12
+
+### Compatibility
+
+- **`columns.toml` moves to schema 7.** An older build leaves the file
+  untouched and does not write to it until the newer build is back.
+
+### Added
+
+- **A column can refuse tickets whose `Summary` has an unticked box.** In a
+  column's settings, `Entry needs every summary box ticked` holds such a
+  ticket at the column's door and keeps it from being archived from there.
+  It is off on every column, DONE included.
+
+### Changed
+
+- **An unticked `Summary` box no longer blocks archiving** unless the
+  ticket's column has `Entry needs every summary box ticked` turned on.
+- **The crown watches tickets by default.** Settings › Crown › `Watches
+  tickets` is now on, including on boards that never changed it; a board
+  where you turned it off keeps it off.
+- **Words the crown leaves for a ticket it watches are sent to that ticket's
+  agent** as they are for an agent the crown started under autonomous mode,
+  instead of waiting for your `^y`. Words still waiting when the watch ends
+  come back to you. Questions, plans and parking stay yours.
+- **Agents' `Summary` checklists name stages of the work and tick them as
+  they land.** A finished ticket no longer keeps a box for the merge or
+  another step the board does by itself.
+
+### Fixed
+
+- **A card no longer reads `interrupted` while the model thinks for more than
+  a minute after a tool call.**
+- **A lead agent waiting on long-running subagents stays working** instead of
+  being parked after ten minutes and moved to REVIEW.
+- **After a daemon restart, the crown is no longer told an agent finished its
+  turn while the agent is still thinking.**
+- **Claude Code's automatic compaction of an idle session is no longer read
+  as a turn.** The ticket stays in its column and the card keeps the last
+  reply.
+- **The archive offer's disk figure counts only space the removal frees.** On
+  macOS a worktree whose build output was cloned from the checkout was
+  counted at the full clone size, tens of GB too high.
+- **A card's new reply no longer flashes before its fade-in starts.**
+
 ## v0.1.0-beta.4 — 2026-10-10
 
 ### Added
