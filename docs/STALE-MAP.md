@@ -23663,8 +23663,12 @@ the card.
 ticket: under autonomous mode the crown's words go by the same road as to an agent it started
 (idle, now or immediately; the wake and budget clauses unchanged, so a parked watched agent
 still needs a free seat to be woken). The turn that takes them already woke the crown
-(`answered your ask` is heard for any worker). A watch is asked for by the person's words to
-the crown, so it is the person's hand-over of that ticket. **When a watch ends** — unwatch, the
+(`answered your ask` is heard for any worker). **Nothing checks that a person asked for the
+watch**: the crown may `watch_ticket` any person's ticket and then send its agent words, so
+under the defaults (watches on, T-732; autonomous, T-610) the `^y` hold on a person's agent
+binds only where a person turned one of the two off. Flagged by the commit's security review
+and accepted by the author (2026-10-12): the crown already acts for the person on the board,
+and a separate send switch is the road if that changes. **When a watch ends** — unwatch, the
 merge, the ticket leaving the board, the row turned off — words still waiting on that ticket go
 back to a person's send (`hold_unwatched_sends`, unless the crown started the agent); a new
 crown already holds every send (`hold_crown_sends`). The held words name the road: "a person
