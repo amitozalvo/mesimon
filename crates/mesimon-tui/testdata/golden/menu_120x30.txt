@@ -26,5 +26,5 @@
 
 
 
-
+ External sessions ∙ agent sessions in this repo that mesimon did not start
  MENU                                                                                                            ? keys

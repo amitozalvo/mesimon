@@ -26,5 +26,5 @@
                            ╰───────────────────────── jk select ∙ enter choose ∙ esc close ─╯
 
 
-
+ Restart on the new build ∙ a newer mesimon is on disk ∙ sessions keep running
  MENU                                                                                                            ? keys

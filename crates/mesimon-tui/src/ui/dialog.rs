@@ -252,18 +252,12 @@ pub(super) fn list(
     );
     // The right edge keeps one cell of margin after it.
     let edge = |row: &ListRow| if row.right.is_empty() { 0 } else { row.right.width() + 1 };
-    // What the cursor's row cut, whole: the words it reveals (its head, or
-    // in a two-line list its detail), else a cut head.
+    // The cursor's row, whole, cut or not, as the board's row names the
+    // cursor card: its head, and in a two-line list its detail after it.
     let cursor = &rows[idx];
-    let head_cut = cursor.head.width() > inner_w.saturating_sub(cursor.lead.width() + edge(cursor));
-    let detail_cut =
-        cursor.detail.as_deref().filter(|d| tall && d.width() > inner_w.saturating_sub(6));
-    let whole = match (tall, detail_cut) {
-        (true, Some(d)) => Some(d),
-        _ => head_cut.then_some(cursor.head.as_str()),
-    };
-    if let Some(text) = whole {
-        whole_row(f, app, whole_y, text);
+    match cursor.detail.as_deref().filter(|d| tall && !d.is_empty()) {
+        Some(d) => whole_row(f, app, whole_y, &format!("{} ∙ {d}", cursor.head), false),
+        None => whole_row(f, app, whole_y, &cursor.head, true),
     }
     let mut lines: Vec<Line<'static>> = Vec::new();
     // Each drawn row is the mouse's to pick (T-716), by the cursor's own
@@ -338,8 +332,13 @@ pub(super) fn list(
 /// the board's hover row's place and its register (`chrome::hover_line`):
 /// a dialog is at most `MAX_W` wide and the frame is the terminal's, so a
 /// checklist item or a link the row cut reads whole without waiting on the
-/// marquee. Past even that width it reveals on the row's own clock.
-fn whole_row(f: &mut Frame, app: &App, y: u16, text: &str) {
+/// marquee. Past even that width a one-line list's head reveals on the
+/// row's own clock (`scroll`); a head and detail together are cut, since
+/// two reveals keyed on different words would reset that clock each frame.
+fn whole_row(f: &mut Frame, app: &App, y: u16, text: &str, scroll: bool) {
+    if text.trim().is_empty() {
+        return;
+    }
     let screen = f.area();
     let rect = Rect { x: screen.x, y, width: screen.width, height: 1 };
     f.render_widget(Clear, rect);
@@ -347,7 +346,8 @@ fn whole_row(f: &mut Frame, app: &App, y: u16, text: &str) {
         f.render_widget(Block::default().style(Style::default().bg(bg)), rect);
     }
     // One cell of page padding at each edge, the advisory row's inset.
-    let words = reveal(app, text, (screen.width as usize).saturating_sub(2));
+    let room = (screen.width as usize).saturating_sub(2);
+    let words = if scroll { reveal(app, text, room) } else { truncate(text, room) };
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(format!(" {words}"), app.theme.dim1()))),
         rect,

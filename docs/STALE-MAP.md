@@ -23782,7 +23782,7 @@ which has no previous sample. A turn's own look (`Look::run`) judges from the bi
 stands, so it is right once the sample has moved the base and not before.
 
 
-## T-741: a list dialog's cut row reads whole above the footer (2026-10-12)
+## T-741: a list dialog's cursor row reads whole above the footer (2026-10-12)
 
 **The ask.** A long checklist item (the SUMMARY dialog) or link (LINKS) was cut at the dialog's
 64 cells, and the marquee walks it too slowly to read. The board already names the cursor card
@@ -23790,11 +23790,12 @@ in full on the row above the footer (`chrome::hover_line`, T-471); the person as
 on the dialogs.
 
 **Built.** `dialog::list`, which every list dialog draws through, writes the cursor row's words
-across the whole row above the footer (`whole_row`) while that row is cut: the words the row
-reveals (its head, or a two-line list's detail), else a cut head. Same inset and ink as the
-hover row; a text past even the terminal's width reveals on the row's own `menu_marquee` clock.
-A row that fits leaves the row to what was there. A list as tall as the screen now stops one
-row short of it, so the dialog never covers its own line; no golden moved. Over the ticket page
-the line lands on the zone's last row, which the dialog's modal anyway. The pointer's row is not
-read: the board's row names the cursor's card, and two reveals keyed on different words would
-reset one clock every frame.
+across the whole row above the footer (`whole_row`), cut or not, as the board's row names the
+cursor card whether its title was cut or not (the author: "show all, not only when it's
+truncated. like ticket titles"): the head, and in a two-line list `head ∙ detail`. Same inset
+and ink as the hover row. A head past even the terminal's width reveals on the row's own
+`menu_marquee` clock; a head with its detail is cut, since its words differ from the detail the
+row reveals and two reveals on different words reset one clock every frame. A list as tall as
+the screen now stops one row short of it, so the dialog never covers its own line. Eight list
+goldens gained that line. Over the ticket page it lands on the zone's last row, which the
+dialog's modal anyway. The pointer's row is not read: the board's row names the cursor's card.

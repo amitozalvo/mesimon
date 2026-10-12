@@ -26,5 +26,5 @@
 
 
 
-
+ Install v0.1.0-alpha.5 ∙ downloads and verifies it ∙ nothing restarts yet
  MENU                                                                                                            ? keys

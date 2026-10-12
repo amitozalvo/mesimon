@@ -6163,11 +6163,11 @@ fn the_cursors_links_row_scrolls_its_cut_into_view() {
     assert!(row(&app).contains("browse/ABC-123│"), "walked to the end: {}", row(&app));
 }
 
-/// A row the dialog cut reads whole on the row above the footer (T-741),
-/// over the board and over the ticket page, and a row that fits leaves it
-/// to what was there.
+/// The cursor's row reads whole on the row above the footer (T-741), over
+/// the board and over the ticket page: one the dialog cut, and one that
+/// fits, as the board's row names the cursor card either way.
 #[test]
-fn the_cursors_cut_row_reads_whole_above_the_footer() {
+fn the_cursors_row_reads_whole_above_the_footer() {
     let head = "url    the Jira ticket ∙ https://jira.example.com/browse/ABC-123";
     for page in [false, true] {
         let mut app = app_links();
@@ -6181,7 +6181,7 @@ fn the_cursors_cut_row_reads_whole_above_the_footer() {
         let Mode::Links { idx, .. } = &mut app.mode else { unreachable!() };
         *idx = 1;
         let rows = render(&app, 120, 30);
-        assert!(!rows[28].contains("url    "), "page {page}: {}", rows[28]);
+        assert_eq!(rows[28].trim(), "ticket T-1 ∙ Decay treatments", "page {page}: {}", rows[28]);
     }
 }
 
