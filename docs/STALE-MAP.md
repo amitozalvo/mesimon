@@ -23941,6 +23941,9 @@ on a conflict the forge reports and not on a base that merely moved, and the ask
 push with --force-with-lease so PR #42 updates`. **The train acts on nothing it has not read**
 (the author's rule): `forge_fresh` is a verdict younger than the agent's last end of turn, or no
 forge on the board at all; before the first probe nothing is fresh and the train waits a bucket.
+Whether a forge reads the board is learned with the flags (`learn_remotes`, a few git reads per
+repository directory, once): three merge-train e2es timed out when the remotes were learned by
+the forge pass alone, since the snapshot's owed row plans on the flags the moment they land.
 
 **Columns.** `ColumnSettings::arrives_on` (`Arrival`: nothing ∙ PR opened ∙ pipeline passes ∙
 merged ∙ deployed to `arrives_env`) moves a ticket on an edge between two forge reads, through
@@ -23985,9 +23988,7 @@ presses, and `^k` opens the first link, not the PR). No notification row for a f
 the feed, the card and the crown carry it. GitLab names no failing job on this road (one more
 call per MR). A GitHub Enterprise host is told from a GitLab one only by which CLI's `auth status`
 passes. The `m` hint on the ticket page still reads `m merge` with a PR open; the daemon's
-sentence answers the press. No rig test: a Sonnet run needs a forge, and the rig's daemon takes
-no stub `gh` yet — the crown's new wake words are the same shape as the merged wake's, and the
-e2e covers the daemon's half.
+sentence answers the press.
 
 **Tests.** `forge_e2e` (a stub `gh` on the daemon's PATH: the PR binds by the ticket's branch,
 its red pipeline reaches the snapshot and refuses a `requires_pipeline` column in its words, `m`
@@ -23999,4 +24000,8 @@ number, the deployments, the name cap), `daemon::forge` (the delta, the edge, th
 cadence, the CLI lookup), `cost` (a `pr create` and its result across two passes), `train` (an
 open PR, a conflict, a stale verdict), `prefs` (both new keys), the keymap laws, goldens
 `settings_behaviour_*`, `settings_appearance_board_60`, `settings_groups_*`, `column_settings_120`,
-`ticket_prs_120`, `board_prs_120`.
+`ticket_prs_120`, `board_prs_120`. The rig's F1 (`ci/rig/tests.toml`; `forge_pr`, `forge_fail`,
+`forge_off` steps put a stub `gh` first on the rig daemon's PATH and write the worker's PR, the
+`woke:<cause>` check reads the feed's wakes): on the real Sonnet, 2026-10-13, PASS in 68 s —
+the board woke the crown `pipeline`, the crown's `ask_agent` reached the worker, which replied
+`noted`. `cargo nextest run --workspace`: 2319 passed.
