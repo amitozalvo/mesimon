@@ -327,7 +327,13 @@ pub fn parse_glab(repo: &str, json: &str) -> Vec<Pr> {
                 _ if v.get("draft").and_then(Value::as_bool) == Some(true) => PrState::Draft,
                 _ => PrState::Open,
             };
-            let merge_oid = ["squash_commit_sha", "merge_commit_sha"]
+            // What is on the target branch (T-754). Under GitLab's default
+            // "merge commit" method a squash still lands as a merge commit
+            // whose second parent is the squash commit, and the MR carries
+            // both shas: the pipeline and the deployments are the merge
+            // commit's. A fast-forward or semi-linear squash has no merge
+            // commit, and the squash sha is then what landed.
+            let merge_oid = ["merge_commit_sha", "squash_commit_sha"]
                 .iter()
                 .filter_map(|k| v.get(k).and_then(Value::as_str))
                 .find(|s| !s.is_empty())
@@ -880,7 +886,18 @@ mod tests {
         assert_eq!(prs[0].pipeline, Pipeline::Unknown, "the list says nothing of the pipeline");
         assert_eq!(prs[0].label(), "!4096");
         assert_eq!(prs[0].updated_ms, 1_791_864_000_000, "+02:00 is two hours earlier in UTC");
-        assert_eq!(prs[1].merge_oid, "sq1", "a squash's sha before the merge commit's");
+        assert_eq!(
+            prs[1].merge_oid, "m1",
+            "the merge commit before the squash commit: under GitLab's default merge method \
+             a squash lands as a merge commit, and that is what is on main (T-754)"
+        );
+        let ff = r#"[{"iid":8,"web_url":"https://gitlab.com/g/p/-/merge_requests/8","state":"merged","source_branch":"z","sha":"s",
+          "merge_commit_sha":null,"squash_commit_sha":"sq2","updated_at":"2026-10-13T04:00:00Z"}]"#;
+        assert_eq!(
+            parse_glab("g/p", ff)[0].merge_oid,
+            "sq2",
+            "a fast-forward or semi-linear squash has no merge commit: the squash sha landed"
+        );
         assert_eq!(
             parse_gitlab_pipelines(r#"[{"status":"manual"}]"#),
             Pipeline::Waiting(String::new())

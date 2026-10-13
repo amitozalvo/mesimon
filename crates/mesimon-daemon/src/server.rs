@@ -7757,8 +7757,11 @@ impl Daemon {
                 BindingStatus::Provisioning => {
                     self.wt_progress.get(tid).map(|(d, t)| format!("{d}/{t}"))
                 }
-                // How the init script went, while it went wrong (T-614).
-                BindingStatus::Attached => b.init.as_ref().and_then(|r| r.detail()),
+                // How the init script went, while it went wrong (T-614);
+                // else a leg whose sample failed (T-754).
+                BindingStatus::Attached => {
+                    b.init.as_ref().and_then(|r| r.detail()).or_else(|| self.leg_trouble(tid))
+                }
                 _ => None,
             },
             path: (b.status == BindingStatus::Attached).then(|| b.path.display().to_string()),
@@ -9345,6 +9348,46 @@ impl Daemon {
         self.worktrees.get(&id).map(|b| b.legs(&self.paths.repo_root, &base)).unwrap_or_default()
     }
 
+    /// The root's default branch, resolved once and forgotten by a fetch
+    /// (T-267). Never asked of a folder root (T-754): a workspace whose
+    /// root is no repository has no branch there for git to name.
+    fn root_base(&mut self) -> Option<String> {
+        if self.base_branch.is_none() && self.paths.repo_root.join(".git").exists() {
+            self.base_branch = worktree::default_branch(&self.paths.repo_root).ok();
+        }
+        self.base_branch.clone()
+    }
+
+    /// Whether a flags pass, the train or a merge needs the root's default
+    /// branch (T-754): a single-repo binding is judged against it, where a
+    /// workspace leg carries its own base (T-368). A workspace whose root
+    /// is a plain folder has none, and every road that gated on
+    /// `base_branch` alone sat still on such a board: no leg ever read
+    /// ahead or merged, by git or by the forge, and nothing said so.
+    fn needs_root_base(&self) -> bool {
+        self.worktrees.values().any(|b| !b.branch.is_empty() && !b.is_workspace())
+    }
+
+    /// The base this ticket's branch is judged against is known (T-754):
+    /// the root's default branch, or the legs' own on a workspace binding.
+    fn base_known_for(&self, ticket: ulid::Ulid) -> bool {
+        self.base_branch.is_some() || self.worktrees.get(&ticket).is_some_and(|b| b.is_workspace())
+    }
+
+    /// The first leg whose last sample failed (T-754), for the ticket page
+    /// to say beside the branch: `api ∙ git rev-list: not a git repository
+    /// …`. A leg that could not be read is never a clean leg.
+    fn leg_trouble(&self, tid: &ulid::Ulid) -> Option<String> {
+        let legs = self.wt_repos.get(tid)?;
+        let leg = legs.iter().find(|l| l.trouble.is_some())?;
+        let trouble = mesimon_core::text::scrub_text(leg.trouble.as_deref()?);
+        Some(if leg.name.is_empty() {
+            trouble
+        } else {
+            format!("{} ∙ {trouble}", worktree::leg_word(&leg.name))
+        })
+    }
+
     /// The ticket's base tip as of the last sample (`""` before one).
     fn base_tip_of(&self, id: ulid::Ulid) -> &str {
         self.wt_agg.get(&id).map_or("", |a| a.base_tip.as_str())
@@ -9610,18 +9653,32 @@ impl Daemon {
                 notified: false,
             };
         }
-        if self.base_branch.is_none() {
-            self.base_branch = worktree::default_branch(&self.paths.repo_root).ok();
-        }
-        let Some(base) = self.base_branch.clone() else {
-            return Response::Merge {
-                outcome: MergeOutcome::Refused,
-                detail: "no default branch found".into(),
-                notified: false,
-            };
+        let workspace = self.worktrees.get(&id).is_some_and(|b| b.is_workspace());
+        // A single-repo branch lands on the root's default branch; a
+        // workspace leg on its own base (T-368), so a folder root with no
+        // branch of its own refuses nothing there (T-754).
+        let base = match self.root_base() {
+            Some(b) => b,
+            None if workspace => String::new(),
+            None => {
+                return Response::Merge {
+                    outcome: MergeOutcome::Refused,
+                    detail: "no default branch found".into(),
+                    notified: false,
+                };
+            }
         };
         let legs = self.legs_of(id);
-        let workspace = self.worktrees.get(&id).is_some_and(|b| b.is_workspace());
+        // The base a sentence names: the root's, or on a folder root the
+        // legs' own.
+        let base_word = if base.is_empty() {
+            legs.iter()
+                .map(|l| l.base.clone())
+                .find(|b| !b.is_empty())
+                .unwrap_or_else(|| "main".into())
+        } else {
+            base.clone()
+        };
         // A branch whose tip never left the creation base is trivially an
         // ancestor of main — merge_check would call it "already merged".
         // Truth: there is nothing to merge yet (dogfood 2026-08-30).
@@ -9647,7 +9704,7 @@ impl Daemon {
                 .map(|a| &a.merged_in)
                 .filter(|s| !s.is_empty())
                 .cloned()
-                .unwrap_or_else(|| base.clone());
+                .unwrap_or_else(|| base_word.clone());
             return Response::Merge {
                 outcome: MergeOutcome::AlreadyMerged,
                 detail: format!("{branch} is already in {landed}"),
@@ -9683,7 +9740,7 @@ impl Daemon {
             },
             worktree::LegMerge::Already => Response::Merge {
                 outcome: MergeOutcome::AlreadyMerged,
-                detail: format!("{branch} is already in {base}"),
+                detail: format!("{branch} is already in {base_word}"),
                 notified: false,
             },
             worktree::LegMerge::NeedsRebase(moved) => Response::Merge {
@@ -9760,14 +9817,12 @@ impl Daemon {
         if by.is_human() {
             self.train.hand_touched(id);
         }
-        let Some(b) = self.worktrees.get(&id) else {
+        if !self.worktrees.contains_key(&id) {
             return Response::Err { message: "no worktree on this ticket".into() };
-        };
-        let branch = b.branch.clone();
-        if self.base_branch.is_none() {
-            self.base_branch = worktree::default_branch(&self.paths.repo_root).ok();
         }
-        let mut base = self.base_branch.clone().unwrap_or_else(|| "main".into());
+        let mut base = self.root_base().unwrap_or_else(|| "main".into());
+        let b = &self.worktrees[&id];
+        let branch = b.branch.clone();
         // On a workspace ticket (T-368) the base is per leg: the sentence
         // names the legs that moved, `main (api), main (web)`, or every
         // touched leg where the sample has not said which yet.
@@ -10066,7 +10121,7 @@ impl Daemon {
         if !self.train.is_armed()
             || self.worktrees_barred
             || self.worktrees.is_empty()
-            || self.base_branch.is_none()
+            || (self.base_branch.is_none() && self.needs_root_base())
         {
             return false;
         }
@@ -13269,10 +13324,14 @@ impl Daemon {
             self.wt_fresh.clear();
             return;
         }
-        if self.base_branch.is_none() {
-            self.base_branch = worktree::default_branch(&self.paths.repo_root).ok();
-        }
-        if self.base_branch.is_none() {
+        // A workspace leg carries its own base, so a folder root with no
+        // branch of its own samples its legs all the same (T-754); only a
+        // single-repo binding waits on the root's, and the journal says so.
+        if self.root_base().is_none() && self.needs_root_base() {
+            self.journal.line(&format!(
+                "worktree flags: no default branch at {}; single-repo bindings unsampled",
+                self.paths.repo_root.display()
+            ));
             return;
         }
         let queries = self.wt_queries(true, None);
@@ -13684,17 +13743,25 @@ impl Daemon {
         let mut queries = self.wt_queries(false, None);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let base = match base.or_else(|| worktree::default_branch(&repo).ok()) {
-                Some(b) => b,
-                None => {
-                    let _ = tx.send(Msg::WorktreeFlags(gen, Vec::new()));
-                    return;
-                }
-            };
+            // The root's default branch, for the single-repo legs judged
+            // against it; a workspace leg carries its own, so a folder
+            // root with no branch samples its legs all the same (T-754).
+            let base = base.or_else(|| {
+                repo.join(".git").exists().then(|| worktree::default_branch(&repo).ok()).flatten()
+            });
             for q in &mut queries {
                 if q.base.is_empty() {
-                    q.base = base.clone();
+                    if let Some(b) = &base {
+                        q.base = b.clone();
+                    }
                 }
+            }
+            queries.retain(|q| !q.base.is_empty());
+            if queries.is_empty() {
+                let _ = tx.send(Msg::WorktreeFlags(gen, Vec::new()));
+                return;
+            }
+            for q in &mut queries {
                 // The upstream ref leaves the writer thread with the base,
                 // and on the same terms: asked here when the cache has no
                 // answer yet.
@@ -13821,13 +13888,22 @@ impl Daemon {
             for leg in b.legs(&self.paths.repo_root, &base) {
                 let Some(s) = samples.iter().find(|s| s.name == leg.name && s.base == leg.base)
                 else {
-                    // Not sampled this pass: carry the old leg forward.
-                    if let Some(old) = self
+                    // Not sampled this pass: carry the old leg forward. A
+                    // leg no query has ever reached says so (T-754): never
+                    // a clean leg.
+                    match self
                         .wt_repos
                         .get(&t)
                         .and_then(|old| old.iter().find(|l| l.name == leg.name))
                     {
-                        legs.push(old.clone());
+                        Some(old) => legs.push(old.clone()),
+                        None => legs.push(worktree::RepoFlags {
+                            name: leg.name.clone(),
+                            base: leg.base.clone(),
+                            base_oid: leg.base_oid.clone(),
+                            trouble: Some("not sampled".into()),
+                            ..Default::default()
+                        }),
                     }
                     continue;
                 };
@@ -13888,8 +13964,8 @@ impl Daemon {
             let same_legs = self.wt_repos.get(&t).is_some_and(|old| {
                 old.len() == legs.len()
                     && old.iter().zip(&legs).all(|(o, n)| {
-                        (o.ahead, o.merged, o.needs_rebase, o.conflict)
-                            == (n.ahead, n.merged, n.needs_rebase, n.conflict)
+                        (o.ahead, o.merged, o.needs_rebase, o.conflict, &o.trouble)
+                            == (n.ahead, n.merged, n.needs_rebase, n.conflict, &n.trouble)
                     })
             });
             changed |= !same_legs;

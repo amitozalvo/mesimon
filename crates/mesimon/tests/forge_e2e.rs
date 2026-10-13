@@ -692,3 +692,206 @@ fn the_prs_survive_a_restart_and_the_first_pass_lists() {
     assert_eq!(feed_count(&h, "pr", id), 1, "the merge, and no PR said over");
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
+
+/// The stub `glab`: `auth status` passes, `api … user` names the account,
+/// `mr list` prints the file the test writes, and `api …/pipelines?sha=X`
+/// prints `<pipelines file>.X` where one exists, else no pipeline — so the
+/// merge commit's sha has a pipeline and the squash commit's has none,
+/// which is the lab's shape (T-754).
+const GLAB_STUB: &str = r#"#!/bin/sh
+case "$1 $2" in
+  "auth status") exit 0 ;;
+  "mr list") cat "$MSMN_GLAB_MRS" 2>/dev/null || echo '[]' ;;
+  "api --hostname")
+    case "$4" in
+      user) echo '{"username":"me"}' ;;
+      *pipelines?sha=*)
+        sha="${4#*sha=}"; sha="${sha%%&*}"
+        if [ -f "$MSMN_GLAB_PIPELINES.$sha" ]; then cat "$MSMN_GLAB_PIPELINES.$sha"; else echo '[]'; fi ;;
+      *) echo '[]' ;;
+    esac ;;
+  *) echo "stub glab: $*" >&2; exit 1 ;;
+esac
+"#;
+
+/// One merged MR as `glab mr list --output json` prints it under GitLab's
+/// default merge method: a squash lands as a merge commit whose second
+/// parent is the squash commit, so the MR carries both shas.
+fn merged_mr_json(branch: &str, tip: &str, merge_sha: &str, squash_sha: &str) -> String {
+    format!(
+        r#"[{{"iid":1,"web_url":"https://gitlab.example.com/lab/forge-lab-api/-/merge_requests/1","state":"merged",
+          "source_branch":"{branch}","sha":"{tip}","merge_commit_sha":"{merge_sha}","squash_commit_sha":"{squash_sha}",
+          "draft":false,"has_conflicts":false,"detailed_merge_status":"not_open","updated_at":"2026-10-13T12:00:00Z"}}]"#
+    )
+}
+
+/// A workspace whose root is a plain folder (T-754, the forge lab's shape):
+/// two nested repositories and no repository at the root, so the root has
+/// no default branch. A leg with commits reads ahead all the same, an MR
+/// merged at that tip folds the leg to `main (MR !1)` with the merge
+/// commit — not the squash commit — as what landed, its pipeline read off
+/// that commit, and the crown hears the merge.
+#[test]
+fn a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_commit() {
+    let stub_dir = std::env::temp_dir().join(format!("msmn-forge-folder-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&stub_dir);
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    let glab = stub_dir.join("glab");
+    std::fs::write(&glab, GLAB_STUB).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&glab, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mrs_file = stub_dir.join("mrs.json");
+    let pipelines = stub_dir.join("pipelines");
+    write(&mrs_file, "[]");
+    let path_var = format!(
+        "{}:{}",
+        stub_dir.display(),
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+    );
+    let Some(h) = Harness::boot_with_env(
+        "forge_folder",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GLAB_MRS", &mrs_file.display().to_string()),
+            ("MSMN_GLAB_PIPELINES", &pipelines.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    // The root stays a folder: no `init_repo` on it.
+    let root = h.repo.clone();
+    init_repo(&root.join("api"), "server.ts", "one\n");
+    init_repo(&root.join("web"), "page.tsx", "hello\n");
+    git(
+        &root.join("api"),
+        &["remote", "add", "origin", "https://gitlab.example.com/lab/forge-lab-api.git"],
+    );
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("forge_folder");
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    let turn = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let create = |c: &mut TestClient, title: &str| match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: title.into(),
+        workspace: None,
+        tier: None,
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("create: {other:?}"),
+    };
+
+    // The crown, and a worker it starts on a worktree of the workspace.
+    let a = create(&mut c, "coordinate");
+    let w = create(&mut c, "lab worker");
+    let kw = c.board().ticket(w).unwrap().short_key.clone();
+    let sa = match c.request(Command::SpawnSession {
+        ticket: a,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn: {other:?}"),
+    };
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(Duration::from_millis(500));
+    turn(&mut c, sa);
+    let seen = match c
+        .send(Principal::Agent { session: sa }, Command::AgentReadTicket { key: kw.clone() })
+    {
+        Response::AgentTicket { ticket } => ticket.seen,
+        other => panic!("read: {other:?}"),
+    };
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    let wt = wait_attached(&mut c, w);
+    let names: Vec<&str> = wt.repos.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, ["api", "web"], "a folder root has no root leg");
+    let container = PathBuf::from(wt.path.clone().expect("a path"));
+    wait_until(Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    std::thread::sleep(Duration::from_millis(500));
+
+    // ---- three commits in api: the leg reads ahead 3 -----------------------
+    let api = container.join("api");
+    for n in 1..=3 {
+        std::fs::write(api.join(format!("work{n}.ts")), format!("work {n}\n")).unwrap();
+        git(&api, &["add", "."]);
+        git(&api, &["commit", "-qm", &format!("work {n}")]);
+    }
+    let tip = git(&api, &["rev-parse", "HEAD"]).trim().to_string();
+    wait_until(Duration::from_secs(20), "the api leg to read ahead 3", || {
+        wt_of(&mut c, w).is_some_and(|w| {
+            w.ahead == 3
+                && w.repos.iter().any(|r| r.name == "api" && r.ahead == 3 && !r.merged)
+                && w.repos.iter().any(|r| r.name == "web" && r.ahead == 0)
+        })
+    });
+    let worker = format!("{kw} \"lab worker\"");
+    turn(&mut c, ws);
+    wait_until(Duration::from_secs(10), "the delivery's wake", || {
+        lines_with(&format!("{worker} delivered")).len() == 1
+    });
+    turn(&mut c, sa);
+
+    // ---- the MR merges on the forge, squash under "merge commit" ----------
+    let merge_sha = "25559fabaea42e44173d2d161dd893f949a2701b";
+    let squash_sha = "65f00df496d207427db655a37f264463a75d2f84";
+    write(&pipelines.with_extension(merge_sha), r#"[{"status":"success"}]"#);
+    write(&mrs_file, &merged_mr_json(&wt.branch, &tip, merge_sha, squash_sha));
+    wait_until(Duration::from_secs(20), "the leg to read merged by the forge", || {
+        wt_of(&mut c, w)
+            .is_some_and(|w| w.merged && w.repos.iter().any(|r| r.name == "api" && r.merged))
+    });
+    let after = wt_of(&mut c, w).unwrap();
+    assert_eq!(after.merged_in, "main (MR !1)", "landed on the leg's base, by the forge's word");
+    assert_eq!(after.merged_oid, merge_sha, "what is on main is the merge commit, not the squash");
+    assert!(!after.needs_rebase, "{after:?}");
+    assert!(after.repos.iter().any(|r| r.name == "web" && !r.merged && r.ahead == 0), "{after:?}");
+    wait_until(Duration::from_secs(20), "the merge commit's pipeline", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == w && p.number == 1 && p.pipeline == "passed")
+    });
+    let pr = prs_of(&mut c).into_iter().find(|p| p.ticket == w).unwrap();
+    assert_eq!((pr.forge.as_str(), pr.state.as_str()), ("gitlab", "merged"));
+    assert_eq!(pr.merged_oid, merge_sha);
+
+    // ---- the crown hears the merge --------------------------------------
+    wait_until(Duration::from_secs(20), "the merged wake", || {
+        !lines_with(&format!("{worker} merged (")).is_empty()
+    });
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}

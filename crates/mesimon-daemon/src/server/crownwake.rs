@@ -757,17 +757,29 @@ impl Look {
     fn run(self, worker: ulid::Ulid) -> Found {
         match self {
             Look::Branch { binding, repo, base, mut queries } => {
-                let Some(base) = base.or_else(|| worktree::default_branch(&repo).ok()) else {
-                    return Found::Unknown;
-                };
+                // The root's default branch for a single-repo leg; a
+                // workspace leg carries its own, so a folder root with no
+                // branch is looked at all the same (T-754).
+                let base = base.or_else(|| {
+                    repo.join(".git")
+                        .exists()
+                        .then(|| worktree::default_branch(&repo).ok())
+                        .flatten()
+                });
                 for q in &mut queries {
                     if q.base.is_empty() {
-                        q.base = base.clone();
+                        if let Some(b) = &base {
+                            q.base = b.clone();
+                        }
                     }
+                }
+                queries.retain(|q| !q.base.is_empty());
+                if queries.is_empty() {
+                    return Found::Unknown;
                 }
                 let samples = worktree::compute_repo_flags(&queries);
                 let legs: Vec<worktree::RepoFlags> = binding
-                    .legs(&repo, &base)
+                    .legs(&repo, &base.unwrap_or_default())
                     .iter()
                     .filter_map(|leg| {
                         let s =
@@ -1150,7 +1162,7 @@ impl Daemon {
     /// "Will it", not "has it": the train acts on its next sample, seconds
     /// after the turn's end.
     pub(super) fn train_takes(&self, worker: ulid::Ulid, look: &BranchLook) -> bool {
-        if !self.train.is_armed() || self.worktrees_barred || self.base_branch.is_none() {
+        if !self.train.is_armed() || self.worktrees_barred || !self.base_known_for(worker) {
             return false;
         }
         let Some(t) = self.board.ticket(worker).filter(|t| !t.is_archived()) else {

@@ -429,9 +429,10 @@ pub fn ensure_root(paths: &Paths) -> Result<PathBuf> {
 fn git(repo: &Path, args: &[&str]) -> Result<String> {
     let out = crate::git::git(repo).args(args).output().context("run git")?;
     if !out.status.success() {
+        // Named by its verb, never by a leading flag (`--no-optional-locks`).
         bail!(
             "git {} failed: {}",
-            args.first().copied().unwrap_or(""),
+            args.iter().copied().find(|a| !a.starts_with('-')).unwrap_or(""),
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
@@ -1412,6 +1413,10 @@ pub struct Flags {
     pub merged_oid: String,
     /// The verdict to remember for the next pass.
     pub seen: Option<ContentSeen>,
+    /// Why this branch could not be read, when it could not (T-754): git's
+    /// first line. A leg that failed to sample is never a clean leg; the
+    /// ticket page says this beside the branch.
+    pub trouble: Option<String>,
 }
 
 /// Every binding's flags, sampled together, plus the base branch they were
@@ -1432,7 +1437,11 @@ pub struct WtFlags {
 /// remote-tracking ref shares the name — and the upstream tip is returned
 /// separately rather than under `origin/main` in the map, where a local
 /// branch of that name would collide with it.
-fn branch_tips(repo: &Path, upstream: Option<&str>) -> (HashMap<String, Tip>, Tip) {
+/// Every local branch's tip and the upstream's, in one read — and the
+/// read's failure in one line where it failed (T-754): a repository git
+/// cannot open answers with no tips at all, which read as a branch with
+/// nothing ahead until the leg said so.
+fn branch_tips(repo: &Path, upstream: Option<&str>) -> (HashMap<String, Tip>, Tip, Option<String>) {
     let up_ref = upstream.map(|u| format!("refs/remotes/{u}"));
     let mut args = vec![
         "for-each-ref",
@@ -1444,22 +1453,39 @@ fn branch_tips(repo: &Path, upstream: Option<&str>) -> (HashMap<String, Tip>, Ti
     }
     let mut tips: HashMap<String, Tip> = HashMap::new();
     let mut up_tip = Tip::default();
-    if let Ok(out) = git_read(repo, &args) {
-        for line in out.lines() {
-            let mut parts = line.split(' ');
-            let (Some(name), Some(oid)) = (parts.next(), parts.next()) else { continue };
-            let tip = Tip {
-                oid: oid.to_string(),
-                time: parts.next().and_then(|t| t.trim().parse().ok()).unwrap_or(0),
-            };
-            if let Some(short) = name.strip_prefix("refs/heads/") {
-                tips.insert(short.to_string(), tip);
-            } else if up_ref.as_deref() == Some(name) {
-                up_tip = tip;
+    let mut trouble = None;
+    match git_read(repo, &args) {
+        Ok(out) => {
+            for line in out.lines() {
+                let mut parts = line.split(' ');
+                let (Some(name), Some(oid)) = (parts.next(), parts.next()) else { continue };
+                let tip = Tip {
+                    oid: oid.to_string(),
+                    time: parts.next().and_then(|t| t.trim().parse().ok()).unwrap_or(0),
+                };
+                if let Some(short) = name.strip_prefix("refs/heads/") {
+                    tips.insert(short.to_string(), tip);
+                } else if up_ref.as_deref() == Some(name) {
+                    up_tip = tip;
+                }
             }
         }
+        Err(e) => trouble = Some(git_trouble(&e)),
     }
-    (tips, up_tip)
+    (tips, up_tip, trouble)
+}
+
+/// A failed git read as one line for the ticket page: `git rev-list: not a
+/// git repository (or any of the parent directories): .git`. The first
+/// line of git's own words, its `fatal:` prefix dropped.
+fn git_trouble(e: &anyhow::Error) -> String {
+    let text = e.to_string();
+    let line = text.lines().next().unwrap_or_default();
+    line.replacen(" failed: fatal: ", ": ", 1).replacen(" failed: error: ", ": ", 1).replacen(
+        " failed: ",
+        ": ",
+        1,
+    )
 }
 
 /// A ref's tip and the commit time on it.
@@ -1560,7 +1586,7 @@ pub fn compute_flags(
     upstream: Option<&str>,
     inputs: &[FlagInput],
 ) -> WtFlags {
-    let (tips, upstream_tip) = branch_tips(repo, upstream);
+    let (tips, upstream_tip, read_trouble) = branch_tips(repo, upstream);
     let base = base.to_string();
     let base_tip = tips.get(&base).cloned().unwrap_or_default();
     // ONE target for the pass (T-267): the ref a merged PR lands on where
@@ -1583,12 +1609,14 @@ pub fn compute_flags(
         .filter(|i| !i.branch.is_empty())
         .map(|i| {
             let tip = tips.get(&i.branch).cloned().unwrap_or_default();
-            let counts = git_read(
+            let read = git_read(
                 repo,
                 &["rev-list", "--left-right", "--count", &format!("{base}...{}", i.branch)],
-            )
-            .ok()
-            .and_then(|s| {
+            );
+            // A read that failed is the leg's word (T-754), never a clean
+            // leg: the tips' failure first, else this count's.
+            let trouble = read_trouble.clone().or_else(|| read.as_ref().err().map(git_trouble));
+            let counts = read.ok().and_then(|s| {
                 let mut it = s.split_whitespace().map(|n| n.parse::<u32>().ok());
                 Some((it.next()??, it.next()??))
             });
@@ -1639,6 +1667,7 @@ pub fn compute_flags(
                 merged_in,
                 merged_oid,
                 seen,
+                trouble,
             }
         })
         .collect();
@@ -1801,7 +1830,7 @@ pub fn compute_repo_flags(queries: &[RepoQuery]) -> Vec<RepoSample> {
 
 /// One leg's flags as the daemon keeps them between passes: the snapshot's
 /// per-repo row, `ticket_merged`'s content memo, and `aggregate`'s input.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepoFlags {
     pub name: String,
     pub base: String,
@@ -1815,6 +1844,9 @@ pub struct RepoFlags {
     pub merged_in: String,
     pub merged_oid: String,
     pub content: Option<ContentSeen>,
+    /// Why the leg's last sample failed, when it did (T-754): git's words,
+    /// or `not sampled` for a leg no query reached. Never a clean leg.
+    pub trouble: Option<String>,
 }
 
 impl RepoFlags {
@@ -1842,6 +1874,7 @@ impl RepoFlags {
             merged_in: f.merged_in.clone(),
             merged_oid: f.merged_oid.clone(),
             content: f.seen.clone(),
+            trouble: f.trouble.clone(),
         }
     }
 
@@ -2670,6 +2703,7 @@ mod tests {
                 merged_in: f.merged_in.clone(),
                 merged_oid: f.merged_oid.clone(),
                 content: f.seen.clone(),
+                trouble: None,
             }
         };
         // Another ticket lands; both branches are sampled behind it.
@@ -3004,8 +3038,96 @@ mod tests {
         assert!(by("landed").merged && by("landed").ahead == 0);
         assert!(!by("stale").merged && by("stale").ahead == 0 && by("stale").needs_rebase);
         assert!(!by("gone").merged && by("gone").ahead == 0 && by("gone").needs_rebase);
+        assert!(by("gone").trouble.is_some(), "a branch git cannot count says so");
+        assert!(by("work").trouble.is_none());
         assert!(got.conflicts.is_empty());
         std::fs::remove_dir_all(&repo).ok();
+    }
+
+    /// A workspace whose root is a plain folder (T-754): two repositories
+    /// nested under it and none at the root, so the queries are the legs'
+    /// own, one per repository, each against its own base. A leg three
+    /// commits ahead reads so with its tip filled, an untouched leg reads
+    /// nothing ahead, and a directory git cannot open answers with its
+    /// trouble — never as a clean leg.
+    #[test]
+    fn a_folder_workspaces_legs_sample_on_their_own_bases() {
+        if !have_git() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("msmn-wt-folder-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&root).unwrap();
+        let run = |dir: &Path, args: &[&str]| {
+            let ok = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+            assert!(ok.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&ok.stderr));
+        };
+        let init = |name: &str| -> PathBuf {
+            let dir = root.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            run(&dir, &["init", "-q", "-b", "main"]);
+            run(&dir, &["config", "user.email", "t@t"]);
+            run(&dir, &["config", "user.name", "t"]);
+            std::fs::write(dir.join("a.txt"), "hello\n").unwrap();
+            run(&dir, &["add", "."]);
+            run(&dir, &["commit", "-qm", "init"]);
+            dir
+        };
+        let (api, web) = (init("api"), init("web"));
+        assert!(!root.join(".git").exists(), "the root stays a folder");
+        // A folder with no repository in it: the lab's shape for a leg
+        // whose checkout is gone.
+        std::fs::create_dir_all(root.join("gone")).unwrap();
+        let branch = "msmn/T-1-fix-thing";
+        let api_base = branch_tip(&api, "main");
+        run(&api, &["checkout", "-q", "-b", branch]);
+        for n in 1..=3 {
+            std::fs::write(api.join(format!("work{n}.txt")), format!("work {n}\n")).unwrap();
+            run(&api, &["add", "."]);
+            run(&api, &["commit", "-qm", &format!("work {n}")]);
+        }
+        let web_base = branch_tip(&web, "main");
+        run(&web, &["branch", branch]);
+        let input = |base_oid: &str| {
+            vec![FlagInput {
+                ticket: ulid::Ulid(1),
+                branch: branch.into(),
+                base_oid: base_oid.into(),
+                seen: None,
+            }]
+        };
+        let query = |name: &str, repo: PathBuf, base_oid: &str| RepoQuery {
+            name: name.into(),
+            repo,
+            base: "main".into(),
+            upstream: None,
+            inputs: input(base_oid),
+        };
+        let queries = vec![
+            query("api", api.clone(), &api_base),
+            query("web", web.clone(), &web_base),
+            query("gone", root.join("gone"), ""),
+        ];
+        let samples = compute_repo_flags(&queries);
+        assert_eq!(samples.len(), 3);
+        let api_f = &samples[0].flags.flags[0];
+        assert_eq!(api_f.ahead, 3, "{api_f:?}");
+        assert_eq!(api_f.tip, branch_tip(&api, branch));
+        assert!(!api_f.tip.is_empty() && !api_f.merged && !api_f.needs_rebase);
+        assert_eq!(api_f.trouble, None);
+        assert_eq!(samples[0].flags.base_tip, api_base);
+        let web_f = &samples[1].flags.flags[0];
+        assert!(web_f.ahead == 0 && !web_f.merged && web_f.trouble.is_none(), "{web_f:?}");
+        assert_eq!(web_f.tip, web_base);
+        let gone_f = &samples[2].flags.flags[0];
+        assert!(
+            gone_f.trouble.as_deref().is_some_and(|t| t.contains("not a git repository")),
+            "{:?}",
+            gone_f.trouble
+        );
+        assert!(gone_f.tip.is_empty() && gone_f.ahead == 0, "{gone_f:?}");
+        assert!(samples[2].flags.base_tip.is_empty());
+        std::fs::remove_dir_all(&root).ok();
     }
 
     // ---- workspace worktrees: one leg per repo (T-368) ------------------------
@@ -3345,6 +3467,7 @@ mod tests {
             merged_in: String::new(),
             merged_oid: String::new(),
             content: None,
+            trouble: None,
         }
     }
 
@@ -3440,6 +3563,7 @@ mod tests {
                     merged_in: f.merged_in.clone(),
                     merged_oid: f.merged_oid.clone(),
                     content: f.seen.clone(),
+                    trouble: None,
                 }
             })
             .collect();

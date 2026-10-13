@@ -24278,3 +24278,65 @@ until the next note landed. Narration was never the problem (T-604 reads it).
 **Tests.** Daemon `the_last_words_outlive_any_amount_of_tool_traffic` (600 KiB of tool traffic
 carried, a half-written record, a fresh read 400 KiB deep, a shorter and a longer rewrite); TUI
 `test_preview_pages_a_long_reply` holds the longer rewrite on the card.
+
+## A GitLab squash reads the wrong merge commit, and a folder workspace's legs never sample (T-754, 2026-10-13, follow-up to T-739)
+
+Seen on T-739's forge lab (`~/Documents/code/forge-lab`: a folder root with legs `api`, `web` on
+gitlab.com and `gh` on github.com). The crown merged MR !1 of the api leg (a squash, under the
+project's default merge method) and waited for its `merged` wake, which never came. Two faults,
+one under the other.
+
+**GitLab's merge method decides which sha landed.** Under the default "merge commit" method a
+squash still lands as a merge commit whose second parent is the squash commit: the MR carries
+both `merge_commit_sha` (25559fa on the lab, with the main pipeline and the staging deployment)
+and `squash_commit_sha` (65f00df, no pipeline, no deployment), and what is on main is the merge
+commit. `parse_glab` took the squash sha first, so the merged MR read `pipeline: none` with no
+environments, and a column that arrives on a passed pipeline or a deployment never took the
+ticket. Now `merge_commit_sha` first, `squash_commit_sha` second: a fast-forward or semi-linear
+squash has a null merge commit, and the squash sha is then what landed. GitHub's
+`mergeCommit.oid` is one field and was never the wrong way round.
+
+**A folder root has no default branch, and every flags road gated on it.** `Daemon::base_branch`
+is the root checkout's default branch, what a single-repo binding is judged against. A workspace
+leg carries its own base (T-368), and a workspace whose root is a plain folder — the lab's
+shape: `is_meta == false` at provisioning, no root leg — has no branch at the root for
+`default_branch` to name. `refresh_worktree_flags` returned on `base_branch.is_none()`, the
+tick's worker sent an empty sample that `on_worktree_flags` dropped, the train's look
+(`queue_ticket_flags`), `train_could_take`, `train_takes`, `train_pass` and the crown's turn
+probe (`Look::run`) all returned on the same test, and `merge_ticket` refused `no default branch
+found`. So no leg of such a board was ever sampled: `wt_repos` stayed empty, the snapshot's
+per-repo rows fell back to `ahead 0 ∙ merged false ∙ needs_rebase false` (nothing on the wire
+told that from a clean leg), `forge_fold_legs` had no leg to fold, and the git road's patch-id
+never ran. The e2e failed first exactly there: a folder root with two nested repositories, a leg
+three commits ahead, the snapshot reading `ahead 0` until the wait ran out.
+
+- `needs_root_base` says whether anything on the board is judged against the root's branch (a
+  single-repo binding with a branch); `base_known_for(ticket)` is the per-ticket form (the root's
+  branch, or a workspace binding's own legs). The flags pass, the train pass and the two train
+  gates ask those instead of `base_branch` alone; the three worker roads fill a single-repo
+  query's base where the root's is known and drop the ones left with none, so a workspace leg
+  samples whichever way the root reads. `merge_ticket` takes the root's branch for a single-repo
+  binding and the legs' own on a workspace (`base_word` names one for the already-merged
+  sentence).
+- `root_base` resolves the root's branch once and never asks git of a folder root (`.git`
+  absent).
+- The journal says when a pass is skipped for want of the root's branch on a board that needs
+  it (`worktree flags: no default branch at <root>; single-repo bindings unsampled`).
+
+**A leg that failed to sample is never a clean leg.** `Flags`/`RepoFlags` carry `trouble`: git's
+first line when `for-each-ref` or the `rev-list` count failed (`git rev-list: not a git
+repository …`; a branch git cannot count carries it too), and `not sampled` for a leg no query
+reached (a workspace leg recorded with no base). `worktree_item` puts the first leg's trouble in
+the row's `detail`, which the ticket page already draws beside the branch (`api ∙ git rev-list:
+…`), after an init script's own detail; a change of trouble is news the sample broadcasts.
+`git()`'s refusal names its verb rather than a leading `--no-optional-locks`.
+
+**Tests.** Core `glab_json_reads_into_a_pr_and_its_pipeline_comes_by_sha` (the order, and a null
+merge commit); daemon `a_folder_workspaces_legs_sample_on_their_own_bases` (two repositories
+under a folder, api three ahead with its tip, web untouched, a non-repo folder's trouble),
+`compute_flags_agrees_with_the_single_question_helpers` (a lost branch's trouble); e2e
+`forge_e2e::a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_commit`
+(a `glab` stub, a folder root, legs `api`/`web` and no root leg, ahead 3, the MR merged at the
+tip folding to `main (MR !1)` with the merge commit as `merged_oid` and its pipeline `passed`
+while the squash commit's has none, the crown's merged wake). The lab itself is left as it was;
+its daemon runs main's build until the merge.

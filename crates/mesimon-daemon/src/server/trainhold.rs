@@ -63,7 +63,7 @@ impl Daemon {
             *again = true;
             return;
         }
-        let Some(base) = self.base_branch.clone() else { return };
+        let base = self.base_branch.clone();
         let mut queries = self.wt_queries(false, Some(ticket));
         if queries.is_empty() {
             return;
@@ -75,11 +75,18 @@ impl Daemon {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             // The board's sample's terms (`queue_worktree_flags`): the base
-            // and the upstream filled in here where the writer had none.
+            // and the upstream filled in here where the writer had none. A
+            // single-repo leg with no base known is not judged this look;
+            // a workspace leg carries its own (T-754).
             for q in &mut queries {
                 if q.base.is_empty() {
-                    q.base = base.clone();
+                    if let Some(b) = &base {
+                        q.base = b.clone();
+                    }
                 }
+            }
+            queries.retain(|q| !q.base.is_empty());
+            for q in &mut queries {
                 if !cached.contains_key(&q.name) {
                     q.upstream = worktree::upstream_base(&q.repo, &q.base);
                 }
@@ -122,7 +129,7 @@ impl Daemon {
     /// person has not kept for their own merge. Everything the flags decide
     /// is the look's.
     fn train_could_take(&self, ticket: ulid::Ulid) -> bool {
-        if !self.train.is_armed() || self.worktrees_barred || self.base_branch.is_none() {
+        if !self.train.is_armed() || self.worktrees_barred || !self.base_known_for(ticket) {
             return false;
         }
         let Some(t) = self.board.ticket(ticket).filter(|t| !t.is_archived()) else {
