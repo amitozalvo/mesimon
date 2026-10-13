@@ -644,6 +644,20 @@ pub fn merged_at<'a>(set: &'a [Pr], repo: &str, tip: &str) -> Option<&'a Pr> {
     (newest.state == PrState::Merged && !tip.is_empty() && newest.head_oid == tip).then_some(newest)
 }
 
+/// The PR a ticket's merge waits on (T-774): the newest open one, on any
+/// repository and any branch. While one is open the ticket's work has not
+/// landed, whatever its branch reads: a follow-up MR after the branch merged
+/// holds the merge gate as it holds the train.
+pub fn holding(set: &[Pr]) -> Option<&Pr> {
+    set.iter().find(|p| p.state.is_open())
+}
+
+/// Why the merge is the forge's (T-739), in the one sentence `m`, the crown,
+/// the train and the merge gate say: `MR !2 open — merge it on GitLab`.
+pub fn open_refusal(pr: &Pr) -> String {
+    format!("{} {} open — merge it on {}", pr.forge.noun(), pr.label(), pr.forge.name())
+}
+
 /// The worst pipeline over the set's open PRs; the merged commit's once
 /// nothing is open and one is merged (the caller has read it onto the PR);
 /// `Unknown` with no PR.
@@ -1189,5 +1203,36 @@ mod tests {
         // Unbound and nothing opened here: nothing to pass.
         assert_eq!(entry_refusal(None, Some(false)), None);
         assert_eq!(entry_refusal(Some(&[]), Some(false)), None);
+    }
+
+    /// T-774: a branch merged by its first MR, then a second MR opened from
+    /// another branch on the same ticket. The open one holds the merge
+    /// whichever repository or branch it is on, and says so in the merge
+    /// refusal's words.
+    #[test]
+    fn an_open_pr_on_a_merged_ticket_holds_the_merge() {
+        let gl = |mut p: Pr, head_ref: &str| {
+            p.forge = Forge::GitLab;
+            p.head_ref = head_ref.into();
+            p
+        };
+        let first = gl(pr("g/app", 1, PrState::Merged, "tip1", 10), "msmn/A1-x");
+        let second = gl(pr("g/app", 2, PrState::Open, "tip2", 20), "fix/greeting");
+        let set = ticket_set(vec![first.clone(), second.clone()]);
+        let held = holding(&set).expect("the open MR holds");
+        assert_eq!(held.number, 2);
+        assert_eq!(open_refusal(held), "MR !2 open — merge it on GitLab");
+
+        // On another repository: the branch's own repo reads merged at its
+        // tip, and the ticket is held all the same.
+        let other = gl(pr("g/api", 3, PrState::Draft, "tip3", 30), "fix/api");
+        let set = ticket_set(vec![first.clone(), other]);
+        assert!(merged_at(&set, "g/app", "tip1").is_some());
+        assert_eq!(holding(&set).map(|p| p.number), Some(3), "a draft is open");
+
+        // Merged, the follow-up holds nothing.
+        let mut merged = second;
+        merged.state = PrState::Merged;
+        assert_eq!(holding(&ticket_set(vec![first, merged])), None);
     }
 }

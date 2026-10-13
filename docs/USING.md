@@ -496,7 +496,9 @@ follow-up fix after a merge reads as a new open PR until it lands.
 A PR merged on the forge reads merged here without a pull, squashed, rebased or not, and the
 ticket page says `merged into main (PR #42) as 1a2b3c4`. While a PR is open, `m` and the merge
 train leave the merge to the forge; the train asks the agent to rebase only when the forge reports
-a conflict, and that ask ends with the push. A column can wait for the forge: in a column's
+a conflict, and that ask ends with the push. An open PR holds DONE the same way: a column with
+**Entry needs a merged branch** refuses the ticket until the forge merges it, whoever moves it,
+and a ticket already there reads unmerged again. A column can wait for the forge: in a column's
 settings, **Arrives here when** moves a ticket there on its own when a PR opens, its pipeline
 passes, every PR is merged, or the merge reached an environment you name (`deployed to staging`),
 and **Entry needs a passed pipeline** refuses a ticket whose pipeline failed, still runs or was

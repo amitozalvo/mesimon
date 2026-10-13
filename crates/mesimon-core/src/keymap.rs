@@ -6093,7 +6093,9 @@ static COLUMN_ITEMS: &[MenuItem] = &[
     MenuItem {
         verb: Verb::ColumnRequiresMerge,
         label: |c| format!("Entry needs a merged branch: {}", yes_no(c.col_requires_merge)),
-        detail: |_| "a card with unmerged work is refused at the door".into(),
+        detail: |_| {
+            "a card with unmerged work or an open pull request is refused at the door".into()
+        },
         avail: |c| !c.col_new,
         key: "",
     },

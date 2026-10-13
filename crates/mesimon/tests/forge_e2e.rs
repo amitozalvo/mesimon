@@ -30,6 +30,11 @@
 //! merges and deploys, the first one's row still reads its merge commit's
 //! pipeline and where it was deployed.
 //!
+//! An open PR holds DONE (T-774): a merged ticket already in DONE whose
+//! follow-up PR opens on another branch reads unmerged again where it is,
+//! a person's move of another such ticket into DONE is refused in the merge
+//! refusal's words, and once the PRs merge DONE admits it.
+//!
 //! The stub is the forge: `auth status` passes, `pr list` prints the file
 //! the test writes, `api …/check-runs` the merge commit's pipeline and
 //! `api …/deployments` its deployments, by sha where the test wrote one. No
@@ -1951,5 +1956,117 @@ fn a_train_rebase_turn_is_read_at_its_end() {
     let took = stopped.elapsed();
     assert!(took < Duration::from_secs(20), "cleared {took:?} after the turn's end");
     let _ = c.request(Command::Shutdown);
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// A PR of number `n` as `gh pr list --json` prints it, open or merged at
+/// its head.
+fn numbered_pr(n: u64, branch: &str, tip: &str, merged: bool) -> String {
+    let (state, merge) =
+        if merged { ("MERGED", format!(r#"{{"oid":"{tip}"}}"#)) } else { ("OPEN", "null".into()) };
+    format!(
+        r#"{{"number":{n},"url":"https://github.com/example/forge/pull/{n}","state":"{state}","isDraft":false,
+          "headRefName":"{branch}","headRefOid":"{tip}","mergeCommit":{merge},"mergeable":"MERGEABLE",
+          "reviewDecision":"REVIEW_REQUIRED","updatedAt":"2026-10-14T06:00:00Z",
+          "statusCheckRollup":[{{"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"SUCCESS"}}]}}"#
+    )
+}
+
+/// A follow-up commit on a side branch in a ticket's worktree, its HEAD's
+/// reflog the fact that binds its PR to the ticket; the ticket's own branch
+/// stays where it merged.
+fn follow_up(path: &Path, branch: &str) -> String {
+    git(path, &["checkout", "-qb", branch]);
+    std::fs::write(path.join(format!("{branch}.txt").replace('/', "-")), "more\n").unwrap();
+    git(path, &["add", "."]);
+    git(path, &["commit", "-qm", branch]);
+    git(path, &["rev-parse", "HEAD"]).trim().to_string()
+}
+
+#[test]
+fn an_open_pr_holds_done_and_a_ticket_there_reads_unmerged() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    let (stub_dir, path_var) = gh_stub("forge-done");
+    let prs_file = stub_dir.join("prs.json");
+    write(&prs_file, "[]");
+    let Some(h) = Harness::boot_with_env(
+        "forge-done",
+        Some(STUB),
+        &[
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs_file.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    let repo = h.repo.clone();
+    init_repo(&repo, "a.txt", "hello\n");
+    git(&repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let mut c = h.client("forge-done");
+    let (a, a_sid, a_branch, a_path) = ready(&mut c, "alpha");
+    git(&repo, &["merge", "-q", "--ff-only", &a_branch]);
+    let (b, _, b_branch, b_path) = ready(&mut c, "beta");
+    git(&repo, &["merge", "-q", "--ff-only", &b_branch]);
+    wait_until(Duration::from_secs(20), "both branches to read merged", || {
+        let wts = worktrees_of(&mut c);
+        [a, b].iter().all(|t| wts.iter().any(|w| w.ticket == *t && w.merged))
+    });
+    assert!(matches!(
+        c.request(Command::MoveTicket { id: a, column: "DONE".into(), before: None }),
+        Response::Ok
+    ));
+
+    // Follow-up PRs open on side branches of both tickets.
+    let a_tip = follow_up(&a_path, "fix/greeting");
+    let b_tip = follow_up(&b_path, "fix/beta");
+    let open = |merged: bool| {
+        format!(
+            "[{},{}]",
+            numbered_pr(2, "fix/greeting", &a_tip, merged),
+            numbered_pr(3, "fix/beta", &b_tip, merged)
+        )
+    };
+    write(&prs_file, &open(false));
+    wait_until(Duration::from_secs(20), "both PRs to bind", || {
+        let prs = prs_of(&mut c);
+        prs.iter().any(|p| p.ticket == a && p.number == 2)
+            && prs.iter().any(|p| p.ticket == b && p.number == 3)
+    });
+
+    // In DONE already: not evicted, but the card reads unmerged again and
+    // `get_ticket` says why.
+    let wa = wt_of(&mut c, a).unwrap();
+    assert!(!wa.merged, "an open PR reads unmerged on a landed branch");
+    assert_eq!(c.board().ticket(a).unwrap().column, "DONE");
+    match c.send(Principal::Agent { session: a_sid }, Command::AgentGetTicket) {
+        Response::AgentTicket { ticket } => {
+            assert_eq!(ticket.merge_state.as_deref(), Some("open PR #2"));
+            assert!(ticket.merged_in.is_none());
+        }
+        other => panic!("get_ticket: {other:?}"),
+    }
+
+    // A person's move into DONE is refused in the merge refusal's words.
+    match c.request(Command::MoveTicket { id: b, column: "DONE".into(), before: None }) {
+        Response::Err { message } => {
+            assert_eq!(message, "PR #3 open — merge it on GitHub before DONE")
+        }
+        other => panic!("DONE with a PR open: {other:?}"),
+    }
+    assert_ne!(c.board().ticket(b).unwrap().column, "DONE");
+
+    // The forge merges them: merged again, and DONE admits the ticket.
+    write(&prs_file, &open(true));
+    wait_until(Duration::from_secs(20), "the PRs to read merged", || {
+        prs_of(&mut c).iter().filter(|p| p.state == "merged").count() == 2
+    });
+    assert!(wt_of(&mut c, a).unwrap().merged);
+    assert!(matches!(
+        c.request(Command::MoveTicket { id: b, column: "DONE".into(), before: None }),
+        Response::Ok
+    ));
     let _ = std::fs::remove_dir_all(&stub_dir);
 }

@@ -24031,6 +24031,41 @@ open PR, a conflict, a stale verdict), `prefs` (both new keys), the keymap laws,
 the board woke the crown `pipeline`, the crown's `ask_agent` reached the worker, which replied
 `noted`. `cargo nextest run --workspace`: 2319 passed.
 
+## An open PR holds DONE, as it holds the train (T-774, 2026-10-14, follow-up to T-739)
+
+**Why.** The forge lab's finding 14 (2026-10-13, scenario B3): ticket A1's MR !1 merged, the
+branch read merged and the card went to DONE; the worker then opened MR !2 from `fix/greeting`
+on the same ticket. The card read `◯!2 ●!1`, `merge_state` stayed `merged` and DONE kept it
+while !2 was in review. The train already read an open PR as unfinished (`pr_open`); the merge
+gate did not.
+
+**The decision, and it is provisional.** The author, 2026-10-14: an open PR holds DONE, to be
+revisited after dogfooding. An open PR on the ticket, on any repository and any branch
+(`PrState::Open | Draft`, `forge::holding`), means its work has not landed:
+- `ticket_merged` answers false while one is open, so the DONE gate, the delete gate, the
+  archive and `m` read it unmerged; `column_gate` names it first, in `merge_ticket`'s sentence
+  plus the column (`MR !2 open — merge it on GitLab before DONE`, `forge::open_refusal`), for
+  every mover, a person included, and on a checkout ticket too.
+- The card and the page (`WorktreeItem.merged`) read it unmerged where the branch landed, so
+  the reclaim and sleep offers hold off; `get_ticket`'s `merge_state` reads `open MR !2` there
+  (the four words otherwise); `agent_allowed_columns` drops a `requires_merge` column.
+- A gate refuses entry and never evicts: a ticket already in DONE stays, unmerged, and an
+  arrival rule moves it as any ticket.
+- **Not changed:** `wt_agg.merged` stays the branch's reading, so the train (which holds on
+  `pr_open` already) and the crown's wake words (`merge_state merged`, T-757's later-PR wake)
+  are as they were. The hold is read at the readers above, not folded into the aggregate.
+
+**Tests.** Unit `an_open_pr_on_a_merged_ticket_holds_the_merge` (core forge: the open MR on
+another branch holds with the refusal's words; a draft on another repository holds beside a
+merged-at-tip PR; merged, nothing holds). `forge_e2e::an_open_pr_holds_done_and_a_ticket_there_reads_unmerged`:
+two tickets ff-merged and one moved to DONE, then PRs on side branches bind by reflog; the one
+in DONE stays and reads unmerged with `merge_state` `open PR #2`, a hand move of the other is
+refused `PR #3 open — merge it on GitHub before DONE`, and once both merge DONE admits it. With
+the gate clause removed the e2e fails at the hand move. Rig F6 (`forge_later_open`, checks
+`not_column`/`crown_reply`): on the real Sonnet, 2026-10-14, PASS in 72 s — asked to move the
+merged ticket to DONE with PR #43 open, the crown answered `F6 held: PR #43 open — merge it on
+GitHub before DONE`. `cargo nextest run --workspace`: 2377 passed.
+
 ## A ticket arrives as its least advanced PR (T-768, 2026-10-14, follow-up to T-739)
 
 **Why.** The forge lab's finding 8 (2026-10-13, scenario C1: one ticket, MRs on `api` and `web`).

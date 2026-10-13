@@ -736,6 +736,35 @@ checks = ["road:mod", "started_by_crown", "woke:merged", "woke:forge", "crown:as
   rig = "forge_off"
 
 [[test]]
+id = "F6"
+title = "F6 · the crown is refused DONE for a merged ticket whose second pull request is open: do the steps below"
+workspace = "worktree"
+brief = "Write a file named F6.txt holding the single line f6, commit it with git with the message F6, then reply with the single word done and end your turn. Read no other file and run no other command."
+expect = "the worker commits; its PR 42 merges on a stub forge and the board wakes the crown with the merge; a later PR 43 on the same ticket opens and stays open, so the ticket reads unmerged and DONE is neither offered nor taken (T-774); the crown, asked to move it to DONE, says it is held and the ticket stays out of DONE."
+checks = ["road:mod", "started_by_crown", "woke:merged", "not_column:DONE", "crown_reply:F6 held", "replies:done"]
+
+  [[test.steps]]
+  crown = "F6: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: F6 started. When the board wakes you because {key}'s agent delivered or finished, end your turn with the single line: F6 seen. When the board wakes you because {key} merged, end your turn with the single line: F6 merged, and move no ticket."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "forge_pr"
+
+  [[test.steps]]
+  rig = "forge_merge"
+
+  [[test.steps]]
+  rig = "forge_later_open"
+
+  [[test.steps]]
+  crown = "F6: move {key} to DONE with move_ticket. If it moved, end your turn with the single line: F6 moved. If DONE is not offered or the move is refused, end your turn with the single line: F6 held, then the reason get_ticket or the refusal gives."
+  until = { state = "idle" }
+
+  [[test.steps]]
+  rig = "forge_off"
+
+[[test]]
 id = "F5"
 title = "F5 · the crown hears a pull request first read with its pipeline already passed: do the steps below"
 workspace = "worktree"

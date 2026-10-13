@@ -1555,6 +1555,21 @@ Reply with the single word ready and end your turn."""
                 record["failures"].append("the crown's turn on the forge's news never ended")
                 return False
             return True
+        if what == "forge_later_open":
+            # A second PR opens on the merged ticket (T-774) and stays open:
+            # the ticket reads unmerged again, and DONE refuses it.
+            d = self.forge_stub()
+            later = {"number": 43, "head": "c0ffee43" * 5, "state": "OPEN"}
+            self.write_pr(d, self.forge_branch, "MERGED", "passed", later=later)
+            held = self.wait_for("the second PR to bind and unmerge the card", lambda: any(
+                p["ticket"] == test["ticket"] and p["number"] == 43
+                for p in self.snapshot().get("prs", [])) and not any(
+                w["ticket"] == test["ticket"] and w.get("merged")
+                for w in self.snapshot().get("worktrees", [])), STEP_TIMEOUT, self.watch)
+            if not held:
+                record["failures"].append("the second PR never bound, or the card stayed merged")
+                return False
+            return True
         if what == "forge_off":
             # The board's own Claude Code and PATH back: the stub is gone.
             d = self.forge_stub()
@@ -1985,6 +2000,16 @@ Reply with the single word ready and end your turn."""
                 check(c, arg in (record["doctor"] or ""), record["doctor"] or "no line")
             elif name == "final":
                 check(c, word_of(rec["state"]) == arg, word_of(rec["state"]))
+            elif name == "column" or name == "not_column":
+                # Where the ticket stands at the verdict (T-774).
+                col = next((t.get("column") for t in board.get("tickets", [])
+                            if t.get("id") == tid), None)
+                check(c, (col == arg) == (name == "column"), f"in {col}")
+            elif name == "crown_reply":
+                # The crown's last words on the test (T-774), `arg` within.
+                crown = self.agent_of(board, self.crown)
+                said = last_reply(transcript(crown)) if crown else ""
+                check(c, arg.lower() in said.lower(), f"said {said[:100]!r}")
             elif name == "woke":
                 causes = [l.get("cause") for l in lines if l.get("kind") == "crown_wake"
                           and l.get("worker") == tid]

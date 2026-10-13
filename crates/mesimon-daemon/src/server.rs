@@ -7081,7 +7081,7 @@ impl Daemon {
         if self.agent_tools_for(id) < AgentTools::Full {
             return Vec::new();
         }
-        let unmerged = self.ticket_unmerged(id);
+        let unmerged = self.ticket_unmerged(id) || self.open_pr(id).is_some();
         // Read only when some column asks: a board with the gate off reads
         // no note here.
         let unticked = self.board.columns.iter().any(|c| c.settings.requires_ticked)
@@ -7163,7 +7163,7 @@ impl Daemon {
         let view = |by: &str, why: &str| AgentMergeView { by: by.into(), why: why.into() };
         // A merged branch has no merger (T-772): the train's clause on a
         // merged ticket in a column it reaches read as a merge to come.
-        if self.merge_state_word(id) == Some("merged") {
+        if self.merge_state_word(id).as_deref() == Some("merged") {
             return view("nobody", "already merged");
         }
         if !self.board.crown_mode.merges() {
@@ -7224,7 +7224,7 @@ impl Daemon {
                 ),
             });
         };
-        match state {
+        match state.as_str() {
             "merged" => Some(format!("{key}'s branch is already merged")),
             "clean" => Some(format!("{key}'s branch has no commits to merge yet")),
             "needs_rebase" => Some(format!(
@@ -7307,16 +7307,25 @@ impl Daemon {
         }
     }
 
-    fn merge_state_word(&self, id: ulid::Ulid) -> Option<&'static str> {
+    /// `merge_word`'s four, and `open MR !2` for a landed branch an open PR
+    /// holds back (T-774): the ticket reads unmerged, and the word says why.
+    fn merge_state_word(&self, id: ulid::Ulid) -> Option<String> {
         let b = self.worktrees.get(&id)?;
         if b.branch.is_empty() {
             return None;
         }
-        Some(worktree::merge_word(
-            self.wt_agg.get(&id).is_some_and(|a| a.merged),
-            self.wt_agg.get(&id).is_some_and(|a| a.needs_rebase),
-            self.wt_agg.get(&id).map_or(0, |a| a.ahead),
-        ))
+        let merged = self.wt_agg.get(&id).is_some_and(|a| a.merged);
+        if let Some(pr) = self.open_pr(id).filter(|_| merged) {
+            return Some(format!("open {} {}", pr.forge.noun(), pr.label()));
+        }
+        Some(
+            worktree::merge_word(
+                merged,
+                self.wt_agg.get(&id).is_some_and(|a| a.needs_rebase),
+                self.wt_agg.get(&id).map_or(0, |a| a.ahead),
+            )
+            .to_string(),
+        )
     }
 
     fn agent_ticket_view(&self, id: ulid::Ulid) -> Option<AgentTicketView> {
@@ -7329,10 +7338,10 @@ impl Daemon {
             column: t.column.clone(),
             workspace: workspace.to_string(),
             branch: self.worktrees.get(&id).map(|b| b.branch.clone()).filter(|b| !b.is_empty()),
-            merge_state: self.merge_state_word(id).map(str::to_string),
+            merge_state: self.merge_state_word(id),
             // The worktree row's word (T-772), `main (MR !1)` where the
             // forge merged it.
-            merged_in: (self.merge_state_word(id) == Some("merged"))
+            merged_in: (self.merge_state_word(id).as_deref() == Some("merged"))
                 .then(|| self.wt_agg.get(&id).map(|a| a.merged_in.clone()))
                 .flatten()
                 .filter(|m| !m.is_empty())
@@ -7587,10 +7596,15 @@ impl Daemon {
         // which would have let an automation route around the one rule that
         // keeps the board from claiming something shipped when git says it
         // did not.
-        if self.board.column(dest).is_some_and(|c| c.settings.requires_merge)
-            && self.ticket_unmerged(id)
-        {
-            return Some(format!("worktree unmerged — merge before {dest}"));
+        if self.board.column(dest).is_some_and(|c| c.settings.requires_merge) {
+            // An open PR first (T-774), on a branch or a checkout: the
+            // merge is the forge's, and the mover hears where to press it.
+            if let Some(why) = self.open_pr_refusal(id) {
+                return Some(format!("{why} before {dest}"));
+            }
+            if self.ticket_unmerged(id) {
+                return Some(format!("worktree unmerged — merge before {dest}"));
+            }
         }
         // Its pipeline twin (T-739): unknown is never green, and a ticket
         // that opened no PR has none to pass (T-750).
@@ -7794,7 +7808,9 @@ impl Daemon {
                 BindingStatus::Error { .. } => "error",
             }
             .into(),
-            merged: self.wt_agg.get(tid).is_some_and(|a| a.merged),
+            // `ticket_merged`'s answer, so the card and the gates agree: an
+            // open PR reads unmerged on a landed branch (T-774).
+            merged: self.wt_agg.get(tid).is_some_and(|a| a.merged) && self.open_pr(*tid).is_none(),
             merged_in: self.wt_agg.get(tid).map(|a| a.merged_in.clone()).unwrap_or_default(),
             merged_oid: self.wt_agg.get(tid).map(|a| a.merged_oid.clone()).unwrap_or_default(),
             conflict: !b.branch.is_empty() && self.wt_conflicts.contains(&b.branch),
@@ -9359,7 +9375,15 @@ impl Daemon {
     /// The ticket's branch has landed in EVERY leg it was cut in (T-368):
     /// the DONE gate's, the delete gate's and the archive's one oracle, and
     /// it must answer as the card does.
+    ///
+    /// An open PR on the ticket, on any repository or branch, is work not
+    /// landed (T-774): the ticket reads unmerged until the forge merges it,
+    /// so a follow-up MR after the branch landed holds DONE as it holds the
+    /// train.
     fn ticket_merged(&self, id: ulid::Ulid) -> bool {
+        if self.open_pr(id).is_some() {
+            return false;
+        }
         let Some(b) = self.worktrees.get(&id) else { return false };
         if b.branch.is_empty() {
             return false;
@@ -9402,6 +9426,17 @@ impl Daemon {
                         && seen.branch_tip == worktree::branch_tip(&leg.repo, &b.branch)
                 })
         })
+    }
+
+    /// The ticket's open PR its merge waits on (`forge::holding`, T-774):
+    /// the one `merge_ticket`, the DONE gate and `merge_state` name.
+    fn open_pr(&self, id: ulid::Ulid) -> Option<&mesimon_core::forge::Pr> {
+        self.forge.sets.get(&id).and_then(|s| mesimon_core::forge::holding(s))
+    }
+
+    /// `forge::open_refusal`'s sentence for the ticket's open PR.
+    fn open_pr_refusal(&self, id: ulid::Ulid) -> Option<String> {
+        self.open_pr(id).map(mesimon_core::forge::open_refusal)
     }
 
     /// The binding's legs, with the daemon's base branch for a single-repo
@@ -9782,17 +9817,8 @@ impl Daemon {
         // An open PR is the merge (T-739): the team reviews and presses the
         // forge's button, and mesimon never fast-forwards past it. `m`, the
         // crown and the train all hear this one sentence.
-        if let Some(pr) = self.forge.open_of(id).first() {
-            return Response::Merge {
-                outcome: MergeOutcome::Refused,
-                detail: format!(
-                    "{} {} open — merge it on {}",
-                    pr.forge.noun(),
-                    pr.label(),
-                    pr.forge.name()
-                ),
-                notified: false,
-            };
+        if let Some(detail) = self.open_pr_refusal(id) {
+            return Response::Merge { outcome: MergeOutcome::Refused, detail, notified: false };
         }
         // ff-only policy, leg by leg (T-368): every touched leg is judged
         // before any is moved — a base moved past the branch anywhere is the
@@ -11988,6 +12014,7 @@ impl Daemon {
                     .is_some_and(|a| a.until.is_none());
                 archived
                     && self.wt_agg.get(*id).is_some_and(|a| a.merged)
+                    && self.open_pr(**id).is_none()
                     && b.path.is_dir()
                     && !self.terminals.contains_key(&Some(**id))
             })
