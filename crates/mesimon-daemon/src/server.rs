@@ -766,6 +766,11 @@ pub struct Daemon {
     /// told of (T-599, `hear_lingering`), forgotten on the record's next
     /// foreground turn. Kept in `crown.json` (T-602).
     lingered: std::collections::HashSet<uuid::Uuid>,
+    /// The last automatic move each ticket was refused (T-749), for its
+    /// page and `get_ticket`: the gate's words, kept until the ticket moves
+    /// or, for a column rule, until the rule passes. Memory only, as the
+    /// move gate is: a restart's first automove asks again.
+    held: crate::movegate::HeldMoves,
     /// Tickets the crown watches (T-712, `watch_ticket`): ones it did not
     /// start, whose delivery, finished turn, raised hand and merge wake it
     /// as a worker it started does (`crownwake::crown_hears`). A watch ends
@@ -1269,6 +1274,7 @@ pub fn run(paths: Paths) -> Result<()> {
         late_asks: HashMap::new(),
         turns_open: std::collections::HashSet::new(),
         lingered: std::collections::HashSet::new(),
+        held: crate::movegate::HeldMoves::default(),
         crown_watched: std::collections::BTreeSet::new(),
         answer_waits: None,
         modroad,
@@ -7350,6 +7356,7 @@ impl Daemon {
                 .map(|c| AgentAutomoveView {
                     on_working: c.settings.on_working.clone(),
                     on_done: c.settings.on_done.clone(),
+                    held: self.held_items().into_iter().find(|h| h.ticket == id).map(|h| h.words),
                 })
                 .unwrap_or_default(),
             tags: t
@@ -7548,6 +7555,39 @@ impl Daemon {
             .collect()
     }
 
+    /// What the column `dest` refuses `id` for on the way in, in the words
+    /// the mover hears (T-749 reads it again to clear a held line).
+    fn column_gate(&self, id: ulid::Ulid, dest: &str) -> Option<String> {
+        // M4 DONE gate (author rule 3), now the column's `requires_merge`
+        // (T-117): entering means the work landed — an unmerged worktree
+        // blocks the move. It lived inside the human's move path until T-84,
+        // which would have let an automation route around the one rule that
+        // keeps the board from claiming something shipped when git says it
+        // did not.
+        if self.board.column(dest).is_some_and(|c| c.settings.requires_merge)
+            && self.ticket_unmerged(id)
+        {
+            return Some(format!("worktree unmerged — merge before {dest}"));
+        }
+        // Its pipeline twin (T-739): unknown is never green, and a ticket
+        // that opened no PR has none to pass (T-750).
+        if self.board.column(dest).is_some_and(|c| c.settings.requires_pipeline) {
+            if let Some(why) = self.pipeline_refusal(id) {
+                return Some(format!("{why} — before {dest}"));
+            }
+        }
+        // Its summary-box twin (T-735), off unless a person turned it on:
+        // the card's open box says work is left, so the column refuses it.
+        if self.board.column(dest).is_some_and(|c| c.settings.requires_ticked) {
+            if let Some(message) =
+                open_boxes_refusal(self.open_boxes(id), &format!("before {dest}"))
+            {
+                return Some(message);
+            }
+        }
+        None
+    }
+
     /// The one function that moves a ticket between columns.
     ///
     /// Three callers today — the human's `MoveTicket`, `automove`, and the
@@ -7586,32 +7626,9 @@ impl Daemon {
             }
             return Ok(from);
         }
-        // M4 DONE gate (author rule 3), now the column's `requires_merge`
-        // (T-117): entering means the work landed — an unmerged worktree
-        // blocks the move. It lived inside the human's move path until T-84,
-        // which would have let an automation route around the one rule that
-        // keeps the board from claiming something shipped when git says it
-        // did not.
-        if self.board.column(dest).is_some_and(|c| c.settings.requires_merge)
-            && self.ticket_unmerged(id)
-        {
-            return Err(format!("worktree unmerged — merge before {dest}"));
-        }
-        // Its pipeline twin (T-739): unknown is never green, and a ticket
-        // that opened no PR has none to pass (T-750).
-        if self.board.column(dest).is_some_and(|c| c.settings.requires_pipeline) {
-            if let Some(why) = self.pipeline_refusal(id) {
-                return Err(format!("{why} — before {dest}"));
-            }
-        }
-        // Its summary-box twin (T-735), off unless a person turned it on:
-        // the card's open box says work is left, so the column refuses it.
-        if self.board.column(dest).is_some_and(|c| c.settings.requires_ticked) {
-            if let Some(message) =
-                open_boxes_refusal(self.open_boxes(id), &format!("before {dest}"))
-            {
-                return Err(message);
-            }
+        if let Some(refusal) = self.column_gate(id, dest) {
+            self.held.refused(id, dest, &refusal, by, true, now_ms());
+            return Err(refusal);
         }
         if let Decision::Deny { reason } =
             authorize(by, &Action::MoveTicket, &Resource::Ticket { id })
@@ -7625,6 +7642,7 @@ impl Daemon {
         }
         if let Err(refusal) = self.moves.check(id, &from, dest, by, Instant::now()) {
             self.feed.board(by.actor(), &format!("move_refused:{}", refusal.tag()), Some(id));
+            self.held.refused(id, dest, &refusal.message(), by, false, now_ms());
             return Err(refusal.message());
         }
 
@@ -7648,6 +7666,7 @@ impl Daemon {
             let _ = store::save_ticket(&self.paths, &t);
         }
         self.moves.record(id, &from, dest, by, turn_of, Instant::now());
+        self.held.moved(id);
         if by.is_human() {
             self.train.hand_touched(id);
         }
@@ -7657,6 +7676,15 @@ impl Daemon {
             self.moves.leave();
         }
         Ok(dest.to_string())
+    }
+
+    /// The held lines still standing (T-749): a column rule's until the
+    /// rule passes, the move gate's until the ticket moves.
+    fn held_items(&self) -> Vec<mesimon_core::command::HeldMove> {
+        self.held.standing(
+            |t| self.board.ticket(t).is_some(),
+            |t, dest| self.column_gate(t, dest).is_some(),
+        )
     }
 
     /// The in-column reorder: `order`, and nothing else.
@@ -8140,6 +8168,7 @@ impl Daemon {
             train_asked,
             train_suspended,
             holding: self.train_holding(),
+            held: self.held_items(),
         }
     }
 

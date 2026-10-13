@@ -370,16 +370,16 @@ pub fn tools() -> Vec<Value> {
     vec![
         json!({
             "name": "get_ticket",
-            "description": "Returns the mesimon ticket this session is attached to, or with \
-                            key another ticket (crown only): key, title, column, workspace, \
-                            branch, merge state (per repo), who merges (merge), pull \
-                            requests (prs), the init script (worktree_init), the columns \
-                            move_ticket accepts and what each is for, tags, the board's \
-                            tags (allowed_tags), the description (first note), each note's \
-                            id, name, author, the summary, the agent's state and the seen \
-                            stamp edits need. The prompt is often the ticket's \
+            "description": "Returns this session's ticket, or with key another (crown \
+                            only): key, title, column, workspace, branch, merge state per \
+                            repo, who merges (merge), pull requests (prs), the init script \
+                            (worktree_init), the columns move_ticket accepts and what each \
+                            is for, the board's moves and why it last held it (automove), \
+                            tags, the board's tags (allowed_tags), the description (first \
+                            note), each note's id, name, author, the summary, the agent's \
+                            state and the seen stamp edits need. The prompt is often the \
                             title alone; the description and notes are the rest of the \
-                            brief, so this is a session's first call.",
+                            brief: a session's first call.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

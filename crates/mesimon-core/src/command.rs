@@ -2169,6 +2169,10 @@ pub struct AgentAutomoveView {
     pub on_working: Option<String>,
     #[serde(default)]
     pub on_done: Option<String>,
+    /// The board's last automatic move of this ticket that a column or the
+    /// move gate refused (T-749), in the refusal's words, while it stands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<String>,
 }
 
 /// A ticket's agent as its card shows it (T-411). Words, never a session:
@@ -2650,6 +2654,19 @@ pub struct AutomationStatus {
     /// Absent from an older daemon parses as none.
     #[serde(default)]
     pub holding: Vec<ulid::Ulid>,
+    /// Tickets an automatic move was refused for (T-749), the last refusal
+    /// each, while it stands. Absent from an older daemon parses as none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held: Vec<HeldMove>,
+}
+
+/// The last automatic move a ticket was refused (T-749), in the refusal's
+/// own words — `pipeline running — before REVIEW` — and when.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldMove {
+    pub ticket: ulid::Ulid,
+    pub words: String,
+    pub at_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

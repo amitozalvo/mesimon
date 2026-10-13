@@ -4650,6 +4650,34 @@ fn golden_ticket_prs_120() {
     assert!(app.ticket_linkable(ulid_n(5)));
 }
 
+/// A refused automove on the ticket page (T-749): one grey row under the
+/// pull requests, the refusal in the gate's own words and how long ago,
+/// with a terminal escape in a forge's job name drawn as nothing it can do.
+#[test]
+fn golden_ticket_held_move_120() {
+    let mut app = app_prs();
+    app.prs.truncate(2);
+    app.automation.held = vec![mesimon_core::command::HeldMove {
+        ticket: ulid_n(5),
+        words: "pipeline running — before REVIEW".into(),
+        at_ms: mesimon_core::clock::now_ms().saturating_sub(150_000),
+    }];
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    let text = lines.join("\n");
+    let row = lines.iter().position(|l| l.contains("held: pipeline running")).expect(&text);
+    assert!(lines[row].contains("— before REVIEW ∙ 2m ago"), "{text}");
+    assert!(lines[row - 1].contains("PR #42"), "under the pull requests:\n{text}");
+    golden("ticket_held_move_120x30", &lines);
+    app.automation.held[0].words = "pipeline failed: \u{1b}]52;c;eA==\u{7}x — before REVIEW".into();
+    let text = render(&app, 120, 30).join("\n");
+    assert!(text.contains("held: pipeline failed:"), "{text}");
+    assert!(!text.contains('\u{1b}') && !text.contains('\u{7}'), "{text}");
+    // Another ticket's held move is not this page's.
+    app.automation.held[0].ticket = ulid_n(6);
+    assert!(!render(&app, 120, 30).iter().any(|l| l.contains("held:")));
+}
+
 /// `^h` on the ticket page (T-759): every pull request, the one the page
 /// folds into `+1 more` included, each with the page's words whole and its
 /// repository in a column of its own; Enter hands the cursor row's URL to

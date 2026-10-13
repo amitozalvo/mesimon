@@ -1,0 +1,30 @@
+ TICKET (T-5)   mesimon › kanban-tui
+
+ Grapheme truncation
+ REVIEW for >1y ∙ created >1y ago
+ ⎇ msmn/T-5-grapheme-truncation ∙ 2 to merge ∙ m merge
+   ✗ PR #43 open ∙ pipeline failed: test-linux ∙ changes requested
+   ◴ PR #42 open ∙ pipeline running
+   held: pipeline running — before REVIEW ∙ 2m ago
+
+
+  PREVIEW                                                                                  SESSIONS                  1
+    ▄▄▄         ▄▄▄
+    ▀▀█▀ ▄▀▀▀   ▀▀█▀                                                                      ✓ ✻ claude               >1y
+      ██▀█▀▀     ███   ✦                                                                   x sleep
+    ▄▀█████▀▀▀▀▀▀███▀▄
+  ✦█████▀████████▀████▀
+   ████▀█▀██████▀█▀████
+   █▀▀█████▀▀▀▀█████▀▀█
+   ▀▀▀██████▀▀██████▀▀▀
+      ▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+
+    done
+    it left no transcript
+
+
+
+
+
+
+ enter focus ∙ v diff ∙ t merge by hand ∙ r rename ∙ d delete ∙ n describe                                       ? keys

@@ -734,3 +734,38 @@ checks = ["road:mod", "started_by_crown", "woke:merged", "woke:forge", "crown:as
 
   [[test.steps]]
   rig = "forge_off"
+
+[[test]]
+id = "H1"
+title = "H1 · a worker asked why its ticket did not move finds the held move: do the steps below"
+workspace = "worktree"
+brief = "This first turn only: reply with the single word done and end your turn, reading no file and running no command for it."
+expect = "the worker's turn ends in IN PROGRESS while REVIEW needs a passed pipeline and its PR's pipeline is running, so the board's automove to REVIEW is refused; asked to find out why the ticket did not move, naming no tool or field, the worker reads get_ticket's automove.held (T-749) and answers with the gate's words, pipeline running. A bare why? is not the ask: in three runs Sonnet answered I don't know without looking, even with the brief's no-reads rule scoped to its first turn."
+checks = ["road:mod", "started_by_crown", "tools:get_ticket", "reply:pipeline"]
+
+  [[test.steps]]
+  crown = "H1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: H1 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: H1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "forge_pr"
+
+  [[test.steps]]
+  rig = "gate_pipeline"
+
+  [[test.steps]]
+  crown = "H1: call ask_agent for {key} with the text: Reply with the single word again and end your turn. Then end your turn with the single line: H1 asked. When the board wakes you because {key}'s agent finished, end your turn with the single line: H1 again."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  crown = "H1: call ask_agent for {key} with the text: Find out why your ticket did not move to REVIEW when your last turn ended, and say why in one line. Then end your turn with the single line: H1 asked why. When the board wakes you because {key}'s agent finished, end your turn with the single line: H1 told."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "gate_off"
+
+  [[test.steps]]
+  rig = "forge_off"

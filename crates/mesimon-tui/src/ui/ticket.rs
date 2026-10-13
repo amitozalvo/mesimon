@@ -223,6 +223,25 @@ fn pr_rows(
     rows
 }
 
+/// The last automatic move the board was refused for this ticket (T-749),
+/// in the refusal's own words: `held: pipeline running — before REVIEW ∙
+/// 2m ago`. Grey: nothing here needs the person, it says why the card sat
+/// still. The words can carry a forge's job name, so they cross
+/// `scrub_cells`.
+fn held_row(
+    app: &App,
+    ticket: ulid::Ulid,
+    ink: &crate::theme::Ramp,
+    room: usize,
+    now: u64,
+) -> Option<Line<'static>> {
+    let h = app.automation.held.iter().find(|h| h.ticket == ticket)?;
+    let words = mesimon_core::text::scrub_cells(&crate::text::one_line(&h.words), false);
+    let text = format!("held: {words} ∙ {}", crate::text::age_ago(now, h.at_ms));
+    let text = truncate(&text, room.saturating_sub(3));
+    Some(Line::from(Span::styled(format!("   {text}"), Style::default().fg(ink.dim2))))
+}
+
 /// Where the branch's work landed, in words (T-267). A plain fast-forward
 /// into the checkout's own default branch stays the bare `merged` it has
 /// always been — that is the ref the whole page is already about. Anything
@@ -634,7 +653,10 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // row, newest first, in the card's glyphs: what the forge said of
     // each, with the repository named only when it is not this one.
     let pr_rows = pr_rows(app, ticket.id, ink, room);
-    let wt_row = u16::from(workspace.is_some()) + pr_rows.len() as u16;
+    // Under them, why the board's last move of the card did not happen
+    // (T-749), while it still holds.
+    let held = held_row(app, ticket.id, ink, room, now);
+    let wt_row = u16::from(workspace.is_some()) + pr_rows.len() as u16 + u16::from(held.is_some());
     // Those rows are `^h`'s to a click (T-759): under the pad, the title
     // and the state line, and the branch row when there is one.
     if !pr_rows.is_empty() {
@@ -693,6 +715,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     let mut rows = vec![Line::default(), title_row, ident];
     rows.extend(workspace);
     rows.extend(pr_rows);
+    rows.extend(held);
     rows.push(Line::default());
     if !desc.is_empty() && !reading_note {
         let (bar_ch, bar_style) = theme.desc_bar();

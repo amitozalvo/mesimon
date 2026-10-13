@@ -24469,3 +24469,48 @@ names the corner). A frame with a text field shows its cursor where the field as
 **Tests.** `quiet::a_hidden_cursor_rests_in_the_corner_whatever_the_frame_wrote`;
 `the_cursor_is_told_only_what_it_was_not_told_last` now expects the park after the hide. Not
 measured against the real indicator in this ticket: the person's board is the check.
+
+## A refused automove leaves a trace on the ticket page (T-749, 2026-10-14)
+
+**Why.** On the forge lab a worker's turn ended in IN PROGRESS, the `on_done` move to REVIEW was
+refused by `Entry needs a passed pipeline`, and the only sign was the feed's `movement_decision
+refused: pipeline not read — before REVIEW`. The person asked why the ticket had not moved.
+
+**What.** `place_ticket` keeps the last refusal of an **automation** per ticket
+(`movegate::HeldMoves`, in memory like the move gate): the column rules' words (merge, pipeline,
+summary boxes — `Daemon::column_gate`, factored out of `place_ticket` so the refusal and the
+re-check are one function) and the move gate's (no undo, depth, fuse). A person's refusal is not
+kept (their dialog said it), nor an agent's (`move_ticket` answers it). Any successful column
+move clears it. It rides the snapshot as `AutomationStatus.held` (`HeldMove { ticket, words,
+at_ms }`, `#[serde(default)]`, left off the wire when empty) and `get_ticket` as
+`automove.held`, which its description now names (below). **A column rule's line
+stands only while the rule still refuses**: `held_items` asks `column_gate` again for each
+entry as the snapshot is built, so a pipeline that passes clears the line with the card still
+where it was; the move gate's line stands until the ticket moves. The words shown are the
+refusal's as it happened, never re-read: a pipeline that went from running to failed keeps
+`running` until the next automove is refused in its own words.
+
+**The page.** `ui/ticket.rs::held_row`: one grey (`dim2`) row under the PR rows, `held: <words> ∙
+2m ago`, the words through `scrub_cells` (a forge's job name rides them). No card line: the
+card's second line is the brief's. The golden is `ticket_held_move_120x30`, since
+`ticket_held_120x30` already named T-544's held ask.
+
+**Tests.** `movegate::a_refused_automation_move_is_held_until_the_ticket_moves` (an automation's
+kept, a person's and an agent's not, the latest replaces, a passing rule clears a rule's line
+and not the gate's, off the board draws nothing, a move clears); `golden_ticket_held_move_120`
+(the row under the PRs, the age, an escape in the words drawn inert, another ticket's not
+drawn); `forge_e2e::a_ticket_with_no_pull_request_enters_and_one_opened_here_waits` now reads
+the held line on the snapshot and in `get_ticket`, keeps it through the person's refused
+`MoveTicket`, and sees it go when the forge reads the pipeline passed.
+
+**Rig H1, and what it took.** REVIEW gated (`gate_pipeline`, reset on every lay), a running PR,
+a worker's second turn ends held in IN PROGRESS. Asked a bare `Why did your ticket not move to
+REVIEW?`, Sonnet answered `I don't know` without calling a tool in three runs — twice citing the
+rig brief's `read no file and run no command`, once with that rule scoped to its first turn,
+offering to look instead. `get_ticket`'s description named no automove at all, so it now says
+`the board's moves and why it last held it (automove)` (816 → 820 bytes after trimming
+`mesimon`, `the ticket's` and two parentheses), against the brief's "the field, not the
+description". Asked `Find out why …, and say why in one line` (no tool or field named), the
+worker tailed `daemon.log` (this repository's CLAUDE.md names it), then called `get_ticket` and
+answered `held because this ticket's pull request #42 has a pipeline still running`: PASS. Not
+measured: whether that run needed the description's new words.

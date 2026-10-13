@@ -322,6 +322,67 @@ impl MoveGate {
     }
 }
 
+/// An automatic move a column or this gate refused (T-749): where it was
+/// going, the refusal as the mover heard it, when, and whether a column rule
+/// refused it — one that can pass with the ticket still where it is.
+struct Held {
+    dest: String,
+    words: String,
+    at_ms: u64,
+    gate: bool,
+}
+
+/// The last refused automatic move per ticket (T-749), for its page and
+/// `get_ticket`, so a card that sat still says why outside the feed. In
+/// memory like the gate: a restart's first automove asks again.
+#[derive(Default)]
+pub struct HeldMoves(HashMap<ulid::Ulid, Held>);
+
+impl HeldMoves {
+    /// A move refused. Kept for an automation only: a person's dialog said
+    /// it as it happened, and an agent's `move_ticket` answers it.
+    pub fn refused(
+        &mut self,
+        ticket: ulid::Ulid,
+        dest: &str,
+        words: &str,
+        by: &Principal,
+        gate: bool,
+        at_ms: u64,
+    ) {
+        if matches!(by, Principal::Automation { .. }) {
+            let held = Held { dest: dest.into(), words: words.into(), at_ms, gate };
+            self.0.insert(ticket, held);
+        }
+    }
+
+    /// The ticket moved, whoever moved it.
+    pub fn moved(&mut self, ticket: ulid::Ulid) {
+        self.0.remove(&ticket);
+    }
+
+    /// The held lines still standing, by ticket: on the board, and for a
+    /// column rule, `refuses(ticket, dest)` still true.
+    pub fn standing(
+        &self,
+        on_board: impl Fn(ulid::Ulid) -> bool,
+        refuses: impl Fn(ulid::Ulid, &str) -> bool,
+    ) -> Vec<mesimon_core::command::HeldMove> {
+        let mut out: Vec<_> = self
+            .0
+            .iter()
+            .filter(|(t, h)| on_board(**t) && (!h.gate || refuses(**t, &h.dest)))
+            .map(|(t, h)| mesimon_core::command::HeldMove {
+                ticket: *t,
+                words: h.words.clone(),
+                at_ms: h.at_ms,
+            })
+            .collect();
+        out.sort_by_key(|h| h.ticket);
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,5 +684,38 @@ mod tests {
             assert!(r.message().starts_with("refused: "));
             assert!(!r.tag().is_empty());
         }
+    }
+
+    /// T-749: an automation's refusal is kept until the ticket moves, a
+    /// column rule's only while the rule still refuses, and a person's or an
+    /// agent's is not kept at all.
+    #[test]
+    fn a_refused_automation_move_is_held_until_the_ticket_moves() {
+        let a = ulid::Ulid::from_parts(1, 1);
+        let b = ulid::Ulid::from_parts(1, 2);
+        let mut h = HeldMoves::default();
+        let all = |_| true;
+        let refuses = |_, _: &str| true;
+        h.refused(a, "REVIEW", "pipeline running — before REVIEW", &auto(), true, 5);
+        h.refused(b, "DONE", "worktree unmerged — merge before DONE", &Principal::Local, true, 6);
+        h.refused(b, "DONE", "worktree unmerged — merge before DONE", &agent(), true, 6);
+        let held = h.standing(all, refuses);
+        assert_eq!(held.len(), 1, "only the automation's refusal is held");
+        assert_eq!(held[0].ticket, a);
+        assert_eq!(held[0].words, "pipeline running — before REVIEW");
+        assert_eq!(held[0].at_ms, 5);
+        // A later refusal replaces it.
+        h.refused(a, "REVIEW", "pipeline failed: test — before REVIEW", &auto(), true, 9);
+        assert_eq!(h.standing(all, refuses)[0].words, "pipeline failed: test — before REVIEW");
+        // The rule passing clears a column rule's line; the gate's stays.
+        h.refused(b, "REVIEW", "moved too often — paused", &auto(), false, 7);
+        let passes = |_, _: &str| false;
+        let held = h.standing(all, passes);
+        assert_eq!(held.iter().map(|x| x.ticket).collect::<Vec<_>>(), [b]);
+        // A ticket off the board draws nothing; a move clears it.
+        assert!(h.standing(|t| t != b, passes).is_empty());
+        h.moved(a);
+        h.moved(b);
+        assert!(h.standing(all, refuses).is_empty());
     }
 }

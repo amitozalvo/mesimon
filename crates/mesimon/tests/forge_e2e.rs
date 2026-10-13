@@ -90,6 +90,16 @@ fn prs_of(c: &mut TestClient) -> Vec<PrItem> {
     }
 }
 
+/// The snapshot's held automoves (T-749), by ticket.
+fn held_of(c: &mut TestClient) -> Vec<(ulid::Ulid, String)> {
+    match c.request(Command::Snapshot) {
+        Response::Board { automation, .. } => {
+            automation.held.into_iter().map(|h| (h.ticket, h.words)).collect()
+        }
+        other => panic!("not a board: {other:?}"),
+    }
+}
+
 /// One PR as `gh pr list --json` prints it.
 fn pr_json(
     branch: &str,
@@ -357,16 +367,29 @@ fn a_ticket_with_no_pull_request_enters_and_one_opened_here_waits() {
         })
     });
     assert_ne!(c.board().ticket(pr_id).unwrap().column, "REVIEW");
+    // And on the page and in `get_ticket` (T-749), in the same words.
+    let words = "pipeline not read — before REVIEW";
+    assert_eq!(held_of(&mut c), [(pr_id, words.to_string())]);
+    match c.send(Principal::Agent { session: pr_sid }, Command::AgentGetTicket) {
+        Response::AgentTicket { ticket } => {
+            assert_eq!(ticket.automove.held.as_deref(), Some(words))
+        }
+        other => panic!("get_ticket: {other:?}"),
+    }
     match c.request(Command::MoveTicket { id: pr_id, column: "REVIEW".into(), before: None }) {
         Response::Err { message } => assert!(message.contains("pipeline not read"), "{message}"),
         other => panic!("REVIEW before the forge read the PR: {other:?}"),
     }
+    // A person's refusal is the dialog's to say: the automation's stays.
+    assert_eq!(held_of(&mut c), [(pr_id, words.to_string())]);
 
-    // The forge binds it, its pipeline green: the move goes through.
+    // The forge binds it, its pipeline green: the rule passes, the held
+    // line goes with the card still where it was, and the move goes through.
     write(&prs_file, &pr_json(&branch, &tip, "OPEN", None, None));
     wait_until(Duration::from_secs(20), "the PR to bind, passed", || {
         prs_of(&mut c).iter().any(|p| p.ticket == pr_id && p.pipeline == "passed")
     });
+    assert_eq!(held_of(&mut c), []);
     assert!(matches!(
         c.request(Command::MoveTicket { id: pr_id, column: "REVIEW".into(), before: None }),
         Response::Ok

@@ -183,7 +183,11 @@ session is waiting on you*.
 sleeps them all. The Esc menu archives finished tickets and lists the archive. A column's
 settings can hold back a ticket whose `Summary` still has an unticked box (`Entry needs every
 summary box ticked`, off by default): it cannot enter that column, is never offered from it and
-cannot be archived from it until the box is ticked or taken out. **Closing the board
+cannot be archived from it until the box is ticked or taken out. When a rule like that refuses
+the move the board makes on its own at a turn's start or end, the card stays where it is and the
+ticket page says why in grey under the branch, in the rule's words (`held: pipeline running —
+before REVIEW ∙ 2m ago`), until the ticket moves or the rule passes; the ticket's agent reads the
+same line when it asks for its ticket. **Closing the board
 does not stop your agents** — that is the point of the daemon.
 
 The footer names the main keys for whatever you are looking at; `?` opens the complete key

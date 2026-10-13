@@ -692,6 +692,10 @@ class Rig:
             settings["claude_mode"] = "manual"
             self.wire.request({"cmd": "set_column_settings", "name": MANUAL_COLUMN,
                                "settings": settings})
+        # REVIEW's pipeline gate is H1's alone (T-749): a run cut short
+        # inside H1 left it on, and every later test's turn end would wait
+        # on a pipeline its ticket never runs.
+        self.gate_pipeline(False)
         # The crown's asks go straight to the workers it started and it
         # answers their questions (T-610's autonomous mode, the default);
         # supervised, each waits on its card for a person's ^y.
@@ -703,6 +707,15 @@ class Rig:
             self.wire.set_crown_watches(True)
         say(f"  tier {TIER_NAME} ({spec['model']}, effort {TIER_EFFORT}) is the board's default; "
             f"the crown is autonomous")
+
+    def gate_pipeline(self, on):
+        """REVIEW's `entry needs a passed pipeline` (T-739), on or off."""
+        col = next(c for c in self.board()["columns"] if c["name"] == "REVIEW")
+        if bool(col.get("requires_pipeline")) == on:
+            return
+        settings = {k: v for k, v in col.items() if k not in ("name", "order")}
+        settings["requires_pipeline"] = on
+        self.wire.request({"cmd": "set_column_settings", "name": "REVIEW", "settings": settings})
 
     def clear_previous(self):
         """A run is repeatable. An earlier run's tickets stay where they are
@@ -1211,6 +1224,11 @@ Reply with the single word ready and end your turn."""
             if not ok:
                 record["failures"].append("the daemon did not come back on the mod")
             return ok
+        if what in ("gate_pipeline", "gate_off"):
+            # H1 (T-749): REVIEW refuses a ticket whose pipeline has not
+            # passed, so a turn's end in IN PROGRESS is held there.
+            self.gate_pipeline(what == "gate_pipeline")
+            return True
         if what == "doctor_mcp":
             out = subprocess.run([self.bin, "doctor", "--mcp"], cwd=self.repo, capture_output=True,
                                  text=True, env=terminal_env(), timeout=120)
