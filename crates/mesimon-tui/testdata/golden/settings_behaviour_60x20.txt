@@ -1,5 +1,5 @@
  BOARD   mesimon › kanban-tui   6 tickets
-  ╭─ SETTINGS ∙ BEHAVIOUR ───────────────────────────────╮
+  ╭─ SETTINGS ∙ BEHAVIOUR ∙ MACHINE ─────────────────────╮
   │                                                      │
   │  Keep this machine awake   ○ off                     │
   │  Mouse                     ● on                      │

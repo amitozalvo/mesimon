@@ -58,6 +58,10 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     }
     if app.settings_board_scope {
         name.push_str(" ∙ THIS BOARD");
+    } else if app.frame_ctx().pref_scope_offered {
+        // Where `b` is on offer the other scope is named too (T-746): a
+        // pick a board's own setting hides must not read as this board's.
+        name.push_str(" ∙ MACHINE");
     }
     let inner = dialog::frame(
         f,

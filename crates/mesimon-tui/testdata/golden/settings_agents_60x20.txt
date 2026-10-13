@@ -1,5 +1,5 @@
  BOARD   mesimon › kanban-tui   6 tickets
-  ╭─ SETTINGS ∙ AGENTS ──────────────────────────────────╮
+  ╭─ SETTINGS ∙ AGENTS ∙ MACHINE ────────────────────────╮
   │                                                      │
   │  Default tier    claude                              │
   │  Tiers           none yet ›                          │

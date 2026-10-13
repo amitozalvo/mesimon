@@ -59,6 +59,16 @@ pub(super) fn draw_page(f: &mut Frame, app: &App, area: Rect) {
         }
     }
     f.render_widget(Paragraph::new(Line::from(head)), Rect { height: 1, ..area });
+    // Under it, in machine scope, what this board's own pick keeps: a pick
+    // here saves and changes nothing on this board (T-746).
+    if let Some(keeps) = app.board_keeps(slot).filter(|_| !app.settings_board_scope) {
+        let line = format!(" {keeps} ∙ b sets this board's");
+        let line = truncate(&line, usize::from(area.width));
+        f.render_widget(
+            Paragraph::new(Span::styled(line, theme.dim2())),
+            Rect { y: area.y + 1, height: 1, ..area },
+        );
+    }
 
     // The rows: an inherit row first in board scope (T-361), then every
     // flavor with its ground at the right.
@@ -131,8 +141,8 @@ pub(super) fn draw_page(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// The row of the pick the slot holds: the board's own in board scope (the
-/// inherit row while it has none), else the machine's — the live theme for
-/// the board's own ground, which under a pin is not the slot's.
+/// inherit row while it has none), else the machine's, which this board's
+/// own pick may hide (T-746).
 fn kept_row(app: &App, slot: Slot) -> usize {
     let ground = match slot {
         Slot::One(g) => g,
@@ -141,7 +151,7 @@ fn kept_row(app: &App, slot: Slot) -> usize {
     let pick = if app.settings_board_scope {
         app.board_prefs.flavor(ground)
     } else {
-        Some(app.prefs.for_ground(ground))
+        Some(app.machine_prefs.for_ground(ground))
     };
     match pick {
         Some(f) => {

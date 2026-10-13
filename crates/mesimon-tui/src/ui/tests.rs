@@ -1230,6 +1230,26 @@ fn golden_theme_picker_board_120() {
     golden("theme_picker_board_120x30", &render(&app, 120, 30));
 }
 
+/// The picker in the machine's scope on a board with a theme of its own
+/// (T-746): the title names the scope, and the line under the slots says
+/// which theme this board keeps whatever is picked here.
+#[test]
+fn theme_picker_says_what_the_board_keeps() {
+    let mut app = app_graphite(fixture_archived());
+    app.board_prefs.set_flavor(crate::theme::Ground::Dark, crate::theme::Flavor::Amber);
+    app.resolve_prefs();
+    app.mode = Mode::Theme { idx: 0, slot: crate::theme::Slot::Both };
+    let rows = render(&app, 120, 30);
+    assert!(rows.iter().any(|r| r.contains("SETTINGS ∙ MACHINE")), "{rows:#?}");
+    assert!(
+        rows.iter().any(|r| r.contains("this board keeps amber for dark ∙ b sets this board's")),
+        "{rows:#?}"
+    );
+    app.settings_board_scope = true;
+    let rows = render(&app, 120, 30);
+    assert!(!rows.iter().any(|r| r.contains("this board keeps")), "{rows:#?}");
+}
+
 /// The agent-brief dialog: the reach named, the text verbatim on the elevated
 /// surface, and the four answers in the bottom edge. This golden is the
 /// promise the feature makes — what is on the screen is what every claude

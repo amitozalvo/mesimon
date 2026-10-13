@@ -1,6 +1,6 @@
  BOARD   mesimon › kanban-tui   6 tickets
 
-    TO╭─ SETTINGS ───────────────────────────────────────────────────────────────────────────────────────────────╮   0
+    TO╭─ SETTINGS ∙ MACHINE ─────────────────────────────────────────────────────────────────────────────────────╮   0
       │                                                                                                          │
     De│  Theme              the cursor's card           another card                                             │
       │                                                                              ╭─ an agent's pane ───────╮ │

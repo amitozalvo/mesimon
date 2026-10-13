@@ -4237,6 +4237,19 @@ static TIER_EDIT: &[Binding] = &[
 /// nothing the daemon owns changes, and the file it writes is this
 /// machine's own preference.
 static THEME: &[Binding] = &[
+    // The scope switch (T-746): offered here as on the section list, so a
+    // pick a board's own theme would hide can be made the board's.
+    Binding {
+        keys: &[Key::Char('b')],
+        verb: Verb::PrefScope,
+        show: "b",
+        hint: |c| if c.pref_scope_board { "machine" } else { "this board" },
+        avail: |c| c.pref_scope_offered,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 40,
+    },
     Binding {
         keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
         verb: Verb::CursorDown,

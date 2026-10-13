@@ -24067,3 +24067,30 @@ waits for that turn's `Stop`.
 that committed nothing) binds every worktree ticket cut from that base, since each one's reflog
 holds it (`forge::binds`' `made here`): F2's pass also woke the crown for F1's ticket. GitHub
 refuses a PR with no diff; GitLab opens an empty MR.
+
+## A board's own theme is named where it hides a pick (T-746, 2026-10-13)
+
+The author, on the personal-life board: "it says green saved for dark and light terminals but not
+actually taking effect", and "nothing said machine scope, i couldn't even set it to board using
+b". The board's `prefs.json` held `amber` for both grounds (set 2026-09-30, while T-625 opened
+Appearance in board scope); T-717's dialog opens on the machine's, so the pick saved to the
+machine file and the board's own pick kept winning. Three faults, three fixes:
+
+- **`b` was offered and unbound on the Theme page.** `Ctx::pref_scope_offered` held there, but
+  `THEME` had no binding. It has `b` now, as `SECTIONS` does, and the `PrefScope` arm moves the
+  picker's cursor onto the slot's pick in the new scope (the inherit row comes and goes).
+- **Nothing named the machine's scope.** The title said `THIS BOARD` in board scope and nothing
+  otherwise; where `b` is on offer it now says `MACHINE`.
+- **The page and the status said nothing of the board's pick.** `App::board_keeps(slot)` names
+  what the board's own picks keep of a slot; in machine scope the Theme page draws it under the
+  slots (`this board keeps amber ∙ b sets this board's`) and a pick's status carries it after
+  `saved for …`. The page's `●` and its opening cursor read the machine's pick wherever the board
+  holds one (`kept_row`, `theme_cursor`), not the resolved theme, which is the board's.
+
+A machine pick does not drop the board's: other boards' themes are deliberate (one colour per
+board), and the board's pick is now one key away, named on the page.
+
+**Tests.** TUI `a_board_that_keeps_its_theme_says_so_and_b_reaches_it` (the status, the cursor,
+`b` both ways, the board's pick landing), `theme_picker_says_what_the_board_keeps` (the title
+and the line, gone in board scope); goldens `settings_*` (the `MACHINE` word),
+`theme_picker_120`, `theme_picker_board_120` (the `b` hint).

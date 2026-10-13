@@ -4092,14 +4092,15 @@ impl App {
     /// The picker row a ground's saved pick sits on: board scope has the
     /// inherit row first (T-361) and opens there when the board has no pick
     /// of its own; machine scope opens on the slot's pick — the live theme
-    /// for the board's own ground, which under a pin is not the slot's.
+    /// for the board's own ground, which under a pin is not the slot's, and
+    /// the machine's where this board's own pick hides it (T-746).
     fn theme_cursor(&self, ground: Ground) -> usize {
         let pick = if self.settings_board_scope {
             self.board_prefs.flavor(ground)
-        } else if ground == self.ground {
+        } else if ground == self.ground && self.board_prefs.flavor(ground).is_none() {
             Some(self.theme.flavor)
         } else {
-            Some(self.prefs.for_ground(ground))
+            Some(self.machine_prefs.for_ground(ground))
         };
         match pick {
             Some(f) => {
@@ -4160,6 +4161,29 @@ impl App {
         }
     }
 
+    /// What this board's own picks keep of a slot (T-746): in machine scope
+    /// a pick for a ground the board sets saves and changes nothing here, so
+    /// the page and the status say which theme stays. `None` when the board
+    /// sets none of the slot's grounds.
+    pub(crate) fn board_keeps(&self, slot: Slot) -> Option<String> {
+        let held: Vec<(Ground, Flavor)> = slot
+            .grounds()
+            .iter()
+            .filter_map(|g| self.board_prefs.flavor(*g).map(|f| (*g, f)))
+            .collect();
+        let (_, first) = *held.first()?;
+        let words = if held.len() == slot.grounds().len() && held.iter().all(|(_, f)| *f == first)
+        {
+            first.name().to_string()
+        } else {
+            held.iter()
+                .map(|(g, f)| format!("{} for {}", f.name(), g.word()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        Some(format!("this board keeps {words}"))
+    }
+
     /// Enter in the picker: the slot the terminal is on takes the flavor,
     /// and the file follows where it may — the machine's, or this board's
     /// in board scope, where the inherit row (`None`) drops the board's
@@ -4205,7 +4229,12 @@ impl App {
             self.after_pref_change();
             let name = flavor.name();
             self.status = match self.save_prefs(name) {
-                Ok(()) => format!("{name} saved for {word}"),
+                Ok(()) => match self.board_keeps(slot) {
+                    Some(keeps) => {
+                        format!("{name} saved for {word} ∙ {keeps} ∙ b sets this board's")
+                    }
+                    None => format!("{name} saved for {word}"),
+                },
                 Err(why) => why,
             };
         }
@@ -6117,6 +6146,15 @@ impl App {
             }
             Verb::PrefScope => {
                 self.settings_board_scope = !self.settings_board_scope;
+                // The picker's rows gain or lose the inherit row: the cursor
+                // lands on the slot's pick in the scope it is now in.
+                if let Mode::Theme { slot, .. } = self.mode {
+                    let ground = match slot {
+                        Slot::One(g) => g,
+                        Slot::Both => self.ground,
+                    };
+                    self.mode = Mode::Theme { idx: self.theme_cursor(ground), slot };
+                }
                 self.status = if self.settings_board_scope {
                     "settings for this board ∙ b returns a row to the machine's".into()
                 } else {
@@ -17352,6 +17390,55 @@ mod tests {
         assert_eq!(app.board_prefs.flavor(Ground::Dark), None);
         assert_eq!(app.board_prefs.flavor(Ground::Light), None);
         assert_eq!(app.machine_prefs.light, Flavor::Blue, "the machine's is untouched");
+    }
+
+    /// A board with a theme of its own (T-746): a pick in the machine's
+    /// scope saved and changed nothing, said only "saved", and `b` was
+    /// inert on the Theme page. The pick now says what the board keeps,
+    /// and `b` there makes the next pick this board's.
+    #[test]
+    fn a_board_that_keeps_its_theme_says_so_and_b_reaches_it() {
+        let dir = std::env::temp_dir().join(format!("msmn-app-keeps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut app = app_three_columns();
+        app.prefs_path = Some(dir.join("prefs.json"));
+        app.board_prefs_path = Some(dir.join("board.json"));
+        app.board_prefs.set_flavor(Ground::Dark, Flavor::Amber);
+        app.board_prefs.set_flavor(Ground::Light, Flavor::Amber);
+        app.resolve_prefs();
+        app.theme = Theme::new(Flavor::Amber, Profile::TrueColor);
+        open_theme_picker(&mut app);
+        let at = |f: Flavor| Flavor::ALL.iter().position(|x| *x == f).expect("a flavor");
+        assert_eq!(
+            app.mode,
+            Mode::Theme { idx: at(Flavor::Graphite), slot: Slot::Both },
+            "machine scope opens on the machine's pick, not the board's"
+        );
+        assert_eq!(app.board_keeps(Slot::Both).as_deref(), Some("this board keeps amber"));
+        app.mode = Mode::Theme { idx: at(Flavor::Green), slot: Slot::Both };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(
+            app.status,
+            "green saved for dark and light terminals ∙ this board keeps amber ∙ b sets this board's"
+        );
+        assert_eq!(app.machine_prefs.dark, Flavor::Green);
+        assert_eq!(app.theme.flavor, Flavor::Amber, "the board's own pick still wins");
+        assert!(app.ctx().pref_scope_offered);
+        press(&mut app, 'b');
+        assert!(app.settings_board_scope, "b works on the Theme page");
+        assert_eq!(
+            app.mode,
+            Mode::Theme { idx: at(Flavor::Amber) + 1, slot: Slot::Both },
+            "the cursor lands on the board's pick, past the inherit row"
+        );
+        app.mode = Mode::Theme { idx: at(Flavor::Green) + 1, slot: Slot::Both };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.status, "green for dark and light terminals ∙ saved for this board");
+        assert_eq!(app.theme.flavor, Flavor::Green);
+        press(&mut app, 'b');
+        assert!(!app.settings_board_scope, "and back to the machine's");
+        assert_eq!(app.mode, Mode::Theme { idx: at(Flavor::Green), slot: Slot::Both });
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn says_light() -> Option<Ground> {

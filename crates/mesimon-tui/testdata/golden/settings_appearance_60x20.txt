@@ -1,5 +1,5 @@
  BOARD   mesimon › kanban-tui   6 tickets
-  ╭─ SETTINGS ∙ APPEARANCE ──────────────────────────────╮
+  ╭─ SETTINGS ∙ APPEARANCE ∙ MACHINE ────────────────────╮
   │                                                      │
   │ the cursor's card          another card              │
   │                                                      │

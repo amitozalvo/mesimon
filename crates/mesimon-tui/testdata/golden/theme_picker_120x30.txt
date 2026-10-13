@@ -1,6 +1,6 @@
  BOARD   mesimon › kanban-tui   6 tickets
 
-    TO╭─ SETTINGS ───────────────────────────────────────────────────────────────────────────────────────────────╮   0
+    TO╭─ SETTINGS ∙ MACHINE ─────────────────────────────────────────────────────────────────────────────────────╮   0
       │                                                                                                          │
     De│▎ Theme               ○ dark and light   ● dark   ○ light                                                 │
       │                                                                                                          │
@@ -25,6 +25,6 @@
       │                                                                                                          │
       │                                                                                                          │
       │                     navy and gold, the Borland look                                                      │
-      ╰───────────────────────────────────────────────── jk preview ∙ enter keep ∙ tab for light ∙ esc sections ─╯
+      ╰────────────────────────────────── jk preview ∙ enter keep ∙ tab for light ∙ b this board ∙ esc sections ─╯
 
  THEME                                                                                                           ? keys
