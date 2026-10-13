@@ -826,7 +826,9 @@ pub struct Daemon {
     git_fetch_wanted: bool,
     /// The in-flight sample is fetching. What the menu row shows meanwhile.
     git_fetching: bool,
-    /// `MESIMON_GIT_FETCH`, read once. Zero = only the menu row fetches.
+    /// The fetch cadence (T-739): the `fetch_every` pref, or
+    /// `MESIMON_GIT_FETCH` over it, re-read on the slow bucket. Zero = only
+    /// the push / pull view's `f` fetches.
     git_fetch_every: Duration,
     /// When the last fetch was ATTEMPTED — a failing remote is retried on the
     /// cadence, never every sample.
@@ -1142,6 +1144,7 @@ pub fn run(paths: Paths) -> Result<()> {
         .collect();
     let feed = FeedWriter::open(&paths.activity_log())?;
     let modroad = bridge::ModRoad::start(&paths);
+    let git_fetch_every = crate::gitstatus::fetch_every_resolved(&paths);
 
     let mut d = Daemon {
         paths,
@@ -1271,7 +1274,7 @@ pub fn run(paths: Paths) -> Result<()> {
         git_wanted: false,
         git_fetch_wanted: false,
         git_fetching: false,
-        git_fetch_every: crate::gitstatus::fetch_every_from_env(),
+        git_fetch_every,
         git_last_fetch: None,
         git_fetched_at_ms: 0,
         git_fetch_error: None,
@@ -2862,6 +2865,10 @@ impl Daemon {
             changed |= stage!("claude_md", self.claude_md.refresh(&self.paths.repo_root));
         }
         if self.ticks % wt_refresh_ticks() == 1 {
+            // The cadence is a pref the person may change while the board
+            // runs (T-739): read off the files on every bucket, two small
+            // reads, so a row's Enter needs no wire and no restart.
+            self.git_fetch_every = crate::gitstatus::fetch_every_resolved(&self.paths);
             if !self.git_fetch_every.is_zero()
                 && self.git_last_fetch.is_none_or(|t| t.elapsed() >= self.git_fetch_every)
             {

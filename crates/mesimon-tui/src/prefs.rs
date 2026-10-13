@@ -210,6 +210,41 @@ pref_words!(ring SummaryShow {
     None => "none",
 });
 
+/// How often the board fetches the remote (T-739). Off by default: the
+/// fetch writes remote-tracking refs, which promise 1 allows only once a
+/// person turns it on. The daemon reads the same key off the files
+/// (`gitstatus::fetch_every_resolved`); the TUI only shows and sets it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FetchEvery {
+    #[default]
+    Off,
+    One,
+    Five,
+    Fifteen,
+}
+
+pref_words!(ring FetchEvery {
+    Off => "off",
+    One => "1m",
+    Five => "5m",
+    Fifteen => "15m",
+});
+
+impl FetchEvery {
+    pub const ALL: [FetchEvery; 4] =
+        [FetchEvery::Off, FetchEvery::One, FetchEvery::Five, FetchEvery::Fifteen];
+
+    /// The word the Settings row and the status line show.
+    pub fn show(self) -> &'static str {
+        match self {
+            FetchEvery::Off => "off",
+            FetchEvery::One => "1 min",
+            FetchEvery::Five => "5 min",
+            FetchEvery::Fifteen => "15 min",
+        }
+    }
+}
+
 /// Who posts a banner (T-676): mesimon's own helper, with the mascot, or
 /// the terminal the board runs in, by an escape and signed as itself — so
 /// a managed Mac that audits every launch has nothing of ours to audit.
@@ -399,6 +434,8 @@ pub(crate) struct Prefs {
     /// looked, one muted line under its title (T-720). ON by default; per
     /// machine, a view preference like the summary's.
     pub new_replies: bool,
+    /// How often the board fetches the remote (T-739); off by default.
+    pub fetch_every: FetchEvery,
     /// The document as loaded, so a save keeps what it does not understand.
     doc: Map<String, Value>,
 }
@@ -445,6 +482,7 @@ impl Default for Prefs {
             card_corner: CardCorner::Age,
             summary: SummaryShow::Full,
             new_replies: true,
+            fetch_every: FetchEvery::Off,
             doc: Map::new(),
         }
     }
@@ -488,6 +526,7 @@ const USAGE_CODEX_KEY: &str = PrefKey::UsageCodex.name();
 const CARD_CORNER_KEY: &str = PrefKey::CardCorner.name();
 const SUMMARY_KEY: &str = PrefKey::Summary.name();
 const NEW_REPLIES_KEY: &str = PrefKey::NewReplies.name();
+const FETCH_EVERY_KEY: &str = PrefKey::FetchEvery.name();
 
 impl Prefs {
     // The three bools are plain fields: `body()` writes every one on each
@@ -588,6 +627,9 @@ impl Prefs {
         if let Some(v) = board.sound(PrefKey::NotifySoundDone) {
             p.notify_sound_done = v;
         }
+        if let Some(v) = board.word(PrefKey::FetchEvery).and_then(FetchEvery::from_key) {
+            p.fetch_every = v;
+        }
         p
     }
 
@@ -642,6 +684,7 @@ impl Prefs {
             PrefKey::UsageCodex => onoff(self.usage_codex),
             PrefKey::CardCorner => self.card_corner.key(),
             PrefKey::Summary => self.summary.key(),
+            PrefKey::FetchEvery => self.fetch_every.key(),
         }
     }
 
@@ -742,6 +785,13 @@ impl Prefs {
         {
             doc.insert(SUMMARY_KEY.into(), Value::from(self.summary.key()));
         }
+        if !doc
+            .get(FETCH_EVERY_KEY)
+            .and_then(Value::as_str)
+            .is_some_and(|v| FetchEvery::from_key(v).is_none())
+        {
+            doc.insert(FETCH_EVERY_KEY.into(), Value::from(self.fetch_every.key()));
+        }
         for (key, s) in [
             (NOTIFY_SOUND_NEEDS_YOU_KEY, self.notify_sound_needs_you),
             (NOTIFY_SOUND_DONE_KEY, self.notify_sound_done),
@@ -820,6 +870,15 @@ impl BoardPrefs {
         self.doc.get(g.word()).and_then(Value::as_str).and_then(Flavor::from_name)
     }
 
+    /// A named value's word, as the file spells it (T-739): the caller
+    /// parses it, so a word a newer build wrote reads as unset here.
+    pub(crate) fn word(&self, key: PrefKey) -> Option<&str> {
+        if !key.board_overridable() {
+            return None;
+        }
+        self.doc.get(key.name()).and_then(Value::as_str)
+    }
+
     /// Present AND readable by this build — what "set for this board" means.
     pub(crate) fn is_set(&self, key: PrefKey) -> bool {
         match key {
@@ -847,6 +906,7 @@ impl BoardPrefs {
             | PrefKey::UsageCodex
             | PrefKey::CardCorner
             | PrefKey::Summary => false,
+            PrefKey::FetchEvery => self.word(key).and_then(FetchEvery::from_key).is_some(),
             _ => self.bool(key).is_some(),
         }
     }
@@ -863,6 +923,12 @@ impl BoardPrefs {
 
     pub(crate) fn set_flavor(&mut self, g: Ground, f: Flavor) {
         self.doc.insert(g.word().into(), Value::from(f.name()));
+    }
+
+    /// A named value, by its word (T-739).
+    pub(crate) fn set_word(&mut self, key: PrefKey, word: &str) {
+        debug_assert!(key.board_overridable() && !key.is_bool());
+        self.doc.insert(key.name().into(), Value::from(word));
     }
 
     /// Back to inheriting: the key leaves the file.
@@ -1063,6 +1129,11 @@ pub(crate) fn load(path: &Path) -> Loaded {
         .and_then(Value::as_str)
         .and_then(SummaryShow::from_key)
         .unwrap_or_default();
+    let fetch_every = doc
+        .get(FETCH_EVERY_KEY)
+        .and_then(Value::as_str)
+        .and_then(FetchEvery::from_key)
+        .unwrap_or_default();
     let prefs = Prefs {
         dark: slot("dark", Flavor::Graphite),
         light: slot("light", Flavor::Chalk),
@@ -1103,6 +1174,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         usage_codex,
         card_corner,
         summary,
+        fetch_every,
         doc,
     };
     if schema > SCHEMA {
@@ -1769,16 +1841,21 @@ mod tests {
         board.set_bool(PrefKey::MergeTrain, false);
         board.set_flavor(Ground::Light, Flavor::Amber);
         board.set_sound(PrefKey::NotifySoundDone, Sound::Hero);
+        board.set_word(PrefKey::FetchEvery, "5m");
         let r = machine.overlay(&board);
         assert!(!r.merge_train, "the board's off wins");
         assert!(r.notify, "untouched keys are the machine's");
         assert_eq!(r.dark, Flavor::Blue);
         assert_eq!(r.light, Flavor::Amber);
         assert_eq!(r.notify_sound_done, Sound::Hero);
+        assert_eq!(r.fetch_every, FetchEvery::Five, "a named value overlays too (T-739)");
         assert_eq!(
             board.overridden(),
-            [PrefKey::Light, PrefKey::MergeTrain, PrefKey::NotifySoundDone]
+            [PrefKey::Light, PrefKey::MergeTrain, PrefKey::NotifySoundDone, PrefKey::FetchEvery]
         );
+        board.set_word(PrefKey::FetchEvery, "hourly");
+        assert_eq!(machine.overlay(&board).fetch_every, FetchEvery::Off, "a foreign word inherits");
+        assert!(!board.is_set(PrefKey::FetchEvery), "and is not an override this build reads");
         assert_eq!(r.word(PrefKey::MergeTrain), "off");
         assert_eq!(machine.word(PrefKey::MergeTrain), "on");
     }
@@ -1921,5 +1998,26 @@ mod tests {
         assert_eq!(l.prefs.summary, SummaryShow::Full, "unknown reads as the default");
         save(&p, &l.prefs).unwrap();
         assert!(std::fs::read_to_string(&p).unwrap().contains("\"later\""), "kept");
+    }
+
+    /// The fetch cadence (T-739) round-trips, reads `off` when absent, and
+    /// keeps a foreign word until a press replaces it: the summary's rule.
+    #[test]
+    fn the_fetch_cadence_round_trips_and_a_foreign_word_survives() {
+        let p = scratch("fetch-every");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&p);
+        let mut l = load(&p);
+        assert_eq!(l.prefs.fetch_every, FetchEvery::Off, "absent is off");
+        l.prefs.fetch_every = FetchEvery::Five;
+        save(&p, &l.prefs).unwrap();
+        assert_eq!(load(&p).prefs.fetch_every, FetchEvery::Five);
+        assert_eq!(load(&p).prefs.word(PrefKey::FetchEvery), "5m");
+        assert_eq!(FetchEvery::Fifteen.next(), FetchEvery::Off, "the ring closes on off");
+        std::fs::write(&p, r#"{"schema_version":1,"fetch_every":"hourly"}"#).unwrap();
+        let l = load(&p);
+        assert_eq!(l.prefs.fetch_every, FetchEvery::Off, "unknown reads as the default");
+        save(&p, &l.prefs).unwrap();
+        assert!(std::fs::read_to_string(&p).unwrap().contains("\"hourly\""), "kept");
     }
 }

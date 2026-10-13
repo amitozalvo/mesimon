@@ -967,11 +967,14 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
         );
     }
     if g.sampled && !g.branch.is_empty() {
-        let every = mesimon_daemon::gitstatus::fetch_every_from_env();
-        let fetch = if every.is_zero() {
-            "fetch off (opt in: MESIMON_GIT_FETCH=5, minutes)".to_string()
-        } else {
-            format!("fetch every {}m (MESIMON_GIT_FETCH)", every.as_secs() / 60)
+        let every = mesimon_daemon::Paths::for_repo(repo)
+            .map(|p| mesimon_daemon::gitstatus::fetch_every_resolved(&p))
+            .unwrap_or_else(|_| mesimon_daemon::gitstatus::fetch_every_from_env());
+        let by_env = std::env::var("MESIMON_GIT_FETCH").is_ok_and(|v| !v.trim().is_empty());
+        let fetch = match (every.is_zero(), by_env) {
+            (true, _) => "fetch off (Settings > Behaviour > Fetch from the remote)".to_string(),
+            (false, true) => format!("fetch every {}m (MESIMON_GIT_FETCH)", every.as_secs() / 60),
+            (false, false) => format!("fetch every {}m (Settings > Behaviour)", every.as_secs() / 60),
         };
         let upstream = match &g.upstream {
             Some(u) => format!("upstream {u}"),

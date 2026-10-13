@@ -675,6 +675,9 @@ pub enum Verb {
     /// The Settings row under it: whether a train merge also pastes the
     /// merged notice into that agent.
     MergeTrainNotice,
+    /// The Behaviour row for the periodic fetch (T-739): off, or every 1,
+    /// 5 or 15 minutes. `prefs.json`, board-overridable.
+    FetchEvery,
     /// The Settings row that turns the agent tool surface on or off for this
     /// board (T-217). Board state, not a preference: it is per repo, it
     /// lives in `columns.toml`, and the daemon reads it at every spawn.
@@ -1051,6 +1054,7 @@ impl SettingsSection {
             | Verb::UsageCodex => Self::Usage,
             Verb::MergeTrain
             | Verb::MergeTrainNotice
+            | Verb::FetchEvery
             | Verb::SnoozeQuiet
             | Verb::WeekStart
             | Verb::KeepAwake
@@ -1528,6 +1532,9 @@ pub struct Ctx {
     /// says it is ARMED — the row's detail says `arming…` between the two.
     pub merge_train: bool,
     pub merge_train_notice: bool,
+    /// How often the board fetches the remote (T-739): the pref's word,
+    /// `off`, `1m`, `5m` or `15m`.
+    pub fetch_every_word: &'static str,
     pub merge_train_armed: bool,
     /// The train can reach the subject ticket: an attached worktree binding
     /// on it, and the train on (the preference, or the daemon saying it is
@@ -4854,6 +4861,20 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // The merge train (2026-09-04): the one standing consent for mesimon to
     // prompt an agent with no per-press gesture, which is why it is a
     // preference; on by default since T-610, and this row takes it back.
+    // The periodic fetch (T-739): off by default, since it writes
+    // remote-tracking refs and promise 1 names it as the write a person
+    // turns on. It is what lets a pull request merged on a forge read
+    // merged on the card (T-267) without a pull by hand.
+    MenuItem {
+        verb: Verb::FetchEvery,
+        label: |_| "Fetch from the remote".into(),
+        detail: |c| match c.fetch_every_word {
+            "off" => "only f in the push / pull view fetches".into(),
+            _ => "remote-tracking refs only, never your branches ∙ a merged PR shows as merged".into(),
+        },
+        avail: always,
+        key: "",
+    },
     MenuItem {
         verb: Verb::MergeTrain,
         label: |_| "Auto merge".into(),
@@ -5387,6 +5408,7 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::Mouse,
             Verb::SnoozeQuiet,
             Verb::WeekStart,
+            Verb::FetchEvery,
             Verb::MergeTrain,
             Verb::MergeTrainNotice,
         ],
@@ -5440,6 +5462,7 @@ pub fn settings_heading(verb: Verb) -> Option<&'static str> {
         Verb::NotifyWords => Some("BANNER"),
         Verb::NotifySoundNeedsYou => Some("SOUND"),
         Verb::SnoozeQuiet => Some("SNOOZE"),
+        Verb::FetchEvery => Some("REMOTE"),
         Verb::MergeTrain => Some("AUTO MERGE"),
         Verb::UsageShow => Some("QUOTA LINE"),
         Verb::TabTitle => Some("TITLE"),
@@ -5479,6 +5502,15 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
         Verb::StatusLine => pick(&["top", "bottom"], !c.status_top),
         Verb::CrownLightning => pick(&["lightning", "still"], !c.crown_lightning),
         Verb::SummaryShow => choice(&["full", "hover", "none"], or(c.summary_word, "full")),
+        Verb::FetchEvery => choice(
+            &["off", "1 min", "5 min", "15 min"],
+            match c.fetch_every_word {
+                "1m" => "1 min",
+                "5m" => "5 min",
+                "15m" => "15 min",
+                _ => "off",
+            },
+        ),
         Verb::NewReplies => Value::Switch(c.new_replies),
         Verb::CardCorner => pick(&["age", "cost"], c.card_cost),
         Verb::NotifyToggle => Value::Switch(c.notify),
@@ -5604,6 +5636,7 @@ pub fn pref_key(verb: Verb) -> Option<PrefKey> {
         Verb::CardCorner => PrefKey::CardCorner,
         Verb::SummaryShow => PrefKey::Summary,
         Verb::NewReplies => PrefKey::NewReplies,
+        Verb::FetchEvery => PrefKey::FetchEvery,
         _ => return None,
     })
 }
@@ -9540,6 +9573,7 @@ mod tests {
                     Verb::Mouse,
                     Verb::SnoozeQuiet,
                     Verb::WeekStart,
+                    Verb::FetchEvery,
                     Verb::MergeTrain,
                 ],
             ),
@@ -9571,7 +9605,7 @@ mod tests {
         .iter()
         .map(|m| m.verb)
         .collect();
-        assert_eq!(on[4..6], [Verb::MergeTrain, Verb::MergeTrainNotice]);
+        assert_eq!(on[5..7], [Verb::MergeTrain, Verb::MergeTrainNotice]);
         for v in prefs {
             assert!(!verbs.contains(&v), "{v:?} is a preference and belongs in Settings");
         }
@@ -10233,6 +10267,7 @@ mod tests {
             Verb::WeekStart,
             Verb::MergeTrain,
             Verb::MergeTrainNotice,
+            Verb::FetchEvery,
             Verb::UsageShow,
             Verb::UsageFiveHour,
             Verb::UsageWeekly,

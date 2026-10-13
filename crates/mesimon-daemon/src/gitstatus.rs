@@ -504,6 +504,42 @@ pub fn fetch_every_from_env() -> Duration {
     fetch_every(std::env::var("MESIMON_GIT_FETCH").ok().as_deref())
 }
 
+/// The cadence as the board resolves it (T-739): `MESIMON_GIT_FETCH` where
+/// it is set (a test seam and an override), else the `fetch_every` word of
+/// this board's `prefs.json`, else the machine's, else off. Read at the
+/// moment the daemon decides, like the merged-notice pref (T-613): the TUI
+/// owns the files and nothing rides the wire for it.
+pub fn fetch_every_resolved(paths: &crate::paths::Paths) -> Duration {
+    if let Ok(v) = std::env::var("MESIMON_GIT_FETCH") {
+        if !v.trim().is_empty() {
+            return fetch_every(Some(&v));
+        }
+    }
+    let key = mesimon_core::prefs::PrefKey::FetchEvery.name();
+    let word = pref_word(&paths.prefs_file(), key).or_else(|| {
+        let machine = crate::paths::state_root().ok()?.join("prefs.json");
+        pref_word(&machine, key)
+    });
+    fetch_every_word(word.as_deref())
+}
+
+/// One string key of a `prefs.json`: `None` where the file, the key or the
+/// type is not there, so the next file is asked.
+fn pref_word(path: &Path, key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str::<serde_json::Value>(&text).ok()?.get(key)?.as_str().map(str::to_string)
+}
+
+/// The pref's word as a cadence: `off` or a word a newer build wrote is
+/// zero, `5m` is five minutes.
+pub fn fetch_every_word(word: Option<&str>) -> Duration {
+    let minutes: u64 = word
+        .and_then(|w| w.trim().strip_suffix('m'))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
+    Duration::from_secs(minutes * 60)
+}
+
 /// The cadence a `MESIMON_GIT_FETCH` value means.
 pub fn fetch_every(value: Option<&str>) -> Duration {
     let minutes: u64 = value.and_then(|v| v.trim().parse().ok()).unwrap_or(0);
@@ -869,5 +905,10 @@ mod tests {
         assert_eq!(fetch_every(Some(" 1 ")), Duration::from_secs(60));
         assert_eq!(fetch_every(Some("x")), Duration::ZERO);
         assert_eq!(fetch_every(Some("0")), Duration::ZERO);
+        assert_eq!(fetch_every_word(None), Duration::ZERO);
+        assert_eq!(fetch_every_word(Some("off")), Duration::ZERO);
+        assert_eq!(fetch_every_word(Some("5m")), Duration::from_secs(300));
+        assert_eq!(fetch_every_word(Some("15m")), Duration::from_secs(900));
+        assert_eq!(fetch_every_word(Some("hourly")), Duration::ZERO, "a newer word is off");
     }
 }

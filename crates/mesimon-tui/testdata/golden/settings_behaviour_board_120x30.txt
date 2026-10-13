@@ -9,12 +9,12 @@
       │  Notifications       Comes back                ● lit   ○ quiet                                inherited  │
       │                      Week starts on            Monday                                           machine  │
       │▎ Behaviour                                                                                               │
-      │                     AUTO MERGE                                                                           │
-      │  Agents              Auto merge                ● on                                            set here  │
-      │                      Tells the agent           ● on                                           inherited  │
-      │  Crown                                                                                                   │
+      │                     REMOTE                                                                               │
+      │  Agents              Fetch from the remote     ● off   ○ 1 min   ○ 5 min   ○ 15 min           inherited  │
       │                                                                                                          │
-      │  Terminal                                                                                                │
+      │  Crown              AUTO MERGE                                                                           │
+      │                      Auto merge                ● on                                            set here  │
+      │  Terminal            Tells the agent           ● on                                           inherited  │
       │                                                                                                          │
       │  Usage                                                                                                   │
       │                                                                                                          │

@@ -9,12 +9,12 @@
       │  Notifications       Comes back                ● lit   ○ quiet                                           │
       │                      Week starts on            Monday                                                    │
       │▎ Behaviour                                                                                               │
-      │                     AUTO MERGE                                                                           │
-      │  Agents              Auto merge                ● on                                                      │
-      │                      Tells the agent           ● on                                                      │
-      │  Crown                                                                                                   │
+      │                     REMOTE                                                                               │
+      │  Agents              Fetch from the remote     ● off   ○ 1 min   ○ 5 min   ○ 15 min                      │
       │                                                                                                          │
-      │  Terminal                                                                                                │
+      │  Crown              AUTO MERGE                                                                           │
+      │                      Auto merge                ● on                                                      │
+      │  Terminal            Tells the agent           ● on                                                      │
       │                                                                                                          │
       │  Usage                                                                                                   │
       │                                                                                                          │

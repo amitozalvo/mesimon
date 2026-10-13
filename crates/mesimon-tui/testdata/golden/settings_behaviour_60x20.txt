@@ -8,12 +8,12 @@
   │  Comes back                ● lit   ○ quiet           │
   │  Week starts on            Monday                    │
   │                                                      │
+  │ REMOTE                                               │
+  │  Fetch from the remote     off                       │
+  │                                                      │
   │ AUTO MERGE                                           │
   │  Auto merge                ● on                      │
   │  Tells the agent           ● on                      │
-  │                                                      │
-  │                                                      │
-  │                                                      │
   │                                                      │
   │ the machine sleeps on its own clock, agents or not   │
   ╰──────────── jk select ∙ enter change ∙ b this board ─╯

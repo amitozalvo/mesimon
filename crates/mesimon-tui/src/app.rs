@@ -4195,6 +4195,25 @@ impl App {
                     }),
                 }
             }
+            // A named value (T-739): `inherit → each word → inherit`.
+            PrefKey::FetchEvery => {
+                use crate::prefs::FetchEvery;
+                let next = match self.board_prefs.word(key).and_then(FetchEvery::from_key) {
+                    None => Some(FetchEvery::ALL[0]),
+                    Some(v) => {
+                        let i = FetchEvery::ALL.iter().position(|x| *x == v).unwrap_or(0);
+                        FetchEvery::ALL.get(i + 1).copied()
+                    }
+                };
+                match next {
+                    Some(v) => self.set_board_pref(&format!("{label}: {}", v.show()), |b| {
+                        b.set_word(key, v.key())
+                    }),
+                    None => self.set_board_pref(&format!("{label} inherits the machine's"), |b| {
+                        b.clear(key)
+                    }),
+                }
+            }
             _ => {
                 let next = match self.board_prefs.bool(key) {
                     None => Some(true),
@@ -5630,6 +5649,7 @@ impl App {
                 .collect(),
             merge_train: self.prefs.merge_train,
             merge_train_notice: self.prefs.merge_train_notice,
+            fetch_every_word: self.prefs.fetch_every.key(),
             merge_train_armed: self.automation.merge_train,
             // The preference OR the daemon's word: the reconcile lags the
             // toggle by a snapshot, and the key must not flicker across it.
@@ -6442,6 +6462,16 @@ impl App {
                         }
                     }
                 }
+            }
+            // T-739. The daemon reads the key off the files on its own
+            // bucket; nothing to push.
+            Verb::FetchEvery => {
+                let v = self.prefs.fetch_every.next();
+                let word = match v {
+                    crate::prefs::FetchEvery::Off => "fetch off ∙ f in the push / pull view fetches".to_string(),
+                    other => format!("fetch every {} ∙ remote-tracking refs only", other.show()),
+                };
+                self.set_pref(&word, |p| p.fetch_every = v);
             }
             Verb::MergeTrain => {
                 let on = !self.prefs.merge_train;

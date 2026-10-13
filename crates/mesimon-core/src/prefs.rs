@@ -91,10 +91,16 @@ pub enum PrefKey {
     /// by default; off gives the terminal its own text selection back,
     /// which reading the mouse takes. Per machine: it is about the terminal.
     Mouse,
+    /// How often the board fetches the remote (T-739): `off`, or every `1m`,
+    /// `5m` or `15m`. The fetch is what lets a pull request merged on a
+    /// forge read merged here (T-267), so it is about the repo and a board
+    /// may set its own. Off by default: promise 1 names it as the one
+    /// write outside the allowlist a person turns on.
+    FetchEvery,
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 39] = [
+    pub const ALL: [PrefKey; 40] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::SnoozeNeedsYou,
@@ -134,6 +140,7 @@ impl PrefKey {
         PrefKey::Summary,
         PrefKey::NewReplies,
         PrefKey::Mouse,
+        PrefKey::FetchEvery,
     ];
 
     /// The JSON key in both files.
@@ -178,6 +185,7 @@ impl PrefKey {
             PrefKey::Summary => "summary",
             PrefKey::NewReplies => "new_replies",
             PrefKey::Mouse => "mouse",
+            PrefKey::FetchEvery => "fetch_every",
         }
     }
 
@@ -265,6 +273,7 @@ impl PrefKey {
             PrefKey::UsageCodex => "usage line's codex",
             PrefKey::CardCorner => "card corner",
             PrefKey::Mouse => "mouse",
+            PrefKey::FetchEvery => "fetch from the remote",
         }
     }
 
@@ -285,6 +294,7 @@ impl PrefKey {
                 | PrefKey::UsageResets
                 | PrefKey::CardCorner
                 | PrefKey::Summary
+                | PrefKey::FetchEvery
         )
     }
 }

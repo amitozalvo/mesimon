@@ -17,8 +17,8 @@ there is deliberately no token.
 Two more, each only when you ask for it:
 
 - **Remote-tracking refs and objects**, if you turn on periodic fetching
-  (`MESIMON_GIT_FETCH=<minutes>`) or press `f` in the push / pull view (`v` on the board, then
-  `tab`). That fetch never
+  (Settings › Behaviour › Fetch from the remote, or `MESIMON_GIT_FETCH=<minutes>`) or press `f`
+  in the push / pull view (`v` on the board, then `tab`). That fetch never
   writes `FETCH_HEAD`, never runs `gc`, and never touches your branches.
 - **mesimon's own binary**, and the `mesimon-tmux` beside it where one exists, if you take an
   update offer. The download is checked against its published checksum first and refused
