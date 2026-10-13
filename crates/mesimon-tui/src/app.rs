@@ -2115,6 +2115,12 @@ impl App {
         matches!(&self.delete_armed, Some(Doomed::Ticket(t)) if *t == ticket)
     }
 
+    /// Is the `d` chord armed on this column (T-775)? Its header flashes as
+    /// a doomed card does while it is.
+    pub fn column_doomed(&self, column: &str) -> bool {
+        matches!(&self.delete_armed, Some(Doomed::Column(c)) if c == column)
+    }
+
     /// Is the `a` chord armed on this ticket? The card (and the ticket page's
     /// title row) fade in and out while it is (T-545).
     pub fn archiving(&self, ticket: ulid::Ulid) -> bool {

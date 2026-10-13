@@ -24836,3 +24836,15 @@ second conflict's ask, and a restore without `settled` asks a third time.
 `merge_train_e2e::a_rebase_turn_open_across_a_restart_still_holds_the_next_ask` now reads B's
 settled ask under `settled` rather than gone. There is no rig test: the words to the agent are
 unchanged, and only when they are sent moved.
+
+## The armed column flashes like an armed card (T-775, 2026-10-14)
+
+The first `d` on a column's header armed the delete with a footer sentence alone, while the
+first `d` on a card flashed it red. Now the header row takes the doomed card's treatment from
+the first `d` to the second or the stray key that cancels: `Theme::delete_row` (the diff's
+deleted-line ground) under an `err` name, on `Theme::delete_lit`'s 400 ms phase. `App::column_doomed`
+is the column's twin of `App::doomed`; nothing new in the theme, so the one-saturated-colour law
+is untouched. A header being renamed does not flash.
+
+**Tests.** `ui::tests::test_armed_column_delete_flashes_the_header`: at rest no header cell is
+tinted, after `d` the row is and the name is in `err`, a stray key clears it.

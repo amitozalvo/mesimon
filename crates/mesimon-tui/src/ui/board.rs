@@ -581,6 +581,11 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         Some((InputPurpose::RenameColumn { name: n }, buf)) if n == name => Some(buf),
         _ => None,
     };
+    // The first `d` on the header (T-775): the row flashes as a doomed card
+    // does, the diff's deleted-line ground under an `err` name, on the same
+    // 400 ms phase, until the second `d` or the stray key that cancels.
+    let doomed =
+        header_edit.is_none() && app.column_doomed(name) && theme.delete_lit(app.spin_frame());
     let mut head: Vec<Span<'static>> = Vec::new();
     let mut header_cursor_x: Option<u16> = None;
     if col_header || header_edit.is_some() {
@@ -600,6 +605,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             shown,
             Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD),
         ));
+    } else if doomed {
+        head.push(Span::styled(name.to_uppercase(), theme.err_text().add_modifier(Modifier::BOLD)));
     } else if is_cursor_col {
         head.push(Span::styled(
             name.to_uppercase(),
@@ -640,8 +647,13 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     head.push(Span::raw(" ".repeat(fill)));
     head.extend(right);
     head.push(Span::raw(" "));
-    let head_line =
-        if is_cursor_col { Line::from(head).style(theme.selected_row()) } else { Line::from(head) };
+    let head_line = if doomed {
+        Line::from(head).style(theme.delete_row())
+    } else if is_cursor_col {
+        Line::from(head).style(theme.selected_row())
+    } else {
+        Line::from(head)
+    };
 
     let mut out: Vec<Line<'static>> = vec![head_line];
     let mut header_cursor_y: u16 = 0;

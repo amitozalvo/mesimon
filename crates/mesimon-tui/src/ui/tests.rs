@@ -550,6 +550,34 @@ fn test_layout_pause_flashes_the_footer() {
     assert!(!app.layout_flash_lit(), "an English letter ends it, flash and all");
 }
 
+/// The first `d` on a column's header flashes the header row the way it
+/// flashes a doomed card (T-775): the diff's deleted-line ground under an
+/// `err` name, until the second `d` or a stray key.
+#[test]
+fn test_armed_column_delete_flashes_the_header() {
+    let mut app = app_graphite(fixture(false));
+    let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+    const HEAD: u16 = 2; // under the title bar and its blank row
+    let lit_bg = theme.delete_row().bg.expect("truecolor tints the delete row");
+    let lit = |app: &App| {
+        let buf = cells(app, 120, 30);
+        (0..120).filter(|&x| buf[(x, HEAD)].bg == lit_bg).count()
+    };
+    app.cursor_col = 1;
+    app.cursor_row = Some(0);
+    press(&mut app, 'k');
+    assert!(app.on_column_header());
+    assert_eq!(lit(&app), 0, "a header at rest is not tinted");
+    press(&mut app, 'd');
+    assert!(lit(&app) > 0, "the armed header is lit at once");
+    let buf = cells(&app, 120, 30);
+    let name = (0..120).find(|&x| buf[(x, HEAD)].symbol() != " " && buf[(x, HEAD)].bg == lit_bg);
+    let name = name.expect("the header's name is on the tint");
+    assert_eq!(buf[(name, HEAD)].fg, theme.err_text().fg.expect("err has a colour"), "in err");
+    press(&mut app, 'x');
+    assert_eq!(lit(&app), 0, "a stray key cancels the flash");
+}
+
 /// A raised hand (T-107): the mark replaces the done mark on the card, and
 /// the cursor card carries the agent's own sentence in the context row the
 /// snooze preset and the owed row share.
