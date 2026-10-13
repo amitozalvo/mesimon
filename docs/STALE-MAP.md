@@ -24514,3 +24514,14 @@ description". Asked `Find out why …, and say why in one line` (no tool or fiel
 worker tailed `daemon.log` (this repository's CLAUDE.md names it), then called `get_ticket` and
 answered `held because this ticket's pull request #42 has a pipeline still running`: PASS. Not
 measured: whether that run needed the description's new words.
+
+## Doctor and USING.md say why a folder workspace asks to trust every worktree (T-762, 2026-10-14)
+
+Seen on the forge lab: every ticket's agent stopped at Claude Code's "Quick safety check". Claude
+Code keeps the trust answer per exact folder (`~/.claude.json`, `projects[path]`) and carries a
+trusted checkout's answer to its git worktrees. A repository board's worktree is one; a folder
+workspace's is a new folder holding git worktrees, so each ticket asks. mesimon answers no startup
+modal and writes no `~/.claude.json`, so the way out is the person's: `git init` the root, commit a
+README and a `.gitignore` naming the nested repos, run `claude` there once and accept.
+`doctor`'s `workspace` line carries that as a second advice paragraph where the root has no
+`.git`, and USING.md says it beside the worktree init script. No behaviour change.

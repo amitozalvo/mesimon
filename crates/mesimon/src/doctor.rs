@@ -945,6 +945,27 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
     if !g.repos.is_empty() {
         let shown: Vec<&str> = g.repos.iter().take(4).map(String::as_str).collect();
         let more = if g.repos.len() > shown.len() { ", …" } else { "" };
+        let mut how = String::from(
+            "The header counts changes across all of them and v on the board diffs them \
+             together. A worktree ticket here cuts one worktree per nested repo (and of \
+             the root, when it is a repository) under one directory, all on the ticket's \
+             branch; m merges each fast-forward into the branch it was cut from, and a \
+             repo whose branch moved on is named for the rebase.",
+        );
+        // T-762: Claude Code keeps its trust answer per folder and carries a
+        // trusted checkout's to that checkout's git worktrees. A root that is
+        // not a repository has none to carry, so every ticket asks.
+        if !repo.join(".git").exists() {
+            how.push_str(
+                "\nClaude Code asks to trust every ticket's worktree here, each time: it keeps \
+                 its answer per folder and carries it only to git worktrees of a trusted \
+                 checkout, and this root is not a repository. mesimon never answers that \
+                 dialog and never writes ~/.claude.json. To ask once: run git init in the \
+                 root, commit a README and a .gitignore naming the nested repos, then run \
+                 claude there once and accept. Each ticket's worktree is then a git worktree \
+                 of the trusted root.",
+            );
+        }
         records.push(
             rec(
                 // `Ok`, not `Note`: a note hides without `--verbose`, and the
@@ -957,13 +978,7 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
                     shown.join(", ")
                 ),
             )
-            .advice(
-                "The header counts changes across all of them and v on the board diffs them \
-                 together. A worktree ticket here cuts one worktree per nested repo (and of \
-                 the root, when it is a repository) under one directory, all on the ticket's \
-                 branch; m merges each fast-forward into the branch it was cut from, and a \
-                 repo whose branch moved on is named for the rebase.",
-            ),
+            .advice(how),
         );
     }
     if g.sampled && !g.branch.is_empty() {

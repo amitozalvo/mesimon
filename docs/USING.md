@@ -167,6 +167,14 @@ uv sync
 make dev
 ```
 
+On a folder workspace (a root that is not a repository, holding nested repos), Claude Code asks
+to trust every ticket's worktree, each time: it keeps its answer per folder and carries it only
+to git worktrees of a trusted checkout, and the root is not one. The ticket's card reads
+needs-you at that dialog. mesimon never answers it and never writes `~/.claude.json`. To be
+asked once, run `git init` in the root, commit a README and a `.gitignore` naming the nested
+repos, then run `claude` there once and accept. Each ticket's worktree is then a git worktree of
+the trusted root. `mesimon doctor` says the same on its `workspace` line.
+
 What you step into is the agent itself: Claude Code or Codex exactly as you run it without
 mesimon, with the same prompt, the same slash commands and the same permission dialogs. Type to
 it, answer its questions, interrupt it: mesimon never sits between you and it.
