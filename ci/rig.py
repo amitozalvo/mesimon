@@ -1271,6 +1271,15 @@ Reply with the single word ready and end your turn."""
             if not told:
                 record["failures"].append("the crown never told the worker of its failed pipeline")
                 return False
+            # The worker's turn on those words ends before the next step
+            # restarts the daemon under it.
+            rec = self.agent_of(self.board(), test["ticket"])
+            done = rec and self.wait_for("the worker's turn on the crown's words", lambda: any(
+                l.get("kind") == "hook" and l.get("event") == "Stop"
+                for l in self.worker_lines(rec["id"], mark)), STEP_TIMEOUT, self.watch)
+            if not done:
+                record["failures"].append("the worker's turn on the crown's words never ended")
+                return False
             return True
         if what == "forge_pass":
             # The pipeline passes on the forge (T-744): the board wakes the

@@ -24005,3 +24005,65 @@ open PR, a conflict, a stale verdict), `prefs` (both new keys), the keymap laws,
 `woke:<cause>` check reads the feed's wakes): on the real Sonnet, 2026-10-13, PASS in 68 s —
 the board woke the crown `pipeline`, the crown's `ask_agent` reached the worker, which replied
 `noted`. `cargo nextest run --workspace`: 2319 passed.
+
+## The crown hears the forge's edges (T-744, 2026-10-13, follow-up to T-739)
+
+**Why.** T-739's crown heard two forge facts: a failed pipeline and a merge. With a PR open the
+train never takes the ticket, so after the worker's `finished` wake the crown learned nothing more
+until something else woke it (T-739's lab, scenario E3). The decisions a person wants voiced sit
+on the other edges.
+
+**What.** `daemon::forge::Edge` grows `failed`, `waiting` (the job's word), `conflict` and
+`review` (per open PR, by label) beside the arrival edges, read between two forge reads like
+them: a first read is a baseline, a PR newly bound brings its conflict and its review in as part
+of its opening, and a review edge is only `approved` or `changes_requested` (a dismissal to
+`required` is not a verdict). `Edge::news` says each in the crown's words, naming its PR:
+`pipeline passed !1`, `pipeline failed #42: test-linux`, `waiting on deploy:production !1`
+(`waiting on a manual job !1` where GitLab names none), `deployed to staging !1`, `conflict !1`,
+`conflict cleared !1`, `review approved !1`, `changes requested !1`. Never an opening (the
+worker's turn end carries it) and never the merge (the flags' merged wake). `on_forge_sampled`
+joins a ticket's edges into one line per pass and calls `hear_forge` after `forge_arrivals`, so
+the wake's `column` is where the arrival rule put the ticket.
+
+**One cause, not two.** `WakeCause::Pipeline` became `WakeCause::Forge`, clause `has news from the
+forge`, feed word `forge`, at the old rank (above Finished, under Merged): every edge is a decision
+someone may take, and the brackets carry which. Keeping `Pipeline` for a failure beside `Forge`
+would have split one table row in two for no difference in what the crown does. `Told.pipeline`
+became `Told.forge`; `crown.json` reads T-739's `pipeline` spellings of both back
+(`#[serde(alias)]`). **The words are edges, not a state**: `changes()` says them whenever a wake
+carries them (T-739 compared them with the last told, which would have swallowed a second
+`review approved` after a dismissal), and `CrownWake::fold` keeps an earlier fold's words, so a
+pass and a review between two crown turns are both in the line, and a delivery folded over a
+forge wake keeps the forge's words in its delta. A restart cannot say an edge twice: the sets are
+memory, and the first read after it is a baseline.
+
+**Not a cap.** The brief's "at most five over a PR's life" is the count of edge kinds, not a
+fuse: a pipeline that fails, is fixed and passes again is two wakes the crown needs, and a
+conflict that comes and goes is said each time. Each is one wake per pass per ticket.
+
+**No policy.** The crown's brief (`mcp::CROWN_WAKES`) names the edges and says nothing about what
+to do with them: a crown whose own brief says merge does it on the forge (`merge_ticket` refuses
+an open PR in words naming the forge); one with no such instruction raises its hand as for any
+step a person must take. USING.md "Pull requests" has the sentence.
+
+**Tests.** Units: `the_crown_hears_each_forge_edge_by_its_pr` (each edge's words, a wait read
+twice, a dismissal, a comment, a freshly bound PR, two edges on one pass),
+`a_forge_wake_says_every_edge_and_round_trips` (rank, clause, the fold, T-739's `crown.json`).
+`forge_e2e::the_crown_hears_the_forges_edges`: a crown and a worker it started; the stub PR
+opens running (no wake), passes, waits on `deploy:production`, then turns conflicting and
+approved on one pass, each one `forge` wake with the edge's words, and a quiet pass after says
+nothing. The rig: F1 reads `woke:forge`; F2 (pipeline passes, nothing said about merging; the
+`crown_hand:#42` check reads the crown's own `raise_hand`) and F3 (the brief says merge; the
+worker commits; `crown:merge_ticket`) are new, with a `forge_pass` step.
+On the real Sonnet (claude 2.1.296), 2026-10-13: F2 PASS in 82 s — woken `forge` on the passed
+pipeline, the crown merged nothing and raised its hand: "T-2's pull request #42 … pipeline passed;
+review is still required and the open P[R]…"; F3 PASS in 76 s — woken `delivered`, then `forge`,
+the crown called `merge_ticket`, refused on the open PR; F1 PASS in 68 s on its second run. Its
+first failed `replies:done,noted` on the rig, not the board: `forge_fail` returned at the crown's
+`ask_agent` and `forge_off` restarted the daemon under the worker's `noted` turn; the step now
+waits for that turn's `Stop`.
+
+**Seen on the way, not fixed here.** In the rig a stub PR whose head is the base commit (a worker
+that committed nothing) binds every worktree ticket cut from that base, since each one's reflog
+holds it (`forge::binds`' `made here`): F2's pass also woke the crown for F1's ticket. GitHub
+refuses a PR with no diff; GitLab opens an empty MR.
