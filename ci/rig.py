@@ -12,6 +12,7 @@ real Claude Code on the mod road, one test at a time, through its own crown.
                                     verdicts.md lists as FAIL
     python3 -B ci/rig.py --reset    park and archive the rig's tickets, stop its
                                     daemon and its private tmux
+    python3 -B ci/rig.py --stale    list the dead rig boards; remove nothing
     --no-build                      skip `cargo build -p mesimon`
     --flags-off                     the rig's daemon launches every Claude Code
                                     with its flags service off (the seam
@@ -43,6 +44,13 @@ close-out costs no turn of its own; a failed one stays in REVIEW. The
 run's table is printed and written to `target/rig/verdicts.md`. Nothing is
 torn down at the end, and nothing on the rig's board is archived but by
 `--reset` (the author's rule: the crown never archives there).
+
+Every run first clears the dead rig boards (T-765): a board keyed on a ticket
+worktree of this repository that no longer exists, found by the checkout path
+the rig records in `<state>/rig/parent` (or, for an older board, a session's
+cwd whose proj16 is the board's). Its daemon and private tmux are stopped, its
+worktrees removed, their msmn/ branches deleted and its state and runtime
+dirs removed. A board whose ticket worktree still exists is never touched.
 """
 
 import argparse
@@ -365,6 +373,134 @@ def last_failed(path):
         if len(cells) > 3 and cells[3].startswith("FAIL"):
             out.append(cells[1].split()[0])
     return out
+
+
+# ---- dead rig boards (T-765)
+#
+# A rig board is keyed on its ticket worktree's path, and its state dir, its
+# worktrees and their msmn/ branches outlive that worktree: the main board
+# archives the ticket and the rig's board stays, a worktree each test. Every
+# run clears the boards whose ticket worktree is gone.
+
+def board_repo(state_dir):
+    """The checkout a board's state dir is keyed on, or None: the rig's own
+    record of it, else a session's cwd whose proj16 is the dir's name (a board
+    laid before the record)."""
+    cands = []
+    try:
+        with open(os.path.join(state_dir, "rig", "parent")) as f:
+            cands.append(f.read().strip())
+    except OSError:
+        pass
+    try:
+        with open(os.path.join(state_dir, "sessions.json")) as f:
+            cands += [s.get("cwd") or "" for s in json.load(f).get("sessions", [])]
+    except (OSError, ValueError, AttributeError):
+        pass
+    name = os.path.basename(state_dir)
+    return next((c for c in cands if c and board_paths(c).proj16 == name), None)
+
+
+def gitdir_of(worktree):
+    """Where a worktree's `.git` file points, or None."""
+    try:
+        with open(os.path.join(worktree, ".git")) as f:
+            line = f.read().strip()
+    except OSError:
+        return None
+    return line[len("gitdir: "):] if line.startswith("gitdir: ") else None
+
+
+def pids_of(pattern):
+    out = subprocess.run(["pgrep", "-f", "--", pattern], capture_output=True, text=True)
+    return [int(p) for p in out.stdout.split()]
+
+
+def stop_pids(pids, what):
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    deadline = time.time() + 10
+    while pids and time.time() < deadline:
+        pids = [p for p in pids if _alive(p)]
+        time.sleep(0.1)
+    if pids:
+        say(f"    {what} still running after SIGTERM: {pids}")
+    return not pids
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+
+
+def dead_boards(repo):
+    """Each board keyed on a ticket worktree of this repository that is gone,
+    as (state dir, its checkout, {worktree: branch})."""
+    common = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    root = os.path.dirname(board_paths(repo).state_dir)
+    ticket_worktree = re.compile(re.escape(root) + r"/[0-9a-f]{16}/worktrees/[^/]+")
+    listed, path = {}, None
+    for line in (git(repo, "worktree", "list", "--porcelain") or "").splitlines():
+        if line.startswith("worktree "):
+            path = line[len("worktree "):]
+            listed[path] = None
+        elif line.startswith("branch refs/heads/") and path:
+            listed[path] = line[len("branch refs/heads/"):]
+    out = []
+    for name in sorted(os.listdir(root)):
+        d = os.path.join(root, name)
+        if not re.fullmatch(r"[0-9a-f]{16}", name) or not os.path.isdir(d):
+            continue
+        parent = board_repo(d)
+        if not parent or not ticket_worktree.fullmatch(parent) or os.path.exists(parent):
+            continue
+        nested = glob.glob(os.path.join(d, "worktrees", "*"))
+        foreign = [w for w in nested if (g := gitdir_of(w)) and not g.startswith(common + "/")]
+        if foreign:
+            say(f"  {name}: {os.path.basename(parent)} is gone, but {len(foreign)} of its "
+                "worktrees belong to another repository: left alone")
+            continue
+        mine = {p: b for p, b in listed.items() if p.startswith(d + "/worktrees/")}
+        out.append((d, parent, mine))
+    return out
+
+
+def sweep(repo, dry):
+    """Clear every dead rig board: its daemon and private tmux stopped, its
+    worktrees removed, their branches deleted, its state and runtime dirs
+    gone. `dry` lists them and touches nothing."""
+    boards = dead_boards(repo)
+    if not boards:
+        if dry:
+            say("  no dead rig boards")
+        return
+    say(f"▶ {len(boards)} dead rig board{'s' if len(boards) != 1 else ''}"
+        f"{' (--stale: nothing removed)' if dry else ', cleared'}")
+    for d, parent, mine in boards:
+        say(f"  {os.path.basename(d)}: {os.path.basename(parent)} is gone; "
+            f"{len(mine)} worktree{'s' if len(mine) != 1 else ''}")
+        if dry:
+            continue
+        paths = board_paths(parent)
+        stop_pids(pids_of(f"daemon --repo {parent.replace('.', '[.]')}$"), "its daemon")
+        stop_pids(pids_of(f"-S {paths.tmux_sock.replace('.', '[.]')} "), "its tmux server")
+        for w in mine:
+            subprocess.run(["git", "-C", repo, "worktree", "remove", "-f", "-f", w],
+                           capture_output=True)
+        git(repo, "worktree", "prune")
+        branches = [b for b in mine.values() if b]
+        if branches:
+            git(repo, "branch", "-D", *branches)
+        shutil.rmtree(d, ignore_errors=True)
+        shutil.rmtree(paths.rt_dir, ignore_errors=True)
+        if os.path.exists(d):
+            say(f"    {d} could not be removed whole")
 
 
 class Phone:
@@ -1988,6 +2124,8 @@ def main():
     ap.add_argument("--failed", action="store_true",
                     help="only the tests the last run's verdicts.md lists as FAIL")
     ap.add_argument("--reset", action="store_true", help="park and archive everything, stop the daemon and tmux")
+    ap.add_argument("--stale", action="store_true",
+                    help="list the dead rig boards every run clears; remove nothing")
     ap.add_argument("--no-build", action="store_true")
     ap.add_argument("--flags-off", action="store_true",
                     help="Claude Code's flags service off for the rig's sessions (T-598's seam)")
@@ -2005,6 +2143,15 @@ def main():
     os.makedirs(rig.out, exist_ok=True)
     LOG = open(os.path.join(rig.out, "rig.log"), "a")
     say(f"\n=== rig {time.strftime('%Y-%m-%d %H:%M:%S')} ∙ {branch} ∙ proj16 {rig.paths.proj16}")
+
+    sweep(repo, dry=args.stale)
+    if args.stale:
+        return
+    # The checkout this board is keyed on, for a later run's sweep to find
+    # once that checkout is gone (T-765).
+    os.makedirs(os.path.join(rig.paths.state_dir, "rig"), mode=0o700, exist_ok=True)
+    with open(os.path.join(rig.paths.state_dir, "rig", "parent"), "w") as f:
+        f.write(repo + "\n")
 
     if args.reset:
         rig.reset()

@@ -172,7 +172,8 @@ Additional targeted gates:
 - The real Claude Code on the mod road: `python3 -B ci/rig.py` in a ticket worktree (a
   `msmn/` branch) lays a board there and drives Sonnet sessions through that board's crown, one
   test of `ci/rig/tests.toml` at a time; `--lay` starts nothing, `--only T` runs a group,
-  `--failed` re-runs the last table's failures, `--reset` stops it all. It
+  `--failed` re-runs the last table's failures, `--reset` stops it all; every run first clears
+  the boards of ticket worktrees that are gone (`--stale` lists them). It
   costs cents per run and needs the author's Claude Code login. A change to what an agent or
   the crown is told or does (tool text, `get_ticket`'s answer, the brief, a crown wake, a turn
   road) adds a test there and runs it once before the ticket is done, never on every build.

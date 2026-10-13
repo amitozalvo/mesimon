@@ -7,6 +7,12 @@
 set -e
 src="$MESIMON_CHECKOUT/target"
 [ -d "$src" ] || exit 0
+# A checkout on a msmn/ branch is itself a ticket worktree, so this worktree is a
+# rig test's (ci/rig.py): its worker never builds, and the clone would only pin
+# build output the checkout has since replaced (T-765).
+case "$(git -C "$MESIMON_CHECKOUT" symbolic-ref --short -q HEAD)" in
+  msmn/*) exit 0 ;;
+esac
 [ -e target ] && exit 0
 case "$(uname)" in
   Darwin) cp -c -R "$src" target ;;

@@ -24583,3 +24583,35 @@ commit moves nothing, `update-ref` of a tracking ref does, a ref at a foreign co
 `forge_e2e::a_turn_that_pushed_is_read_at_its_end_not_on_the_minute` (the stub `gh` logs its
 calls). Each e2e fails with its half disabled: `unchanged` forced false reads once, the burst
 off never merges. They sit in `forge_e2e` rather than `merge_train_e2e`, which has no `gh` stub.
+
+## Dead rig boards are cleared, and a rig worktree seeds no target/ (T-765, 2026-10-14)
+
+**The leak.** `ci/rig.py` keys its board on the ticket worktree it runs in, so its state dir
+(`~/.local/state/mesimon/<proj16>/`), its worktrees, their `msmn/T-N-t-…` branches and at times
+a `tmux -D` server outlived that worktree: the main board archives the ticket, nothing touches the
+rig's. On 2026-10-14, 14 such boards held 71 worktrees and 71 branches in this repository, and
+T-734's tmux server had run for two days. `du` read ~1.2 TB for them; it counts every APFS
+clone whole. Every rig worktree's `target/` was a clone of the checkout's with **0 bytes rebuilt**
+after it (rig workers never build); what they really held was the build output the checkout had
+since replaced, 21 GB across all of them (a file's (path, mtime, size) absent from the checkout's
+`target/`, counted once). The by-hand clear freed 13 GB; the rest is shared with live
+main-board worktrees.
+
+**Not in the daemon.** A teardown of nested boards on archive was proposed and refused: it is
+this repository's own workflow, not a user's. Both halves are dev tooling.
+
+**The fix.** `.mesimon-worktree-init.sh` exits before the clone when the checkout is on a `msmn/`
+branch (a rig worktree's checkout is a ticket worktree). `ci/rig.py` writes its checkout's path
+to `<state>/rig/parent` on every run and, before anything else, sweeps each board whose checkout
+(that record, else a `sessions.json` cwd whose proj16 is the dir's name) is a
+`<state root>/<proj16>/worktrees/<name>` path that no longer exists: its daemon and tmux server
+SIGTERMed by `pgrep -f` on their argv (no client of a build that may be gone), its worktrees
+`git worktree remove -f -f`, their branches `branch -D`, its state and runtime dirs removed. A
+board with a worktree of another repository is left alone. `--stale` lists and removes nothing.
+A board whose checkout exists is never touched, so a rig run never clears a sibling ticket's rig.
+
+**Tests.** By hand: a dry sweep of the real state dir found the two live rig boards' checkouts
+present and one dead board (a T-215 board, 52 KB); a fabricated dead board with a registered
+worktree, a branch and a live tmux server was listed by the dry pass untouched, then cleared
+whole; a board found by its `rig/parent` record alone was cleared; the init script skips for a
+ticket-worktree checkout and seeds for a `main` one.
