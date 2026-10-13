@@ -13692,9 +13692,13 @@ impl Daemon {
             }
             // The edge since the last read: what a column arrives on, and
             // what the crown hears (T-744), one line per ticket per pass. A
-            // first read is a baseline and says nothing.
+            // first read is a baseline and says nothing, but what it held is
+            // remembered, so an opening is said once (T-767).
+            let opens = self.forge.opens(t, &set);
+            let old = self.forge.sets.get(&t);
             if let Some(old) = old {
-                let edge = crate::forge::edge(old, &set);
+                let mut edge = crate::forge::edge(old, &set);
+                edge.opened &= opens;
                 // A merge is the flags' to say where they flip on it (T-757):
                 // the PR whose head is a leg's tip lands the branch the flags
                 // read (`forge_fold_legs` folds exactly that one), and a flip
@@ -13738,6 +13742,7 @@ impl Daemon {
         let live: Vec<ulid::Ulid> = self.board.tickets.iter().map(|t| t.id).collect();
         self.forge.sets.retain(|t, _| live.contains(t));
         self.forge.at_ms.retain(|t, _| live.contains(t));
+        self.forge.held.retain(|t, _| live.contains(t));
         self.forge.basis.retain(|t, _| live.contains(t));
         self.forge.local.retain(|t, _| live.contains(t));
         self.forge.owed.retain(|t, _| live.contains(t));

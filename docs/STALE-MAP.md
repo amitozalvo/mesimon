@@ -24031,6 +24031,41 @@ open PR, a conflict, a stale verdict), `prefs` (both new keys), the keymap laws,
 the board woke the crown `pipeline`, the crown's `ask_agent` reached the worker, which replied
 `noted`. `cargo nextest run --workspace`: 2319 passed.
 
+## A merged PR's pipeline is no pass (T-767, 2026-10-14, follow-up to T-739)
+
+**Why.** The forge lab's worst finding (2026-10-13, scenario C1): a ticket whose two MRs had
+merged and deployed sat in PROD, and then api's main pipeline went `waiting` → `passed` as its
+manual `deploy:production` finished. `forge::edge` filled `passed` from `pipeline_of`, which reads
+the merge commit's pipeline once nothing is open, so REVIEW's `Arrives here when: pipeline passes`
+took the edge and pulled the ticket back from PROD; the train then claimed it, and the
+`deployed to production` for the other MR never came, since `forge_arrivals` takes the furthest
+stage of one pass and that pass held the pass alone.
+
+**The rule.** `Edge.passed` is the worst pipeline over the *open* PRs turning passed: what
+`requires_pipeline` waits for. A merged commit's pipeline is the deploy run; it feeds
+`Edge.waiting`, `Edge.failed`, `Edge.deployed` and the crown's words for those, never an arrival
+on `pipeline passes` and never `pipeline passed` in a crown wake. A follow-up PR that opens green
+on a merged set is a pass (the old rule missed it, the set's word having read passed already).
+`Edge::news` names the open PRs for it, the merged fallback gone.
+
+**An opening is said once.** `forge::State::held` keeps every PR, by repository and number, a
+ticket's reads have held since this start, seeded from `forge.json` on restore; the caller keeps
+`Edge.opened` only for an open PR not held before (`State::opens`). A PR a read missed (a
+repository that failed on the ticket's first read, a binding that flickered) or a reopened one is
+a re-read, not an opening. Memory only: the restored sets are the baseline it needs.
+
+**Finding 10's answer: "Entry needs a passed pipeline" is entry-only.** It refuses a move into
+the column while the pipeline has not passed; a pipeline that fails after the ticket entered is
+the crown's forge wake (`pipeline failed !1: job`) and never a move out.
+
+**Tests.** Units `a_merged_commits_pipeline_passing_is_no_pass` (running → passed and waiting →
+passed on a merged set: no `passed`, the deployment as before; an open PR's pass beside a merged
+one, and a follow-up opening green) and `an_opening_is_said_once`; the edge test's merge no
+longer reads as a pass. `forge_e2e`: the merge commit's check-runs go from in progress to
+success with REVIEW on `pipeline passes`, and the ticket stays in DONE; the crown hears
+`pipeline passed #42` for the open PR alone, not when the merge commit's pipeline passes, and
+not `pipeline passed #43` beside `merged #43`. Both e2e assertions fail on the old rule.
+
 ## Entry needs a passed pipeline ignores a ticket with no PR (T-750, 2026-10-13, follow-up to T-739)
 
 **Why.** On the forge lab the crown's ticket, which has no PR and never will, ended its turn and

@@ -156,7 +156,7 @@ fn a_pull_request_binds_pipelines_gate_and_the_forges_merge_lands() {
     write(&prs_file, "[]");
     write(
         &checks_file,
-        r#"{"check_runs":[{"name":"release","status":"completed","conclusion":"success"}]}"#,
+        r#"{"check_runs":[{"name":"release","status":"in_progress","conclusion":null}]}"#,
     );
     let path_var = format!(
         "{}:{}",
@@ -232,11 +232,18 @@ fn a_pull_request_binds_pipelines_gate_and_the_forges_merge_lands() {
         other => panic!("merge with a PR open: {other:?}"),
     }
 
-    // DONE takes a ticket once merged, on the forge's word.
+    // DONE takes a ticket once merged, on the forge's word; REVIEW, before
+    // it, once a pipeline passes.
     let mut done = c.board().column("DONE").unwrap().settings.clone();
     done.arrives_on = Arrival::Merged;
     assert!(matches!(
         c.request(Command::SetColumnSettings { name: "DONE".into(), settings: done }),
+        Response::Ok
+    ));
+    let mut review = c.board().column("REVIEW").unwrap().settings.clone();
+    review.arrives_on = Arrival::PipelinePasses;
+    assert!(matches!(
+        c.request(Command::SetColumnSettings { name: "REVIEW".into(), settings: review }),
         Response::Ok
     ));
     let merge_oid = "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d";
@@ -253,10 +260,22 @@ fn a_pull_request_binds_pipelines_gate_and_the_forges_merge_lands() {
     });
     let pr = prs_of(&mut c).into_iter().find(|p| p.ticket == id).unwrap();
     assert_eq!(pr.state, "merged");
-    assert_eq!(pr.pipeline, "passed", "the merge commit's pipeline, off check-runs");
+    assert_eq!(pr.pipeline, "running", "the merge commit's pipeline, off check-runs");
     wait_until(Duration::from_secs(10), "the feed to say the merge", || {
         feed_count(&h, "pr", id) >= 1
     });
+
+    // The merge commit's pipeline passing is its deploy run finishing, not
+    // the ticket's pipeline passing: REVIEW does not pull it back (T-767).
+    write(
+        &checks_file,
+        r#"{"check_runs":[{"name":"release","status":"completed","conclusion":"success"}]}"#,
+    );
+    wait_until(Duration::from_secs(20), "the merge commit's pipeline to pass", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == id && p.pipeline == "passed")
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(c.board().ticket(id).unwrap().column, "DONE");
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
 
@@ -433,6 +452,10 @@ fn the_crown_hears_the_forges_edges() {
     }
     let prs_file = stub_dir.join("prs.json");
     write(&prs_file, "[]");
+    // The merge commits' pipeline, running until the first merge has woken
+    // the crown.
+    let checks_file = stub_dir.join("checks.json");
+    write(&checks_file, r#"{"check_runs":[{"name":"release","status":"in_progress"}]}"#);
     let path_var = format!(
         "{}:{}",
         stub_dir.display(),
@@ -448,6 +471,7 @@ fn the_crown_hears_the_forges_edges() {
             ("MESIMON_PANE_QUIET_MS", "600000"),
             ("PATH", &path_var),
             ("MSMN_GH_PRS", &prs_file.display().to_string()),
+            ("MSMN_GH_CHECKS", &checks_file.display().to_string()),
         ],
     ) else {
         return;
@@ -635,6 +659,18 @@ fn the_crown_hears_the_forges_edges() {
     git(&h.repo, &["merge", "--ff-only", "-q", &wt.branch]);
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(forge_wakes(), 3, "the first PR's merge is the flags' to say");
+    // The merge commit's pipeline passing is no `pipeline passed` (T-767):
+    // only an open PR's is.
+    write(
+        &checks_file,
+        r#"{"check_runs":[{"name":"release","status":"completed","conclusion":"success"}]}"#,
+    );
+    wait_until(Duration::from_secs(20), "the merge commit's pipeline to pass", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == w && p.number == 42 && p.pipeline == "passed")
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(forge_wakes(), 3, "{}", std::fs::read_to_string(&got).unwrap());
+    assert_eq!(lines_with("pipeline passed").len(), 1, "the open PR's alone");
 
     // ---- a later PR merges: the forge says it -----------------------------
     let open = gh_pr(43, "fix/greeting", &fix, "OPEN", "null", "2026-10-13T07:00:00Z");
@@ -660,6 +696,7 @@ fn the_crown_hears_the_forges_edges() {
     std::thread::sleep(Duration::from_millis(1500));
     let all = std::fs::read_to_string(&got).unwrap();
     assert!(!all.contains("merged #42"), "{all}");
+    assert!(!all.contains("pipeline passed #43"), "a merged PR's pipeline: {all}");
     assert_eq!(merged_wakes(), 1, "{all}");
     assert_eq!(forge_wakes(), 4, "{all}");
     let _ = std::fs::remove_dir_all(&stub_dir);

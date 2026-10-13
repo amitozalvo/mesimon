@@ -168,9 +168,12 @@ pub struct Query {
 /// against the previous read, never a first one, which is a baseline.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Edge {
-    /// A PR newly bound and open.
+    /// A PR newly bound and open. The caller keeps it only for a PR its
+    /// ticket never read before (T-767): an opening, never a re-read.
     pub opened: bool,
-    /// The set's pipeline turned passed.
+    /// The worst pipeline over the open PRs turned passed (T-767): what
+    /// `requires_pipeline` waits for, never a merged commit's pipeline,
+    /// which is the deploy edges' (`waiting`, `deployed`).
     pub passed: bool,
     /// Every PR of the set is merged, and was not before.
     pub merged: bool,
@@ -219,16 +222,6 @@ impl Edge {
         let labels = |pick: &dyn Fn(&Pr) -> bool| -> String {
             new.iter().filter(|p| pick(p)).map(Pr::label).collect::<Vec<_>>().join(" ")
         };
-        // The PRs `pipeline_of` read the set's word off: the open ones, or
-        // the newest merged once nothing is open.
-        let lead = || {
-            let open = labels(&|p| p.state.is_open());
-            if open.is_empty() {
-                new.iter().find(|p| p.state == PrState::Merged).map(Pr::label).unwrap_or_default()
-            } else {
-                open
-            }
-        };
         let tail =
             |label: String| if label.is_empty() { String::new() } else { format!(" {label}") };
         let mut out: Vec<String> = self.landed.iter().map(|l| format!("merged {l}")).collect();
@@ -240,7 +233,7 @@ impl Edge {
             }
         }
         if self.passed {
-            out.push(format!("pipeline passed{}", tail(lead())));
+            out.push(format!("pipeline passed{}", tail(labels(&|p| p.state.is_open()))));
         }
         if let Some(job) = &self.waiting {
             let label = labels(&|p| matches!(p.pipeline, Pipeline::Waiting(_)));
@@ -292,6 +285,10 @@ pub fn edge(old: &[Pr], new: &[Pr]) -> Edge {
     };
     let before = envs(old);
     let (then, now) = (forge::pipeline_of(old), forge::pipeline_of(new));
+    // The open set's own: a merged commit's pipeline passing is its deploy
+    // run finishing, never a ticket's pipeline passing (T-767).
+    let open_passed =
+        |s: &[Pr]| s.iter().any(|p| p.state.is_open()) && forge::pipeline_of(s) == Pipeline::Passed;
     // An open PR read open before too: a conflict or a review on one just
     // bound is part of its opening, which is not news.
     let kept: Vec<(&Pr, &Pr)> = new
@@ -301,7 +298,7 @@ pub fn edge(old: &[Pr], new: &[Pr]) -> Edge {
         .collect();
     Edge {
         opened: new.iter().any(|p| p.state.is_open() && was(p).is_none()),
-        passed: now == Pipeline::Passed && then != Pipeline::Passed,
+        passed: open_passed(new) && !open_passed(old),
         merged: all_merged(new) && !all_merged(old),
         landed: new
             .iter()
@@ -826,6 +823,10 @@ pub struct State {
     /// Each ticket's set, newest first, and when it was read.
     pub sets: HashMap<ulid::Ulid, Vec<Pr>>,
     pub at_ms: HashMap<ulid::Ulid, u64>,
+    /// Every PR, by repository path and number, a ticket's reads have held
+    /// since this start or in `forge.json` (T-767): a PR read again after
+    /// a read that missed it, or reopened, is no opening.
+    pub held: HashMap<ulid::Ulid, Vec<(String, u64)>>,
     /// The repositories whose last call failed, with the CLI's words.
     pub errors: Vec<(String, String)>,
     /// Merge commits whose pipeline settled, by repository path and oid.
@@ -854,6 +855,21 @@ impl State {
     /// The CLI a host is read through, if the probe said one.
     pub fn cli_for(&self, host: &str) -> Option<&Cli> {
         self.probes.get(host).and_then(|p| p.cli.as_ref())
+    }
+
+    /// Whether `set` holds an open PR its ticket's reads never held
+    /// (T-767), remembering every PR of it.
+    pub fn opens(&mut self, t: ulid::Ulid, set: &[Pr]) -> bool {
+        let held = self.held.entry(t).or_default();
+        let mut opens = false;
+        for p in set {
+            let id = (p.repo.clone(), p.number);
+            if !held.contains(&id) {
+                opens |= p.state.is_open();
+                held.push(id);
+            }
+        }
+        opens
     }
 
     /// Something reads a forge on this board: a probe found a CLI.
@@ -1072,8 +1088,9 @@ impl State {
             if !live(t) {
                 continue;
             }
-            let set: Vec<Pr> = records.into_iter().filter_map(PrRecord::pr).collect();
-            self.sets.insert(t, forge::ticket_set(set));
+            let set = forge::ticket_set(records.into_iter().filter_map(PrRecord::pr).collect());
+            self.opens(t, &set);
+            self.sets.insert(t, set);
         }
         for c in file.commits {
             let key = (c.repo, c.oid);
@@ -1194,7 +1211,8 @@ mod tests {
         m.merge_oid = "m1".into();
         let old = [pr(1, PrState::Open, Pipeline::Running)];
         let e = edge(&old, &[m.clone()]);
-        assert!(e.passed && e.merged && !e.opened && e.deployed.is_empty());
+        assert!(e.merged && !e.opened && e.deployed.is_empty());
+        assert!(!e.passed, "the merge commit's pipeline is no pass (T-767)");
         m.deployed = vec!["staging".into()];
         let e = edge(&[pr(1, PrState::Merged, Pipeline::Passed)], &[m.clone()]);
         assert_eq!(e.deployed, ["staging"]);
@@ -1202,6 +1220,64 @@ mod tests {
         let e = edge(&[m.clone()], &[pr(2, PrState::Open, Pipeline::None), m.clone()]);
         assert!(e.opened && !e.merged, "a follow-up PR opens");
         assert!(!edge(&[], &[]).any());
+    }
+
+    /// T-767: with every PR merged, the merge commit's pipeline passing is
+    /// the deploy run finishing — no `passed`, no `pipeline passed` words,
+    /// the deployment as before; an open PR's pass is one.
+    #[test]
+    fn a_merged_commits_pipeline_passing_is_no_pass() {
+        let merged = |pipeline: Pipeline, deployed: &[&str]| {
+            let mut p = pr(1, PrState::Merged, pipeline);
+            p.forge = Forge::GitLab;
+            p.merge_oid = "m1".into();
+            p.deployed = deployed.iter().map(|d| d.to_string()).collect();
+            p
+        };
+        let running = [merged(Pipeline::Running, &["staging"])];
+        let after = [merged(Pipeline::Passed, &["staging", "production"])];
+        let e = edge(&running, &after);
+        assert!(!e.passed);
+        assert_eq!(e.deployed, ["production"]);
+        assert_eq!(e.news(&after), ["deployed to production !1"]);
+        let waiting = [merged(Pipeline::Waiting("deploy:production".into()), &["staging"])];
+        let e = edge(&waiting, &after);
+        assert!(!e.passed && e.waiting.is_none());
+        assert_eq!(e.news(&after), ["deployed to production !1"]);
+        // A merged commit's job stopping on a person is still heard.
+        assert_eq!(edge(&running, &waiting).waiting.as_deref(), Some("deploy:production"));
+        // One open PR passing beside a merged one: a pass, by its label.
+        let open = |pipeline: Pipeline| {
+            let mut p = pr(2, PrState::Open, pipeline);
+            p.forge = Forge::GitLab;
+            p
+        };
+        let before = [open(Pipeline::Running), merged(Pipeline::Running, &[])];
+        let now = [open(Pipeline::Passed), merged(Pipeline::Running, &[])];
+        let e = edge(&before, &now);
+        assert!(e.passed);
+        assert_eq!(e.news(&now), ["pipeline passed !2"]);
+        // A follow-up PR opening green on a merged, passed set is a pass too.
+        let done = [merged(Pipeline::Passed, &[])];
+        let e = edge(&done, &[open(Pipeline::Passed), merged(Pipeline::Passed, &[])]);
+        assert!(e.passed && e.opened);
+    }
+
+    /// T-767: an opening is a PR the ticket's reads never held; one read
+    /// again after a read that missed it, or a baseline's, is not.
+    #[test]
+    fn an_opening_is_said_once() {
+        let mut s = State::default();
+        let t = ulid::Ulid::new();
+        let one = pr(1, PrState::Open, Pipeline::Running);
+        assert!(s.opens(t, std::slice::from_ref(&one)), "the first read holds it");
+        assert!(!s.opens(t, std::slice::from_ref(&one)));
+        assert!(!s.opens(t, &[]));
+        assert!(!s.opens(t, std::slice::from_ref(&one)), "back after a read that missed it");
+        let two = pr(2, PrState::Merged, Pipeline::Passed);
+        assert!(!s.opens(t, &[two, one.clone()]), "a merged PR opens nothing");
+        assert!(s.opens(t, &[pr(3, PrState::Draft, Pipeline::None), one]));
+        assert!(!s.opens(ulid::Ulid::new(), &[]));
     }
 
     /// T-757: a PR read open and then merged is `landed`, by label, and the
