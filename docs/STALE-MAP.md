@@ -23911,7 +23911,7 @@ captured shell PATH; one `pr list --author @me --state all` per repository per m
 a fetch is (own session, 20 s, the group killed, every prompt and pager door shut,
 `GH_NO_UPDATE_NOTIFIER` and `GLAB_CHECK_UPDATE` off so the CLI writes no stamp of its own); a
 failed repository backs off five minutes and shows on the advisory row (`forge_unreachable`).
-The verdict is memory only; a restart re-reads.
+The verdict is memory only; a restart re-reads (until T-752, below: `forge.json`).
 
 **A ticket's PRs are the PRs its work made, never the ones its agent mentioned.** The author
 refuted the first draft's ladder (a URL in a note, the key in a title): agents mention prerequisite
@@ -24046,6 +24046,60 @@ pending create, the result in the unread tail, no cursor moved, a gone file), an
 `a_ticket_with_no_pull_request_enters_and_one_opened_here_waits` (a checkout ticket's turn end
 lands in a `requires_pipeline` REVIEW while a worktree ticket whose transcript printed a `gh pr
 create` URL is held in the gate's words, hand move too, until its PR reads passed).
+
+## A board's pull requests survive a restart (T-752, 2026-10-13, follow-up to T-739)
+
+**Why.** On the forge lab a `U` reload took MR !1 off ticket A1's card for about 70 s. Two causes:
+the sets lived in memory only, and the first pass after a start only probed (which CLI, signed
+in, glab's viewer) — `queue_forge_sample` built a `RepoQuery` only for a host that already had a
+`HostProbe`, so the list came one `forge::EVERY` later. Measured: daemon up 18:41:54.856, first
+pass 18:41:55.284 with no `prs`, second pass 18:43:06 with `!1 merged`. The author's ask: PRs
+show immediately after a restart.
+
+**The sets persist.** `forge.json` in the state dir (`FORGE_SCHEMA` 1, `persist_forge`, barred
+and quarantined on `store::load_versioned` like the other state files; the tenth): each ticket's
+set in the wire's words (`PrRecord`: a word this build does not know drops that PR, not the
+file) and the settled merge commits (`CommitRecord`: the terminal pipeline and the environments
+reached, the old `commit_pipelines`/`deployed` maps). No time is written, so a quiet board writes
+nothing; it is written after each pass through `write_if_changed`. `restore_forge` at start keeps
+the sets of tickets the board still has. **A restart is not news**: the first live pass diffs
+against the loaded sets, so `forge::delta`, the arrivals and the crown's forge edges (T-744) say
+only what moved while the daemon was down — a PR merged in the gap is one `merged #42` line and
+one arrival, every other PR silent.
+
+**One pass probes and lists.** The repositories of a host probed on this pass ride the query as
+`pending` and `forge::list_probed` turns them into `RepoQuery`s on the worker from the probe's
+answer, so a board with no `forge.json` (or a quarantined one) has its PRs within the first
+pass's own seconds. A host whose probe found no CLI lists nothing, as before. And a pass that finds every binding still provisioning (no
+branch yet) no longer stamps the minute: it returns and the next bucket asks again, or a ticket
+whose worktree was being cut at that moment waited a whole cadence (the new e2e caught it under
+the full suite's load).
+
+**A failed call keeps the last read.** `forge::carry`: a repository whose list call failed on a
+pass keeps the previous read's PRs in each ticket's set; one that answered says what it says now.
+Without it a timeout on the first pass after a load would blank exactly the sets the file brought
+back (and, before this, any timeout blanked a live card for a pass).
+
+**What the gates read before a live answer.** `ticket_merged` (DONE, delete, archive) and the
+card's `forge_fold_legs` read a loaded set as a live one: a PR merged at the leg's tip is a fact
+that cannot turn back, the tip is re-read, and the card and the gates must answer alike. The
+pipeline gate (`requires_pipeline`, `pipeline_refusal`) reads **live reads only** — a set read
+since this start (`State.at_ms`, which is not restored) — because a pipeline, unlike a merge, can
+turn back, and a file may be a day old: before the first live pass it refuses `pipeline not
+read`, which is what it said after a restart before. Beside T-750's no-PR rule: a loaded set
+holding PRs refuses `pipeline not read`; a loaded empty one reads as no read, so the transcripts
+decide as they did after a restart before. The train's `forge_fresh` is unchanged for
+the same reason (at_ms empty: nothing fresh until a live read). An open PR from the file still
+refuses `m` until the pass, the conservative side.
+
+**Tests.** `forge_e2e::the_prs_survive_a_restart_and_the_first_pass_lists` (the cadence is a
+minute, so the PR binding at all is the same-pass list; across a restart the stub `gh` holds
+every call 3 s, and the first snapshot carries the PR with `sampled_at_ms` 0, a
+`requires_pipeline` column refuses `pipeline not read`, and the PR merged in the gap is the one
+feed line); each fix disabled in turn fails it. Units in `daemon::forge`: the same-pass list from
+a fresh query, the carry, the file's round trip (no time in it, a gone ticket dropped, a load and
+a save the same bytes, a newer schema refused, `{` quarantined) and a schema-1 fixture with an
+unknown state word.
 
 ## A running pipeline sweeps, a waiting one is a target (T-747, 2026-10-13, follow-up to T-739)
 

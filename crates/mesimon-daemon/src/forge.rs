@@ -17,13 +17,17 @@
 //! door shut. A repository whose call failed is reported, not retried in a
 //! loop: the next sample waits `BACKOFF`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use mesimon_core::command::Notice;
 use mesimon_core::forge::{self, Facts, Forge, Pipeline, Pr, PrState, Remote, Review};
+use serde::{Deserialize, Serialize};
+
+use crate::paths::Paths;
 
 /// How long one CLI call may take before its group is killed.
 const CALL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -129,11 +133,21 @@ pub struct ProbeQuery {
     pub candidates: Vec<Cli>,
 }
 
+/// A repository whose host is probed on this same pass (T-752): listed
+/// once the probe found its CLI, so a fresh daemon's first pass lists too.
+#[derive(Debug, Clone)]
+pub struct PendingRepo {
+    pub remote: Remote,
+    pub dir: PathBuf,
+}
+
 /// What one pass is asked.
 #[derive(Debug, Clone, Default)]
 pub struct Query {
     pub probes: Vec<ProbeQuery>,
     pub repos: Vec<RepoQuery>,
+    /// The repositories of the hosts in `probes`, listed after the probe.
+    pub pending: Vec<PendingRepo>,
     pub tickets: Vec<TicketQuery>,
     /// The environments some column waits for: a deployment is read only
     /// where one is asked for.
@@ -308,6 +322,8 @@ pub fn edge(old: &[Pr], new: &[Pr]) -> Edge {
 #[derive(Debug, Clone)]
 pub struct RepoReport {
     pub key: String,
+    /// The remote's path, as a `Pr`'s `repo` spells it.
+    pub path: String,
     pub error: Option<String>,
 }
 
@@ -324,19 +340,28 @@ pub struct Sample {
 }
 
 /// The pass, on a worker thread.
-pub fn sample(q: Query, now_ms: u64) -> Sample {
+pub fn sample(mut q: Query, now_ms: u64) -> Sample {
     let mut out = Sample { at_ms: now_ms, ..Default::default() };
     for p in &q.probes {
         out.probes.push((p.host.clone(), probe_host(&p.host, &p.candidates)));
     }
+    list_probed(&mut q, &out.probes);
     let mut prs: Vec<Pr> = Vec::new();
     for r in &q.repos {
         match list(r) {
             Ok(mut found) => {
                 prs.append(&mut found);
-                out.repos.push(RepoReport { key: r.key(), error: None });
+                out.repos.push(RepoReport {
+                    key: r.key(),
+                    path: r.remote.path.clone(),
+                    error: None,
+                });
             }
-            Err(e) => out.repos.push(RepoReport { key: r.key(), error: Some(e) }),
+            Err(e) => out.repos.push(RepoReport {
+                key: r.key(),
+                path: r.remote.path.clone(),
+                error: Some(e),
+            }),
         }
     }
     for t in &q.tickets {
@@ -386,6 +411,19 @@ pub fn sample(q: Query, now_ms: u64) -> Sample {
         out.sets.insert(t.ticket, set);
     }
     out
+}
+
+/// The pending repositories whose host's probe, answered on this pass,
+/// found a CLI join the pass's list (T-752); the rest are not read.
+pub fn list_probed(q: &mut Query, answered: &[(String, HostProbe)]) {
+    for p in std::mem::take(&mut q.pending) {
+        let Some((_, probe)) = answered.iter().find(|(h, _)| *h == p.remote.host) else { continue };
+        let Some(cli) = probe.cli.clone() else { continue };
+        if q.repos.iter().any(|r| r.remote == p.remote) {
+            continue;
+        }
+        q.repos.push(RepoQuery { remote: p.remote, cli, viewer: probe.viewer.clone(), dir: p.dir });
+    }
 }
 
 /// Which candidate is signed in to the host, in order; the viewer's
@@ -753,6 +791,187 @@ impl State {
     }
 }
 
+/// `forge.json`'s schema (T-752).
+pub const FORGE_SCHEMA: u32 = 1;
+
+/// One PR as `forge.json` keeps it: the wire's words, so the file reads
+/// as the snapshot does and a word this build does not know drops the PR
+/// rather than the file.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PrRecord {
+    pub forge: String,
+    pub repo: String,
+    pub number: u64,
+    pub url: String,
+    pub state: String,
+    pub head_oid: String,
+    pub head_ref: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub merge_oid: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub conflict: bool,
+    pub review: String,
+    pub pipeline: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub job: String,
+    pub updated_ms: u64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub deployed: Vec<String>,
+}
+
+impl PrRecord {
+    fn of(p: &Pr) -> Self {
+        PrRecord {
+            forge: p.forge.word().into(),
+            repo: p.repo.clone(),
+            number: p.number,
+            url: p.url.clone(),
+            state: p.state.word().into(),
+            head_oid: p.head_oid.clone(),
+            head_ref: p.head_ref.clone(),
+            merge_oid: p.merge_oid.clone(),
+            conflict: p.conflict,
+            review: p.review.word().into(),
+            pipeline: p.pipeline.word().into(),
+            job: p.pipeline.job().unwrap_or_default().into(),
+            updated_ms: p.updated_ms,
+            deployed: p.deployed.clone(),
+        }
+    }
+
+    fn pr(self) -> Option<Pr> {
+        Some(Pr {
+            forge: Forge::from_word(&self.forge)?,
+            state: PrState::from_word(&self.state)?,
+            pipeline: Pipeline::from_words(&self.pipeline, Some(&self.job)),
+            review: Review::from_word(&self.review),
+            repo: self.repo,
+            number: self.number,
+            url: self.url,
+            head_oid: self.head_oid,
+            head_ref: self.head_ref,
+            merge_oid: self.merge_oid,
+            conflict: self.conflict,
+            updated_ms: self.updated_ms,
+            deployed: self.deployed,
+        })
+    }
+}
+
+/// What the passes settled of one merge commit: its terminal pipeline and
+/// the environments it was seen reaching.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CommitRecord {
+    pub repo: String,
+    pub oid: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub pipeline: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub job: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub deployed: Vec<String>,
+}
+
+/// `forge.json` (T-752): each ticket's set as the last pass read it, and
+/// what the passes settled, so a restart's first snapshot carries the PRs.
+/// No time in it: a quiet board writes nothing. Every field defaults, so a
+/// file from an older build of this schema reads as what it held.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ForgeFile {
+    pub schema_version: u32,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub sets: BTreeMap<ulid::Ulid, Vec<PrRecord>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub commits: Vec<CommitRecord>,
+}
+
+impl ForgeFile {
+    pub fn of(state: &State) -> Self {
+        let sets = state
+            .sets
+            .iter()
+            .map(|(t, set)| (*t, set.iter().map(PrRecord::of).collect()))
+            .collect();
+        let mut keys: Vec<&(String, String)> =
+            state.commit_pipelines.keys().chain(state.deployed.keys()).collect();
+        keys.sort();
+        keys.dedup();
+        let commits = keys
+            .into_iter()
+            .map(|key| {
+                let pipeline = state.commit_pipelines.get(key);
+                CommitRecord {
+                    repo: key.0.clone(),
+                    oid: key.1.clone(),
+                    pipeline: pipeline.map(|p| p.word().to_string()).unwrap_or_default(),
+                    job: pipeline.and_then(Pipeline::job).unwrap_or_default().into(),
+                    deployed: state.deployed.get(key).cloned().unwrap_or_default(),
+                }
+            })
+            .collect();
+        ForgeFile { schema_version: FORGE_SCHEMA, sets, commits }
+    }
+
+    /// No sets, at this build's schema: what an absent file reads as.
+    pub fn default_of_schema() -> Self {
+        ForgeFile { schema_version: FORGE_SCHEMA, ..ForgeFile::default() }
+    }
+}
+
+impl State {
+    /// Take a loaded `forge.json` back (T-752): the sets of the tickets the
+    /// board still has, and the settled commits. `at_ms` stays empty — it
+    /// is "read live since this start", what the train's freshness and the
+    /// pipeline gate wait for.
+    pub fn restore(&mut self, file: ForgeFile, live: impl Fn(ulid::Ulid) -> bool) {
+        for (t, records) in file.sets {
+            if !live(t) {
+                continue;
+            }
+            let set: Vec<Pr> = records.into_iter().filter_map(PrRecord::pr).collect();
+            self.sets.insert(t, forge::ticket_set(set));
+        }
+        for c in file.commits {
+            let key = (c.repo, c.oid);
+            if let p @ (Pipeline::Passed | Pipeline::Failed(_)) =
+                Pipeline::from_words(&c.pipeline, Some(&c.job))
+            {
+                self.commit_pipelines.insert(key.clone(), p);
+            }
+            if !c.deployed.is_empty() {
+                self.deployed.insert(key, c.deployed);
+            }
+        }
+    }
+}
+
+/// Startup loader: the file, any notices, and whether writes are barred,
+/// on the other state files' contract (`store::load_versioned`).
+pub fn load_or_recover(paths: &Paths) -> (ForgeFile, Vec<Notice>, bool) {
+    let (file, notices, barred) = crate::store::load_versioned(
+        &paths.forge_file(),
+        FORGE_SCHEMA,
+        "the board's pull requests",
+        "",
+    );
+    (file.unwrap_or_default(), notices, barred)
+}
+
+/// A ticket's set as a pass read it, with the previous read's PRs of every
+/// repository whose call failed on this pass carried over (T-752): a
+/// forge that did not answer said nothing, and a card does not lose its
+/// PRs to a timeout, nor a loaded set to the first pass after a restart.
+pub fn carry(old: Option<&[Pr]>, new: Vec<Pr>, failed: &[&str]) -> Vec<Pr> {
+    let Some(old) = old else { return new };
+    let kept = old.iter().filter(|p| failed.contains(&p.repo.as_str())).cloned();
+    let mut set: Vec<Pr> = new.into_iter().filter(|p| !failed.contains(&p.repo.as_str())).collect();
+    set.extend(kept);
+    forge::ticket_set(set)
+}
+
 /// The feed's words for what changed in a ticket's set between two reads:
 /// a PR newly bound, one merged or closed, a pipeline that failed or
 /// passed. Nothing on the first read, which would say every old PR over.
@@ -993,5 +1212,146 @@ mod tests {
             "falls through to the daemon's own PATH"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A fresh daemon has no probe (T-752): the hosts it probes on its
+    /// first pass are listed on that same pass once a CLI answers, and a
+    /// host whose probe found none is not.
+    #[test]
+    fn a_fresh_state_lists_the_probed_hosts_on_the_same_pass() {
+        let remote = |host: &str, path: &str| Remote { host: host.into(), path: path.into() };
+        let mut q = Query {
+            pending: vec![
+                PendingRepo { remote: remote("gitlab.lab", "g/a"), dir: "/r".into() },
+                PendingRepo { remote: remote("gitlab.lab", "g/b"), dir: "/r/b".into() },
+                PendingRepo { remote: remote("github.com", "o/r"), dir: "/r/c".into() },
+            ],
+            ..Default::default()
+        };
+        assert!(q.repos.is_empty(), "nothing to list before the probe");
+        let glab = Cli { forge: Forge::GitLab, bin: "/bin/glab".into() };
+        let answered = vec![
+            (
+                "gitlab.lab".to_string(),
+                HostProbe {
+                    cli: Some(glab.clone()),
+                    at: Instant::now(),
+                    viewer: Some("me".into()),
+                },
+            ),
+            ("github.com".to_string(), HostProbe { cli: None, at: Instant::now(), viewer: None }),
+        ];
+        list_probed(&mut q, &answered);
+        let keys: Vec<String> = q.repos.iter().map(RepoQuery::key).collect();
+        assert_eq!(keys, vec!["gitlab.lab/g/a", "gitlab.lab/g/b"]);
+        assert!(q.repos.iter().all(|r| r.cli == glab && r.viewer.as_deref() == Some("me")));
+        assert_eq!(q.repos[1].dir, PathBuf::from("/r/b"));
+        assert!(q.pending.is_empty());
+    }
+
+    /// A repository whose call failed keeps the previous read's PRs; one
+    /// that answered says what it says now (T-752).
+    #[test]
+    fn a_failed_call_carries_its_repositorys_prs_over() {
+        let mut other = pr(9, PrState::Open, Pipeline::Running);
+        other.repo = "o/other".into();
+        let old = vec![pr(1, PrState::Open, Pipeline::Running), other.clone()];
+        let new = vec![pr(1, PrState::Merged, Pipeline::Passed)];
+        let set = carry(Some(&old), new.clone(), &["o/other"]);
+        assert_eq!(set.len(), 2);
+        assert!(set.iter().any(|p| p.number == 1 && p.state == PrState::Merged));
+        assert!(set.contains(&other));
+        assert_eq!(carry(Some(&old), new.clone(), &[]), new, "every call answered");
+        assert_eq!(carry(None, new.clone(), &["o/r"]), new, "a first read carries nothing");
+    }
+
+    /// `forge.json` round-trips the sets and the settled commits (T-752),
+    /// leaves `at_ms` empty (no live read yet), drops a ticket the board no
+    /// longer has, and a newer build's file is refused.
+    #[test]
+    fn the_forge_file_round_trips_and_a_newer_one_is_refused() {
+        let (a, gone) = (ulid::Ulid(1), ulid::Ulid(2));
+        let mut s = State::default();
+        let mut merged = pr(3, PrState::Merged, Pipeline::Failed("deploy:prod".into()));
+        merged.merge_oid = "m".into();
+        merged.deployed = vec!["staging".into()];
+        merged.conflict = true;
+        merged.review = Review::Approved;
+        let set = forge::ticket_set(vec![
+            merged,
+            pr(4, PrState::Draft, Pipeline::Waiting(String::new())),
+        ]);
+        s.sets.insert(a, set.clone());
+        s.sets.insert(gone, vec![pr(5, PrState::Open, Pipeline::None)]);
+        s.at_ms.insert(a, 7);
+        s.commit_pipelines.insert(("o/r".into(), "m".into()), Pipeline::Passed);
+        s.deployed.insert(("o/r".into(), "m".into()), vec!["staging".into()]);
+        s.deployed.insert(("o/r".into(), "n".into()), vec!["prod".into()]);
+        let text = serde_json::to_string_pretty(&ForgeFile::of(&s)).unwrap();
+        assert!(!text.contains("at_ms"), "no time in the file: {text}");
+        let back: ForgeFile = crate::store::parse_versioned(&text, FORGE_SCHEMA).unwrap();
+        let mut restored = State::default();
+        restored.restore(back, |t| t == a);
+        assert_eq!(restored.sets.get(&a), Some(&set));
+        assert!(!restored.sets.contains_key(&gone));
+        assert!(restored.at_ms.is_empty());
+        assert_eq!(restored.commit_pipelines, s.commit_pipelines);
+        assert_eq!(restored.deployed, s.deployed);
+        assert_eq!(
+            text,
+            serde_json::to_string_pretty(&ForgeFile::of(&{
+                let mut r = State::default();
+                r.restore(crate::store::parse_versioned(&text, FORGE_SCHEMA).unwrap(), |_| true);
+                r
+            }))
+            .unwrap(),
+            "a load and a save write the same bytes"
+        );
+        let empty = serde_json::to_string(&ForgeFile::default_of_schema()).unwrap();
+        assert_eq!(empty, format!("{{\"schema_version\":{FORGE_SCHEMA}}}"));
+        let newer = format!("{{\"schema_version\": {}}}", FORGE_SCHEMA + 1);
+        assert!(matches!(
+            crate::store::parse_versioned::<ForgeFile>(&newer, FORGE_SCHEMA),
+            Err((Some(_), _))
+        ));
+        assert!(matches!(
+            crate::store::parse_versioned::<ForgeFile>("{", FORGE_SCHEMA),
+            Err((None, _))
+        ));
+    }
+
+    /// The back-compat fixture (T-752): schema 1 as this build first wrote
+    /// it, missing optional fields, and a word a later build may add. The
+    /// PR with an unknown state is dropped; the file is not.
+    #[test]
+    fn a_schema_one_forge_file_reads() {
+        let t = ulid::Ulid(1);
+        let text = format!(
+            r#"{{
+  "schema_version": 1,
+  "sets": {{
+    "{t}": [
+      {{"forge": "gitlab", "repo": "g/p", "number": 1, "url": "https://gitlab.lab/g/p/-/merge_requests/1",
+        "state": "merged", "head_oid": "h", "head_ref": "msmn/T-3-x", "merge_oid": "m",
+        "review": "none", "pipeline": "passed", "updated_ms": 5, "deployed": ["production"]}},
+      {{"forge": "gitlab", "repo": "g/p", "number": 2, "state": "queued"}}
+    ]
+  }},
+  "commits": [{{"repo": "g/p", "oid": "m", "pipeline": "passed"}}],
+  "later_field": true
+}}"#
+        );
+        let file: ForgeFile = crate::store::parse_versioned(&text, FORGE_SCHEMA).unwrap();
+        let mut s = State::default();
+        s.restore(file, |_| true);
+        let set = &s.sets[&t];
+        assert_eq!(set.len(), 1);
+        assert_eq!(
+            (set[0].label(), set[0].state, set[0].pipeline.clone()),
+            ("!1".into(), PrState::Merged, Pipeline::Passed)
+        );
+        assert_eq!(set[0].deployed, vec!["production".to_string()]);
+        assert_eq!(s.commit_pipelines[&("g/p".to_string(), "m".to_string())], Pipeline::Passed);
+        assert!(s.merged_at(t, "g/p", "h").is_some());
     }
 }

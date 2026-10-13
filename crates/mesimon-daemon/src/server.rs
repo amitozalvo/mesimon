@@ -526,6 +526,10 @@ pub struct Daemon {
     train_barred: bool,
     /// `train.json` as last written, so an unchanged one is not written again.
     train_written: String,
+    /// `forge.json` could not be read, or a newer build wrote it (T-752).
+    forge_barred: bool,
+    /// `forge.json` as last written, so an unchanged one is not written again.
+    forge_written: String,
     /// `columns.toml`'s and `sessions.json`'s text as last written; a save
     /// whose text is the same writes nothing.
     columns_written: String,
@@ -1035,6 +1039,8 @@ pub fn run(paths: Paths) -> Result<()> {
     notices.extend(crown_notices);
     let (train_file, train_notices, train_barred) = crate::train::load_or_recover(&paths);
     notices.extend(train_notices);
+    let (forge_file, forge_notices, forge_barred) = crate::forge::load_or_recover(&paths);
+    notices.extend(forge_notices);
     let queued: Vec<QueuedAsk> = queue_entries
         .into_iter()
         .filter_map(|e| {
@@ -1182,6 +1188,8 @@ pub fn run(paths: Paths) -> Result<()> {
         train: Default::default(),
         train_barred,
         train_written: String::new(),
+        forge_barred,
+        forge_written: String::new(),
         columns_written: String::new(),
         sessions_written: String::new(),
         ticks: 0,
@@ -1293,6 +1301,9 @@ pub fn run(paths: Paths) -> Result<()> {
     d.restore_crown(crown_ledger);
     // The train's open rebase asks (T-635): the hold through a restart.
     d.restore_train(train_file);
+    // The board's pull requests as the last pass read them (T-752): on the
+    // first snapshot, and the baseline the first live pass diffs against.
+    d.restore_forge(forge_file);
     // The restored entries (T-418), judged once as any entry is (a gone
     // ticket, a seat someone took) and written back so the file is the list
     // again; each survivor is announced, so the feed says where the marks
@@ -7077,7 +7088,16 @@ impl Daemon {
     /// URLs and the tail its pass has not reached, read now, so a turn's end
     /// judges the `pr create` of that same turn (T-750).
     fn pipeline_refusal(&self, id: ulid::Ulid) -> Option<String> {
+        // A live read only (T-752): a set `forge.json` brought back may be
+        // a day old, and a pipeline, unlike a merge, can turn back. A loaded
+        // set with PRs waits for the first live pass; an empty one reads as
+        // no read at all, as before a restart kept anything.
+        let live = self.forge.at_ms.contains_key(&id);
         let set = self.forge.sets.get(&id).map(Vec::as_slice);
+        if !live && set.is_some_and(|s| !s.is_empty()) {
+            return Some("pipeline not read".into());
+        }
+        let set = set.filter(|_| live);
         let opened_here = if set.is_some_and(|s| !s.is_empty()) {
             None
         } else {
@@ -8381,6 +8401,32 @@ impl Daemon {
             .collect();
         self.train.restore(asks);
         self.persist_train();
+    }
+
+    /// The single write path for `forge.json` (T-752): each ticket's pull
+    /// requests and what the passes settled, written when they changed.
+    fn persist_forge(&mut self) {
+        if self.forge_barred {
+            return;
+        }
+        let file = crate::forge::ForgeFile::of(&self.forge);
+        let Ok(text) = serde_json::to_string_pretty(&file) else { return };
+        let _ = store::write_if_changed(
+            &self.paths.forge_file(),
+            text,
+            store::PRIVATE,
+            &mut self.forge_written,
+        );
+    }
+
+    /// Read `forge.json` back at start (T-752): the sets of the tickets the
+    /// board still has. The file is rewritten only once a pass changes it.
+    fn restore_forge(&mut self, file: crate::forge::ForgeFile) {
+        let board = &self.board;
+        self.forge.restore(file, |t| board.ticket(t).is_some());
+        self.forge_written =
+            serde_json::to_string_pretty(&crate::forge::ForgeFile::of(&self.forge))
+                .unwrap_or_default();
     }
 
     /// The single write path for `started.json`.
@@ -13268,7 +13314,8 @@ impl Daemon {
             tickets.push((*t, b.branch.clone(), b.legs(&self.paths.repo_root, &base)));
         }
         if tickets.is_empty() {
-            self.forge.last = Some(Instant::now());
+            // Every binding still provisioning (no branch yet): asked again
+            // on the next bucket, not a whole cadence later (T-752).
             return;
         }
         // Every repository on the pass, by host and path, and where to run.
@@ -13358,6 +13405,20 @@ impl Daemon {
                 })
             })
             .collect();
+        // A host first probed on this pass has no probe here yet: its
+        // repositories are listed on the worker once the probe answers
+        // (T-752), not a whole cadence later.
+        let pending: Vec<crate::forge::PendingRepo> = repos
+            .iter()
+            .filter(|(remote, _)| {
+                !self.forge.probes.contains_key(&remote.host)
+                    && probes.iter().any(|p| p.host == remote.host)
+            })
+            .map(|(remote, dir)| crate::forge::PendingRepo {
+                remote: remote.clone(),
+                dir: dir.clone(),
+            })
+            .collect();
         if probes.is_empty() && repo_queries.is_empty() {
             // No forge reads this board: nothing to ask, and no pass to
             // wait for.
@@ -13382,6 +13443,7 @@ impl Daemon {
         let query = crate::forge::Query {
             probes,
             repos: repo_queries,
+            pending,
             tickets: queries,
             envs,
             commit_pipelines: self.forge.commit_pipelines.clone(),
@@ -13433,11 +13495,14 @@ impl Daemon {
         let mut changed = false;
         let mut news: Vec<(ulid::Ulid, String)> = Vec::new();
         let mut arrivals: Vec<(ulid::Ulid, crate::forge::Edge)> = Vec::new();
+        let failed: Vec<&str> =
+            sample.repos.iter().filter(|r| r.error.is_some()).map(|r| r.path.as_str()).collect();
         for (t, set) in sample.sets {
             if self.board.ticket(t).is_none() {
                 continue;
             }
             let old = self.forge.sets.get(&t);
+            let set = crate::forge::carry(old.map(Vec::as_slice), set, &failed);
             for line in crate::forge::delta(old.map(Vec::as_slice), &set) {
                 self.feed.board_outcome("forge", "pr", Some(t), &line);
             }
@@ -13465,6 +13530,7 @@ impl Daemon {
         let live: Vec<ulid::Ulid> = self.board.tickets.iter().map(|t| t.id).collect();
         self.forge.sets.retain(|t, _| live.contains(t));
         self.forge.at_ms.retain(|t, _| live.contains(t));
+        self.persist_forge();
         let tickets: Vec<ulid::Ulid> = self.wt_repos.keys().copied().collect();
         for t in tickets {
             let Some(mut legs) = self.wt_repos.get(&t).cloned() else { continue };

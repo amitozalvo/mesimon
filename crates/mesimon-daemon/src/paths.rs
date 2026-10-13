@@ -93,6 +93,11 @@ impl Paths {
     pub fn train_file(&self) -> PathBuf {
         self.state_dir.join("train.json")
     }
+    /// Each ticket's pull requests as the forge last read them (T-752): what
+    /// a restart's first snapshot shows before the first pass answers.
+    pub fn forge_file(&self) -> PathBuf {
+        self.state_dir.join("forge.json")
+    }
     /// What each ticket's agents have spent, in tokens by hour and model, and
     /// how far each transcript has been read (T-327).
     pub fn costs_file(&self) -> PathBuf {

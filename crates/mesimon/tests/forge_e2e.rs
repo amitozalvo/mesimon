@@ -9,6 +9,11 @@
 //! that waits on a person, a conflict and a review on one pass, each a
 //! `forge` wake in the edge's words.
 //!
+//! The PRs survive a restart (T-752): the first pass lists as it probes,
+//! `forge.json` brings the set back, the first snapshot after a restart
+//! carries it while the forge has not answered yet, and the first live pass
+//! says only what moved while the daemon was down.
+//!
 //! The stub is the forge: `auth status` passes, `pr list` prints the file
 //! the test writes, `api …/check-runs` the merge commit's pipeline. No
 //! network, no token, nothing of the real CLI.
@@ -557,5 +562,133 @@ fn the_crown_hears_the_forges_edges() {
     // A pass that sees nothing new says nothing.
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(forge_wakes(), 3, "{}", std::fs::read_to_string(&got).unwrap());
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// The board's PRs survive a daemon restart (T-752). The cadence is a
+/// minute, so the PR binding at all proves the first pass lists as it
+/// probes; across the restart the stub holds every call three seconds, so
+/// the snapshot read at once is `forge.json`'s; the PR merged while the
+/// daemon was down is the one feed line the first live pass adds.
+#[test]
+fn the_prs_survive_a_restart_and_the_first_pass_lists() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    let stub_dir = std::env::temp_dir().join(format!("msmn-forge-keep-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&stub_dir);
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    let gh = stub_dir.join("gh");
+    let hold = stub_dir.join("hold");
+    std::fs::write(
+        &gh,
+        GH_STUB.replacen("case", "[ -f \"$(dirname \"$0\")/hold\" ] && sleep 3\ncase", 1),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let prs_file = stub_dir.join("prs.json");
+    write(&prs_file, "[]");
+    let path_var = format!(
+        "{}:{}",
+        stub_dir.display(),
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+    );
+    let Some(h) = Harness::boot_with_env(
+        "forge-keep",
+        Some(STUB),
+        &[
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "60000"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs_file.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    let repo = h.repo.clone();
+    init_repo(&repo, "a.txt", "hello\n");
+    git(&repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let mut c = h.client("forge-keep");
+    // The PR is on the forge before the ticket's first pass: bound by the
+    // branch mesimon will cut.
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "keep".into(),
+        workspace: None,
+        tier: None,
+    });
+    let id = c.board().tickets.iter().find(|t| t.title == "keep").unwrap().id;
+    let key = c.board().ticket(id).unwrap().short_key.clone();
+    let branch = mesimon_core::workspace::branch_name(&key, "keep");
+    write(&prs_file, &pr_json(&branch, "0000", "OPEN", None, Some("test-linux")));
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    assert!(matches!(
+        c.request(Command::SpawnSession {
+            ticket: id,
+            kind: SessionKind::Claude,
+            submit_prompt: false,
+            plan: false
+        }),
+        Response::Provisioning
+    ));
+    assert_eq!(wait_attached(&mut c, id).branch, branch);
+    wait_until(Duration::from_secs(20), "the first pass to bind the PR", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == id && p.number == 42)
+    });
+    let kept = h.paths.state_dir.join("forge.json");
+    wait_until(Duration::from_secs(10), "forge.json to hold the PR", || {
+        std::fs::read_to_string(&kept).is_ok_and(|t| t.contains("pull/42"))
+    });
+    assert_eq!(feed_count(&h, "pr", id), 0, "a first read says nothing");
+
+    // Down, the PR merges on the forge, and the forge goes slow.
+    drop(c);
+    h.restart_after(|| {
+        std::fs::write(&hold, "").unwrap();
+        write(&prs_file, &pr_json(&branch, "0000", "MERGED", Some("feedf00d"), None));
+    });
+    let mut c = h.client("forge-keep-2");
+    let (prs, forge) = match c.request(Command::Snapshot) {
+        Response::Board { prs, forge, .. } => (prs, forge),
+        other => panic!("not a board: {other:?}"),
+    };
+    assert_eq!(forge.sampled_at_ms, 0, "the forge has not answered yet: {forge:?}");
+    let pr = prs
+        .iter()
+        .find(|p| p.ticket == id && p.number == 42)
+        .expect("the PR on the first snapshot");
+    assert_eq!(
+        (pr.state.as_str(), pr.pipeline.as_str()),
+        ("open", "failed"),
+        "as the last read left it"
+    );
+    // A loaded pipeline is not a gate's answer: only a live read is.
+    let mut review = c.board().column("REVIEW").unwrap().settings.clone();
+    review.requires_pipeline = true;
+    assert!(matches!(
+        c.request(Command::SetColumnSettings { name: "REVIEW".into(), settings: review }),
+        Response::Ok
+    ));
+    match c.request(Command::MoveTicket { id, column: "REVIEW".into(), before: None }) {
+        Response::Err { message } => assert!(message.contains("pipeline not read"), "{message}"),
+        other => panic!("REVIEW before a live read: {other:?}"),
+    }
+
+    // The first live pass says what moved while down, and only that.
+    let _ = std::fs::remove_file(&hold);
+    wait_until(Duration::from_secs(30), "the first live pass to read the merge", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == id && p.state == "merged")
+    });
+    wait_until(Duration::from_secs(10), "the feed to say the merge", || {
+        feed_count(&h, "pr", id) >= 1
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(feed_count(&h, "pr", id), 1, "the merge, and no PR said over");
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
