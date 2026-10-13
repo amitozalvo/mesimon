@@ -12,6 +12,7 @@ use std::time::Duration;
 const STUB: &str = "#!/bin/sh\nexec sleep 120\n";
 
 fn spawn(client: &mut TestClient, title: &str) -> uuid::Uuid {
+    client.open_to_new("IN PROGRESS");
     client.request(Command::CreateTicket {
         column: "IN PROGRESS".into(),
         title: title.into(),

@@ -6771,7 +6771,7 @@ impl Daemon {
         // No column named means the board's default (T-279): the one chosen
         // in Settings while it still exists, else the first column.
         let Some(column) = column.or_else(|| self.board.landing_column()) else {
-            return Response::Err { message: "the board has no columns".into() };
+            return Response::Err { message: "no column on the board takes new tickets".into() };
         };
         if !self.board.columns.iter().any(|c| c.name == column) {
             return Response::Err { message: format!("no such column: {column}") };
@@ -9157,8 +9157,16 @@ impl Daemon {
         if self.columns_barred {
             return Err(self.barred_message("columns"));
         }
-        if self.board.column(&column).is_none() {
+        let Some(col) = self.board.column(&column) else {
             return Err(format!("no such column: {column}"));
+        };
+        // A column a ticket only reaches by moving (T-764): every road that
+        // mints is refused there, and the refusal names where `o` would file.
+        if col.settings.refuses_new {
+            return Err(match self.board.filing_column(&column) {
+                Some(open) => format!("{column} takes no new tickets: file it in {open}"),
+                None => format!("{column} takes no new tickets"),
+            });
         }
         // A title is user text on a card row; scrubbed and bounded here, at
         // the boundary — the composer's own cap is a courtesy a client can lift.
@@ -14275,9 +14283,13 @@ impl Daemon {
         let ticket = match ticket {
             Some(t) => t,
             None => {
-                let Some(column) = self.board.sorted_columns().first().map(|c| c.name.clone())
+                let Some(column) = self
+                    .board
+                    .sorted_columns()
+                    .first()
+                    .and_then(|c| self.board.filing_column(&c.name))
                 else {
-                    return Err("board has no columns".into());
+                    return Err("no column on the board takes new tickets".into());
                 };
                 let title = item
                     .name

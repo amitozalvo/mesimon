@@ -1274,6 +1274,12 @@ pub struct ColumnSettings {
     /// never retroactive. `None` = the board default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceStrategy>,
+    /// No ticket is minted here (T-764): a column a ticket only reaches by
+    /// moving, as IN PROGRESS and REVIEW are. `o` on it files into
+    /// `Board::filing_column`, and the daemon refuses a mint that names it.
+    /// No schema bump: a build that drops it only lets a mint in again.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub refuses_new: bool,
     #[serde(default, skip_serializing_if = "ClaudeMode::is_inherit")]
     pub claude_mode: ClaudeMode,
     #[serde(default, skip_serializing_if = "CodexSandbox::is_inherit")]
@@ -1361,6 +1367,9 @@ impl ColumnSettings {
         }
         if self.collapsed {
             out.push("collapsed".into());
+        }
+        if self.refuses_new {
+            out.push("takes no new tickets".into());
         }
         if let Some(w) = self.workspace {
             out.push(format!("workspace: {}", w.word()));
@@ -2354,12 +2363,16 @@ pub fn template_settings(name: &str) -> Option<ColumnSettings> {
     let d = ColumnSettings::default;
     Some(match name {
         "TODO" => ColumnSettings { on_working: Some("IN PROGRESS".into()), ..d() },
-        "IN PROGRESS" => {
-            ColumnSettings { on_done: Some("REVIEW".into()), train: TrainReach::Rebase, ..d() }
-        }
+        "IN PROGRESS" => ColumnSettings {
+            on_done: Some("REVIEW".into()),
+            train: TrainReach::Rebase,
+            refuses_new: true,
+            ..d()
+        },
         "REVIEW" => ColumnSettings {
             on_working: Some("IN PROGRESS".into()),
             train: TrainReach::Merge,
+            refuses_new: true,
             ..d()
         },
         "DONE" => ColumnSettings { requires_merge: true, reclaim: true, ..d() },
@@ -2446,13 +2459,30 @@ impl Board {
     }
 
     /// The column a ticket lands in when nothing named one (T-279): the
-    /// chosen default while the board still has it, else the first column.
-    /// `None` only on a board with no columns at all.
+    /// chosen default while the board still has it, else the first column,
+    /// either one through `filing_column` (T-764). `None` only on a board
+    /// where no column takes new tickets.
     pub fn landing_column(&self) -> Option<String> {
-        if let Some(d) = self.default_column.as_deref().and_then(|n| self.column(n)) {
-            return Some(d.name.clone());
-        }
-        self.sorted_columns().first().map(|c| c.name.clone())
+        let chosen = match self.default_column.as_deref().and_then(|n| self.column(n)) {
+            Some(d) => d.name.clone(),
+            None => self.sorted_columns().first()?.name.clone(),
+        };
+        self.filing_column(&chosen)
+    }
+
+    /// Where a ticket minted from `name` goes (T-764): `name` itself unless
+    /// it refuses new tickets, then the nearest column to its left that
+    /// takes them, then the nearest to its right. `None` when no column
+    /// does, or `name` is not on the board.
+    pub fn filing_column(&self, name: &str) -> Option<String> {
+        let cols = self.sorted_columns();
+        let at = cols.iter().position(|c| c.name == name)?;
+        let open = |c: &&&Column| !c.settings.refuses_new;
+        cols.get(at)
+            .filter(open)
+            .or_else(|| cols[..at].iter().rev().find(open))
+            .or_else(|| cols[at + 1..].iter().find(open))
+            .map(|c| c.name.clone())
     }
 
     /// Choose the landing column, or `None` to go back to the first column.
@@ -2616,6 +2646,11 @@ impl Board {
         }
         if s.arrives_on == Arrival::Deployed && s.arrives_env.is_none() {
             return Err("deployed to: name the environment".into());
+        }
+        // One column always takes new tickets (T-764), or `o` has nowhere
+        // to file one.
+        if s.refuses_new && self.columns.iter().all(|c| c.name == name || c.settings.refuses_new) {
+            return Err("new tickets: the board's last column that takes them".into());
         }
         if let Some(c) = self.column_mut(name) {
             c.settings = s;
@@ -4300,11 +4335,14 @@ mod tests {
         assert_eq!(b.landing_column().as_deref(), Some("TODO"), "unset means the first column");
         assert_eq!(b.set_default_column(Some("NOPE")).unwrap_err(), "no such column: NOPE");
         assert_eq!(b.default_column, None, "a refusal changes nothing");
+        b.set_default_column(Some("DONE")).unwrap();
+        assert_eq!(b.landing_column().as_deref(), Some("DONE"));
+        b.rename_column("DONE", "SHIPPED").unwrap();
+        assert_eq!(b.default_column.as_deref(), Some("SHIPPED"), "a rename carries it");
+        assert_eq!(b.landing_column().as_deref(), Some("SHIPPED"));
+        // A default that takes no new tickets lands where `o` on it would.
         b.set_default_column(Some("REVIEW")).unwrap();
-        assert_eq!(b.landing_column().as_deref(), Some("REVIEW"));
-        b.rename_column("REVIEW", "QA").unwrap();
-        assert_eq!(b.default_column.as_deref(), Some("QA"), "a rename carries it");
-        assert_eq!(b.landing_column().as_deref(), Some("QA"));
+        assert_eq!(b.landing_column().as_deref(), Some("TODO"));
         // A name the board lost reads as the first column, and the prune
         // clears it so the file agrees with what the board does.
         b.default_column = Some("GONE".into());
@@ -4314,6 +4352,41 @@ mod tests {
         b.set_default_column(None).unwrap();
         assert_eq!(b.landing_column().as_deref(), Some("TODO"));
         assert_eq!(Board::default().landing_column(), None, "no columns, nowhere to land");
+    }
+
+    /// T-764: a column that takes no new tickets files `o` into its nearest
+    /// open neighbour, the left one first; the board keeps one open column.
+    #[test]
+    fn a_closed_column_files_into_its_nearest_open_neighbour() {
+        let mut b = template_board();
+        assert!(b.column("IN PROGRESS").unwrap().settings.refuses_new);
+        assert!(b.column("REVIEW").unwrap().settings.refuses_new);
+        assert!(!b.column("TODO").unwrap().settings.refuses_new);
+        assert!(!b.column("DONE").unwrap().settings.refuses_new);
+        let filed = |b: &Board, n: &str| b.filing_column(n);
+        assert_eq!(filed(&b, "TODO").as_deref(), Some("TODO"), "an open column is itself");
+        assert_eq!(filed(&b, "IN PROGRESS").as_deref(), Some("TODO"));
+        assert_eq!(filed(&b, "REVIEW").as_deref(), Some("TODO"), "left first, past a closed one");
+        assert_eq!(filed(&b, "NOPE"), None);
+        // Nothing open to the left: the right side answers.
+        let close = |b: &mut Board, n: &str| {
+            let mut s = b.column(n).unwrap().settings.clone();
+            s.refuses_new = true;
+            b.set_column_settings(n, s)
+        };
+        close(&mut b, "TODO").unwrap();
+        assert_eq!(filed(&b, "IN PROGRESS").as_deref(), Some("DONE"));
+        assert_eq!(filed(&b, "TODO").as_deref(), Some("DONE"));
+        assert_eq!(b.landing_column().as_deref(), Some("DONE"));
+        // The last open column cannot close.
+        let err = close(&mut b, "DONE").unwrap_err();
+        assert!(err.contains("last column"), "{err}");
+        assert!(!b.column("DONE").unwrap().settings.refuses_new, "a refusal changes nothing");
+        // A board whose every column refuses (an older file, a delete)
+        // files nowhere: the caller says so.
+        b.column_mut("DONE").unwrap().settings.refuses_new = true;
+        assert_eq!(filed(&b, "REVIEW"), None);
+        assert_eq!(b.landing_column(), None);
     }
 
     #[test]
@@ -4588,7 +4661,10 @@ mod tests {
     fn the_settings_summary_says_only_what_was_chosen() {
         assert!(ColumnSettings::default().summary().is_empty());
         let s = template_settings("REVIEW").unwrap();
-        assert_eq!(s.summary(), ["working → IN PROGRESS", "train: auto-merge"]);
+        assert_eq!(
+            s.summary(),
+            ["takes no new tickets", "working → IN PROGRESS", "train: auto-merge"]
+        );
         assert!(s.automated());
         assert!(!template_settings("DONE").unwrap().automated());
     }

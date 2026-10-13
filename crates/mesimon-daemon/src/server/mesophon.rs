@@ -2040,7 +2040,7 @@ impl Daemon {
     ) -> Reply {
         let reject = |message: String| Reply::Rejected { message };
         let Some(column) = column.or_else(|| self.board.landing_column()) else {
-            return reject("the board has no columns".into());
+            return reject("no column on the board takes new tickets".into());
         };
         if self.board.column(&column).is_none() {
             return reject(format!("no such column: {column}"));
@@ -2735,7 +2735,7 @@ impl Daemon {
             }
             None => {
                 let Some(name) = self.board.landing_column() else {
-                    return reject("the board has no columns");
+                    return reject("no column on the board takes new tickets");
                 };
                 authorize(by, &Action::FileTicket, &Resource::Column { name })
             }

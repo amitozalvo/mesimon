@@ -114,6 +114,7 @@ fn completed_column_stay_survives_short_moves_and_restart() {
     let paths = fixture.paths(&repo);
     let daemon = fixture.daemon(&repo);
     let mut c = TestClient::connect(&paths.orch_sock());
+    c.open_to_new("IN PROGRESS");
     let Response::Created { id, .. } = c.request(Command::CreateTicket {
         column: "IN PROGRESS".into(),
         title: "timed".into(),

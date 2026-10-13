@@ -120,12 +120,17 @@ fn agent_board_tools_tier_and_collisions() {
         workspace: None,
         tier: None,
     });
-    let _ = c.request(Command::CreateTicket {
-        column: "REVIEW".into(),
+    // REVIEW takes no new tickets (T-764): the decoy is minted and moved.
+    let Response::Created { id: decoy } = c.request(Command::CreateTicket {
+        column: "TODO".into(),
         title: "decoy".into(),
         workspace: None,
         tier: None,
-    });
+    }) else {
+        panic!("decoy")
+    };
+    let moved = c.request(Command::MoveTicket { id: decoy, column: "REVIEW".into(), before: None });
+    assert!(matches!(moved, Response::Ok), "{moved:?}");
     let board = board_of(c.request(Command::Snapshot));
     let ticket = board.tickets.iter().find(|t| t.title == "the work").unwrap().id;
     let key = board.ticket(ticket).unwrap().short_key.clone();
@@ -379,8 +384,12 @@ fn agent_board_tools_tier_and_collisions() {
     assert_eq!(board.tickets.iter().filter(|t| t.title == "found: flaky test").count(), 1);
     // A named column is honoured; a column that is not there is refused, and
     // the refusal is an answer the model can read rather than a transport error.
-    let in_review = shim.call_ok("create_ticket", json!({"title": "second", "column": "REVIEW"}));
-    assert_eq!(in_review["column"], "REVIEW");
+    let in_done = shim.call_ok("create_ticket", json!({"title": "second", "column": "DONE"}));
+    assert_eq!(in_done["column"], "DONE");
+    // A column a ticket only reaches by moving (T-764) refuses, and says
+    // where a new one goes.
+    let closed = shim.call_err("create_ticket", json!({"title": "second", "column": "REVIEW"}));
+    assert!(closed.contains("REVIEW takes no new tickets: file it in TODO"), "{closed}");
     let refused = shim.call_err("create_ticket", json!({"title": "third", "column": "NOPE"}));
     assert!(refused.contains("no such column"), "{refused}");
     assert!(shim.call_err("create_ticket", json!({})).contains("title"));

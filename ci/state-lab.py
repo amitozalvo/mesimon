@@ -51,6 +51,13 @@ class Client:
     def board(self):
         return self.request("snapshot")["board"]
 
+    def open_to_new(self, column):
+        # The template closes IN PROGRESS to new tickets (T-764); the lab
+        # mints straight into it.
+        settings = next(c for c in self.board()["columns"] if c["name"] == column)
+        settings = {k: v for k, v in settings.items() if k not in ("name", "order", "refuses_new")}
+        self.request("set_column_settings", name=column, settings=settings)
+
     def close(self):
         self.file.close()
         self.sock.close()
@@ -110,6 +117,7 @@ def seed(repo, home, binary):
     client = Client(repo)
     entries = []
     client.request("set_mcp_tools", on=False)
+    client.open_to_new("IN PROGRESS")
     for case, title, event, payload, state, reason, column in cases():
         created = client.request("create_ticket", column="IN PROGRESS", title=title, workspace=None)
         ticket = created["id"]

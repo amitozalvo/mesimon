@@ -72,6 +72,11 @@ fn columns_are_added_renamed_sorted_deleted_and_survive_a_restart() {
     assert_eq!(settings(&board, "IN PROGRESS").on_done.as_deref(), Some("REVIEW"));
     assert_eq!(settings(&board, "REVIEW").train, TrainReach::Merge);
     assert!(settings(&board, "DONE").requires_merge && settings(&board, "DONE").reclaim);
+    // T-764: a ticket reaches IN PROGRESS and REVIEW by moving, never a mint.
+    for name in ["IN PROGRESS", "REVIEW"] {
+        assert!(settings(&board, name).refuses_new, "{name}");
+    }
+    assert!(!settings(&board, "TODO").refuses_new && !settings(&board, "DONE").refuses_new);
 
     // ---- add + reorder ------------------------------------------------------
     assert!(matches!(
@@ -122,7 +127,20 @@ fn columns_are_added_renamed_sorted_deleted_and_survive_a_restart() {
     // ---- rename carries the tickets, the archive and the rules ---------------
     let t1 = create(&mut c, "TODO", "one");
     let t2 = create(&mut c, "TODO", "two");
-    let t3 = create(&mut c, "REVIEW", "three");
+    err_containing(
+        c.request(Command::CreateTicket {
+            column: "REVIEW".into(),
+            title: "three".into(),
+            workspace: None,
+            tier: None,
+        }),
+        "REVIEW takes no new tickets: file it in TODO",
+    );
+    let t3 = create(&mut c, "TODO", "three");
+    assert!(matches!(
+        c.request(Command::MoveTicket { id: t3, column: "REVIEW".into(), before: None }),
+        Response::Ok
+    ));
     let parked = create(&mut c, "TODO", "parked");
     assert!(matches!(c.request(Command::ArchiveTicket { id: parked }), Response::Ok));
     // REVIEW's rule points at IN PROGRESS; rename that and watch it follow.

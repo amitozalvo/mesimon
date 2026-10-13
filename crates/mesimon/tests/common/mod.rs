@@ -316,6 +316,15 @@ impl TestClient {
         board_of(self.request(Command::Snapshot))
     }
 
+    /// Let `column` take new tickets (T-764), for a test that mints straight
+    /// into a column the template closes (IN PROGRESS, REVIEW).
+    pub fn open_to_new(&mut self, column: &str) {
+        let mut settings = self.board().column(column).expect("column").settings.clone();
+        settings.refuses_new = false;
+        let r = self.request(Command::SetColumnSettings { name: column.into(), settings });
+        assert!(matches!(r, Response::Ok), "{r:?}");
+    }
+
     /// Swallow any already-queued pushes so the next wait sees only new ones.
     pub fn drain_events(&mut self) {
         while self.next_event(Duration::from_millis(300)).is_some() {}

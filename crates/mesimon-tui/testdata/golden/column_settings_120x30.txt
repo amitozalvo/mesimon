@@ -9,6 +9,7 @@
                            │   Description: none                                            │
                            │   Collapsed: no                                                │
                            │   Sort now: newest first                                       │
+                           │   New tickets here: yes                                        │
                            │   Workspace for new tickets: board default                     │
                            │   Agent behaviour                                              │
                            │   Arrives here when: nothing                                   │
@@ -20,7 +21,6 @@
                            │                                                                │
                            │     what this column is for ∙ agents read it to pick a column  │
                            ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
-
 
 
 

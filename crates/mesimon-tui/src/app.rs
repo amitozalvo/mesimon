@@ -1631,6 +1631,10 @@ pub struct App {
     /// newly on the footer. The footer flashes from that instant
     /// (`layout_flash_lit`), so a repeated press is a repeated no.
     pub layout_flash: Option<Instant>,
+    /// A refusal the footer flashes red (T-764), the layout pause's flash:
+    /// the status it was said in and when. It flashes while `status` still
+    /// says those words, so a later status never inherits it.
+    pub status_flash: Option<(String, Instant)>,
     /// The ticket page's preview zone: the selected shell's pane tail, and
     /// when it was fetched. Per-view and in memory only — a shell has no
     /// transcript file to read the way `peek_cache` reads an agent's, so
@@ -1999,6 +2003,7 @@ impl App {
             refused: None,
             layout_pause: None,
             layout_flash: None,
+            status_flash: None,
             shell_tail: None,
             terminals: Vec::new(),
             crown_touches: Vec::new(),
@@ -2127,6 +2132,7 @@ impl App {
             || self.pager().is_some_and(Pager::animating)
             || self.shaking()
             || self.layout_flashing()
+            || self.status_flashing()
             || self.board.crown.is_some_and(|id| self.crowning_ms(id).is_some())
             || self.striking()
             || self.summary_pulsing()
@@ -2214,6 +2220,27 @@ impl App {
     pub(crate) fn layout_flash_lit(&self) -> bool {
         self.layout_flashing()
             && self.layout_flash.is_some_and(|at| {
+                (at.elapsed().as_millis() / LAYOUT_FLASH_PHASE.as_millis()).is_multiple_of(2)
+            })
+    }
+
+    /// Say a refusal in the footer and flash it (T-764): the layout pause's
+    /// lit, dark, lit, so a key that did nothing says so where the eye is.
+    fn refuse_flashing(&mut self, words: String) {
+        self.status_flash = Some((words.clone(), Instant::now()));
+        self.status = words;
+    }
+
+    fn status_flashing(&self) -> bool {
+        self.status_flash.as_ref().is_some_and(|(words, at)| {
+            *words == self.status && at.elapsed() < LAYOUT_FLASH_PHASE * LAYOUT_FLASH_PHASES
+        })
+    }
+
+    /// Whether the footer's status is in a lit phase of its flash.
+    pub(crate) fn status_flash_lit(&self) -> bool {
+        self.status_flashing()
+            && self.status_flash.as_ref().is_some_and(|(_, at)| {
                 (at.elapsed().as_millis() / LAYOUT_FLASH_PHASE.as_millis()).is_multiple_of(2)
             })
     }
@@ -5568,6 +5595,7 @@ impl App {
             col_arrives_word: cs.arrives_on.word(),
             col_arrives_env: cs.arrives_env.clone().unwrap_or_default(),
             col_requires_ticked: cs.requires_ticked,
+            col_refuses_new: cs.refuses_new,
             col_train_word: cs.train.word(),
             col_live: col_tickets.len(),
             col_plan_able: col.is_some_and(|c| self.column_plan_able(&c.name)),
@@ -6326,6 +6354,26 @@ impl App {
             }
             // ---- tickets ---------------------------------------------------
             Verb::OpenTicket => {
+                // A column a ticket only reaches by moving (T-764) hands the
+                // new one to its nearest open neighbour, left first: the
+                // cursor goes there and the composer opens in it.
+                let here = self.cursor_column().map(|c| c.name.clone());
+                let Some(open) = here.as_deref().and_then(|n| self.board.filing_column(n)) else {
+                    self.refuse_flashing(if here.is_none() {
+                        "no new ticket: the board has no columns".into()
+                    } else {
+                        "no new ticket: no column takes them (column settings → New tickets here)"
+                            .into()
+                    });
+                    return Ok(());
+                };
+                if here.as_deref() != Some(open.as_str()) {
+                    if let Some(ci) = self.columns().iter().position(|c| *c == open) {
+                        self.cursor_col = ci;
+                        self.cursor_row = self.cursor_row.map(|_| 0);
+                        self.clamp_cursor();
+                    }
+                }
                 // The composer starts at the column's own default (T-117);
                 // Shift+Tab still changes it.
                 let workspace = self.cursor_column().and_then(|c| c.settings.workspace);
@@ -7586,6 +7634,7 @@ impl App {
                     self.set_column(|s| s.arrives_on = next)?;
                 }
             }
+            Verb::ColumnRefusesNew => self.set_column(|s| s.refuses_new = !s.refuses_new)?,
             Verb::ColumnRequiresTicked => {
                 self.set_column(|s| s.requires_ticked = !s.requires_ticked)?
             }
@@ -14631,6 +14680,49 @@ mod tests {
         press(&mut app, 'j');
         ctrl(&mut app, 'k');
         assert_eq!(links_of(&app), ["https://ci.test/9"]);
+    }
+
+    /// T-764: `o` on a column that takes no new tickets opens the composer
+    /// in the nearest one that does, the left side first, then the right;
+    /// with none at all the footer flashes why and nothing opens.
+    #[test]
+    fn o_on_a_closed_column_composes_in_the_nearest_open_one() {
+        let close = |b: &mut Board, names: &[&str]| {
+            for n in names {
+                b.column_mut(n).unwrap().settings.refuses_new = true;
+            }
+        };
+        let composing_in = |app: &App| {
+            assert!(
+                matches!(app.mode, Mode::Input { purpose: InputPurpose::Create { .. }, .. }),
+                "{:?}",
+                app.mode
+            );
+            app.columns()[app.cursor_col].clone()
+        };
+        let mut b = board_three_columns();
+        close(&mut b, &["doing"]);
+        let mut app = App::for_test(b, theme());
+        press(&mut app, 'l');
+        press(&mut app, 'o');
+        assert_eq!(composing_in(&app), "todo", "the left side first");
+
+        let mut b = board_three_columns();
+        close(&mut b, &["todo", "doing"]);
+        let mut app = App::for_test(b, theme());
+        press(&mut app, 'l');
+        press(&mut app, 'o');
+        assert_eq!(composing_in(&app), "done", "then the right");
+
+        let mut b = board_three_columns();
+        close(&mut b, &["todo", "doing", "done"]);
+        let mut app = App::for_test(b, theme());
+        press(&mut app, 'o');
+        assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
+        assert!(app.status.contains("no column takes them"), "{}", app.status);
+        assert!(app.status_flash_lit() && app.animating(), "the refusal flashes");
+        app.status = "something else".into();
+        assert!(!app.status_flash_lit(), "a later status never inherits the flash");
     }
 
     #[test]

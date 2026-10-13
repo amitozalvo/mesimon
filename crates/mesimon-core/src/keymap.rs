@@ -533,6 +533,8 @@ pub enum Verb {
     ColumnArrives,
     /// The column's summary-box gate (T-735): entry and an archive from it.
     ColumnRequiresTicked,
+    /// The column dialog's `New tickets here` row (T-764).
+    ColumnRefusesNew,
     ColumnReclaim,
     ColumnTrain,
     /// Open the release notes from the menu. Same argument, read even less
@@ -1639,6 +1641,8 @@ pub struct Ctx {
     pub col_arrives_env: String,
     /// `ColumnSettings::requires_ticked` (T-735).
     pub col_requires_ticked: bool,
+    /// `ColumnSettings::refuses_new` (T-764).
+    pub col_refuses_new: bool,
     pub col_train_word: &'static str,
     /// Live tickets in the dialog's column: a delete is refused while any.
     pub col_live: usize,
@@ -5852,6 +5856,20 @@ static COLUMN_ITEMS: &[MenuItem] = &[
         avail: |c| !c.col_new,
         key: "",
     },
+    // T-764: a column a ticket only reaches by moving.
+    MenuItem {
+        verb: Verb::ColumnRefusesNew,
+        label: |c| format!("New tickets here: {}", yes_no(!c.col_refuses_new)),
+        detail: |c| {
+            if c.col_refuses_new {
+                "o here files into the nearest column that takes them, left first".into()
+            } else {
+                "one column on the board always does".into()
+            }
+        },
+        avail: |c| !c.col_new,
+        key: "",
+    },
     MenuItem {
         verb: Verb::ColumnWorkspace,
         label: |c| {
@@ -9271,7 +9289,7 @@ mod tests {
         let fresh = Ctx { col_new: true, ..Default::default() };
         let rows: Vec<Verb> = column_items(&fresh).iter().map(|m| m.verb).collect();
         assert_eq!(rows, vec![Verb::ColumnName]);
-        assert_eq!(column_items(&other).len(), 11);
+        assert_eq!(column_items(&other).len(), 12);
         assert!(!column_items(&other).iter().any(|m| m.verb == Verb::ColumnName));
         let agents = Ctx { column_agents: true, ..Default::default() };
         assert_eq!(

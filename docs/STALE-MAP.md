@@ -24659,3 +24659,41 @@ author asked for the tail to go: the row now names the pick alone, on every colu
 `shift+tab` hint takes the room the tail held. `render_workspace_selector` no longer takes the
 column's default. The multi-line composer dialog never spelled it. Golden
 `composer_column_default_120x30` reminted; its test asserts no `(default)`.
+
+## A column can take no new tickets, and `o` there files next door (T-764, 2026-10-14)
+
+**The ask.** Nothing is ever started in IN PROGRESS or REVIEW: a ticket reaches them by moving.
+`o` on such a column should open the composer in the nearest column that takes new tickets, the
+left side first, then the right; with none at all, the footer flashes red to say why.
+
+**The setting.** `ColumnSettings::refuses_new`, the column dialog's `New tickets here: yes/no`
+row. `#[serde(default)]`, no `COLUMNS_SCHEMA` bump: a build that drops it only lets a mint in
+again, which narrows nothing. The template seeds it on IN PROGRESS and REVIEW; DONE stays open
+(a person may log finished work there). `seed_template_settings` runs on a fresh board only, so
+**an existing board keeps every column open** until a person sets the row: no migration.
+`Board::set_column_settings` refuses to close the board's last open column, so `o` always has a
+place to file; the red flash is for a board that got there anyway (an older file, a delete).
+
+**One rule, every road.** `Board::filing_column(name)` is the rule (itself, else nearest left,
+else nearest right, else `None`) and `landing_column` goes through it, so a board default that
+is closed lands where `o` on it would, and the phone's `default_column` follows. `mint_full`
+refuses a mint that names a closed column, in words that name the open one (`REVIEW takes no new
+tickets: file it in TODO`): an agent's `create_ticket`, the phone's file, an import and the CLI
+are refused rather than redirected, because the phone's `FileTicket` is authorized per column
+and a redirect after the check would land it where it was never allowed. The TUI resolves
+before it opens the composer, so the composer opens in the column the ticket will land in. An
+adopted external session mints in the first column's `filing_column`. `DuplicateTicket` copies
+beside its source and is not gated: a copy is not a new ticket in the sense the ask meant.
+
+**The flash.** `App::refuse_flashing` sets the status and `status_flash` (the words and the
+instant); the footer draws a status in the layout pause's delete-row/err treatment while lit,
+on the same 400 ms × 3 cadence, and only while the status still says those words.
+
+**Open.** The phone's New ticket sheet still lists every column; a closed one comes back as the
+daemon's refusal. Hiding it needs the column's flag on the phone's board reply.
+
+**Tests.** `a_closed_column_files_into_its_nearest_open_neighbour` (core),
+`o_on_a_closed_column_composes_in_the_nearest_open_one` (TUI), the store round-trip, and
+`mcp_e2e` asserts an agent's `create_ticket` into REVIEW is refused naming TODO. Five e2es and
+`ci/state-lab.py` minted straight into IN PROGRESS/REVIEW; they open the column first
+(`TestClient::open_to_new`) or mint and move.

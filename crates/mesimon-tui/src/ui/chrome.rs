@@ -677,10 +677,14 @@ pub(super) fn footer_line(app: &App, width: u16) -> Line<'static> {
         return Line::from(spans).style(band);
     }
     if !app.status.is_empty() {
-        let mut spans = vec![Span::styled(
-            format!(" {}", crate::text::one_line(&app.status)),
-            Style::default().fg(ink.base),
-        )];
+        // A refusal's flash (T-764) wears the layout pause's treatment.
+        let (band, text) = if app.status_flash_lit() {
+            (theme.delete_row(), theme.err_text().add_modifier(Modifier::BOLD))
+        } else {
+            (band, Style::default().fg(ink.base))
+        };
+        let mut spans =
+            vec![Span::styled(format!(" {}", crate::text::one_line(&app.status)), text)];
         pad_to(&mut spans);
         return Line::from(spans).style(band);
     }

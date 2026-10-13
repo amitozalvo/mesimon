@@ -35,6 +35,7 @@ fn a_raised_hand_outlives_the_turn_and_is_lowered_by_the_person_or_the_next_turn
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("raisehand");
 
+    c.open_to_new("IN PROGRESS");
     let ticket = match c.request(Command::CreateTicket {
         column: "IN PROGRESS".into(),
         title: "wire up login".into(),
@@ -220,6 +221,7 @@ fn a_raised_hand_comes_down_with_the_dialog_it_stood_for() {
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("raisedialog");
 
+    c.open_to_new("IN PROGRESS");
     let ticket = match c.request(Command::CreateTicket {
         column: "IN PROGRESS".into(),
         title: "pick a login".into(),

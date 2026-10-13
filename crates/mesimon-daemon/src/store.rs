@@ -2291,18 +2291,18 @@ order = "a0"
         let text = std::fs::read_to_string(paths.board_dir.join("board/columns.toml")).unwrap();
         assert!(!text.contains("default_column"), "unchosen is unwritten:\n{text}");
         assert_eq!(read_columns_scalars(&paths).default_column, None);
-        l.board.set_default_column(Some("REVIEW")).unwrap();
+        l.board.set_default_column(Some("DONE")).unwrap();
         save_columns(&paths, &l.board).unwrap();
         let back = load(&paths).unwrap();
-        assert_eq!(back.board.default_column.as_deref(), Some("REVIEW"));
-        assert_eq!(back.board.landing_column().as_deref(), Some("REVIEW"));
-        assert_eq!(read_columns_scalars(&paths).default_column.as_deref(), Some("REVIEW"));
+        assert_eq!(back.board.default_column.as_deref(), Some("DONE"));
+        assert_eq!(back.board.landing_column().as_deref(), Some("DONE"));
+        assert_eq!(read_columns_scalars(&paths).default_column.as_deref(), Some("DONE"));
         // Written by hand to a column the board lacks: the board lands on the
         // first column and doctor says the same.
         let text = std::fs::read_to_string(paths.board_dir.join("board/columns.toml")).unwrap();
         std::fs::write(
             paths.board_dir.join("board/columns.toml"),
-            text.replace("default_column = \"REVIEW\"", "default_column = \"GONE\""),
+            text.replace("default_column = \"DONE\"", "default_column = \"GONE\""),
         )
         .unwrap();
         let back = load(&paths).unwrap();
@@ -2374,6 +2374,7 @@ order = "a0"
                     description: Some("planned for this version".into()),
                     collapsed: true,
                     workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
+                    refuses_new: true,
                     claude_mode: mesimon_core::board::ClaudeMode::Plan,
                     codex_sandbox: mesimon_core::board::CodexSandbox::Inherit,
                     codex_approval: mesimon_core::board::CodexApproval::Inherit,
@@ -2413,6 +2414,7 @@ order = "a0"
         assert!(text.contains("agent_tools = \"read\""), "{text}");
         assert!(text.contains("description = \"planned for this version\""), "{text}");
         assert!(text.contains("sleep_after_minutes = 5"), "{text}");
+        assert!(text.contains("refuses_new = true"), "{text}");
         assert!(!text.contains("on_done"), "{text}");
         assert_eq!(back.tags.len(), 2);
         assert_eq!(back.tags[0].name, "BUG");

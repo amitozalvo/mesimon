@@ -88,6 +88,7 @@ fn m2_attention_headless() {
         tier: None,
     });
     // A pre-existing REVIEW ticket: automoved arrivals must land ABOVE it.
+    c.open_to_new("REVIEW");
     let _ = c.request(Command::CreateTicket {
         column: "REVIEW".into(),
         title: "decoy".into(),

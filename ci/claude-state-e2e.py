@@ -203,6 +203,7 @@ class Probe:
         lab.wait_for(lambda: (self.runtime / 'orch.sock').exists())
         self.client = lab.Client(self.repo)
         self.client.request('set_mcp_tools', on=False)
+        self.client.open_to_new('IN PROGRESS')
         self.ticket = self.client.request('create_ticket', column='IN PROGRESS', title='State lab', workspace=None)['id']
         self.sid = self.client.request('spawn_session', ticket=self.ticket, kind='claude', submit_prompt=False)['id']
         self.target = self.sid.replace('-', '')[:16]
