@@ -292,11 +292,14 @@ pub fn gh_rollup(rollup: Option<&Value>) -> Pipeline {
     for e in entries {
         let name =
             job_word(e.get("name").or_else(|| e.get("context")).and_then(Value::as_str).unwrap_or_default());
-        let status = e.get("status").and_then(Value::as_str).unwrap_or_default();
-        let conclusion = e.get("conclusion").and_then(Value::as_str).unwrap_or_default();
+        // GraphQL (`gh pr list`) spells these in capitals, REST
+        // (`commits/{sha}/check-runs`) in lower case: one reading.
+        let word = |key: &str| {
+            e.get(key).and_then(Value::as_str).unwrap_or_default().to_ascii_uppercase()
+        };
+        let (status, conclusion, state) = (word("status"), word("conclusion"), word("state"));
         // A commit status (`StatusContext`) says `state` alone.
-        let state = e.get("state").and_then(Value::as_str).unwrap_or_default();
-        let one = match (status, conclusion, state) {
+        let one = match (status.as_str(), conclusion.as_str(), state.as_str()) {
             (_, "FAILURE" | "TIMED_OUT" | "STARTUP_FAILURE" | "CANCELLED", _)
             | (_, _, "FAILURE" | "ERROR") => Pipeline::Failed(name),
             (_, "ACTION_REQUIRED", _) | ("WAITING", _, _) => Pipeline::Waiting(name),
@@ -813,6 +816,11 @@ mod tests {
             Pipeline::Failed("release".into())
         );
         assert_eq!(parse_gh_check_runs("nope"), Pipeline::Unknown);
+        assert_eq!(
+            parse_gh_check_runs(r#"{"check_runs":[{"name":"release","status":"completed","conclusion":"success"}]}"#),
+            Pipeline::Passed,
+            "REST spells its words in lower case"
+        );
     }
 
     #[test]
