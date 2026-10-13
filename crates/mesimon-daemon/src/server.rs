@@ -7263,6 +7263,28 @@ impl Daemon {
             merge_state: self.merge_state_word(id).map(str::to_string),
             repos: self.agent_repo_views(id),
             merge: self.merge_state_word(id).is_some().then(|| self.merge_by(id)),
+            // The ticket's pull requests as the forge last said (T-739),
+            // newest first: a worker sees its own red pipeline on the next
+            // read, and the crown reads a worker's.
+            prs: self
+                .forge
+                .sets
+                .get(&id)
+                .map(|set| {
+                    set.iter()
+                        .map(|p| mesimon_core::command::AgentPrView {
+                            label: p.label(),
+                            repo: p.repo.clone(),
+                            url: p.url.clone(),
+                            state: p.state.word().into(),
+                            pipeline: p.pipeline.word().into(),
+                            job: p.pipeline.job().map(mesimon_core::text::scrub_text),
+                            conflict: p.conflict,
+                            review: p.review.word().into(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             // The init script (T-614), on every read: the file's name,
             // whether the checkout has one, what it is for, and how its
             // last run for this ticket went. A stat, nothing more.
@@ -13149,11 +13171,15 @@ impl Daemon {
         }
         // Every repository on the pass, by host and path, and where to run.
         let mut repos: Vec<(mesimon_core::forge::Remote, std::path::PathBuf)> = Vec::new();
-        let mut add_repo = |remote: mesimon_core::forge::Remote, dir: std::path::PathBuf| {
+        fn add_repo(
+            repos: &mut Vec<(mesimon_core::forge::Remote, std::path::PathBuf)>,
+            remote: mesimon_core::forge::Remote,
+            dir: std::path::PathBuf,
+        ) {
             if !repos.iter().any(|(r, _)| *r == remote) {
                 repos.push((remote, dir));
             }
-        };
+        }
         let mut queries = Vec::new();
         for (t, branch, legs) in &tickets {
             let mut leg_queries = Vec::new();
@@ -13167,12 +13193,18 @@ impl Daemon {
                 let Some(remote) = remote else { continue };
                 leg_queries
                     .push(crate::forge::LegQuery { repo_path: remote.path.clone(), dir: leg.path.clone() });
-                add_repo(remote, leg.repo.clone());
+                add_repo(&mut repos, remote, leg.repo.clone());
             }
+            // A URL a session printed may name another repository of a host
+            // a leg's remote already reaches (the account's own forge), and
+            // never a host of its own: the transcript is untrusted text, and
+            // no CLI is pointed at a host it names.
             let opened = self.costs.opened_urls(*t);
             for url in &opened {
                 if let Some(remote) = mesimon_core::forge::repo_of_url(url) {
-                    add_repo(remote, self.paths.repo_root.clone());
+                    if repos.iter().any(|(r, _)| r.host == remote.host) {
+                        add_repo(&mut repos, remote, self.paths.repo_root.clone());
+                    }
                 }
             }
             queries.push(crate::forge::TicketQuery {
@@ -13251,6 +13283,7 @@ impl Daemon {
         self.forge.errors =
             sample.repos.iter().filter_map(|r| Some((r.key.clone(), r.error.clone()?))).collect();
         let mut changed = false;
+        let mut failed: Vec<(ulid::Ulid, String)> = Vec::new();
         for (t, set) in sample.sets {
             if self.board.ticket(t).is_none() {
                 continue;
@@ -13259,10 +13292,32 @@ impl Daemon {
             for line in crate::forge::delta(old.map(Vec::as_slice), &set) {
                 self.feed.board_outcome("forge", "pr", Some(t), &line);
             }
+            // A pipeline that failed since the last read (T-739): the edge
+            // the crown hears. A first read is a baseline and says nothing.
+            if let Some(old) = old {
+                let was = mesimon_core::forge::pipeline_of(old);
+                let now = mesimon_core::forge::pipeline_of(&set);
+                if let mesimon_core::forge::Pipeline::Failed(job) = &now {
+                    if !matches!(was, mesimon_core::forge::Pipeline::Failed(_)) {
+                        let label = set
+                            .iter()
+                            .find(|p| matches!(p.pipeline, mesimon_core::forge::Pipeline::Failed(_)))
+                            .map(|p| p.label())
+                            .unwrap_or_default();
+                        let words = if job.is_empty() {
+                            format!("failed {label}")
+                        } else {
+                            format!("failed {label}: {job}")
+                        };
+                        failed.push((t, words));
+                    }
+                }
+            }
             changed |= old != Some(&set);
             self.forge.sets.insert(t, set);
             self.forge.at_ms.insert(t, sample.at_ms);
         }
+        changed |= self.hear_pipelines(failed);
         let live: Vec<ulid::Ulid> = self.board.tickets.iter().map(|t| t.id).collect();
         self.forge.sets.retain(|t, _| live.contains(t));
         self.forge.at_ms.retain(|t, _| live.contains(t));

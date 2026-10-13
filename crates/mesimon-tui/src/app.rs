@@ -1407,6 +1407,9 @@ pub struct App {
     /// line marks them.
     pub prs: Vec<mesimon_core::command::PrItem>,
     pub forge: mesimon_core::command::ForgeStatus,
+    /// What each card's pull requests looked like when the cursor last
+    /// rested on it (T-739): the `news` showing's memory, the spoke's rule.
+    pub(crate) pr_seen: std::collections::HashMap<ulid::Ulid, String>,
     /// The `!` terminals alive on the daemon's tmux, by ticket (T-366): the
     /// ticket page's ghost row and the card's busy spinner read them.
     pub terminals: Vec<mesimon_core::command::TerminalItem>,
@@ -1924,6 +1927,7 @@ impl App {
             worktrees: snap.worktrees,
             prs: snap.prs,
             forge: snap.forge,
+            pr_seen: std::collections::HashMap::new(),
             notices: snap.notices,
             shell_env: snap.shell_env,
             git: snap.git,
@@ -3814,13 +3818,60 @@ impl App {
     /// The cursor is on `ticket` (or its page is open): whatever its agent
     /// has said is seen. Returns whether that cleared a mark.
     fn ack_spoke(&mut self, ticket: ulid::Ulid) -> bool {
+        let prs = self.ack_prs(ticket);
         match self.spoke.get_mut(&ticket) {
             Some(e) if e.key != e.seen => {
                 e.seen = e.key;
                 true
             }
-            _ => false,
+            _ => prs,
         }
+    }
+
+    /// The cursor rests on the card: its pull requests as they stand are
+    /// what it has seen (T-739). True when that moved the `news` line.
+    pub(crate) fn ack_prs(&mut self, ticket: ulid::Ulid) -> bool {
+        let now = self.pr_fingerprint(ticket);
+        if self.pr_seen.get(&ticket) == Some(&now) {
+            return false;
+        }
+        self.pr_seen.insert(ticket, now);
+        self.prefs.card_prs == crate::prefs::CardPrs::News
+    }
+
+    /// The ticket's pull requests in one line: what `news` compares.
+    fn pr_fingerprint(&self, ticket: ulid::Ulid) -> String {
+        self.prs_of(ticket)
+            .iter()
+            .map(|p| format!("{}:{}:{}:{}", p.forge, p.number, p.state, p.pipeline))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// The card's pull-request line (T-739): one glyph and the forge's own
+    /// number per PR, newest first, in the glyph's register — or nothing,
+    /// where the showing is off, or `news` and the cursor has rested on the
+    /// card since the PRs last changed.
+    pub(crate) fn pr_brief(&self, ticket: ulid::Ulid) -> Vec<(String, crate::glyphs::Register)> {
+        match self.prefs.card_prs {
+            crate::prefs::CardPrs::Off => return Vec::new(),
+            crate::prefs::CardPrs::News
+                if self.pr_seen.get(&ticket) == Some(&self.pr_fingerprint(ticket)) =>
+            {
+                return Vec::new();
+            }
+            _ => {}
+        }
+        let tier = self.theme.glyph_tier();
+        self.prs_of(ticket)
+            .iter()
+            .map(|p| {
+                let (mark, reg) =
+                    crate::glyphs::pr_mark(tier, &p.state, &p.pipeline, !p.deployed.is_empty());
+                let sign = if p.forge == "gitlab" { '!' } else { '#' };
+                (format!("{mark}{sign}{}", p.number), reg)
+            })
+            .collect()
     }
 
     /// The spoke marks' beat, from `tick`: the departing card is scanned and
@@ -5421,6 +5472,7 @@ impl App {
             crown_lightning: self.prefs.crown_lightning,
             mouse: self.prefs.mouse,
             new_replies: self.prefs.new_replies,
+            card_prs_word: self.prefs.card_prs.key(),
             preview_scrolls: self.preview.view.get().max > 0,
             update_ready: self.update_ready(),
             // A binary already waiting on disk outranks a download: reload
@@ -6783,6 +6835,16 @@ impl App {
                     "the crown's actions hold still ∙ the card still says what was done"
                 };
                 self.set_pref(word, |p| p.crown_lightning = on);
+            }
+            // T-739. Read on every frame; nothing to push.
+            Verb::CardPrs => {
+                let v = self.prefs.card_prs.next();
+                let word = match v {
+                    crate::prefs::CardPrs::Always => "every card with a PR carries its line",
+                    crate::prefs::CardPrs::News => "a card's PR line shows until you rest on it",
+                    crate::prefs::CardPrs::Off => "cards carry no PR line ∙ the ticket page lists them",
+                };
+                self.set_pref(word, |p| p.card_prs = v);
             }
             // T-720. Read on every frame; nothing to push.
             Verb::NewReplies => {

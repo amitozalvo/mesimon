@@ -593,6 +593,7 @@ fn sample_card(
         p.summary == crate::prefs::SummaryShow::Full,
         (p.new_replies && !selected)
             .then_some(("Parser fixed, tests green.", crate::theme::REPLY_REVEAL_MS)),
+        &[],
     )
 }
 

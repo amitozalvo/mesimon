@@ -127,6 +127,9 @@ pub(super) struct Told {
     /// Commits ahead of the base; 0 on a checkout.
     pub(super) ahead: u32,
     pub(super) column: String,
+    /// The pipeline's word when a wake is about it (T-739): `failed: test-linux`
+    /// on PR #42 reads `failed #42: test-linux`. `None` where no forge spoke.
+    pub(super) pipeline: Option<String>,
 }
 
 /// `Told` in `crown.json` (T-602): the merge word as written, read back as
@@ -140,6 +143,8 @@ struct ToldOnDisk {
     merge: Option<String>,
     ahead: u32,
     column: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pipeline: Option<String>,
 }
 
 impl From<ToldOnDisk> for Told {
@@ -147,7 +152,7 @@ impl From<ToldOnDisk> for Told {
         let merge = d.merge.and_then(|w| {
             ["merged", "needs_rebase", "ahead", "clean"].into_iter().find(|k| *k == w)
         });
-        Told { tip: d.tip, merge, ahead: d.ahead, column: d.column }
+        Told { tip: d.tip, merge, ahead: d.ahead, column: d.column, pipeline: d.pipeline }
     }
 }
 
@@ -158,6 +163,7 @@ impl From<Told> for ToldOnDisk {
             merge: t.merge.map(str::to_string),
             ahead: t.ahead,
             column: t.column,
+            pipeline: t.pipeline,
         }
     }
 }
@@ -194,6 +200,7 @@ impl BranchLook {
             merge: Some(worktree::merge_word(self.merged, self.needs_rebase, self.ahead)),
             ahead: self.ahead,
             column,
+            pipeline: None,
         }
     }
 }
@@ -213,6 +220,10 @@ pub(super) enum WakeCause {
     /// Idle with background tasks for `LINGER_MS` (T-599): the weakest.
     Lingering,
     Finished,
+    /// Its pull request's pipeline failed (T-739): above a finished turn,
+    /// since there is something to do, under a merge and a delivery, whose
+    /// delta carries the pipeline's word anyway.
+    Pipeline,
     Merged,
     Delivered,
     Answered,
@@ -227,6 +238,7 @@ impl WakeCause {
         match self {
             WakeCause::Lingering => "has been idle with background tasks",
             WakeCause::Finished => "finished its turn",
+            WakeCause::Pipeline => "has a failing pipeline",
             WakeCause::Merged => "merged",
             WakeCause::Delivered => "delivered",
             WakeCause::Answered => "answered your ask",
@@ -245,6 +257,7 @@ impl WakeCause {
         match self {
             WakeCause::Lingering => "lingering",
             WakeCause::Finished => "finished",
+            WakeCause::Pipeline => "pipeline",
             WakeCause::Merged => "merged",
             WakeCause::Delivered => "delivered",
             WakeCause::Answered => "answered",
@@ -545,6 +558,12 @@ fn changes(before: Option<&Told>, now: &Told, head: bool) -> Vec<String> {
     }
     if before.is_none_or(|b| b.column != now.column) {
         out.push(format!("column {}", mesimon_core::text::scrub_text(&now.column)));
+    }
+    // The pipeline's word (T-739), where the forge spoke and it moved.
+    if let Some(p) = &now.pipeline {
+        if before.and_then(|b| b.pipeline.as_ref()) != Some(p) {
+            out.push(format!("pipeline {}", mesimon_core::text::scrub_text(p)));
+        }
     }
     out
 }
@@ -1039,7 +1058,9 @@ impl Daemon {
         let merge_step = asked == Some(TurnAsk::Merge);
         let (now, branch) = match p.found {
             Found::Branch(look) => (look.told(column), Some(look)),
-            Found::Checkout { head } => (Told { tip: head, merge: None, ahead: 0, column }, None),
+            Found::Checkout { head } => {
+                (Told { tip: head, merge: None, ahead: 0, column, pipeline: None }, None)
+            }
             Found::Unknown => {
                 // Git could not say what the turn left — nothing seen is
                 // nothing to merge — but an answer is still an answer, and
@@ -1276,6 +1297,7 @@ impl Daemon {
                 merge: Some("merged"),
                 ahead: self.wt_agg.get(&worker).map_or(0, |a| a.ahead),
                 column,
+                pipeline: None,
             };
             let heard = self.crown_heard.get(&worker).cloned().unwrap_or_default();
             // A delivery held for the train is this crown's to hear (T-554),
@@ -1427,6 +1449,42 @@ impl Daemon {
         !due.is_empty()
     }
 
+    /// A worker's pipeline failed (T-739): the forge pass saw the edge, and
+    /// the crown hears it for a worker it started or watches, as it hears a
+    /// merge — the same table (`due`), so a turn in flight holds it. The
+    /// words name the PR and the job: `failed #42: test-linux`.
+    pub(super) fn hear_pipelines(&mut self, failed: Vec<(ulid::Ulid, String)>) -> bool {
+        let Some(crown) = self.board.crown_holder().map(|t| t.id) else { return false };
+        let mut woke = false;
+        for (worker, words) in failed {
+            if worker == crown || !self.crown_hears(worker, crown) {
+                continue;
+            }
+            let Some(column) = self.board.ticket(worker).map(|t| t.column.clone()) else {
+                continue;
+            };
+            let agg = self.wt_agg.get(&worker);
+            let now = Told {
+                tip: agg.map(|a| a.tip.clone()).unwrap_or_default(),
+                merge: agg.map(|a| worktree::merge_word(a.merged, a.needs_rebase, a.ahead)),
+                ahead: agg.map_or(0, |a| a.ahead),
+                column,
+                pipeline: Some(words),
+            };
+            match due(Some(WakeCause::Pipeline), None, &self.pending_on(worker, None)) {
+                Due::Step(cause) => self.hold_for_step(worker, cause, now),
+                Due::Wake(cause) => {
+                    let heard = self.crown_heard.entry(worker).or_default();
+                    let from = heard.told.replace(now.clone());
+                    self.owe_crown_wake(crown, worker, cause, from, Some(now), false);
+                    woke = true;
+                }
+                Due::Hold(_) | Due::Silent => {}
+            }
+        }
+        woke
+    }
+
     /// The crown left, or another ticket took it: whatever it was owed goes
     /// with it, said once in the feed, and what it was told goes too — a
     /// new crown has heard nothing.
@@ -1485,11 +1543,11 @@ mod tests {
     use super::*;
 
     fn branch(tip: &str, merge: &'static str, ahead: u32, column: &str) -> Told {
-        Told { tip: tip.into(), merge: Some(merge), ahead, column: column.into() }
+        Told { tip: tip.into(), merge: Some(merge), ahead, column: column.into(), pipeline: None }
     }
 
     fn checkout(head: &str, column: &str) -> Told {
-        Told { tip: head.into(), merge: None, ahead: 0, column: column.into() }
+        Told { tip: head.into(), merge: None, ahead: 0, column: column.into(), pipeline: None }
     }
 
     const DELIVERED: Option<WakeCause> = Some(WakeCause::Delivered);

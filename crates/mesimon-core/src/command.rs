@@ -2054,6 +2054,10 @@ pub struct AgentTicketView {
     /// reads it on its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge: Option<AgentMergeView>,
+    /// The ticket's pull requests as the forge last said (T-739), newest
+    /// first; empty, and absent from the JSON, with none bound or no forge.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prs: Vec<AgentPrView>,
     /// The repository's worktree init script (T-614): its name, whether
     /// the repository has one, what it is for, and how its last run for
     /// this ticket ended. On every read, so an agent asked how to make a
@@ -2275,6 +2279,28 @@ pub struct AgentRepoView {
     pub base: String,
     /// The same words as `merge_state`, for this repository alone.
     pub merge_state: String,
+}
+
+/// One pull request of a ticket, as `get_ticket` says it (T-739): the
+/// forge's own label (`#42`, `!7`), the repository, the URL, and four
+/// words — `state` (`open` | `draft` | `merged` | `closed`), `pipeline`
+/// (`unknown` | `none` | `passed` | `running` | `waiting` | `failed`, with
+/// the job it is about where the forge named one), `review` (`none` |
+/// `required` | `approved` | `changes_requested`) — and whether the forge
+/// reports a conflict.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentPrView {
+    pub label: String,
+    pub repo: String,
+    pub url: String,
+    pub state: String,
+    pub pipeline: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
+    #[serde(default)]
+    pub conflict: bool,
+    #[serde(default)]
+    pub review: String,
 }
 
 /// Who merges a worktree branch (T-613), as `get_ticket` says it beside
@@ -3315,6 +3341,7 @@ mod tests {
             merge_state: Some("ahead".into()),
             repos: vec![],
             merge: None,
+            prs: vec![],
             worktree_init: None,
             allowed_columns: vec![],
             column_descriptions: Default::default(),

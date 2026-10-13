@@ -230,6 +230,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         let unseen = !(selected || held) && app.spoke_unseen(t.id);
         // What that agent said, for a resting card's new-reply row (T-720).
         let fresh = if unseen && !left { app.fresh_reply(t.id) } else { None };
+        // Its pull requests, for the line under the title (T-739).
+        let brief = if left { Vec::new() } else { app.pr_brief(t.id) };
         // A held ask's keys ride the cursor card (T-551) — the subject the
         // frame's `Ctx` was built for, so the keys it names act on THIS card.
         let keys_ctx = app.frame_ctx();
@@ -284,6 +286,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 app.summary_pulse(t.id),
                 app.prefs.summary == crate::prefs::SummaryShow::Full,
                 fresh.as_ref().map(|(words, ago)| (words.as_str(), *ago)),
+                &brief,
             )
         };
         let mut lines = render(open, peek.as_deref());

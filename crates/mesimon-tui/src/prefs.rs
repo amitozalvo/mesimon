@@ -210,6 +210,23 @@ pref_words!(ring SummaryShow {
     None => "none",
 });
 
+/// A card's second line names the ticket's pull requests (T-739): always,
+/// only as news until the cursor rests on the card (the new reply's decay),
+/// or never — the ticket page lists them either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CardPrs {
+    #[default]
+    Always,
+    News,
+    Off,
+}
+
+pref_words!(ring CardPrs {
+    Always => "always",
+    News => "news",
+    Off => "off",
+});
+
 /// How often the board fetches the remote (T-739). Off by default: the
 /// fetch writes remote-tracking refs, which promise 1 allows only once a
 /// person turns it on. The daemon reads the same key off the files
@@ -436,6 +453,9 @@ pub(crate) struct Prefs {
     pub new_replies: bool,
     /// How often the board fetches the remote (T-739); off by default.
     pub fetch_every: FetchEvery,
+    /// A card's second line names its pull requests (T-739); always, by
+    /// default.
+    pub card_prs: CardPrs,
     /// The document as loaded, so a save keeps what it does not understand.
     doc: Map<String, Value>,
 }
@@ -483,6 +503,7 @@ impl Default for Prefs {
             summary: SummaryShow::Full,
             new_replies: true,
             fetch_every: FetchEvery::Off,
+            card_prs: CardPrs::Always,
             doc: Map::new(),
         }
     }
@@ -527,6 +548,7 @@ const CARD_CORNER_KEY: &str = PrefKey::CardCorner.name();
 const SUMMARY_KEY: &str = PrefKey::Summary.name();
 const NEW_REPLIES_KEY: &str = PrefKey::NewReplies.name();
 const FETCH_EVERY_KEY: &str = PrefKey::FetchEvery.name();
+const CARD_PRS_KEY: &str = PrefKey::CardPrs.name();
 
 impl Prefs {
     // The three bools are plain fields: `body()` writes every one on each
@@ -685,6 +707,7 @@ impl Prefs {
             PrefKey::CardCorner => self.card_corner.key(),
             PrefKey::Summary => self.summary.key(),
             PrefKey::FetchEvery => self.fetch_every.key(),
+            PrefKey::CardPrs => self.card_prs.key(),
         }
     }
 
@@ -791,6 +814,13 @@ impl Prefs {
             .is_some_and(|v| FetchEvery::from_key(v).is_none())
         {
             doc.insert(FETCH_EVERY_KEY.into(), Value::from(self.fetch_every.key()));
+        }
+        if !doc
+            .get(CARD_PRS_KEY)
+            .and_then(Value::as_str)
+            .is_some_and(|v| CardPrs::from_key(v).is_none())
+        {
+            doc.insert(CARD_PRS_KEY.into(), Value::from(self.card_prs.key()));
         }
         for (key, s) in [
             (NOTIFY_SOUND_NEEDS_YOU_KEY, self.notify_sound_needs_you),
@@ -905,7 +935,8 @@ impl BoardPrefs {
             | PrefKey::UsageClaude
             | PrefKey::UsageCodex
             | PrefKey::CardCorner
-            | PrefKey::Summary => false,
+            | PrefKey::Summary
+            | PrefKey::CardPrs => false,
             PrefKey::FetchEvery => self.word(key).and_then(FetchEvery::from_key).is_some(),
             _ => self.bool(key).is_some(),
         }
@@ -1134,6 +1165,11 @@ pub(crate) fn load(path: &Path) -> Loaded {
         .and_then(Value::as_str)
         .and_then(FetchEvery::from_key)
         .unwrap_or_default();
+    let card_prs = doc
+        .get(CARD_PRS_KEY)
+        .and_then(Value::as_str)
+        .and_then(CardPrs::from_key)
+        .unwrap_or_default();
     let prefs = Prefs {
         dark: slot("dark", Flavor::Graphite),
         light: slot("light", Flavor::Chalk),
@@ -1175,6 +1211,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         card_corner,
         summary,
         fetch_every,
+        card_prs,
         doc,
     };
     if schema > SCHEMA {
@@ -1998,6 +2035,27 @@ mod tests {
         assert_eq!(l.prefs.summary, SummaryShow::Full, "unknown reads as the default");
         save(&p, &l.prefs).unwrap();
         assert!(std::fs::read_to_string(&p).unwrap().contains("\"later\""), "kept");
+    }
+
+    /// The card's pull-request line (T-739) round-trips and reads `always`
+    /// when absent, the summary's rule for a foreign word.
+    #[test]
+    fn the_card_prs_showing_round_trips() {
+        let p = scratch("card-prs");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&p);
+        let mut l = load(&p);
+        assert_eq!(l.prefs.card_prs, CardPrs::Always, "absent is always");
+        l.prefs.card_prs = CardPrs::News;
+        save(&p, &l.prefs).unwrap();
+        assert_eq!(load(&p).prefs.card_prs, CardPrs::News);
+        assert_eq!(load(&p).prefs.word(PrefKey::CardPrs), "news");
+        assert_eq!(CardPrs::Off.next(), CardPrs::Always);
+        std::fs::write(&p, r#"{"schema_version":1,"card_prs":"loud"}"#).unwrap();
+        let l = load(&p);
+        assert_eq!(l.prefs.card_prs, CardPrs::Always, "unknown reads as the default");
+        save(&p, &l.prefs).unwrap();
+        assert!(std::fs::read_to_string(&p).unwrap().contains("\"loud\""), "kept");
     }
 
     /// The fetch cadence (T-739) round-trips, reads `off` when absent, and

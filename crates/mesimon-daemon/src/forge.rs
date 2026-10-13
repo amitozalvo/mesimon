@@ -247,25 +247,30 @@ fn list(r: &RepoQuery) -> Result<Vec<Pr>, String> {
             Ok(forge::parse_gh(&r.remote.path, &out))
         }
         Forge::GitLab => {
+            // The signed-in account's MRs are the whole candidate set: with
+            // the account unknown there is no list, never an unfiltered one
+            // a stranger's MR could bind through.
+            let Some(viewer) = r.viewer.as_deref() else {
+                return Err("signed-in account unknown; glab api user did not answer".into());
+            };
             let repo = format!("https://{}/{}", r.remote.host, r.remote.path);
-            let mut args = vec![
-                "mr",
-                "list",
-                "--repo",
-                &repo,
-                "--all",
-                "--per-page",
-                LIST_LIMIT,
-                "--output",
-                "json",
-            ];
-            let viewer;
-            if let Some(v) = &r.viewer {
-                viewer = v.clone();
-                args.push("--author");
-                args.push(&viewer);
-            }
-            let out = run(&r.cli.bin, &args, Some(&r.dir))?;
+            let out = run(
+                &r.cli.bin,
+                &[
+                    "mr",
+                    "list",
+                    "--repo",
+                    &repo,
+                    "--author",
+                    viewer,
+                    "--all",
+                    "--per-page",
+                    LIST_LIMIT,
+                    "--output",
+                    "json",
+                ],
+                Some(&r.dir),
+            )?;
             Ok(forge::parse_glab(&r.remote.path, &out))
         }
     }
@@ -507,7 +512,10 @@ pub fn delta(old: Option<&[Pr]>, new: &[Pr]) -> Vec<String> {
                         Pipeline::Failed(job) if job.is_empty() => {
                             out.push(format!("pipeline failed {label}"))
                         }
-                        Pipeline::Failed(job) => out.push(format!("pipeline failed {label}: {job}")),
+                        Pipeline::Failed(job) => out.push(format!(
+                            "pipeline failed {label}: {}",
+                            mesimon_core::text::scrub_text(job)
+                        )),
                         Pipeline::Passed if was.pipeline != Pipeline::None => {
                             out.push(format!("pipeline passed {label}"))
                         }

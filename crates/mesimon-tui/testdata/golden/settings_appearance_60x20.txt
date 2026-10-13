@@ -8,12 +8,12 @@
   │    [ ] parse it                                      │
   │    [✓] read the reply                                │
   │                                                      │
-  │  Status line        ○ top         ● bottom           │
-  │  Crown's actions    ● lightning   ○ still            │
-  │  Summary on cards   ● full        ○ hover    ○ none  │
-  │  New replies        ● on                             │
-  │  Card corner        ● age         ○ cost             │
-  │                                                      │
+  │  Status line              ○ top         ● bottom     │
+  │  Crown's actions          ● lightning   ○ still      │
+  │  Summary on cards         full                       │
+  │  New replies              ● on                       │
+  │  Pull requests on cards   always                     │
+  │  Card corner              ● age         ○ cost       │
   │                                                      │
   │ tmux's bar over an agent's pane                      │
   ╰──────────── jk select ∙ enter change ∙ b this board ─╯

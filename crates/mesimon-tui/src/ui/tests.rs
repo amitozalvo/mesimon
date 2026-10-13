@@ -8090,6 +8090,70 @@ fn seed_spoke(app: &mut App, ticket: ulid::Ulid) {
     );
 }
 
+/// T-739: a card's pull requests on its second line — one glyph and the
+/// forge's own number per PR, newest first, right-aligned under the age —
+/// sharing the line with a new reply, which is cut against it; past half
+/// the width the oldest fold into a count. `news` shows it until the cursor
+/// rests on the card; `off` leaves the branch mark alone.
+#[test]
+fn golden_board_prs_120() {
+    use mesimon_core::command::PrItem;
+    let path = write_transcript(
+        "prs-reply",
+        &reply_record("Fixed the OSC-11 race:\nthe query now runs once before raw mode."),
+    );
+    let mut b = fixture(false);
+    attach_transcript(&mut b, &path);
+    let mut app = app_graphite(b);
+    app.scan_spoke();
+    app.spoke.get_mut(&ulid_n(3)).expect("T-3 spoke").since_ms = 0;
+    let pr = |ticket: u128, number: u64, forge: &str, state: &str, pipeline: &str| PrItem {
+        ticket: ulid_n(ticket),
+        forge: forge.into(),
+        repo: "o/r".into(),
+        number,
+        url: format!("https://x/o/r/pull/{number}"),
+        state: state.into(),
+        pipeline: pipeline.into(),
+        job: None,
+        conflict: false,
+        review: "none".into(),
+        merged_oid: String::new(),
+        deployed: Vec::new(),
+    };
+    app.prs = vec![
+        pr(3, 42, "github", "open", "failed"),
+        pr(3, 7, "gitlab", "merged", "passed"),
+        pr(5, 44, "github", "open", "running"),
+        pr(5, 43, "github", "open", "passed"),
+        pr(5, 41, "github", "merged", "none"),
+        pr(5, 40, "github", "merged", "none"),
+        pr(5, 39, "github", "merged", "none"),
+    ];
+    let lines = render(&app, 120, 30);
+    golden("board_prs_120x30", &lines);
+    let under = |lines: &[String], title: &str| {
+        let y = lines.iter().position(|l| l.contains(title)).expect(title);
+        lines[y + 1].clone()
+    };
+    let t3 = under(&lines, "Fix OSC-11");
+    assert!(t3.contains("Fixed the OSC~ ✗#42 ●!7"), "the reply is cut against the brief: {t3}");
+    let t5 = under(&lines, "Grapheme truncation");
+    assert!(t5.contains("◯#44 ◉#43 +3"), "the oldest fold into a count: {t5}");
+    // `news`: the line stays until the cursor rests on the card, then goes;
+    // a change brings it back.
+    app.seed_pref(|p| p.card_prs = crate::prefs::CardPrs::News);
+    assert!(under(&render(&app, 120, 30), "Grapheme truncation").contains("◯#44"));
+    assert!(app.ack_prs(ulid_n(5)));
+    assert!(!under(&render(&app, 120, 30), "Grapheme truncation").contains("◯#44"), "seen");
+    app.prs[2].pipeline = "failed".into();
+    assert!(under(&render(&app, 120, 30), "Grapheme truncation").contains("✗#44"), "changed: news again");
+    // `off`: nothing on the card.
+    app.seed_pref(|p| p.card_prs = crate::prefs::CardPrs::Off);
+    assert!(!render(&app, 120, 30).iter().any(|l| l.contains("#44")));
+    std::fs::remove_file(&path).ok();
+}
+
 /// T-720: a resting card whose agent said something the person has not
 /// been on the card for shows those words, one line under its title, in the
 /// quiet ink. Seen, opened, under the cursor or switched off, it is gone.

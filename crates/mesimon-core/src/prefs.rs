@@ -97,10 +97,14 @@ pub enum PrefKey {
     /// may set its own. Off by default: promise 1 names it as the one
     /// write outside the allowlist a person turns on.
     FetchEvery,
+    /// A card's second line names the ticket's pull requests (T-739):
+    /// `always`, only as `news` until the cursor rests on the card, or
+    /// `off`. Per machine, a view preference like the summary's.
+    CardPrs,
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 40] = [
+    pub const ALL: [PrefKey; 41] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::SnoozeNeedsYou,
@@ -141,6 +145,7 @@ impl PrefKey {
         PrefKey::NewReplies,
         PrefKey::Mouse,
         PrefKey::FetchEvery,
+        PrefKey::CardPrs,
     ];
 
     /// The JSON key in both files.
@@ -186,6 +191,7 @@ impl PrefKey {
             PrefKey::NewReplies => "new_replies",
             PrefKey::Mouse => "mouse",
             PrefKey::FetchEvery => "fetch_every",
+            PrefKey::CardPrs => "card_prs",
         }
     }
 
@@ -228,6 +234,7 @@ impl PrefKey {
                 | PrefKey::Summary
                 | PrefKey::NewReplies
                 | PrefKey::Mouse
+                | PrefKey::CardPrs
         )
     }
 
@@ -274,6 +281,7 @@ impl PrefKey {
             PrefKey::CardCorner => "card corner",
             PrefKey::Mouse => "mouse",
             PrefKey::FetchEvery => "fetch from the remote",
+            PrefKey::CardPrs => "pull requests on cards",
         }
     }
 
@@ -295,6 +303,7 @@ impl PrefKey {
                 | PrefKey::CardCorner
                 | PrefKey::Summary
                 | PrefKey::FetchEvery
+                | PrefKey::CardPrs
         )
     }
 }
@@ -344,6 +353,7 @@ mod tests {
                 PrefKey::Summary,
                 PrefKey::NewReplies,
                 PrefKey::Mouse,
+                PrefKey::CardPrs,
             ]
         );
     }

@@ -138,8 +138,9 @@ pub const CROWN_WAKES: &str = concat!(
     "The board wakes this session on its own: when an agent the crown started delivers, \
      finishes a turn with nothing pending on it (no words queued for it, no hand up, no merge \
      the merge train will make), is merged, answers the crown's ask, raises its hand, asks a \
-     question or stops on a plan, one sentence naming the ticket and what changed arrives as \
-     this session's next prompt, once it is idle. A finished turn that left nothing new to \
+     question, stops on a plan, or its pull request's pipeline fails (has a failing pipeline, \
+     the PR and the job named; its get_ticket carries the PR under prs), one sentence naming \
+     the ticket and what changed arrives as this session's next prompt, once it is idle. A finished turn that left nothing new to \
      merge says so: the agent is done with what it was asked, and what comes next is the \
      crown's to decide. Nothing needs \
      polling. A background task or monitor left running does not hold the wake or a queued \
@@ -369,12 +370,12 @@ pub fn tools() -> Vec<Value> {
             "name": "get_ticket",
             "description": "Returns the mesimon ticket this session is attached to, or with \
                             key another ticket (crown only): key, title, column, workspace, \
-                            branch, merge state (per repo on a workspace), who merges \
-                            (merge), the init script (worktree_init), the columns \
+                            branch, merge state (per repo), who merges (merge), pull \
+                            requests (prs), the init script (worktree_init), the columns \
                             move_ticket accepts and what each is for, tags, the board's \
                             tags (allowed_tags), the description (first note), each note's \
-                            id, name, author, the summary, the agent's state and a seen \
-                            stamp keyed edits require. The prompt is often the ticket's \
+                            id, name, author, the summary, the agent's state and the seen \
+                            stamp edits need. The prompt is often the ticket's \
                             title alone; the description and notes are the rest of the \
                             brief, so this is a session's first call.",
             "inputSchema": {

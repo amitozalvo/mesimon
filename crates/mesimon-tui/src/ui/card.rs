@@ -403,6 +403,7 @@ pub(super) fn render(
     summary_pulse: Option<(u64, Option<mesimon_core::summary::Count>)>,
     summary_underline: bool,
     fresh: Option<(&str, u64)>,
+    prs: &[(String, Register)],
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
     let t_cells = (ctx.width as usize).saturating_sub(BAR_WIDTH + 2);
@@ -786,9 +787,47 @@ pub(super) fn render(
     // reply whole — and never on the cursor, the move ghost, a trail or the
     // delete flash: the first two are being looked at, the others are
     // saying something else.
+    // The ticket's pull requests (T-739): one glyph and number per PR,
+    // newest first, right-aligned under the age slot the way the worktree
+    // mark is on line 1. At most half the content width; past that the
+    // oldest fold into a count. It shares line 2 with a new reply: the
+    // reply keeps the left and is cut against the brief, never a third
+    // line. Not on a trail or the delete flash, which say something else.
+    let brief: Vec<Span<'static>> = if prs.is_empty() || trail || doomed {
+        Vec::new()
+    } else {
+        let budget = t_cells / 2;
+        let mut keep = prs.len();
+        let width_of = |n: usize| -> usize {
+            let items: usize = prs[..n].iter().map(|(s, _)| s.width()).sum();
+            let more = if n < prs.len() { format!(" +{}", prs.len() - n).width() } else { 0 };
+            items + n.saturating_sub(1) + more
+        };
+        while keep > 1 && width_of(keep) > budget {
+            keep -= 1;
+        }
+        let mut spans = Vec::new();
+        for (i, (text, reg)) in prs[..keep].iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw(" "));
+            }
+            let mut graphemes = text.chars();
+            let mark = graphemes.next().map(|c| c.to_string()).unwrap_or_default();
+            let label: String = graphemes.collect();
+            spans.push(Span::styled(mark, register_style(theme, *reg)));
+            spans.push(Span::styled(label, theme.dim2()));
+        }
+        if keep < prs.len() {
+            spans.push(Span::styled(format!(" +{}", prs.len() - keep), theme.dim2()));
+        }
+        spans
+    };
+    let brief_w = super::spans_width(&brief);
+    let brief_room = if brief_w > 0 { brief_w + 1 } else { 0 };
+    let mut drew_line2 = false;
     if let Some((words, ago)) = fresh.filter(|_| !(open || cursorish || trail || doomed)) {
         use unicode_segmentation::UnicodeSegmentation;
-        let words = truncate(words, t_cells.saturating_sub(glyph_cells));
+        let words = truncate(words, t_cells.saturating_sub(glyph_cells + brief_room));
         let cells = words.width();
         let mut row = bar_spans();
         row.push(Span::raw(" ".repeat(1 + glyph_cells)));
@@ -802,7 +841,18 @@ pub(super) fn render(
             at += w;
         }
         let used = super::spans_width(&row);
-        row.push(Span::raw(" ".repeat((ctx.width as usize).saturating_sub(used))));
+        row.push(Span::raw(" ".repeat((ctx.width as usize).saturating_sub(used + brief_w + 1))));
+        row.extend(brief.iter().cloned());
+        row.push(Span::raw(" "));
+        lines.push(Line::from(row));
+        drew_line2 = true;
+    }
+    if !drew_line2 && brief_w > 0 {
+        let mut row = bar_spans();
+        let used = super::spans_width(&row);
+        row.push(Span::raw(" ".repeat((ctx.width as usize).saturating_sub(used + brief_w + 1))));
+        row.extend(brief);
+        row.push(Span::raw(" "));
         lines.push(Line::from(row));
     }
 

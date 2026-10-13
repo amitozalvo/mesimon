@@ -9,12 +9,12 @@
       │  Notifications         [ ] parse it                                          ╰─────────────────────────╯ │
       │                        [✓] read the reply                                                                │
       │  Behaviour                                                                                               │
-      │                      Status line        ○ top         ● bottom                                           │
-      │  Agents              Crown's actions    ● lightning   ○ still                                            │
-      │                      Summary on cards   ● full        ○ hover    ○ none                                  │
-      │  Crown               New replies        ● on                                                             │
-      │                      Card corner        ● age         ○ cost                                             │
-      │  Terminal                                                                                                │
+      │                      Status line              ○ top         ● bottom                                     │
+      │  Agents              Crown's actions          ● lightning   ○ still                                      │
+      │                      Summary on cards         ● full        ○ hover    ○ none                            │
+      │  Crown               New replies              ● on                                                       │
+      │                      Pull requests on cards   ● always      ○ news     ○ off                             │
+      │  Terminal            Card corner              ● age         ○ cost                                       │
       │                                                                                                          │
       │  Usage                                                                                                   │
       │                                                                                                          │

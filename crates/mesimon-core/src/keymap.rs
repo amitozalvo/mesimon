@@ -604,6 +604,9 @@ pub enum Verb {
     /// agent said since the person last looked, one muted line under the
     /// title. On by default, per machine.
     NewReplies,
+    /// The Appearance row for a card's pull-request line (T-739): always,
+    /// news or off. `prefs.json`, per machine.
+    CardPrs,
     UsageShow,
     UsageFiveHour,
     UsageWeekly,
@@ -1025,6 +1028,7 @@ impl SettingsSection {
             | Verb::CrownLightning
             | Verb::SummaryShow
             | Verb::NewReplies
+            | Verb::CardPrs
             | Verb::CardCorner => Self::Appearance,
             Verb::NotifyToggle
             | Verb::NotifyVia
@@ -1176,6 +1180,8 @@ pub struct Ctx {
     pub mouse: bool,
     /// A resting card shows its agent's new reply under its title (T-720).
     pub new_replies: bool,
+    /// A card's pull-request line (T-739): `always`, `news` or `off`.
+    pub card_prs_word: &'static str,
     /// The ticket page's preview zone holds more rows than it can show, so
     /// there is somewhere to page to. Measured by the last draw (the zone's
     /// height is a fact of the frame, not of the board), which is also what
@@ -4823,6 +4829,19 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // A card's pull requests (T-739): one glyph per PR with its number on a
+    // line under the title, always, only as news, or never.
+    MenuItem {
+        verb: Verb::CardPrs,
+        label: |_| "Pull requests on cards".into(),
+        detail: |c| match or(c.card_prs_word, "always") {
+            "news" => "the line only until you rest on the card, as a new reply".into(),
+            "off" => "the branch mark alone says merged ∙ the ticket page lists them".into(),
+            _ => "a line under every card with a PR, newest first".into(),
+        },
+        avail: always,
+        key: "",
+    },
     MenuItem {
         verb: Verb::CardCorner,
         label: |_| "Card corner".into(),
@@ -5385,6 +5404,7 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::CrownLightning,
             Verb::SummaryShow,
             Verb::NewReplies,
+            Verb::CardPrs,
             Verb::CardCorner,
         ],
         SettingsSection::Notifications => &[
@@ -5512,6 +5532,7 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
             },
         ),
         Verb::NewReplies => Value::Switch(c.new_replies),
+        Verb::CardPrs => choice(&["always", "news", "off"], or(c.card_prs_word, "always")),
         Verb::CardCorner => pick(&["age", "cost"], c.card_cost),
         Verb::NotifyToggle => Value::Switch(c.notify),
         Verb::NotifyVia => pick(&["mesimon", "your terminal"], c.notify_via_terminal),
@@ -5636,6 +5657,7 @@ pub fn pref_key(verb: Verb) -> Option<PrefKey> {
         Verb::CardCorner => PrefKey::CardCorner,
         Verb::SummaryShow => PrefKey::Summary,
         Verb::NewReplies => PrefKey::NewReplies,
+        Verb::CardPrs => PrefKey::CardPrs,
         Verb::FetchEvery => PrefKey::FetchEvery,
         _ => return None,
     })
@@ -9551,6 +9573,7 @@ mod tests {
                     Verb::CrownLightning,
                     Verb::SummaryShow,
                     Verb::NewReplies,
+                    Verb::CardPrs,
                     Verb::CardCorner,
                 ],
             ),
@@ -10254,6 +10277,7 @@ mod tests {
             Verb::CrownLightning,
             Verb::SummaryShow,
             Verb::NewReplies,
+            Verb::CardPrs,
             Verb::TabTitle,
             Verb::TabTitleNeedsYou,
             Verb::TabTitleFocus,

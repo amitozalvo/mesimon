@@ -286,12 +286,9 @@ pub fn gh_rollup(rollup: Option<&Value>) -> Pipeline {
     let Some(Value::Array(entries)) = rollup else { return Pipeline::None };
     let mut fold = Pipeline::None;
     for e in entries {
-        let name = e
-            .get("name")
-            .or_else(|| e.get("context"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+        let name = crate::text::scrub_text(
+            e.get("name").or_else(|| e.get("context")).and_then(Value::as_str).unwrap_or_default(),
+        );
         let status = e.get("status").and_then(Value::as_str).unwrap_or_default();
         let conclusion = e.get("conclusion").and_then(Value::as_str).unwrap_or_default();
         // A commit status (`StatusContext`) says `state` alone.
@@ -391,8 +388,10 @@ pub fn parse_gh_check_runs(json: &str) -> Pipeline {
     }
 }
 
+/// A string field, scrubbed: the forge's words are untrusted text and this
+/// is the boundary they cross (`text::scrub_text`).
 fn str_of(v: &Value, key: &str) -> String {
-    v.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    crate::text::scrub_text(v.get(key).and_then(Value::as_str).unwrap_or_default())
 }
 
 /// An ISO-8601 stamp (`2026-10-13T05:56:17Z`, or with an offset) as unix

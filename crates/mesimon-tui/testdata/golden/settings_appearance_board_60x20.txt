@@ -8,12 +8,12 @@
   │    [ ] parse it                                      │
   │    [✓] read the reply                                │
   │                                                      │
-  │  Status line        ○ top         ● bottom  machine  │
-  │  Crown's actions    ● lightning   ○ still   machine  │
-  │  Summary on cards   full                    machine  │
-  │  New replies        ● on                    machine  │
-  │  Card corner        ● age         ○ cost    machine  │
-  │                                                      │
+  │  Status line              bottom            machine  │
+  │  Crown's actions          lightning         machine  │
+  │  Summary on cards         full              machine  │
+  │  New replies              ● on              machine  │
+  │  Pull requests on cards   always            machine  │
+  │  Card corner              age               machine  │
   │                                                      │
   │ tmux's bar over an agent's pane                      │
   ╰─────────────── jk select ∙ enter change ∙ b machine ─╯
