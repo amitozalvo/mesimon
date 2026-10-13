@@ -24365,3 +24365,37 @@ under a folder, api three ahead with its tip, web untouched, a non-repo folder's
 tip folding to `main (MR !1)` with the merge commit as `merged_oid` and its pipeline `passed`
 while the squash commit's has none, the crown's merged wake). The lab itself is left as it was;
 its daemon runs main's build until the merge.
+
+## `^h` lists a ticket's pull requests (T-759, 2026-10-13, follow-up to T-739)
+
+**Why.** The author, on the forge lab: "use ^h to show a dialog showing all PRs/MRs of this
+ticket, including pipelines and deployments". The ticket page stops at three PR rows and folds
+the rest into `+N more`; the card's brief is glyphs and numbers.
+
+**What.** `^h` (`Verb::PullRequests`) on the board's cursor card and on the ticket page opens
+`Scope::PullRequests` (`Mode::PullRequests { ticket, idx }`, `ui/prs.rs`): every PR the forge
+bound, newest first, one row each — `glyphs::pr_mark` in its register (`ListRow::lead_ink`,
+new, so a list's lead can carry a mark), the forge's number and the repository in columns as
+wide as their widest row, then the page's words whole (`ticket::pr_clauses`, now shared by the
+page and the dialog, so neither can say a PR differently). The title counts the rows and says
+when the forge was last read (`ForgeStatus::sampled_at_ms`, the Usage dialog's `read 3m ago`).
+The rows are read off the snapshot each frame, the summary dialog's way, so a pipeline turning
+over shows in place. Enter opens the row's URL with the board's opener and leaves the dialog up
+(a ticket's PRs are read one after another, unlike `^k`'s one link); `c` copies the URL; `q`,
+Esc and `^h` close. The mouse: each row is a list row (T-716), and the card's brief and the
+page's PR rows are `mouse::Target::Prs`, whose click is that ticket's `^h` (the cursor walks to
+the card first). `board.rs::brief_at` finds the brief by matching `card::brief_spans` on the
+card's second line, so the click goes only where the brief is drawn.
+
+**The key.** `^h` is gated on `Ctx::has_prs`, so with none it is inert and unhinted, and the
+dialog is never opened empty; one whose PRs go while it is open says `no pull requests ∙ the
+forge binds one…`. In a text field `^h` stays delete-word beside `^w`: the keymap's
+one-verb-per-key rule is per scope chain and the barriers do not reach the board. crossterm
+reads 0x08 as `Ctrl('h')` and 0x7F as Backspace, so a terminal that sends 0x08 for Backspace
+opens the dialog on Backspace on the board; USING.md says so, and it is not a second key.
+
+**Tests.** `keymap::ctrl_h_opens_the_pull_requests` (both screens, gated, the dialog's keys,
+Input keeps its own `^h`); `golden_ticket_prs_dialog_120` (all four PRs where the page folds
+one, the cut row whole above the footer, Enter's URL, `^h` closes, the read time);
+`ctrl_h_is_inert_without_prs_and_the_empty_dialog_says_why`;
+`a_click_on_a_cards_prs_opens_the_dialog` (the card's brief and the page's rows).

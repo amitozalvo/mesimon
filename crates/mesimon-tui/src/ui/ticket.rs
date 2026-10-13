@@ -132,10 +132,54 @@ fn leg_clauses(w: &mesimon_core::command::WorktreeItem, tier: glyphs::Tier) -> V
 /// count: the newest matter, and the header is not a list.
 const PR_ROWS: usize = 3;
 
+/// One pull request's words after its number and state (T-739): the
+/// pipeline and the job it is about, conflicts, the review, and every
+/// environment the merge reached — what the page's rows and the pull
+/// requests dialog (T-759) both say. The forge's words — a job's name, an
+/// environment's — are untrusted text and cross `scrub_cells` here.
+pub(super) fn pr_clauses(p: &mesimon_core::command::PrItem) -> Vec<String> {
+    use mesimon_core::text::scrub_cells;
+    let mut words = Vec::new();
+    match (p.pipeline.as_str(), p.job.as_deref()) {
+        ("failed", Some(job)) => {
+            words.push(format!("pipeline failed: {}", scrub_cells(job, false)))
+        }
+        ("failed", None) => words.push("pipeline failed".into()),
+        ("waiting", Some(job)) => {
+            words.push(format!("pipeline waiting: {}", scrub_cells(job, false)))
+        }
+        ("waiting", None) => words.push("pipeline waiting".into()),
+        ("running", _) => words.push("pipeline running".into()),
+        ("passed", _) => words.push("pipeline passed".into()),
+        _ => {}
+    }
+    if p.conflict {
+        words.push("conflicts".into());
+    }
+    match p.review.as_str() {
+        "approved" => words.push("approved".into()),
+        "changes_requested" => words.push("changes requested".into()),
+        _ => {}
+    }
+    if !p.deployed.is_empty() {
+        let names: Vec<String> = p.deployed.iter().map(|d| scrub_cells(d, false)).collect();
+        words.push(format!("deployed: {}", names.join(", ")));
+    }
+    words
+}
+
+/// A pull request's number as its forge spells it: `!7` on GitLab, `#42`
+/// everywhere else.
+pub(super) fn pr_number(p: &mesimon_core::command::PrItem) -> String {
+    let sign = if p.forge == "gitlab" { '!' } else { '#' };
+    format!("{sign}{}", p.number)
+}
+
 /// The ticket's pull requests as header rows (T-739): `✗ PR #42 open ∙
-/// pipeline failed: test-linux ∙ changes requested`, newest first. The
-/// forge's words — a job's name, a repository's path — are untrusted text
-/// and cross `scrub_cells` here.
+/// pipeline failed: test-linux ∙ changes requested`, newest first. A
+/// repository's path is the forge's word and crosses `scrub_cells` here;
+/// the rest is `pr_clauses`. Past `PR_ROWS` the rest fold into a count,
+/// which `^h` unfolds (T-759).
 fn pr_rows(
     app: &App,
     ticket: ulid::Ulid,
@@ -165,36 +209,11 @@ fn pr_rows(
             "gitlab" => "MR",
             _ => "PR",
         };
-        let sign = if p.forge == "gitlab" { '!' } else { '#' };
-        let mut words = vec![format!("{noun} {sign}{} {}", p.number, p.state)];
+        let mut words = vec![format!("{noun} {} {}", pr_number(p), p.state)];
         if p.repo != own_repo {
             words.push(scrub_cells(&p.repo, false));
         }
-        match (p.pipeline.as_str(), p.job.as_deref()) {
-            ("failed", Some(job)) => {
-                words.push(format!("pipeline failed: {}", scrub_cells(job, false)))
-            }
-            ("failed", None) => words.push("pipeline failed".into()),
-            ("waiting", Some(job)) => {
-                words.push(format!("pipeline waiting: {}", scrub_cells(job, false)))
-            }
-            ("waiting", None) => words.push("pipeline waiting".into()),
-            ("running", _) => words.push("pipeline running".into()),
-            ("passed", _) => words.push("pipeline passed".into()),
-            _ => {}
-        }
-        if p.conflict {
-            words.push("conflicts".into());
-        }
-        match p.review.as_str() {
-            "approved" => words.push("approved".into()),
-            "changes_requested" => words.push("changes requested".into()),
-            _ => {}
-        }
-        if !p.deployed.is_empty() {
-            let names: Vec<String> = p.deployed.iter().map(|d| scrub_cells(d, false)).collect();
-            words.push(format!("deployed: {}", names.join(", ")));
-        }
+        words.extend(pr_clauses(p));
         let text = truncate(&words.join(" ∙ "), room.saturating_sub(4));
         rows.push(Line::from(vec![
             Span::styled(format!("   {mark}"), mark_style),
@@ -616,6 +635,13 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // each, with the repository named only when it is not this one.
     let pr_rows = pr_rows(app, ticket.id, ink, room);
     let wt_row = u16::from(workspace.is_some()) + pr_rows.len() as u16;
+    // Those rows are `^h`'s to a click (T-759): under the pad, the title
+    // and the state line, and the branch row when there is one.
+    if !pr_rows.is_empty() {
+        let y = area.y + 4 + u16::from(workspace.is_some());
+        let rect = Rect { x: area.x, y, width: area.width, height: pr_rows.len() as u16 };
+        app.hits.borrow_mut().record(rect.intersection(area), crate::mouse::Target::Prs(ticket_id));
+    }
 
     // Breathing row between the header and the title (06 §5.5); the state
     // line sits directly under the title, the way a card's meta row does.

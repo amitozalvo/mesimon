@@ -4575,12 +4575,10 @@ fn golden_train_blocked_120() {
     golden("train_blocked_120x30", &render(&app, 120, 30));
 }
 
-/// A ticket's pull requests on its page (T-739): one row each under the
-/// branch row, newest first, in the card's glyphs — the failing pipeline
-/// named, the review's word, a repository named only when it is not this
-/// one — and each URL in the `^k` list, labelled as the forge spells it.
-#[test]
-fn golden_ticket_prs_120() {
+/// T-5 on a worktree with four pull requests (T-739): a failing one under
+/// review, a running one, a merged MR in another repository that reached
+/// staging, and an old merged one.
+fn app_prs() -> App {
     use mesimon_core::command::PrItem;
     let mut app = app_graphite(fixture(false));
     app.worktrees = vec![mesimon_core::command::WorktreeItem {
@@ -4622,6 +4620,16 @@ fn golden_ticket_prs_120() {
         api,
         pr(40, "merged", "none", None),
     ];
+    app
+}
+
+/// A ticket's pull requests on its page (T-739): one row each under the
+/// branch row, newest first, in the card's glyphs — the failing pipeline
+/// named, the review's word, a repository named only when it is not this
+/// one — and each URL in the `^k` list, labelled as the forge spells it.
+#[test]
+fn golden_ticket_prs_120() {
+    let mut app = app_prs();
     app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
     let lines = render(&app, 120, 30);
     let text = lines.join("\n");
@@ -4640,6 +4648,86 @@ fn golden_ticket_prs_120() {
     let labels: Vec<&str> = links.iter().filter_map(|l| l.label.as_deref()).collect();
     assert_eq!(labels, ["PR #43 open", "PR #42 open", "MR !7 merged", "PR #40 merged"]);
     assert!(app.ticket_linkable(ulid_n(5)));
+}
+
+/// `^h` on the ticket page (T-759): every pull request, the one the page
+/// folds into `+1 more` included, each with the page's words whole and its
+/// repository in a column of its own; Enter hands the cursor row's URL to
+/// the opener and leaves the dialog up, `^h` closes it.
+#[test]
+fn golden_ticket_prs_dialog_120() {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    let mut app = app_prs();
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
+    let page = render(&app, 120, 30).join("\n");
+    assert!(!page.contains("#40"), "the page folds the fourth:\n{page}");
+    app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL).unwrap();
+    assert!(matches!(app.mode, Mode::PullRequests { ticket, idx: 0 } if ticket == ulid_n(5)));
+    let lines = render(&app, 120, 30);
+    let text = lines.join("\n");
+    assert!(text.contains("PULL REQUESTS ∙ T-5 ∙ 4"), "{text}");
+    for row in [
+        "✗ #43  o/r    open ∙ pipeline failed: test-linux",
+        // The row the dialog cuts reads whole above the footer.
+        " #43  o/r    open ∙ pipeline failed: test-linux ∙ changes requested",
+        "◴ #42  o/r    open ∙ pipeline running",
+        "◆ !7   g/api  merged ∙ pipeline passed ∙ deployed: staging",
+        "● #40  o/r    merged",
+    ] {
+        assert!(text.contains(row), "{row:?} is listed:\n{text}");
+    }
+    golden("ticket_prs_dialog_120x30", &lines);
+
+    app.opener = Some("open".into());
+    app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE).unwrap();
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    assert_eq!(
+        app.pending_open,
+        Some(vec!["open".to_string(), "https://github.com/o/r/pull/42".to_string()])
+    );
+    assert!(matches!(app.mode, Mode::PullRequests { idx: 1, .. }), "the dialog stays");
+    app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL).unwrap();
+    assert!(matches!(app.mode, Mode::Normal));
+
+    // The forge's last read rides the title, as a quota's does.
+    app.forge.sampled_at_ms = mesimon_core::clock::now_ms().saturating_sub(180_000);
+    app.mode = Mode::PullRequests { ticket: ulid_n(5), idx: 0 };
+    let text = render(&app, 120, 30).join("\n");
+    assert!(text.contains("PULL REQUESTS ∙ T-5 ∙ 4 ∙ read 3m ago"), "{text}");
+}
+
+/// With no pull requests `^h` is inert, and a dialog whose PRs went while it
+/// was open says so rather than drawing nothing.
+#[test]
+fn ctrl_h_is_inert_without_prs_and_the_empty_dialog_says_why() {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    let mut app = app_graphite(fixture(false));
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
+    app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL).unwrap();
+    assert!(matches!(app.mode, Mode::Normal));
+    app.mode = Mode::PullRequests { ticket: ulid_n(5), idx: 2 };
+    let text = render(&app, 120, 30).join("\n");
+    assert!(text.contains("no pull requests ∙ the forge binds one"), "{text}");
+    assert!(text.contains("this ticket's worktree"), "{text}");
+}
+
+/// A click on a card's pull-request brief is that card's `^h` (T-759): the
+/// cursor walks to the card and the dialog opens over the board.
+#[test]
+fn a_click_on_a_cards_prs_opens_the_dialog() {
+    let mut app = app_prs();
+    let lines = render(&app, 120, 30);
+    let at = spot_of(&lines, "#43");
+    assert_ne!(app.selected_ticket().map(|t| t.id), Some(ulid_n(5)));
+    click(&mut app, at);
+    assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid_n(5)));
+    assert!(matches!(app.mode, Mode::PullRequests { ticket, .. } if ticket == ulid_n(5)));
+    // …and on the page, a click on its PR rows.
+    app.mode = Mode::Normal;
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
+    let at = spot_of(&render(&app, 120, 30), "PR #42 open");
+    click(&mut app, at);
+    assert!(matches!(app.mode, Mode::PullRequests { ticket, .. } if ticket == ulid_n(5)));
 }
 
 /// A pull request merged somewhere else (T-267): the branch is not an

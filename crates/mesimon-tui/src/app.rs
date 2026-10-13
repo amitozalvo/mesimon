@@ -494,6 +494,14 @@ pub enum Mode {
         ticket: ulid::Ulid,
         idx: usize,
     },
+    /// The pull requests dialog (T-759): every PR the forge bound to the
+    /// ticket, over the board or the ticket page. Read off the snapshot each
+    /// frame, the summary's way, so a pipeline turning over shows in place;
+    /// `idx` is clamped to the rows there are.
+    PullRequests {
+        ticket: ulid::Ulid,
+        idx: usize,
+    },
     /// The column settings dialog (T-117): a list over `keymap::column_items`
     /// on one column, every row relabelling off the snapshot and none closing
     /// the dialog (the Settings list's rule). Esc goes back to the board, or
@@ -3231,6 +3239,7 @@ impl App {
             Target::Row(i) => self.point_row(i),
             Target::Section(i) => self.point_section(i),
             Target::Card(id) => self.point_card(id),
+            Target::Prs(id) => self.point_prs(id),
             Target::Column(ci) => self.point_column(ci),
             Target::Chip(chip) => self.point_chip(chip),
             Target::Rail(i) => self.point_rail(i),
@@ -3398,6 +3407,7 @@ impl App {
             | Mode::TierEdit { idx, field: None, .. }
             | Mode::Links { idx, .. }
             | Mode::Summary { idx, .. }
+            | Mode::PullRequests { idx, .. }
             | Mode::ColumnSettings {
                 idx, naming: None, describing: None, env_naming: None, ..
             } => Some(*idx),
@@ -3479,6 +3489,22 @@ impl App {
             app.select_ticket(id);
             Ok(())
         })
+    }
+
+    /// A click on a card's pull requests, or on the page's (T-759): the
+    /// card's `^h`, pressed where the keyboard would — the cursor walks to
+    /// the card first, as a click on it would.
+    fn point_prs(&mut self, id: ulid::Ulid) -> Result<bool> {
+        let on_page = matches!(self.screen, Screen::Ticket { ticket, .. } if ticket == id)
+            && self.scope() == Scope::Ticket;
+        if !on_page {
+            if !self.board_at_rest() {
+                return Ok(false);
+            }
+            self.header_focus = false;
+            self.select_ticket(id);
+        }
+        self.press(&[Key::Ctrl('h')])
     }
 
     /// A click on a column's header: the cursor stands on it, and a click
@@ -5415,6 +5441,7 @@ impl App {
             Mode::Brief { .. } => Scope::Brief,
             Mode::Links { .. } => Scope::Links,
             Mode::Summary { .. } => Scope::Summary,
+            Mode::PullRequests { .. } => Scope::PullRequests,
             Mode::Search(_) => Scope::Search,
             // Naming a column IS a text field (the tag picker's rule), and
             // saying so is what puts `enter save ∙ esc cancel` in the edge.
@@ -5607,6 +5634,7 @@ impl App {
             },
             ticket_linkable: subject.is_some_and(|t| self.ticket_linkable(t)),
             ticket_summarised: subject.is_some_and(|t| self.ticket_summarised(t)),
+            has_prs: subject.is_some_and(|t| self.prs.iter().any(|p| p.ticket == t)),
             summary_on_task: self.summary_cursor().is_some_and(|(_, r)| r.done.is_some()),
             summary_on_link: self
                 .summary_cursor()
@@ -7435,6 +7463,11 @@ impl App {
             }
             Verb::Links => self.open_links(),
             Verb::Summary => self.open_summary(),
+            Verb::PullRequests => {
+                if let Some(ticket) = self.subject() {
+                    self.mode = Mode::PullRequests { ticket, idx: 0 };
+                }
+            }
             Verb::SummaryTick => return self.summary_tick(),
             Verb::SummaryAsk => return self.summary_ask(key, ctx),
             Verb::LinkFirst => {
@@ -7451,6 +7484,7 @@ impl App {
                 let text = match &self.mode {
                     Mode::Links { links, idx, .. } => links.get(*idx).map(|l| l.text.clone()),
                     Mode::Summary { .. } => self.summary_cursor().map(|(_, r)| r.text),
+                    Mode::PullRequests { .. } => self.pr_cursor().map(|p| p.url.clone()),
                     _ => None,
                 };
                 if let Some(text) = text {
@@ -7792,6 +7826,15 @@ impl App {
                     *idx = step(*idx, len, down);
                 }
             }
+            Scope::PullRequests => {
+                let len = match &self.mode {
+                    Mode::PullRequests { ticket, .. } => self.prs_of(*ticket).len(),
+                    _ => 0,
+                };
+                if let Mode::PullRequests { idx, .. } = &mut self.mode {
+                    *idx = step((*idx).min(len.saturating_sub(1)), len, down);
+                }
+            }
             // The section list (T-717): the cursor is the section, so the
             // page beside it follows; `l` steps in as Enter does.
             Scope::Sections => {
@@ -8092,6 +8135,14 @@ impl App {
             }
             Scope::Summary => {
                 self.summary_open_line();
+                Ok(())
+            }
+            // The row's PR in the browser; the dialog stays, since a
+            // ticket's PRs are often read one after another.
+            Scope::PullRequests => {
+                if let Some(url) = self.pr_cursor().map(|p| p.url.clone()) {
+                    self.open_outside(url);
+                }
                 Ok(())
             }
             Scope::Theme => {
@@ -10986,6 +11037,14 @@ impl App {
     /// A ticket's pull requests (T-739), newest first.
     pub fn prs_of(&self, ticket: ulid::Ulid) -> Vec<&mesimon_core::command::PrItem> {
         self.prs.iter().filter(|p| p.ticket == ticket).collect()
+    }
+
+    /// The pull requests dialog's cursor row (T-759), clamped to the rows
+    /// the last snapshot left; `None` with the dialog closed or empty.
+    pub(crate) fn pr_cursor(&self) -> Option<&mesimon_core::command::PrItem> {
+        let Mode::PullRequests { ticket, idx } = &self.mode else { return None };
+        let prs = self.prs_of(*ticket);
+        prs.get((*idx).min(prs.len().saturating_sub(1))).copied()
     }
 
     /// Flip a ticket between the shared checkout and a worktree of its own —

@@ -453,6 +453,7 @@ fn draw_list(
     let offered = items.iter().take_while(|m| keymap::is_suggested(m.verb, &ctx)).count();
     let heading = |head: &str| ListRow {
         lead: String::new(),
+        lead_ink: None,
         head: head.to_string(),
         right: String::new(),
         detail: None,
@@ -474,6 +475,7 @@ fn draw_list(
             } else {
                 "   ".to_string()
             },
+            lead_ink: None,
             head: (item.label)(&ctx),
             right: item.key.to_string(),
             detail: Some(keymap::item_detail(item, &ctx)),

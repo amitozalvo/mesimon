@@ -162,6 +162,9 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         id: Option<ulid::Ulid>,
         /// A moved card's trail where it stood (T-544), not the card.
         trail: bool,
+        /// Where the pull-request brief sits on the card's second line
+        /// (T-759): its x offset and width, for its click.
+        prs_at: Option<(u16, u16)>,
     }
     let mut groups: Vec<Group> = Vec::new();
     // `left`: this is the trail a card the crown moved out left behind
@@ -184,6 +187,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 shake: 0,
                 id: Some(t.id),
                 trail: false,
+                prs_at: None,
             });
             return;
         }
@@ -290,6 +294,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             )
         };
         let mut lines = render(open, peek.as_deref());
+        let t_cells = usize::from(ctx.width).saturating_sub(crate::tags::BAR_WIDTH + 2);
+        let prs_at = brief_at(lines.get(1), &card::brief_spans(ctx.theme, &brief, t_cells));
         // The card is drawn WHOLE first — glyph, title, sessions, peek — and
         // the field is added under it. That order is the point: what you are
         // about to talk to stays legible while you type at it.
@@ -320,6 +326,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             shake: if left { 0 } else { app.shake_dx(t.id) },
             id: Some(t.id),
             trail: left,
+            prs_at: if left { None } else { prs_at },
         });
     };
     match ghost {
@@ -406,6 +413,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 shake: 0,
                 id: None,
                 trail: false,
+                prs_at: None,
             });
         }
     }
@@ -418,6 +426,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                                                                  // mark's column, and whether it is a trail: the bolts' spots once the
                                                                  // window is known.
     let mut card_starts: Vec<(usize, usize, ulid::Ulid, Option<u16>, bool)> = Vec::new();
+    let mut brief_spots: Vec<(usize, ulid::Ulid, (u16, u16))> = Vec::new();
     let crown_glyph = crate::glyphs::crown(theme.glyph_tier());
     let mut cursor_range: Option<(usize, usize)> = None;
     let mut edit_at: Option<(usize, u16)> = None; // (flat line idx, x offset)
@@ -447,6 +456,9 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 None
             };
             card_starts.push((start, end, id, mark, g.trail));
+            if let Some(at) = g.prs_at {
+                brief_spots.push((start + 1, id, at));
+            }
         }
     }
     lines.pop(); // no trailing blank after the last card
@@ -740,6 +752,13 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                     Rect { x: area.x, y: row_of(lo), width: area.width, height: (hi - lo) as u16 };
                 hits.record(rect, crate::mouse::Target::Card(id));
             }
+            if let Some(&(line, _, (x, w))) = brief_spots.iter().find(|b| b.1 == id && !trail) {
+                // The brief is the card's `^h` (T-759), over the card's own.
+                if line >= content_start && line < content_end {
+                    let rect = Rect { x: area.x + x, y: row_of(line), width: w, height: 1 };
+                    hits.record(rect.intersection(area), crate::mouse::Target::Prs(id));
+                }
+            }
             if start >= content_start && start < content_end {
                 let spot = crate::strike::CardSpot {
                     id,
@@ -790,6 +809,24 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         f.set_cursor_position(at);
         super::field_spot(app, area, at);
     }
+}
+
+/// Where `brief` (`card::brief_spans`) stands on `line`, the card's second
+/// line, as its x offset and width — `None` where the line does not end in
+/// it and its one-cell margin (a trail, the delete flash, no PRs).
+fn brief_at(line: Option<&Line<'_>>, brief: &[Span<'_>]) -> Option<(u16, u16)> {
+    let spans = &line?.spans;
+    let n = brief.len();
+    if n == 0 || spans.len() < n + 1 {
+        return None;
+    }
+    let at = spans.len() - 1 - n;
+    if !spans[at..at + n].iter().zip(brief).all(|(a, b)| a.content == b.content) {
+        return None;
+    }
+    let x = u16::try_from(super::spans_width(&spans[..at])).ok()?;
+    let w = u16::try_from(super::spans_width(brief)).ok()?;
+    Some((x, w))
 }
 
 /// The column of the first `glyph` on `line`, in cells from its start.

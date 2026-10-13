@@ -1,0 +1,30 @@
+ TICKET (T-5)   mesimon › kanban-tui
+
+ Grapheme truncation
+ REVIEW for >1y ∙ created >1y ago
+ ⎇ msmn/T-5-grapheme-truncation ∙ 2 to merge ∙ m merge
+   ✗ PR #43 open ∙ pipeline failed: test-linux ∙ changes requested
+   ◴ PR #42 open ∙ pipeline running
+   ◆ MR !7 merged ∙ g/api ∙ pipeline passed ∙ deployed: staging
+    ∙ +1 more
+
+
+  PREVIEW                                                                                  SESSIONS                  1
+    ▄▄▄         ▄▄▄        ╭─ PULL REQUESTS ∙ T-5 ∙ 4 ──────────────────────────────────────╮
+    ▀▀█▀ ▄▀▀▀   ▀▀█▀       │ ✗ #43  o/r    open ∙ pipeline failed: test-linux ∙ changes req~│ claude               >1y
+      ██▀█▀▀     ███   ✦   │ ◴ #42  o/r    open ∙ pipeline running                          │sleep
+    ▄▀█████▀▀▀▀▀▀███▀▄     │ ◆ !7   g/api  merged ∙ pipeline passed ∙ deployed: staging     │
+  ✦█████▀████████▀████▀    │ ● #40  o/r    merged                                           │
+   ████▀█▀██████▀█▀████    ╰────────────────── jk select ∙ enter open ∙ c copy ∙ esc close ─╯
+   █▀▀█████▀▀▀▀█████▀▀█
+   ▀▀▀██████▀▀██████▀▀▀
+      ▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+
+    done
+    it left no transcript
+
+
+
+
+ #43  o/r    open ∙ pipeline failed: test-linux ∙ changes requested
+ PULL REQUESTS  jk select ∙ enter open ∙ c copy ∙ esc close                                                      ? keys

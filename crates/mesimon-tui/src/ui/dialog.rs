@@ -167,6 +167,10 @@ pub(super) struct ListRow {
     /// Drawn a step quieter than the head unless the row is selected, so a
     /// marked row reads as a label with a mark, never as a bulleted list.
     pub lead: String,
+    /// The lead's own ink where it is a mark that means something (a pull
+    /// request's state, T-759), on every row, the cursor's too; `None`
+    /// draws it as above.
+    pub lead_ink: Option<Style>,
     pub head: String,
     /// What sits at the right edge, dim — a key, a ground word — or `""`.
     pub right: String,
@@ -290,7 +294,7 @@ pub(super) fn list(
             theme.base()
         };
         let row_style = if selected { theme.selected_row() } else { Style::default() };
-        let lead_style = if selected { style } else { theme.dim3() };
+        let lead_style = row.lead_ink.unwrap_or(if selected { style } else { theme.dim3() });
         let edge = edge(row);
         // The cursor's head reveals what a cut hides, the board card
         // title's way (T-702); a two-line list reveals its detail instead,
@@ -402,6 +406,7 @@ pub(super) fn draw_archived(f: &mut Frame, app: &App, idx: usize) {
             };
             ListRow {
                 lead: " ".into(),
+                lead_ink: None,
                 head: format!(
                     "{}  {} ∙ {} ∙ {}",
                     t.short_key,
@@ -460,6 +465,7 @@ pub(super) fn draw_links(
             };
             ListRow {
                 lead: " ".into(),
+                lead_ink: None,
                 head: format!("{:<6} {}", l.kind(), crate::text::one_line(&body)),
                 right: String::new(),
                 detail: None,
@@ -489,7 +495,14 @@ pub(super) fn draw_summary(f: &mut Frame, app: &App, ticket: ulid::Ulid, idx: us
                 Some(done) => format!("{} {words}", super::card::box_mark(tier, Some(done))),
                 None => format!(" -  {words}"),
             };
-            ListRow { lead: " ".into(), head, right: String::new(), detail: None, heading: false }
+            ListRow {
+                lead: " ".into(),
+                lead_ink: None,
+                head,
+                right: String::new(),
+                detail: None,
+                heading: false,
+            }
         })
         .collect();
     let idx = idx.min(rows.len().saturating_sub(1));
@@ -587,6 +600,7 @@ pub(super) fn draw_drawer(f: &mut Frame, app: &App, idx: usize) {
             }
             ListRow {
                 lead: " ".into(),
+                lead_ink: None,
                 head: format!(
                     "{}  {}{badges}",
                     truncate(&name, 24),

@@ -214,6 +214,11 @@ pub enum Scope {
     /// opens the row's line in its note, `a` asks the agent about it. The
     /// links dialog's shapes with one key that mutates.
     Summary,
+    /// The pull requests dialog (T-759): every PR or MR the forge bound to
+    /// the ticket, one row each, with the ticket page's words unfolded —
+    /// the page stops at three. `^h` opens it over the board or the page;
+    /// Enter opens the row's PR in the browser.
+    PullRequests,
     /// The column settings dialog (T-117): one column's every setting in a
     /// list of its own, reached from the column's header or the menu. The
     /// Settings list's shapes, plus `h`/`l` on its sort row. Its Name row
@@ -267,7 +272,7 @@ impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 32] = [
+    pub const ALL: [Scope; 33] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -300,6 +305,7 @@ impl Scope {
         Scope::TierEdit,
         Scope::Usage,
         Scope::Summary,
+        Scope::PullRequests,
     ];
 
     /// The scope a key falls through to when this one does not bind it.
@@ -324,7 +330,8 @@ impl Scope {
             | Scope::Tiers
             | Scope::TierEdit
             | Scope::Usage
-            | Scope::Summary => Some(Scope::Global),
+            | Scope::Summary
+            | Scope::PullRequests => Some(Scope::Global),
             Scope::Global
             | Scope::Move
             | Scope::DiffView
@@ -368,6 +375,7 @@ impl Scope {
             Scope::Releases => "RELEASES",
             Scope::Links => "LINKS",
             Scope::Summary => "SUMMARY",
+            Scope::PullRequests => "PULL REQUESTS",
             Scope::ColumnSettings => "COLUMN",
             Scope::Header => "HEADER",
             Scope::Search => "SEARCH",
@@ -476,6 +484,10 @@ pub enum Verb {
     /// dialog: close it and open the ticket's prompt field with the row's
     /// words quoted, for the person to finish and send.
     SummaryAsk,
+    /// `^h` on the board or the ticket page: the PULL REQUESTS dialog over
+    /// the ticket's pull requests (T-759). Inert while the forge has bound
+    /// none, so the dialog is never opened empty.
+    PullRequests,
     /// Open the settings submenu from the menu: the preferences, one level
     /// down, so a menu row is either an action or the door to the settings
     /// and never a toggle between actions.
@@ -1258,6 +1270,9 @@ pub struct Ctx {
     /// row (T-696), as the TUI's cache last read them — never the disk. What
     /// `^j` gates on.
     pub ticket_summarised: bool,
+    /// The forge has bound at least one pull request to the subject ticket
+    /// (T-739), as the last snapshot said. What `^h` gates on.
+    pub has_prs: bool,
     /// The summary dialog's cursor row is a box (a task item), so Space has
     /// something to flip. False on a plain row, where it is inert.
     pub summary_on_task: bool,
@@ -2597,6 +2612,23 @@ static BOARD: &[Binding] = &[
         prio: 0,
     },
     Binding {
+        // The ticket's pull requests (T-759): every one the forge bound,
+        // with its pipeline, review and deployments — the card's brief and
+        // the page's three rows, unfolded. Overlay-only like `^k` and `^j`,
+        // and inert while there is none. `^h` is 0x08 on the legacy floor;
+        // a terminal that sends 0x08 for Backspace opens this dialog there,
+        // which is a limit of that terminal and not a second key.
+        keys: &[Key::Ctrl('h')],
+        verb: Verb::PullRequests,
+        show: "^h",
+        hint: |_| "prs",
+        avail: |c| c.has_ticket && c.has_prs,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
         // The picker's digit, reached without the picker: one press steps the
         // selected card along that group's tags and off the end back to
         // untagged. Overlay-only (`prio: 0`) on the Nudge precedent — it is an
@@ -3185,6 +3217,18 @@ static TICKET: &[Binding] = &[
         show: "^j",
         hint: |_| "summary",
         avail: |c| c.ticket_summarised,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        // The board's pull requests key on the ticket's own page (T-759).
+        keys: &[Key::Ctrl('h')],
+        verb: Verb::PullRequests,
+        show: "^h",
+        hint: |_| "prs",
+        avail: |c| c.has_prs,
         class: Class::Plain,
         group: Group::Ticket,
         mutates: false,
@@ -6291,6 +6335,56 @@ static LINKS: &[Binding] = &[
     },
 ];
 
+/// The pull requests dialog (T-759): the links dialog's shapes. Enter
+/// opens the row's PR with the board's opener, and `^h` closes the dialog
+/// it opened.
+static PULL_REQUESTS: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
+        verb: Verb::CursorDown,
+        show: "jk",
+        hint: |_| "select",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Enter],
+        verb: Verb::Act,
+        show: "enter",
+        hint: |_| "open",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 20,
+    },
+    Binding {
+        keys: &[Key::Char('c')],
+        verb: Verb::LinkCopy,
+        show: "c",
+        hint: |_| "copy",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 30,
+    },
+    Binding {
+        keys: &[Key::Char('q'), Key::Esc, Key::Ctrl('h')],
+        verb: Verb::Back,
+        show: "esc",
+        hint: |_| "close",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 250,
+    },
+];
+
 /// The summary dialog (T-696): the links dialog's shapes, plus Space on a
 /// box, `a` to ask the agent about a row, and `^j` as a second spelling of
 /// `Back`. Space is the one key here that mutates — it writes the note —
@@ -7336,6 +7430,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::Releases => RELEASES,
         Scope::Links => LINKS,
         Scope::Summary => SUMMARY,
+        Scope::PullRequests => PULL_REQUESTS,
         Scope::ColumnSettings => COLUMN,
         Scope::Header => HEADER,
         Scope::Search => SEARCH,
@@ -7693,6 +7788,7 @@ mod tests {
                 Scope::TierEdit => 29,
                 Scope::Usage => 30,
                 Scope::Summary => 31,
+                Scope::PullRequests => 32,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -7891,6 +7987,28 @@ mod tests {
         assert_eq!(resolve(Scope::Summary, Key::ShiftEnter, &plain), None);
         assert_eq!(resolve(Scope::Summary, Key::Ctrl('j'), &plain), Some(Verb::Back));
         assert_eq!(resolve(Scope::Summary, Key::Char('c'), &plain), Some(Verb::LinkCopy));
+    }
+
+    /// `^h` is the pull requests dialog (T-759) on both screens, gated on
+    /// the forge having bound one; in a text field the same atom stays
+    /// delete-word, and inside the dialog it closes what it opened.
+    #[test]
+    fn ctrl_h_opens_the_pull_requests() {
+        let on = Ctx { has_ticket: true, has_prs: true, ..Default::default() };
+        let off = Ctx { has_ticket: true, ..Default::default() };
+        for scope in [Scope::Board, Scope::Ticket] {
+            assert_eq!(resolve(scope, Key::Ctrl('h'), &on), Some(Verb::PullRequests), "{scope:?}");
+            assert_eq!(hint_for(scope, Verb::PullRequests, &on), Some(("^h", "prs")));
+            assert_eq!(resolve(scope, Key::Ctrl('h'), &off), None, "{scope:?}");
+            assert_eq!(hint_for(scope, Verb::PullRequests, &off), None, "{scope:?}");
+            assert_eq!(resolve(scope, Key::Backspace, &on), resolve(scope, Key::Backspace, &off));
+        }
+        let none = Ctx::default();
+        assert_eq!(resolve(Scope::PullRequests, Key::Enter, &none), Some(Verb::Act));
+        assert_eq!(resolve(Scope::PullRequests, Key::Char('j'), &none), Some(Verb::CursorDown));
+        assert_eq!(resolve(Scope::PullRequests, Key::Ctrl('h'), &none), Some(Verb::Back));
+        assert_eq!(resolve(Scope::PullRequests, Key::Char('c'), &none), Some(Verb::LinkCopy));
+        assert_ne!(resolve(Scope::Input, Key::Ctrl('h'), &on), Some(Verb::PullRequests));
     }
 
     /// The ambiguity clause itself: every binding on `atom` must be
@@ -10048,6 +10166,7 @@ mod tests {
             Scope::Releases,
             Scope::Links,
             Scope::Summary,
+            Scope::PullRequests,
             Scope::ColumnSettings,
             Scope::Header,
             Scope::Sharing,

@@ -469,7 +469,10 @@ first. `◯` is open with no pipeline, `◴` (turning once a second) open with i
 `◎` open with a manual job waiting for someone to start it, `◉` open and green (your turn: a
 review, the merge button), `✗` a failed pipeline, `●` merged, `◆` merged and deployed. **Settings ›
 Appearance › Pull requests on cards** shows the line always, only as news until you rest on the
-card, or never. `ctrl-k` on the ticket opens the PR.
+card, or never. `ctrl-k` on the ticket opens the PR. `ctrl-h` on a card or a ticket page (or a
+click on its PR glyphs) lists every pull request with its pipeline, job, review and deployments,
+where the page stops at three; Enter opens the one under the cursor. A terminal that sends
+`ctrl-h` for Backspace opens the list on Backspace there.
 
 A ticket's pull requests are the ones its work made: a PR whose commits were made in the ticket's
 worktree, whose branch is the ticket's own, or that a `gh pr create` run by the ticket's agent

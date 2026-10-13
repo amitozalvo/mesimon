@@ -240,7 +240,7 @@ pub(super) fn render_ask_mode(
     Line::from(spans).style(theme.selected_row())
 }
 
-fn register_style(theme: &Theme, reg: Register) -> Style {
+pub(super) fn register_style(theme: &Theme, reg: Register) -> Style {
     match reg {
         Register::Attn => theme.attn_text(),
         Register::Err => theme.err_text(),
@@ -248,6 +248,45 @@ fn register_style(theme: &Theme, reg: Register) -> Style {
         Register::Grey => theme.dim2(),
         Register::Dormant => theme.dim3(),
     }
+}
+
+/// The card's pull-request brief (T-739) as drawn on line 2: one glyph and
+/// number per PR, newest first, in at most half of `t_cells`; past that the
+/// oldest fold into a count. Empty with no PRs. `board.rs` matches these
+/// spans on the drawn line to give the brief its click (T-759).
+pub(super) fn brief_spans(
+    theme: &Theme,
+    prs: &[(String, Register)],
+    t_cells: usize,
+) -> Vec<Span<'static>> {
+    if prs.is_empty() {
+        return Vec::new();
+    }
+    let budget = t_cells / 2;
+    let mut keep = prs.len();
+    let width_of = |n: usize| -> usize {
+        let items: usize = prs[..n].iter().map(|(s, _)| s.width()).sum();
+        let more = if n < prs.len() { format!(" +{}", prs.len() - n).width() } else { 0 };
+        items + n.saturating_sub(1) + more
+    };
+    while keep > 1 && width_of(keep) > budget {
+        keep -= 1;
+    }
+    let mut spans = Vec::new();
+    for (i, (text, reg)) in prs[..keep].iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(" "));
+        }
+        let mut graphemes = text.chars();
+        let mark = graphemes.next().map(|c| c.to_string()).unwrap_or_default();
+        let label: String = graphemes.collect();
+        spans.push(Span::styled(mark, register_style(theme, *reg)));
+        spans.push(Span::styled(label, theme.dim2()));
+    }
+    if keep < prs.len() {
+        spans.push(Span::styled(format!(" +{}", prs.len() - keep), theme.dim2()));
+    }
+    spans
 }
 
 /// Render one card. `selected` is the cursor card (accordion), `held` is the
@@ -793,35 +832,8 @@ pub(super) fn render(
     // oldest fold into a count. It shares line 2 with a new reply: the
     // reply keeps the left and is cut against the brief, never a third
     // line. Not on a trail or the delete flash, which say something else.
-    let brief: Vec<Span<'static>> = if prs.is_empty() || trail || doomed {
-        Vec::new()
-    } else {
-        let budget = t_cells / 2;
-        let mut keep = prs.len();
-        let width_of = |n: usize| -> usize {
-            let items: usize = prs[..n].iter().map(|(s, _)| s.width()).sum();
-            let more = if n < prs.len() { format!(" +{}", prs.len() - n).width() } else { 0 };
-            items + n.saturating_sub(1) + more
-        };
-        while keep > 1 && width_of(keep) > budget {
-            keep -= 1;
-        }
-        let mut spans = Vec::new();
-        for (i, (text, reg)) in prs[..keep].iter().enumerate() {
-            if i > 0 {
-                spans.push(Span::raw(" "));
-            }
-            let mut graphemes = text.chars();
-            let mark = graphemes.next().map(|c| c.to_string()).unwrap_or_default();
-            let label: String = graphemes.collect();
-            spans.push(Span::styled(mark, register_style(theme, *reg)));
-            spans.push(Span::styled(label, theme.dim2()));
-        }
-        if keep < prs.len() {
-            spans.push(Span::styled(format!(" +{}", prs.len() - keep), theme.dim2()));
-        }
-        spans
-    };
+    let brief: Vec<Span<'static>> =
+        if trail || doomed { Vec::new() } else { brief_spans(theme, prs, t_cells) };
     let brief_w = super::spans_width(&brief);
     let brief_room = if brief_w > 0 { brief_w + 1 } else { 0 };
     let mut drew_line2 = false;
