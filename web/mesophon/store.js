@@ -691,12 +691,21 @@ export class Store {
     const item = this.edits.take(command);
     if (!item) return;
     if (reply.result === "rejected") {
-      const what = { rename: "Not renamed", move: "Not moved", tag: "Tags not changed", workspace: "Workspace not changed" }[
-        item.op
-      ];
+      const what = {
+        rename: "Not renamed",
+        move: "Not moved",
+        tag: "Tags not changed",
+        workspace: "Workspace not changed",
+        archive: item.restore ? "Not restored" : "Not archived",
+      }[item.op];
       this.editError = `${what}: ${reply.message || "the terminal refused it."}`;
       this.say(this.editError);
     } else if (reply.result === "edited" && item.moved) this.say(`Moved ${item.key} to ${item.patch.column}`, "two");
+    else if (reply.result === "edited" && item.op === "archive")
+      this.say(`${item.restore ? "Restored" : "Archived"} ${item.key}`, "two", item.restore ? undefined : {
+        label: "Restore",
+        run: () => this.restoreTicket(item.ticket, item.key),
+      });
     // The board that follows is the truth, the refusal's included.
     this.refresh();
     this.emit();
@@ -763,12 +772,30 @@ export class Store {
     const workspace = { ...ws, kind: worktree ? "worktree" : "shared", state: worktree ? "planned" : "" };
     this.edit(ticket, "workspace", { worktree }, { workspace });
   }
+  // Into the archive (T-737), the board's `a a`: the card leaves at once
+  // and the sheet with it, and a page showing it goes back to the list. The
+  // host refuses a ticket whose agent is awake, as the desk does.
+  archiveTicket(id) {
+    const ticket = this.board?.tickets.find((t) => t.id === id);
+    if (!ticket || this.editWaiting(ticket, "archive")) return;
+    if (!this.edit(ticket, "archive", {}, {}, { restore: false })) return;
+    if (this.cardSheet === id) this.cardSheet = undefined;
+    if (this.detailOpen && this.board.selected === id) this.back();
+    this.emit();
+  }
+  // Back from the archive (T-737), the archive toast's Restore: the card
+  // returns to the column it left when the host's board says so.
+  restoreTicket(id, key) {
+    if (!this.edit({ id, key }, "archive", { restore: true }, {}, { restore: true })) return;
+    this.emit();
+  }
   // The sheet that moves a ticket, sets its tags and, while it is open,
-  // its workspace, opened from its line.
+  // its workspace, opened from its line; it also archives it (T-737).
   openCardSheet(id) {
     const ticket = this.board?.tickets.find((t) => t.id === id);
     const workspace = this.canEdit("workspace") && !!ticket?.workspace?.open;
-    if (!ticket || !(this.canEdit("move") || this.canEdit("tag") || workspace)) return;
+    const edits = this.canEdit("move") || this.canEdit("tag") || this.canEdit("archive");
+    if (!ticket || !(edits || workspace)) return;
     this.cardSheet = id;
     this.editError = "";
     this.emit();

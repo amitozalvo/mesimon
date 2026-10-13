@@ -681,6 +681,20 @@ test("a workspace edit is worn until its answer, as a card edit (T-642)", async 
   edits.take(1);
   assert.deepEqual(edits.wear("board-a", host)[0].workspace, { kind: "shared", open: true });
 });
+test("an archive takes the card off the board until its answer, and its restore wears nothing (T-737)", async () => {
+  const { Edits } = await import("./edits.js");
+  const edits = new Edits();
+  const host = [{ id: "a", column: "TODO" }, { id: "b", column: "TODO" }];
+  edits.sent(1, { board: "board-a", ticket: "a", key: "T-1", op: "archive", patch: {}, restore: false });
+  assert.deepEqual(edits.wear("board-a", host).map((t) => t.id), ["b"]);
+  assert.deepEqual(edits.wear("board-b", host).map((t) => t.id), ["a", "b"], "another board's card stays");
+  assert.equal(edits.waiting("board-a", "a", "archive"), true);
+  edits.take(1);
+  assert.deepEqual(edits.wear("board-a", host).map((t) => t.id), ["a", "b"]);
+  edits.sent(2, { board: "board-a", ticket: "a", key: "T-1", op: "archive", patch: {}, restore: true });
+  assert.deepEqual(edits.wear("board-a", [host[1]]).map((t) => t.id), ["b"], "a restore waits for the host's board");
+  assert.deepEqual(edits.wear("board-a", host).map((t) => t.id), ["a", "b"]);
+});
 test("the crown's words name whose agent did what, and a word it does not know as spelled (T-623)", () => {
   assert.equal(crownSentence({ action: "moved", by: "T-9" }), "T-9’s agent moved this ticket");
   assert.equal(crownSentence({ action: "woke", by: "T-4" }), "T-4’s news woke this agent");

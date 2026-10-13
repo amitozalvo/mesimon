@@ -23799,3 +23799,44 @@ row reveals and two reveals on different words reset one clock every frame. A li
 the screen now stops one row short of it, so the dialog never covers its own line. Eight list
 goldens gained that line. Over the ticket page it lands on the zone's last row, which the
 dialog's modal anyway. The pointer's row is not read: the board's row names the cursor's card.
+
+## Remote Control archives a ticket (T-737, 2026-10-13, "remote control archive tickets")
+
+**Built: the op.** `Request::Archive { ticket, restore }`, feature `archive`, answered `Edited`
+or `Rejected`. It is the desk's `a a` (`Daemon::archive_ticket` as the paired principal, so
+an awake session refuses with "sessions still awake — sleep them first", a `requires_ticked`
+column with an open box refuses in its words, the crown is dropped and a landed worktree is
+reclaimed as at the desk), and with `restore` the desk's restore (`unarchive_ticket`, back to
+the column it left). Asking for what already is writes nothing. Feed rules
+`mesophon_archive_ticket` and `mesophon_unarchive_ticket`; the archive's `by` is
+`device:<id>`. Live only, never through the mailbox, like T-530's edits.
+**Decided: `Action::ArchiveTicket`, the fifth card edit**, under T-530's rule: `Paired` gets it
+on a `Resource::Ticket` and nothing else, every other principal answers it as `Mutate`.
+`Paired` still has no `Mutate`. A viewer's copy refuses (`team_viewer_refusal`). Restore finds
+the ticket by id among the archived, which `control_ticket` never does, since the phone's
+board carries none but Sent's.
+
+**Built: the page.** The card sheet's foot carries **Archive** (a quiet row, the Lucide archive
+glyph). A press takes the card off the board at once (`Edits::wear` drops an archive's card;
+a restore wears nothing until the host's board brings it back), closes the sheet and, when the
+ticket's page was open, goes back to the list. Its answer says `Archived T-n` with a
+**Restore** action for the toast's 6 s; a refusal says `Not archived: <the host's words>` and
+the next board puts the card back. An agent awake (any state but `sleeping`) disables the
+press with "Its agent is awake. Archive it once the agent sleeps.": a phone has no sleep, so
+the desk's "sleep them first" would be a dead end. A shell awake on the ticket is not on the
+phone's board and is left to the host's refusal. The line's hint gains the verb
+("Move, tag or archive this ticket").
+
+**Not built:** a restore anywhere but the toast (the desk's archived list is the road after
+it), and an archive from the Board's card without opening it.
+
+Verified: core units (the op's shape, `ArchiveTicket` against `Mutate` for every principal),
+`cargo ut`, clippy on core and the daemon with `-D warnings`; the browser state tests (an
+archive worn and taken, a restore wearing nothing, another board untouched); the UX suite in
+Chromium and WebKit at every size with a new archive flow: held by an awake agent, archived,
+the page back to the list, restored from the toast, refused in the host's words, and an older
+host offering nothing. Screenshots read. **Not verified:** a physical phone; no daemon unit
+drives `control_archive` (no daemon fixture for control ops, as for T-530 and T-642).
+
+**Owed:** a CHANGELOG line at the next release, and the relay's `ship.sh` after it merges, since
+the relay serves the page.

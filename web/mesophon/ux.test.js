@@ -252,10 +252,19 @@ function fixture() {
     update() {
       this.reply(this.snapshot());
     },
-    // The host's rename, move, tag or workspace, as the daemon applies it.
+    // The tickets the host archived (T-737), each with where it stood.
+    inArchive: [],
+    // The host's rename, move, tag, workspace or archive, as the daemon
+    // applies it.
     applyEdit(request) {
+      if (request.op === "archive" && request.restore) {
+        const gone = this.inArchive.findIndex((s) => s.ticket.id === request.ticket);
+        if (gone >= 0) this.tickets.splice(this.inArchive[gone].at, 0, this.inArchive.splice(gone, 1)[0].ticket);
+        return;
+      }
       const at = this.tickets.findIndex((t) => t.id === request.ticket);
       const ticket = this.tickets[at];
+      if (request.op === "archive") this.inArchive.push({ at, ticket: this.tickets.splice(at, 1)[0] });
       if (request.op === "rename") ticket.title = request.title;
       if (request.op === "workspace")
         ticket.workspace = request.worktree
@@ -427,7 +436,7 @@ function fixture() {
               state.begin(request.ticket, id);
             }
           }
-          if (["rename", "move", "tag", "workspace"].includes(request.op)) {
+          if (["rename", "move", "tag", "workspace", "archive"].includes(request.op)) {
             state.edits.push(request);
             if (state.editDisposition === "rejected") answer({ result: "rejected", message: state.editRefusal });
             else if (state.editDisposition !== "hold") {
@@ -2148,6 +2157,115 @@ async function workspaceFlow(browser, engineName, size, viewport) {
   }
 }
 
+// A ticket into the archive from its card sheet (T-737), the board's `a a`:
+// the card leaves at once and the page with it, the toast's Restore brings
+// it back, an awake agent holds it on the board, a refusal is said in the
+// host's words, and an older host offers nothing.
+async function archiveFlow(browser, engineName, size, viewport) {
+  const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
+  await context.addInitScript(fixture);
+  await context.addInitScript(() => window.fixture.features.push("rename", "move", "tag", "archive"));
+  await context.route("**/pkg/mesimon_web.js", (route) =>
+    route.fulfill({ contentType: "text/javascript", body: fakeCrypto }),
+  );
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  const overview = async () => {
+    if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
+    if (size === "desktop" && (await page.locator(".detail-scrim").count()))
+      await page.locator(".detail-scrim").click({ position: { x: 10, y: 10 } });
+  };
+  const shot = (name) =>
+    page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-${name}.png`) });
+  const lastEdit = () => page.evaluate(() => fixture.edits.at(-1));
+  const sheet = page.locator("#card-sheet");
+  const card = (id) => page.locator(`.ticket.card[data-id="${id}"]`);
+  const open = async (id) => {
+    await overview();
+    await card(id).click();
+    await page.locator("#card-line").waitFor();
+    await page.locator("#card-line").click();
+    await sheet.waitFor({ state: "visible" });
+  };
+  try {
+    await page.goto(origin);
+    await until(page, () => !document.querySelector("#pair").disabled);
+    await page.getByLabel("Pairing code", { exact: true }).fill("fixture-pair-code");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    await page.locator('button[data-mode="board"]').locator("visible=true").click();
+    if (size === "phone") await page.locator('.column-tab[data-column="TODO"]').click();
+
+    // An agent awake holds its ticket on the board, as at the desk.
+    await open("ticket-5");
+    assert(await page.locator("#card-archive").isDisabled());
+    assert.equal(await page.locator(".card-archive .field-note").textContent(), "Its agent is awake. Archive it once the agent sleeps.");
+    await page.locator("#card-done").click();
+    await sheet.waitFor({ state: "hidden" });
+
+    // A ticket with none: the line says it archives, and the press takes
+    // the card off the board, the sheet and the page with it.
+    await overview();
+    await card("ticket-3").click();
+    await page.locator("#card-line").waitFor();
+    assert.equal(await page.locator("#card-line-hint").textContent(), "Move, tag or archive this ticket");
+    await page.locator("#card-line").click();
+    await sheet.waitFor({ state: "visible" });
+    assert.equal(await page.locator(".card-archive .field-note").count(), 0);
+    if (size === "phone") {
+      const height = await page.locator("#card-archive").evaluate((n) => n.getBoundingClientRect().height);
+      assert(height >= 44, `the archive press is ${height}px`);
+    }
+    await shot("archive-sheet");
+    await page.locator("#card-archive").click();
+    assert.deepEqual(await lastEdit(), { op: "archive", ticket: "ticket-3" });
+    await sheet.waitFor({ state: "hidden" });
+    await card("ticket-3").waitFor({ state: "detached" });
+    if (size === "phone") assert.equal(await page.locator("#back").isVisible(), false, "the page went back to the list");
+    await until(page, () => document.querySelector("#toast")?.textContent.includes("Archived T-3"));
+    await shot("archive-toast");
+
+    // The toast's Restore brings it back to its column.
+    await page.locator("#toast-action").click();
+    assert.deepEqual(await lastEdit(), { op: "archive", ticket: "ticket-3", restore: true });
+    await card("ticket-3").waitFor();
+    await until(page, () => document.querySelector("#toast")?.textContent.includes("Restored T-3"));
+
+    // Refused: the card comes back and the toast says why in the host's words.
+    await page.evaluate(() => {
+      fixture.editDisposition = "rejected";
+      fixture.editRefusal = "sessions still awake — sleep them first";
+    });
+    await open("ticket-3");
+    await page.locator("#card-archive").click();
+    await until(page, () => document.querySelector("#toast")?.textContent.includes("Not archived"));
+    assert.equal(await page.locator("#toast").textContent(), "Not archived: sessions still awake — sleep them first");
+    await card("ticket-3").waitFor();
+    await page.evaluate(() => {
+      fixture.editDisposition = "edited";
+    });
+
+    // An older host takes no archive: the sheet offers none.
+    await page.evaluate(() => {
+      fixture.features = fixture.features.filter((f) => f !== "archive");
+      fixture.channel().close();
+    });
+    await until(page, () => document.querySelector("#connection").textContent === "Connected");
+    await open("ticket-3");
+    assert.equal(await page.locator("#card-archive").count(), 0);
+    assert.equal(await page.locator("#card-line-hint").textContent(), "Move or tag this ticket");
+    await page.locator("#card-done").click();
+    assert.deepEqual(errors, []);
+    console.log(`${engineName} ${size}: archive held by an awake agent, archived, restored, refused, and an older host passed`);
+  } catch (error) {
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-archive-failure.png`) });
+    throw error;
+  } finally {
+    await context.close();
+  }
+}
+
 // A pairing QR (T-497): the code arrives in the link's fragment, fills the
 // field, leaves the address bar, and still waits for Connect.
 // A batch, or a question that takes several choices, is answered whole on
@@ -3709,6 +3827,7 @@ try {
         await tierFlow(browser, engineName, size, viewport);
         await editFlow(browser, engineName, size, viewport);
         await workspaceFlow(browser, engineName, size, viewport);
+        await archiveFlow(browser, engineName, size, viewport);
         await batchFlow(browser, engineName, size, viewport);
         await notesFlow(browser, engineName, size, viewport);
         await chatFlow(browser, engineName, size, viewport);

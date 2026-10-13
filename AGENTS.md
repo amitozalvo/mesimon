@@ -86,7 +86,7 @@ Preserve these boundaries:
   with no bare imports (`web/mesophon/vendor/README.md`).
 - A paired phone's writes are `Action::FileTicket` into a column, `Action::StartAgent` on a
   ticket (under `authorize_execution`), the card edits `MoveTicket`/`RenameTicket`/`TagTicket`/
-  `ChooseWorkspace` (each is `Mutate` for every other principal, so `place_ticket` asks `MoveTicket` of every
+  `ChooseWorkspace`/`ArchiveTicket` (each is `Mutate` for every other principal, so `place_ticket` asks `MoveTicket` of every
   mover) and `Annotate` on a ticket's notes: never widen `Paired` to `Mutate`, which also
   reaches `PromptColumn`, merges and deletes, and a filed ticket starts nothing by itself.
 - Every side of the Mesophon control socket drops a peer on a frame it cannot parse, so mail

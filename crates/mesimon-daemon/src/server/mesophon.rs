@@ -811,6 +811,8 @@ impl Daemon {
                     "tag",
                     // Where a ticket's next agent works (T-642).
                     "workspace",
+                    // A ticket into the archive and back (T-737).
+                    "archive",
                     // Notes read and written from the ticket page (T-532).
                     "notes",
                     // A batch or several-choice question answered whole,
@@ -1032,6 +1034,9 @@ impl Daemon {
             }
             api::Request::Workspace { ticket, worktree } => {
                 self.control_workspace(&by, &ticket, worktree)
+            }
+            api::Request::Archive { ticket, restore } => {
+                self.control_archive(&by, &ticket, restore)
             }
             api::Request::Notes { ticket } => self.control_notes(&by, &ticket),
             api::Request::Note { ticket, note } => self.control_note(&by, &ticket, &note),
@@ -2394,6 +2399,42 @@ impl Daemon {
             return reject(&message);
         }
         self.feed.board(by.actor(), "mesophon_set_workspace", Some(id));
+        Reply::Edited { ticket: id.to_string() }
+    }
+
+    /// A ticket into the archive from the owner's phone (T-737), the desk's
+    /// `a a`: `archive_ticket` as the person, so a ticket with a session
+    /// awake, or an unticked box where its column asks for them all,
+    /// refuses in the desk's words, and a landed worktree is reclaimed as
+    /// at the desk. With `restore`, the desk's restore: back to the column
+    /// it left. Asking for what already is writes nothing.
+    fn control_archive(&mut self, by: &Principal, ticket: &str, restore: bool) -> Reply {
+        let reject = |message: &str| Reply::Rejected { message: message.into() };
+        let gone = || reject("ticket unavailable");
+        let Ok(id) = ulid::Ulid::from_string(ticket) else { return gone() };
+        let Some(archived) = self.board.ticket(id).map(|t| t.is_archived()) else {
+            return gone();
+        };
+        if let Decision::Deny { reason } =
+            authorize(by, &Action::ArchiveTicket, &Resource::Ticket { id })
+        {
+            return reject(&format!("denied: {reason}"));
+        }
+        if let Some(message) = self.team_viewer_refusal() {
+            return reject(&message);
+        }
+        if archived != restore {
+            return Reply::Edited { ticket: id.to_string() };
+        }
+        let (answer, rule) = if restore {
+            (self.unarchive_ticket(id), "mesophon_unarchive_ticket")
+        } else {
+            (self.archive_ticket(id, by), "mesophon_archive_ticket")
+        };
+        if let Response::Err { message } = answer {
+            return reject(&message);
+        }
+        self.feed.board(by.actor(), rule, Some(id));
         Reply::Edited { ticket: id.to_string() }
     }
 

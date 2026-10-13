@@ -277,6 +277,19 @@ function WorkspaceChoice({ store, ticket }) {
   </fieldset>`;
 }
 
+// Into the archive (T-737), the board's `a a`: off the board until the
+// toast's Restore, or the desk's, brings it back. An awake agent holds it
+// on the board, as at the desk, and a phone cannot put one to sleep.
+function ArchiveChoice({ store, ticket }) {
+  if (!store.canEdit("archive")) return null;
+  const awake = !!ticket.agent && ticket.agent.state !== "sleeping";
+  return html`<div class="card-archive">
+    <button id="card-archive" type="button" class="btn btn-quiet" disabled=${awake}
+      onClick=${() => store.archiveTicket(ticket.id)}><${Icon} name="archive" size=${16} /><span>Archive</span></button>
+    ${awake && html`<p class="field-note">Its agent is awake. Archive it once the agent sleeps.</p>`}
+  </div>`;
+}
+
 // Where the ticket's code lives once its worktree is cut (T-642), the TUI
 // page's branch row: the branch, then what it waits on or what is wrong.
 // Since T-701 it is in the sheet the ticket's line opens, under the line's
@@ -295,7 +308,8 @@ function WorkspaceLine({ ticket }) {
 
 // A ticket's column and tags (T-530), opened from the ticket page's line:
 // each press goes to the board as it is made, as the board's own keys do,
-// and Done closes the sheet. Only the board's own tags are offered.
+// and Done closes the sheet. Only the board's own tags are offered. Its
+// foot archives the ticket (T-737).
 export function CardSheet({ store }) {
   const ref = useRef();
   const board = store.board;
@@ -336,6 +350,7 @@ export function CardSheet({ store }) {
         <${TagChoices} allowed=${board.allowedTags} worn=${ticket.tags || []} disabled=${!store.canEdit("tag")}
           onToggle=${(tag) => store.toggleTicketTag(ticket.id, tag)} />
         <${WorkspaceChoice} store=${store} ticket=${ticket} />
+        <${ArchiveChoice} store=${store} ticket=${ticket} />
       </div>
       ${store.editError && html`<footer class="compose-foot"><p class="compose-error" role="alert">${store.editError}</p></footer>`}
     </div>

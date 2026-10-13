@@ -209,6 +209,15 @@ pub enum Request {
         ticket: String,
         worktree: bool,
     },
+    /// Take a ticket off the board into the archive (T-737), the desk's
+    /// `a a` from a phone, or with `restore` bring it back to its column.
+    /// The desk's gates apply: an awake session on it, or an unticked box
+    /// where its column asks for them all, refuses.
+    Archive {
+        ticket: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        restore: bool,
+    },
     /// A ticket's notes (T-532): every note's row, the description first,
     /// and the description's body, which the ticket page shows.
     Notes {
@@ -1327,6 +1336,18 @@ mod tests {
             panic!("workspace")
         };
         assert!(worktree);
+        let Request::Archive { restore, .. } =
+            serde_json::from_str(r#"{"op":"archive","ticket":"01J"}"#).unwrap()
+        else {
+            panic!("archive")
+        };
+        assert!(!restore);
+        let Request::Archive { restore, .. } =
+            serde_json::from_str(r#"{"op":"archive","ticket":"01J","restore":true}"#).unwrap()
+        else {
+            panic!("restore")
+        };
+        assert!(restore);
         for bad in [
             r#"{"op":"rename","ticket":"01J"}"#,
             r#"{"op":"move","ticket":"01J"}"#,
@@ -1334,6 +1355,8 @@ mod tests {
             r#"{"op":"tag","ticket":"01J","group":1,"name":"NEW","register":true}"#,
             r#"{"op":"workspace","ticket":"01J"}"#,
             r#"{"op":"workspace","ticket":"01J","worktree":"adopt"}"#,
+            r#"{"op":"archive"}"#,
+            r#"{"op":"archive","ticket":"01J","restore":"yes"}"#,
         ] {
             assert!(serde_json::from_str::<Request>(bad).is_err(), "{bad}");
         }

@@ -1,9 +1,10 @@
-// The card edits this tab sent (T-530): a rename, a move, a tag or a
-// workspace (T-642), by command id, until the host answers. While one waits
-// the board wears it, so a snapshot the host took before it had the edit
-// cannot put the card back for a moment. The answer, or a dropped
-// connection, ends it, and the next snapshot is the truth. Never replayed and never kept: after a drop or
-// a reload the board itself says what took.
+// The card edits this tab sent (T-530): a rename, a move, a tag, a
+// workspace (T-642) or an archive (T-737), by command id, until the host
+// answers. While one waits the board wears it, so a snapshot the host took
+// before it had the edit cannot put the card back for a moment. The answer,
+// or a dropped connection, ends it, and the next snapshot is the truth.
+// Never replayed and never kept: after a drop or a reload the board itself
+// says what took.
 export class Edits {
   constructor() {
     this.items = new Map(); // command id -> { board, ticket, key, op, patch, before }
@@ -37,6 +38,12 @@ export class Edits {
       if (item.board !== board) continue;
       const at = worn.findIndex((t) => t.id === item.ticket);
       if (at < 0) continue;
+      // An archive takes the card off the board; its restore has no card
+      // to wear until the host's board brings it back.
+      if (item.op === "archive") {
+        if (!item.restore) worn.splice(at, 1);
+        continue;
+      }
       const ticket = { ...worn[at], ...item.patch };
       if (item.op !== "move") {
         worn[at] = ticket;

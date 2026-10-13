@@ -982,6 +982,15 @@ select {
 .settings-forget {
   margin: 0 -10px;
 }
+/* The card sheet's Archive (T-737): a quiet row at the sheet's foot. */
+.card-archive {
+  display: grid;
+  gap: 4px;
+  margin: 0 -10px;
+}
+.card-archive .field-note {
+  padding: 0 10px;
+}
 /* A switch row (T-701): the label and its one fact, the box at the right. */
 .setting-switch {
   grid-template-columns: minmax(0, 1fr) auto;

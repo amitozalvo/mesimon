@@ -23,7 +23,7 @@ reload shows an edit) beside a host board built from this checkout.
   agent waits on you.
 - `starts.js`: the agents this tab started, per board and ticket: a clock while
   the host starts one, two ticks once its session runs, or why not.
-- `edits.js`: the card edits this tab sent (rename, move, tag, workspace) until the host
+- `edits.js`: the card edits this tab sent (rename, move, tag, workspace, archive) until the host
   answers, worn on the board meanwhile so an earlier snapshot cannot undo them.
 - `sent.js`: the Sent list, per board: a filed ticket's status (a clock while
   sealed in this browser, one tick at the relay, two once landed; unsent,
@@ -160,6 +160,12 @@ column or a slot (`before`). The host answers `edited` or `rejected`, through
 and `TagTicket` (a tag the board already has). `edits.js` wears each edit on the
 board until its answer, and a dropped connection forgets them: the next board
 says what took, and nothing is sent again.
+
+The `archive` op (T-737) is the fifth, under `ArchiveTicket`: the sheet's foot
+takes the ticket off the board as the desk's `a a` does (`archive_ticket`, so an
+awake session refuses), and the toast's Restore sends it again with `restore`.
+An archive is worn by taking the card off the board; a restore wears nothing
+until the host's board brings the card back.
 
 A landed ticket turns teal once the host's board says it was picked up
 (`picked`: `by` is `desk` when its page was opened in the TUI, `agent` when an

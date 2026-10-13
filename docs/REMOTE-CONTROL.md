@@ -1,8 +1,8 @@
 # Remote Control (browser preview)
 
 Remote Control (Mesophon) lets your own browser **view tickets, read an agent’s
-conversation or its screen, send a prompt, answer supported Claude dialogs, file new tickets, move, rename
-and tag tickets, start an agent on a ticket, and read and edit a ticket's notes**. It works on
+conversation or its screen, send a prompt, answer supported Claude dialogs, file new tickets, move, rename,
+tag and archive tickets, start an agent on a ticket, and read and edit a ticket's notes**. It works on
 desktop and phone.
 Open **Esc → Remote Control**, sign in to your relay, and enable this board.
 
@@ -122,7 +122,7 @@ tag the board has since lost, it lands in the default column, without that tag. 
 terminal that has never been live with this version keeps no tickets for later, and
 the sheet says so.
 
-## Moving, renaming and tagging a ticket
+## Moving, renaming, tagging and archiving a ticket
 
 On a ticket's page, press its **title** to write over it: **Enter** or **Save** sends the
 new title, **Escape** or **Cancel** puts the old one back. Press the **line under the title**
@@ -131,6 +131,12 @@ moves the ticket there, to the end of that column. A tag goes on and replaces th
 tag in the same group; pressing a tag the ticket wears takes it off. Each press reaches your
 board as you make it, and **Done** closes the sheet. On a desktop's Board you can also drag
 a card to another column, or to another place in its own.
+
+**Archive**, at the foot of the same sheet, takes the ticket off the board as **a a** does at
+your terminal, and the page goes back to the list. The message that says so has a
+**Restore** button for a few seconds; after that, restore it from the archive at your
+terminal. A ticket whose agent is awake stays on the board until the agent sleeps, and the
+sheet says so.
 
 These edits follow your terminal's rules. A column that needs the work merged refuses an
 unmerged ticket, and the sheet says why. Only the board's own tags are offered: new tags are
