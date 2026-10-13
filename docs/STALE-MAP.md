@@ -24213,6 +24213,42 @@ that committed nothing) binds every worktree ticket cut from that base, since ea
 holds it (`forge::binds`' `made here`): F2's pass also woke the crown for F1's ticket. GitHub
 refuses a PR with no diff; GitLab opens an empty MR.
 
+## A later PR's merge wakes the crown (T-757, 2026-10-13, follow-up to T-744)
+
+**Why.** T-744 kept the merge out of the forge's edges: "the flags' merged wake says it". That is
+half right. The flags wake the crown when they flip unmerged → merged, which happens once per
+branch tip. On T-739's lab (scenario B3) a ticket whose MR !1 had merged opened !2 from
+`fix/greeting`; the crown merged it on gitlab.com, the feed wrote `merged !2`, and the crown sat
+70 s waiting for a wake that could not come, since the worktree already read merged.
+
+**What.** `forge::Edge` grows `landed`: the PRs, by label, read merged that were read open
+before (a first read stays a baseline). `Edge::news` says each first: `merged !2`.
+`on_forge_sampled` keeps a label only where the flags will say nothing: the PR's head is not a
+worktree leg's tip, and no flags wake is waiting for the tick (`crown_landed`). A PR whose head is
+a leg's tip is the one `forge_fold_legs` folds into the flags (and the one the git road reads
+merged by ancestry), so a first PR's merge is still said once, as `merged` with its merge step.
+`merged_at` and `ticket_merged` are untouched: this is a wake, not a merge reading.
+
+**Not the ticket's rule.** The brief said to keep the edge only where `wt_agg.merged` was
+already true before the pass (or no worktree). That misses a merge the flags never flip on: once
+a newer PR stands in front of a merged one, `merged_at` reads the newest PR, so a worktree whose
+merge was the forge's fold alone (no fetch of the base) reads unmerged again, and the later PR's
+merge, at a head that is not the tip, flips nothing. The head-is-a-tip rule says exactly what the
+fold will say. What it can still double: a later PR that also carries the worktree's commits,
+merged and then fetched, is said by the forge (`merged !2`) and by the flags (`merged`) in two
+wakes. Both are true, and a lost merge is the worse failure.
+
+**Tests.** Unit `a_pr_that_merges_lands_by_its_label`. `forge_e2e::the_crown_hears_the_forges_edges`
+goes on: #42 merges at the tip and the base takes it, one `merged` wake and no `forge` wake; a
+commit made in the worktree and stepped back from (so #43 binds by the reflog) opens as #43, no
+wake, then merges: one `forge` wake with `merged #43`, and `merged #42` is never said. The rig: F4
+(`forge_merge`, `forge_later` steps; `woke:merged`, `woke:forge`, `crown:ask_agent`), where the
+base never takes the merge, so the flags bounce back to unmerged when #43 opens: the brief's rule
+would have woken nothing there. The crown's brief (`mcp::CROWN_WAKES`) and USING.md name the
+new edge. On the real Sonnet (claude 2.1.296), 2026-10-13: F4 PASS twice (the second on the final
+brief, 107 s), wakes `delivered`, `merged`, `forge`, `answered`; the crown asked the worker once
+and the worker said `noted`.
+
 ## A board's own theme is named where it hides a pick (T-746, 2026-10-13)
 
 The author, on the personal-life board: "it says green saved for dark and light terminals but not

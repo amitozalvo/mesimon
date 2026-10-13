@@ -171,6 +171,10 @@ pub struct Edge {
     pub passed: bool,
     /// Every PR of the set is merged, and was not before.
     pub merged: bool,
+    /// PRs, by label, read merged that were read open before (T-757): what
+    /// the crown hears of a merge the worktree flags cannot say, the caller
+    /// keeping them only then.
+    pub landed: Vec<String>,
     /// Environments a merge commit reached since.
     pub deployed: Vec<String>,
     /// The set's pipeline turned failed: the job's word, empty where the
@@ -191,6 +195,7 @@ impl Edge {
         self.opened
             || self.passed
             || self.merged
+            || !self.landed.is_empty()
             || !self.deployed.is_empty()
             || self.failed.is_some()
             || self.waiting.is_some()
@@ -199,12 +204,14 @@ impl Edge {
     }
 
     /// What the crown hears of the edge (T-744), one phrase per edge, each
-    /// naming its PR: `pipeline passed !1`, `waiting on deploy:production
-    /// !1`, `deployed to staging !1`, `conflict !1`, `conflict cleared !1`,
-    /// `review approved !1`, `changes requested !1`, `pipeline failed !1:
-    /// test-linux`. Never an opening (the worker's turn end carries it) and
-    /// never a merge (the flags' merged wake says it). `new` is the read the
-    /// edge was taken on, for the labels.
+    /// naming its PR: `merged !2`, `pipeline passed !1`, `waiting on
+    /// deploy:production !1`, `deployed to staging !1`, `conflict !1`,
+    /// `conflict cleared !1`, `review approved !1`, `changes requested !1`,
+    /// `pipeline failed !1: test-linux`. Never an opening (the worker's turn
+    /// end carries it). A merge is said only where the caller left it in
+    /// `landed`: the flags' merged wake says the one that lands the
+    /// worktree's branch (T-757). `new` is the read the edge was taken on,
+    /// for the labels.
     pub fn news(&self, new: &[Pr]) -> Vec<String> {
         let labels = |pick: &dyn Fn(&Pr) -> bool| -> String {
             new.iter().filter(|p| pick(p)).map(Pr::label).collect::<Vec<_>>().join(" ")
@@ -221,7 +228,7 @@ impl Edge {
         };
         let tail =
             |label: String| if label.is_empty() { String::new() } else { format!(" {label}") };
-        let mut out = Vec::new();
+        let mut out: Vec<String> = self.landed.iter().map(|l| format!("merged {l}")).collect();
         if let Some(job) = &self.failed {
             let label = labels(&|p| matches!(p.pipeline, Pipeline::Failed(_)));
             match forge::job_word(job) {
@@ -293,6 +300,12 @@ pub fn edge(old: &[Pr], new: &[Pr]) -> Edge {
         opened: new.iter().any(|p| p.state.is_open() && was(p).is_none()),
         passed: now == Pipeline::Passed && then != Pipeline::Passed,
         merged: all_merged(new) && !all_merged(old),
+        landed: new
+            .iter()
+            .filter(|p| p.state == PrState::Merged)
+            .filter(|p| was(p).is_some_and(|o| o.state.is_open()))
+            .map(Pr::label)
+            .collect(),
         deployed: envs(new).into_iter().filter(|e| !before.contains(e)).collect(),
         failed: match &now {
             Pipeline::Failed(job) if !matches!(then, Pipeline::Failed(_)) => Some(job.clone()),
@@ -1061,6 +1074,31 @@ mod tests {
         let e = edge(&[m.clone()], &[pr(2, PrState::Open, Pipeline::None), m.clone()]);
         assert!(e.opened && !e.merged, "a follow-up PR opens");
         assert!(!edge(&[], &[]).any());
+    }
+
+    /// T-757: a PR read open and then merged is `landed`, by label, and the
+    /// crown hears `merged !2` — a later PR's too, beside one merged before.
+    #[test]
+    fn a_pr_that_merges_lands_by_its_label() {
+        let gl = |n: u64, state: PrState| {
+            let mut p = pr(n, state, Pipeline::Passed);
+            p.forge = Forge::GitLab;
+            p
+        };
+        let (one, two) = (gl(1, PrState::Merged), gl(2, PrState::Open));
+        let after = [gl(2, PrState::Merged), one.clone()];
+        let e = edge(&[two.clone(), one.clone()], &after);
+        assert_eq!(e.landed, ["!2"]);
+        assert!(e.any());
+        assert_eq!(e.news(&after), ["merged !2"]);
+        // Merged on both reads, or first read merged: no landing.
+        assert!(edge(&after, &after).landed.is_empty());
+        assert_eq!(edge(std::slice::from_ref(&two), &after).landed, ["!2"]);
+        assert!(edge(&[], &after).landed.is_empty(), "never read open");
+        // The caller keeps it out where the flags say the merge.
+        let mut quiet = edge(&[two], &after);
+        quiet.landed.clear();
+        assert!(quiet.news(&after).is_empty());
     }
 
     /// T-744: each edge the crown hears, in its words, naming its PR — and

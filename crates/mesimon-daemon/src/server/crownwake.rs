@@ -223,7 +223,8 @@ pub(super) enum WakeCause {
     Finished,
     /// Its pull request has news from the forge (T-739, T-744): a pipeline
     /// failed or passed, a job waits on a person, the merge reached an
-    /// environment, a conflict came or went, a review landed. Above a
+    /// environment, a conflict came or went, a review landed, a PR merged
+    /// that moves no worktree flag (T-757). Above a
     /// finished turn, since each is a decision someone may take; under a
     /// merge and a delivery, whose delta carries the forge's words anyway.
     /// T-739's crown.json spelled it `pipeline`.

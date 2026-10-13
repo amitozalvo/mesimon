@@ -13570,7 +13570,28 @@ impl Daemon {
             // first read is a baseline and says nothing.
             if let Some(old) = old {
                 let edge = crate::forge::edge(old, &set);
-                let words = edge.news(&set);
+                // A merge is the flags' to say where they flip on it (T-757):
+                // the PR whose head is a leg's tip lands the branch the flags
+                // read (`forge_fold_legs` folds exactly that one), and a flip
+                // waiting for the tick is being said. Any other PR — a later
+                // one on a ticket already merged, one from another branch —
+                // moves no flag, so the forge says it.
+                let mut heard = edge.clone();
+                let flipping = self.crown_landed.contains(&t);
+                let tips: Vec<&str> = self
+                    .wt_repos
+                    .get(&t)
+                    .map(|legs| legs.iter().map(|l| l.tip.as_str()).collect())
+                    .unwrap_or_default();
+                heard.landed.retain(|label| {
+                    !flipping
+                        && set.iter().any(|p| {
+                            p.label() == *label
+                                && p.state == mesimon_core::forge::PrState::Merged
+                                && !tips.contains(&p.head_oid.as_str())
+                        })
+                });
+                let words = heard.news(&set);
                 if !words.is_empty() {
                     news.push((t, words.join(", ")));
                 }

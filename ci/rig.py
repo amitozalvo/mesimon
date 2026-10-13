@@ -1300,6 +1300,56 @@ Reply with the single word ready and end your turn."""
                 record["failures"].append("the crown's turn on the forge's news never ended")
                 return False
             return True
+        if what == "forge_merge":
+            # PR 42 merges on the forge at the branch's tip (T-757): the
+            # forge folds it into the flags, which wake the crown with the
+            # merge; the step ends when the crown's turn on it did.
+            d = self.forge_stub()
+            mark = len(self.feed_lines)
+            self.write_pr(d, self.forge_branch, "MERGED", "passed")
+            wake = self.wait_for("the crown's merge wake", lambda: next((
+                l for l in self.feed_lines[mark:] if l.get("kind") == "crown_wake"
+                and l.get("worker") == test["ticket"]
+                and l.get("cause") in ("merged", "delivered")), None),
+                WAKE_GRACE * 2, self.watch)
+            record["wakes"].append(wake.get("cause") if wake else "none came")
+            if not wake:
+                record["failures"].append("the board never woke the crown for the merge")
+                return False
+            self.quiet_since = None
+            if not self.wait_for("the crown's turn on the merge",
+                                 lambda: self.crown_settled(after_ms=wake.get("at_ms", 0)),
+                                 STEP_TIMEOUT, self.watch):
+                record["failures"].append("the crown's turn on the merge never ended")
+                return False
+            return True
+        if what == "forge_later":
+            # A second PR on the merged ticket (T-757), at a commit the
+            # worktree's branch does not hold: it opens, which is no news,
+            # then merges, which moves no flag, so the forge's wake says it.
+            d = self.forge_stub()
+            later = {"number": 43, "head": "c0ffee43" * 5}
+            self.write_pr(d, self.forge_branch, "MERGED", "passed", later=dict(later, state="OPEN"))
+            bound = self.wait_for("the second PR to bind", lambda: any(
+                p["ticket"] == test["ticket"] and p["number"] == 43
+                for p in self.snapshot().get("prs", [])), STEP_TIMEOUT, self.watch)
+            if not bound:
+                record["failures"].append("the second PR never bound to the ticket")
+                return False
+            mark = len(self.feed_lines)
+            self.write_pr(d, self.forge_branch, "MERGED", "passed", later=dict(later, state="MERGED"))
+            wake = self.forge_wake(test, mark)
+            record["wakes"].append(wake.get("cause") if wake else "none came")
+            if not wake:
+                record["failures"].append("the board never woke the crown for the later merge")
+                return False
+            self.quiet_since = None
+            if not self.wait_for("the crown's turn on the forge's news",
+                                 lambda: self.crown_settled(after_ms=wake.get("at_ms", 0)),
+                                 STEP_TIMEOUT, self.watch):
+                record["failures"].append("the crown's turn on the forge's news never ended")
+                return False
+            return True
         if what == "forge_off":
             # The board's own Claude Code and PATH back: the stub is gone.
             d = self.forge_stub()
@@ -1335,18 +1385,30 @@ Reply with the single word ready and end your turn."""
                 f.write('{"check_runs":[]}')
         return d
 
-    def write_pr(self, d, branch, state, pipeline):
+    def write_pr(self, d, branch, state, pipeline, later=None):
+        """PR 42 on `branch` at its tip; `later` (number, head, state) a
+        newer PR on the same branch in front of it (T-757)."""
         tip = subprocess.run(["git", "-C", self.repo, "rev-parse", branch], capture_output=True,
                              text=True).stdout.strip()
-        rollup = {
+        rollups = {
             "running": '[{"__typename":"CheckRun","name":"test-linux","status":"IN_PROGRESS","conclusion":null}]',
             "failed": '[{"__typename":"CheckRun","name":"test-linux","status":"COMPLETED","conclusion":"FAILURE"}]',
             "passed": '[{"__typename":"CheckRun","name":"test-linux","status":"COMPLETED","conclusion":"SUCCESS"}]',
-        }[pipeline]
-        body = (f'[{{"number":42,"url":"https://github.com/example/rig/pull/42","state":"{state}",'
-                f'"isDraft":false,"headRefName":"{branch}","headRefOid":"{tip}","mergeCommit":null,'
-                f'"mergeable":"MERGEABLE","reviewDecision":"REVIEW_REQUIRED",'
-                f'"updatedAt":"2026-10-13T06:00:00Z","statusCheckRollup":{rollup}}}]')
+        }
+        rollup = rollups[pipeline]
+        def pr(number, head, state, at):
+            merge = f'{{"oid":"{head}"}}' if state == "MERGED" else "null"
+            # The later PR opens running: its opening is no pipeline news.
+            checks = rollups["running"] if state == "OPEN" and number != 42 else rollup
+            return (f'{{"number":{number},"url":"https://github.com/example/rig/pull/{number}",'
+                    f'"state":"{state}","isDraft":false,"headRefName":"{branch}",'
+                    f'"headRefOid":"{head}","mergeCommit":{merge},"mergeable":"MERGEABLE",'
+                    f'"reviewDecision":"REVIEW_REQUIRED","updatedAt":"{at}",'
+                    f'"statusCheckRollup":{checks}}}')
+        prs = [pr(42, tip, state, "2026-10-13T06:00:00Z")]
+        if later:
+            prs.insert(0, pr(later["number"], later["head"], later["state"], "2026-10-13T07:00:00Z"))
+        body = "[" + ",".join(prs) + "]"
         path = os.path.join(d, "prs.json")
         with open(path + ".tmp", "w") as f:
             f.write(body)

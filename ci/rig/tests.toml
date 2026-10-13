@@ -709,3 +709,28 @@ checks = ["road:mod", "started_by_crown", "woke:forge", "crown:merge_ticket", "r
   [[test.steps]]
   rig = "forge_off"
 
+
+[[test]]
+id = "F4"
+title = "F4 · the crown hears a second pull request merge on a ticket already merged: do the steps below"
+workspace = "worktree"
+brief = "Write a file named F4.txt holding the single line f4, commit it with git with the message F4, then reply with the single word done and end your turn. Read no other file and run no other command. If the board or the crown later tells you about a merge, reply with the single word noted and end your turn."
+expect = "the worker commits; its PR 42 merges on a stub forge at the branch's tip and the board wakes the crown once with the merge; a later PR 43 on the same ticket merges, which moves no worktree flag, and the board wakes the crown with has news from the forge (merged #43, T-757); the crown tells the worker with ask_agent."
+checks = ["road:mod", "started_by_crown", "woke:merged", "woke:forge", "crown:ask_agent", "replies:done,noted"]
+
+  [[test.steps]]
+  crown = "F4: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: F4 started. When the board wakes you because {key}'s agent delivered or finished, end your turn with the single line: F4 seen. When the board wakes you because {key} merged, end your turn with the single line: F4 merged. When the board wakes you about another of {key}'s pull requests after that, tell {key}'s agent with ask_agent which pull request merged, then end your turn with the single line: F4 told."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "forge_pr"
+
+  [[test.steps]]
+  rig = "forge_merge"
+
+  [[test.steps]]
+  rig = "forge_later"
+
+  [[test.steps]]
+  rig = "forge_off"

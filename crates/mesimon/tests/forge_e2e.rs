@@ -562,6 +562,78 @@ fn the_crown_hears_the_forges_edges() {
     // A pass that sees nothing new says nothing.
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(forge_wakes(), 3, "{}", std::fs::read_to_string(&got).unwrap());
+
+    // ---- the PR merges: the flags' merged wake alone (T-757) ---------------
+    // A commit made in the worktree and stepped back from first: in HEAD's
+    // reflog, so a later PR at it binds, and not on the branch.
+    std::fs::write(path.join("greeting.txt"), "hi\n").unwrap();
+    git(&path, &["add", "."]);
+    git(&path, &["commit", "-qm", "greeting"]);
+    let fix = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
+    git(&path, &["reset", "-q", "--hard", "HEAD~1"]);
+    let gh_pr = |number: u64, branch: &str, head: &str, state: &str, merge: &str, at: &str| {
+        let checks = if state == "OPEN" { running } else { passed };
+        format!(
+            r#"{{"number":{number},"url":"https://github.com/example/forge/pull/{number}","state":"{state}",
+              "isDraft":false,"headRefName":"{branch}","headRefOid":"{head}","mergeCommit":{merge},
+              "mergeable":"MERGEABLE","reviewDecision":"APPROVED","updatedAt":"{at}",
+              "statusCheckRollup":{checks}}}"#
+        )
+    };
+    let first = gh_pr(
+        42,
+        &wt.branch,
+        &tip,
+        "MERGED",
+        &format!(r#"{{"oid":"{tip}"}}"#),
+        "2026-10-13T06:00:00Z",
+    );
+    write(&prs_file, &format!("[{first}]"));
+    let merged_wakes = || {
+        std::fs::read_to_string(&feed_path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| {
+                l.contains("\"kind\":\"crown_wake\"")
+                    && l.contains(&format!("\"worker\":\"{w}\""))
+                    && l.contains("\"cause\":\"merged\"")
+            })
+            .count()
+    };
+    wait_until(Duration::from_secs(20), "the merge's wake", || merged_wakes() == 1);
+    turn(&mut c, sa);
+    // The base has it too, so the flags keep reading merged by ancestry once
+    // a newer PR stands in front of this one.
+    git(&h.repo, &["merge", "--ff-only", "-q", &wt.branch]);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(forge_wakes(), 3, "the first PR's merge is the flags' to say");
+
+    // ---- a later PR merges: the forge says it -----------------------------
+    let open = gh_pr(43, "fix/greeting", &fix, "OPEN", "null", "2026-10-13T07:00:00Z");
+    write(&prs_file, &format!("[{open},{first}]"));
+    wait_until(Duration::from_secs(20), "the second PR to bind", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == w && p.number == 43)
+    });
+    std::thread::sleep(Duration::from_millis(1000));
+    assert_eq!(
+        forge_wakes(),
+        3,
+        "an opening is not news: {}",
+        std::fs::read_to_string(&got).unwrap()
+    );
+    let second =
+        gh_pr(43, "fix/greeting", &fix, "MERGED", r#"{"oid":"feedf00d"}"#, "2026-10-13T07:05:00Z");
+    write(&prs_file, &format!("[{second},{first}]"));
+    wait_until(Duration::from_secs(20), "the later merge's wake", || {
+        heard(&lines_with(&news), "merged #43)")
+    });
+    wait_until(Duration::from_secs(5), "the forge wake's feed line", || forge_wakes() == 4);
+    turn(&mut c, sa);
+    std::thread::sleep(Duration::from_millis(1500));
+    let all = std::fs::read_to_string(&got).unwrap();
+    assert!(!all.contains("merged #42"), "{all}");
+    assert_eq!(merged_wakes(), 1, "{all}");
+    assert_eq!(forge_wakes(), 4, "{all}");
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
 
