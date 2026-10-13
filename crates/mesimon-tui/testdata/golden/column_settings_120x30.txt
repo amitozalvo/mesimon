@@ -5,21 +5,21 @@
     Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y     z Painted accent bar >1y
 
     Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
-
                            ╭─ COLUMN ∙ IN PROGRESS ─────────────────────────────────────────╮
                            │   Description: none                                            │
                            │   Collapsed: no                                                │
                            │   Sort now: newest first                                       │
                            │   Workspace for new tickets: board default                     │
                            │   Agent behaviour                                              │
+                           │   Arrives here when: nothing                                   │
                            │   Entry needs a merged branch: no                              │
+                           │   Entry needs a passed pipeline: no                            │
                            │   Entry needs every summary box ticked: no                     │
                            │   Offer: off                                                   │
                            │   Auto merge: off                                              │
                            │                                                                │
                            │     what this column is for ∙ agents read it to pick a column  │
                            ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
-
 
 
 

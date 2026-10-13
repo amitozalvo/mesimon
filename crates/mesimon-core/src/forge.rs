@@ -227,6 +227,9 @@ pub struct Pr {
     pub pipeline: Pipeline,
     /// Unix ms the forge last touched it; what orders a ticket's set.
     pub updated_ms: u64,
+    /// The environments the merge commit reached, as the forge names them;
+    /// read only where a column asks for one, and only once merged.
+    pub deployed: Vec<String>,
 }
 
 impl Pr {
@@ -275,6 +278,7 @@ pub fn parse_gh(repo: &str, json: &str) -> Vec<Pr> {
                 review,
                 pipeline: gh_rollup(v.get("statusCheckRollup")),
                 updated_ms: iso_ms(v.get("updatedAt")),
+                deployed: Vec::new(),
             })
         })
         .collect()
@@ -286,9 +290,8 @@ pub fn gh_rollup(rollup: Option<&Value>) -> Pipeline {
     let Some(Value::Array(entries)) = rollup else { return Pipeline::None };
     let mut fold = Pipeline::None;
     for e in entries {
-        let name = crate::text::scrub_text(
-            e.get("name").or_else(|| e.get("context")).and_then(Value::as_str).unwrap_or_default(),
-        );
+        let name =
+            job_word(e.get("name").or_else(|| e.get("context")).and_then(Value::as_str).unwrap_or_default());
         let status = e.get("status").and_then(Value::as_str).unwrap_or_default();
         let conclusion = e.get("conclusion").and_then(Value::as_str).unwrap_or_default();
         // A commit status (`StatusContext`) says `state` alone.
@@ -347,6 +350,7 @@ pub fn parse_glab(repo: &str, json: &str) -> Vec<Pr> {
                 review,
                 pipeline: Pipeline::Unknown,
                 updated_ms: iso_ms(v.get("updated_at")),
+                deployed: Vec::new(),
             })
         })
         .collect()
@@ -392,6 +396,56 @@ pub fn parse_gh_check_runs(json: &str) -> Pipeline {
 /// is the boundary they cross (`text::scrub_text`).
 fn str_of(v: &Value, key: &str) -> String {
     crate::text::scrub_text(v.get(key).and_then(Value::as_str).unwrap_or_default())
+}
+
+/// How many bytes of a job's or an environment's name the board keeps: a
+/// name is a word on a card and a clause in the crown's wake, never a
+/// paragraph a CI config could write there.
+pub const NAME_MAX_BYTES: usize = 80;
+
+/// A job's or an environment's name as the board keeps it: scrubbed, one
+/// line, capped at `NAME_MAX_BYTES`.
+pub fn job_word(raw: &str) -> String {
+    // One line first — a control character is a space here, not nothing —
+    // then the scrub, then the cap.
+    let one: String = raw.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let flat = crate::text::scrub_text(&one).split_whitespace().collect::<Vec<_>>().join(" ");
+    crate::text::cap_bytes(&flat, NAME_MAX_BYTES).to_string()
+}
+
+/// GitHub's `deployments?sha=` answer: each deployment's id and environment.
+pub fn parse_gh_deployments(json: &str) -> Vec<(u64, String)> {
+    let Ok(Value::Array(items)) = serde_json::from_str::<Value>(json) else { return Vec::new() };
+    items
+        .iter()
+        .filter_map(|d| {
+            let id = d.get("id")?.as_u64()?;
+            let env = d.get("environment").and_then(Value::as_str)?;
+            Some((id, job_word(env)))
+        })
+        .collect()
+}
+
+/// GitHub's `deployments/{id}/statuses?per_page=1` answer: whether the
+/// newest status is a success.
+pub fn parse_gh_deployment_success(json: &str) -> bool {
+    let Ok(Value::Array(items)) = serde_json::from_str::<Value>(json) else { return false };
+    items.first().and_then(|s| s.get("state")).and_then(Value::as_str) == Some("success")
+}
+
+/// GitLab's `deployments?environment=&status=success` answer: whether one
+/// of them deployed this commit.
+pub fn parse_gitlab_deployed(json: &str, oid: &str) -> bool {
+    let Ok(Value::Array(items)) = serde_json::from_str::<Value>(json) else { return false };
+    !oid.is_empty()
+        && items.iter().any(|d| {
+            d.get("sha").and_then(Value::as_str) == Some(oid)
+                || d.get("deployable")
+                    .and_then(|x| x.get("commit"))
+                    .and_then(|c| c.get("id"))
+                    .and_then(Value::as_str)
+                    == Some(oid)
+        })
 }
 
 /// An ISO-8601 stamp (`2026-10-13T05:56:17Z`, or with an offset) as unix
@@ -706,6 +760,7 @@ mod tests {
             review: Review::None,
             pipeline: Pipeline::None,
             updated_ms: updated,
+            deployed: Vec::new(),
         }
     }
 
@@ -890,6 +945,22 @@ mod tests {
         assert_eq!((r.host.as_str(), r.path.as_str()), ("gitlab.example.com", "g/s/p"));
         assert_eq!(repo_of_url("https://github.com/o/r/issues/3"), None);
         assert_eq!(Forge::GitLab.name(), "GitLab");
+    }
+
+    #[test]
+    fn deployments_read_by_environment_and_names_are_bounded() {
+        let ds = parse_gh_deployments(r#"[{"id":7,"environment":"staging","sha":"m"},{"id":8,"environment":"production"}]"#);
+        assert_eq!(ds, [(7, "staging".to_string()), (8, "production".to_string())]);
+        assert!(parse_gh_deployment_success(r#"[{"state":"success"},{"state":"pending"}]"#));
+        assert!(!parse_gh_deployment_success(r#"[{"state":"in_progress"}]"#));
+        assert!(!parse_gh_deployment_success("[]"));
+        assert!(parse_gitlab_deployed(r#"[{"sha":"abc","status":"success"}]"#, "abc"));
+        assert!(parse_gitlab_deployed(r#"[{"deployable":{"commit":{"id":"abc"}}}]"#, "abc"));
+        assert!(!parse_gitlab_deployed(r#"[{"sha":"zzz"}]"#, "abc"));
+        assert!(!parse_gitlab_deployed(r#"[{"sha":""}]"#, ""));
+        let long = "x".repeat(200);
+        assert_eq!(job_word(&format!("  a\nb\t{long}")).len(), NAME_MAX_BYTES);
+        assert_eq!(job_word("test\nlinux"), "test linux");
     }
 
     #[test]

@@ -59,7 +59,10 @@ pub(crate) mod imports;
 /// v7 (T-735) adds a column's `requires_ticked`: a v6 build would drop it on
 /// its next write, and an agent or an automove would then enter a column a
 /// person closed to a ticket with an unticked summary box — a widening.
-pub const COLUMNS_SCHEMA: u32 = 7;
+/// v8 (T-739) adds a column's `requires_pipeline`, the same widening if
+/// dropped; `arrives_on` and `arrives_env` ride the same bump, though a
+/// build that drops them only moves nothing.
+pub const COLUMNS_SCHEMA: u32 = 8;
 /// v2 added `[[notes]]`, on the columns file's reasoning: at v1 an older
 /// build would read the ticket, ignore the array, and on its next
 /// `save_ticket` drop every note's metadata while the files stayed behind
@@ -2379,6 +2382,9 @@ order = "a0"
                     on_done: None,
                     requires_merge: true,
                     requires_ticked: true,
+                    requires_pipeline: false,
+                    arrives_on: mesimon_core::board::Arrival::Nothing,
+                    arrives_env: None,
                     reclaim: true,
                     offers: Some(mesimon_core::board::ColumnOffers::Sleep),
                     train: mesimon_core::board::TrainReach::Merge,
@@ -2469,10 +2475,10 @@ order = "a0"
         // The stamp is what stops an older build silently dropping the
         // registry on its next write: at v1 it would parse, ignore `tags`,
         // and overwrite the file without them.
-        assert_eq!(COLUMNS_SCHEMA, 7);
+        assert_eq!(COLUMNS_SCHEMA, 8);
         assert!(matches!(verdict(1, COLUMNS_SCHEMA), Verdict::Load));
         assert!(matches!(verdict(3, COLUMNS_SCHEMA), Verdict::Load));
-        assert!(matches!(verdict(COLUMNS_SCHEMA, 3), Verdict::Newer(7)));
+        assert!(matches!(verdict(COLUMNS_SCHEMA, 3), Verdict::Newer(8)));
     }
 
     /// T-499 removed the column's `auto_run`. A file that still says it

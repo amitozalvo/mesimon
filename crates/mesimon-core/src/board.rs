@@ -1021,6 +1021,53 @@ impl AgentTools {
     }
 }
 
+/// What lands a ticket in this column on its own, read off the forge
+/// (T-739): nothing, a pull request opened, its pipeline passed, every PR
+/// merged, or the merge commit deployed to the environment the column
+/// names (`arrives_env`). Edge-triggered on what a forge pass saw change,
+/// through `place_ticket` under the automation principal, so the move gate
+/// applies as to `on_done`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Arrival {
+    #[default]
+    Nothing,
+    PrOpened,
+    PipelinePasses,
+    Merged,
+    Deployed,
+}
+
+impl Arrival {
+    pub const ALL: [Arrival; 5] = [
+        Arrival::Nothing,
+        Arrival::PrOpened,
+        Arrival::PipelinePasses,
+        Arrival::Merged,
+        Arrival::Deployed,
+    ];
+
+    /// The dialog's word.
+    pub fn word(self) -> &'static str {
+        match self {
+            Arrival::Nothing => "nothing",
+            Arrival::PrOpened => "PR opened",
+            Arrival::PipelinePasses => "pipeline passes",
+            Arrival::Merged => "merged",
+            Arrival::Deployed => "deployed to",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        let i = Arrival::ALL.iter().position(|a| *a == self).unwrap_or(0);
+        Arrival::ALL[(i + 1) % Arrival::ALL.len()]
+    }
+
+    fn is_nothing(&self) -> bool {
+        *self == Arrival::Nothing
+    }
+}
+
 /// How far the merge train reaches into this column (T-117): nowhere, rebase
 /// asks only, or auto-merge candidates and rebase asks. The train's global
 /// preference is still the consent switch; this says where it looks.
@@ -1246,6 +1293,18 @@ pub struct ColumnSettings {
     /// Entry is refused while the ticket's worktree branch is unmerged.
     #[serde(default, skip_serializing_if = "is_false")]
     pub requires_merge: bool,
+    /// Entry is refused unless the ticket's pipeline passed (T-739): a
+    /// failing, running, absent or unread pipeline is refused alike, since
+    /// unknown is never green.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub requires_pipeline: bool,
+    /// What lands a ticket here on its own, off the forge (T-739).
+    #[serde(default, skip_serializing_if = "Arrival::is_nothing")]
+    pub arrives_on: Arrival,
+    /// The environment `Arrival::Deployed` waits for, as the forge names
+    /// it (`staging`, `production`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrives_env: Option<String>,
     /// Entry, and an archive from here, are refused while a `Summary` box on
     /// the ticket is unticked (T-735; T-713 refused every archive, with no
     /// switch). Off on every column, the template's DONE too.
@@ -1280,7 +1339,8 @@ impl ColumnSettings {
     /// Whether any automation would act on a ticket here — the header's one
     /// optional mark.
     pub fn automated(&self) -> bool {
-        self.on_working.is_some()
+        self.arrives_on != Arrival::Nothing
+            || self.on_working.is_some()
             || self.on_done.is_some()
             || self.train != TrainReach::Off
             || self.sleep_after_minutes > 0
@@ -1325,6 +1385,17 @@ impl ColumnSettings {
         }
         if self.requires_merge {
             out.push("entry needs a merged branch".into());
+        }
+        if self.requires_pipeline {
+            out.push("entry needs a passed pipeline".into());
+        }
+        match self.arrives_on {
+            Arrival::Nothing => {}
+            Arrival::Deployed => out.push(format!(
+                "arrives when deployed to {}",
+                self.arrives_env.as_deref().unwrap_or("?")
+            )),
+            a => out.push(format!("arrives when {}", a.word())),
         }
         if self.requires_ticked {
             out.push("entry and archive need every summary box ticked".into());
@@ -1736,6 +1807,14 @@ pub const COLUMN_DESCRIPTION_MAX_BYTES: usize = 300;
 pub fn sanitize_column_description(raw: &str) -> Option<String> {
     use crate::text::{cap_bytes, nonblank, scrub_cells};
     nonblank(cap_bytes(&scrub_cells(raw, false), COLUMN_DESCRIPTION_MAX_BYTES))
+}
+
+/// An environment's name as a column waits for it (T-739): one line, as
+/// the forge spells it, `forge::NAME_MAX_BYTES` at most.
+pub fn sanitize_environment(raw: &str) -> Option<String> {
+    use crate::text::{cap_bytes, nonblank, scrub_cells};
+    let flat = scrub_cells(raw, false).split_whitespace().collect::<Vec<_>>().join(" ");
+    nonblank(cap_bytes(&flat, crate::forge::NAME_MAX_BYTES))
 }
 
 /// The longest a raised hand's reason may be, in bytes (T-107). One line on
@@ -2534,6 +2613,9 @@ impl Board {
                     return Err(format!("when {field}: no such column: {t}"));
                 }
             }
+        }
+        if s.arrives_on == Arrival::Deployed && s.arrives_env.is_none() {
+            return Err("deployed to: name the environment".into());
         }
         if let Some(c) = self.column_mut(name) {
             c.settings = s;

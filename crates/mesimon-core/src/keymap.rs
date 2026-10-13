@@ -513,6 +513,12 @@ pub enum Verb {
     /// The column's idle park (T-543): Enter cycles `COLUMN_SLEEP_MINUTES`.
     ColumnSleepAfter,
     ColumnRequiresMerge,
+    /// The column dialog's `Entry needs a passed pipeline` row (T-739).
+    ColumnRequiresPipeline,
+    /// The column dialog's `Arrives here when` row (T-739): what the forge
+    /// saw that lands a ticket here; `deployed to` opens the environment's
+    /// field in place, the Description row's shape.
+    ColumnArrives,
     /// The column's summary-box gate (T-735): entry and an archive from it.
     ColumnRequiresTicked,
     ColumnReclaim,
@@ -1613,6 +1619,12 @@ pub struct Ctx {
     /// The column's own idle park in minutes; zero is off (T-543).
     pub col_sleep_after: u32,
     pub col_requires_merge: bool,
+    /// The column refuses entry unless the pipeline passed (T-739).
+    pub col_requires_pipeline: bool,
+    /// What lands a ticket here on its own (T-739): `Arrival::word`.
+    pub col_arrives_word: &'static str,
+    /// The environment the column waits for, when `deployed to`.
+    pub col_arrives_env: String,
     /// `ColumnSettings::requires_ticked` (T-735).
     pub col_requires_ticked: bool,
     pub col_train_word: &'static str,
@@ -5886,10 +5898,37 @@ static COLUMN_ITEMS: &[MenuItem] = &[
         avail: |c| !c.col_new && !c.claude_unused,
         key: "",
     },
+    // What the forge saw that lands a ticket here (T-739): a column per
+    // environment and nobody syncs the board by hand.
+    MenuItem {
+        verb: Verb::ColumnArrives,
+        label: |c| match c.col_arrives_word {
+            "deployed to" => format!(
+                "Arrives here when: deployed to {}",
+                or(&c.col_arrives_env, "…")
+            ),
+            "" => "Arrives here when: nothing".into(),
+            w => format!("Arrives here when: {w}"),
+        },
+        detail: |c| match c.col_arrives_word {
+            "nothing" => "a PR opened, its pipeline passing, every PR merged or a deployment".into(),
+            "deployed to" => "the merge commit reached that environment on the forge".into(),
+            _ => "the card moves here on its own when the forge says so".into(),
+        },
+        avail: |c| !c.col_new,
+        key: "",
+    },
     MenuItem {
         verb: Verb::ColumnRequiresMerge,
         label: |c| format!("Entry needs a merged branch: {}", yes_no(c.col_requires_merge)),
         detail: |_| "a card with unmerged work is refused at the door".into(),
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::ColumnRequiresPipeline,
+        label: |c| format!("Entry needs a passed pipeline: {}", yes_no(c.col_requires_pipeline)),
+        detail: |_| "a failing, running or unread pipeline is refused at the door".into(),
         avail: |c| !c.col_new,
         key: "",
     },
@@ -9095,7 +9134,7 @@ mod tests {
         let fresh = Ctx { col_new: true, ..Default::default() };
         let rows: Vec<Verb> = column_items(&fresh).iter().map(|m| m.verb).collect();
         assert_eq!(rows, vec![Verb::ColumnName]);
-        assert_eq!(column_items(&other).len(), 9);
+        assert_eq!(column_items(&other).len(), 11);
         assert!(!column_items(&other).iter().any(|m| m.verb == Verb::ColumnName));
         let agents = Ctx { column_agents: true, ..Default::default() };
         assert_eq!(

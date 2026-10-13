@@ -46,6 +46,16 @@ pub struct WtFlags {
     pub merged: bool,
     pub needs_rebase: bool,
     pub conflict: bool,
+    /// A pull request is open on the ticket (T-739): the PR is the merge,
+    /// so the train never fast-forwards past it, and a rebase is asked only
+    /// on a conflict the forge reports, not on a base that merely moved.
+    pub pr_open: bool,
+    /// The forge reports a conflict on an open PR.
+    pub pr_conflict: bool,
+    /// The forge's verdict on this ticket is younger than its agent's last
+    /// end of turn, or no forge reads this board at all: the train acts on
+    /// nothing it has not read (T-739).
+    pub forge_fresh: bool,
 }
 
 pub struct Input<'a> {
@@ -136,15 +146,25 @@ pub fn lane(t: &Ticket, r: &Reading) -> Option<Lane> {
     {
         return None;
     }
+    // The train acts on nothing it has not read (T-739): a forge verdict
+    // older than the agent's last turn may not yet know the PR that turn
+    // opened.
+    if !f.forge_fresh {
+        return None;
+    }
     if r.reach == TrainReach::Merge
         && f.ahead > 0
         && !f.needs_rebase
+        && !f.pr_open
         && matches!(r.seat, Seat::Empty | Seat::Idle)
     {
         return Some(Lane::Merge);
     }
+    // With a PR open the base moving past the branch is not a reason: the
+    // forge merges a branch behind its base. A conflict it reports is.
+    let behind = if f.pr_open { f.pr_conflict } else { f.needs_rebase };
     (matches!(r.reach, TrainReach::Merge | TrainReach::Rebase)
-        && f.needs_rebase
+        && behind
         && f.ahead > 0
         && r.seat == Seat::Idle
         && !r.fused
@@ -230,7 +250,54 @@ mod tests {
     }
 
     fn flags(ahead: u32, needs_rebase: bool) -> WtFlags {
-        WtFlags { attached: true, ahead, merged: false, needs_rebase, conflict: false }
+        WtFlags {
+            attached: true,
+            ahead,
+            merged: false,
+            needs_rebase,
+            conflict: false,
+            pr_open: false,
+            pr_conflict: false,
+            forge_fresh: true,
+        }
+    }
+
+    /// T-739: an open PR takes a ticket off the merge list, a rebase is
+    /// asked only on a conflict the forge reports, and a stale forge verdict
+    /// holds the ticket off both lists.
+    #[test]
+    fn an_open_pr_is_the_merge_and_a_stale_verdict_holds() {
+        let b = board();
+        let t = ticket(1, REVIEW, "a");
+        let idle = claude(1, idle(), Confidence::High);
+        let mut b2 = b.clone();
+        b2.sessions.push(idle);
+        let reading = |f: &WtFlags| {
+            lane(
+                &t,
+                &Reading {
+                    reach: TrainReach::Merge,
+                    flags: f,
+                    seat: seat(&b2, t.id),
+                    base_tip: "tip",
+                    asked: None,
+                    fused: false,
+                },
+            )
+        };
+        let mut f = flags(2, false);
+        assert_eq!(reading(&f), Some(Lane::Merge), "no PR: the train's merge");
+        f.pr_open = true;
+        assert_eq!(reading(&f), None, "an open PR is the merge");
+        f.needs_rebase = true;
+        assert_eq!(reading(&f), None, "a base moved past a PR branch is not a reason");
+        f.pr_conflict = true;
+        assert_eq!(reading(&f), Some(Lane::Rebase), "a conflict the forge reports is");
+        f.forge_fresh = false;
+        assert_eq!(reading(&f), None, "a verdict older than the turn holds the ticket");
+        let mut plain = flags(2, true);
+        plain.forge_fresh = false;
+        assert_eq!(reading(&plain), None, "on both lists");
     }
 
     /// Every ticket 1..=4 stands on the same base tip.

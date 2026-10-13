@@ -508,6 +508,9 @@ pub enum Mode {
         /// The Description row is a text field while `Some` (T-467), in place
         /// like `naming` — but the list stays, so the row keeps its place.
         describing: Option<EditBuffer>,
+        /// The `Arrives here when: deployed to` row's environment field
+        /// while `Some` (T-739), the Description row's shape.
+        env_naming: Option<EditBuffer>,
         /// The `Sort now` row's pending order: `h`/`l` step it, Enter runs it.
         sort: SortBy,
     },
@@ -3249,6 +3252,7 @@ impl App {
             | Mode::Prompts { editing: Some(buf), .. }
             | Mode::ColumnSettings { naming: Some(buf), .. }
             | Mode::ColumnSettings { describing: Some(buf), .. }
+            | Mode::ColumnSettings { env_naming: Some(buf), .. }
             | Mode::Tiers { naming: Some(buf), .. }
             | Mode::TierEdit { field: Some(buf), .. } => Some(buf),
             _ => None,
@@ -3389,7 +3393,9 @@ impl App {
             | Mode::TierEdit { idx, field: None, .. }
             | Mode::Links { idx, .. }
             | Mode::Summary { idx, .. }
-            | Mode::ColumnSettings { idx, naming: None, describing: None, .. } => Some(*idx),
+            | Mode::ColumnSettings { idx, naming: None, describing: None, env_naming: None, .. } => {
+                Some(*idx)
+            }
             Mode::Search(s) => Some(s.idx),
             _ => None,
         }
@@ -3625,6 +3631,8 @@ impl App {
             ("a column name", buf.paste(text), buf.limit())
         } else if let Mode::ColumnSettings { describing: Some(buf), .. } = &mut self.mode {
             ("a column description", buf.paste(text), buf.limit())
+        } else if let Mode::ColumnSettings { env_naming: Some(buf), .. } = &mut self.mode {
+            ("an environment name", buf.paste(text), buf.limit())
         } else if let Mode::Tiers { naming: Some(buf), .. } = &mut self.mode {
             ("a tier name", buf.paste(text), buf.limit())
         } else if let Mode::TierEdit { field: Some(buf), .. } = &mut self.mode {
@@ -5251,6 +5259,7 @@ impl App {
                 Mode::Search(_)
                     | Mode::ColumnSettings { naming: Some(_), .. }
                     | Mode::ColumnSettings { describing: Some(_), .. }
+                    | Mode::ColumnSettings { env_naming: Some(_), .. }
                     | Mode::Prompts { editing: Some(_), .. }
                     | Mode::Sharing { editing: Some(_), .. }
                     | Mode::Tiers { naming: Some(_), .. }
@@ -5326,7 +5335,8 @@ impl App {
             // Naming a column IS a text field (the tag picker's rule), and
             // saying so is what puts `enter save ∙ esc cancel` in the edge.
             Mode::ColumnSettings { naming: Some(_), .. }
-            | Mode::ColumnSettings { describing: Some(_), .. } => Scope::Input,
+            | Mode::ColumnSettings { describing: Some(_), .. }
+            | Mode::ColumnSettings { env_naming: Some(_), .. } => Scope::Input,
             Mode::ColumnSettings { .. } => Scope::ColumnSettings,
             _ => match self.screen {
                 Screen::Diff => Scope::Diff,
@@ -5443,6 +5453,9 @@ impl App {
             col_on_done: cs.on_done.clone().unwrap_or_default(),
             col_sleep_after: cs.sleep_after_minutes,
             col_requires_merge: cs.requires_merge,
+            col_requires_pipeline: cs.requires_pipeline,
+            col_arrives_word: cs.arrives_on.word(),
+            col_arrives_env: cs.arrives_env.clone().unwrap_or_default(),
             col_requires_ticked: cs.requires_ticked,
             col_train_word: cs.train.word(),
             col_live: col_tickets.len(),
@@ -5949,6 +5962,9 @@ impl App {
         }
         if let Mode::ColumnSettings { describing: Some(_), .. } = self.mode {
             return self.key_column_description(code, mods);
+        }
+        if let Mode::ColumnSettings { env_naming: Some(_), .. } = self.mode {
+            return self.key_column_env(code, mods);
         }
         if let Mode::Prompts { editing: Some(_), .. } = self.mode {
             return self.key_agent_prompt(code, mods);
@@ -7349,6 +7365,7 @@ impl App {
                     idx: 0,
                     naming: Some(EditBuffer::new(mesimon_core::board::COLUMN_NAME_MAX_BYTES)),
                     describing: None,
+                    env_naming: None,
                     sort: SortBy::NewestArrival,
                 };
             }
@@ -7412,6 +7429,26 @@ impl App {
             }
             Verb::ColumnRequiresMerge => {
                 self.set_column(|s| s.requires_merge = !s.requires_merge)?
+            }
+            Verb::ColumnRequiresPipeline => {
+                self.set_column(|s| s.requires_pipeline = !s.requires_pipeline)?
+            }
+            // T-739. The ring's `deployed to` stop is not sent on its own: it
+            // opens the environment's field, and Enter there sends both.
+            Verb::ColumnArrives => {
+                let Some(col) = self.dialog_column() else { return Ok(()) };
+                let next = col.settings.arrives_on.next();
+                if next == mesimon_core::board::Arrival::Deployed {
+                    let text = col.settings.arrives_env.clone().unwrap_or_default();
+                    if let Mode::ColumnSettings { env_naming, .. } = &mut self.mode {
+                        *env_naming = Some(EditBuffer::from_text(
+                            text,
+                            mesimon_core::forge::NAME_MAX_BYTES,
+                        ));
+                    }
+                } else {
+                    self.set_column(|s| s.arrives_on = next)?;
+                }
             }
             Verb::ColumnRequiresTicked => {
                 self.set_column(|s| s.requires_ticked = !s.requires_ticked)?
@@ -8077,6 +8114,7 @@ impl App {
             idx: 0,
             naming: None,
             describing: None,
+            env_naming: None,
             sort: SortBy::NewestArrival,
         };
         Ok(())
@@ -8222,6 +8260,60 @@ impl App {
             Some(Verb::Cancel) => {
                 if let Mode::ColumnSettings { describing, .. } = &mut self.mode {
                     *describing = None;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// The environment field (T-739): the Description row's shape. Enter
+    /// sends `deployed to <name>` as one setting; an emptied field cancels
+    /// to the ring's start, since `deployed to` names something or nothing.
+    fn key_column_env(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
+        if let Mode::ColumnSettings { env_naming: Some(buf), .. } = &mut self.mode {
+            edit_buffer_key(buf, code, mods);
+        }
+        let ctx = self.ctx();
+        let verb = crate::keys::to_key_text(code, mods)
+            .and_then(|k| keymap::resolve(Scope::Input, k, &ctx));
+        match verb {
+            Some(Verb::Save | Verb::SaveStart) => {
+                let Mode::ColumnSettings { env_naming: Some(buf), .. } = &self.mode else {
+                    return Ok(());
+                };
+                let env = mesimon_core::board::sanitize_environment(buf.as_str());
+                let Some(col) = self.dialog_column() else { return Ok(()) };
+                let name = col.name.clone();
+                let settings = match env {
+                    Some(env) => ColumnSettings {
+                        arrives_on: mesimon_core::board::Arrival::Deployed,
+                        arrives_env: Some(env),
+                        ..col.settings.clone()
+                    },
+                    None => ColumnSettings {
+                        arrives_on: mesimon_core::board::Arrival::Nothing,
+                        arrives_env: None,
+                        ..col.settings.clone()
+                    },
+                };
+                if settings != col.settings {
+                    match self.req(Command::SetColumnSettings { name, settings }) {
+                        Response::Ok => self.refresh()?,
+                        Response::Err { message } => {
+                            self.status = message;
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
+                if let Mode::ColumnSettings { env_naming, .. } = &mut self.mode {
+                    *env_naming = None;
+                }
+            }
+            Some(Verb::Cancel) => {
+                if let Mode::ColumnSettings { env_naming, .. } = &mut self.mode {
+                    *env_naming = None;
                 }
             }
             _ => {}

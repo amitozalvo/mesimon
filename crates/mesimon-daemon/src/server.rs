@@ -7057,14 +7057,35 @@ impl Daemon {
         // no note here.
         let unticked = self.board.columns.iter().any(|c| c.settings.requires_ticked)
             && self.open_boxes(id) > 0;
+        let unpassed = self.pipeline_refusal(id).is_some();
         self.board
             .sorted_columns()
             .into_iter()
             .filter(|c| c.name != t.column)
             .filter(|c| !(unmerged && c.settings.requires_merge))
+            .filter(|c| !(unpassed && c.settings.requires_pipeline))
             .filter(|c| !(unticked && c.settings.requires_ticked))
             .map(|c| c.name.clone())
             .collect()
+    }
+
+    /// Why a column that needs a passed pipeline refuses this ticket (T-739),
+    /// or `None` when its pipeline passed. The forge's reading of the
+    /// ticket's set: the worst open PR's, the merge commit's once merged.
+    fn pipeline_refusal(&self, id: ulid::Ulid) -> Option<String> {
+        use mesimon_core::forge::Pipeline;
+        let set = self.forge.sets.get(&id);
+        let pipeline = set.map(|s| mesimon_core::forge::pipeline_of(s)).unwrap_or(Pipeline::Unknown);
+        match pipeline {
+            Pipeline::Passed => None,
+            Pipeline::Unknown => Some("pipeline not read".into()),
+            Pipeline::None => Some("no pipeline ran".into()),
+            Pipeline::Running => Some("pipeline running".into()),
+            Pipeline::Waiting(job) if job.is_empty() => Some("pipeline waiting".into()),
+            Pipeline::Waiting(job) => Some(format!("pipeline waiting: {job}")),
+            Pipeline::Failed(job) if job.is_empty() => Some("pipeline failed".into()),
+            Pipeline::Failed(job) => Some(format!("pipeline failed: {job}")),
+        }
     }
 
     /// Every column's description (T-467), keyed by name, for `get_ticket`
@@ -7281,6 +7302,7 @@ impl Daemon {
                             job: p.pipeline.job().map(mesimon_core::text::scrub_text),
                             conflict: p.conflict,
                             review: p.review.word().into(),
+                            deployed: p.deployed.clone(),
                         })
                         .collect()
                 })
@@ -7548,6 +7570,12 @@ impl Daemon {
             && self.ticket_unmerged(id)
         {
             return Err(format!("worktree unmerged — merge before {dest}"));
+        }
+        // Its pipeline twin (T-739): unknown is never green.
+        if self.board.column(dest).is_some_and(|c| c.settings.requires_pipeline) {
+            if let Some(why) = self.pipeline_refusal(id) {
+                return Err(format!("{why} — before {dest}"));
+            }
         }
         // Its summary-box twin (T-735), off unless a person turned it on:
         // the card's open box says work is left, so the column refuses it.
@@ -7820,9 +7848,10 @@ impl Daemon {
         // A repository the forge CLI cannot read (T-739): the pull requests
         // on the cards are as old as the last pass that answered.
         if let Some(trouble) = self.forge.trouble() {
+            let hold = if self.train.is_armed() { " ∙ the merge train holds its tickets" } else { "" };
             notices.push(Notice::new(
                 "forge_unreachable",
-                format!("pull requests not read — {trouble}"),
+                format!("pull requests not read — {trouble}{hold}"),
             ));
         }
         // The foregrounds ride the snapshot's records and nothing else: the
@@ -9714,8 +9743,20 @@ impl Daemon {
         // The board's template, or mesimon's own words where nobody wrote one
         // (T-353). The two facts the sentence is about — which branch, which
         // base — are the only things substituted into it.
-        let text =
+        let mut text =
             self.board.prompts.render(request.prompt(), &[("branch", &branch), ("base", &base)]);
+        // A rebase of a branch with a PR open ends with the push (T-739):
+        // the forge's PR updates from the branch, and a rebase it never
+        // sees is a rebase it never had.
+        if matches!(request, mesimon_core::command::MergeRequest::Rebase) {
+            if let Some(pr) = self.forge.open_of(id).first() {
+                text.push_str(&format!(
+                    " Then push with --force-with-lease so {} {} updates.",
+                    pr.forge.noun(),
+                    pr.label()
+                ));
+            }
+        }
         if let Err(message) = self.paste_to_ticket(id, &text, ack) {
             return Response::Err { message };
         }
@@ -9886,10 +9927,36 @@ impl Daemon {
                         merged: self.wt_agg.get(t).is_some_and(|a| a.merged),
                         needs_rebase: self.wt_agg.get(t).is_some_and(|a| a.needs_rebase),
                         conflict: self.wt_conflicts.contains(&b.branch),
+                        pr_open: !self.forge.open_of(*t).is_empty(),
+                        pr_conflict: self.forge.open_of(*t).iter().any(|p| p.conflict),
+                        forge_fresh: self.forge_fresh(*t),
                     },
                 )
             })
             .collect()
+    }
+
+    /// The forge's verdict on a ticket is current (T-739): no forge reads
+    /// this board (every remote parsed to none, or every host probed to no
+    /// CLI), or the ticket's set was read since its agent's last end of
+    /// turn — the turn that may have opened the PR. Before the first probe
+    /// nothing is known and nothing is fresh: the train waits a bucket.
+    fn forge_fresh(&self, ticket: ulid::Ulid) -> bool {
+        let no_forge = !self.forge.remotes.is_empty()
+            && (self.forge.remotes.values().all(Option::is_none)
+                || (!self.forge.probes.is_empty()
+                    && self.forge.probes.values().all(|p| p.cli.is_none())));
+        if no_forge {
+            return true;
+        }
+        let Some(read_at) = self.forge.at_ms.get(&ticket).copied() else { return false };
+        let turn_end = self
+            .board
+            .live_agent(ticket)
+            .filter(|s| matches!(s.state, SessionState::Idle { .. }))
+            .and_then(|s| s.state_changed_at)
+            .unwrap_or(0);
+        read_at >= turn_end
     }
 
     /// What the train would do, over the cached flags — no git on this road.
@@ -12172,7 +12239,11 @@ impl Daemon {
             .description
             .as_deref()
             .and_then(mesimon_core::board::sanitize_column_description);
-        let settings = mesimon_core::board::ColumnSettings { description, ..settings };
+        // So is the environment a column waits for (T-739): a forge's name,
+        // one line, bounded.
+        let arrives_env =
+            settings.arrives_env.as_deref().and_then(mesimon_core::board::sanitize_environment);
+        let settings = mesimon_core::board::ColumnSettings { description, arrives_env, ..settings };
         if col.settings == settings {
             return Response::Ok;
         }
@@ -13259,7 +13330,26 @@ impl Daemon {
         self.forge.inflight = true;
         self.forge.gen = self.forge.gen.wrapping_add(1);
         let gen = self.forge.gen;
-        let query = crate::forge::Query { probes, repos: repo_queries, tickets: queries };
+        // The environments some column waits for, so a deployment is read
+        // only where one is asked for; and what earlier passes settled.
+        let mut envs: Vec<String> = Vec::new();
+        for c in &self.board.columns {
+            if c.settings.arrives_on == mesimon_core::board::Arrival::Deployed {
+                if let Some(env) = &c.settings.arrives_env {
+                    if !envs.contains(env) {
+                        envs.push(env.clone());
+                    }
+                }
+            }
+        }
+        let query = crate::forge::Query {
+            probes,
+            repos: repo_queries,
+            tickets: queries,
+            envs,
+            commit_pipelines: self.forge.commit_pipelines.clone(),
+            deployed: self.forge.deployed.clone(),
+        };
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let _ = tx.send(Msg::ForgeSampled(gen, crate::forge::sample(query, now_ms())));
@@ -13282,8 +13372,30 @@ impl Daemon {
         }
         self.forge.errors =
             sample.repos.iter().filter_map(|r| Some((r.key.clone(), r.error.clone()?))).collect();
+        // What the merged commits' reads taught: terminal pipelines and the
+        // environments reached are kept, so a landed ticket costs no call
+        // on the next pass.
+        for pr in sample.sets.values().flatten() {
+            if pr.state != mesimon_core::forge::PrState::Merged || pr.merge_oid.is_empty() {
+                continue;
+            }
+            let key = (pr.repo.clone(), pr.merge_oid.clone());
+            if matches!(
+                pr.pipeline,
+                mesimon_core::forge::Pipeline::Passed | mesimon_core::forge::Pipeline::Failed(_)
+            ) {
+                self.forge.commit_pipelines.insert(key.clone(), pr.pipeline.clone());
+            }
+            let known = self.forge.deployed.entry(key).or_default();
+            for env in &pr.deployed {
+                if !known.contains(env) {
+                    known.push(env.clone());
+                }
+            }
+        }
         let mut changed = false;
         let mut failed: Vec<(ulid::Ulid, String)> = Vec::new();
+        let mut arrivals: Vec<(ulid::Ulid, crate::forge::Edge)> = Vec::new();
         for (t, set) in sample.sets {
             if self.board.ticket(t).is_none() {
                 continue;
@@ -13291,6 +13403,12 @@ impl Daemon {
             let old = self.forge.sets.get(&t);
             for line in crate::forge::delta(old.map(Vec::as_slice), &set) {
                 self.feed.board_outcome("forge", "pr", Some(t), &line);
+            }
+            if let Some(old) = old {
+                let edge = crate::forge::edge(old, &set);
+                if edge.any() {
+                    arrivals.push((t, edge));
+                }
             }
             // A pipeline that failed since the last read (T-739): the edge
             // the crown hears. A first read is a baseline and says nothing.
@@ -13318,6 +13436,7 @@ impl Daemon {
             self.forge.at_ms.insert(t, sample.at_ms);
         }
         changed |= self.hear_pipelines(failed);
+        changed |= self.forge_arrivals(arrivals);
         let live: Vec<ulid::Ulid> = self.board.tickets.iter().map(|t| t.id).collect();
         self.forge.sets.retain(|t, _| live.contains(t));
         self.forge.at_ms.retain(|t, _| live.contains(t));
@@ -13348,6 +13467,55 @@ impl Daemon {
         }
         self.settle_looks();
         self.broadcast();
+    }
+
+    /// A column's `Arrives here when` (T-739): the first column, in board
+    /// order, whose rule the pass's edge satisfies takes the ticket, through
+    /// `place_ticket` under the automation principal — the move gate's
+    /// no-undo and fuse apply as to an automove. The furthest stage wins
+    /// when one pass saw several. True when a ticket moved.
+    fn forge_arrivals(&mut self, arrivals: Vec<(ulid::Ulid, crate::forge::Edge)>) -> bool {
+        use mesimon_core::board::Arrival;
+        let mut moved = false;
+        for (t, edge) in arrivals {
+            let Some(from) = self.board.ticket(t).map(|x| x.column.clone()) else { continue };
+            // The furthest stage: a deployment over a merge over a pass over
+            // an opening; among equals, the first in board order.
+            let dest = self
+                .board
+                .sorted_columns()
+                .into_iter()
+                .filter(|c| c.name != from)
+                .filter_map(|c| {
+                    let rank = match c.settings.arrives_on {
+                        Arrival::Deployed
+                            if c.settings.arrives_env.as_ref().is_some_and(|env| {
+                                edge.deployed.iter().any(|d| d == env)
+                            }) =>
+                        {
+                            4
+                        }
+                        Arrival::Merged if edge.merged => 3,
+                        Arrival::PipelinePasses if edge.passed => 2,
+                        Arrival::PrOpened if edge.opened => 1,
+                        _ => return None,
+                    };
+                    Some((rank, c.name.clone()))
+                })
+                .max_by_key(|(rank, _)| *rank)
+                .map(|(_, name)| name);
+            let Some(dest) = dest else { continue };
+            let by = Principal::Automation { rule: "forge".into() };
+            let outcome = match self.place_ticket(t, &dest, Position::Top, &by, None, "forge") {
+                Ok(_) => {
+                    moved = true;
+                    "moved".to_string()
+                }
+                Err(reason) => format!("refused: {reason}"),
+            };
+            self.feed.movement_decision(t, &from, Some(&dest), &outcome);
+        }
+        moved
     }
 
     /// The merged clause the forge adds to a ticket's legs (T-739): a leg
@@ -13391,7 +13559,7 @@ impl Daemon {
                     conflict: pr.conflict,
                     review: pr.review.word().into(),
                     merged_oid: pr.merge_oid.clone(),
-                    deployed: Vec::new(),
+                    deployed: pr.deployed.clone(),
                 });
             }
         }

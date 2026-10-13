@@ -136,6 +136,61 @@ pub struct Query {
     pub probes: Vec<ProbeQuery>,
     pub repos: Vec<RepoQuery>,
     pub tickets: Vec<TicketQuery>,
+    /// The environments some column waits for: a deployment is read only
+    /// where one is asked for.
+    pub envs: Vec<String>,
+    /// Merge commits whose pipeline settled on an earlier pass, by
+    /// repository path and oid: not asked again.
+    pub commit_pipelines: HashMap<(String, String), Pipeline>,
+    /// The environments each merge commit was seen reaching: a deployment
+    /// is permanent, so one is read until every wanted environment is in.
+    pub deployed: HashMap<(String, String), Vec<String>>,
+}
+
+/// What a pass saw change in a ticket's set (T-739): the edges a column's
+/// `Arrives here when` fires on. Read against the previous read, never a
+/// first one, which is a baseline.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Edge {
+    /// A PR newly bound and open.
+    pub opened: bool,
+    /// The set's pipeline turned passed.
+    pub passed: bool,
+    /// Every PR of the set is merged, and was not before.
+    pub merged: bool,
+    /// Environments a merge commit reached since.
+    pub deployed: Vec<String>,
+}
+
+impl Edge {
+    pub fn any(&self) -> bool {
+        self.opened || self.passed || self.merged || !self.deployed.is_empty()
+    }
+}
+
+/// The edge between two reads of one ticket's set.
+pub fn edge(old: &[Pr], new: &[Pr]) -> Edge {
+    let known = |p: &Pr| old.iter().any(|o| o.repo == p.repo && o.number == p.number);
+    let all_merged = |s: &[Pr]| !s.is_empty() && s.iter().all(|p| p.state == PrState::Merged);
+    let envs = |s: &[Pr]| -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for p in s.iter().filter(|p| p.state == PrState::Merged) {
+            for e in &p.deployed {
+                if !out.contains(e) {
+                    out.push(e.clone());
+                }
+            }
+        }
+        out
+    };
+    let before = envs(old);
+    Edge {
+        opened: new.iter().any(|p| p.state.is_open() && !known(p)),
+        passed: forge::pipeline_of(new) == Pipeline::Passed
+            && forge::pipeline_of(old) != Pipeline::Passed,
+        merged: all_merged(new) && !all_merged(old),
+        deployed: envs(new).into_iter().filter(|e| !before.contains(e)).collect(),
+    }
 }
 
 /// One repository's answer: its PRs, or why not.
@@ -191,6 +246,31 @@ pub fn sample(q: Query, now_ms: u64) -> Sample {
             if let Some(r) = q.repos.iter().find(|r| r.remote.path == pr.repo) {
                 pr.pipeline = gitlab_pipeline(r, &pr.head_oid);
             }
+        }
+        // The newest merged PR per repository: its merge commit's pipeline
+        // (the build-and-deploy run on main) unless an earlier pass settled
+        // it, and the environments it reached where a column waits for one.
+        let mut seen_repo: Vec<String> = Vec::new();
+        for pr in set.iter_mut().filter(|p| p.state == PrState::Merged && !p.merge_oid.is_empty()) {
+            if seen_repo.contains(&pr.repo) {
+                continue;
+            }
+            seen_repo.push(pr.repo.clone());
+            let Some(r) = q.repos.iter().find(|r| r.remote.path == pr.repo) else { continue };
+            let key = (pr.repo.clone(), pr.merge_oid.clone());
+            pr.pipeline = match q.commit_pipelines.get(&key) {
+                Some(p) => p.clone(),
+                None => commit_pipeline(r, &pr.merge_oid),
+            };
+            let mut known = q.deployed.get(&key).cloned().unwrap_or_default();
+            if q.envs.iter().any(|e| !known.contains(e)) {
+                for env in deployments(r, &pr.merge_oid, &q.envs) {
+                    if !known.contains(&env) {
+                        known.push(env);
+                    }
+                }
+            }
+            pr.deployed = known;
         }
         out.sets.insert(t.ticket, set);
     }
@@ -285,6 +365,69 @@ fn gitlab_pipeline(r: &RepoQuery, sha: &str) -> Pipeline {
         Ok(out) => forge::parse_gitlab_pipelines(&out),
         Err(_) => Pipeline::Unknown,
     }
+}
+
+/// A merge commit's pipeline on the forge: GitHub's check runs for the
+/// commit, GitLab's newest pipeline by sha. `Unknown` when the call fails.
+fn commit_pipeline(r: &RepoQuery, oid: &str) -> Pipeline {
+    match r.cli.forge {
+        Forge::GitHub => {
+            let path = format!("repos/{}/commits/{oid}/check-runs?per_page=100", r.remote.path);
+            match run(&r.cli.bin, &["api", "--hostname", &r.remote.host, &path], Some(&r.dir)) {
+                Ok(out) => forge::parse_gh_check_runs(&out),
+                Err(_) => Pipeline::Unknown,
+            }
+        }
+        Forge::GitLab => gitlab_pipeline(r, oid),
+    }
+}
+
+/// The environments, of those wanted, a merge commit reached: GitHub's
+/// deployments by sha with a success status, GitLab's successful
+/// deployments of each wanted environment naming the sha.
+fn deployments(r: &RepoQuery, oid: &str, envs: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    match r.cli.forge {
+        Forge::GitHub => {
+            let path = format!("repos/{}/deployments?sha={oid}&per_page=30", r.remote.path);
+            let Ok(list) =
+                run(&r.cli.bin, &["api", "--hostname", &r.remote.host, &path], Some(&r.dir))
+            else {
+                return out;
+            };
+            for (id, env) in forge::parse_gh_deployments(&list) {
+                if !envs.contains(&env) || out.contains(&env) {
+                    continue;
+                }
+                let path =
+                    format!("repos/{}/deployments/{id}/statuses?per_page=1", r.remote.path);
+                if let Ok(status) =
+                    run(&r.cli.bin, &["api", "--hostname", &r.remote.host, &path], Some(&r.dir))
+                {
+                    if forge::parse_gh_deployment_success(&status) {
+                        out.push(env);
+                    }
+                }
+            }
+        }
+        Forge::GitLab => {
+            let project = r.remote.path.replace('/', "%2F");
+            for env in envs {
+                let path = format!(
+                    "projects/{project}/deployments?environment={env}&status=success\
+                     &order_by=created_at&sort=desc&per_page=20"
+                );
+                if let Ok(list) =
+                    run(&r.cli.bin, &["api", "--hostname", &r.remote.host, &path], Some(&r.dir))
+                {
+                    if forge::parse_gitlab_deployed(&list, oid) {
+                        out.push(env.clone());
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Every commit a worktree's HEAD pointed at, newest first; empty where
@@ -446,6 +589,10 @@ pub struct State {
     pub at_ms: HashMap<ulid::Ulid, u64>,
     /// The repositories whose last call failed, with the CLI's words.
     pub errors: Vec<(String, String)>,
+    /// Merge commits whose pipeline settled, by repository path and oid.
+    pub commit_pipelines: HashMap<(String, String), Pipeline>,
+    /// The environments each merge commit was seen reaching.
+    pub deployed: HashMap<(String, String), Vec<String>>,
     pub last: Option<Instant>,
     /// Unix ms of the last pass that answered, for the snapshot.
     pub last_ms: u64,
@@ -546,6 +693,7 @@ mod tests {
             review: Default::default(),
             pipeline,
             updated_ms: number,
+            deployed: Vec::new(),
         }
     }
 
@@ -564,6 +712,22 @@ mod tests {
         );
         let bare = [pr(2, PrState::Open, Pipeline::Failed(String::new()))];
         assert_eq!(delta(Some(&before), &bare), ["pipeline failed #2"]);
+    }
+
+    #[test]
+    fn the_edge_between_two_reads_names_what_a_column_waits_for() {
+        let mut m = pr(1, PrState::Merged, Pipeline::Passed);
+        m.merge_oid = "m1".into();
+        let old = [pr(1, PrState::Open, Pipeline::Running)];
+        let e = edge(&old, &[m.clone()]);
+        assert!(e.passed && e.merged && !e.opened && e.deployed.is_empty());
+        m.deployed = vec!["staging".into()];
+        let e = edge(&[pr(1, PrState::Merged, Pipeline::Passed)], &[m.clone()]);
+        assert_eq!(e.deployed, ["staging"]);
+        assert!(!e.merged, "merged before too");
+        let e = edge(&[m.clone()], &[pr(2, PrState::Open, Pipeline::None), m.clone()]);
+        assert!(e.opened && !e.merged, "a follow-up PR opens");
+        assert!(!edge(&[], &[]).any());
     }
 
     #[test]

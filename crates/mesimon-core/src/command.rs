@@ -2301,6 +2301,9 @@ pub struct AgentPrView {
     pub conflict: bool,
     #[serde(default)]
     pub review: String,
+    /// The environments the merge commit reached, once merged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deployed: Vec<String>,
 }
 
 /// Who merges a worktree branch (T-613), as `get_ticket` says it beside

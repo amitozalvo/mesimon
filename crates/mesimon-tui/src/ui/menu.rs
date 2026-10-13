@@ -46,7 +46,10 @@ fn scoped(app: &App, name: &str) -> String {
 /// row would not fit `layout::MIN_H`. The Name row is a text field while
 /// the mode says so, edited in place with the hardware cursor.
 pub(super) fn draw_column(f: &mut Frame, app: &App) {
-    let Mode::ColumnSettings { subject, idx, naming, describing, .. } = &app.mode else { return };
+    let Mode::ColumnSettings { subject, idx, naming, describing, env_naming, .. } = &app.mode
+    else {
+        return;
+    };
     let ctx = app.frame_ctx();
     let items = keymap::column_items(&ctx);
     let title = match subject {
@@ -59,7 +62,8 @@ pub(super) fn draw_column(f: &mut Frame, app: &App) {
     let field = naming
         .as_ref()
         .map(|b| ("Name: ", b))
-        .or_else(|| describing.as_ref().map(|b| ("Description: ", b)));
+        .or_else(|| describing.as_ref().map(|b| ("Description: ", b)))
+        .or_else(|| env_naming.as_ref().map(|b| ("Deployed to: ", b)));
     draw_dense(f, app, &ctx, *idx, &title, &items, field);
 }
 
