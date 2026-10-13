@@ -1,5 +1,5 @@
  BOARD   mesimon › kanban-tui   6 tickets
-  ╭─ SETTINGS ∙ MACHINE ─────────────────────────────────╮
+  ╭─ SETTINGS ∙ THIS BOARD ──────────────────────────────╮
   │                                                      │
   │▎ Theme                                               │
   │  Appearance                                          │
@@ -16,5 +16,5 @@
   │                                                      │
   │                                                      │
   │                                                      │
-  ╰── jk section ∙ enter open ∙ b this board ∙ esc back ─╯
+  ╰───── jk section ∙ enter open ∙ b machine ∙ esc back ─╯
  SETTINGS                                            ? keys

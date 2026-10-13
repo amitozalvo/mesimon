@@ -24094,3 +24094,16 @@ board), and the board's pick is now one key away, named on the page.
 `b` both ways, the board's pick landing), `theme_picker_says_what_the_board_keeps` (the title
 and the line, gone in board scope); goldens `settings_*` (the `MACHINE` word),
 `theme_picker_120`, `theme_picker_board_120` (the `b` hint).
+
+**The Theme section opens on this board's** (same day, the author: "default should be this
+board for themes"). A board's look is the board's, so Theme has a scope of its own,
+`App::theme_machine` (false: this board's), beside the dialog's `settings_board_scope`, and
+both reset when the dialog opens or closes. `b` speaks to Theme's while the page is open or the
+list's cursor is on Theme (`App::on_theme`), and to the dialog's everywhere else;
+`App::scope_is_board` is what the title and `Ctx::pref_scope_board` say, so the title reads
+`THIS BOARD` on Theme and `MACHINE` on Appearance in one dialog, each true of the page it heads.
+T-717's "one switch for the dialog cannot flip as the cursor passes a section" still holds for
+that one switch; this is a second switch, whose scope Theme alone reads. A pick lands in the
+board's `prefs.json`; `inherit` returns the slot to the machine's. Tests: TUI
+`the_theme_section_opens_on_this_board`; the machine-scope picker tests open through
+`open_machine_theme_picker`, which presses `b`; goldens `settings_120x30`, `settings_60x20`.

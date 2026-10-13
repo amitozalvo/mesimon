@@ -1213,6 +1213,7 @@ fn the_settings_subtitle_marquees() {
 #[test]
 fn golden_theme_picker_120() {
     let mut app = app_graphite(fixture_archived());
+    app.theme_machine = true;
     app.mode = Mode::Theme { idx: 2, slot: crate::theme::Slot::One(crate::theme::Ground::Dark) };
     let rows = render(&app, 120, 30);
     assert!(rows.iter().any(|r| r.contains("navy and gold")), "the blurb: {rows:#?}");
@@ -1220,12 +1221,11 @@ fn golden_theme_picker_120() {
     golden("theme_picker_120x30", &rows);
 }
 
-/// The picker in board scope (T-361): the inherit row first, naming the
-/// machine's pick, then the six flavors.
+/// The picker in board scope (T-361), where it opens (T-746): the inherit
+/// row first, naming the machine's pick, then the six flavors.
 #[test]
 fn golden_theme_picker_board_120() {
     let mut app = app_graphite(fixture_archived());
-    app.settings_board_scope = true;
     app.mode = Mode::Theme { idx: 0, slot: crate::theme::Slot::One(crate::theme::Ground::Dark) };
     golden("theme_picker_board_120x30", &render(&app, 120, 30));
 }
@@ -1238,6 +1238,7 @@ fn theme_picker_says_what_the_board_keeps() {
     let mut app = app_graphite(fixture_archived());
     app.board_prefs.set_flavor(crate::theme::Ground::Dark, crate::theme::Flavor::Amber);
     app.resolve_prefs();
+    app.theme_machine = true;
     app.mode = Mode::Theme { idx: 0, slot: crate::theme::Slot::Both };
     let rows = render(&app, 120, 30);
     assert!(rows.iter().any(|r| r.contains("SETTINGS ∙ MACHINE")), "{rows:#?}");
@@ -1245,7 +1246,7 @@ fn theme_picker_says_what_the_board_keeps() {
         rows.iter().any(|r| r.contains("this board keeps amber for dark ∙ b sets this board's")),
         "{rows:#?}"
     );
-    app.settings_board_scope = true;
+    app.theme_machine = false;
     let rows = render(&app, 120, 30);
     assert!(!rows.iter().any(|r| r.contains("this board keeps")), "{rows:#?}");
 }

@@ -61,7 +61,7 @@ pub(super) fn draw_page(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(Line::from(head)), Rect { height: 1, ..area });
     // Under it, in machine scope, what this board's own pick keeps: a pick
     // here saves and changes nothing on this board (T-746).
-    if let Some(keeps) = app.board_keeps(slot).filter(|_| !app.settings_board_scope) {
+    if let Some(keeps) = app.board_keeps(slot).filter(|_| !app.theme_board_scope()) {
         let line = format!(" {keeps} ∙ b sets this board's");
         let line = truncate(&line, usize::from(area.width));
         f.render_widget(
@@ -148,7 +148,7 @@ fn kept_row(app: &App, slot: Slot) -> usize {
         Slot::One(g) => g,
         Slot::Both => app.ground,
     };
-    let pick = if app.settings_board_scope {
+    let pick = if app.theme_board_scope() {
         app.board_prefs.flavor(ground)
     } else {
         Some(app.machine_prefs.for_ground(ground))
@@ -156,7 +156,7 @@ fn kept_row(app: &App, slot: Slot) -> usize {
     match pick {
         Some(f) => {
             Flavor::ALL.iter().position(|x| *x == f).unwrap_or(0)
-                + usize::from(app.settings_board_scope)
+                + usize::from(app.theme_board_scope())
         }
         None => 0,
     }

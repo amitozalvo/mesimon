@@ -1,30 +1,30 @@
  BOARD   mesimon › kanban-tui   6 tickets
 
-    TO╭─ SETTINGS ∙ MACHINE ─────────────────────────────────────────────────────────────────────────────────────╮   0
+    TO╭─ SETTINGS ∙ THIS BOARD ──────────────────────────────────────────────────────────────────────────────────╮   0
       │                                                                                                          │
     De│▎ Theme               ● dark and light   ○ dark   ○ light                                                 │
       │                                                                                                          │
-    Ke│  Appearance          ● graphite        dark    ╭─ graphite ───────────────────────────────────────────╮  │
-      │                        chalk          light    │ BOARD  kanban ∙ 5 tickets                            │  │
-      │  Notifications         blue            dark    │                                                      │  │
-      │                        amber           dark    │   TODO         2   IN PROGRESS  2   REVIEW       1   │  │
-      │  Behaviour             green           dark    │                                                      │  │
-      │                        solarized      light    │ ▎ Keymap      2d ▎ Fix parser  3h ▎ ✓ Graphemes 1d   │  │
-      │  Agents                void            dark    │                                                      │  │
-      │                        nord            dark    │ ▎ Decay       5h ▎ Drawer      1h                    │  │
-      │  Crown                 mocha           dark    │                                                      │  │
-      │                        tokyo           dark    │ ▉▉ ▉▉ ▉▉ ▉▉ ▉▉ ▉▉ ▉▉ ▉▉ ▉▉ ▉▉                        │  │
-      │  Terminal              rose            dark    ╰─────────────────────────────────────────────── dark ─╯  │
-      │                        gruvbox         dark                                                              │
-      │  Usage                 latte          light                                                              │
+    Ke│  Appearance          ● inherit                 ╭─ graphite ───────────────────────────────────────────╮  │
+      │                        graphite        dark    │ BOARD  kanban ∙ 5 tickets                            │  │
+      │  Notifications         chalk          light    │                                                      │  │
+      │                        blue            dark    │   TODO         2   IN PROGRESS  2   REVIEW       1   │  │
+      │  Behaviour             amber           dark    │                                                      │  │
+      │                        green           dark    │ ▎ Keymap      2d ▎ Fix parser  3h ▎ ✓ Graphemes 1d   │  │
+      │  Agents                solarized      light    │                                                      │  │
+      │                        void            dark    │ ▎ Decay       5h ▎ Drawer      1h                    │  │
+      │  Crown                 nord            dark    │                                                      │  │
+      │                        mocha           dark    │ ▉▉ ▉▉ ▉▉ ▉▉ ▉▉ ▉▉ ▉▉ ▉▉ ▉▉ ▉▉                        │  │
+      │  Terminal              tokyo           dark    ╰─────────────────────────────────────────────── dark ─╯  │
+      │                        rose            dark                                                              │
+      │  Usage                 gruvbox         dark                                                              │
+      │                        latte          light                                                              │
       │                        gruvbox-light  light                                                              │
       │                        ice             dark                                                              │
       │                                                                                                          │
       │                                                                                                          │
       │                                                                                                          │
       │                                                                                                          │
-      │                                                                                                          │
       │                     dark: graphite ∙ light: chalk ∙ follows the OS                                       │
-      ╰────────────────────────────────────────────────────── jk section ∙ enter open ∙ b this board ∙ esc back ─╯
+      ╰───────────────────────────────────────────────────────── jk section ∙ enter open ∙ b machine ∙ esc back ─╯
 
  SETTINGS                                                                                                        ? keys

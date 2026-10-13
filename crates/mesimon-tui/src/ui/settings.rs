@@ -56,7 +56,7 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     if !wide && on_page {
         name.push_str(&format!(" ∙ {}", app.settings_section.name().to_uppercase()));
     }
-    if app.settings_board_scope {
+    if app.scope_is_board() {
         name.push_str(" ∙ THIS BOARD");
     } else if app.frame_ctx().pref_scope_offered {
         // Where `b` is on offer the other scope is named too (T-746): a

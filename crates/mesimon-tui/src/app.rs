@@ -1897,6 +1897,10 @@ pub struct App {
     /// or a section opens and when a section closes (T-559), so it is true
     /// only under a list that offers `b`; `b` flips it.
     pub settings_board_scope: bool,
+    /// The Theme section's own scope (T-746): a board's look is the board's,
+    /// so the section starts on this board and `b` there flips this alone.
+    /// Reset with the dialog.
+    pub theme_machine: bool,
     /// The flavor query's reply, when it comes back after the query gave up
     /// on it, arrives as keystrokes; this recognises and discards it ahead
     /// of everything else (`osc.rs`).
@@ -2057,6 +2061,7 @@ impl App {
             board_prefs_path: None,
             board_prefs_write_barred: false,
             settings_board_scope: false,
+            theme_machine: false,
             reply_swallow: crate::osc::ReplySwallow::default(),
             update_watch: crate::update::UpdateWatch::new(),
             release,
@@ -4095,7 +4100,7 @@ impl App {
     /// for the board's own ground, which under a pin is not the slot's, and
     /// the machine's where this board's own pick hides it (T-746).
     fn theme_cursor(&self, ground: Ground) -> usize {
-        let pick = if self.settings_board_scope {
+        let pick = if self.theme_board_scope() {
             self.board_prefs.flavor(ground)
         } else if ground == self.ground && self.board_prefs.flavor(ground).is_none() {
             Some(self.theme.flavor)
@@ -4105,7 +4110,7 @@ impl App {
         match pick {
             Some(f) => {
                 Flavor::ALL.iter().position(|x| *x == f).unwrap_or(0)
-                    + usize::from(self.settings_board_scope)
+                    + usize::from(self.theme_board_scope())
             }
             None => 0,
         }
@@ -4145,16 +4150,40 @@ impl App {
         self.theme_at(idx).unwrap_or(self.machine_prefs.for_ground(machine))
     }
 
+    /// Is the Theme section on this board's (T-746)? Its own scope, not the
+    /// dialog's: on unless `b` was pressed on it.
+    pub(crate) fn theme_board_scope(&self) -> bool {
+        !self.theme_machine
+    }
+
+    /// Is the Theme section the one `b` speaks to: its page, or the list
+    /// with its cursor on it?
+    fn on_theme(&self) -> bool {
+        matches!(self.mode, Mode::Theme { .. })
+            || (matches!(self.mode, Mode::Sections)
+                && self.settings_section == keymap::SettingsSection::Theme)
+    }
+
+    /// The scope the dialog says is live: the Theme section's own there,
+    /// the dialog's everywhere else.
+    pub(crate) fn scope_is_board(&self) -> bool {
+        if self.on_theme() {
+            self.theme_board_scope()
+        } else {
+            self.settings_board_scope
+        }
+    }
+
     /// The picker's rows: `Flavor::ALL`, with an inherit row first in board
     /// scope (T-361).
     pub(crate) fn theme_rows(&self) -> usize {
-        Flavor::ALL.len() + usize::from(self.settings_board_scope)
+        Flavor::ALL.len() + usize::from(self.theme_board_scope())
     }
 
     /// The flavor a picker row names; `None` is the inherit row.
     pub(crate) fn theme_at(&self, idx: usize) -> Option<Flavor> {
         let idx = idx.min(self.theme_rows() - 1);
-        if self.settings_board_scope {
+        if self.theme_board_scope() {
             idx.checked_sub(1).map(|i| Flavor::ALL[i])
         } else {
             Some(Flavor::ALL[idx])
@@ -4197,7 +4226,7 @@ impl App {
             Slot::Both => "dark and light terminals".to_string(),
         };
         let pinned = self.forced.take().is_some();
-        if self.settings_board_scope {
+        if self.theme_board_scope() {
             match pick {
                 Some(f) => self.set_board_pref(&format!("{} for {word}", f.name()), |b| {
                     for g in grounds {
@@ -5745,7 +5774,7 @@ impl App {
                     self.mode,
                     Mode::Sections | Mode::Settings { .. } | Mode::Theme { .. }
                 ) && self.settings_section.board_scoped()),
-            pref_scope_board: self.settings_board_scope,
+            pref_scope_board: self.scope_is_board(),
             board_overrides: self
                 .board_prefs
                 .overridden()
@@ -6138,14 +6167,16 @@ impl App {
             Verb::Quit => self.quit = true,
             Verb::Menu => self.mode = Mode::Menu { idx: 0 },
             // The dialog opens on its section list, on the first section
-            // and the machine's settings (T-717).
+            // and the machine's settings (T-717), Theme on this board's
+            // (T-746).
             Verb::Settings => {
                 self.settings_section = keymap::SettingsSection::Theme;
                 self.settings_board_scope = false;
+                self.theme_machine = false;
                 self.mode = Mode::Sections;
             }
-            Verb::PrefScope => {
-                self.settings_board_scope = !self.settings_board_scope;
+            Verb::PrefScope if self.on_theme() => {
+                self.theme_machine = !self.theme_machine;
                 // The picker's rows gain or lose the inherit row: the cursor
                 // lands on the slot's pick in the scope it is now in.
                 if let Mode::Theme { slot, .. } = self.mode {
@@ -6155,6 +6186,14 @@ impl App {
                     };
                     self.mode = Mode::Theme { idx: self.theme_cursor(ground), slot };
                 }
+                self.status = if self.theme_board_scope() {
+                    "this board's theme ∙ inherit returns it to the machine's".into()
+                } else {
+                    "the machine's theme ∙ b sets this board's".into()
+                };
+            }
+            Verb::PrefScope => {
+                self.settings_board_scope = !self.settings_board_scope;
                 self.status = if self.settings_board_scope {
                     "settings for this board ∙ b returns a row to the machine's".into()
                 } else {
@@ -8067,6 +8106,7 @@ impl App {
             // opening starts on the machine's settings again.
             Scope::Sections => {
                 self.settings_board_scope = false;
+                self.theme_machine = false;
                 self.mode = Mode::Menu { idx: self.menu_row(Verb::Settings) };
             }
             Scope::Usage => self.return_to_settings(Verb::Usage),
@@ -16193,11 +16233,15 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
     }
 
-    /// The theme picker is the Theme section's page, in the machine's
-    /// scope.
-    fn open_theme_picker(app: &mut App) {
+    /// The theme picker is the Theme section's page, which opens on this
+    /// board's (T-746); `b` takes it to the machine's, where these tests
+    /// pick.
+    fn open_machine_theme_picker(app: &mut App) {
         open_section(app, keymap::SettingsSection::Theme);
-        assert!(!app.settings_board_scope);
+        assert!(app.theme_board_scope(), "the Theme page opens on this board's");
+        press(app, 'b');
+        assert!(!app.theme_board_scope());
+        assert!(!app.settings_board_scope, "the dialog's scope is untouched");
         assert!(matches!(app.mode, Mode::Theme { .. }), "{:?}", app.mode);
     }
 
@@ -17289,7 +17333,7 @@ mod tests {
         assert!(!app.force_redraw);
         // Under the picker the board still follows the ground (T-717: the
         // preview is the picker's own), and the picker keeps its slot.
-        open_theme_picker(&mut app);
+        open_machine_theme_picker(&mut app);
         assert_eq!(app.mode, Mode::Theme { idx: 1, slot: Slot::Both });
         press(&mut app, 'j');
         assert_eq!(app.theme.flavor, Flavor::Chalk, "browsing repaints only the preview");
@@ -17315,7 +17359,7 @@ mod tests {
         let mut app = app_three_columns();
         app.prefs_path = Some(path.clone());
         app.seed_pref(|p| p.set(Ground::Light, Flavor::Blue));
-        open_theme_picker(&mut app);
+        open_machine_theme_picker(&mut app);
         assert_eq!(app.mode, Mode::Theme { idx: 0, slot: Slot::Both });
         assert_eq!(app.ctx().theme_tab_word, "dark", "the hint names the next stop");
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
@@ -17364,7 +17408,7 @@ mod tests {
         // board has no pick there; both + inherit clears both keys.
         let board = dir.join("board.json");
         app.board_prefs_path = Some(board.clone());
-        app.settings_board_scope = true;
+        app.theme_machine = false;
         app.board_prefs.set_flavor(Ground::Dark, Flavor::Amber);
         app.resolve_prefs();
         reopen(&mut app);
@@ -17392,6 +17436,41 @@ mod tests {
         assert_eq!(app.machine_prefs.light, Flavor::Blue, "the machine's is untouched");
     }
 
+    /// Theme opens on this board's (T-746, the author: "default should be
+    /// this board for themes"): a pick lands in the board's file, `b` on
+    /// Theme flips Theme alone, and the other sections keep the dialog's
+    /// scope, the machine's.
+    #[test]
+    fn the_theme_section_opens_on_this_board() {
+        let (mut app, _, _) = app_with_claude(SessionState::Running, false);
+        let (machine, board) = pref_scratch("theme-default");
+        app.prefs_path = Some(machine.clone());
+        app.board_prefs_path = Some(board.clone());
+        open_settings(&mut app);
+        assert!(app.ctx().pref_scope_board, "the list on Theme says this board");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let green = Flavor::ALL.iter().position(|f| *f == Flavor::Green).unwrap() + 1;
+        app.mode = Mode::Theme { idx: green, slot: Slot::Both };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.status, "green for dark and light terminals ∙ saved for this board");
+        assert_eq!(app.theme.flavor, Flavor::Green);
+        assert!(!machine.exists(), "the machine's file is untouched");
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Sections);
+        press(&mut app, 'b');
+        assert!(!app.theme_board_scope(), "b on Theme flips Theme");
+        assert!(!app.settings_board_scope, "and not the dialog");
+        press(&mut app, 'j');
+        assert_eq!(app.settings_section, keymap::SettingsSection::Appearance);
+        assert!(!app.ctx().pref_scope_board, "Appearance is on the machine's");
+        press(&mut app, 'k');
+        assert!(!app.ctx().pref_scope_board, "Theme keeps what b left it on");
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        open_settings(&mut app);
+        assert!(app.theme_board_scope(), "a new dialog starts Theme on this board again");
+    }
+
     /// A board with a theme of its own (T-746): a pick in the machine's
     /// scope saved and changed nothing, said only "saved", and `b` was
     /// inert on the Theme page. The pick now says what the board keeps,
@@ -17407,7 +17486,7 @@ mod tests {
         app.board_prefs.set_flavor(Ground::Light, Flavor::Amber);
         app.resolve_prefs();
         app.theme = Theme::new(Flavor::Amber, Profile::TrueColor);
-        open_theme_picker(&mut app);
+        open_machine_theme_picker(&mut app);
         let at = |f: Flavor| Flavor::ALL.iter().position(|x| *x == f).expect("a flavor");
         assert_eq!(
             app.mode,
@@ -17425,7 +17504,7 @@ mod tests {
         assert_eq!(app.theme.flavor, Flavor::Amber, "the board's own pick still wins");
         assert!(app.ctx().pref_scope_offered);
         press(&mut app, 'b');
-        assert!(app.settings_board_scope, "b works on the Theme page");
+        assert!(app.theme_board_scope(), "b works on the Theme page");
         assert_eq!(
             app.mode,
             Mode::Theme { idx: at(Flavor::Amber) + 1, slot: Slot::Both },
@@ -17436,7 +17515,7 @@ mod tests {
         assert_eq!(app.status, "green for dark and light terminals ∙ saved for this board");
         assert_eq!(app.theme.flavor, Flavor::Green);
         press(&mut app, 'b');
-        assert!(!app.settings_board_scope, "and back to the machine's");
+        assert!(!app.theme_board_scope(), "and back to the machine's");
         assert_eq!(app.mode, Mode::Theme { idx: at(Flavor::Green), slot: Slot::Both });
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -17481,7 +17560,7 @@ mod tests {
         app.forced = Some(Flavor::Green);
         app.set_pref("chalk for light terminals", |p| p.light = Flavor::Chalk);
         assert!(app.appearance.is_none(), "pinned");
-        open_theme_picker(&mut app);
+        open_machine_theme_picker(&mut app);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap(); // the light slot alone
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(app.forced.is_none());
@@ -17500,7 +17579,7 @@ mod tests {
     fn theme_row_opens_the_picker_on_the_current_theme() {
         let mut app = app_three_columns();
         app.theme = Theme::new(Flavor::Blue, Profile::TrueColor);
-        open_theme_picker(&mut app);
+        open_machine_theme_picker(&mut app);
         assert_eq!(
             app.mode,
             Mode::Theme { idx: 2, slot: Slot::Both },
@@ -17515,7 +17594,7 @@ mod tests {
     #[test]
     fn moving_the_cursor_moves_the_preview_and_esc_saves_nothing() {
         let mut app = app_three_columns();
-        open_theme_picker(&mut app);
+        open_machine_theme_picker(&mut app);
         assert_eq!(app.mode, Mode::Theme { idx: 0, slot: Slot::Both });
         press(&mut app, 'j');
         press(&mut app, 'j');
@@ -17536,7 +17615,7 @@ mod tests {
         let mut app = app_three_columns();
         app.prefs_path = Some(path.clone());
         app.ground = Ground::Light;
-        open_theme_picker(&mut app);
+        open_machine_theme_picker(&mut app);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap(); // from both to light alone
         press(&mut app, 'j');
         press(&mut app, 'j');
@@ -17564,7 +17643,7 @@ mod tests {
         app.theme = Theme::new(Flavor::Green, Profile::TrueColor);
         let ctx = app.ctx();
         assert!(ctx.theme_pinned);
-        open_theme_picker(&mut app);
+        open_machine_theme_picker(&mut app);
         press(&mut app, 'k');
         press(&mut app, 'k');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
@@ -23042,8 +23121,7 @@ mod tests {
         app.board_prefs_path = Some(board.clone());
         app.seed_pref(|p| p.set(Ground::Dark, Flavor::Graphite));
         app.settings_section = keymap::SettingsSection::Theme;
-        app.settings_board_scope = true;
-        assert_eq!(app.theme_rows(), Flavor::ALL.len() + 1);
+        assert_eq!(app.theme_rows(), Flavor::ALL.len() + 1, "this board's by default");
         app.open_theme_picker();
         assert_eq!(
             app.mode,
@@ -23068,7 +23146,7 @@ mod tests {
         assert_eq!(app.prefs.dark, Flavor::Graphite);
         assert_eq!(app.theme.flavor, Flavor::Graphite, "the board rests on the machine's");
         // Machine scope: the picker is the six rows it always was.
-        app.settings_board_scope = false;
+        app.theme_machine = true;
         assert_eq!(app.theme_rows(), Flavor::ALL.len());
         assert_eq!(app.theme_at(0), Some(Flavor::ALL[0]));
     }
