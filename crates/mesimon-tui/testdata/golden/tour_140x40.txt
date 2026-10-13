@@ -1,0 +1,40 @@
+ BOARD   mesimon › kanban-tui   7 tickets
+ ╭─ GUIDED TOUR ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │                                                                                                                                        │
+ │  TICKETS                        Create a ticket                                                                                        │
+ │    Create a ticket                                                                                                                     │
+ │    Rename a ticket              A ticket is one piece of work, and the board is its columns. o opens a new ticket in the column the    │
+ │    Describe a ticket            cursor is in: type its title, and enter files it.                                                      │
+ │    Checklists                                                                                                                          │
+ │    Tags                         ╭─ practice board ───────────────────────────────────────────────────────────────────────────────────╮ │
+ │    Copy a ticket's title        │ BOARD   mesimon › practice   6 tickets                                                             │ │
+ │    Duplicate a ticket           │                                                                                                    │ │
+ │    Archive a ticket             │    TODO                    3 →     IN PROGRESS             1 →     REVIEW                 1 →   1  │ │
+ │    Delete a ticket              │                                                                                                    │ │
+ │                                 │    Fix the login redirect  now     Dark mode toggle        now     Rate-limit the public~ now   D  │ │
+ │  MOVING                         │                                                                                                 O  │ │
+ │    Move a card                  │    Write the onboarding g~ now                                                                  N  │ │
+ │    Order the cards              │                                                                                                 E  │ │
+ │    Automatic moves              │    Cache the avatar images now                                                                     │ │
+ │                                 │                                                                                                    │ │
+ │  FINDING                        │                                                                                                    │ │
+ │    Search                       │                                                                                                    │ │
+ │    Open a link                  │                                                                                                    │ │
+ │                                 │                                                                                                    │ │
+ │  AGENTS                         │                                                                                                    │ │
+ │    Quick start                  │                                                                                                    │ │
+ │    Start an agent               │                                                                                                    │ │
+ │    Agent tiers                  │                                                                                                    │ │
+ │    Worktrees                    │                                                                                                    │ │
+ │    The merge train              │                                                                                                    │ │
+ │    Pull requests                │                                                                                                    │ │
+ │    The crown                    │                                                                                                    │ │
+ │    Adopt a session              │                                                                                                    │ │
+ │                                 │                                                                                                    │ │
+ │  THE BOARD                      │ T-1 Fix the login redirect ∙ created just now                                                      │ │
+ │    Columns                      │ enter ticket page ∙ o new ticket ∙ HJKL move card ∙ tab describe ∙ r rename      esc menu ∙ ? keys │ │
+ │                                 ╰────────────────────────────────────────────────────────────────────────────────────────────────────╯ │
+ │                                                                                                                                        │
+ │                                                                                                                                        │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 1 of 23 ─╯
+ TOUR  jk lesson ∙ enter try it ∙ r replay ∙ esc close                                                                               ? keys

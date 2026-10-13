@@ -151,7 +151,7 @@ pub struct ReleaseWatch {
 impl ReleaseWatch {
     /// A watch that has checked nothing and will check nothing until it is
     /// given an `Eligible` — which only `new` does, outside the tests.
-    fn inert() -> Self {
+    pub(crate) fn inert() -> Self {
         let (tx, rx) = mpsc::channel();
         Self {
             eligible: None,

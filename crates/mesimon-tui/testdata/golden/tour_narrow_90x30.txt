@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui   7 tickets
+ ╭─ GUIDED TOUR ────────────────────────────────────────────────────────────────────────╮
+ │                                                                                      │
+ │ Checklists                                                                           │
+ │                                                                                      │
+ │ A Summary heading in the description, with - [ ] lines under it, is a checklist: the │
+ │ card shows how far along it is. ^j opens it, and space ticks a box.                  │
+ │                                                                                      │
+ │ ╭─ practice board ─────────────────────────────────────────────────────────────────╮ │
+ │ │ BOARD   mesimon › practice   6 tickets                                           │ │
+ │ │                                                                                  │ │
+ │ │    TODO                         3 →     IN PROGRESS                 1 →   1   1  │ │
+ │ │                                                                                  │ │
+ │ │    Fix the login redirect       now     Dark mode toggle            now   R   D  │ │
+ │ │                                                                           E   O  │ │
+ │ │    Write the onboarding guide   now                                       V   N  │ │
+ │ │                                                                           I   E  │ │
+ │ │    Cache the avatar images      now                                       E      │ │
+ │ │                                                                           W      │ │
+ │ │                                                                                  │ │
+ │ │                                                                                  │ │
+ │ │                                                                                  │ │
+ │ │                                                                                  │ │
+ │ │ T-1 Fix the login redirect ∙ created just now                                    │ │
+ │ │ enter ticket page ∙ o new ticket ∙ HJKL move card ∙ r rename   esc menu ∙ ? keys │ │
+ │ ╰──────────────────────────────────────────────────────────────────────────────────╯ │
+ │                                                                                      │
+ │                                                                                      │
+ ╰──────────────────────────────────────────────────────────────────────────── 4 of 23 ─╯
+ TOUR  jk lesson ∙ enter try it ∙ r replay ∙ esc close                             ? keys

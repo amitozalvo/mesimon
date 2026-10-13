@@ -37,6 +37,7 @@ mod tags;
 mod text;
 mod theme;
 mod title;
+mod tour;
 mod ui;
 mod update;
 

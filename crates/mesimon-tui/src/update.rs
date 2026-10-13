@@ -19,6 +19,12 @@ pub struct UpdateWatch {
 }
 
 impl UpdateWatch {
+    /// A watch on nothing: the tour's practice board (T-763) has no binary
+    /// of its own to see replaced.
+    pub(crate) fn inert() -> Self {
+        Self { exe: None, start: None, candidate: None, last_check: Instant::now(), ready: false }
+    }
+
     pub fn new() -> Self {
         let exe = mesimon_core::exe::current_exe().ok();
         let start = exe.as_deref().and_then(mtime);

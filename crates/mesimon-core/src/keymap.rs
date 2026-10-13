@@ -266,13 +266,19 @@ pub enum Scope {
     /// provider has none. `r` reads again now, `s` opens the line's
     /// settings, Esc goes back to the menu.
     Usage,
+    /// The guided tour (T-763), from the menu's row: the lessons down the
+    /// left, a practice board beside them playing the one under the cursor,
+    /// and Enter hands that board the keys. While it has them they are its
+    /// own (the tour's keymap is not asked), so this scope is the lesson
+    /// list's alone.
+    Tour,
 }
 
 impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 33] = [
+    pub const ALL: [Scope; 34] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -306,6 +312,7 @@ impl Scope {
         Scope::Usage,
         Scope::Summary,
         Scope::PullRequests,
+        Scope::Tour,
     ];
 
     /// The scope a key falls through to when this one does not bind it.
@@ -331,7 +338,8 @@ impl Scope {
             | Scope::TierEdit
             | Scope::Usage
             | Scope::Summary
-            | Scope::PullRequests => Some(Scope::Global),
+            | Scope::PullRequests
+            | Scope::Tour => Some(Scope::Global),
             Scope::Global
             | Scope::Move
             | Scope::DiffView
@@ -381,6 +389,7 @@ impl Scope {
             Scope::Search => "SEARCH",
             Scope::Input => "INPUT",
             Scope::Editor => "EDIT",
+            Scope::Tour => "TOUR",
         }
     }
 }
@@ -540,6 +549,8 @@ pub enum Verb {
     /// Open the release notes from the menu. Same argument, read even less
     /// often: what changed is a question for after an update, not a key.
     ReleaseNotes,
+    /// Open the guided tour from the menu (T-763).
+    Tour,
     // ---- sessions ----
     Shell,
     /// Shift+Enter on the board: open a one-line field on the selected card
@@ -1102,6 +1113,11 @@ impl SettingsSection {
 /// action applies.
 #[derive(Debug, Clone, Default)]
 pub struct Ctx {
+    /// The guided tour's lesson under the cursor has something to try on
+    /// its practice board (T-763).
+    pub tour_tryable: bool,
+    /// This is the tour's practice board.
+    pub practice: bool,
     pub settings_section: SettingsSection,
     /// The board's three agent-prompt templates (T-353), as the rows label
     /// themselves off them. `Default` is "mesimon's own words", which is what
@@ -2813,7 +2829,9 @@ static BOARD: &[Binding] = &[
         keys: &[Key::Char('q'), Key::Ctrl('c')],
         verb: Verb::Quit,
         show: "q",
-        hint: |_| "quit",
+        // On the tour's practice board (T-763), leaving is going back to
+        // the lessons.
+        hint: |c| if c.practice { "back to the tour" } else { "quit" },
         avail: always,
         class: Class::Plain,
         group: Group::App,
@@ -3511,6 +3529,56 @@ static RELEASES: &[Binding] = &[
         verb: Verb::Back,
         show: "q",
         hint: |_| "back",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 250,
+    },
+];
+
+/// The guided tour's lesson list (T-763). Enter hands the practice board
+/// the keys, where the lesson has something to try; the board gives them
+/// back on its own Esc.
+static TOUR: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
+        verb: Verb::CursorDown,
+        show: "jk",
+        hint: |_| "lesson",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Enter],
+        verb: Verb::Act,
+        show: "enter",
+        hint: |_| "try it",
+        avail: |c| c.tour_tryable,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 20,
+    },
+    Binding {
+        keys: &[Key::Char('r')],
+        verb: Verb::Repeat,
+        show: "r",
+        hint: |_| "replay",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 30,
+    },
+    Binding {
+        keys: &[Key::Char('q'), Key::Esc],
+        verb: Verb::Back,
+        show: "esc",
+        hint: |_| "close",
         avail: always,
         class: Class::Plain,
         group: Group::Navigate,
@@ -4589,7 +4657,7 @@ static MENU_ITEMS: &[MenuItem] = &[
                 "share this board, or join one with a code".into()
             }
         },
-        avail: |c| c.teams || c.mesophon,
+        avail: |c| (c.teams || c.mesophon) && !c.practice,
         key: "",
     },
     // The door to the preferences. Never a suggestion — a setting is not
@@ -4604,6 +4672,17 @@ static MENU_ITEMS: &[MenuItem] = &[
         avail: always,
         key: ",",
     },
+    // The guided tour (T-763): the board's moves, each played on a practice
+    // board and, where it can be, tried there. Never a suggestion — a
+    // newcomer finds it in the menu, and nobody else is told twice.
+    MenuItem {
+        verb: Verb::Tour,
+        label: |_| "Guided tour".into(),
+        detail: |_| "every move, shown and tried on a practice board".into(),
+        // Not from inside the tour's own practice board.
+        avail: |c| !c.practice,
+        key: "",
+    },
     // What this build is, in its own words. Never a
     // suggestion either — the header's update chip is the one that says a
     // NEWER one exists, and this row reads the notes the binary carries.
@@ -4616,8 +4695,20 @@ static MENU_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::Quit,
-        label: |_| "Quit mesimon".into(),
-        detail: |_| "sessions keep running".into(),
+        label: |c| {
+            if c.practice {
+                "Back to the tour".into()
+            } else {
+                "Quit mesimon".into()
+            }
+        },
+        detail: |c| {
+            if c.practice {
+                "the practice board keeps nothing".into()
+            } else {
+                "sessions keep running".into()
+            }
+        },
         avail: always,
         key: "q",
     },
@@ -7454,6 +7545,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::Search => SEARCH,
         Scope::Input => INPUT,
         Scope::Editor => EDITOR,
+        Scope::Tour => TOUR,
     }
 }
 
@@ -7807,6 +7899,7 @@ mod tests {
                 Scope::Usage => 30,
                 Scope::Summary => 31,
                 Scope::PullRequests => 32,
+                Scope::Tour => 33,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -9744,6 +9837,7 @@ mod tests {
             Verb::Sharing,
             Verb::Settings,
             Verb::ReleaseNotes,
+            Verb::Tour,
             Verb::Quit,
         ] {
             assert!(verbs.contains(&v), "{v:?} missing from the menu: {verbs:?}");
@@ -10188,6 +10282,7 @@ mod tests {
             Scope::ColumnSettings,
             Scope::Header,
             Scope::Sharing,
+            Scope::Tour,
         ] {
             assert_eq!(resolve(s, Key::Char('q'), &ctx), Some(Verb::Back), "{s:?}");
             assert_eq!(resolve(s, Key::Esc, &ctx), Some(Verb::Back), "{s:?}");

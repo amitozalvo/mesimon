@@ -7901,6 +7901,30 @@ fn test_no_drawn_structure() {
         sweep(&arch),
         sweep(&picker),
         {
+            // The tour (T-763), its practice board holding a dialog of its
+            // own: that board's frames are frames on this one.
+            let mut tour = touring(0);
+            let columns = crate::tour::LESSONS
+                .iter()
+                .position(|l| l.title == "Columns")
+                .expect("the columns lesson");
+            for _ in 0..columns {
+                press(&mut tour, 'j');
+            }
+            tour.handle_key(
+                ratatui::crossterm::event::KeyCode::Enter,
+                ratatui::crossterm::event::KeyModifiers::NONE,
+            )
+            .unwrap();
+            press(&mut tour, 'O');
+            let lines = sweep(&tour);
+            assert!(
+                lines.iter().any(|l| l.contains("NEW COLUMN")),
+                "the practice board's dialog must be ON SCREEN, or this law does not bite"
+            );
+            lines
+        },
+        {
             let lines = sweep(&header);
             assert!(
                 lines.iter().any(|l| l.contains("column settings")),
@@ -11137,5 +11161,100 @@ fn a_selection_reads_on_every_surface() {
                 );
             }
         }
+    }
+}
+
+// ---- the guided tour (T-763) ----------------------------------------------
+
+/// The board with the tour open from the menu, on lesson `n`, its playback
+/// stepped `beats` keys in.
+fn touring(n: usize) -> App {
+    let mut app = app_graphite(fixture(false));
+    app.handle_key(
+        ratatui::crossterm::event::KeyCode::Esc,
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    )
+    .expect("menu");
+    let row = mesimon_core::keymap::menu_items(&app.ctx())
+        .iter()
+        .position(|m| m.verb == mesimon_core::keymap::Verb::Tour)
+        .expect("the menu offers the tour");
+    for _ in 0..row {
+        press(&mut app, 'j');
+    }
+    app.handle_key(
+        ratatui::crossterm::event::KeyCode::Enter,
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    )
+    .expect("open");
+    assert!(matches!(app.mode, Mode::Tour), "the row opens the tour");
+    for _ in 0..n {
+        press(&mut app, 'j');
+    }
+    app
+}
+
+#[test]
+fn golden_tour_140() {
+    golden("tour_140x40", &render(&touring(0), 140, 40));
+}
+
+/// Narrower than the list and a board beside it: the lesson alone, its
+/// place in the frame's tail.
+#[test]
+fn golden_tour_narrow_90() {
+    golden("tour_narrow_90x30", &render(&touring(3), 90, 30));
+}
+
+#[test]
+fn the_tour_closes_on_esc_and_q_back_to_the_board() {
+    for key in
+        [ratatui::crossterm::event::KeyCode::Esc, ratatui::crossterm::event::KeyCode::Char('q')]
+    {
+        let mut app = touring(1);
+        app.handle_key(key, ratatui::crossterm::event::KeyModifiers::NONE).expect("key");
+        assert!(matches!(app.mode, Mode::Normal), "{key:?}");
+        assert!(app.tour.is_none(), "{key:?}: the practice board went with it");
+    }
+}
+
+#[test]
+fn trying_hands_the_practice_board_the_keys_and_the_real_board_keeps_its_own() {
+    let mut app = touring(0);
+    let before = app.board.tickets.len();
+    app.handle_key(
+        ratatui::crossterm::event::KeyCode::Enter,
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    )
+    .expect("try");
+    assert!(app.tour.as_ref().is_some_and(|t| t.trying));
+    press(&mut app, 'o');
+    for c in "Practice".chars() {
+        press(&mut app, c);
+    }
+    app.handle_key(
+        ratatui::crossterm::event::KeyCode::Enter,
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    )
+    .expect("file");
+    let tour = app.tour.as_ref().expect("tour");
+    assert!(tour.is_done(0), "filing a ticket on the practice board is the lesson done");
+    assert_eq!(app.board.tickets.len(), before, "the real board got nothing");
+    assert!(render(&app, 140, 40).iter().any(|l| l.contains("✓ done")));
+    // q on the practice board gives the keys back, and the tour stays.
+    press(&mut app, 'q');
+    assert!(matches!(app.mode, Mode::Tour));
+    assert!(!app.tour.as_ref().expect("tour").trying);
+    assert!(!app.quit, "q on the practice board quits nothing");
+}
+
+#[test]
+fn tour_dump() {
+    if std::env::var_os("MESIMON_TOUR_SHOW").is_none() {
+        return;
+    }
+    let app = touring(0);
+    for l in render(&app, 140, 40) {
+        println!("{l}");
     }
 }

@@ -502,6 +502,9 @@ pub enum Mode {
         ticket: ulid::Ulid,
         idx: usize,
     },
+    /// The guided tour (T-763): its lesson list, cursor and practice board
+    /// live in `App::tour`, which is `Some` exactly while this is the mode.
+    Tour,
     /// The column settings dialog (T-117): a list over `keymap::column_items`
     /// on one column, every row relabelling off the snapshot and none closing
     /// the dialog (the Settings list's rule). Esc goes back to the board, or
@@ -1839,6 +1842,13 @@ pub struct App {
     last_action: Option<LastAction>,
     /// The `?` overlay is up. The next key — any key — puts it away.
     pub help: bool,
+    /// The guided tour while it is open (T-763), practice board and all.
+    pub tour: Option<Box<crate::tour::Tour>>,
+    /// This App is the tour's practice board: a copy says what it would
+    /// have copied and copies nothing, unless `practice_copies` (the person
+    /// trying it pressed the key), and nothing opens outside it.
+    practice: bool,
+    practice_copies: bool,
     /// `^L`: the main loop clears and redraws from scratch.
     pub force_redraw: bool,
     /// `^Z`: the main loop restores the terminal and raises SIGTSTP.
@@ -2087,6 +2097,9 @@ impl App {
             last_undo: None,
             last_action: None,
             help: false,
+            tour: None,
+            practice: false,
+            practice_copies: false,
             force_redraw: false,
             pending_suspend: false,
             diff_two_pane: Cell::new(true),
@@ -2107,6 +2120,72 @@ impl App {
         app.leave_pinned_column(None);
         app.seed_team_drafts();
         Ok(app)
+    }
+
+    /// The guided tour's practice board (T-763): a board on `client` (the
+    /// tour's toy daemon) drawn in the person's theme and prefs, with no
+    /// watch of its own, copying nothing until `practice_copies`.
+    pub(crate) fn practice(
+        client: Box<dyn Transport>,
+        theme: Theme,
+        prefs: &crate::prefs::Prefs,
+    ) -> Result<Self> {
+        let mut app = Self::new(client, PathBuf::from("/practice"), theme)?;
+        app.prefs = prefs.clone();
+        app.machine_prefs = prefs.clone();
+        app.update_watch = crate::update::UpdateWatch::inert();
+        app.release = crate::release::ReleaseWatch::inert();
+        app.practice = true;
+        // `new` keeps the first snapshot's board and leaves some of what
+        // rides beside it (the machine's tiers) to the first refresh.
+        app.refresh()?;
+        Ok(app)
+    }
+
+    /// Is this the tour's practice board? It is drawn at whatever size its
+    /// pane has, under the board's own floor.
+    pub(crate) fn is_practice(&self) -> bool {
+        self.practice
+    }
+
+    /// The title of the card under the cursor, for the tour's checks.
+    pub(crate) fn selected_title(&self) -> Option<&str> {
+        self.selected_ticket().map(|t| t.title.as_str())
+    }
+
+    /// Is a text field taking the keys right now?
+    pub(crate) fn typing_now(&self) -> bool {
+        self.text_field()
+    }
+
+    /// Let the practice board's copy reach the clipboard: the person trying
+    /// a lesson pressed the key themselves.
+    pub(crate) fn practice_copies(&mut self, on: bool) {
+        self.practice_copies = on;
+    }
+
+    /// `text` to the clipboard, the status line's words for it back. The
+    /// tour's practice board copies only when a person pressed the key.
+    fn copy(&self, subject: &str, text: &str) -> String {
+        if self.practice && !self.practice_copies {
+            return format!("{subject} copied");
+        }
+        crate::clipboard::copy_status(subject, text)
+    }
+
+    /// Open the guided tour (T-763) on its first lesson, or say why not.
+    fn open_tour(&mut self) {
+        let theme = (self.theme.flavor, self.theme.profile);
+        match crate::tour::Tour::new(theme, self.prefs.clone(), 0) {
+            Ok(t) => {
+                self.tour = Some(Box::new(t));
+                self.mode = Mode::Tour;
+            }
+            Err(e) => {
+                self.mode = Mode::Normal;
+                self.status = format!("the tour could not start: {e:#}");
+            }
+        }
     }
 
     /// Is the `d` chord armed on this ticket? The card (and the ticket page's
@@ -2144,6 +2223,7 @@ impl App {
             || self.summary_pulsing()
             || self.settings_striking()
             || self.reply_revealing()
+            || self.tour.as_ref().is_some_and(|t| t.animating())
     }
 
     /// Is the Appearance page's preview striking (T-717)? Once, from the
@@ -2986,6 +3066,49 @@ impl App {
 
     /// Poll one terminal event; returns whether a redraw is needed.
     pub fn tick(&mut self) -> Result<bool> {
+        let mut dirty = self.pump()?;
+        // The tour's practice board, on its own clock (T-763).
+        if let Some(tour) = self.tour.as_mut() {
+            dirty |= tour.tick(mesimon_core::clock::now_ms())?;
+        }
+        // The loop redraws once per tick, so the poll timeout is the frame
+        // rate: 100 ms paces the spinner, and a panel in motion gets a
+        // shorter one for the few frames it takes to settle.
+        let frame = if self.animating() { 16 } else { 100 };
+        if !event::poll(Duration::from_millis(frame))? {
+            return Ok(dirty);
+        }
+        let key = match event::read()? {
+            TermEvent::Key(key) => key,
+            // Bracketed paste (armed by `lib.rs::init_terminal`): the whole
+            // clipboard as one event, never as keystrokes.
+            TermEvent::Paste(text) => return Ok(self.on_paste(&text)? || dirty),
+            // The mouse (T-716, armed by `lib.rs` while the setting is on).
+            TermEvent::Mouse(m) => return Ok(self.on_mouse(m)? || dirty),
+            // The terminal saying whether anybody is looking (T-282, armed by
+            // `lib.rs::init_terminal`). From the first one of these on, it is
+            // the only source the presence rule consults.
+            TermEvent::FocusGained => {
+                self.saw_focus(true);
+                return Ok(dirty);
+            }
+            TermEvent::FocusLost => {
+                self.saw_focus(false);
+                // The pointer went with the focus: no hover on a board
+                // nobody is pointing at.
+                self.hover.set(None);
+                self.peeked.set(None);
+                return Ok(self.pointer.take().is_some() || dirty);
+            }
+            _ => return Ok(dirty),
+        };
+        Ok(self.on_terminal_key(key)? || dirty)
+    }
+
+    /// Everything a tick does but wait for the terminal: the wire, the
+    /// watches, the polls. The tour's practice board (T-763) is pumped by
+    /// this alone, since the terminal is its board's and not its own.
+    pub(crate) fn pump(&mut self) -> Result<bool> {
         let mut dirty = self.poll_image_paste();
         // A transport-level advisory (build skew that would not settle) joins
         // the daemon's own notices in the advisory row.
@@ -3056,38 +3179,7 @@ impl App {
             dirty = true;
         }
         dirty |= self.drive_caffeine();
-        // The loop redraws once per tick, so the poll timeout is the frame
-        // rate: 100 ms paces the spinner, and a panel in motion gets a
-        // shorter one for the few frames it takes to settle.
-        let frame = if self.animating() { 16 } else { 100 };
-        if !event::poll(Duration::from_millis(frame))? {
-            return Ok(dirty);
-        }
-        let key = match event::read()? {
-            TermEvent::Key(key) => key,
-            // Bracketed paste (armed by `lib.rs::init_terminal`): the whole
-            // clipboard as one event, never as keystrokes.
-            TermEvent::Paste(text) => return Ok(self.on_paste(&text)? || dirty),
-            // The mouse (T-716, armed by `lib.rs` while the setting is on).
-            TermEvent::Mouse(m) => return Ok(self.on_mouse(m)? || dirty),
-            // The terminal saying whether anybody is looking (T-282, armed by
-            // `lib.rs::init_terminal`). From the first one of these on, it is
-            // the only source the presence rule consults.
-            TermEvent::FocusGained => {
-                self.saw_focus(true);
-                return Ok(dirty);
-            }
-            TermEvent::FocusLost => {
-                self.saw_focus(false);
-                // The pointer went with the focus: no hover on a board
-                // nobody is pointing at.
-                self.hover.set(None);
-                self.peeked.set(None);
-                return Ok(self.pointer.take().is_some() || dirty);
-            }
-            _ => return Ok(dirty),
-        };
-        Ok(self.on_terminal_key(key)? || dirty)
+        Ok(dirty)
     }
 
     /// Rich terminals distinguish a fresh press from a held key. Legacy
@@ -3445,6 +3537,7 @@ impl App {
                 idx, naming: None, describing: None, env_naming: None, ..
             } => Some(*idx),
             Mode::Search(s) => Some(s.idx),
+            Mode::Tour => self.tour.as_ref().filter(|t| !t.trying).map(|t| t.idx),
             _ => None,
         }
     }
@@ -3656,6 +3749,10 @@ impl App {
     /// status line says when the field's limit cut it. Returns whether the
     /// screen changed.
     pub fn on_paste(&mut self, text: &str) -> Result<bool> {
+        if let Some(t) = self.tour.as_mut().filter(|t| t.trying) {
+            t.paste(text)?;
+            return Ok(true);
+        }
         self.pending_spawn_focus = None;
         self.status.clear();
         self.merge_note.clear();
@@ -5475,6 +5572,7 @@ impl App {
             Mode::Links { .. } => Scope::Links,
             Mode::Summary { .. } => Scope::Summary,
             Mode::PullRequests { .. } => Scope::PullRequests,
+            Mode::Tour => Scope::Tour,
             Mode::Search(_) => Scope::Search,
             // Naming a column IS a text field (the tag picker's rule), and
             // saying so is what puts `enter save ∙ esc cancel` in the edge.
@@ -5893,6 +5991,8 @@ impl App {
             editor_cycles: editor.is_some_and(|e| self.note_ring(e).is_some()),
             editor_word: self.editor_word,
             rich_keys: self.rich_keys,
+            practice: self.practice,
+            tour_tryable: self.tour.as_ref().is_some_and(|t| !t.trying && t.lesson().ask.is_some()),
             prompts: self.board.prompts.clone(),
             prompt_editing: matches!(self.mode, Mode::Prompts { editing: Some(_), .. }),
             // An identity the relay has not admitted is not signed in: the
@@ -6025,6 +6125,12 @@ impl App {
     /// verb it returns is matched exhaustively below — so a binding with no
     /// handler is a compile error, not a dead key.
     pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
+        // The tour's practice board has the keys (T-763): every one is its
+        // own until it gives them back.
+        if let Some(t) = self.tour.as_mut().filter(|t| t.trying) {
+            t.key(code, mods, mesimon_core::clock::now_ms())?;
+            return Ok(());
+        }
         // A letter typed into a field says which layout the keyboard is on
         // (T-458), so leaving a Hebrew title for the board finds the pause
         // already up — before its first key, which on Hebrew is `q` typing
@@ -6490,6 +6596,12 @@ impl App {
             Verb::Grab => self.grab(key, scope, ctx)?,
             Verb::Nudge if scope == Scope::Tiers => self.nudge_tier(key)?,
             Verb::Nudge => self.nudge(key)?,
+            // `r` in the tour: the lesson from its first frame.
+            Verb::Repeat if scope == Scope::Tour => {
+                if let Some(t) = self.tour.as_mut() {
+                    t.start(t.idx, mesimon_core::clock::now_ms())?;
+                }
+            }
             Verb::Repeat => self.repeat_last()?,
             // `a` on a ticket that is already archived restores it right
             // away; otherwise it arms, and the second `a` archives.
@@ -7542,7 +7654,7 @@ impl App {
                     _ => None,
                 };
                 if let Some(text) = text {
-                    self.status = crate::clipboard::copy_status("link", &text);
+                    self.status = self.copy("link", &text);
                 }
             }
             Verb::ThemeSlot => self.cycle_theme_slot(),
@@ -7647,6 +7759,7 @@ impl App {
             Verb::ColumnReclaim => self.set_column(|s| s.offers = Some(s.offers().next()))?,
             Verb::ColumnTrain => self.set_column(|s| s.train = s.train.next())?,
             Verb::ReleaseNotes => self.open_releases(),
+            Verb::Tour => self.open_tour(),
             Verb::AdoptObserve => self.adopt_external(false)?,
             // Shift+Tab on a ticket that has not started yet (T-309): the
             // composer's pick, still open. The composer and the editor keep
@@ -7735,7 +7848,7 @@ impl App {
             1 => ("title", t.title.clone()),
             _ => ("id + title", format!("{} {}", t.short_key, t.title)),
         };
-        let status = crate::clipboard::copy_status(&format!("{} {subject}", t.short_key), &text);
+        let status = self.copy(&format!("{} {subject}", t.short_key), &text);
         let next = match step {
             0 => "title",
             1 => "id + title",
@@ -7868,6 +7981,16 @@ impl App {
             Scope::Links => {
                 if let Mode::Links { links, idx, .. } = &mut self.mode {
                     *idx = step(*idx, links.len(), down);
+                }
+            }
+            Scope::Tour => {
+                if let Some(t) = self.tour.as_mut() {
+                    let to = step(t.idx, crate::tour::LESSONS.len(), down);
+                    if to != t.idx {
+                        if let Err(e) = t.start(to, mesimon_core::clock::now_ms()) {
+                            self.status = format!("{e:#}");
+                        }
+                    }
                 }
             }
             Scope::Summary => {
@@ -8177,6 +8300,12 @@ impl App {
                 }
                 Ok(())
             }
+            Scope::Tour => {
+                if let Some(t) = self.tour.as_mut() {
+                    t.try_it()?;
+                }
+                Ok(())
+            }
             Scope::Links => {
                 let Mode::Links { links, idx, .. } = &self.mode else {
                     return Ok(());
@@ -8303,6 +8432,11 @@ impl App {
             // back onto the column, never into the board's menu.
             Scope::Header => self.header_focus = false,
             Scope::Brief => self.leave_brief(),
+            // Out of the tour, practice board and all.
+            Scope::Tour => {
+                self.tour = None;
+                self.mode = Mode::Normal;
+            }
             // The menu is the board's, so the notes always return there.
             Scope::Releases => {
                 self.releases = None;
@@ -12784,6 +12918,10 @@ impl App {
     }
 
     fn open_outside(&mut self, target: String) {
+        if self.practice {
+            self.status = format!("opens {target} ∙ on your own board");
+            return;
+        }
         match &self.opener {
             Some(prog) => {
                 self.pending_open = Some(vec![prog.clone(), target.clone()]);

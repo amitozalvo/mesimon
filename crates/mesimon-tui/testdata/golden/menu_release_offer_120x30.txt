@@ -3,9 +3,8 @@
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
 
     Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
-
-    Keymap validator      >╭─ MENU ─────────────────────────────────────────────────────────╮
-                           │ SUGGESTED                                                      │
+                           ╭─ MENU ─────────────────────────────────────────────────────────╮
+    Keymap validator      >│ SUGGESTED                                                      │
                            │ ◦ Install v0.1.0-alpha.5                                       │
                            │     downloads and verifies it ∙ nothing restarts yet           │
                            │                                                                │
@@ -17,12 +16,13 @@
                            │     sign in to a relay to share this board or join one         │
                            │   Settings                                                   , │
                            │     theme, notifications, agents, crown, usage                 │
+                           │   Guided tour                                                  │
+                           │     every move, shown and tried on a practice board            │
                            │   Release notes                                                │
                            │     what changed in each version, newest first                 │
                            │   Quit mesimon                                               q │
                            │     sessions keep running                                      │
                            ╰───────────────────────── jk select ∙ enter choose ∙ esc close ─╯
-
 
 
 

@@ -22,6 +22,7 @@ mod tagpicker;
 mod tests;
 mod themes;
 mod ticket;
+mod tour;
 pub(crate) mod usage;
 
 pub(crate) use card::{CrownMark, Land};
@@ -110,7 +111,7 @@ fn draw_screen(f: &mut Frame, app: &App) {
 
     // Live-resize floor (07 §2.4): a notice, never a broken layout.
     let area = f.area();
-    if area.width < MIN_W || area.height < MIN_H {
+    if !app.is_practice() && (area.width < MIN_W || area.height < MIN_H) {
         let msg = format!(
             "mesimon needs {MIN_W}x{MIN_H}; this terminal is {}x{}",
             area.width, area.height
@@ -269,6 +270,9 @@ fn draw_screen(f: &mut Frame, app: &App) {
     }
     if matches!(app.mode, Mode::ColumnSettings { .. }) {
         menu::draw_column(f, app);
+    }
+    if matches!(app.mode, Mode::Tour) {
+        tour::draw(f, app);
     }
     // The merge dialog, over the card whose branch it is about (T-697): the
     // ticket page's, the same frame and words.

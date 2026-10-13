@@ -189,6 +189,17 @@ pub(crate) fn forget_hints() {
     HINTS.with(|h| h.borrow_mut().clear());
 }
 
+/// The hints spelled so far, taken: a board drawn inside this frame (the
+/// tour's practice board, T-763) spells and scrapes its own in between,
+/// and [`restore_hints`] puts these back.
+pub(crate) fn stash_hints() -> Vec<(String, Key)> {
+    HINTS.with(|h| std::mem::take(&mut *h.borrow_mut()))
+}
+
+pub(crate) fn restore_hints(hints: Vec<(String, Key)>) {
+    HINTS.with(|h| *h.borrow_mut() = hints);
+}
+
 /// Every hint this frame spelled that is still whole on `buf` — not cut by
 /// a frame's edge, not drawn over by a dialog — recorded as a spot over
 /// its key and its word. A hint's key is bold (06 §5.1 clause 3), which is

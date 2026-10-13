@@ -24934,3 +24934,62 @@ is untouched. A header being renamed does not flash.
 
 **Tests.** `ui::tests::test_armed_column_delete_flashes_the_header`: at rest no header cell is
 tinted, after `d` the row is and the name is in `err`, a stray key clears it.
+## The guided tour (T-763, 2026-10-14)
+
+**The ask.** A walkthrough for newcomers, in the Esc menu for now: a big dialog, the concepts
+down the left, an animated board on the right showing the one under the cursor with a
+description, and Enter to do it yourself on that board where that makes sense. Named **Guided
+tour** (the menu row, the frame's title).
+
+**The practice board is the board.** The right pane is a second `App`
+(`App::practice`) on a toy daemon (`tour/toy.rs`): a `Transport` whose world is in memory and
+answers the wire the way the daemon does for the commands a lesson reaches (create, rename,
+move, tag, notes, archive, delete, duplicate, columns, tiers, crown, merge, adopt, spawn). It
+writes no file and starts no process; anything else is refused in words saying it belongs to a
+real board, and the refusal is recorded (`World::refused`). `ui::tour` draws that `App` with the
+very `ui::draw` that draws the board, onto a `TestBackend` canvas the pane's size, and lays its
+cells into the pane; its dialog frames join the outer frame's record, so the L1 laws read its
+composer's border as a frame. The practice board is drawn under the board's 60x20 floor
+(`App::is_practice`). Its mouse hints are stashed around its draw (`mouse::stash_hints`), so the
+outer frame's survive.
+
+**A lesson is keys on a clock** (`tour/lessons.rs`): a seed world, then `Step`s, `Key` (900 ms
+to see it land), `Type` (70 ms a letter), `Wait`, `Say` (the line under the board) and `Do`, the
+world moving by itself where an agent, a forge or the train has the part (a turn ending, a
+pipeline passing, a branch merging). The toy applies `core::automove` on a session's state
+edge, so a start moves its card as on a real board. Because the animation presses the real
+keys, it cannot drift from them: `every_lesson_plays_to_its_end` plays all 23 and fails on a
+lesson whose keys no longer do what its try asks for, or that reaches past the practice board.
+Each lesson replays after a 3 s hold; `r` replays at once.
+
+**Trying it.** Enter (where the lesson has an `ask`) resets the world and hands the practice
+board every key, Esc and its menu included, since two lessons go through the menu. **q gives
+them back**: on the practice board the board's quit is the way back to the lessons, its hint
+reads `back to the tour` and the menu's last row `Back to the tour` (`Ctx::practice`); the
+practice menu offers no tour and no Sharing. A lesson's `done(&World, &App)` turns its row's
+tick on and the line under the board to `✓ done`. Copying during playback copies nothing; a
+person's own `c` while trying does (`App::practice_copies`), and an opener only says what it
+would open.
+
+**The 23 lessons**, in five groups: Tickets (create, rename, describe and pictures, checklists,
+tags, copy the title, duplicate, archive, delete), Moving (`> >`, `HJKL` and `.`, automatic
+moves), Finding (search, links), Agents (quick start, start an agent, tiers, worktrees, the
+merge train, pull requests, the crown, adopt a session), The board (columns and their
+settings). Watch-only: automatic moves and the merge train.
+
+**Plumbing.** `App::tick` split into `pump` (everything but the terminal read) and the read; the
+practice board is pumped by the tour's own tick, never reads the terminal. `UpdateWatch::inert`,
+`ReleaseWatch::inert` and a first `refresh` (the machine's tiers ride the snapshot, not `new`)
+in `App::practice`. `Scope::Tour` (jk, enter try it, r replay, esc close), `Verb::Tour`,
+`Mode::Tour` with the state in `App::tour`.
+
+**Open.** The mouse picks nothing in the dialog yet (no `Target::Row` on the lessons, no clicks
+into the practice board). The crown lesson does not strike its lightning. The lesson words are
+first drafts for the author to tune.
+
+**Tests.** The tour's own (`tour::tests`, `tour::toy::tests`, `tour::lessons::tests`), goldens
+`tour_140x40` and `tour_narrow_90x30`, the tour with a practice-board dialog open in
+`test_no_drawn_structure`, `trying_hands_the_practice_board_the_keys_and_the_real_board_keeps_its_own`.
+`MESIMON_TOUR_DUMP=<n> cargo test -p mesimon-tui dump_a_lesson -- --nocapture` prints lesson n
+beat by beat: how a lesson is written against what the board really does. Menu goldens reminted
+for the new row.
