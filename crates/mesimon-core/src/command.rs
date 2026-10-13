@@ -2042,6 +2042,14 @@ pub struct AgentTicketView {
     /// the same reason `WorktreeItem.status` is one.
     #[serde(default)]
     pub merge_state: Option<String>,
+    /// Where a merged branch landed, as the worktree row says it (T-772):
+    /// `main (MR !1)` where the forge merged it, so the crown ties the
+    /// merge to its PR without reading `prs`, or the ref a squash was found
+    /// on (`origin/main`). Absent until `merge_state` reads `merged`, and
+    /// for a plain merge into the checkout's own branch, which the row
+    /// calls just `merged`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_in: Option<String>,
     /// On a workspace ticket (T-368), every repository the branch lives in
     /// with its own merge state. Empty — and absent from the JSON — on a
     /// single repo.
@@ -2049,7 +2057,8 @@ pub struct AgentTicketView {
     pub repos: Vec<AgentRepoView>,
     /// Who merges this branch when it is ready (T-613), beside
     /// `merge_state`: the merge train, the crown or a person, with the one
-    /// clause that decides it. Absent with no branch. The crown reads it
+    /// clause that decides it, and nobody once it is merged (T-772).
+    /// Absent with no branch. The crown reads it
     /// on a worker's ticket and acts by it (`mcp::CROWN_WAKES`); a worker
     /// reads it on its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2276,13 +2285,17 @@ pub struct AgentTagView {
 /// One repository of a workspace ticket as the agent sees it (T-368).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentRepoView {
-    /// `""` is the root repository.
+    /// `root` is the root repository (T-772), as the ticket page says it;
+    /// `""` inside the daemon.
     pub name: String,
     /// The branch this leg is judged against: the repository's checked-out
     /// branch when the leg was cut.
     pub base: String,
     /// The same words as `merge_state`, for this repository alone.
     pub merge_state: String,
+    /// `merged_in`, for this repository alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_in: Option<String>,
 }
 
 /// One pull request of a ticket, as `get_ticket` says it (T-739): the
@@ -2316,8 +2329,9 @@ pub struct AgentPrView {
 /// (the crown's `merge_ticket`: the train is off, the ticket is out of it
 /// by `t`, or its column's train setting stops short of a merge) or
 /// `person` (crown mode is supervised, or the ticket's words came from
-/// outside and a person executes for it). `why` is the one clause that
-/// decided it, in words a crown relays.
+/// outside and a person executes for it) or `nobody` (the branch is merged
+/// already, T-772). `why` is the one clause that decided it, in words a
+/// crown relays.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentMergeView {
     pub by: String,
@@ -3359,6 +3373,7 @@ mod tests {
             workspace: "worktree".into(),
             branch: Some("msmn/T-1-x".into()),
             merge_state: Some("ahead".into()),
+            merged_in: None,
             repos: vec![],
             merge: None,
             prs: vec![],
@@ -3383,6 +3398,7 @@ mod tests {
             seen: None,
         };
         assert!(!serde_json::to_string(&t).unwrap().contains("repos"));
+        assert!(!serde_json::to_string(&t).unwrap().contains("merged_in"));
         // An agent at no stop says nothing about one (T-566), nor a crown
         // whose ask nobody dropped about that (T-568).
         assert!(!serde_json::to_string(&t).unwrap().contains("needs_you"));
@@ -3393,6 +3409,7 @@ mod tests {
             name: "api".into(),
             base: "main".into(),
             merge_state: "ahead".into(),
+            merged_in: None,
         }];
         t.column_descriptions.insert("BACKLOG".into(), "someday".into());
         t.asked = Some(AgentAskedView {

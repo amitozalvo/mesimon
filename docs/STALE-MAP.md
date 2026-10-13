@@ -24133,6 +24133,39 @@ passes and reaches staging, #43 merges and reaches staging, and #42 still reads 
 deployed. The stub answers check-runs and deployments by sha; the e2e fails on the old code with
 #42 at `running`, deployed `[]`.
 
+## Forge words name what they are about (T-772, 2026-10-14, follow-up to T-739)
+
+**Why.** Forge lab findings 13, 18, 19, 20 and 22 (2026-10-13): five words an agent or the crown
+read that named the wrong thing or nothing. Words only; no schema bump.
+
+**What changed.**
+- `get_ticket` carries `merged_in` (13): the worktree row's word, `main (MR !1)` where the forge
+  merged it or the ref a squash was found on, once `merge_state` reads `merged`; each workspace
+  repo carries its own. Absent for a plain merge into the checkout's branch, which the row calls
+  just `merged`. The crown ties a merge to its MR without reading `prs`.
+- A merged branch's `merge` reads `by: nobody, why: already merged` (18). It read `by: train,
+  the train is armed and reaches this column` in REVIEW, a merge to come that never would.
+- A workspace repo's `name` is `root` for the root leg (22), `worktree::leg_word` as the ticket
+  page says it; the daemon keeps `""`.
+- The crown's wake delta says `ahead` per leg on a branch of more than one leg (19): `ahead api
+  1 → 2`, each leg that moved. `wt_agg.ahead` sums the legs, so `ahead 2 → 6` named no repository
+  and matched no forge count. `Told.legs` carries each leg's count and crosses `crown.json`
+  (written only for more than one leg); a baseline without it, from an older build or with a
+  leg cut since, says the sum with the count (`ahead 2 → 6 over 2 repos`). One leg reads as before.
+- GitLab names the job a pipeline stopped on (20): a waiting or failed pipeline is followed by
+  one read of `projects/:id/pipelines/:pid/jobs`, the first `manual` (or `failed`, a job allowed
+  to fail last) job's name through `forge::job_word`. The wake says `waiting on
+  deploy:production !1`, not `waiting on a manual job !1`, and the failing job is named, which
+  T-739 left undone. The read happens only on a waiting or failed answer, on the same cadence as
+  the pipeline read; a failed read leaves the word bare.
+
+**Tests.** Units `a_multi_leg_delta_names_each_leg_that_moved` (crownwake) and
+`a_gitlab_pipeline_names_the_job_it_stopped_on` (core forge). `forge_e2e::a_folder_workspaces_leg_…`
+now waits for `deploy:production` on the PR and in the crown's wake, and reads `merged_in`,
+`merge: nobody` and each repo's `merged_in` through the crown's `get_ticket`; `workspace_e2e`
+reads the legs as `root, api, web`. Rig F1 passed on Sonnet. The multi-leg wake has no rig
+test, because the rig cuts no workspace root.
+
 ## Entry needs a passed pipeline ignores a ticket with no PR (T-750, 2026-10-13, follow-up to T-739)
 
 **Why.** On the forge lab the crown's ticket, which has no PR and never will, ended its turn and

@@ -708,13 +708,24 @@ fn list(r: &RepoQuery) -> Result<Vec<Pr>, String> {
 }
 
 /// A GitLab commit's newest pipeline, by sha. `Unknown` when the call
-/// fails: never read as green.
+/// fails: never read as green. A wait or a failure is named by one more
+/// read, of that pipeline's jobs (T-772); a failed read leaves it bare.
 fn gitlab_pipeline(r: &RepoQuery, sha: &str) -> Pipeline {
     let project = r.remote.path.replace('/', "%2F");
     let path = format!("projects/{project}/pipelines?sha={sha}&per_page=1");
+    let Ok(out) = run(&r.cli.bin, &["api", "--hostname", &r.remote.host, &path], Some(&r.dir))
+    else {
+        return Pipeline::Unknown;
+    };
+    let pipeline = forge::parse_gitlab_pipelines(&out);
+    let (Some(status), Some(id)) = (pipeline.gitlab_job_status(), forge::gitlab_pipeline_id(&out))
+    else {
+        return pipeline;
+    };
+    let path = format!("projects/{project}/pipelines/{id}/jobs?per_page=100");
     match run(&r.cli.bin, &["api", "--hostname", &r.remote.host, &path], Some(&r.dir)) {
-        Ok(out) => forge::parse_gitlab_pipelines(&out),
-        Err(_) => Pipeline::Unknown,
+        Ok(jobs) => pipeline.with_job(forge::parse_gitlab_job(&jobs, status)),
+        Err(_) => pipeline,
     }
 }
 

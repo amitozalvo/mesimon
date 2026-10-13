@@ -855,7 +855,8 @@ fn the_prs_survive_a_restart_and_the_first_pass_lists() {
 /// `mr list` prints the file the test writes, and `api …/pipelines?sha=X`
 /// prints `<pipelines file>.X` where one exists, else no pipeline — so the
 /// merge commit's sha has a pipeline and the squash commit's has none,
-/// which is the lab's shape (T-754).
+/// which is the lab's shape (T-754). A pipeline's jobs (T-772) are
+/// `<pipelines file>.jobs`.
 const GLAB_STUB: &str = r#"#!/bin/sh
 case "$1 $2" in
   "auth status") exit 0 ;;
@@ -866,6 +867,7 @@ case "$1 $2" in
       *pipelines?sha=*)
         sha="${4#*sha=}"; sha="${sha%%&*}"
         if [ -f "$MSMN_GLAB_PIPELINES.$sha" ]; then cat "$MSMN_GLAB_PIPELINES.$sha"; else echo '[]'; fi ;;
+      */jobs*) cat "$MSMN_GLAB_PIPELINES.jobs" 2>/dev/null || echo '[]' ;;
       *) echo '[]' ;;
     esac ;;
   *) echo "stub glab: $*" >&2; exit 1 ;;
@@ -888,7 +890,9 @@ fn merged_mr_json(branch: &str, tip: &str, merge_sha: &str, squash_sha: &str) ->
 /// no default branch. A leg with commits reads ahead all the same, an MR
 /// merged at that tip folds the leg to `main (MR !1)` with the merge
 /// commit — not the squash commit — as what landed, its pipeline read off
-/// that commit, and the crown hears the merge.
+/// that commit, and the crown hears the merge. Its manual job is named by
+/// GitLab's jobs read (T-772), and `get_ticket` says where it landed and
+/// that nobody merges it now.
 #[test]
 fn a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_commit() {
     let stub_dir = std::env::temp_dir().join(format!("msmn-forge-folder-{}", std::process::id()));
@@ -1029,7 +1033,11 @@ fn a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_co
     // ---- the MR merges on the forge, squash under "merge commit" ----------
     let merge_sha = "25559fabaea42e44173d2d161dd893f949a2701b";
     let squash_sha = "65f00df496d207427db655a37f264463a75d2f84";
-    write(&pipelines.with_extension(merge_sha), r#"[{"status":"success"}]"#);
+    write(&pipelines.with_extension(merge_sha), r#"[{"id":44,"status":"manual"}]"#);
+    write(
+        &pipelines.with_extension("jobs"),
+        r#"[{"name":"build","status":"success"},{"name":"deploy:production","status":"manual"}]"#,
+    );
     write(&mrs_file, &merged_mr_json(&wt.branch, &tip, merge_sha, squash_sha));
     wait_until(Duration::from_secs(20), "the leg to read merged by the forge", || {
         wt_of(&mut c, w)
@@ -1040,6 +1048,33 @@ fn a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_co
     assert_eq!(after.merged_oid, merge_sha, "what is on main is the merge commit, not the squash");
     assert!(!after.needs_rebase, "{after:?}");
     assert!(after.repos.iter().any(|r| r.name == "web" && !r.merged && r.ahead == 0), "{after:?}");
+    // The manual job by its name (T-772), on the board and to the crown.
+    wait_until(Duration::from_secs(20), "the waiting job's name", || {
+        prs_of(&mut c).iter().any(|p| {
+            p.ticket == w
+                && p.pipeline == "waiting"
+                && p.job.as_deref() == Some("deploy:production")
+        })
+    });
+    wait_until(Duration::from_secs(20), "the crown to hear the job's name", || {
+        !lines_with("waiting on deploy:production !1").is_empty()
+    });
+    assert!(lines_with("a manual job").is_empty(), "never the bare wait once named");
+    // The crown's read of the worker: where it landed, and no merger.
+    let view = match c
+        .send(Principal::Agent { session: sa }, Command::AgentReadTicket { key: kw.clone() })
+    {
+        Response::AgentTicket { ticket } => ticket,
+        other => panic!("read: {other:?}"),
+    };
+    assert_eq!(view.merge_state.as_deref(), Some("merged"));
+    assert_eq!(view.merged_in.as_deref(), Some("main (MR !1)"));
+    let merge = view.merge.expect("a branch says who merges it");
+    assert_eq!((merge.by.as_str(), merge.why.as_str()), ("nobody", "already merged"));
+    let names: Vec<(&str, Option<&str>)> =
+        view.repos.iter().map(|r| (r.name.as_str(), r.merged_in.as_deref())).collect();
+    assert_eq!(names, [("api", Some("main (MR !1)")), ("web", None)]);
+    write(&pipelines.with_extension(merge_sha), r#"[{"id":44,"status":"success"}]"#);
     wait_until(Duration::from_secs(20), "the merge commit's pipeline", || {
         prs_of(&mut c).iter().any(|p| p.ticket == w && p.number == 1 && p.pipeline == "passed")
     });

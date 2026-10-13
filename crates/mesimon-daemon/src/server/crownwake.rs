@@ -124,8 +124,12 @@ pub(super) struct Told {
     /// crosses as `ToldOnDisk`'s.
     #[serde(skip)]
     pub(super) merge: Option<&'static str>,
-    /// Commits ahead of the base; 0 on a checkout.
+    /// Commits ahead of the base, the legs summed; 0 on a checkout.
     pub(super) ahead: u32,
+    /// Each leg's own `ahead` by its word (`root`, `api`), on a branch of
+    /// more than one leg alone (T-772): a sum names no repository and
+    /// matches no forge's count, so a multi-leg delta says the legs.
+    pub(super) legs: Vec<(String, u32)>,
     pub(super) column: String,
     /// The forge's words when a wake is about its edge (T-739, T-744):
     /// `pipeline passed !1, review approved !1`. `None` where no forge spoke.
@@ -142,6 +146,8 @@ struct ToldOnDisk {
     #[serde(skip_serializing_if = "Option::is_none")]
     merge: Option<String>,
     ahead: u32,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    legs: Vec<(String, u32)>,
     column: String,
     /// T-739 wrote it `pipeline`.
     #[serde(skip_serializing_if = "Option::is_none", alias = "pipeline")]
@@ -153,7 +159,7 @@ impl From<ToldOnDisk> for Told {
         let merge = d.merge.and_then(|w| {
             ["merged", "needs_rebase", "ahead", "clean"].into_iter().find(|k| *k == w)
         });
-        Told { tip: d.tip, merge, ahead: d.ahead, column: d.column, forge: d.forge }
+        Told { tip: d.tip, merge, ahead: d.ahead, legs: d.legs, column: d.column, forge: d.forge }
     }
 }
 
@@ -163,6 +169,7 @@ impl From<Told> for ToldOnDisk {
             tip: t.tip,
             merge: t.merge.map(str::to_string),
             ahead: t.ahead,
+            legs: t.legs,
             column: t.column,
             forge: t.forge,
         }
@@ -189,9 +196,21 @@ pub(super) struct BranchLook {
     pub(super) tip: String,
     pub(super) base_tip: String,
     pub(super) ahead: u32,
+    /// `Told::legs`: each leg's `ahead`, on more than one leg alone.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(super) legs: Vec<(String, u32)>,
     pub(super) merged: bool,
     pub(super) needs_rebase: bool,
     pub(super) conflict: bool,
+}
+
+/// `Told::legs` out of a branch's legs: each leg's word and `ahead`, empty
+/// on a single leg, whose `ahead` is the branch's.
+pub(super) fn leg_aheads(legs: &[worktree::RepoFlags]) -> Vec<(String, u32)> {
+    if legs.len() < 2 {
+        return Vec::new();
+    }
+    legs.iter().map(|l| (worktree::leg_word(&l.name).to_string(), l.ahead)).collect()
 }
 
 impl BranchLook {
@@ -200,6 +219,7 @@ impl BranchLook {
             tip: self.tip.clone(),
             merge: Some(worktree::merge_word(self.merged, self.needs_rebase, self.ahead)),
             ahead: self.ahead,
+            legs: self.legs.clone(),
             column,
             forge: None,
         }
@@ -554,7 +574,9 @@ pub(super) fn merge_verdict(started: bool, heard: &Heard, now: &Told) -> Option<
 /// `column REVIEW`. With nothing heard before, the state itself. A branch
 /// merged again at a new tip says `merge_state merged` once more, and a
 /// merged branch's `ahead` is not said: an ff merge reads 0 and a squash
-/// keeps its count, and neither is news beside the word.
+/// keeps its count, and neither is news beside the word. A branch of more
+/// than one leg says each leg that moved (`ahead api 1 → 2`), never a bare
+/// sum (T-772).
 pub(super) fn delta(before: Option<&Told>, now: &Told) -> Vec<String> {
     changes(before, now, true)
 }
@@ -572,8 +594,8 @@ fn changes(before: Option<&Told>, now: &Told, head: bool) -> Vec<String> {
         _ => {}
     }
     if let Some(b) = before.filter(|b| b.merge.is_some() && now.merge.is_some()) {
-        if b.ahead != now.ahead && now.merge != Some("merged") {
-            out.push(format!("ahead {} → {}", b.ahead, now.ahead));
+        if now.merge != Some("merged") {
+            out.extend(ahead_words(b, now));
         }
     }
     if head && now.merge.is_none() && before.is_none_or(|b| b.tip != now.tip) && !now.tip.is_empty()
@@ -589,6 +611,36 @@ fn changes(before: Option<&Told>, now: &Told, head: bool) -> Vec<String> {
         out.push(mesimon_core::text::scrub_text(p));
     }
     out
+}
+
+/// How far ahead the branch moved since `b`: the count on a single leg;
+/// each leg that moved where both sides know the same legs (`ahead api
+/// 1 → 2`); else the sum with the leg count (`ahead 2 → 3 over 2 repos`),
+/// for a baseline from before T-772 or a leg cut since.
+fn ahead_words(b: &Told, now: &Told) -> Vec<String> {
+    if now.legs.is_empty() {
+        return if b.ahead == now.ahead {
+            Vec::new()
+        } else {
+            vec![format!("ahead {} → {}", b.ahead, now.ahead)]
+        };
+    }
+    let was = |name: &str| b.legs.iter().find(|(n, _)| n == name).map(|(_, a)| *a);
+    if b.legs.len() == now.legs.len() && now.legs.iter().all(|(n, _)| was(n).is_some()) {
+        return now
+            .legs
+            .iter()
+            .filter_map(|(n, a)| {
+                let from = was(n)?;
+                (from != *a)
+                    .then(|| format!("ahead {} {from} → {a}", mesimon_core::text::scrub_text(n)))
+            })
+            .collect();
+    }
+    if b.ahead == now.ahead {
+        return Vec::new();
+    }
+    vec![format!("ahead {} → {} over {} repos", b.ahead, now.ahead, now.legs.len())]
 }
 
 /// One worker's two baselines. `judged` is the work as the last looked-at
@@ -807,6 +859,7 @@ impl Look {
                     tip: a.tip,
                     base_tip: a.base_tip,
                     ahead: a.ahead,
+                    legs: leg_aheads(&legs),
                     merged: a.merged,
                     needs_rebase: a.needs_rebase,
                     conflict: a.conflict,
@@ -1103,9 +1156,10 @@ impl Daemon {
         let merge_step = asked == Some(TurnAsk::Merge);
         let (now, branch) = match p.found {
             Found::Branch(look) => (look.told(column), Some(look)),
-            Found::Checkout { head } => {
-                (Told { tip: head, merge: None, ahead: 0, column, forge: None }, None)
-            }
+            Found::Checkout { head } => (
+                Told { tip: head, merge: None, ahead: 0, legs: Vec::new(), column, forge: None },
+                None,
+            ),
             Found::Unknown => {
                 // Git could not say what the turn left — nothing seen is
                 // nothing to merge — but an answer is still an answer, and
@@ -1233,6 +1287,7 @@ impl Daemon {
             tip: self.wt_agg.get(&worker)?.tip.clone(),
             base_tip: self.base_tip_of(worker).to_string(),
             ahead: self.wt_agg.get(&worker).map_or(0, |a| a.ahead),
+            legs: self.wt_repos.get(&worker).map(|l| leg_aheads(l)).unwrap_or_default(),
             merged: self.wt_agg.get(&worker).is_some_and(|a| a.merged),
             needs_rebase: self.wt_agg.get(&worker).is_some_and(|a| a.needs_rebase),
             conflict: self.wt_conflicts.contains(branch),
@@ -1349,6 +1404,7 @@ impl Daemon {
                 tip: self.wt_agg.get(&worker).map(|a| a.tip.clone()).unwrap_or_default(),
                 merge: Some("merged"),
                 ahead: self.wt_agg.get(&worker).map_or(0, |a| a.ahead),
+                legs: self.wt_repos.get(&worker).map(|l| leg_aheads(l)).unwrap_or_default(),
                 column,
                 forge: None,
             };
@@ -1527,6 +1583,7 @@ impl Daemon {
                 tip: agg.map(|a| a.tip.clone()).unwrap_or_default(),
                 merge: agg.map(|a| worktree::merge_word(a.merged, a.needs_rebase, a.ahead)),
                 ahead: agg.map_or(0, |a| a.ahead),
+                legs: self.wt_repos.get(&worker).map(|l| leg_aheads(l)).unwrap_or_default(),
                 column,
                 forge: Some(words),
             };
@@ -1614,11 +1671,25 @@ mod tests {
     use super::*;
 
     fn branch(tip: &str, merge: &'static str, ahead: u32, column: &str) -> Told {
-        Told { tip: tip.into(), merge: Some(merge), ahead, column: column.into(), forge: None }
+        Told {
+            tip: tip.into(),
+            merge: Some(merge),
+            ahead,
+            legs: Vec::new(),
+            column: column.into(),
+            forge: None,
+        }
     }
 
     fn checkout(head: &str, column: &str) -> Told {
-        Told { tip: head.into(), merge: None, ahead: 0, column: column.into(), forge: None }
+        Told {
+            tip: head.into(),
+            merge: None,
+            ahead: 0,
+            legs: Vec::new(),
+            column: column.into(),
+            forge: None,
+        }
     }
 
     const DELIVERED: Option<WakeCause> = Some(WakeCause::Delivered);
@@ -1902,6 +1973,37 @@ mod tests {
         let mut w = wake(None, Some(checkout("1111111aaaa", "REVIEW")));
         w.fold(WakeCause::Delivered, None, Some(checkout("2222222bbbb", "REVIEW")));
         assert_eq!(w.changed(), ["commit 2222222", "column REVIEW"]);
+    }
+
+    /// A branch of two legs says each leg that moved, by its word, never
+    /// the sum (T-772, lab finding 19); a baseline that knew no legs (an
+    /// older `crown.json`, a leg cut since) says the sum with the count;
+    /// one leg says the count as it always did. The legs cross `crown.json`.
+    #[test]
+    fn a_multi_leg_delta_names_each_leg_that_moved() {
+        let legs = |tip: &str, root: u32, api: u32| Told {
+            legs: vec![("root".into(), root), ("api".into(), api)],
+            ..branch(tip, "ahead", root + api, "REVIEW")
+        };
+        let (before, after) = (legs("a+b", 1, 1), legs("a+c", 1, 2));
+        assert_eq!(delta(Some(&before), &after), ["ahead api 1 → 2"]);
+        assert_eq!(
+            delta(Some(&before), &legs("c+d", 3, 4)),
+            ["ahead root 1 → 3", "ahead api 1 → 4"]
+        );
+        // The same total, moved between legs, is still news.
+        assert_eq!(
+            delta(Some(&before), &legs("c+d", 0, 2)),
+            ["ahead root 1 → 0", "ahead api 1 → 2"]
+        );
+        let unlegged = branch("a+b", "ahead", 2, "REVIEW");
+        assert_eq!(delta(Some(&unlegged), &legs("a+c", 1, 5)), ["ahead 2 → 6 over 2 repos"]);
+        assert!(delta(Some(&unlegged), &legs("a+c", 1, 1)).is_empty());
+        let one = branch("a", "ahead", 1, "REVIEW");
+        assert_eq!(delta(Some(&one), &branch("b", "ahead", 2, "REVIEW")), ["ahead 1 → 2"]);
+        let back: Told = serde_json::from_str(&serde_json::to_string(&after).unwrap()).unwrap();
+        assert_eq!(back, after);
+        assert!(!serde_json::to_string(&one).unwrap().contains("legs"), "one leg writes none");
     }
 
     #[test]

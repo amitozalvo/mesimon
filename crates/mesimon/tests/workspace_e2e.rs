@@ -312,6 +312,12 @@ fn a_workspace_ticket_gets_a_worktree_per_repo() {
             assert_eq!((api.base.as_str(), api.merge_state.as_str()), ("main", "ahead"));
             let web = ticket.repos.iter().find(|r| r.name == "web").expect("web leg");
             assert_eq!(web.merge_state, "clean");
+            // The root leg is `root` to an agent, as on the page (T-772).
+            let names: Vec<&str> = ticket.repos.iter().map(|r| r.name.as_str()).collect();
+            assert_eq!(names, ["root", "api", "web"]);
+            assert!(
+                ticket.merged_in.is_none() && ticket.repos.iter().all(|r| r.merged_in.is_none())
+            );
         }
         other => panic!("expected the agent's ticket view, got {other:?}"),
     }

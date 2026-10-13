@@ -366,14 +366,61 @@ pub fn parse_glab(repo: &str, json: &str) -> Vec<Pr> {
 }
 
 /// The one `pipeline` word for GitLab's `pipelines?sha=` answer: the newest
-/// pipeline's status. GitLab names no failing job on this road, so a
-/// failure reads bare.
+/// pipeline's status. GitLab names no job on this road: a wait or a
+/// failure reads bare until the pipeline's jobs are read
+/// (`gitlab_pipeline_id`, `parse_gitlab_job`).
 pub fn parse_gitlab_pipelines(json: &str) -> Pipeline {
     let Ok(Value::Array(items)) = serde_json::from_str::<Value>(json) else {
         return Pipeline::Unknown;
     };
     let Some(first) = items.first() else { return Pipeline::None };
     gitlab_status(first.get("status").and_then(Value::as_str).unwrap_or_default())
+}
+
+/// The newest pipeline's id in GitLab's `pipelines?sha=` answer, for the
+/// read of its jobs (T-772).
+pub fn gitlab_pipeline_id(json: &str) -> Option<u64> {
+    let Ok(Value::Array(items)) = serde_json::from_str::<Value>(json) else { return None };
+    items.first()?.get("id")?.as_u64()
+}
+
+/// The job a GitLab pipeline stopped on, out of its `pipelines/:id/jobs`
+/// answer (T-772): the first job at `status` — `manual` for a waiting
+/// pipeline, `failed` for a failed one — a job allowed to fail only where
+/// no other did. Empty where none is.
+pub fn parse_gitlab_job(json: &str, status: &str) -> String {
+    let Ok(Value::Array(jobs)) = serde_json::from_str::<Value>(json) else { return String::new() };
+    let at: Vec<&Value> =
+        jobs.iter().filter(|j| j.get("status").and_then(Value::as_str) == Some(status)).collect();
+    let allowed = |j: &&&Value| j.get("allow_failure").and_then(Value::as_bool) == Some(true);
+    at.iter()
+        .find(|j| !allowed(j))
+        .or_else(|| at.first())
+        .and_then(|j| j.get("name").and_then(Value::as_str))
+        .map(job_word)
+        .unwrap_or_default()
+}
+
+impl Pipeline {
+    /// The GitLab job status that names this word's job: `manual` for a
+    /// wait, `failed` for a failure, `None` for a word with no job or one
+    /// already named.
+    pub fn gitlab_job_status(&self) -> Option<&'static str> {
+        match self {
+            Pipeline::Waiting(j) if j.is_empty() => Some("manual"),
+            Pipeline::Failed(j) if j.is_empty() => Some("failed"),
+            _ => None,
+        }
+    }
+
+    /// The same word, about `job`.
+    pub fn with_job(self, job: String) -> Pipeline {
+        match self {
+            Pipeline::Waiting(_) => Pipeline::Waiting(job),
+            Pipeline::Failed(_) => Pipeline::Failed(job),
+            other => other,
+        }
+    }
 }
 
 /// A GitLab pipeline status word as the board's.
@@ -909,6 +956,30 @@ mod tests {
         assert_eq!(parse_gitlab_pipelines("[]"), Pipeline::None);
         assert_eq!(gitlab_status("running"), Pipeline::Running);
         assert_eq!(gitlab_status("failed"), Pipeline::Failed(String::new()));
+    }
+
+    #[test]
+    fn a_gitlab_pipeline_names_the_job_it_stopped_on() {
+        assert_eq!(gitlab_pipeline_id(r#"[{"id":44,"status":"manual"},{"id":43}]"#), Some(44));
+        assert_eq!(gitlab_pipeline_id("[]"), None);
+        let jobs = r#"[{"name":"test","status":"success"},
+            {"name":"lint","status":"failed","allow_failure":true},
+            {"name":"deploy:production","status":"manual"},
+            {"name":"build\nhere","status":"failed","allow_failure":false}]"#;
+        assert_eq!(parse_gitlab_job(jobs, "manual"), "deploy:production");
+        assert_eq!(
+            parse_gitlab_job(jobs, "failed"),
+            "build here",
+            "a job allowed to fail is named only where no other failed, through job_word"
+        );
+        assert_eq!(parse_gitlab_job(r#"[{"name":"lint","status":"failed"}]"#, "manual"), "");
+        assert_eq!(parse_gitlab_job("not json", "failed"), "");
+        let waiting = Pipeline::Waiting(String::new());
+        assert_eq!(waiting.gitlab_job_status(), Some("manual"));
+        assert_eq!(Pipeline::Failed(String::new()).gitlab_job_status(), Some("failed"));
+        assert_eq!(Pipeline::Failed("x".into()).gitlab_job_status(), None, "named already");
+        assert_eq!(Pipeline::Running.gitlab_job_status(), None);
+        assert_eq!(waiting.with_job("deploy".into()), Pipeline::Waiting("deploy".into()));
     }
 
     #[test]

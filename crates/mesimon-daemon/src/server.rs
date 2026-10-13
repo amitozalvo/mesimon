@@ -7161,6 +7161,11 @@ impl Daemon {
     /// the train leaves alone.
     fn merge_by(&self, id: ulid::Ulid) -> AgentMergeView {
         let view = |by: &str, why: &str| AgentMergeView { by: by.into(), why: why.into() };
+        // A merged branch has no merger (T-772): the train's clause on a
+        // merged ticket in a column it reaches read as a merge to come.
+        if self.merge_state_word(id) == Some("merged") {
+            return view("nobody", "already merged");
+        }
         if !self.board.crown_mode.merges() {
             return view("person", "crown mode is supervised");
         }
@@ -7325,6 +7330,13 @@ impl Daemon {
             workspace: workspace.to_string(),
             branch: self.worktrees.get(&id).map(|b| b.branch.clone()).filter(|b| !b.is_empty()),
             merge_state: self.merge_state_word(id).map(str::to_string),
+            // The worktree row's word (T-772), `main (MR !1)` where the
+            // forge merged it.
+            merged_in: (self.merge_state_word(id) == Some("merged"))
+                .then(|| self.wt_agg.get(&id).map(|a| a.merged_in.clone()))
+                .flatten()
+                .filter(|m| !m.is_empty())
+                .map(|m| mesimon_core::text::scrub_text(&m)),
             repos: self.agent_repo_views(id),
             merge: self.merge_state_word(id).is_some().then(|| self.merge_by(id)),
             // The ticket's pull requests as the forge last said (T-739),
@@ -9467,17 +9479,22 @@ impl Daemon {
                 .repos
                 .iter()
                 .map(|r| AgentRepoView {
-                    name: r.name.clone(),
+                    name: worktree::leg_word(&r.name).into(),
                     base: r.base.clone(),
                     merge_state: "clean".into(),
+                    merged_in: None,
                 })
                 .collect();
         };
         legs.iter()
             .map(|l| AgentRepoView {
-                name: l.name.clone(),
+                // The root leg is `""` here and `root` to an agent (T-772),
+                // as the ticket page's rows say it.
+                name: worktree::leg_word(&l.name).into(),
                 base: l.base.clone(),
                 merge_state: worktree::merge_word(l.merged, l.needs_rebase, l.ahead).into(),
+                merged_in: (l.merged && !l.merged_in.is_empty())
+                    .then(|| mesimon_core::text::scrub_text(&l.merged_in)),
             })
             .collect()
     }
