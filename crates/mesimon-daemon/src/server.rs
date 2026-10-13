@@ -13666,18 +13666,15 @@ impl Daemon {
         }
         // A read begun since a turn's end answers it.
         self.forge.owed.retain(|t, since| !(sample.sets.contains_key(t) && sample.at_ms >= *since));
-        // What the merged commits' reads taught: terminal pipelines and the
-        // environments reached are kept, so a landed ticket costs no call
-        // on the next pass.
+        // What the merged commits' reads taught, per PR (T-771): pipelines
+        // and the environments reached are kept, so a settled one costs no
+        // call on the next pass and an older PR keeps its own.
         for pr in sample.sets.values().flatten() {
             if pr.state != mesimon_core::forge::PrState::Merged || pr.merge_oid.is_empty() {
                 continue;
             }
             let key = (pr.repo.clone(), pr.merge_oid.clone());
-            if matches!(
-                pr.pipeline,
-                mesimon_core::forge::Pipeline::Passed | mesimon_core::forge::Pipeline::Failed(_)
-            ) {
+            if pr.pipeline != mesimon_core::forge::Pipeline::Unknown {
                 self.forge.commit_pipelines.insert(key.clone(), pr.pipeline.clone());
             }
             let known = self.forge.deployed.entry(key).or_default();

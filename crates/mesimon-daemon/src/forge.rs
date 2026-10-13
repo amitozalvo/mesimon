@@ -44,6 +44,9 @@ const PROBE_FOR: Duration = Duration::from_secs(6 * 3600);
 const REFLOG_CAP: &str = "2000";
 /// How many PRs one list call brings back.
 const LIST_LIMIT: &str = "100";
+/// How long a merge commit a newer one superseded is still read (T-771): a
+/// day is past any deploy run, and the PR keeps what was read by then.
+pub const SUPERSEDED_READ_MS: u64 = 24 * 3600 * 1000;
 
 /// The CLI a host is read through.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,8 +158,8 @@ pub struct Query {
     /// The environments some column waits for: a deployment is read only
     /// where one is asked for.
     pub envs: Vec<String>,
-    /// Merge commits whose pipeline settled on an earlier pass, by
-    /// repository path and oid: not asked again.
+    /// Merge commits' pipelines as earlier passes read them, by repository
+    /// path and oid: a passed or failed one is not asked again.
     pub commit_pipelines: HashMap<(String, String), Pipeline>,
     /// The environments each merge commit was seen reaching: a deployment
     /// is permanent, so one is read until every wanted environment is in.
@@ -274,8 +277,8 @@ impl Edge {
 
 /// The environments a ticket's set has reached as a whole (T-768): none
 /// while a PR is open, else those every repository's newest merged PR's
-/// merge commit reached — the one a read asks of (`sample`), an older
-/// merge there being in its history.
+/// merge commit reached, an older merge there being in its history; an
+/// older PR's own deployments are its row's and the crown's (T-771).
 fn arrived_envs(set: &[Pr]) -> Vec<String> {
     if set.iter().any(|p| p.state.is_open()) {
         return Vec::new();
@@ -493,34 +496,66 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
                 pr.pipeline = gitlab_pipeline(r, &pr.head_oid);
             }
         }
-        // The newest merged PR per repository: its merge commit's pipeline
-        // (the build-and-deploy run on main) unless an earlier pass settled
-        // it, and the environments it reached where a column waits for one.
-        let mut seen_repo: Vec<String> = Vec::new();
-        for pr in set.iter_mut().filter(|p| p.state == PrState::Merged && !p.merge_oid.is_empty()) {
-            if seen_repo.contains(&pr.repo) {
-                continue;
-            }
-            seen_repo.push(pr.repo.clone());
-            let Some(r) = q.repos.iter().find(|r| r.remote.path == pr.repo) else { continue };
-            let key = (pr.repo.clone(), pr.merge_oid.clone());
-            pr.pipeline = match q.commit_pipelines.get(&key) {
-                Some(p) => p.clone(),
-                None => commit_pipeline(r, &pr.merge_oid),
-            };
-            let mut known = q.deployed.get(&key).cloned().unwrap_or_default();
-            if q.envs.iter().any(|e| !known.contains(e)) {
-                for env in deployments(r, &pr.merge_oid, &q.envs) {
-                    if !known.contains(&env) {
-                        known.push(env);
-                    }
-                }
-            }
-            pr.deployed = known;
-        }
+        merged_reads(
+            &mut set,
+            &q,
+            now_ms,
+            |pr| match q.repos.iter().find(|r| r.remote.path == pr.repo) {
+                Some(r) => commit_pipeline(r, &pr.merge_oid),
+                None => Pipeline::Unknown,
+            },
+            |pr| match q.repos.iter().find(|r| r.remote.path == pr.repo) {
+                Some(r) => deployments(r, &pr.merge_oid, &q.envs),
+                None => Vec::new(),
+            },
+        );
         out.sets.insert(t.ticket, set);
     }
     out
+}
+
+/// Each merged PR of a set, per PR (T-771): its merge commit's pipeline
+/// (the build-and-deploy run on main) and the environments it reached, what
+/// earlier passes learned kept and read again only while unsettled. A
+/// pipeline is read until it passes or fails, deployments until every
+/// wanted environment is in. A merge commit a newer one of the same
+/// repository superseded is read only for `SUPERSEDED_READ_MS` after its
+/// merge, so a ticket's old PRs cost nothing once the forge has moved on.
+pub fn merged_reads(
+    set: &mut [Pr],
+    q: &Query,
+    now_ms: u64,
+    mut pipeline: impl FnMut(&Pr) -> Pipeline,
+    mut deployments: impl FnMut(&Pr) -> Vec<String>,
+) {
+    let mut newest: Vec<String> = Vec::new();
+    for pr in set.iter_mut().filter(|p| p.state == PrState::Merged && !p.merge_oid.is_empty()) {
+        let superseded = newest.contains(&pr.repo);
+        if !superseded {
+            newest.push(pr.repo.clone());
+        }
+        let live = !superseded || now_ms.saturating_sub(pr.updated_ms) < SUPERSEDED_READ_MS;
+        let key = (pr.repo.clone(), pr.merge_oid.clone());
+        let last = q.commit_pipelines.get(&key);
+        pr.pipeline = match last {
+            Some(p @ (Pipeline::Passed | Pipeline::Failed(_))) => p.clone(),
+            _ if live => match pipeline(pr) {
+                Pipeline::Unknown => last.cloned().unwrap_or(Pipeline::Unknown),
+                p => p,
+            },
+            Some(p) => p.clone(),
+            None => pr.pipeline.clone(),
+        };
+        let mut known = q.deployed.get(&key).cloned().unwrap_or_default();
+        if live && q.envs.iter().any(|e| !known.contains(e)) {
+            for env in deployments(pr) {
+                if !known.contains(&env) {
+                    known.push(env);
+                }
+            }
+        }
+        pr.deployed = known;
+    }
 }
 
 /// The pending repositories whose host's probe, answered on this pass,
@@ -851,7 +886,8 @@ pub struct State {
     pub held: HashMap<ulid::Ulid, Vec<(String, u64)>>,
     /// The repositories whose last call failed, with the CLI's words.
     pub errors: Vec<(String, String)>,
-    /// Merge commits whose pipeline settled, by repository path and oid.
+    /// Merge commits' pipelines as last read, by repository path and oid
+    /// (T-771): settled once passed or failed.
     pub commit_pipelines: HashMap<(String, String), Pipeline>,
     /// The environments each merge commit was seen reaching.
     pub deployed: HashMap<(String, String), Vec<String>>,
@@ -1038,7 +1074,7 @@ impl PrRecord {
     }
 }
 
-/// What the passes settled of one merge commit: its terminal pipeline and
+/// What the passes read of one merge commit: its pipeline as last read and
 /// the environments it was seen reaching.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -1116,10 +1152,11 @@ impl State {
         }
         for c in file.commits {
             let key = (c.repo, c.oid);
-            if let p @ (Pipeline::Passed | Pipeline::Failed(_)) =
-                Pipeline::from_words(&c.pipeline, Some(&c.job))
-            {
-                self.commit_pipelines.insert(key.clone(), p);
+            match Pipeline::from_words(&c.pipeline, Some(&c.job)) {
+                Pipeline::Unknown => {}
+                p => {
+                    self.commit_pipelines.insert(key.clone(), p);
+                }
             }
             if !c.deployed.is_empty() {
                 self.deployed.insert(key, c.deployed);
@@ -1242,6 +1279,101 @@ mod tests {
         let e = edge(&[m.clone()], &[pr(2, PrState::Open, Pipeline::None), m.clone()]);
         assert!(e.opened && !e.merged, "a follow-up PR opens");
         assert!(!edge(&[], &[]).any());
+    }
+
+    /// T-771: two merged PRs on one ticket keep each its own merge commit's
+    /// pipeline and deployments; the newer one's reads do not clear the
+    /// older one's, and a settled, covered PR is never read again.
+    #[test]
+    fn each_merged_pr_keeps_its_own_pipeline_and_deployments() {
+        let merged = |number: u64, oid: &str, updated_ms: u64| {
+            let mut p = pr(number, PrState::Merged, Pipeline::Unknown);
+            p.forge = Forge::GitLab;
+            p.merge_oid = oid.into();
+            p.updated_ms = updated_ms;
+            p
+        };
+        let now = 10 * SUPERSEDED_READ_MS;
+        let key = |oid: &str| ("o/r".to_string(), oid.to_string());
+        let mut q =
+            Query { envs: vec!["staging".into(), "production".into()], ..Default::default() };
+        q.commit_pipelines.insert(key("m1"), Pipeline::Passed);
+        q.deployed.insert(key("m1"), vec!["staging".into(), "production".into()]);
+        let mut set = [merged(2, "m2", now - 1000), merged(1, "m1", now - 2000)];
+        let mut asked: Vec<String> = Vec::new();
+        let mut deploys: Vec<String> = Vec::new();
+        merged_reads(
+            &mut set,
+            &q,
+            now,
+            |p| {
+                asked.push(p.merge_oid.clone());
+                Pipeline::Running
+            },
+            |p| {
+                deploys.push(p.merge_oid.clone());
+                vec!["staging".into()]
+            },
+        );
+        assert_eq!((asked, deploys), (vec!["m2".to_string()], vec!["m2".to_string()]));
+        assert_eq!(
+            (&set[0].pipeline, &set[0].deployed[..]),
+            (&Pipeline::Running, &["staging".to_string()][..])
+        );
+        assert_eq!(set[1].pipeline, Pipeline::Passed, "the older PR keeps its own");
+        assert_eq!(set[1].deployed, ["staging", "production"]);
+
+        // An unsettled older PR is read while its merge is recent, and keeps
+        // what was read once the day is past; a failed read is no reading.
+        q.commit_pipelines.insert(key("m1"), Pipeline::Running);
+        q.deployed.insert(key("m1"), vec!["staging".into()]);
+        let mut set = [merged(2, "m2", now - 1000), merged(1, "m1", now - 2000)];
+        let mut asked = 0;
+        merged_reads(
+            &mut set,
+            &q,
+            now,
+            |_| {
+                asked += 1;
+                Pipeline::Unknown
+            },
+            |_| Vec::new(),
+        );
+        assert_eq!(asked, 2);
+        assert_eq!(set[1].pipeline, Pipeline::Running, "an unanswered call keeps the last read");
+        let mut set = [merged(2, "m2", now - 1000), merged(1, "m1", now - SUPERSEDED_READ_MS)];
+        let asked = std::cell::RefCell::new(Vec::<String>::new());
+        merged_reads(
+            &mut set,
+            &q,
+            now,
+            |p| {
+                asked.borrow_mut().push(p.merge_oid.clone());
+                Pipeline::Passed
+            },
+            |p| {
+                asked.borrow_mut().push(p.merge_oid.clone());
+                Vec::new()
+            },
+        );
+        assert_eq!(*asked.borrow(), ["m2", "m2"], "a superseded day-old merge is not read");
+        assert_eq!(set[1].pipeline, Pipeline::Running);
+        assert_eq!(set[1].deployed, ["staging"]);
+
+        // The newer PR reaching an environment the older one stands in is
+        // news; the older one's standing deployment is not said again.
+        let mut one = merged(1, "m1", 1);
+        one.pipeline = Pipeline::Passed;
+        one.deployed = vec!["staging".into(), "production".into()];
+        let two = merged(2, "m2", 2);
+        let mut two_deployed = two.clone();
+        two_deployed.deployed = vec!["staging".into()];
+        let old = [two.clone(), one.clone()];
+        let new = [two_deployed, one];
+        let e = edge(&old, &new);
+        assert_eq!(e.deployed, ["staging"]);
+        assert_eq!(e.news(&new), ["deployed to staging !2"]);
+        assert!(edge(&new, &new).deployed.is_empty());
     }
 
     /// T-767: with every PR merged, the merge commit's pipeline passing is

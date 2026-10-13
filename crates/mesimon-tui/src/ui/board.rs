@@ -397,12 +397,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             let painted = crate::tags::painted(&app.board, tags);
             let (line, x_off) = card::render_edit(&ctx, buf, &painted);
             let tier_word = app.field_tier_word(None, tier.as_deref());
-            let selector = card::render_workspace_selector(
-                &ctx,
-                *workspace,
-                *plan,
-                tier_word.as_deref(),
-            );
+            let selector =
+                card::render_workspace_selector(&ctx, *workspace, *plan, tier_word.as_deref());
             groups.push(Group {
                 lines: vec![line, selector],
                 cursor: true,

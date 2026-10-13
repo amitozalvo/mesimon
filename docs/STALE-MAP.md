@@ -24097,6 +24097,42 @@ success with REVIEW on `pipeline passes`, and the ticket stays in DONE; the crow
 `pipeline passed #42` for the open PR alone, not when the merge commit's pipeline passes, and
 not `pipeline passed #43` beside `merged #43`. Both e2e assertions fail on the old rule.
 
+## An older PR keeps its pipeline and deployments (T-771, 2026-10-14, follow-up to T-739)
+
+**Why.** Forge lab finding 15 (2026-10-13, scenario B3): once !2's merge commit deployed to
+staging, !1's row fell from `pipeline passed`, deployed `[staging, production]` to `pipeline
+unknown` with nothing deployed. `forge::sample` read the merge commit's pipeline and deployments
+for the newest merged PR of each repository alone; the older PR took the list's words (GitLab's
+list says no pipeline; GitHub's rollup is the head's, not the merge commit's) and an empty
+deployed list, though `State` still held what earlier passes had read of its merge commit.
+
+**The rule: per PR.** `forge::merged_reads` walks every merged PR of a set: what earlier passes
+read of its merge commit (`commit_pipelines`, `deployed`, by repository and oid) is its own, a
+pipeline is read again until it passes or fails, and deployments until every wanted environment
+is in (a deployment is permanent, per PR). `commit_pipelines` now keeps the last read of any
+word but `unknown`, so an unanswered call keeps the last reading rather than blanking it, and
+`forge.json`'s commits restore the same. No schema bump: an older build restores the settled
+words alone, as before.
+
+**The bound.** A settled, covered PR is never read. A merge commit a newer one of the same
+repository superseded is read only for `SUPERSEDED_READ_MS` (a day) after its merge, then keeps
+what was read: a superseded commit's manual job left waiting, or an environment it will never
+reach, costs nothing after that. The newest keeps the old cadence.
+
+**The edge needed nothing of its own.** T-768, which landed first, made `Edge.deployed` the
+ticket's arrival off each repository's newest merged PR and `Edge.reached` the crown's words,
+per PR against the same PR's last read: an older PR keeping its environments neither hides a
+newer one's deployment nor is said again. The card's brief, the page's rows and `^h`'s dialog
+already drew each PR's own words, so the TUI is unchanged.
+
+**Tests.** Unit `each_merged_pr_keeps_its_own_pipeline_and_deployments` (the newer PR's reads do
+not touch the older one's; a settled, covered PR is not asked; an unanswered call keeps the last
+read; a superseded day-old merge is not read; the edge says !2's staging and not !1's again).
+`forge_e2e::an_older_pr_keeps_its_pipeline_and_deployments_after_a_newer_one_merges`: #42 merges,
+passes and reaches staging, #43 merges and reaches staging, and #42 still reads passed and
+deployed. The stub answers check-runs and deployments by sha; the e2e fails on the old code with
+#42 at `running`, deployed `[]`.
+
 ## Entry needs a passed pipeline ignores a ticket with no PR (T-750, 2026-10-13, follow-up to T-739)
 
 **Why.** On the forge lab the crown's ticket, which has no PR and never will, ended its turn and

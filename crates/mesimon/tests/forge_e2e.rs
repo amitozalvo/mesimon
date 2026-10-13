@@ -26,8 +26,13 @@
 //! A ticket arrives as its least advanced PR (T-768): with a PR on each of
 //! two repositories, a `deployed` column waits for the second one.
 //!
+//! An older PR keeps its own (T-771): once a newer PR of the same ticket
+//! merges and deploys, the first one's row still reads its merge commit's
+//! pipeline and where it was deployed.
+//!
 //! The stub is the forge: `auth status` passes, `pr list` prints the file
-//! the test writes, `api …/check-runs` the merge commit's pipeline. No
+//! the test writes, `api …/check-runs` the merge commit's pipeline and
+//! `api …/deployments` its deployments, by sha where the test wrote one. No
 //! network, no token, nothing of the real CLI.
 
 // Integration-test crate: `allow-unwrap-in-tests` only reaches items marked
@@ -53,9 +58,15 @@ case "$1 $2" in
   "pr list") cat "$MSMN_GH_PRS" 2>/dev/null || echo '[]' ;;
   api\ *)
     case "$4" in
-      *check-runs*) cat "$MSMN_GH_CHECKS" 2>/dev/null || echo '{"check_runs":[]}' ;;
+      *check-runs*)
+        sha=$(echo "$4" | sed -n 's|.*/commits/\([^/]*\)/check-runs.*|\1|p')
+        if [ -f "$MSMN_GH_CHECKS.$sha" ]; then cat "$MSMN_GH_CHECKS.$sha"
+        else cat "$MSMN_GH_CHECKS" 2>/dev/null || echo '{"check_runs":[]}'; fi ;;
       *deployments/*/statuses*) echo '[{"state":"success"}]' ;;
-      *deployments*) cat "$MSMN_GH_DEPLOYS" 2>/dev/null || echo '[]' ;;
+      *deployments*)
+        sha=$(echo "$4" | sed -n 's|.*sha=\([^&]*\).*|\1|p')
+        if [ -f "$MSMN_GH_DEPLOYS.$sha" ]; then cat "$MSMN_GH_DEPLOYS.$sha"
+        else cat "$MSMN_GH_DEPLOYS" 2>/dev/null || echo '[]'; fi ;;
       *) echo '{}' ;;
     esac ;;
   *) echo "stub gh: $*" >&2; exit 1 ;;
@@ -1422,5 +1433,113 @@ fn a_deployed_arrival_waits_for_every_repositorys_pr() {
         column(&mut c) == "REVIEW"
     });
     assert!(deployed_of(&mut c, 3));
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// An older PR keeps its pipeline and deployments (T-771): PR #42 merges,
+/// its merge commit passes and reaches staging; then #43 of the same ticket
+/// merges and reaches staging too, and #42's row still reads passed and
+/// deployed. The list's own rollup for #42 says running, so a row that read
+/// only the list would show it.
+#[test]
+fn an_older_pr_keeps_its_pipeline_and_deployments_after_a_newer_one_merges() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    let stub_dir = std::env::temp_dir().join(format!("msmn-forge-older-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&stub_dir);
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    let gh = stub_dir.join("gh");
+    std::fs::write(&gh, GH_STUB).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let prs_file = stub_dir.join("prs.json");
+    let checks_file = stub_dir.join("checks.json");
+    let deploys_file = stub_dir.join("deploys.json");
+    write(&prs_file, "[]");
+    write(&checks_file, r#"{"check_runs":[{"name":"release","status":"in_progress"}]}"#);
+    let path_var = format!(
+        "{}:{}",
+        stub_dir.display(),
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+    );
+    let Some(h) = Harness::boot_with_env(
+        "forge_older",
+        Some(STUB),
+        &[
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs_file.display().to_string()),
+            ("MSMN_GH_CHECKS", &checks_file.display().to_string()),
+            ("MSMN_GH_DEPLOYS", &deploys_file.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let mut c = h.client("forge_older");
+    let (id, _sid, branch, path) = ready(&mut c, "alpha");
+    let tip = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
+    // A second commit in HEAD's reflog and off the branch: #43's head.
+    std::fs::write(path.join("fix.txt"), "fix\n").unwrap();
+    git(&path, &["add", "."]);
+    git(&path, &["commit", "-qm", "fix"]);
+    let fix = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
+    git(&path, &["reset", "-q", "--hard", "HEAD~1"]);
+
+    // A column waits for staging, so deployments are read.
+    let mut done = c.board().column("DONE").unwrap().settings.clone();
+    done.arrives_on = Arrival::Deployed;
+    done.arrives_env = Some("staging".into());
+    assert!(matches!(
+        c.request(Command::SetColumnSettings { name: "DONE".into(), settings: done }),
+        Response::Ok
+    ));
+
+    let running =
+        r#"[{"__typename":"CheckRun","name":"test","status":"IN_PROGRESS","conclusion":null}]"#;
+    let gh_pr = |number: u64, branch: &str, head: &str, merge: &str, at: &str| {
+        format!(
+            r#"{{"number":{number},"url":"https://github.com/example/forge/pull/{number}","state":"MERGED",
+              "isDraft":false,"headRefName":"{branch}","headRefOid":"{head}","mergeCommit":{{"oid":"{merge}"}},
+              "mergeable":"UNKNOWN","reviewDecision":"APPROVED","updatedAt":"{at}",
+              "statusCheckRollup":{running}}}"#
+        )
+    };
+    let (m1, m2) =
+        ("1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222");
+    let passed =
+        r#"{"check_runs":[{"name":"release","status":"completed","conclusion":"success"}]}"#;
+    let staging = r#"[{"id":7,"environment":"staging"}]"#;
+    write(&stub_dir.join(format!("checks.json.{m1}")), passed);
+    write(&stub_dir.join(format!("deploys.json.{m1}")), staging);
+    let first = gh_pr(42, &branch, &tip, m1, "2026-10-13T06:00:00Z");
+    write(&prs_file, &format!("[{first}]"));
+    let row = |c: &mut TestClient, number: u64| {
+        prs_of(c).into_iter().find(|p| p.ticket == id && p.number == number)
+    };
+    wait_until(Duration::from_secs(20), "#42 to read passed and deployed", || {
+        row(&mut c, 42).is_some_and(|p| p.pipeline == "passed" && p.deployed == ["staging"])
+    });
+
+    // #43 merges; its merge commit runs, then reaches staging.
+    let second = gh_pr(43, "fix/alpha", &fix, m2, "2026-10-13T07:00:00Z");
+    write(&prs_file, &format!("[{second},{first}]"));
+    wait_until(Duration::from_secs(20), "#43 to bind", || {
+        row(&mut c, 43).is_some_and(|p| p.pipeline == "running")
+    });
+    write(&stub_dir.join(format!("deploys.json.{m2}")), staging);
+    wait_until(Duration::from_secs(20), "#43 to reach staging", || {
+        row(&mut c, 43).is_some_and(|p| p.deployed == ["staging"])
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    let older = row(&mut c, 42).expect("#42 still bound");
+    assert_eq!(older.pipeline, "passed", "{older:?}");
+    assert_eq!(older.deployed, ["staging"], "{older:?}");
+    let _ = c.request(Command::Shutdown);
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
