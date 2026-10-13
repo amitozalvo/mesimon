@@ -391,6 +391,9 @@ enum Msg {
     /// started under: a synchronous refresh in the meantime (a merge, a
     /// teardown) makes it stale, and it is dropped.
     WorktreeFlags(u64, Vec<worktree::RepoSample>),
+    /// A forge pass landed (T-739): the generation it was asked under, and
+    /// what it found.
+    ForgeSampled(u64, crate::forge::Sample),
     /// One ticket's own flags sample (T-678): a turn's end on a branch the
     /// train may take, and the number it started under.
     TicketFlags(ulid::Ulid, u64, Vec<worktree::RepoSample>),
@@ -657,6 +660,9 @@ pub struct Daemon {
     /// per leg — the value is whether there is one — and forgotten with
     /// `base_branch`, since a fetch can mint either.
     upstreams: HashMap<String, Option<String>>,
+    /// The forge road (T-739): which CLI reads each host, each ticket's
+    /// pull requests, and the pass in flight.
+    forge: crate::forge::State,
     /// Worktrees on their way out — a deleted ticket's once its grace
     /// expired, an archived ticket's once its work landed (T-278) — each
     /// waiting for the reaper (never remove a live cwd).
@@ -1226,6 +1232,7 @@ pub fn run(paths: Paths) -> Result<()> {
         awaiting_looks: HashMap::new(),
         base_branch: None,
         upstreams: HashMap::new(),
+        forge: Default::default(),
         pending_teardown: Vec::new(),
         tearing_down: Default::default(),
         tx: tx.clone(),
@@ -1386,6 +1393,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::GitSampled(..) => "git sampled".into(),
             Msg::ClientGone(_) => "client gone".into(),
             Msg::WorktreeFlags(..) => "worktree flags".into(),
+            Msg::ForgeSampled(..) => "forge sampled".into(),
             Msg::TicketFlags(..) => "ticket flags".into(),
             Msg::TornDown { .. } => "torn down".into(),
             Msg::TurnProbed(..) => "turn probed".into(),
@@ -1430,6 +1438,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::GitSampled(sample, fetched) => d.on_git_sampled(sample, fetched),
             Msg::ClientGone(stream) => d.on_client_gone(&stream),
             Msg::WorktreeFlags(gen, flags) => d.on_worktree_flags(gen, flags),
+            Msg::ForgeSampled(gen, sample) => d.on_forge_sampled(gen, sample),
             Msg::TicketFlags(ticket, seq, flags) => d.on_ticket_flags(ticket, seq, flags),
             Msg::TornDown { ticket, archived, branch_kept, took } => {
                 d.on_torn_down(ticket, archived, branch_kept, took)
@@ -2885,6 +2894,9 @@ impl Daemon {
             if self.git_has_reader() {
                 stage!("queue_git_sample", self.queue_git_sample());
             }
+            // The forge pass (T-739) rides the same bucket, on its own
+            // minute: one list call per repository, never per ticket.
+            stage!("queue_forge_sample", self.queue_forge_sample());
         }
         if self.ticks.is_multiple_of(server_guard_ticks()) {
             changed |= stage!("guard_server", self.guard_server());
@@ -7783,6 +7795,14 @@ impl Daemon {
         // The machine's tiers file, quarantined or from a newer build
         // (T-443): a standing advisory like any state file's.
         notices.extend(self.machine_tiers.notice.clone());
+        // A repository the forge CLI cannot read (T-739): the pull requests
+        // on the cards are as old as the last pass that answered.
+        if let Some(trouble) = self.forge.trouble() {
+            notices.push(Notice::new(
+                "forge_unreachable",
+                format!("pull requests not read — {trouble}"),
+            ));
+        }
         // The foregrounds ride the snapshot's records and nothing else: the
         // board on disk never carries one (T-366).
         // So does the count of an idle agent's background tasks (T-599): the
@@ -7838,6 +7858,8 @@ impl Daemon {
             crown_touches: self.recent_crown_touches(),
             machine_tiers: self.machine_tiers.tiers.clone(),
             usage: self.usage.view(),
+            prs: self.forge_items(),
+            forge: self.forge_status(),
             costs: self.costs.view(now_ms()),
         }
     }
@@ -9183,6 +9205,13 @@ impl Daemon {
             if !leg.base.is_empty() && worktree::is_merged(&leg.repo, &b.branch, &leg.base) {
                 return true;
             }
+            // The forge's word (T-739), at the branch's tip as it stands.
+            if let Some(Some(remote)) = self.forge.remotes.get(&leg.repo) {
+                let tip = worktree::branch_tip(&leg.repo, &b.branch);
+                if self.forge.merged_at(id, &remote.path, &tip).is_some() {
+                    return true;
+                }
+            }
             // A PR squashed into the base is the SAMPLE's answer (T-267):
             // the patch scan behind it is too big for a keypress. An ff
             // merge made here is caught fresh above; a squash made here is a
@@ -9517,6 +9546,21 @@ impl Daemon {
             return Response::Merge {
                 outcome: MergeOutcome::AlreadyMerged,
                 detail: format!("{branch} is already in {landed}"),
+                notified: false,
+            };
+        }
+        // An open PR is the merge (T-739): the team reviews and presses the
+        // forge's button, and mesimon never fast-forwards past it. `m`, the
+        // crown and the train all hear this one sentence.
+        if let Some(pr) = self.forge.open_of(id).first() {
+            return Response::Merge {
+                outcome: MergeOutcome::Refused,
+                detail: format!(
+                    "{} {} open — merge it on {}",
+                    pr.forge.noun(),
+                    pr.label(),
+                    pr.forge.name()
+                ),
                 notified: false,
             };
         }
@@ -13073,6 +13117,240 @@ impl Daemon {
     /// next bucket comes round is simply the one that will land. The base
     /// branch is resolved on the worker too when the cache is empty (a fetch
     /// empties it), so its own forks leave the writer as well.
+    /// Where a leg's repository is: the root, or the nested one by name.
+    fn leg_dir(&self, name: &str) -> std::path::PathBuf {
+        if name.is_empty() {
+            self.paths.repo_root.clone()
+        } else {
+            self.paths.repo_root.join(name)
+        }
+    }
+
+    /// One forge pass (T-739), on a worker: due on its own minute, over
+    /// the repositories the tickets' legs are checkouts of plus any a
+    /// `pr create` named, each read through the CLI its host's probe
+    /// found. The remotes are parsed once per repository directory, here,
+    /// since a parse is three git reads.
+    fn queue_forge_sample(&mut self) {
+        if !self.forge.due() || self.worktrees.is_empty() {
+            return;
+        }
+        let base = self.base_branch.clone().unwrap_or_default();
+        let mut tickets: Vec<(ulid::Ulid, String, Vec<worktree::Leg>)> = Vec::new();
+        for (t, b) in &self.worktrees {
+            if b.branch.is_empty() || self.tearing_down.contains(t) {
+                continue;
+            }
+            tickets.push((*t, b.branch.clone(), b.legs(&self.paths.repo_root, &base)));
+        }
+        if tickets.is_empty() {
+            self.forge.last = Some(Instant::now());
+            return;
+        }
+        // Every repository on the pass, by host and path, and where to run.
+        let mut repos: Vec<(mesimon_core::forge::Remote, std::path::PathBuf)> = Vec::new();
+        let mut add_repo = |remote: mesimon_core::forge::Remote, dir: std::path::PathBuf| {
+            if !repos.iter().any(|(r, _)| *r == remote) {
+                repos.push((remote, dir));
+            }
+        };
+        let mut queries = Vec::new();
+        for (t, branch, legs) in &tickets {
+            let mut leg_queries = Vec::new();
+            for leg in legs {
+                let remote = self
+                    .forge
+                    .remotes
+                    .entry(leg.repo.clone())
+                    .or_insert_with(|| crate::forge::remote_of(&leg.repo, &leg.base))
+                    .clone();
+                let Some(remote) = remote else { continue };
+                leg_queries
+                    .push(crate::forge::LegQuery { repo_path: remote.path.clone(), dir: leg.path.clone() });
+                add_repo(remote, leg.repo.clone());
+            }
+            let opened = self.costs.opened_urls(*t);
+            for url in &opened {
+                if let Some(remote) = mesimon_core::forge::repo_of_url(url) {
+                    add_repo(remote, self.paths.repo_root.clone());
+                }
+            }
+            queries.push(crate::forge::TicketQuery {
+                ticket: *t,
+                branch: branch.clone(),
+                legs: leg_queries,
+                opened,
+            });
+        }
+        // Which CLI reads each host: probed on the worker where unknown or
+        // stale; a host with no candidate binary at all is settled here.
+        let path = self.shell_env.path.clone();
+        let mut probes = Vec::new();
+        for (remote, _) in &repos {
+            let fresh = self.forge.probes.get(&remote.host).is_some_and(|p| !p.stale());
+            if fresh || probes.iter().any(|p: &crate::forge::ProbeQuery| p.host == remote.host) {
+                continue;
+            }
+            let order = match remote.known_forge() {
+                Some(mesimon_core::forge::Forge::GitHub) => vec![mesimon_core::forge::Forge::GitHub],
+                _ => vec![mesimon_core::forge::Forge::GitLab, mesimon_core::forge::Forge::GitHub],
+            };
+            let candidates: Vec<crate::forge::Cli> =
+                order.into_iter().filter_map(|f| crate::forge::find_cli(f, path.as_deref())).collect();
+            if candidates.is_empty() {
+                self.forge.probes.insert(
+                    remote.host.clone(),
+                    crate::forge::HostProbe { cli: None, at: Instant::now(), viewer: None },
+                );
+                continue;
+            }
+            probes.push(crate::forge::ProbeQuery { host: remote.host.clone(), candidates });
+        }
+        let repo_queries: Vec<crate::forge::RepoQuery> = repos
+            .iter()
+            .filter_map(|(remote, dir)| {
+                let probe = self.forge.probes.get(&remote.host)?;
+                Some(crate::forge::RepoQuery {
+                    remote: remote.clone(),
+                    cli: probe.cli.clone()?,
+                    viewer: probe.viewer.clone(),
+                    dir: dir.clone(),
+                })
+            })
+            .collect();
+        if probes.is_empty() && repo_queries.is_empty() {
+            // No forge reads this board: nothing to ask, and no pass to
+            // wait for.
+            self.forge.last = Some(Instant::now());
+            return;
+        }
+        self.forge.inflight = true;
+        self.forge.gen = self.forge.gen.wrapping_add(1);
+        let gen = self.forge.gen;
+        let query = crate::forge::Query { probes, repos: repo_queries, tickets: queries };
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::ForgeSampled(gen, crate::forge::sample(query, now_ms())));
+        });
+    }
+
+    /// A forge pass landed (T-739): the probes and the sets are taken, the
+    /// feed says what moved in each set, the merged clause is folded into
+    /// the flags, and the train and the reclaim get the same look the git
+    /// sample gives them.
+    fn on_forge_sampled(&mut self, gen: u64, sample: crate::forge::Sample) {
+        self.forge.inflight = false;
+        if gen != self.forge.gen {
+            return;
+        }
+        self.forge.last = Some(Instant::now());
+        self.forge.last_ms = sample.at_ms;
+        for (host, probe) in sample.probes {
+            self.forge.probes.insert(host, probe);
+        }
+        self.forge.errors =
+            sample.repos.iter().filter_map(|r| Some((r.key.clone(), r.error.clone()?))).collect();
+        let mut changed = false;
+        for (t, set) in sample.sets {
+            if self.board.ticket(t).is_none() {
+                continue;
+            }
+            let old = self.forge.sets.get(&t);
+            for line in crate::forge::delta(old.map(Vec::as_slice), &set) {
+                self.feed.board_outcome("forge", "pr", Some(t), &line);
+            }
+            changed |= old != Some(&set);
+            self.forge.sets.insert(t, set);
+            self.forge.at_ms.insert(t, sample.at_ms);
+        }
+        let live: Vec<ulid::Ulid> = self.board.tickets.iter().map(|t| t.id).collect();
+        self.forge.sets.retain(|t, _| live.contains(t));
+        self.forge.at_ms.retain(|t, _| live.contains(t));
+        let tickets: Vec<ulid::Ulid> = self.wt_repos.keys().copied().collect();
+        for t in tickets {
+            let Some(mut legs) = self.wt_repos.get(&t).cloned() else { continue };
+            if self.forge_fold_legs(t, &mut legs) {
+                let a = worktree::aggregate(&legs);
+                let was = self.wt_agg.get(&t).map(|w| w.merged);
+                let owed = self.crown_heard.get(&t).is_some_and(|h| h.awaits_merge());
+                if a.merged
+                    && self.board.crown.is_some()
+                    && (was == Some(false) || (was.is_none() && owed))
+                {
+                    self.crown_landed.push(t);
+                }
+                changed |= self.wt_agg.get(&t) != Some(&a);
+                self.wt_agg.insert(t, a);
+                self.wt_repos.insert(t, legs);
+            }
+        }
+        if !changed {
+            return;
+        }
+        self.reclaim_archived();
+        if self.train_pass() {
+            self.persist_sessions();
+        }
+        self.settle_looks();
+        self.broadcast();
+    }
+
+    /// The merged clause the forge adds to a ticket's legs (T-739): a leg
+    /// the git road reads unmerged whose repository's newest PR is merged
+    /// at the leg's tip reads merged, landed as that PR's merge commit.
+    /// True when a leg changed.
+    fn forge_fold_legs(&self, t: ulid::Ulid, legs: &mut [worktree::RepoFlags]) -> bool {
+        let mut changed = false;
+        for leg in legs.iter_mut() {
+            if leg.merged {
+                continue;
+            }
+            let dir = self.leg_dir(&leg.name);
+            let Some(Some(remote)) = self.forge.remotes.get(&dir) else { continue };
+            let Some(pr) = self.forge.merged_at(t, &remote.path, &leg.tip) else { continue };
+            leg.merged = true;
+            leg.needs_rebase = false;
+            leg.merged_in = format!("{} ({} {})", leg.base, pr.forge.noun(), pr.label());
+            leg.merged_oid =
+                if pr.merge_oid.is_empty() { pr.head_oid.clone() } else { pr.merge_oid.clone() };
+            changed = true;
+        }
+        changed
+    }
+
+    /// Each ticket's pull requests for the snapshot (T-739), newest first.
+    fn forge_items(&self) -> Vec<mesimon_core::command::PrItem> {
+        let mut out = Vec::new();
+        for t in &self.board.tickets {
+            let Some(set) = self.forge.sets.get(&t.id) else { continue };
+            for pr in set {
+                out.push(mesimon_core::command::PrItem {
+                    ticket: t.id,
+                    forge: pr.forge.word().into(),
+                    repo: pr.repo.clone(),
+                    number: pr.number,
+                    url: pr.url.clone(),
+                    state: pr.state.word().into(),
+                    pipeline: pr.pipeline.word().into(),
+                    job: pr.pipeline.job().map(mesimon_core::text::scrub_text),
+                    conflict: pr.conflict,
+                    review: pr.review.word().into(),
+                    merged_oid: pr.merge_oid.clone(),
+                    deployed: Vec::new(),
+                });
+            }
+        }
+        out
+    }
+
+    fn forge_status(&self) -> mesimon_core::command::ForgeStatus {
+        mesimon_core::command::ForgeStatus {
+            present: self.forge.present(),
+            trouble: self.forge.trouble(),
+            sampled_at_ms: self.forge.last_ms,
+        }
+    }
+
     fn queue_worktree_flags(&mut self) {
         if self.wt_inflight || self.worktrees.is_empty() {
             return;
@@ -13267,6 +13545,10 @@ impl Daemon {
                 }
                 rebased = true;
             }
+            // A PR the forge says merged at this tip is a merge the git
+            // road may not see for lack of a fetch (T-739): the same flag,
+            // so the card, the gates, the train and the crown read alike.
+            self.forge_fold_legs(t, &mut legs);
             let a = worktree::aggregate(&legs);
             let was = self.wt_agg.get(&t).map(|w| w.merged);
             // Unmerged to merged is a landing, whoever made it (T-527). A

@@ -9,6 +9,7 @@ pub mod claudemd;
 pub mod cost;
 pub mod diff;
 pub mod feed;
+pub mod forge;
 pub mod git;
 pub mod gitstatus;
 pub mod hook_settings;

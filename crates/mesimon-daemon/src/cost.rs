@@ -63,6 +63,11 @@ pub struct Cursor {
     /// (T-581): a transcript line stamped at or after it is the check's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by_mod_since: Option<u64>,
+    /// `pr create` tool calls whose result the pass has not reached yet
+    /// (T-739): the `opened here` fact is read off the result, which is
+    /// the next line or the next pass.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_create: Vec<String>,
 }
 
 /// The two counts of a ticket's mod-reported turns (T-581), in tokens: the
@@ -114,7 +119,15 @@ pub struct TicketLedger {
     pub check: Check,
     #[serde(default, skip_serializing_if = "Hint::is_empty")]
     pub hint: Hint,
+    /// The PR URLs a `pr create` run by one of the ticket's sessions
+    /// printed (T-739): the `opened here` fact, kept here because the
+    /// transcript is read once and the cursor never goes back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pr_urls: Vec<String>,
 }
+
+/// How many opened URLs a ticket keeps: the newest.
+const PR_URLS_CAP: usize = 32;
 
 impl TicketLedger {
     /// Where the mod's count of `path` starts, if it does: its own fence, or
@@ -153,6 +166,8 @@ pub struct Done {
     pub path: String,
     pub cursor: Cursor,
     pub added: Vec<(u64, String, Tokens)>,
+    /// PR URLs the pass found in a `pr create`'s result (T-739).
+    pub pr_urls: Vec<String>,
 }
 
 impl Ledger {
@@ -259,6 +274,16 @@ impl Ledger {
                 t.conversations.insert(d.path, cursor.clone());
                 moved = true;
             }
+            for url in d.pr_urls {
+                if t.pr_urls.iter().any(|u| mesimon_core::forge::same_url(u, &url)) {
+                    continue;
+                }
+                if t.pr_urls.len() >= PR_URLS_CAP {
+                    t.pr_urls.remove(0);
+                }
+                t.pr_urls.push(url);
+                moved = true;
+            }
             for (at_ms, model, tokens) in d.added {
                 if tokens.is_empty() {
                     continue;
@@ -285,6 +310,11 @@ impl Ledger {
             }
         }
         moved
+    }
+
+    /// The PR URLs a ticket's sessions opened (T-739).
+    pub fn opened_urls(&self, ticket: ulid::Ulid) -> Vec<String> {
+        self.tickets.get(&ticket).map(|t| t.pr_urls.clone()).unwrap_or_default()
     }
 
     /// Drop the tickets the board no longer has. True when any went.
@@ -382,11 +412,22 @@ fn read(job: Job, now_ms: u64) -> Option<Done> {
             path: job.path,
             cursor,
             added: Vec::new(),
+            pr_urls: Vec::new(),
         });
     };
     let text = String::from_utf8_lossy(&buf[..end]);
     let mut added = Vec::new();
+    let mut pr_urls = Vec::new();
     for line in text.lines() {
+        // The `opened here` fact (T-739): a `pr create` the agent ran and
+        // the URL its result printed. Parsed only where it can be there, so
+        // a line costs one parse, not two.
+        if !cursor.pending_create.is_empty()
+            || line.contains("pr create")
+            || line.contains("mr create")
+        {
+            pr_urls.extend(mesimon_core::forge::pr_create_line(line, &mut cursor.pending_create));
+        }
         if cursor.codex {
             match codex_line(line) {
                 Some(CodexLine::Model(m)) => cursor.model = Some(m),
@@ -410,7 +451,7 @@ fn read(job: Job, now_ms: u64) -> Option<Done> {
         }
     }
     cursor.offset += end as u64 + 1;
-    Some(Done { ticket: job.ticket, path: job.path, cursor, added })
+    Some(Done { ticket: job.ticket, path: job.path, cursor, added, pr_urls })
 }
 
 /// A line's moment: its own stamp, or the pass's when it carries none.
@@ -575,6 +616,36 @@ mod tests {
         writeln!(f, "{}", line("m3", 10)).unwrap();
         assert!(ledger.apply(scan(ledger.jobs(), NOW)));
         assert_eq!(ledger.view(NOW)[0].tokens, 163);
+    }
+
+    /// The `opened here` fact (T-739): a `pr create` and its result, read
+    /// across two passes, land on the ticket's ledger once.
+    #[test]
+    fn a_pr_create_in_the_transcript_binds_its_url_to_the_ticket() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let t = ulid::Ulid::new();
+        let call = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_9","name":"Bash","input":{"command":"gh pr create --fill"}}]}}"#;
+        std::fs::write(&path, format!("{call}
+")).unwrap();
+        let mut ledger = Ledger::default();
+        ledger.learn(t, &path.display().to_string(), false, false);
+        ledger.apply(scan(ledger.jobs(), NOW));
+        assert!(ledger.opened_urls(t).is_empty(), "the result has not come");
+        assert_eq!(ledger.tickets[&t].conversations.values().next().unwrap().pending_create, ["toolu_9"]);
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        use std::io::Write;
+        writeln!(f, r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"toolu_9","content":"https://github.com/o/r/pull/42\n"}}]}}}}"#).unwrap();
+        assert!(ledger.apply(scan(ledger.jobs(), NOW)));
+        assert_eq!(ledger.opened_urls(t), ["https://github.com/o/r/pull/42"]);
+        assert!(ledger.tickets[&t].conversations.values().next().unwrap().pending_create.is_empty());
+        // Said again, it is kept once.
+        writeln!(f, "{call}").unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"toolu_9","content":"https://github.com/o/r/pull/42/"}}]}}}}"#).unwrap();
+        ledger.apply(scan(ledger.jobs(), NOW));
+        assert_eq!(ledger.opened_urls(t).len(), 1);
+        let text = serde_json::to_string(&ledger).unwrap();
+        assert!(text.contains("pr_urls"), "the fact survives a restart: {text}");
     }
 
     #[test]

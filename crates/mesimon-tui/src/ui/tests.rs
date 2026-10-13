@@ -4554,6 +4554,67 @@ fn golden_train_blocked_120() {
     golden("train_blocked_120x30", &render(&app, 120, 30));
 }
 
+/// A ticket's pull requests on its page (T-739): one row each under the
+/// branch row, newest first, in the card's glyphs — the failing pipeline
+/// named, the review's word, a repository named only when it is not this
+/// one — and each URL in the `^k` list, labelled as the forge spells it.
+#[test]
+fn golden_ticket_prs_120() {
+    use mesimon_core::command::PrItem;
+    let mut app = app_graphite(fixture(false));
+    app.worktrees = vec![mesimon_core::command::WorktreeItem {
+        ticket: ulid_n(5),
+        branch: "msmn/T-5-grapheme-truncation".into(),
+        status: "attached".into(),
+        merged: false,
+        merged_in: String::new(),
+        merged_oid: String::new(),
+        conflict: false,
+        ahead: 2,
+        needs_rebase: false,
+        detail: None,
+        path: Some("/wt/T-5-grapheme-truncation".into()),
+        repos: vec![],
+    }];
+    let pr = |number: u64, state: &str, pipeline: &str, job: Option<&str>| PrItem {
+        ticket: ulid_n(5),
+        forge: "github".into(),
+        repo: "o/r".into(),
+        number,
+        url: format!("https://github.com/o/r/pull/{number}"),
+        state: state.into(),
+        pipeline: pipeline.into(),
+        job: job.map(str::to_string),
+        conflict: false,
+        review: if number == 43 { "changes_requested".into() } else { "none".into() },
+        merged_oid: String::new(),
+        deployed: Vec::new(),
+    };
+    let mut api = pr(7, "merged", "passed", None);
+    api.forge = "gitlab".into();
+    api.repo = "g/api".into();
+    api.url = "https://gitlab.com/g/api/-/merge_requests/7".into();
+    api.deployed = vec!["staging".into()];
+    app.prs = vec![
+        pr(43, "open", "failed", Some("test-linux")),
+        pr(42, "open", "running", None),
+        api,
+        pr(40, "merged", "none", None),
+    ];
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    let text = lines.join("\n");
+    assert!(text.contains("✗ PR #43 open ∙ pipeline failed: test-linux ∙ changes requested"), "{text}");
+    assert!(text.contains("◯ PR #42 open ∙ pipeline running"), "{text}");
+    assert!(text.contains("◆ MR !7 merged ∙ g/api ∙ pipeline passed ∙ deployed: staging"), "{text}");
+    assert!(text.contains("∙ +1 more"), "the fourth folds into a count:\n{text}");
+    golden("ticket_prs_120x30", &lines);
+    let links = app.ticket_links(ulid_n(5));
+    let labels: Vec<&str> = links.iter().filter_map(|l| l.label.as_deref()).collect();
+    assert_eq!(labels, ["PR #43 open", "PR #42 open", "MR !7 merged", "PR #40 merged"]);
+    assert!(app.ticket_linkable(ulid_n(5)));
+}
+
 /// A pull request merged somewhere else (T-267): the branch is not an
 /// ancestor of anything, and the ticket page still says the work landed —
 /// naming the ref, because the user did not merge it here, and the commit

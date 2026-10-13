@@ -318,6 +318,8 @@ mod tests {
             team: Default::default(),
             mesophon: Default::default(),
             terminals: Vec::new(),
+            prs: Vec::new(),
+            forge: Default::default(),
         }
     }
 

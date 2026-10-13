@@ -258,6 +258,25 @@ pub(crate) fn awake_label(tier: Tier, held: bool) -> &'static str {
     }
 }
 
+/// A pull request's one glyph (T-739), from its state word and its
+/// pipeline word as the snapshot spells them: a failed pipeline is the
+/// loudest and wears the err register, as `⎇!` does; an open PR whose
+/// pipeline passed or waits is a person's turn (review, the merge button, a
+/// manual job) and wears the calm register `⎇↑` offers a merge in; a
+/// merged one is grey, and one deployed somewhere is the filled diamond.
+/// Everything else — open with its pipeline running or absent — is the
+/// hollow ring. One cell on both tiers.
+pub(crate) fn pr_mark(tier: Tier, state: &str, pipeline: &str, deployed: bool) -> (char, Register) {
+    let ascii = tier == Tier::Ascii;
+    match (state, pipeline) {
+        (_, "failed") => (if ascii { 'x' } else { '✗' }, Register::Err),
+        ("merged", _) if deployed => (if ascii { '^' } else { '◆' }, Register::Grey),
+        ("merged", _) => (if ascii { '*' } else { '●' }, Register::Grey),
+        (_, "passed" | "waiting") => (if ascii { 'O' } else { '◉' }, Register::Calm),
+        _ => (if ascii { 'o' } else { '◯' }, Register::Grey),
+    }
+}
+
 /// The branch glyph `⎇` U+2387 and the two arrows the board's own checkout
 /// (the header, T-124) and a ticket's worktree (the card's `⎇↑`/`⎇↓`) share.
 /// One home so the two surfaces cannot drift: `↑` is "ahead, push/merge

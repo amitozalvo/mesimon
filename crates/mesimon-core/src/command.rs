@@ -39,7 +39,7 @@ pub struct Notice {
     /// on an older client. One of:
     /// `quarantined` | `future_version` | `worktrees_barred` | `build_skew` |
     /// `shell_env` | `merge_train_suspended` | `merge_train_blocked` |
-    /// `automation_suspended` | `server_cut_off`.
+    /// `automation_suspended` | `server_cut_off` | `forge_unreachable`.
     pub kind: String,
     /// The headline, in mesimon's voice, ready to render. Never raw serde text.
     pub text: String,
@@ -1759,6 +1759,12 @@ pub enum Response {
         /// older daemon parses as none.
         #[serde(default)]
         costs: Vec<crate::cost::TicketCost>,
+        /// Each ticket's pull requests as the forge last said (T-739),
+        /// newest first per ticket; empty with no forge or nothing bound.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        prs: Vec<PrItem>,
+        #[serde(default)]
+        forge: ForgeStatus,
     },
     /// SpawnSession on a worktree ticket that is not provisioned yet: the
     /// worktree is being created off-thread; a BoardChanged follows when the
@@ -2686,6 +2692,54 @@ pub struct WorktreeItem {
     /// byte-identical to what it was.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repos: Vec<WorktreeRepoItem>,
+}
+
+/// One pull request of a ticket, as the forge last said it (T-739). Words,
+/// not enums, for `Notice.kind`'s reason: a word a newer daemon adds must
+/// not blank an older client's board.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrItem {
+    pub ticket: ulid::Ulid,
+    /// `github` | `gitlab`.
+    pub forge: String,
+    /// `owner/repo` as the remote spells it.
+    pub repo: String,
+    pub number: u64,
+    pub url: String,
+    /// `open` | `draft` | `merged` | `closed`.
+    pub state: String,
+    /// `unknown` | `none` | `passed` | `running` | `waiting` | `failed`.
+    pub pipeline: String,
+    /// The job the pipeline word is about, where the forge named one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
+    #[serde(default)]
+    pub conflict: bool,
+    /// `none` | `required` | `approved` | `changes_requested`.
+    #[serde(default)]
+    pub review: String,
+    /// The commit the merge landed as, once merged.
+    #[serde(default)]
+    pub merged_oid: String,
+    /// The environments the merge commit reached, as the forge names them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deployed: Vec<String>,
+}
+
+/// The forge road's standing (T-739): whether a CLI reads one at all, and
+/// the trouble while a repository cannot be read.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForgeStatus {
+    /// A signed-in `gh` or `glab` reads some repository of this board.
+    #[serde(default)]
+    pub present: bool,
+    /// The last failed call's words, `repo: why`; `None` while every
+    /// repository answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trouble: Option<String>,
+    /// Unix ms of the last pass that answered; zero before the first.
+    #[serde(default)]
+    pub sampled_at_ms: u64,
 }
 
 /// One leg of a workspace binding (T-368): the ticket's branch in one

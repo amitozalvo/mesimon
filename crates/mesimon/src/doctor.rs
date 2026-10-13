@@ -1009,6 +1009,42 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
             ),
         };
         records.push(rec(Level::Ok, "merge base", word).advice(advice));
+        // Which CLI would read this repository's pull requests (T-739): a
+        // stat of PATH, never a call, so doctor stays quick and offline.
+        if let Some(remote) = mesimon_daemon::forge::remote_of(repo, &base) {
+            use mesimon_core::forge::Forge;
+            let order = match remote.known_forge() {
+                Some(Forge::GitHub) => vec![Forge::GitHub],
+                _ => vec![Forge::GitLab, Forge::GitHub],
+            };
+            let found: Vec<String> = order
+                .iter()
+                .filter_map(|f| mesimon_daemon::forge::find_cli(*f, None))
+                .map(|c| c.bin.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
+                .collect();
+            if found.is_empty() {
+                let want = match remote.known_forge() {
+                    Some(Forge::GitHub) => "gh",
+                    _ => "glab (GitLab) or gh (GitHub)",
+                };
+                records.push(
+                    rec(Level::Note, "forge", format!("{}: no {want} on PATH", remote.host)).advice(
+                        "With the forge's CLI installed and signed in, the board reads each \
+                         ticket's pull requests, their pipelines and where they were deployed, \
+                         through that CLI and reads only. Nothing is written to the forge.",
+                    ),
+                );
+            } else {
+                records.push(
+                    rec(Level::Ok, "forge", format!("{} reads {} ({})", found.join(" or "), remote.host, remote.path))
+                        .advice(
+                            "Pull requests the signed-in account opened from a ticket's worktree show \
+                             on the ticket and its card; a sign-in failure shows on the board's \
+                             advisory row.",
+                        ),
+                );
+            }
+        }
     }
     // A repo on the Windows drive reaches git through WSL's 9p bridge, where
     // every operation is many times slower — and worktrees, the diff viewer

@@ -22,6 +22,7 @@ pub mod cost;
 pub mod crown;
 pub mod diff;
 pub mod exe;
+pub mod forge;
 pub mod fracindex;
 pub mod keymap;
 pub mod links;

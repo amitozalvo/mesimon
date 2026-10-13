@@ -128,6 +128,72 @@ fn leg_clauses(w: &mesimon_core::command::WorktreeItem, tier: glyphs::Tier) -> V
         .collect()
 }
 
+/// How many pull requests the header lists before folding the rest into a
+/// count: the newest matter, and the header is not a list.
+const PR_ROWS: usize = 3;
+
+/// The ticket's pull requests as header rows (T-739): `✗ PR #42 open ∙
+/// pipeline failed: test-linux ∙ changes requested`, newest first. The
+/// forge's words — a job's name, a repository's path — are untrusted text
+/// and cross `scrub_cells` here.
+fn pr_rows(app: &App, ticket: ulid::Ulid, ink: &crate::theme::Ramp, room: usize) -> Vec<Line<'static>> {
+    use mesimon_core::text::scrub_cells;
+    let theme = &app.theme;
+    let d2 = Style::default().fg(ink.dim2);
+    let prs = app.prs_of(ticket);
+    let own_repo = prs.first().map(|p| p.repo.clone()).unwrap_or_default();
+    let mut rows = Vec::new();
+    for (i, p) in prs.iter().enumerate() {
+        if i == PR_ROWS {
+            rows.push(Line::from(Span::styled(format!("    ∙ +{} more", prs.len() - PR_ROWS), d2)));
+            break;
+        }
+        let tier = theme.glyph_tier();
+        let (mark, reg) = glyphs::pr_mark(tier, &p.state, &p.pipeline, !p.deployed.is_empty());
+        let mark_style = match reg {
+            glyphs::Register::Err => theme.err_text(),
+            glyphs::Register::Calm => theme.calm_text(),
+            _ => d2,
+        };
+        let noun = match p.forge.as_str() {
+            "gitlab" => "MR",
+            _ => "PR",
+        };
+        let sign = if p.forge == "gitlab" { '!' } else { '#' };
+        let mut words = vec![format!("{noun} {sign}{} {}", p.number, p.state)];
+        if p.repo != own_repo {
+            words.push(scrub_cells(&p.repo, false));
+        }
+        match (p.pipeline.as_str(), p.job.as_deref()) {
+            ("failed", Some(job)) => words.push(format!("pipeline failed: {}", scrub_cells(job, false))),
+            ("failed", None) => words.push("pipeline failed".into()),
+            ("waiting", Some(job)) => words.push(format!("pipeline waiting: {}", scrub_cells(job, false))),
+            ("waiting", None) => words.push("pipeline waiting".into()),
+            ("running", _) => words.push("pipeline running".into()),
+            ("passed", _) => words.push("pipeline passed".into()),
+            _ => {}
+        }
+        if p.conflict {
+            words.push("conflicts".into());
+        }
+        match p.review.as_str() {
+            "approved" => words.push("approved".into()),
+            "changes_requested" => words.push("changes requested".into()),
+            _ => {}
+        }
+        if !p.deployed.is_empty() {
+            let names: Vec<String> = p.deployed.iter().map(|d| scrub_cells(d, false)).collect();
+            words.push(format!("deployed: {}", names.join(", ")));
+        }
+        let text = truncate(&words.join(" ∙ "), room.saturating_sub(4));
+        rows.push(Line::from(vec![
+            Span::styled(format!("   {mark}"), mark_style),
+            Span::styled(format!(" {text}"), d2),
+        ]));
+    }
+    rows
+}
+
 /// Where the branch's work landed, in words (T-267). A plain fast-forward
 /// into the checkout's own default branch stays the bare `merged` it has
 /// always been — that is the ref the whole page is already about. Anything
@@ -535,7 +601,11 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         }
     }
     let workspace = (!wt_spans.is_empty()).then(|| Line::from(wt_spans));
-    let wt_row = u16::from(workspace.is_some());
+    // The ticket's pull requests (T-739), one row each under the branch
+    // row, newest first, in the card's glyphs: what the forge said of
+    // each, with the repository named only when it is not this one.
+    let pr_rows = pr_rows(app, ticket.id, ink, room);
+    let wt_row = u16::from(workspace.is_some()) + pr_rows.len() as u16;
 
     // Breathing row between the header and the title (06 §5.5); the state
     // line sits directly under the title, the way a card's meta row does.
@@ -586,6 +656,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     let shown = if reading_note { 0 } else { extra };
     let mut rows = vec![Line::default(), title_row, ident];
     rows.extend(workspace);
+    rows.extend(pr_rows);
     rows.push(Line::default());
     if !desc.is_empty() && !reading_note {
         let (bar_ch, bar_style) = theme.desc_bar();

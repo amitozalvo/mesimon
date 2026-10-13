@@ -1402,6 +1402,11 @@ pub struct App {
     pub resources: Resources,
     /// Per-ticket worktree bindings (M4): branch, status word, merged/conflict.
     pub worktrees: Vec<WorktreeItem>,
+    /// Each ticket's pull requests as the forge last said (T-739), newest
+    /// first per ticket; the ticket page lists them and the card's second
+    /// line marks them.
+    pub prs: Vec<mesimon_core::command::PrItem>,
+    pub forge: mesimon_core::command::ForgeStatus,
     /// The `!` terminals alive on the daemon's tmux, by ticket (T-366): the
     /// ticket page's ghost row and the card's busy spinner read them.
     pub terminals: Vec<mesimon_core::command::TerminalItem>,
@@ -1917,6 +1922,8 @@ impl App {
             external_scanning: snap.external_scanning,
             resources: snap.resources,
             worktrees: snap.worktrees,
+            prs: snap.prs,
+            forge: snap.forge,
             notices: snap.notices,
             shell_env: snap.shell_env,
             git: snap.git,
@@ -2426,6 +2433,8 @@ impl App {
             machine_tiers,
             usage,
             costs,
+            prs,
+            forge,
         } = snap;
         let was = self.cursor_column().map(|c| c.name.clone());
         // The cursor holds its TICKET across the pass (T-335): a card that
@@ -2464,6 +2473,8 @@ impl App {
         self.machine_tiers = machine_tiers;
         self.usage = usage;
         self.costs = costs;
+        self.prs = prs;
+        self.forge = forge;
         self.absorb_crown_touches(crown_touches, crown_was, &placed);
         self.settle_drawer();
         self.seed_team_drafts();
@@ -10715,6 +10726,11 @@ impl App {
         self.worktrees.iter().find(|w| w.ticket == ticket)
     }
 
+    /// A ticket's pull requests (T-739), newest first.
+    pub fn prs_of(&self, ticket: ulid::Ulid) -> Vec<&mesimon_core::command::PrItem> {
+        self.prs.iter().filter(|p| p.ticket == ticket).collect()
+    }
+
     /// Flip a ticket between the shared checkout and a worktree of its own —
     /// the composer's Shift+Tab, on a ticket that exists (T-309). One road
     /// for all three surfaces (board, ticket page, description editor), so
@@ -12192,6 +12208,19 @@ impl App {
             };
             self.push_links(ticket, &dir, body, &mut out);
         }
+        // The ticket's pull requests (T-739): the forge's URLs, newest
+        // first, each labelled as the forge spells it.
+        for p in self.prs_of(ticket) {
+            if out.iter().any(|l| l.target == LinkTarget::Url(p.url.clone())) {
+                continue;
+            }
+            let noun = if p.forge == "gitlab" { "MR !" } else { "PR #" };
+            out.push(TicketLink {
+                label: Some(format!("{noun}{} {}", p.number, p.state)),
+                text: p.url.clone(),
+                target: LinkTarget::Url(p.url.clone()),
+            });
+        }
         // …and what the agent last said (T-307). The notes are the ticket's
         // record and go first — the description's Jira link is what `^K`
         // opens, and a reply rewrites itself every turn — but a URL an agent
@@ -12236,6 +12265,7 @@ impl App {
     pub(crate) fn ticket_linkable(&self, ticket: ulid::Ulid) -> bool {
         self.board.ticket(ticket).is_some_and(|t| t.description().is_some())
             || self.latest_transcript(ticket).is_some()
+            || self.prs.iter().any(|p| p.ticket == ticket)
     }
 
     /// What that transcript's agent last said, as the peek reads it — the
@@ -12460,6 +12490,9 @@ struct Snapshot {
     machine_tiers: mesimon_core::tier::MachineTiers,
     usage: mesimon_core::usage::Usage,
     costs: Vec<mesimon_core::cost::TicketCost>,
+    /// Each ticket's pull requests as the forge last said (T-739).
+    prs: Vec<mesimon_core::command::PrItem>,
+    forge: mesimon_core::command::ForgeStatus,
 }
 
 impl Snapshot {
@@ -12487,6 +12520,8 @@ impl Snapshot {
                 machine_tiers,
                 usage,
                 costs,
+                prs,
+                forge,
             } => Some(Self {
                 board,
                 grace,
@@ -12509,6 +12544,8 @@ impl Snapshot {
                 machine_tiers,
                 usage,
                 costs,
+                prs,
+                forge,
             }),
             _ => None,
         }
@@ -13026,6 +13063,8 @@ pub(crate) mod test_support {
                     resources: self.resources.clone(),
                     worktrees: Vec::new(),
                     notices: Vec::new(),
+                    prs: Vec::new(),
+                    forge: Default::default(),
                     shell_env: self.shell_env.clone(),
                     git: self.git.clone(),
                     claude_md: self.claude_md.clone().for_board(&self.board),
