@@ -648,8 +648,11 @@ fn a_rebase_turn_open_across_a_restart_still_holds_the_next_ask() {
         git_ok(&repo, &["merge-base", "--is-ancestor", &branch_b, "main"])
     });
     wait_until(Duration::from_secs(15), "C to be asked to rebase", || asks(&branch_c) == 1);
+    // Settled with its turn: off the open asks, kept as the memo (T-770).
     let kept = std::fs::read_to_string(h.paths.state_dir.join("train.json")).unwrap();
-    assert!(!kept.contains(&b.to_string()), "B's ask settled with its turn: {kept}");
+    let file: serde_json::Value = serde_json::from_str(&kept).unwrap();
+    assert!(file["asks"].get(b.to_string()).is_none(), "B's ask settled with its turn: {kept}");
+    assert!(file["settled"].get(b.to_string()).is_some(), "and is remembered: {kept}");
     start(&mut c, sc);
     git(&wt_c, &["rebase", "-q", "main"]);
     stop(&mut c, sc);

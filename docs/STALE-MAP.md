@@ -24697,3 +24697,75 @@ daemon's refusal. Hiding it needs the column's flag on the phone's board reply.
 `mcp_e2e` asserts an agent's `create_ticket` into REVIEW is refused naming TODO. Five e2es and
 `ci/state-lab.py` minted straight into IN PROGRESS/REVIEW; they open the column first
 (`TestClient::open_to_new`) or mint and move.
+
+## The train asks once per forge conflict, and a restart remembers what it asked (T-770, 2026-10-14, follow-up to T-635 and T-739)
+
+**Why.** Forge lab 2026-10-13, scenario D1 (lab log findings 16 and 17): T-7's worker opened MR !4
+on `api`, and the train asked it to rebase three times: 23:32:14, 23:40:09 and 23:40:40 (IDT), the
+last two about 6 minutes after the forge reported the conflict the crown pushed. The lab log read
+the first ask as made on a stale local main with no conflict on the forge, and the train as acting
+on the local `needs_rebase` alone.
+
+**Measured, from the board's feed, its journal and the worker's transcript.** The first ask was
+owed. T-7's worktree was cut from the checkout's `api` main, which did not hold the MRs the lab
+had merged on GitLab, so !4 conflicted from its first read. The worker resolved `hello.txt` and
+force-pushed 7b478a9 at 23:32:35. The "phantom" `conflict cleared !4` at 23:33:25 was that fix
+read back. Since T-739 the train asks on the forge's conflict alone while a PR is open. The 39 s
+from the turn's end to that ask was `forge_fresh` waiting on the minute, which T-761 removed. The
+6 minutes broke down like this:
+
+| IDT | what | where the time went |
+| --- | --- | --- |
+| 23:33 | crown pushes 6be3497 to GitLab's main | |
+| 23:35:47 | a forge read says `conflict !4` | ~1.5 min: the minute's cadence and GitLab's recompute |
+| 23:35:47–23:39:59 | the train is silent | the memo: the ask was keyed on the local base tip, and `api`'s local main never moved (the forge merges), so `asked == base_tip` held. Without a restart it would never have asked |
+| 23:39:59 | SIGTERM (a rebuilt binary); re-armed 23:40:00 | |
+| 23:40:09 | second ask | the restart forgot the settled ask: T-635 kept open asks only |
+| 23:40:23 | the worker force-pushes ce60ad0; its turn ends at 23:40:25 | |
+| 23:40:34 | `U` handover | |
+| 23:40:40 | third ask; the worker answers "Already up to date" | forgotten again, and the forge's last read (before the push) still said conflict |
+
+**Built: one ask per conflict.** `train::lane` with a PR open owes the rebase on `pr_conflict`
+and `!conflict_asked`. A new `Input::conflict_asked` / `Reading::conflict_asked` replaces the
+base-tip memo there: a forge merge never moves the checkout's base, so the local tip can neither
+say a conflict is new nor that it was asked about. Without a PR the rule is unchanged: once per
+base tip. `AskRecord::conflict` records whether the forge reported a conflict on the ticket's PR
+when the ask was delivered (`merge_to_agent`, by train or by hand). `absorb_forge`, on every read,
+clears it for a ticket whose open PRs show no conflict (`Train::conflict_cleared`), so the next
+conflict is owed one ask. A stale conflict read after the rebase's push, the 23:40:40 shape, is
+the same conflict and asks nothing. The crown's `train_takes` reads the same memo.
+
+**Built: the memo survives a restart.** `train.json` keeps `settled` beside `asks` (same
+`KeptAsk` shape plus `conflict`). `restore_train` brings a settled ask back settled, and brings an
+open ask whose ticket has no working or re-deriving agent back settled too (it used to be
+dropped). The schema stays 1: an older build reads `asks`, ignores `settled` and drops it on its
+next write, which is the pre-T-770 behaviour (one repeat), and nothing widens.
+
+**Not built: "no ask on a stale local base".** The premise was the first ask, and that ask was
+owed. With a PR open `needs_rebase` is not a reason (T-739). Without one, `needs_rebase` and the
+base tip are about the checkout's own base branch (`worktree::compute_flags`), which a fetch never
+moves, so "read since the last fetch" has nothing to wait for. A base that moved locally asks, as
+before.
+
+**Not done.** GitLab's `detailed_merge_status` can read `conflict` while `has_conflicts` is false
+during a recompute (lab, 23:41), and `forge::parse_glab` ORs the two, so a card reads conflict
+for a read or two after a fix. The memo stops that from asking. A read of `checking` (no conflict)
+between two stale `conflict` reads would clear the memo and ask once more. Not seen; the fuse caps
+it. A worktree cut from a checkout base that lags the forge starts behind its PR's target. That is
+the first conflict's cause, and it is outside this ticket.
+
+**Tests.** `train::a_pr_conflict_is_asked_once_whatever_the_local_base_says` (core: a clean local
+base asks; asked at this local tip but not about this conflict asks; asked about it, silent, also
+after the local base moves; a clean PR behind its base is the forge's; no PR keeps once per base
+tip; `plan` reads the memo). Daemon: `train::the_asks_round_trip_open_and_settled` (settled with
+its conflict; a pre-T-770 file reads as before) and
+`train::a_conflict_asked_about_holds_until_the_forge_clears_it`.
+`forge_e2e::a_pr_conflict_is_asked_about_once_and_again_only_when_it_returns`, on the stub `gh`: a
+clean PR asks nothing and is never merged here; the flip to `CONFLICTING` asks once, in words
+ending `so PR #42 updates`; the rebase turn ending under the stale conflict asks nothing; the flip
+back asks nothing; a second conflict at the same local base asks again; a restart, then a person's
+turn, asks nothing. The e2e fails in each half's absence: the old base-tip memo times out on the
+second conflict's ask, and a restore without `settled` asks a third time.
+`merge_train_e2e::a_rebase_turn_open_across_a_restart_still_holds_the_next_ask` now reads B's
+settled ask under `settled` rather than gone. There is no rig test: the words to the agent are
+unchanged, and only when they are sent moved.

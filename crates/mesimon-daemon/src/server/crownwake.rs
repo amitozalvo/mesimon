@@ -1214,6 +1214,7 @@ impl Daemon {
             seat: mesimon_core::train::seat(&self.board, worker),
             base_tip: &look.base_tip,
             asked: asked.get(&worker).map(String::as_str),
+            conflict_asked: self.train.conflict_asked().contains(&worker),
             fused: self.train.is_fused(worker),
         };
         match mesimon_core::train::lane(t, &reading) {

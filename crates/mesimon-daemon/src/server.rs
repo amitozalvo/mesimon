@@ -8402,9 +8402,9 @@ impl Daemon {
         }
     }
 
-    /// The single write path for `train.json` (T-635): the train's asks
-    /// whose turn is still open, written when that set changed, so a quiet
-    /// board writes nothing.
+    /// The single write path for `train.json` (T-635): the train's asks,
+    /// open and settled (T-770), written when they changed, so a quiet board
+    /// writes nothing.
     fn persist_train(&mut self) {
         if self.train_barred {
             return;
@@ -8419,28 +8419,31 @@ impl Daemon {
         );
     }
 
-    /// Read `train.json` back at start (T-635). An ask whose ticket is gone,
-    /// or whose ticket has no agent that is working or not yet re-derived
-    /// (a Claude reads `Unknown{DaemonRestarted}` until its transcript or a
-    /// hook speaks), is dropped; the rest hold as they did, and the first
-    /// edge out of a working state settles them (`apply_change`).
+    /// Read `train.json` back at start (T-635). An ask whose ticket is gone
+    /// is dropped. An open one whose ticket has no agent that is working or
+    /// not yet re-derived (a Claude reads `Unknown{DaemonRestarted}` until
+    /// its transcript or a hook speaks) comes back settled; the rest hold as
+    /// they did, and the first edge out of a working state settles them
+    /// (`apply_change`). A settled one is the memo it was (T-770), so the
+    /// first pass does not ask the same ticket at the same tip again.
     fn restore_train(&mut self, file: crate::train::TrainFile) {
         // No file reads as no asks, which is then not written.
         self.train_written =
             serde_json::to_string_pretty(&crate::train::TrainFile::default_of_schema())
                 .unwrap_or_default();
+        let in_turn = |t: &ulid::Ulid| {
+            self.board.sessions.iter().any(|s| {
+                s.ticket == *t
+                    && (mesimon_core::quiet::is_working(s)
+                        || (s.kind.is_agent() && matches!(s.state, SessionState::Unknown { .. })))
+            })
+        };
         let asks: Vec<_> = file
             .asks
             .into_iter()
-            .filter(|(t, _)| {
-                self.board.ticket(*t).is_some()
-                    && self.board.sessions.iter().any(|s| {
-                        s.ticket == *t
-                            && (mesimon_core::quiet::is_working(s)
-                                || (s.kind.is_agent()
-                                    && matches!(s.state, SessionState::Unknown { .. })))
-                    })
-            })
+            .map(|(t, a)| (t, a, !in_turn(&t)))
+            .chain(file.settled.into_iter().map(|(t, a)| (t, a, true)))
+            .filter(|(t, _, _)| self.board.ticket(*t).is_some())
             .collect();
         self.train.restore(asks);
         self.persist_train();
@@ -9922,11 +9925,14 @@ impl Daemon {
         self.tag_owed(id, TurnAsk::Merge);
         // A delivered rebase ask is remembered against the base tip, by hand
         // or by train: the train does not ask again until the base moves
-        // (2026-09-04).
+        // (2026-09-04). With the forge's conflict on its PR, against that
+        // conflict too (T-770): not again until a read finds none.
         if matches!(request, mesimon_core::command::MergeRequest::Rebase) {
+            let conflict = self.forge.open_of(id).iter().any(|p| p.conflict);
             self.train.record_ask(
                 id,
                 self.base_tip_of(id).to_string(),
+                conflict,
                 now_ms(),
                 by.is_human(),
                 Instant::now(),
@@ -10130,6 +10136,7 @@ impl Daemon {
         let base_tip: HashMap<ulid::Ulid, String> =
             self.wt_agg.iter().map(|(t, a)| (*t, a.base_tip.clone())).collect();
         let asked = self.train.asked_tips();
+        let conflict_asked = self.train.conflict_asked();
         let fused: std::collections::HashSet<ulid::Ulid> =
             self.train.fused_tickets().copied().collect();
         mesimon_core::train::plan(&mesimon_core::train::Input {
@@ -10137,6 +10144,7 @@ impl Daemon {
             flags: &flags,
             base_tip: &base_tip,
             asked: &asked,
+            conflict_asked: &conflict_asked,
             fused: &fused,
         })
     }
@@ -13775,6 +13783,21 @@ impl Daemon {
         }
         if changed {
             self.reclaim_archived();
+        }
+        // A conflict the train asked about is owed no second ask (T-770)
+        // until a read finds it gone: then the next one is a new conflict.
+        let gone: Vec<ulid::Ulid> = self
+            .train
+            .conflict_asked()
+            .into_iter()
+            .filter(|t| !self.forge.open_of(*t).iter().any(|p| p.conflict))
+            .collect();
+        let mut memo = false;
+        for t in gone {
+            memo |= self.train.conflict_cleared(t);
+        }
+        if memo {
+            self.persist_train();
         }
         // On every read, changed or not: a read after a turn's end is what
         // makes its ticket's forge verdict current (T-761), and the train

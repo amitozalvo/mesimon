@@ -67,6 +67,9 @@ pub struct Input<'a> {
     pub base_tip: &'a HashMap<ulid::Ulid, String>,
     /// Ticket → the base tip it was last asked to rebase onto.
     pub asked: &'a HashMap<ulid::Ulid, String>,
+    /// Tickets whose PR conflict the forge still reports was already asked
+    /// about (T-770): one ask per conflict, whatever the local base did.
+    pub conflict_asked: &'a HashSet<ulid::Ulid>,
     pub fused: &'a HashSet<ulid::Ulid>,
 }
 
@@ -131,6 +134,8 @@ pub struct Reading<'a> {
     pub base_tip: &'a str,
     /// The base tip it was last asked to rebase onto.
     pub asked: Option<&'a str>,
+    /// The conflict the forge reports on its PR was already asked about.
+    pub conflict_asked: bool,
     pub fused: bool,
 }
 
@@ -161,15 +166,22 @@ pub fn lane(t: &Ticket, r: &Reading) -> Option<Lane> {
         return Some(Lane::Merge);
     }
     // With a PR open the base moving past the branch is not a reason: the
-    // forge merges a branch behind its base. A conflict it reports is.
-    let behind = if f.pr_open { f.pr_conflict } else { f.needs_rebase };
+    // forge merges a branch behind its base. A conflict it reports is, and
+    // it is owed one ask (T-770): the local base tip is no memo for it, since
+    // a forge merge never moves the checkout's base, so a second conflict at
+    // the same local tip was never asked about and a moved local tip asked
+    // again about the same one.
+    let owed = if f.pr_open {
+        f.pr_conflict && !r.conflict_asked
+    } else {
+        f.needs_rebase && r.asked.is_none_or(|at| at != r.base_tip)
+    };
     (matches!(r.reach, TrainReach::Merge | TrainReach::Rebase)
-        && behind
+        && owed
         && f.ahead > 0
         && r.seat == Seat::Idle
-        && !r.fused
-        && r.asked.is_none_or(|at| at != r.base_tip))
-    .then_some(Lane::Rebase)
+        && !r.fused)
+        .then_some(Lane::Rebase)
 }
 
 /// Everything the train would do, in board order — column order, then row
@@ -187,6 +199,7 @@ pub fn plan(input: &Input) -> Plan {
                 seat: seat(input.board, t.id),
                 base_tip: input.base_tip.get(&t.id).map(String::as_str).unwrap_or(""),
                 asked: input.asked.get(&t.id).map(String::as_str),
+                conflict_asked: input.conflict_asked.contains(&t.id),
                 fused: input.fused.contains(&t.id),
             };
             match lane(t, &reading) {
@@ -281,6 +294,7 @@ mod tests {
                     seat: seat(&b2, t.id),
                     base_tip: "tip",
                     asked: None,
+                    conflict_asked: false,
                     fused: false,
                 },
             )
@@ -300,6 +314,63 @@ mod tests {
         assert_eq!(reading(&plain), None, "on both lists");
     }
 
+    /// T-770: with a PR open the forge's conflict is the reason whatever the
+    /// local base says, and it is asked once. The local base tip, which a
+    /// forge merge never moves, is no memo either way: a conflict asked
+    /// about stays answered when the local base moves, and a ticket asked
+    /// at this local tip is asked again about a conflict it was not asked
+    /// about. A ticket with no PR keeps its once-per-base-tip rule.
+    #[test]
+    fn a_pr_conflict_is_asked_once_whatever_the_local_base_says() {
+        let mut b = board();
+        b.tickets.push(ticket(1, REVIEW, "a"));
+        b.sessions.push(claude(1, idle(), Confidence::High));
+        let t = &b.tickets[0];
+        let read = |f: &WtFlags, asked: Option<&str>, conflict_asked: bool| {
+            lane(
+                t,
+                &Reading {
+                    reach: TrainReach::Merge,
+                    flags: f,
+                    seat: seat(&b, t.id),
+                    base_tip: "tip1",
+                    asked,
+                    conflict_asked,
+                    fused: false,
+                },
+            )
+        };
+        let conflict = WtFlags { pr_open: true, pr_conflict: true, ..flags(1, false) };
+        assert_eq!(read(&conflict, None, false), Some(Lane::Rebase), "a clean local base asks");
+        assert_eq!(
+            read(&conflict, Some("tip1"), false),
+            Some(Lane::Rebase),
+            "asked at this local tip, but not about this conflict"
+        );
+        assert_eq!(read(&conflict, None, true), None, "this conflict was asked about");
+        assert_eq!(read(&conflict, Some("tip0"), true), None, "a moved local base changes nothing");
+        let open = WtFlags { pr_open: true, ..flags(1, true) };
+        assert_eq!(read(&open, None, false), None, "a PR behind its base and clean is the forge's");
+        let behind = flags(1, true);
+        assert_eq!(read(&behind, Some("tip1"), false), None, "no PR: once per base tip");
+        assert_eq!(read(&behind, Some("tip0"), true), Some(Lane::Rebase), "the base moved");
+        // And `plan` reads the same memo.
+        let flags = HashMap::from([(t.id, conflict)]);
+        let asked_about = HashSet::from([t.id]);
+        let p = |conflict_asked: &HashSet<ulid::Ulid>| {
+            plan(&Input {
+                board: &b,
+                flags: &flags,
+                base_tip: &tips("tip1"),
+                asked: &HashMap::from([(t.id, "tip1".to_string())]),
+                conflict_asked,
+                fused: &HashSet::new(),
+            })
+        };
+        assert_eq!(p(&HashSet::new()).rebase, vec![t.id]);
+        assert_eq!(p(&asked_about), Plan::default());
+    }
+
     /// Every ticket 1..=4 stands on the same base tip.
     fn tips(tip: &str) -> HashMap<ulid::Ulid, String> {
         (1..=4).map(|n| (ulid::Ulid(n), tip.to_string())).collect()
@@ -311,6 +382,7 @@ mod tests {
             flags,
             base_tip: &tips("tip1"),
             asked: &HashMap::new(),
+            conflict_asked: &HashSet::new(),
             fused: &HashSet::new(),
         })
     }
@@ -450,6 +522,7 @@ mod tests {
             flags: &flags,
             base_tip: &tips("tip1"),
             asked: &asked,
+            conflict_asked: &HashSet::new(),
             fused: &HashSet::new(),
         });
         assert_eq!(p.rebase, vec![ulid::Ulid(3)]);
@@ -467,6 +540,7 @@ mod tests {
             flags: &flags,
             base_tip: &per_ticket,
             asked: &asked,
+            conflict_asked: &HashSet::new(),
             fused: &HashSet::new(),
         });
         assert_eq!(p.rebase, vec![ulid::Ulid(3)]);
@@ -477,6 +551,7 @@ mod tests {
             flags: &flags,
             base_tip: &tips("tip1"),
             asked: &HashMap::new(),
+            conflict_asked: &HashSet::new(),
             fused: &fused,
         });
         assert_eq!(p.rebase, vec![ulid::Ulid(2)]);
@@ -585,7 +660,18 @@ mod tests {
 
     fn lane_of(f: &WtFlags, reach: TrainReach, seat: Seat, asked: Option<&str>) -> Option<Lane> {
         let t = ticket(1, REVIEW, "a");
-        lane(&t, &Reading { reach, flags: f, seat, base_tip: "tip1", asked, fused: false })
+        lane(
+            &t,
+            &Reading {
+                reach,
+                flags: f,
+                seat,
+                base_tip: "tip1",
+                asked,
+                conflict_asked: false,
+                fused: false,
+            },
+        )
     }
 
     /// One ticket read alone, as the crown's wake reads a turn's look
@@ -619,6 +705,7 @@ mod tests {
             flags: &flags,
             base_tip: &tips("tip1"),
             asked: &asked,
+            conflict_asked: &HashSet::new(),
             fused: &HashSet::new(),
         });
         assert_eq!(p, Plan::default());

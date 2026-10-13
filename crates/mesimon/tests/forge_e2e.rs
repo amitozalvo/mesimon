@@ -18,6 +18,11 @@
 //! nothing merges on the look after it with no read at all, and one that
 //! pushed is read at once rather than on the minute.
 //!
+//! The train asks once per conflict (T-770): a PR the forge flips to
+//! conflicting is asked about once, in words naming it; its flip back asks
+//! nothing; a second conflict at the same local base is asked about again;
+//! and a restart asks nothing it already asked.
+//!
 //! The stub is the forge: `auth status` passes, `pr list` prints the file
 //! the test writes, `api …/check-runs` the merge commit's pipeline. No
 //! network, no token, nothing of the real CLI.
@@ -1135,4 +1140,122 @@ fn a_turn_that_pushed_is_read_at_its_end_not_on_the_minute() {
     // Under the floor of one read per repository per ten seconds from the
     // first pass; the minute is ten.
     assert!(took < Duration::from_secs(20), "merged {took:?} after the turn's end");
+}
+
+/// One ask per conflict (T-770), the lab's D1 on a stub: the local base
+/// never moves (the forge merges), so only the forge's word says a conflict
+/// is new, and only `train.json` says one was asked about after a restart.
+#[test]
+fn a_pr_conflict_is_asked_about_once_and_again_only_when_it_returns() {
+    let stub_dir = std::env::temp_dir().join(format!("msmn-forge-conflict-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&stub_dir);
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    let gh = stub_dir.join("gh");
+    std::fs::write(&gh, GH_STUB).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let prs_file = stub_dir.join("prs.json");
+    write(&prs_file, "[]");
+    let path_var = format!(
+        "{}:{}",
+        stub_dir.display(),
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+    );
+    let Some(h) = Harness::boot_with_env(
+        "forge-conflict",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs_file.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    let repo = h.repo.clone();
+    init_repo(&repo, "a.txt", "hello\n");
+    git(&repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let hook_sock = h.paths.hook_sock();
+    let got = h.dir.join("got.txt");
+    let turn = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let arm = |c: &mut TestClient| {
+        assert!(matches!(
+            c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
+            Response::Ok
+        ));
+    };
+    // Several forge passes, each one a train pass (T-761).
+    let passes = || std::thread::sleep(Duration::from_secs(3));
+    let mut c = h.client("forge-conflict");
+    arm(&mut c);
+    let (id, sid, branch, path) = ready(&mut c, "alpha");
+    let tip = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
+    let pr = |mergeable: &str| {
+        open_pr_json(
+            &branch,
+            &tip,
+            r#"[{"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"SUCCESS"}]"#,
+            mergeable,
+            "REVIEW_REQUIRED",
+        )
+    };
+    let asks = || feed_count(&h, "merge_train_rebase_asked", id);
+    write(&prs_file, &pr("MERGEABLE"));
+    wait_until(Duration::from_secs(20), "the PR to bind", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == id && p.number == 42)
+    });
+    turn(&mut c, sid);
+    passes();
+    assert_eq!(asks(), 0, "a clean PR is the forge's merge, and nothing to ask");
+    assert!(!git_ok(&repo, &["merge-base", "--is-ancestor", &branch, "main"]), "never merged here");
+
+    // The forge reports a conflict: one ask, naming the PR.
+    write(&prs_file, &pr("CONFLICTING"));
+    wait_until(Duration::from_secs(20), "the rebase ask", || asks() >= 1);
+    wait_until(Duration::from_secs(10), "the words in the pane", || {
+        std::fs::read_to_string(&got).is_ok_and(|t| t.contains("so PR #42 updates"))
+    });
+    // The rebase turn runs and ends with the forge still saying conflict:
+    // the read before the push. Not asked again.
+    turn(&mut c, sid);
+    passes();
+    assert_eq!(asks(), 1, "one conflict, one ask");
+
+    // The conflict clears: nothing to ask.
+    write(&prs_file, &pr("MERGEABLE"));
+    passes();
+    assert_eq!(asks(), 1, "a flip back asks nothing");
+
+    // A second conflict at the same local base tip (the forge merged
+    // something else; the checkout's main never moved) is a new one.
+    write(&prs_file, &pr("CONFLICTING"));
+    wait_until(Duration::from_secs(20), "the second conflict's ask", || asks() >= 2);
+    turn(&mut c, sid);
+    let kept = h.paths.state_dir.join("train.json");
+    wait_until(Duration::from_secs(10), "train.json to keep the settled ask", || {
+        std::fs::read_to_string(&kept)
+            .is_ok_and(|t| t.contains("settled") && t.contains("conflict"))
+    });
+
+    // A restart, the forge unchanged: the ask is remembered, not repeated.
+    drop(c);
+    h.restart_after(|| {});
+    let mut c = h.client("forge-conflict-2");
+    arm(&mut c);
+    // A person's turn re-derives the seat as idle; the forge reads after it.
+    turn(&mut c, sid);
+    passes();
+    assert_eq!(asks(), 2, "a restart asks nothing it asked");
+    let _ = c.request(Command::Shutdown);
+    let _ = std::fs::remove_dir_all(&stub_dir);
 }

@@ -5,11 +5,13 @@
 //! a restart forgets, the board re-arms on its next snapshot, and one ask
 //! per ticket may repeat under the fuse's cap.
 //!
-//! One part is kept (T-635): the asks whose turn is still open, in
-//! `train.json`. That record is the hold (`in_rebase_turn`), and a `U`
-//! handover in the middle of a rebase turn emptied it, so the new daemon's
-//! first pass asked the next REVIEW ticket onto the same tip. The fuse, the
-//! refusals and the settled asks stay in memory.
+//! One part is kept (T-635): the asks, in `train.json`. The open ones are
+//! the hold (`in_rebase_turn`), and a `U` handover in the middle of a rebase
+//! turn emptied it, so the new daemon's first pass asked the next REVIEW
+//! ticket onto the same tip. The settled ones are the memo (T-770): a
+//! restart that forgot one asked the same ticket again at the same tip, or
+//! about the same forge conflict, twice in the lab inside a minute. The
+//! fuse and the refusals stay in memory.
 //!
 //! Armed BY A CONNECTION: the train pastes into agents with no per-press
 //! gesture, so somebody must be watching. The arming client's writer `Arc`
@@ -48,6 +50,10 @@ pub struct AskRecord {
     /// be running — and the train holds for it (`train_busy`); after, a
     /// later turn at the same tip is a bystander like any other.
     pub turn_over: bool,
+    /// The ask answered a conflict the forge reports on the ticket's PR
+    /// (T-770), and that conflict has not cleared since: the train does not
+    /// ask about it again, whatever the local base does.
+    pub conflict: bool,
 }
 
 #[derive(Default)]
@@ -85,16 +91,20 @@ impl Train {
         self.armed.as_ref().and_then(|a| a.by.upgrade()).is_some_and(|a| Arc::ptr_eq(&a, s))
     }
 
-    /// Remember a delivered rebase ask. Returns whether the fuse blew NOW.
+    /// Remember a delivered rebase ask, and whether the forge reported a
+    /// conflict on the ticket's PR as it was asked. Returns whether the fuse
+    /// blew NOW.
     pub fn record_ask(
         &mut self,
         ticket: ulid::Ulid,
         base_oid: String,
+        conflict: bool,
         at_ms: u64,
         by_hand: bool,
         now: Instant,
     ) -> bool {
-        self.asked.insert(ticket, AskRecord { base_oid, at_ms, by_hand, turn_over: false });
+        let record = AskRecord { base_oid, at_ms, by_hand, turn_over: false, conflict };
+        self.asked.insert(ticket, record);
         if by_hand {
             return false;
         }
@@ -133,29 +143,50 @@ impl Train {
         &self.asked
     }
 
-    /// The asks whose turn is still open, as `train.json` keeps them.
-    pub fn open_asks(&self) -> BTreeMap<ulid::Ulid, OpenAsk> {
+    /// The asks whose turn is still open (`false`) or over (`true`), as
+    /// `train.json` keeps them.
+    pub fn kept_asks(&self, turn_over: bool) -> BTreeMap<ulid::Ulid, KeptAsk> {
         self.asked
             .iter()
-            .filter(|(_, r)| !r.turn_over)
+            .filter(|(_, r)| r.turn_over == turn_over)
             .map(|(t, r)| {
-                (*t, OpenAsk { base_oid: r.base_oid.clone(), at_ms: r.at_ms, by_hand: r.by_hand })
+                let ask = KeptAsk {
+                    base_oid: r.base_oid.clone(),
+                    at_ms: r.at_ms,
+                    by_hand: r.by_hand,
+                    conflict: r.conflict,
+                };
+                (*t, ask)
             })
             .collect()
     }
 
-    /// Read `train.json`'s asks back at start: each is in its turn again,
-    /// and that turn's end settles it as it would have.
-    pub fn restore(&mut self, asks: impl IntoIterator<Item = (ulid::Ulid, OpenAsk)>) {
-        for (ticket, a) in asks {
+    /// Read `train.json`'s asks back at start: an open one is in its turn
+    /// again, and that turn's end settles it as it would have; a settled one
+    /// is the memo it was.
+    pub fn restore(&mut self, asks: impl IntoIterator<Item = (ulid::Ulid, KeptAsk, bool)>) {
+        for (ticket, a, turn_over) in asks {
             let record = AskRecord {
                 base_oid: a.base_oid,
                 at_ms: a.at_ms,
                 by_hand: a.by_hand,
-                turn_over: false,
+                turn_over,
+                conflict: a.conflict,
             };
             self.asked.insert(ticket, record);
         }
+    }
+
+    /// The tickets whose forge conflict was already asked about.
+    pub fn conflict_asked(&self) -> HashSet<ulid::Ulid> {
+        self.asked.iter().filter(|(_, r)| r.conflict).map(|(t, _)| *t).collect()
+    }
+
+    /// A forge read found no conflict on the ticket's PRs: the conflict
+    /// that was asked about is gone, and the next one is owed an ask.
+    /// True when that changed the memo.
+    pub fn conflict_cleared(&mut self, ticket: ulid::Ulid) -> bool {
+        self.asked.get_mut(&ticket).is_some_and(|r| std::mem::take(&mut r.conflict))
     }
 
     /// The ticket's agent stopped working: whatever ask it was in is over.
@@ -199,28 +230,40 @@ impl Train {
 
 pub const TRAIN_SCHEMA: u32 = 1;
 
-/// A rebase ask whose turn has not ended, as `train.json` keeps it.
+/// A rebase ask as `train.json` keeps it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OpenAsk {
+pub struct KeptAsk {
     pub base_oid: String,
     pub at_ms: u64,
     #[serde(default)]
     pub by_hand: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub conflict: bool,
 }
 
 /// The file. Every field defaults, so a file from an older build of this
-/// schema reads as what it held.
+/// schema reads as what it held. An older build reads `asks` alone and
+/// drops `settled` on its next write: one ask may then repeat, as before
+/// T-770, and nothing widens, so the schema stays.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TrainFile {
     pub schema_version: u32,
+    /// The asks whose turn is still open: the hold.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub asks: BTreeMap<ulid::Ulid, OpenAsk>,
+    pub asks: BTreeMap<ulid::Ulid, KeptAsk>,
+    /// The asks whose turn ended (T-770): the memo.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub settled: BTreeMap<ulid::Ulid, KeptAsk>,
 }
 
 impl TrainFile {
     pub fn of(train: &Train) -> Self {
-        TrainFile { schema_version: TRAIN_SCHEMA, asks: train.open_asks() }
+        TrainFile {
+            schema_version: TRAIN_SCHEMA,
+            asks: train.kept_asks(false),
+            settled: train.kept_asks(true),
+        }
     }
 
     /// No asks, at this build's schema: what an absent file reads as.
@@ -288,16 +331,17 @@ mod tests {
             assert!(!train.record_ask(
                 t,
                 format!("tip{i}"),
+                false,
                 0,
                 false,
                 t0 + Duration::from_secs(i as u64)
             ));
         }
         assert!(!train.is_fused(t));
-        assert!(train.record_ask(t, "tip5".into(), 0, false, t0 + Duration::from_secs(5)));
+        assert!(train.record_ask(t, "tip5".into(), false, 0, false, t0 + Duration::from_secs(5)));
         assert!(train.is_fused(t));
         assert!(
-            !train.record_ask(t, "tip6".into(), 0, false, t0 + Duration::from_secs(6)),
+            !train.record_ask(t, "tip6".into(), false, 0, false, t0 + Duration::from_secs(6)),
             "already blown"
         );
         train.hand_touched(t);
@@ -314,7 +358,7 @@ mod tests {
         let t0 = Instant::now();
         for i in 0..20u64 {
             let at = t0 + Duration::from_secs(i * 30 * 60);
-            assert!(!train.record_ask(t, format!("tip{i}"), 0, false, at), "ask {i}");
+            assert!(!train.record_ask(t, format!("tip{i}"), false, 0, false, at), "ask {i}");
         }
         assert!(!train.is_fused(t));
     }
@@ -325,7 +369,7 @@ mod tests {
         let t = ulid::Ulid(1);
         let now = Instant::now();
         for i in 0..20 {
-            assert!(!train.record_ask(t, format!("tip{i}"), i, true, now));
+            assert!(!train.record_ask(t, format!("tip{i}"), false, i, true, now));
         }
         assert!(!train.is_fused(t));
         assert!(train.asked().get(&t).is_some_and(|r| r.by_hand && r.at_ms == 19));
@@ -351,44 +395,77 @@ mod tests {
         let mut train = Train::default();
         train.refuse(ulid::Ulid(1), "a".into(), "b".into(), "dirty".into());
         train.refuse(ulid::Ulid(2), "c".into(), "b".into(), "dirty".into());
-        train.record_ask(ulid::Ulid(1), "b".into(), 0, false, Instant::now());
+        train.record_ask(ulid::Ulid(1), "b".into(), false, 0, false, Instant::now());
         train.forget_refusals();
         assert!(train.refusal(ulid::Ulid(1), "a", "b").is_none());
         assert!(train.refusal(ulid::Ulid(2), "c", "b").is_none());
         assert!(train.asked_tips().contains_key(&ulid::Ulid(1)), "the asks are not refusals");
     }
 
-    /// The open asks round-trip through `train.json`'s bytes (T-635): a
-    /// train ask and a hand ask come back in their turn, a settled one is
-    /// not written, and a newer build's file is refused.
+    /// Every ask round-trips through `train.json`'s bytes (T-635, T-770): a
+    /// train ask and a hand ask come back in their turn, a settled one comes
+    /// back settled with what it answered, and a newer build's file is
+    /// refused.
     #[test]
-    fn the_open_asks_round_trip_and_a_settled_one_is_not_kept() {
+    fn the_asks_round_trip_open_and_settled() {
         let mut train = Train::default();
         let now = Instant::now();
         let (a, b, c) = (ulid::Ulid(1), ulid::Ulid(2), ulid::Ulid(3));
-        train.record_ask(a, "tip".into(), 10, false, now);
-        train.record_ask(b, "tip".into(), 20, true, now);
-        train.record_ask(c, "tip".into(), 30, false, now);
+        train.record_ask(a, "tip".into(), false, 10, false, now);
+        train.record_ask(b, "tip".into(), false, 20, true, now);
+        train.record_ask(c, "tip".into(), true, 30, false, now);
         train.settle(c);
         let text = serde_json::to_string_pretty(&TrainFile::of(&train)).unwrap();
         let back = parse(&text).unwrap();
         assert_eq!(back.asks.len(), 2, "{text}");
+        assert_eq!(back.settled.len(), 1, "{text}");
         let mut restored = Train::default();
-        restored.restore(back.asks);
+        restored.restore(
+            back.asks
+                .into_iter()
+                .map(|(t, a)| (t, a, false))
+                .chain(back.settled.into_iter().map(|(t, a)| (t, a, true))),
+        );
         assert!(restored.in_rebase_turn(a, "tip"));
         assert!(restored.in_rebase_turn(b, "tip"));
-        assert!(!restored.in_rebase_turn(c, "tip"), "settled, not kept");
+        assert!(!restored.in_rebase_turn(c, "tip"), "settled, and kept settled");
+        assert_eq!(restored.asked_tips().get(&c).map(String::as_str), Some("tip"), "the memo");
+        assert_eq!(restored.conflict_asked(), HashSet::from([c]), "what it answered");
         assert!(restored.asked().get(&b).is_some_and(|r| r.by_hand && r.at_ms == 20));
         assert!(!restored.is_fused(a), "the fuse stays in memory");
         restored.settle(a);
         assert!(!restored.in_rebase_turn(a, "tip"), "its turn's end settles it");
         assert_eq!(TrainFile::of(&restored).asks.keys().collect::<Vec<_>>(), vec![&b]);
-        // Nothing open writes no asks at all.
-        restored.forget(b);
+        // Nothing asked writes no asks at all.
+        for t in [a, b, c] {
+            restored.forget(t);
+        }
         let empty = serde_json::to_string(&TrainFile::of(&restored)).unwrap();
         assert_eq!(empty, format!("{{\"schema_version\":{TRAIN_SCHEMA}}}"));
         let newer = format!("{{\"schema_version\": {}}}", TRAIN_SCHEMA + 1);
         assert!(matches!(parse(&newer), Err((Some(_), _))));
         assert!(matches!(parse("{"), Err((None, _))));
+        // A file from before T-770 reads as its open asks, none answering a
+        // conflict.
+        let old = r#"{"schema_version":1,"asks":{"00000000000000000000000001":{"base_oid":"t","at_ms":1}}}"#;
+        let old = parse(old).unwrap();
+        assert!(old.settled.is_empty() && old.asks.values().all(|a| !a.conflict));
+    }
+
+    /// One ask per conflict (T-770): the ask that answered a conflict holds
+    /// until a forge read finds none, and a later turn's end does not
+    /// release it.
+    #[test]
+    fn a_conflict_asked_about_holds_until_the_forge_clears_it() {
+        let mut train = Train::default();
+        let t = ulid::Ulid(1);
+        train.record_ask(t, "tip".into(), true, 0, false, Instant::now());
+        train.settle(t);
+        assert_eq!(train.conflict_asked(), HashSet::from([t]));
+        assert!(train.conflict_cleared(t), "the read with no conflict changes the memo");
+        assert!(!train.conflict_cleared(t), "once");
+        assert!(train.conflict_asked().is_empty());
+        assert_eq!(train.asked_tips().get(&t).map(String::as_str), Some("tip"), "the tip stays");
+        assert!(!train.conflict_cleared(ulid::Ulid(2)), "never asked");
     }
 }
