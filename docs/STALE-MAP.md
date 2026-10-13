@@ -23863,3 +23863,26 @@ Verified: `ux.test.js` `backFlow` (Chromium, WebKit: a page launched again lands
 no entry stacked; a tapped ticket closes on Back and the page stays; a reload on a ticket
 lands on Now with the entry cleared and the ticket tapped after it closes on one Back), the
 phone, tablet and desktop UX flows on both engines, `state.test.js`.
+
+## T-743: the summary line stops offering the plain line (2026-10-13)
+
+**The ask:** "The agents use it and it's not too helpful, just wastes a line. Non checklist
+items on summary are not critical for users." `mcp::SUMMARY_ABOUT` (T-710, T-727) said "a
+plain line is read first, as the one-line summary" and "a job without such stages has the
+plain line alone", which an agent reads as two asks for a plain line on every ticket.
+
+**Built:** the same one constant, nothing else. It now names the box first, says a job
+without stages needs no `Summary` at all, and says a plain line there takes a card line of
+its own, so it waits for a person's ask. `write_note`'s description never named the plain
+line and is unchanged; so is the card, which still reads a plain row first when one is there
+(`docs/USING.md` describes the card, not the agent). No rule in the daemon: a plain line a
+person asked for is still written.
+
+**Rig:** `summary:<done>/<total>` takes `+<plain>`, the plain rows wanted. S2 (a staged job,
+no line asked) checks `3/3+0`; S1 (whose brief asks for "one line above it") checks `2/3+1`,
+so the relaxed words do not stop a line the person asked for. Both passed on Sonnet
+(claude 2.1.296): S2's worker wrote three ticked boxes and no plain row.
+
+Verified: `cargo ut` (the summary convention test now pins "needs no `Summary`" and "waits
+for a person's ask", and that "one-line summary" and "plain line alone" are gone), `notes_e2e`,
+`python3 -B ci/rig.py --only S1,S2`.

@@ -240,14 +240,20 @@ pub const WORKTREE_INIT_ABOUT: &str = "A script at the repository's root, run on
 /// the board's own doings are none; an open box reads as work left, so a
 /// finished job leaves none. Said once here, in the agent's own first tool
 /// result, and in fewer words on `write_note`.
+///
+/// The plain line (T-743): "a plain line is read first, as the one-line
+/// summary" and "a job without such stages has the plain line alone" read
+/// as an ask: workers wrote one on every ticket, and the author found it a
+/// card line spent on little. The boxes are what the person reads the card
+/// for; a plain line is said to cost that line and to wait for a person's ask.
 pub const SUMMARY_ABOUT: &str = "A note section headed `Summary` is what the ticket's card \
-     shows: a plain line is read first, as the one-line summary, and a `- [ ] …` item is a box \
-     the person ticks on the board, counted as progress. A box is one stage of the job as the \
-     person would watch for it from the board, or a step only a person can take (run the \
-     pipeline, ship it); a job without such stages has the plain line alone. Nothing the board \
-     does or shows by itself is a box: the merge, the rebase, the card's move. An open box \
-     reads as work left, so a stage's box is ticked as the stage lands and a finished job \
-     leaves none open. A working list stays under another heading.";
+     shows: a `- [ ] …` item is a box the person ticks on the board, counted as progress. A \
+     box is one stage of the job as the person would watch for it from the board, or a step \
+     only a person can take (run the pipeline, ship it); a job without such stages needs no \
+     `Summary`. A plain line there takes a card line of its own, so it waits for a person's \
+     ask. Nothing the board does or shows by itself is a box: the merge, the rebase, the \
+     card's move. An open box reads as work left, so a stage's box is ticked as the stage \
+     lands and a finished job leaves none open. A working list stays under another heading.";
 
 /// What the ticket's own key is to the person (T-715), on a session's read
 /// of its own ticket (`key_about`): everything the session says is read
@@ -2554,6 +2560,11 @@ mod tests {
             assert!(SUMMARY_ABOUT.contains(words), "summary.about says {words:?}");
         }
         assert!(!SUMMARY_ABOUT.contains("progress worth seeing"), "the vague criterion is gone");
+        // T-743: the plain line is no longer offered as the summary; it waits for an ask.
+        assert!(SUMMARY_ABOUT.contains("needs no `Summary`"), "{SUMMARY_ABOUT}");
+        assert!(SUMMARY_ABOUT.contains("waits for a person's ask"), "{SUMMARY_ABOUT}");
+        assert!(!SUMMARY_ABOUT.contains("one-line summary"), "{SUMMARY_ABOUT}");
+        assert!(!SUMMARY_ABOUT.contains("plain line alone"), "{SUMMARY_ABOUT}");
     }
 
     /// T-582: a plan the crown would change stays a person's, said in the

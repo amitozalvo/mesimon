@@ -1440,7 +1440,8 @@ Reply with the single word ready and end your turn."""
             elif name == "summary":
                 # T-710: the worker's own notes (not the rig's two), read
                 # off the board's disk as the card reads them.
-                want = arg
+                # T-743: `+<n>` also wants that many plain rows.
+                want, _, want_plain = arg.partition("+")
                 ticket = self.ticket(board, tid)
                 notes = [n for n in ticket.get("notes", []) if str(n.get("created_by", "")).startswith("agent:")]
                 found, used = None, []
@@ -1461,7 +1462,8 @@ Reply with the single word ready and end your turn."""
                     boxes = [d for d, _ in found if d is not None]
                     plain = sum(1 for d, _ in found if d is None)
                     have = f"{sum(boxes)}/{len(boxes)}"
-                    check(c, have == want, f"{have} boxes, {plain} plain row(s): "
+                    ok = have == want and (not want_plain or plain == int(want_plain))
+                    check(c, ok, f"{have} boxes, {plain} plain row(s): "
                           + "; ".join(f"[{'x' if d else ' '}] {t[:24]}" if d is not None else f"- {t[:24]}" for d, t in found))
             elif name == "boxes_free":
                 # T-727: no box of the worker's own Summary names what the
