@@ -533,10 +533,8 @@ fn pref_word(path: &Path, key: &str) -> Option<String> {
 /// The pref's word as a cadence: `off` or a word a newer build wrote is
 /// zero, `5m` is five minutes.
 pub fn fetch_every_word(word: Option<&str>) -> Duration {
-    let minutes: u64 = word
-        .and_then(|w| w.trim().strip_suffix('m'))
-        .and_then(|n| n.parse().ok())
-        .unwrap_or(0);
+    let minutes: u64 =
+        word.and_then(|w| w.trim().strip_suffix('m')).and_then(|n| n.parse().ok()).unwrap_or(0);
     Duration::from_secs(minutes * 60)
 }
 

@@ -86,7 +86,13 @@ fn prs_of(c: &mut TestClient) -> Vec<PrItem> {
 }
 
 /// One PR as `gh pr list --json` prints it.
-fn pr_json(branch: &str, tip: &str, state: &str, merge_oid: Option<&str>, failing: Option<&str>) -> String {
+fn pr_json(
+    branch: &str,
+    tip: &str,
+    state: &str,
+    merge_oid: Option<&str>,
+    failing: Option<&str>,
+) -> String {
     let rollup = match failing {
         Some(job) => format!(
             r#"[{{"__typename":"CheckRun","name":"{job}","status":"COMPLETED","conclusion":"FAILURE"}},
@@ -128,7 +134,10 @@ fn a_pull_request_binds_pipelines_gate_and_the_forges_merge_lands() {
     let prs_file = stub_dir.join("prs.json");
     let checks_file = stub_dir.join("checks.json");
     write(&prs_file, "[]");
-    write(&checks_file, r#"{"check_runs":[{"name":"release","status":"completed","conclusion":"success"}]}"#);
+    write(
+        &checks_file,
+        r#"{"check_runs":[{"name":"release","status":"completed","conclusion":"success"}]}"#,
+    );
     let path_var = format!(
         "{}:{}",
         stub_dir.display(),
@@ -181,7 +190,9 @@ fn a_pull_request_binds_pipelines_gate_and_the_forges_merge_lands() {
         Response::Ok
     ));
     match c.request(Command::MoveTicket { id, column: "REVIEW".into(), before: None }) {
-        Response::Err { message } => assert!(message.contains("pipeline failed: test-linux"), "{message}"),
+        Response::Err { message } => {
+            assert!(message.contains("pipeline failed: test-linux"), "{message}")
+        }
         other => panic!("REVIEW with a red pipeline: {other:?}"),
     }
 
@@ -223,7 +234,138 @@ fn a_pull_request_binds_pipelines_gate_and_the_forges_merge_lands() {
     let pr = prs_of(&mut c).into_iter().find(|p| p.ticket == id).unwrap();
     assert_eq!(pr.state, "merged");
     assert_eq!(pr.pipeline, "passed", "the merge commit's pipeline, off check-runs");
-    wait_until(Duration::from_secs(10), "the feed to say the merge", || feed_count(&h, "pr", id) >= 1);
+    wait_until(Duration::from_secs(10), "the feed to say the merge", || {
+        feed_count(&h, "pr", id) >= 1
+    });
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// Entry needs a passed pipeline only where there is one to pass (T-750): a
+/// ticket that opened no PR enters at its turn end, as a ticket with no
+/// branch passes the merge rule; one whose transcript printed a `gh pr
+/// create` URL the forge has not read yet is held, judged on that same
+/// turn's lines, until its pipeline reads passed.
+#[test]
+fn a_ticket_with_no_pull_request_enters_and_one_opened_here_waits() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    let stub_dir = std::env::temp_dir().join(format!("msmn-forge-nopr-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&stub_dir);
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    let gh = stub_dir.join("gh");
+    std::fs::write(&gh, GH_STUB).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let prs_file = stub_dir.join("prs.json");
+    write(&prs_file, "[]");
+    let path_var = format!(
+        "{}:{}",
+        stub_dir.display(),
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+    );
+    let Some(h) = Harness::boot_with_env(
+        "forge_nopr",
+        Some(STUB),
+        &[
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs_file.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("forge_nopr");
+    let mut review = c.board().column("REVIEW").unwrap().settings.clone();
+    review.requires_pipeline = true;
+    assert!(matches!(
+        c.request(Command::SetColumnSettings { name: "REVIEW".into(), settings: review }),
+        Response::Ok
+    ));
+    let turn = |c: &mut TestClient, sid: uuid::Uuid, transcript: &Path| {
+        hook_send(
+            &hook_sock,
+            &sid.to_string(),
+            "SessionStart",
+            &format!(r#"{{"session_id":"x","transcript_path":"{}"}}"#, transcript.display()),
+        );
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+
+    // The PR ticket: its turn ran `gh pr create`, whose result printed the
+    // URL, and the forge has not bound it when the turn ends.
+    let (pr_id, pr_sid, branch, path) = ready(&mut c, "opened");
+    let tip = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
+    let opened = h.dir.join("opened.jsonl");
+    std::fs::write(
+        &opened,
+        concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"gh pr create --fill"}}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"https://github.com/example/forge/pull/42\n"}]}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    turn(&mut c, pr_sid, &opened);
+
+    // The ticket with no PR, on the checkout: nothing to pass.
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "plain".into(),
+        workspace: None,
+        tier: None,
+    });
+    let plain = c.board().tickets.iter().find(|t| t.title == "plain").unwrap().id;
+    let plain_sid = match c.request(Command::SpawnSession {
+        ticket: plain,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn: {other:?}"),
+    };
+    let quiet = h.dir.join("plain.jsonl");
+    std::fs::write(&quiet, "{\"type\":\"user\",\"message\":{\"content\":\"go\"}}\n").unwrap();
+    turn(&mut c, plain_sid, &quiet);
+    wait_until(Duration::from_secs(10), "the ticket with no PR to enter REVIEW", || {
+        c.board().ticket(plain).is_some_and(|t| t.column == "REVIEW")
+    });
+
+    // The PR ticket is held at its turn end, in the gate's words.
+    let feed = h.paths.state_dir.join("activity.jsonl");
+    wait_until(Duration::from_secs(10), "the held automove's feed line", || {
+        std::fs::read_to_string(&feed).unwrap_or_default().lines().any(|l| {
+            l.contains("\"kind\":\"movement_decision\"")
+                && l.contains(&pr_id.to_string())
+                && l.contains("refused: pipeline not read — before REVIEW")
+        })
+    });
+    assert_ne!(c.board().ticket(pr_id).unwrap().column, "REVIEW");
+    match c.request(Command::MoveTicket { id: pr_id, column: "REVIEW".into(), before: None }) {
+        Response::Err { message } => assert!(message.contains("pipeline not read"), "{message}"),
+        other => panic!("REVIEW before the forge read the PR: {other:?}"),
+    }
+
+    // The forge binds it, its pipeline green: the move goes through.
+    write(&prs_file, &pr_json(&branch, &tip, "OPEN", None, None));
+    wait_until(Duration::from_secs(20), "the PR to bind, passed", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == pr_id && p.pipeline == "passed")
+    });
+    assert!(matches!(
+        c.request(Command::MoveTicket { id: pr_id, column: "REVIEW".into(), before: None }),
+        Response::Ok
+    ));
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
 
@@ -323,7 +465,9 @@ fn the_crown_hears_the_forges_edges() {
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(Duration::from_millis(500));
     turn(&mut c, sa);
-    let seen = match c.send(Principal::Agent { session: sa }, Command::AgentReadTicket { key: kw.clone() }) {
+    let seen = match c
+        .send(Principal::Agent { session: sa }, Command::AgentReadTicket { key: kw.clone() })
+    {
         Response::AgentTicket { ticket } => ticket.seen,
         other => panic!("read: {other:?}"),
     };
@@ -359,8 +503,10 @@ fn the_crown_hears_the_forges_edges() {
     turn(&mut c, sa);
 
     // The PR opens with its pipeline running: the baseline, no wake.
-    let running = r#"[{"__typename":"CheckRun","name":"test","status":"IN_PROGRESS","conclusion":null}]"#;
-    let passed = r#"[{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS"}]"#;
+    let running =
+        r#"[{"__typename":"CheckRun","name":"test","status":"IN_PROGRESS","conclusion":null}]"#;
+    let passed =
+        r#"[{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS"}]"#;
     let waiting = r#"[{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS"},
                       {"__typename":"CheckRun","name":"deploy:production","status":"WAITING","conclusion":null}]"#;
     write(&prs_file, &open_pr_json(&wt.branch, &tip, running, "MERGEABLE", "REVIEW_REQUIRED"));

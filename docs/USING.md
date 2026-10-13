@@ -483,7 +483,8 @@ a conflict, and that ask ends with the push. A column can wait for the forge: in
 settings, **Arrives here when** moves a ticket there on its own when a PR opens, its pipeline
 passes, every PR is merged, or the merge reached an environment you name (`deployed to staging`),
 and **Entry needs a passed pipeline** refuses a ticket whose pipeline failed, still runs or was
-never read. A board without `gh` or `glab` changes nothing; **Settings › Behaviour › Fetch from
+never read; a ticket with no pull request passes, as a ticket with no branch passes the merge
+rule, unless its agent opened one the forge has not read yet. A board without `gh` or `glab` changes nothing; **Settings › Behaviour › Fetch from
 the remote** alone makes a merged PR read merged once fetched. A crown hears what the forge says of the
 tickets it started or watches: it is woken when a pipeline fails or passes, a job waits on a
 person, the merge reaches an environment, a conflict comes or clears, or a review approves or

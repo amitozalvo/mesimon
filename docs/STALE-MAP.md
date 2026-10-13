@@ -24006,6 +24006,47 @@ open PR, a conflict, a stale verdict), `prefs` (both new keys), the keymap laws,
 the board woke the crown `pipeline`, the crown's `ask_agent` reached the worker, which replied
 `noted`. `cargo nextest run --workspace`: 2319 passed.
 
+## Entry needs a passed pipeline ignores a ticket with no PR (T-750, 2026-10-13, follow-up to T-739)
+
+**Why.** On the forge lab the crown's ticket, which has no PR and never will, ended its turn and
+its `on_done` into REVIEW (`requires_pipeline`) was refused, `pipeline not read — before REVIEW`;
+a person's move too, since every mover obeys the gate. T-739's `pipeline_refusal` read a ticket
+with no PR set as `Pipeline::Unknown`, and unknown is never green. Its twin `requires_merge`
+ignores a ticket with no branch; this one now ignores a ticket with no PR the same way.
+
+**Why "unknown never green" stopped short of "no PR".** At a worker's turn end its PR is seconds
+old and the forge is read once a minute, so "not bound yet" and "none at all" look alike at that
+instant: waving every unbound ticket through would have waved the lab's A1 into REVIEW with its
+pipeline running. The daemon knows a PR was opened before the forge does: `gh pr create` /
+`glab mr create` print the URL in a tool result, and T-739's transcript road keeps it.
+
+**What.** `core::forge::entry_refusal(set, opened_here)`: a bound PR (a non-empty `forge.sets`
+entry) is judged by its pipeline as before; unbound with a URL opened here, or with a transcript
+that could not be read, is `pipeline not read`; unbound and nothing opened passes.
+`Ledger::opened_any` answers `opened_here` from the ledger's `pr_urls` and, for the race, the
+tail of each of the ticket's transcripts past the pass's cursor (plus a live session's transcript
+the ledger has not learned, and the subagent files beside them), read on the writer thread inside
+the gate and moving no cursor: the pass folds the same lines in later. The tail is what the
+30 s pass has not reached, a local file, milliseconds; past `READ_CAP` or unreadable it is
+`None`, never "none opened"; a file that is gone has nothing new. The worker picked the
+writer-thread read over deferring the automove to the pass's landing: `place_ticket` serves every
+mover, so the hand move and `agent_allowed_columns` see the same answer with no second road.
+`agent_allowed_columns` asks only when some column has the setting.
+
+**Accepted edge.** A PR a person opens by hand on the forge has no line in any transcript: until
+the next read binds it, the ticket passes; the arrival rule and the next read catch up. A `pr
+create` whose result never came (an interrupted turn) is not "opened": only a printed URL is.
+After a restart `forge.sets` is empty until the first read, and the ledger's persisted URLs keep
+a ticket that opened its PR here held.
+
+**Tests.** `entry_needs_a_passed_pipeline_only_where_a_pr_is_or_was_opened` (core: bound failed,
+passed, running, unknown, an open PR unread; unbound with a URL, unreadable, nothing),
+`a_pr_opened_in_the_unread_tail_is_seen_before_the_pass` (cost: an unlearned live transcript, a
+pending create, the result in the unread tail, no cursor moved, a gone file), and `forge_e2e`'s
+`a_ticket_with_no_pull_request_enters_and_one_opened_here_waits` (a checkout ticket's turn end
+lands in a `requires_pipeline` REVIEW while a worktree ticket whose transcript printed a `gh pr
+create` URL is held in the gate's words, hand move too, until its PR reads passed).
+
 ## A running pipeline sweeps, a waiting one is a target (T-747, 2026-10-13, follow-up to T-739)
 
 **Why.** T-739's `glyphs::pr_mark` folded four states into two rings: `◯` for open with no

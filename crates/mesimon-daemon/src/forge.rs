@@ -67,9 +67,8 @@ pub fn every() -> Duration {
 pub fn find_cli(forge: Forge, captured_path: Option<&str>) -> Option<Cli> {
     let name = Cli::name(forge);
     let on = |var: &str| std::env::split_paths(var).map(|d| d.join(name)).find(|p| p.is_file());
-    let bin = captured_path
-        .and_then(on)
-        .or_else(|| std::env::var("PATH").ok().and_then(|p| on(&p)))?;
+    let bin =
+        captured_path.and_then(on).or_else(|| std::env::var("PATH").ok().and_then(|p| on(&p)))?;
     Some(Cli { forge, bin })
 }
 
@@ -206,7 +205,8 @@ impl Edge {
                 open
             }
         };
-        let tail = |label: String| if label.is_empty() { String::new() } else { format!(" {label}") };
+        let tail =
+            |label: String| if label.is_empty() { String::new() } else { format!(" {label}") };
         let mut out = Vec::new();
         if let Some(job) = &self.failed {
             let label = labels(&|p| matches!(p.pipeline, Pipeline::Failed(_)));
@@ -234,7 +234,11 @@ impl Edge {
             out.push(format!("deployed to {}{}", forge::job_word(env), tail(label)));
         }
         for (label, on) in &self.conflict {
-            out.push(if *on { format!("conflict {label}") } else { format!("conflict cleared {label}") });
+            out.push(if *on {
+                format!("conflict {label}")
+            } else {
+                format!("conflict cleared {label}")
+            });
         }
         for (label, verdict) in &self.review {
             match verdict {
@@ -506,8 +510,7 @@ fn deployments(r: &RepoQuery, oid: &str, envs: &[String]) -> Vec<String> {
                 if !envs.contains(&env) || out.contains(&env) {
                     continue;
                 }
-                let path =
-                    format!("repos/{}/deployments/{id}/statuses?per_page=1", r.remote.path);
+                let path = format!("repos/{}/deployments/{id}/statuses?per_page=1", r.remote.path);
                 if let Ok(status) =
                     run(&r.cli.bin, &["api", "--hostname", &r.remote.host, &path], Some(&r.dir))
                 {
@@ -730,7 +733,10 @@ impl State {
 
     /// The open PRs of a ticket's set.
     pub fn open_of(&self, ticket: ulid::Ulid) -> Vec<&Pr> {
-        self.sets.get(&ticket).map(|s| s.iter().filter(|p| p.state.is_open()).collect()).unwrap_or_default()
+        self.sets
+            .get(&ticket)
+            .map(|s| s.iter().filter(|p| p.state.is_open()).collect())
+            .unwrap_or_default()
     }
 
     /// The ticket's merged PR for a repository at a tip, if the newest
@@ -806,7 +812,8 @@ mod tests {
 
     #[test]
     fn the_delta_says_what_moved_and_nothing_on_the_first_read() {
-        let before = [pr(1, PrState::Open, Pipeline::Running), pr(2, PrState::Open, Pipeline::None)];
+        let before =
+            [pr(1, PrState::Open, Pipeline::Running), pr(2, PrState::Open, Pipeline::None)];
         let after = [
             pr(1, PrState::Merged, Pipeline::Passed),
             pr(2, PrState::Open, Pipeline::Failed("test-linux".into())),
@@ -848,8 +855,14 @@ mod tests {
         };
         let running = gl(1, Pipeline::Running);
         let words = |old: &[Pr], new: &[Pr]| edge(old, new).news(new);
-        assert_eq!(words(std::slice::from_ref(&running), &[gl(1, Pipeline::Passed)]), ["pipeline passed !1"]);
-        let e = edge(std::slice::from_ref(&running), &[gl(1, Pipeline::Waiting("deploy:production".into()))]);
+        assert_eq!(
+            words(std::slice::from_ref(&running), &[gl(1, Pipeline::Passed)]),
+            ["pipeline passed !1"]
+        );
+        let e = edge(
+            std::slice::from_ref(&running),
+            &[gl(1, Pipeline::Waiting("deploy:production".into()))],
+        );
         assert_eq!(e.waiting.as_deref(), Some("deploy:production"));
         assert_eq!(
             e.news(&[gl(1, Pipeline::Waiting("deploy:production".into()))]),
@@ -858,7 +871,10 @@ mod tests {
         // A manual job GitLab named nothing for; the same wait read twice
         // is no second edge.
         let manual = gl(1, Pipeline::Waiting(String::new()));
-        assert_eq!(words(std::slice::from_ref(&running), std::slice::from_ref(&manual)), ["waiting on a manual job !1"]);
+        assert_eq!(
+            words(std::slice::from_ref(&running), std::slice::from_ref(&manual)),
+            ["waiting on a manual job !1"]
+        );
         assert!(words(std::slice::from_ref(&manual), std::slice::from_ref(&manual)).is_empty());
         assert_eq!(
             words(std::slice::from_ref(&running), &[gl(1, Pipeline::Failed("test".into()))]),
@@ -866,17 +882,29 @@ mod tests {
         );
         let mut conflicted = gl(1, Pipeline::Running);
         conflicted.conflict = true;
-        assert_eq!(words(std::slice::from_ref(&running), std::slice::from_ref(&conflicted)), ["conflict !1"]);
-        assert_eq!(words(std::slice::from_ref(&conflicted), std::slice::from_ref(&running)), ["conflict cleared !1"]);
+        assert_eq!(
+            words(std::slice::from_ref(&running), std::slice::from_ref(&conflicted)),
+            ["conflict !1"]
+        );
+        assert_eq!(
+            words(std::slice::from_ref(&conflicted), std::slice::from_ref(&running)),
+            ["conflict cleared !1"]
+        );
         let mut approved = gl(1, Pipeline::Running);
         approved.review = Review::Approved;
-        assert_eq!(words(std::slice::from_ref(&running), std::slice::from_ref(&approved)), ["review approved !1"]);
+        assert_eq!(
+            words(std::slice::from_ref(&running), std::slice::from_ref(&approved)),
+            ["review approved !1"]
+        );
         let mut asked = approved.clone();
         asked.review = Review::ChangesRequested;
         assert_eq!(words(std::slice::from_ref(&approved), &[asked]), ["changes requested !1"]);
         let mut required = approved.clone();
         required.review = Review::Required;
-        assert!(words(std::slice::from_ref(&approved), &[required]).is_empty(), "a dismissal is no verdict");
+        assert!(
+            words(std::slice::from_ref(&approved), &[required]).is_empty(),
+            "a dismissal is no verdict"
+        );
         // A comment moves `updated_ms` alone: no edge.
         let mut touched = running.clone();
         touched.updated_ms += 1000;
@@ -959,7 +987,11 @@ mod tests {
         std::fs::write(dir.join("glab"), "#!/bin/sh\n").unwrap();
         let path = dir.to_string_lossy().into_owned();
         assert_eq!(find_cli(Forge::GitLab, Some(&path)).map(|c| c.bin), Some(dir.join("glab")));
-        assert_eq!(find_cli(Forge::GitHub, Some(&path)).map(|c| c.forge), find_cli(Forge::GitHub, None).map(|c| c.forge), "falls through to the daemon's own PATH");
+        assert_eq!(
+            find_cli(Forge::GitHub, Some(&path)).map(|c| c.forge),
+            find_cli(Forge::GitHub, None).map(|c| c.forge),
+            "falls through to the daemon's own PATH"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

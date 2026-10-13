@@ -974,7 +974,9 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
         let fetch = match (every.is_zero(), by_env) {
             (true, _) => "fetch off (Settings > Behaviour > Fetch from the remote)".to_string(),
             (false, true) => format!("fetch every {}m (MESIMON_GIT_FETCH)", every.as_secs() / 60),
-            (false, false) => format!("fetch every {}m (Settings > Behaviour)", every.as_secs() / 60),
+            (false, false) => {
+                format!("fetch every {}m (Settings > Behaviour)", every.as_secs() / 60)
+            }
         };
         let upstream = match &g.upstream {
             Some(u) => format!("upstream {u}"),
@@ -1020,7 +1022,9 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
             let found: Vec<String> = order
                 .iter()
                 .filter_map(|f| mesimon_daemon::forge::find_cli(*f, None))
-                .map(|c| c.bin.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
+                .map(|c| {
+                    c.bin.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+                })
                 .collect();
             if found.is_empty() {
                 let want = match remote.known_forge() {
@@ -1028,20 +1032,25 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
                     _ => "glab (GitLab) or gh (GitHub)",
                 };
                 records.push(
-                    rec(Level::Note, "forge", format!("{}: no {want} on PATH", remote.host)).advice(
-                        "With the forge's CLI installed and signed in, the board reads each \
+                    rec(Level::Note, "forge", format!("{}: no {want} on PATH", remote.host))
+                        .advice(
+                            "With the forge's CLI installed and signed in, the board reads each \
                          ticket's pull requests, their pipelines and where they were deployed, \
                          through that CLI and reads only. Nothing is written to the forge.",
-                    ),
+                        ),
                 );
             } else {
                 records.push(
-                    rec(Level::Ok, "forge", format!("{} reads {} ({})", found.join(" or "), remote.host, remote.path))
-                        .advice(
-                            "Pull requests the signed-in account opened from a ticket's worktree show \
+                    rec(
+                        Level::Ok,
+                        "forge",
+                        format!("{} reads {} ({})", found.join(" or "), remote.host, remote.path),
+                    )
+                    .advice(
+                        "Pull requests the signed-in account opened from a ticket's worktree show \
                              on the ticket and its card; a sign-in failure shows on the board's \
                              advisory row.",
-                        ),
+                    ),
                 );
             }
         }

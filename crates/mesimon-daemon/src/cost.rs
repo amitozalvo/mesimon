@@ -317,6 +317,41 @@ impl Ledger {
         self.tickets.get(&ticket).map(|t| t.pr_urls.clone()).unwrap_or_default()
     }
 
+    /// Whether a ticket's sessions opened a PR (T-750): a URL the ledger
+    /// keeps, or one in a transcript's tail the pass has not reached, `live`
+    /// naming the transcripts its sessions point at now (a new one the
+    /// ledger has not learned is read whole). `None` when a tail could not
+    /// be read: the gate reads that as unknown, never as none opened.
+    pub fn opened_any(&self, ticket: ulid::Ulid, live: &[String]) -> Option<bool> {
+        let empty = TicketLedger::default();
+        let t = self.tickets.get(&ticket).unwrap_or(&empty);
+        if !t.pr_urls.is_empty() {
+            return Some(true);
+        }
+        let mut paths: Vec<String> = t.conversations.keys().cloned().collect();
+        for path in live {
+            if !paths.contains(path) {
+                paths.push(path.clone());
+            }
+        }
+        let subs: Vec<String> = paths.iter().flat_map(|p| subagents(p)).collect();
+        for path in subs {
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+        let fresh = Cursor::default();
+        let mut unread = false;
+        for path in &paths {
+            match opened_in_tail(path, t.conversations.get(path).unwrap_or(&fresh)) {
+                Ok(true) => return Some(true),
+                Ok(false) => {}
+                Err(()) => unread = true,
+            }
+        }
+        (!unread).then_some(false)
+    }
+
     /// Drop the tickets the board no longer has. True when any went.
     pub fn keep(&mut self, live: &HashSet<ulid::Ulid>) -> bool {
         let before = self.tickets.len();
@@ -419,15 +454,7 @@ fn read(job: Job, now_ms: u64) -> Option<Done> {
     let mut added = Vec::new();
     let mut pr_urls = Vec::new();
     for line in text.lines() {
-        // The `opened here` fact (T-739): a `pr create` the agent ran and
-        // the URL its result printed. Parsed only where it can be there, so
-        // a line costs one parse, not two.
-        if !cursor.pending_create.is_empty()
-            || line.contains("pr create")
-            || line.contains("mr create")
-        {
-            pr_urls.extend(mesimon_core::forge::pr_create_line(line, &mut cursor.pending_create));
-        }
+        pr_urls.extend(opened_on(line, &mut cursor.pending_create));
         if cursor.codex {
             match codex_line(line) {
                 Some(CodexLine::Model(m)) => cursor.model = Some(m),
@@ -452,6 +479,51 @@ fn read(job: Job, now_ms: u64) -> Option<Done> {
     }
     cursor.offset += end as u64 + 1;
     Some(Done { ticket: job.ticket, path: job.path, cursor, added, pr_urls })
+}
+
+/// The `opened here` fact (T-739) on one line: a `pr create` the agent ran
+/// and the URL its result printed. Parsed only where it can be there, so a
+/// line costs one parse, not two.
+fn opened_on(line: &str, pending: &mut Vec<String>) -> Vec<String> {
+    if line.contains("pr create")
+        || line.contains("mr create")
+        || pending.iter().any(|id| line.contains(id.as_str()))
+    {
+        return mesimon_core::forge::pr_create_line(line, pending);
+    }
+    Vec::new()
+}
+
+/// Whether one transcript's tail past `cursor` holds a PR URL its session
+/// opened (T-750), read on the caller's thread and moving no cursor: the
+/// pass still folds the same lines in. `Err` when it cannot be read, or
+/// grew past what one pass reads; a file that is gone has nothing new.
+fn opened_in_tail(path: &str, cursor: &Cursor) -> std::result::Result<bool, ()> {
+    let len = match std::fs::metadata(path) {
+        Ok(m) => m.len(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err(()),
+    };
+    // Shorter than the cursor: rewritten, so read from the start.
+    let (offset, mut pending) = if len < cursor.offset {
+        (0, Vec::new())
+    } else {
+        (cursor.offset, cursor.pending_create.clone())
+    };
+    if len == offset {
+        return Ok(false);
+    }
+    if len - offset > READ_CAP {
+        return Err(());
+    }
+    let mut file = std::fs::File::open(path).map_err(|_| ())?;
+    file.seek(SeekFrom::Start(offset)).map_err(|_| ())?;
+    let mut buf = Vec::new();
+    file.take(len - offset).read_to_end(&mut buf).map_err(|_| ())?;
+    let Some(end) = buf.iter().rposition(|b| *b == b'\n') else { return Ok(false) };
+    Ok(String::from_utf8_lossy(&buf[..end])
+        .lines()
+        .any(|line| !opened_on(line, &mut pending).is_empty()))
 }
 
 /// A line's moment: its own stamp, or the pass's when it carries none.
@@ -626,19 +698,34 @@ mod tests {
         let path = dir.path().join("s.jsonl");
         let t = ulid::Ulid::new();
         let call = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_9","name":"Bash","input":{"command":"gh pr create --fill"}}]}}"#;
-        std::fs::write(&path, format!("{call}
-")).unwrap();
+        std::fs::write(
+            &path,
+            format!(
+                "{call}
+"
+            ),
+        )
+        .unwrap();
         let mut ledger = Ledger::default();
         ledger.learn(t, &path.display().to_string(), false, false);
         ledger.apply(scan(ledger.jobs(), NOW));
         assert!(ledger.opened_urls(t).is_empty(), "the result has not come");
-        assert_eq!(ledger.tickets[&t].conversations.values().next().unwrap().pending_create, ["toolu_9"]);
+        assert_eq!(
+            ledger.tickets[&t].conversations.values().next().unwrap().pending_create,
+            ["toolu_9"]
+        );
         let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
         use std::io::Write;
         writeln!(f, r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"toolu_9","content":"https://github.com/o/r/pull/42\n"}}]}}}}"#).unwrap();
         assert!(ledger.apply(scan(ledger.jobs(), NOW)));
         assert_eq!(ledger.opened_urls(t), ["https://github.com/o/r/pull/42"]);
-        assert!(ledger.tickets[&t].conversations.values().next().unwrap().pending_create.is_empty());
+        assert!(ledger.tickets[&t]
+            .conversations
+            .values()
+            .next()
+            .unwrap()
+            .pending_create
+            .is_empty());
         // Said again, it is kept once.
         writeln!(f, "{call}").unwrap();
         writeln!(f, r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"toolu_9","content":"https://github.com/o/r/pull/42/"}}]}}}}"#).unwrap();
@@ -646,6 +733,44 @@ mod tests {
         assert_eq!(ledger.opened_urls(t).len(), 1);
         let text = serde_json::to_string(&ledger).unwrap();
         assert!(text.contains("pr_urls"), "the fact survives a restart: {text}");
+    }
+
+    /// The gate's read (T-750): a `pr create` in the tail the pass has not
+    /// reached is opened here, read now and moving no cursor; a transcript
+    /// with none, or a ticket with no transcript, opened nothing.
+    #[test]
+    fn a_pr_opened_in_the_unread_tail_is_seen_before_the_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let p = path.display().to_string();
+        let t = ulid::Ulid::new();
+        let mut ledger = Ledger::default();
+        assert_eq!(ledger.opened_any(t, &[]), Some(false), "no transcript, nothing opened");
+        std::fs::write(&path, format!("{}\n", line("m1", 10))).unwrap();
+        assert_eq!(
+            ledger.opened_any(t, std::slice::from_ref(&p)),
+            Some(false),
+            "a live one read whole"
+        );
+        ledger.learn(t, &p, false, false);
+        ledger.apply(scan(ledger.jobs(), NOW));
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        use std::io::Write;
+        writeln!(f, r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"toolu_7","name":"Bash","input":{{"command":"glab mr create --fill"}}}}]}}}}"#).unwrap();
+        assert_eq!(ledger.opened_any(t, &[]), Some(false), "the result has not come");
+        writeln!(f, r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"toolu_7","content":"https://gitlab.com/g/p/-/merge_requests/3\n"}}]}}}}"#).unwrap();
+        let before = ledger.clone();
+        assert_eq!(ledger.opened_any(t, &[]), Some(true));
+        assert_eq!(ledger, before, "the gate's read moves no cursor");
+        // The pass folds the same lines in; the ledger answers from then on.
+        ledger.apply(scan(ledger.jobs(), NOW));
+        assert_eq!(ledger.opened_urls(t).len(), 1);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(ledger.opened_any(t, &[]), Some(true));
+        // A transcript that is gone has nothing new.
+        let u = ulid::Ulid::new();
+        ledger.learn(u, &p, false, false);
+        assert_eq!(ledger.opened_any(u, &[]), Some(false));
     }
 
     #[test]

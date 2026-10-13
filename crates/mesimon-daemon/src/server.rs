@@ -7046,7 +7046,8 @@ impl Daemon {
     /// move) and any column whose gate would refuse — so a ticket with an
     /// unmerged worktree does not advertise a `requires_merge` column and
     /// then refuse it, nor one with an unticked summary box a
-    /// `requires_ticked` column (T-735).
+    /// `requires_ticked` column (T-735), nor one whose PR has not passed a
+    /// `requires_pipeline` column (T-739, the same predicate, T-750).
     fn agent_allowed_columns(&self, id: ulid::Ulid) -> Vec<String> {
         let Some(t) = self.board.ticket(id) else { return Vec::new() };
         if self.agent_tools_for(id) < AgentTools::Full {
@@ -7057,7 +7058,8 @@ impl Daemon {
         // no note here.
         let unticked = self.board.columns.iter().any(|c| c.settings.requires_ticked)
             && self.open_boxes(id) > 0;
-        let unpassed = self.pipeline_refusal(id).is_some();
+        let unpassed = self.board.columns.iter().any(|c| c.settings.requires_pipeline)
+            && self.pipeline_refusal(id).is_some();
         self.board
             .sorted_columns()
             .into_iter()
@@ -7070,22 +7072,26 @@ impl Daemon {
     }
 
     /// Why a column that needs a passed pipeline refuses this ticket (T-739),
-    /// or `None` when its pipeline passed. The forge's reading of the
-    /// ticket's set: the worst open PR's, the merge commit's once merged.
+    /// or `None` when it may enter (`forge::entry_refusal`). With no PR
+    /// bound, the transcripts say whether one was opened here: the ledger's
+    /// URLs and the tail its pass has not reached, read now, so a turn's end
+    /// judges the `pr create` of that same turn (T-750).
     fn pipeline_refusal(&self, id: ulid::Ulid) -> Option<String> {
-        use mesimon_core::forge::Pipeline;
-        let set = self.forge.sets.get(&id);
-        let pipeline = set.map(|s| mesimon_core::forge::pipeline_of(s)).unwrap_or(Pipeline::Unknown);
-        match pipeline {
-            Pipeline::Passed => None,
-            Pipeline::Unknown => Some("pipeline not read".into()),
-            Pipeline::None => Some("no pipeline ran".into()),
-            Pipeline::Running => Some("pipeline running".into()),
-            Pipeline::Waiting(job) if job.is_empty() => Some("pipeline waiting".into()),
-            Pipeline::Waiting(job) => Some(format!("pipeline waiting: {job}")),
-            Pipeline::Failed(job) if job.is_empty() => Some("pipeline failed".into()),
-            Pipeline::Failed(job) => Some(format!("pipeline failed: {job}")),
-        }
+        let set = self.forge.sets.get(&id).map(Vec::as_slice);
+        let opened_here = if set.is_some_and(|s| !s.is_empty()) {
+            None
+        } else {
+            let live: Vec<String> = self
+                .board
+                .sessions
+                .iter()
+                .filter(|r| r.ticket == id)
+                .filter_map(crate::cost::transcript_of)
+                .map(|(p, _)| p.display().to_string())
+                .collect();
+            self.costs.opened_any(id, &live)
+        };
+        mesimon_core::forge::entry_refusal(set, opened_here)
     }
 
     /// Every column's description (T-467), keyed by name, for `get_ticket`
@@ -7571,7 +7577,8 @@ impl Daemon {
         {
             return Err(format!("worktree unmerged — merge before {dest}"));
         }
-        // Its pipeline twin (T-739): unknown is never green.
+        // Its pipeline twin (T-739): unknown is never green, and a ticket
+        // that opened no PR has none to pass (T-750).
         if self.board.column(dest).is_some_and(|c| c.settings.requires_pipeline) {
             if let Some(why) = self.pipeline_refusal(id) {
                 return Err(format!("{why} — before {dest}"));
@@ -7848,7 +7855,8 @@ impl Daemon {
         // A repository the forge CLI cannot read (T-739): the pull requests
         // on the cards are as old as the last pass that answered.
         if let Some(trouble) = self.forge.trouble() {
-            let hold = if self.train.is_armed() { " ∙ the merge train holds its tickets" } else { "" };
+            let hold =
+                if self.train.is_armed() { " ∙ the merge train holds its tickets" } else { "" };
             notices.push(Notice::new(
                 "forge_unreachable",
                 format!("pull requests not read — {trouble}{hold}"),
@@ -13285,8 +13293,10 @@ impl Daemon {
                     .or_insert_with(|| crate::forge::remote_of(&leg.repo, &leg.base))
                     .clone();
                 let Some(remote) = remote else { continue };
-                leg_queries
-                    .push(crate::forge::LegQuery { repo_path: remote.path.clone(), dir: leg.path.clone() });
+                leg_queries.push(crate::forge::LegQuery {
+                    repo_path: remote.path.clone(),
+                    dir: leg.path.clone(),
+                });
                 add_repo(&mut repos, remote, leg.repo.clone());
             }
             // A URL a session printed may name another repository of a host
@@ -13318,11 +13328,15 @@ impl Daemon {
                 continue;
             }
             let order = match remote.known_forge() {
-                Some(mesimon_core::forge::Forge::GitHub) => vec![mesimon_core::forge::Forge::GitHub],
+                Some(mesimon_core::forge::Forge::GitHub) => {
+                    vec![mesimon_core::forge::Forge::GitHub]
+                }
                 _ => vec![mesimon_core::forge::Forge::GitLab, mesimon_core::forge::Forge::GitHub],
             };
-            let candidates: Vec<crate::forge::Cli> =
-                order.into_iter().filter_map(|f| crate::forge::find_cli(f, path.as_deref())).collect();
+            let candidates: Vec<crate::forge::Cli> = order
+                .into_iter()
+                .filter_map(|f| crate::forge::find_cli(f, path.as_deref()))
+                .collect();
             if candidates.is_empty() {
                 self.forge.probes.insert(
                     remote.host.clone(),
@@ -13500,9 +13514,10 @@ impl Daemon {
                 .filter_map(|c| {
                     let rank = match c.settings.arrives_on {
                         Arrival::Deployed
-                            if c.settings.arrives_env.as_ref().is_some_and(|env| {
-                                edge.deployed.iter().any(|d| d == env)
-                            }) =>
+                            if c.settings
+                                .arrives_env
+                                .as_ref()
+                                .is_some_and(|env| edge.deployed.iter().any(|d| d == env)) =>
                         {
                             4
                         }

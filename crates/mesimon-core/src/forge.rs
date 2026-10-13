@@ -290,13 +290,13 @@ pub fn gh_rollup(rollup: Option<&Value>) -> Pipeline {
     let Some(Value::Array(entries)) = rollup else { return Pipeline::None };
     let mut fold = Pipeline::None;
     for e in entries {
-        let name =
-            job_word(e.get("name").or_else(|| e.get("context")).and_then(Value::as_str).unwrap_or_default());
+        let name = job_word(
+            e.get("name").or_else(|| e.get("context")).and_then(Value::as_str).unwrap_or_default(),
+        );
         // GraphQL (`gh pr list`) spells these in capitals, REST
         // (`commits/{sha}/check-runs`) in lower case: one reading.
-        let word = |key: &str| {
-            e.get(key).and_then(Value::as_str).unwrap_or_default().to_ascii_uppercase()
-        };
+        let word =
+            |key: &str| e.get(key).and_then(Value::as_str).unwrap_or_default().to_ascii_uppercase();
         let (status, conclusion, state) = (word("status"), word("conclusion"), word("state"));
         // A commit status (`StatusContext`) says `state` alone.
         let one = match (status.as_str(), conclusion.as_str(), state.as_str()) {
@@ -334,8 +334,8 @@ pub fn parse_glab(repo: &str, json: &str) -> Vec<Pr> {
                 .unwrap_or_default()
                 .to_string();
             let status = v.get("detailed_merge_status").and_then(Value::as_str).unwrap_or_default();
-            let conflict =
-                v.get("has_conflicts").and_then(Value::as_bool) == Some(true) || status == "conflict";
+            let conflict = v.get("has_conflicts").and_then(Value::as_bool) == Some(true)
+                || status == "conflict";
             let review = match status {
                 "not_approved" => Review::Required,
                 _ => Review::None,
@@ -475,9 +475,9 @@ pub fn iso_ms(v: Option<&Value>) -> u64 {
     let mut secs = days * 86_400 + h * 3600 + mi * 60 + sec;
     // A trailing offset, `+02:00` / `-0500`; `Z` or none is UTC.
     let rest = &s[19..];
-    let rest = rest.split_once('.').map_or(rest, |(_, after)| {
-        after.trim_start_matches(|c: char| c.is_ascii_digit())
-    });
+    let rest = rest
+        .split_once('.')
+        .map_or(rest, |(_, after)| after.trim_start_matches(|c: char| c.is_ascii_digit()));
     if let Some(sign) = rest.chars().next().filter(|c| *c == '+' || *c == '-') {
         let digits: String = rest[1..].chars().filter(|c| c.is_ascii_digit()).collect();
         if digits.len() == 4 {
@@ -505,21 +505,21 @@ impl Remote {
     /// `ssh://git@gitlab.example.com:2222/g/s/p.git`, `https://gitlab.com/g/p`.
     pub fn parse(url: &str) -> Option<Remote> {
         let url = url.trim();
-        let (host, path) = if let Some((scheme_less, _)) = url.split_once("://").map(|(_, r)| (r, ()))
-        {
-            let (hostport, path) = scheme_less.split_once('/')?;
-            let host = hostport.rsplit('@').next()?.split(':').next()?;
-            (host, path)
-        } else if let Some((userhost, path)) = url.split_once(':') {
-            // scp-like: `git@host:path`
-            if path.starts_with("//") {
+        let (host, path) =
+            if let Some((scheme_less, _)) = url.split_once("://").map(|(_, r)| (r, ())) {
+                let (hostport, path) = scheme_less.split_once('/')?;
+                let host = hostport.rsplit('@').next()?.split(':').next()?;
+                (host, path)
+            } else if let Some((userhost, path)) = url.split_once(':') {
+                // scp-like: `git@host:path`
+                if path.starts_with("//") {
+                    return None;
+                }
+                let host = userhost.rsplit('@').next()?;
+                (host, path)
+            } else {
                 return None;
-            }
-            let host = userhost.rsplit('@').next()?;
-            (host, path)
-        } else {
-            return None;
-        };
+            };
         let path = path.trim_matches('/').trim_end_matches(".git").trim_matches('/');
         if host.is_empty() || path.is_empty() || !path.contains('/') {
             return None;
@@ -565,7 +565,11 @@ pub fn binds(pr: &Pr, facts: &Facts) -> bool {
 /// Two URLs naming the same PR, a trailing slash or `.diff` aside.
 pub fn same_url(a: &str, b: &str) -> bool {
     let norm = |u: &str| {
-        u.trim().trim_end_matches('/').trim_end_matches(".diff").trim_end_matches(".patch").to_string()
+        u.trim()
+            .trim_end_matches('/')
+            .trim_end_matches(".diff")
+            .trim_end_matches(".patch")
+            .to_string()
     };
     norm(a) == norm(b)
 }
@@ -598,6 +602,31 @@ pub fn pipeline_of(set: &[Pr]) -> Pipeline {
     match set.iter().find(|p| p.state == PrState::Merged) {
         Some(p) => p.pipeline.clone(),
         None => Pipeline::Unknown,
+    }
+}
+
+/// Why a column that needs a passed pipeline refuses a ticket (T-739), or
+/// `None` when it may enter. `set` is the forge's last reading of the
+/// ticket's PRs; `opened_here` whether its transcripts opened one, `None`
+/// when they could not be read. A ticket with no PR bound and none opened
+/// has no pipeline to pass and enters, as a ticket with no branch passes
+/// the merge rule (T-750); one opened here and not yet read by the forge
+/// waits for it, so a turn's end seconds after a `pr create` is not waved
+/// through. Unknown is never green.
+pub fn entry_refusal(set: Option<&[Pr]>, opened_here: Option<bool>) -> Option<String> {
+    let set = set.filter(|s| !s.is_empty());
+    if set.is_none() && opened_here == Some(false) {
+        return None;
+    }
+    match set.map(pipeline_of).unwrap_or(Pipeline::Unknown) {
+        Pipeline::Passed => None,
+        Pipeline::Unknown => Some("pipeline not read".into()),
+        Pipeline::None => Some("no pipeline ran".into()),
+        Pipeline::Running => Some("pipeline running".into()),
+        Pipeline::Waiting(job) if job.is_empty() => Some("pipeline waiting".into()),
+        Pipeline::Waiting(job) => Some(format!("pipeline waiting: {job}")),
+        Pipeline::Failed(job) if job.is_empty() => Some("pipeline failed".into()),
+        Pipeline::Failed(job) => Some(format!("pipeline failed: {job}")),
     }
 }
 
@@ -704,7 +733,8 @@ fn flatten(v: Option<&Value>) -> String {
 /// `…/-/merge_requests/<n>`, as the two CLIs print them.
 pub fn pr_urls(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for word in text.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '<' || c == '>')
+    for word in
+        text.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '<' || c == '>')
     {
         let Some(at) = word.find("https://") else { continue };
         let url = word[at..].trim_end_matches(['.', ',', ';', ':', ')', ']']);
@@ -786,7 +816,11 @@ mod tests {
         assert_eq!(prs[0].state, PrState::Open);
         assert!(prs[0].conflict);
         assert_eq!(prs[0].review, Review::ChangesRequested);
-        assert_eq!(prs[0].pipeline, Pipeline::Failed("test-linux".into()), "a failure outranks a run");
+        assert_eq!(
+            prs[0].pipeline,
+            Pipeline::Failed("test-linux".into()),
+            "a failure outranks a run"
+        );
         assert_eq!(prs[0].updated_ms, 1_791_870_977_000);
         assert_eq!(prs[1].state, PrState::Merged);
         assert_eq!(prs[1].merge_oid, "abc123");
@@ -801,23 +835,33 @@ mod tests {
     #[test]
     fn the_rollup_folds_to_the_loudest_word() {
         let v = |s: &str| serde_json::from_str::<Value>(s).unwrap();
-        let running = v(r#"[{"name":"a","status":"QUEUED"},{"name":"b","status":"COMPLETED","conclusion":"SUCCESS"}]"#);
+        let running = v(
+            r#"[{"name":"a","status":"QUEUED"},{"name":"b","status":"COMPLETED","conclusion":"SUCCESS"}]"#,
+        );
         assert_eq!(gh_rollup(Some(&running)), Pipeline::Running);
-        let waiting = v(r#"[{"name":"deploy-prod","status":"WAITING"},{"name":"b","status":"IN_PROGRESS"}]"#);
+        let waiting =
+            v(r#"[{"name":"deploy-prod","status":"WAITING"},{"name":"b","status":"IN_PROGRESS"}]"#);
         assert_eq!(gh_rollup(Some(&waiting)), Pipeline::Waiting("deploy-prod".into()));
-        let required = v(r#"[{"name":"deploy","status":"COMPLETED","conclusion":"ACTION_REQUIRED"}]"#);
+        let required =
+            v(r#"[{"name":"deploy","status":"COMPLETED","conclusion":"ACTION_REQUIRED"}]"#);
         assert_eq!(gh_rollup(Some(&required)), Pipeline::Waiting("deploy".into()));
-        let passed = v(r#"[{"name":"a","status":"COMPLETED","conclusion":"SKIPPED"},{"context":"x","state":"SUCCESS"}]"#);
+        let passed = v(
+            r#"[{"name":"a","status":"COMPLETED","conclusion":"SKIPPED"},{"context":"x","state":"SUCCESS"}]"#,
+        );
         assert_eq!(gh_rollup(Some(&passed)), Pipeline::Passed);
         assert_eq!(gh_rollup(None), Pipeline::None);
         assert_eq!(parse_gh_check_runs(r#"{"check_runs":[]}"#), Pipeline::None);
         assert_eq!(
-            parse_gh_check_runs(r#"{"check_runs":[{"name":"release","status":"completed","conclusion":"FAILURE"}]}"#),
+            parse_gh_check_runs(
+                r#"{"check_runs":[{"name":"release","status":"completed","conclusion":"FAILURE"}]}"#
+            ),
             Pipeline::Failed("release".into())
         );
         assert_eq!(parse_gh_check_runs("nope"), Pipeline::Unknown);
         assert_eq!(
-            parse_gh_check_runs(r#"{"check_runs":[{"name":"release","status":"completed","conclusion":"success"}]}"#),
+            parse_gh_check_runs(
+                r#"{"check_runs":[{"name":"release","status":"completed","conclusion":"success"}]}"#
+            ),
             Pipeline::Passed,
             "REST spells its words in lower case"
         );
@@ -837,8 +881,14 @@ mod tests {
         assert_eq!(prs[0].label(), "!4096");
         assert_eq!(prs[0].updated_ms, 1_791_864_000_000, "+02:00 is two hours earlier in UTC");
         assert_eq!(prs[1].merge_oid, "sq1", "a squash's sha before the merge commit's");
-        assert_eq!(parse_gitlab_pipelines(r#"[{"status":"manual"}]"#), Pipeline::Waiting(String::new()));
-        assert_eq!(parse_gitlab_pipelines(r#"[{"status":"success"},{"status":"failed"}]"#), Pipeline::Passed);
+        assert_eq!(
+            parse_gitlab_pipelines(r#"[{"status":"manual"}]"#),
+            Pipeline::Waiting(String::new())
+        );
+        assert_eq!(
+            parse_gitlab_pipelines(r#"[{"status":"success"},{"status":"failed"}]"#),
+            Pipeline::Passed
+        );
         assert_eq!(parse_gitlab_pipelines("[]"), Pipeline::None);
         assert_eq!(gitlab_status("running"), Pipeline::Running);
         assert_eq!(gitlab_status("failed"), Pipeline::Failed(String::new()));
@@ -869,7 +919,10 @@ mod tests {
             opened: vec!["https://gitlab.com/g/p/-/merge_requests/7/".into()],
         };
         assert!(binds(&pr("o/r", 1, PrState::Open, "bbb", 1), &facts), "made here");
-        assert!(!binds(&pr("o/other", 1, PrState::Open, "bbb", 1), &facts), "another repo's commit");
+        assert!(
+            !binds(&pr("o/other", 1, PrState::Open, "bbb", 1), &facts),
+            "another repo's commit"
+        );
         let mut on_branch = pr("o/r", 2, PrState::Open, "zzz", 1);
         on_branch.head_ref = "msmn/T-12-x".into();
         assert!(binds(&on_branch, &facts), "the ticket's own branch");
@@ -900,7 +953,11 @@ mod tests {
         assert_eq!(pipeline_of(&[failed.clone(), running.clone()]), Pipeline::Failed("t".into()));
         let mut merged = pr("o/r", 6, PrState::Merged, "f", 60);
         merged.pipeline = Pipeline::Passed;
-        assert_eq!(pipeline_of(&[merged]), Pipeline::Passed, "the merge commit's once nothing is open");
+        assert_eq!(
+            pipeline_of(&[merged]),
+            Pipeline::Passed,
+            "the merge commit's once nothing is open"
+        );
         assert_eq!(pipeline_of(&[]), Pipeline::Unknown);
     }
 
@@ -929,22 +986,35 @@ mod tests {
         assert_eq!(pending, ["c1"]);
         let fo = r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"c1",
             "output":"https://gitlab.example.com/g/p/-/merge_requests/9\n"}}"#;
-        assert_eq!(pr_create_line(fo, &mut pending), ["https://gitlab.example.com/g/p/-/merge_requests/9"]);
+        assert_eq!(
+            pr_create_line(fo, &mut pending),
+            ["https://gitlab.example.com/g/p/-/merge_requests/9"]
+        );
         assert!(pr_create_line("not json", &mut pending).is_empty());
         assert!(is_pr_create("/usr/local/bin/gh pr create -t x"));
         assert!(!is_pr_create("gh pr list"));
         for i in 0..20 {
             remember(&mut pending, &format!("id{i}"));
         }
-        assert_eq!(pending.len(), PENDING_CAP, "a result that never comes does not grow the cursor");
+        assert_eq!(
+            pending.len(),
+            PENDING_CAP,
+            "a result that never comes does not grow the cursor"
+        );
     }
 
     #[test]
     fn pr_urls_are_found_in_text_and_numbered() {
         let urls = pr_urls("done: <https://github.com/o/r/pull/42>, and https://gitlab.com/g/s/p/-/merge_requests/7. https://github.com/o/r/issues/3");
-        assert_eq!(urls, ["https://github.com/o/r/pull/42", "https://gitlab.com/g/s/p/-/merge_requests/7"]);
+        assert_eq!(
+            urls,
+            ["https://github.com/o/r/pull/42", "https://gitlab.com/g/s/p/-/merge_requests/7"]
+        );
         assert_eq!(pr_number_of("https://github.com/o/r/pull/42"), Some((Forge::GitHub, 42)));
-        assert_eq!(pr_number_of("https://gitlab.com/g/s/p/-/merge_requests/7"), Some((Forge::GitLab, 7)));
+        assert_eq!(
+            pr_number_of("https://gitlab.com/g/s/p/-/merge_requests/7"),
+            Some((Forge::GitLab, 7))
+        );
         assert_eq!(pr_number_of("https://github.com/o/r/pull/x"), None);
         assert!(same_url("https://a/b/pull/1/", "https://a/b/pull/1"));
         let r = repo_of_url("https://github.com/o/r/pull/42").unwrap();
@@ -957,7 +1027,9 @@ mod tests {
 
     #[test]
     fn deployments_read_by_environment_and_names_are_bounded() {
-        let ds = parse_gh_deployments(r#"[{"id":7,"environment":"staging","sha":"m"},{"id":8,"environment":"production"}]"#);
+        let ds = parse_gh_deployments(
+            r#"[{"id":7,"environment":"staging","sha":"m"},{"id":8,"environment":"production"}]"#,
+        );
         assert_eq!(ds, [(7, "staging".to_string()), (8, "production".to_string())]);
         assert!(parse_gh_deployment_success(r#"[{"state":"success"},{"state":"pending"}]"#));
         assert!(!parse_gh_deployment_success(r#"[{"state":"in_progress"}]"#));
@@ -985,5 +1057,49 @@ mod tests {
         assert_eq!(PrState::from_word("open"), Some(PrState::Open));
         assert_eq!(Review::from_word("approved"), Review::Approved);
         assert_eq!(Forge::from_word("gitlab"), Some(Forge::GitLab));
+    }
+
+    /// The entry rule (T-750): a bound PR is judged by its pipeline and
+    /// unknown is never green; with none bound, a PR opened here waits for
+    /// the forge and a ticket that opened none has nothing to pass.
+    #[test]
+    fn entry_needs_a_passed_pipeline_only_where_a_pr_is_or_was_opened() {
+        let with = |pipeline: Pipeline| {
+            let mut p = pr("o/r", 1, PrState::Open, "aa", 1);
+            p.pipeline = pipeline;
+            vec![p]
+        };
+        // Bound: today's judgement, whatever the transcript says.
+        let failed = with(Pipeline::Failed("test".into()));
+        assert_eq!(
+            entry_refusal(Some(&failed), Some(false)).as_deref(),
+            Some("pipeline failed: test")
+        );
+        assert_eq!(entry_refusal(Some(&with(Pipeline::Passed)), Some(true)), None);
+        assert_eq!(
+            entry_refusal(Some(&with(Pipeline::Running)), None).as_deref(),
+            Some("pipeline running")
+        );
+        // Bound and the forge unreachable: its reading is unknown, and a
+        // ticket that opened nothing here is refused all the same.
+        let mut merged = pr("o/r", 1, PrState::Merged, "aa", 1);
+        merged.pipeline = Pipeline::Unknown;
+        assert_eq!(
+            entry_refusal(Some(&[merged]), Some(false)).as_deref(),
+            Some("pipeline not read")
+        );
+        let open = with(Pipeline::Unknown);
+        assert!(
+            entry_refusal(Some(&open), Some(false)).is_some(),
+            "an open PR unread is never green"
+        );
+        // Unbound, a URL opened here: the forge has not read it yet.
+        assert_eq!(entry_refusal(None, Some(true)).as_deref(), Some("pipeline not read"));
+        assert_eq!(entry_refusal(Some(&[]), Some(true)).as_deref(), Some("pipeline not read"));
+        // Unbound and the transcript unreadable: unknown, never green.
+        assert_eq!(entry_refusal(None, None).as_deref(), Some("pipeline not read"));
+        // Unbound and nothing opened here: nothing to pass.
+        assert_eq!(entry_refusal(None, Some(false)), None);
+        assert_eq!(entry_refusal(Some(&[]), Some(false)), None);
     }
 }
