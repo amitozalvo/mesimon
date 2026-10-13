@@ -1361,8 +1361,9 @@ async function notesFlow(browser, engineName, size, viewport) {
     assert.match(await pane.locator(".markdown").textContent(), /Written away/);
     await shot("notes-away");
     // A reload keeps the notes read and the edit on its way; the page
-    // reopens the ticket it was on.
+    // lands on the list (T-742) and the ticket is opened again.
     await page.reload();
+    await open("ticket-0");
     await page.locator("#pane-bar").waitFor();
     await goTo("Plan: retry the train");
     await until(page, () => /Written away/.test(document.querySelector('.pane-note[aria-hidden="false"]').textContent));
@@ -2688,9 +2689,10 @@ async function pairLinkFlow(browser, engineName) {
   }
 }
 
-// The system's Back on a phone (T-667): a ticket the page opens by itself, the
-// one remembered at launch, closes to the list it came from, and the page
-// stays; only Back from the list leaves.
+// The system's Back on a phone (T-667, T-742): the page launched again lands
+// on Now with no ticket open, the remembered one included; a tapped ticket
+// closes to the list on Back and the page stays; a reload on a ticket lands
+// on Now too, and the ticket tapped after it still closes on one Back.
 async function backFlow(browser, engineName) {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, colorScheme: "dark", serviceWorkers: "block" });
   await context.addInitScript(fixture);
@@ -2721,12 +2723,30 @@ async function backFlow(browser, engineName) {
     page = await context.newPage();
     watch(page);
     await page.goto(origin);
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    assert.equal(await page.locator("#list-title").textContent(), "Now");
+    assert.equal(await page.evaluate(() => document.querySelector("#shell").dataset.detail), "false", "the launch opens no ticket");
+    assert.equal(await page.evaluate(() => !!history.state?.detail), false, "the launch stacks no entry");
+    await page.locator('.ticket[data-id="ticket-0"]').click();
     await until(page, () => document.querySelector("#detail .selection-key")?.textContent === "T-0");
     await page.goBack();
     await until(page, () => document.querySelector("#shell").dataset.detail === "false");
     assert.equal(await page.evaluate(() => location.origin), new URL(origin).origin, "Back stays in the page");
     await page.locator('.ticket[data-id="ticket-0"]').waitFor();
     assert.equal(await page.locator("#list-title").textContent(), "Now");
+    // A reload on the ticket keeps its history entry; the page lands on Now
+    // and that entry no longer says a ticket is open.
+    await page.locator('.ticket[data-id="ticket-0"]').click();
+    await until(page, () => document.querySelector("#detail .selection-key")?.textContent === "T-0");
+    await page.reload();
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    assert.equal(await page.evaluate(() => document.querySelector("#shell").dataset.detail), "false", "a reload opens no ticket");
+    assert.equal(await page.evaluate(() => !!history.state?.detail), false, "a reload's entry is the list's");
+    await page.locator('.ticket[data-id="ticket-0"]').click();
+    await until(page, () => document.querySelector("#detail .selection-key")?.textContent === "T-0");
+    await page.goBack();
+    await until(page, () => document.querySelector("#shell").dataset.detail === "false");
+    assert.equal(await page.evaluate(() => location.origin), new URL(origin).origin, "Back after a reload stays in the page");
     assert.deepEqual(errors, []);
     console.log(`${engineName}: the system's Back closes a remembered ticket passed`);
   } catch (error) {
@@ -2938,10 +2958,9 @@ async function keptFlow(browser, engineName) {
     await page.evaluate(() => localStorage.setItem("fixture-relay-down", "1"));
     await page.reload();
     await until(page, () => document.documentElement.dataset.page === "kept");
-    // The ticket that was open, from memory; back on the list, the rest.
-    await until(page, () => document.querySelector("#detail .selection-key")?.textContent === "T-0");
-    if (await page.locator("#back").isVisible()) await page.locator("#back").click();
+    // The list, from memory, with no ticket open (T-742).
     await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    assert.equal(await page.evaluate(() => document.querySelector("#shell").dataset.detail), "false", "the kept copy opens on the list");
     assert.match(await page.locator("#work-list").textContent(), /As of/);
     assert.equal(await page.locator("#shell").getAttribute("data-link"), "relay");
     assert.equal(await page.evaluate(() => fixture.sockets.length), 0, "the kept page opens no socket");
@@ -3608,9 +3627,16 @@ try {
             await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-rail.png`) });
           }
           await page.reload();
-          await until(page, () =>
-            document.querySelector("#detail .selection-key")?.textContent === "T-2",
-          );
+          // A reload lands on the list (T-742); a wide screen's pane keeps
+          // the selection.
+          if (size === "phone") {
+            await page.locator('.ticket[data-id="ticket-2"]').waitFor();
+            assert.equal(await page.evaluate(() => document.querySelector("#shell").dataset.detail), "false", "a reload opens no ticket");
+          } else {
+            await until(page, () =>
+              document.querySelector("#detail .selection-key")?.textContent === "T-2",
+            );
+          }
           assert(await page.locator("#onboarding").isHidden());
           assert.equal(
             await page.locator("html").getAttribute("data-theme"),

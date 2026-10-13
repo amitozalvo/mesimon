@@ -271,14 +271,18 @@ export class Store {
 
   // ---- navigation --------------------------------------------------------
   // On a phone the ticket is a screen of its own and the system's Back closes
-  // it (T-667): every way it opens (a tap, a notification's link, the
-  // selection remembered at boot or on a board switch) leaves an entry to go
-  // back from, or Back leaves the app.
+  // it (T-667): every way it opens (a tap, a notification's link) leaves an
+  // entry to go back from, or Back leaves the app. The page opens on the list
+  // (T-742): a launch and a board switch keep the selection for the list's
+  // pressed card and a wide screen's pane, and open no ticket. A reload keeps
+  // `history.state`, so a closed ticket's entry is written over, or the next
+  // tap would stack no entry and Back from the list would leave twice.
   detail(open) {
     if (open && !this.detailOpen) this.outputKey = undefined;
     this.detailOpen = open;
     if (!open) this.focus = "row";
     if (open && narrow() && !history.state?.detail) history.pushState({ detail: true }, "");
+    if (!open && history.state?.detail) history.replaceState({ detail: false }, "");
   }
   select(id) {
     if (!this.board) return;
@@ -1820,7 +1824,7 @@ export class Store {
       return;
     }
     this.screen = "shell";
-    this.detail(!!chosen.selected);
+    this.detail(false);
     if (!this.board) this.restoreBoard(chosen);
     this.restoreSent(chosen.pin.board);
     this.restoreNotes(chosen.pin.board);

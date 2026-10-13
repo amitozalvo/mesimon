@@ -23840,3 +23840,26 @@ drives `control_archive` (no daemon fixture for control ops, as for T-530 and T-
 
 **Owed:** a CHANGELOG line at the next release, and the relay's `ship.sh` after it merges, since
 the relay serves the page.
+
+## T-742: Remote Control opens on Now, and Back on a ticket stays in the page (2026-10-13)
+
+Remote Control launched onto a ticket: `openBoard` opened the ticket page on the board's
+remembered selection, and when that ticket was gone (archived, deleted, or never in the
+board's reply) `BoardState::update` fell back to the first ticket with an agent or the first
+ticket, so a launch landed on a ticket nobody picked. From there the system's Back relied on
+the entry T-667 pushed at that boot; a page that came back with `history.state` already
+`{ detail: true }` (a reload, a kept copy's reload once the relay answered, a restored
+window) pushed nothing, and a Back from the list that followed, or a tap that then stacked
+no entry, left the page, which closes the app from the home screen.
+
+**Now** a launch and a board switch open no ticket: `openBoard` calls `detail(false)`, the
+list is Now (the board's mode is not remembered), and the selection is kept for the list's
+pressed card and a wide screen's pane alone. A notification's link still opens its ticket
+(`boot`'s `linked`, `navigateTicket`), with the entry a tap gets. And `detail(false)` writes
+`{ detail: false }` over an entry that still reads `detail`, so after a reload the page and
+its entry agree: the next tap pushes an entry of its own and one Back closes it to the list.
+
+Verified: `ux.test.js` `backFlow` (Chromium, WebKit: a page launched again lands on Now with
+no entry stacked; a tapped ticket closes on Back and the page stays; a reload on a ticket
+lands on Now with the entry cleared and the ticket tapped after it closes on one Back), the
+phone, tablet and desktop UX flows on both engines, `state.test.js`.
