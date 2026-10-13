@@ -23886,3 +23886,117 @@ so the relaxed words do not stop a line the person asked for. Both passed on Son
 Verified: `cargo ut` (the summary convention test now pins "needs no `Summary`" and "waits
 for a person's ask", and that "one-line summary" and "plain line alone" are gone), `notes_e2e`,
 `python3 -B ci/rig.py --only S1,S2`.
+
+## Pull requests on the board (T-739, 2026-10-13, user: "gitlab / github MR / PR integrations ∙ currently it's really hard to keep track of whats merged when working with PRs ∙ there might be a pipeline running as well, there might be multiple environments ∙ propose a mesimon way, I don't want it to be too complex")
+
+**Proposed first, in a doc the author swept for safety, consistency and UX, then built on this
+ticket in five commits.** T-267 had answered "is it merged?" for a squashed or rebased PR from git,
+but only after a fetch nobody turned on (`MESIMON_GIT_FETCH` was an env var), and git cannot say
+the PR itself, its pipeline or where it was deployed. The author's own earlier word was "I don't
+necessarily want gitlab / github / pr integration" (T-267); the ask here is the integration, under
+the mesimon rules: nothing to configure, reads only, the board's own vocabulary.
+
+**The fetch is a Settings row.** Behaviour › Fetch from the remote: off ∙ 1 min ∙ 5 min ∙ 15 min,
+board-overridable (`PrefKey::FetchEvery`, the first named board-overridable value: `BoardPrefs::
+word`/`set_word`). The daemon reads the key off this board's `prefs.json`, then the machine's,
+on its slow bucket (`gitstatus::fetch_every_resolved`), `MESIMON_GIT_FETCH` over both; promise 1
+names the row. Alone it makes a forge's merge read merged on every board.
+
+**The forge is read through the CLI the person signed in to.** `core/src/forge.rs` is the pure
+half: `Pr`, the one `pipeline` word for GitHub's checks and GitLab's pipelines (`Unknown < None <
+Passed < Running < Waiting < Failed`, the loudest wins, unknown never green), the two CLIs' JSON
+readers, `Remote::parse`, the binding rule, the transcript detector. `daemon/src/forge.rs` runs
+the calls: `gh` on github.com, `glab` on any other host that answers `auth status`, found on the
+captured shell PATH; one `pr list --author @me --state all` per repository per minute, fenced as
+a fetch is (own session, 20 s, the group killed, every prompt and pager door shut,
+`GH_NO_UPDATE_NOTIFIER` and `GLAB_CHECK_UPDATE` off so the CLI writes no stamp of its own); a
+failed repository backs off five minutes and shows on the advisory row (`forge_unreachable`).
+The verdict is memory only; a restart re-reads.
+
+**A ticket's PRs are the PRs its work made, never the ones its agent mentioned.** The author
+refuted the first draft's ladder (a URL in a note, the key in a title): agents mention prerequisite
+PRs, open several PRs per ticket, open them from other branches and other repositories, and write
+no note. The rule is facts: `forge::binds` takes a PR whose head commit is in a worktree leg's HEAD
+reflog (`made here`, any branch the agent pushed from, any button that opened it), whose head is
+the ticket's own `msmn/` branch, or whose URL a `gh pr create` / `glab mr create` run by one of the
+ticket's sessions printed (`opened here`: `forge::pr_create_line` reads the tool call and its
+result off the transcript inside the cost ledger's pass, Claude's and Codex's shapes, the URLs kept
+in `costs.json`'s `pr_urls` since the cursor never goes back). Only the signed-in account's PRs are
+candidates, so a URL a script prints or a commit fetched from a stranger's PR binds nothing. A
+ticket's set is every bound PR open or merged, newest first; closed-unmerged drops out. A URL may
+name another repository of a host a leg's remote already reaches, never a host of its own.
+
+**The forge's merge is the same `merged` flag.** `forge_fold_legs` sets a leg merged when its
+repository's newest PR is merged at the leg's tip (`merged_in` = `main (PR #42)`, `merged_oid` the
+merge commit), on every git sample and every forge pass; `ticket_merged` asks the same with the
+tip re-read. So the card's `⎇✓`, the DONE gate, the delete gate, the train's skip, the `m` dialog
+and the crown's merged wake followed with no code, and T-438's two open cases (a conflict resolved
+in the forge UI, a branch amended after the week's window) close. A commit after the merge is
+unlanded, as before.
+
+**The train with a PR.** `train::WtFlags` carries `pr_open`, `pr_conflict`, `forge_fresh`: an
+open PR takes the ticket off the merge list (the PR is the merge; `merge_ticket` refuses `PR #42
+open — merge it on GitHub`, which `m`, the crown and the train all hear), a rebase is asked only
+on a conflict the forge reports and not on a base that merely moved, and the ask ends with `Then
+push with --force-with-lease so PR #42 updates`. **The train acts on nothing it has not read**
+(the author's rule): `forge_fresh` is a verdict younger than the agent's last end of turn, or no
+forge on the board at all; before the first probe nothing is fresh and the train waits a bucket.
+
+**Columns.** `ColumnSettings::arrives_on` (`Arrival`: nothing ∙ PR opened ∙ pipeline passes ∙
+merged ∙ deployed to `arrives_env`) moves a ticket on an edge between two forge reads, through
+`place_ticket` under `Principal::Automation { rule: "forge" }`, the furthest stage first; a first
+read is a baseline and moves nothing, so a restart never re-moves a merged board. `requires_pipeline`
+beside `requires_merge`: entry refused unless the pipeline passed, in the pipeline's words
+(`pipeline failed: test-linux — before DONE`), mirrored in the agent's `allowed_columns`;
+`columns.toml` is schema 8 for it. The merge commit's pipeline (`commits/{sha}/check-runs`,
+GitLab `pipelines?sha=`) and its deployments (`deployments?sha=` + statuses; GitLab's
+`deployments?environment=&status=success` naming the sha) are read only for merged tickets, the
+deployments only where a column names an environment, and memoised once settled. The `deployed
+to` row opens the environment's field in place (`env_naming`, the Description row's shape).
+
+**The card, the page, the agents.** A card with a PR carries a second line: one glyph and the
+forge's own number per PR (`#42` / `!7` says which forge), newest first, right-aligned under the
+age like the worktree mark, sharing the line with a new reply (T-720), the reply cut against it;
+past half the width the oldest fold into `+N`. `glyphs::pr_mark`: `✗` failed (err), `◉` open and
+green or waiting (calm, `⎇↑`'s register), `●` merged, `◆` merged and deployed, `◯` the rest; ASCII
+`x O * ^ o`. Appearance › Pull requests on cards: always ∙ news ∙ off (`PrefKey::CardPrs`,
+machine-only like the summary's); `news` decays when the cursor rests on the card (`ack_prs`
+beside `ack_spoke`). The ticket page lists them under the branch row, three then `+N more`; the
+URLs join `^k`. `get_ticket` carries `prs` (label, repo, url, state, pipeline, job, conflict,
+review, deployed); the crown is woken `has a failing pipeline (pipeline failed #42: test-linux)`
+for a worker it started or watches (`WakeCause::Pipeline`, between Finished and Merged, the words
+on `Told.pipeline`), on the edge only. The feed says `open #42 bound`, `merged #42`, `pipeline
+failed #42: job`, `pipeline passed #42`. `doctor` prints `forge: gh reads github.com (o/r)` or the
+missing CLI.
+
+**Measured.** `gh pr list -A @me` works; gh's REST `check-runs` spell `status`/`conclusion` in
+lower case where GraphQL's `statusCheckRollup` spells them in capitals (the stub caught it);
+`glab mr list` carries no pipeline (read by sha) and `NO_PROMPT` is deprecated for
+`GLAB_NO_PROMPT`; `glab auth status --hostname` and `gh auth status --hostname` both decide a host.
+The security review of the first commit found three things, fixed before the next: a GitLab
+list without the signed-in author would have let a stranger's MR bind, a transcript URL could
+have pointed the sampler at a host of its own, and job names reached the feed unscrubbed
+(`forge::job_word`: one line, 80 bytes, scrubbed, which also bounds what a CI config can put in
+the crown's prompt).
+
+**Not done.** No push, no `pr create`, no merge through the forge, no comment, no webhook, no
+token. A click on the card's brief is not a mouse target (T-716's recipe asks for a key the click
+presses, and `^k` opens the first link, not the PR). No notification row for a failed pipeline:
+the feed, the card and the crown carry it. GitLab names no failing job on this road (one more
+call per MR). A GitHub Enterprise host is told from a GitLab one only by which CLI's `auth status`
+passes. The `m` hint on the ticket page still reads `m merge` with a PR open; the daemon's
+sentence answers the press. No rig test: a Sonnet run needs a forge, and the rig's daemon takes
+no stub `gh` yet — the crown's new wake words are the same shape as the merged wake's, and the
+e2e covers the daemon's half.
+
+**Tests.** `forge_e2e` (a stub `gh` on the daemon's PATH: the PR binds by the ticket's branch,
+its red pipeline reaches the snapshot and refuses a `requires_pipeline` column in its words, `m`
+says the PR is the merge, the forge's merge reads merged with `main (PR #42)`, DONE's `Arrives
+here when: merged` takes the ticket, the merge commit's pipeline reads off check-runs, the feed
+says the merge and nothing of the first read); units beside `core::forge` (both JSON shapes, the
+fold, the remote parser, the binding rule, the set, the detector on both transcripts, the URL
+number, the deployments, the name cap), `daemon::forge` (the delta, the edge, the reflog, the
+cadence, the CLI lookup), `cost` (a `pr create` and its result across two passes), `train` (an
+open PR, a conflict, a stale verdict), `prefs` (both new keys), the keymap laws, goldens
+`settings_behaviour_*`, `settings_appearance_board_60`, `settings_groups_*`, `column_settings_120`,
+`ticket_prs_120`, `board_prs_120`.

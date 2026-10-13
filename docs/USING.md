@@ -456,6 +456,38 @@ the crown's, and its card reads `idle ∙ 3 tasks ∙ 2h`. After 30 minutes the 
 count. Nothing is merged, parked or ended by time, because the wait may be the work (a long
 suite) and the board cannot tell.
 
+## Pull requests
+
+If your team merges through pull requests, the board reads them through the `gh` or `glab` you
+are signed in to: `gh` for a github.com remote, `glab` for a GitLab host. Nothing to configure:
+with the CLI on your PATH and signed in, each ticket's pull requests show on its page under the
+branch row and on its card's second line, one glyph and the forge's own number per PR, newest
+first. `◯` is open with its pipeline running, `◉` open and green (your turn: a review, the merge
+button, a manual job), `✗` a failed pipeline, `●` merged, `◆` merged and deployed. **Settings ›
+Appearance › Pull requests on cards** shows the line always, only as news until you rest on the
+card, or never. `ctrl-k` on the ticket opens the PR.
+
+A ticket's pull requests are the ones its work made: a PR whose commits were made in the ticket's
+worktree, whose branch is the ticket's own, or that a `gh pr create` run by the ticket's agent
+opened. A PR an agent only mentions is not the ticket's. Several PRs on one ticket is normal: a
+follow-up fix after a merge reads as a new open PR until it lands.
+
+A PR merged on the forge reads merged here without a pull, squashed, rebased or not, and the
+ticket page says `merged into main (PR #42) as 1a2b3c4`. While a PR is open, `m` and the merge
+train leave the merge to the forge; the train asks the agent to rebase only when the forge reports
+a conflict, and that ask ends with the push. A column can wait for the forge: in a column's
+settings, **Arrives here when** moves a ticket there on its own when a PR opens, its pipeline
+passes, every PR is merged, or the merge reached an environment you name (`deployed to staging`),
+and **Entry needs a passed pipeline** refuses a ticket whose pipeline failed, still runs or was
+never read. A board without `gh` or `glab` changes nothing; **Settings › Behaviour › Fetch from
+the remote** alone makes a merged PR read merged once fetched.
+
+mesimon reads the forge and never writes to it: no PR is opened, merged or commented on from the
+board, and no token is stored; the CLI's own sign-in is the only credential. The activity feed
+says when a PR binds, merges or its pipeline fails; `mesimon doctor` names the CLI that reads the
+repository; a repository the CLI cannot read shows on the board's advisory row, and the merge
+train holds its tickets until it can.
+
 ## Sleeping idle agents
 
 A column can opt its own tickets in: **Agent behaviour › Sleep idle agents** in the column's

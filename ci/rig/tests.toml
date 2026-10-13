@@ -642,3 +642,25 @@ checks = ["road:mod", "started_by_person", "crown:watch_ticket", "crown:ask_agen
   crown = "W1: tell {key}'s agent: Reply with the single word two and end your turn. Then end your turn with the single line: W1 asked. When the board wakes you because {key}'s agent finished, end your turn with the single line: W1 seen."
   until = { stops = 1, state = "idle" }
   wake = true
+
+[[test]]
+id = "F1"
+title = "F1 · the crown tells a worker its pull request's pipeline failed: do the steps below"
+workspace = "worktree"
+brief = "Reply with the single word done and end your turn. Read no file and run no command. If the board or the crown later tells you a pipeline failed, reply with the single word noted and end your turn."
+expect = "the worker's PR, read off a stub forge, binds by the ticket's own branch; when its pipeline fails the board wakes the crown with has a failing pipeline, the PR and the job named (T-739), and the crown tells the worker with ask_agent; get_ticket on the worker carries the PR under prs."
+checks = ["road:mod", "started_by_crown", "woke:pipeline", "crown:ask_agent", "replies:done,noted"]
+
+  [[test.steps]]
+  crown = "F1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: F1 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: F1 seen. When the board wakes you because {key} has a failing pipeline, call get_ticket with key {key}, tell {key}'s agent with ask_agent which job failed, and end your turn with the single line: F1 told."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "forge_pr"
+
+  [[test.steps]]
+  rig = "forge_fail"
+
+  [[test.steps]]
+  rig = "forge_off"

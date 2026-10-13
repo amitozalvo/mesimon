@@ -69,6 +69,21 @@ TIER_MODEL_FULL = "claude-sonnet-5-5"
 TIER_EFFORT = "low"
 TIER_DESCRIPTION = "every rig test and the rig's crown"
 STEP_TIMEOUT = 600
+# The stub forge CLI a rig test puts first on the daemon's PATH (T-739).
+GH_STUB = """#!/bin/sh
+case "$1 $2" in
+  "auth status") exit 0 ;;
+  "pr list") cat "$MSMN_GH_PRS" 2>/dev/null || echo '[]' ;;
+  api\\ *)
+    case "$4" in
+      *check-runs*) cat "$MSMN_GH_CHECKS" 2>/dev/null || echo '{"check_runs":[]}' ;;
+      *deployments/*/statuses*) echo '[{"state":"success"}]' ;;
+      *deployments*) echo '[]' ;;
+      *) echo '{}' ;;
+    esac ;;
+  *) echo "stub gh: $*" >&2; exit 1 ;;
+esac
+"""
 WAKE_GRACE = 60
 QUIET = 6.0
 SWEEP_WAIT = 1.0  # the last frames' feed lines, after the worker's end
@@ -1198,7 +1213,101 @@ Reply with the single word ready and end your turn."""
             record["doctor"] = line
             self.log(f"doctor: {line}")
             return True
+        if what == "forge_pr":
+            # The forge sees the worker's PR (T-739): a stub `gh` first on the
+            # daemon's PATH answers for github.com, the PR open on the
+            # ticket's own branch with its pipeline running — the baseline
+            # the next step's edge is read against.
+            branch = next((w["branch"] for w in self.snapshot().get("worktrees", [])
+                           if w["ticket"] == test["ticket"]), None)
+            if not branch:
+                record["failures"].append("the worker has no worktree branch to open a PR from")
+                return False
+            d = self.forge_stub()
+            self.forge_branch = branch
+            self.write_pr(d, branch, "OPEN", "running")
+            env = {
+                "PATH": d + ":" + os.environ.get("PATH", ""),
+                "MSMN_GH_PRS": os.path.join(d, "prs.json"),
+                "MSMN_GH_CHECKS": os.path.join(d, "checks.json"),
+                "MESIMON_FORGE_EVERY_MS": "2000",
+            }
+            if not self.restart(env):
+                record["failures"].append("the daemon would not restart with the stub forge")
+                return False
+            bound = self.wait_for("the PR to bind", lambda: any(
+                p["ticket"] == test["ticket"] and p["number"] == 42
+                for p in self.snapshot().get("prs", [])), STEP_TIMEOUT, self.watch)
+            if not bound:
+                record["failures"].append("the stub forge's PR never bound to the ticket")
+                return False
+            return True
+        if what == "forge_fail":
+            # The pipeline fails on the forge: the next read sees the edge,
+            # the board wakes the crown, and the crown tells the worker.
+            d = self.forge_stub()
+            mark = len(self.feed_lines)
+            self.write_pr(d, self.forge_branch, "OPEN", "failed")
+            wake = self.wait_for("the crown's pipeline wake", lambda: next((
+                l for l in self.feed_lines[mark:] if l.get("kind") == "crown_wake"
+                and l.get("worker") == test["ticket"] and l.get("cause") == "pipeline"), None),
+                WAKE_GRACE * 2, self.watch)
+            record["wakes"].append(wake.get("cause") if wake else "none came")
+            if not wake:
+                record["failures"].append("the board never woke the crown for the failed pipeline")
+                return False
+            told = self.wait_for("the crown to tell the worker", lambda: any(
+                l.get("kind") == "board" and l.get("actor") == "agent" and l.get("cmd") == "ask_agent"
+                and l.get("ticket") == test["ticket"] for l in self.feed_lines[mark:]),
+                STEP_TIMEOUT, self.watch)
+            if not told:
+                record["failures"].append("the crown never told the worker of its failed pipeline")
+                return False
+            return True
+        if what == "forge_off":
+            # The board's own Claude Code and PATH back: the stub is gone.
+            d = self.forge_stub()
+            for name in ("prs.json", "checks.json"):
+                try:
+                    os.remove(os.path.join(d, name))
+                except FileNotFoundError:
+                    pass
+            return bool(self.restart())
         die(f"unknown rig step {what}")
+
+    def forge_stub(self):
+        """A stub `gh` (T-739): `auth status` passes, `pr list` prints the
+        file the test writes, `api …/check-runs` the merge commit's pipeline.
+        Under the state dir, where nothing of the person's is."""
+        d = os.path.join(self.paths.state_dir, "forge-stub")
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        gh = os.path.join(d, "gh")
+        if not os.path.exists(gh):
+            with open(gh, "w") as f:
+                f.write(GH_STUB)
+            os.chmod(gh, 0o755)
+        checks = os.path.join(d, "checks.json")
+        if not os.path.exists(checks):
+            with open(checks, "w") as f:
+                f.write('{"check_runs":[]}')
+        return d
+
+    def write_pr(self, d, branch, state, pipeline):
+        tip = subprocess.run(["git", "-C", self.repo, "rev-parse", branch], capture_output=True,
+                             text=True).stdout.strip()
+        rollup = {
+            "running": '[{"__typename":"CheckRun","name":"test-linux","status":"IN_PROGRESS","conclusion":null}]',
+            "failed": '[{"__typename":"CheckRun","name":"test-linux","status":"COMPLETED","conclusion":"FAILURE"}]',
+            "passed": '[{"__typename":"CheckRun","name":"test-linux","status":"COMPLETED","conclusion":"SUCCESS"}]',
+        }[pipeline]
+        body = (f'[{{"number":42,"url":"https://github.com/example/rig/pull/42","state":"{state}",'
+                f'"isDraft":false,"headRefName":"{branch}","headRefOid":"{tip}","mergeCommit":null,'
+                f'"mergeable":"MERGEABLE","reviewDecision":"REVIEW_REQUIRED",'
+                f'"updatedAt":"2026-10-13T06:00:00Z","statusCheckRollup":{rollup}}}]')
+        path = os.path.join(d, "prs.json")
+        with open(path + ".tmp", "w") as f:
+            f.write(body)
+        os.replace(path + ".tmp", path)
 
     def run_test(self, test):
         self.current = test
@@ -1556,6 +1665,10 @@ Reply with the single word ready and end your turn."""
                 check(c, arg in (record["doctor"] or ""), record["doctor"] or "no line")
             elif name == "final":
                 check(c, word_of(rec["state"]) == arg, word_of(rec["state"]))
+            elif name == "woke":
+                causes = [l.get("cause") for l in lines if l.get("kind") == "crown_wake"
+                          and l.get("worker") == tid]
+                check(c, arg in causes, f"wakes {causes}" if causes else "no wake")
             else:
                 check(c, False, "unknown check")
         return results
