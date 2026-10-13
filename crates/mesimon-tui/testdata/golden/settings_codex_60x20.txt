@@ -1,7 +1,7 @@
  BOARD   mesimon › kanban-tui   7 tickets
   ╭─ SETTINGS ∙ AGENTS ∙ MACHINE ────────────────────────╮
   │                                                      │
-  │  Default tier    claude                              │
+  │  Default tier    codex                               │
   │  Tiers           none yet ›                          │
   │  Agent tools     ● on                                │
   │  Agent brief     ○ off                               │
@@ -15,6 +15,6 @@
   │                                                      │
   │                                                      │
   │                                                      │
-  │ this board uses codex (b) ∙ Claude Code ∙ its own m~ │
+  │ set on this board ∙ machine: claude ∙ Codex ∙ its o~ │
   ╰──────────── jk select ∙ enter change ∙ b this board ─╯
  SETTINGS                                            ? keys

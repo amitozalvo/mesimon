@@ -299,13 +299,23 @@ impl App {
             Response::Err { message } => self.status = message,
             _ => {
                 self.refresh()?;
-                self.status = match next {
-                    Some(t) => format!(
+                // The machine's pick under this board's own (T-751): the
+                // row stays on the board's, and the status says why.
+                let kept = self
+                    .tiers()
+                    .board_default()
+                    .filter(|_| matches!(scope, TierScope::Machine))
+                    .map(|t| t.name);
+                self.status = match (next, kept) {
+                    (Some(t), Some(kept)) => {
+                        format!("machine's default tier ∙ {} ∙ this board keeps {kept}", t.name)
+                    }
+                    (Some(t), None) => format!(
                         "default tier ∙ {} ∙ a ticket that picked none starts on {}",
                         t.name,
                         t.summary()
                     ),
-                    None => format!(
+                    (None, _) => format!(
                         "this board inherits the machine's default ∙ {}",
                         self.tiers().machine_default().name
                     ),
@@ -326,16 +336,12 @@ impl App {
         c.codex_in_use = default.provider == AgentProvider::Codex
             || customs.iter().any(|(t, _)| t.provider == AgentProvider::Codex);
         c.tier_cycle = self.tier_cycle_ctx();
-        let shown =
-            if self.settings_board_scope { default.clone() } else { book.machine_default() };
-        c.tier_default = shown.name.clone();
-        c.tier_default_summary = shown.summary();
+        // What runs on this board, in either scope (T-751): the scope says
+        // what Enter edits, and the detail carries the other layer.
+        c.tier_default = default.name.clone();
+        c.tier_default_summary = default.summary();
         c.tier_default_here = book.board_default().is_some();
         c.tier_machine_default = book.machine_default().name;
-        c.tier_board_uses = match book.board_default() {
-            Some(t) if t.id != book.machine_default().id => t.name,
-            _ => String::new(),
-        };
         c.tier_names = self
             .tier_rows()
             .into_iter()

@@ -1394,16 +1394,13 @@ pub struct Ctx {
     /// `^n` has somewhere to go: the subject ticket's ring (or the field's)
     /// holds more than the tier it is on.
     pub tier_cycle: bool,
-    /// The Default tier row, in the scope the dialog is in: the tier's
-    /// name, its launch in words, and — in board scope — whether the board
-    /// sets one and the machine's name.
+    /// The Default tier row: the tier this board starts a ticket on, in
+    /// either scope (T-751), its launch in words, whether the board sets
+    /// one and the machine's name.
     pub tier_default: String,
     pub tier_default_summary: String,
     pub tier_default_here: bool,
     pub tier_machine_default: String,
-    /// The board's own default where it differs from the machine's, for the
-    /// machine-scope row to say so; empty otherwise.
-    pub tier_board_uses: String,
     /// The Tiers door's label: the names the list holds, in its scope.
     pub tier_names: String,
     /// Which providers a column may need settings for: the default tier's
@@ -4914,7 +4911,8 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         label: |_| "Fetch from the remote".into(),
         detail: |c| match c.fetch_every_word {
             "off" => "only f in the push / pull view fetches".into(),
-            _ => "remote-tracking refs only, never your branches ∙ a merged PR shows as merged".into(),
+            _ => "remote-tracking refs only, never your branches ∙ a merged PR shows as merged"
+                .into(),
         },
         avail: always,
         key: "",
@@ -4958,17 +4956,15 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         verb: Verb::DefaultTier,
         label: |_| "Default tier".into(),
         detail: |c| {
-            if !c.pref_scope_board && !c.tier_board_uses.is_empty() {
-                format!("this board uses {} (b) ∙ {}", c.tier_board_uses, c.tier_default_summary)
+            // The row reads what runs on this board in either scope (T-751),
+            // so a board's own pick names the machine's beside it.
+            if c.tier_default_here {
+                let here = if c.pref_scope_board { "set here" } else { "set on this board" };
+                format!("{here} ∙ machine: {} ∙ {}", c.tier_machine_default, c.tier_default_summary)
             } else if !c.pref_scope_board {
                 format!(
                     "what a ticket starts on unless ^n picks its own ∙ {}",
                     c.tier_default_summary
-                )
-            } else if c.tier_default_here {
-                format!(
-                    "set here ∙ machine: {} ∙ {}",
-                    c.tier_machine_default, c.tier_default_summary
                 )
             } else {
                 format!("inherited from the machine ∙ {}", c.tier_default_summary)
@@ -5707,20 +5703,29 @@ pub fn scope_word(item: &MenuItem, c: &Ctx) -> Option<&'static str> {
     })
 }
 
-/// A row's detail, the one line the page shows for the selected row. In
-/// board scope a value this board sets says the machine's beside it, and
-/// that Enter's cycle ends back on it — the one fact `scope_word` cannot
-/// carry. The ONE place scope words join a detail, so no row's own
-/// `detail` knows about scopes.
+/// A row's detail, the one line the page shows for the selected row. A
+/// row reads what runs on this board in either scope (T-751), so a value
+/// this board sets says the machine's beside it: in board scope with
+/// Enter's cycle ending back on it — the one fact `scope_word` cannot
+/// carry — and in machine scope as the board's own. The ONE place scope
+/// words join a detail, so no row's own `detail` knows about scopes.
 pub fn item_detail(item: &MenuItem, c: &Ctx) -> String {
     let base = (item.detail)(c);
-    let Some(key) = pref_key(item.verb).filter(|_| c.pref_scope_board) else {
+    let Some(key) = pref_key(item.verb).filter(|k| k.board_overridable()) else {
         return base;
     };
-    match c.board_overrides.iter().find(|(k, _)| *k == key) {
-        Some((_, machine)) if base.is_empty() => format!("machine: {machine} ∙ inherit last"),
-        Some((_, machine)) => format!("machine: {machine} ∙ {base} ∙ inherit last"),
-        None => base,
+    let Some((_, machine)) = c.board_overrides.iter().find(|(k, _)| *k == key) else {
+        return base;
+    };
+    let (head, tail) = if c.pref_scope_board {
+        (format!("machine: {machine}"), " ∙ inherit last")
+    } else {
+        (format!("set on this board ∙ machine: {machine}"), "")
+    };
+    if base.is_empty() {
+        format!("{head}{tail}")
+    } else {
+        format!("{head} ∙ {base}{tail}")
     }
 }
 
@@ -5916,15 +5921,16 @@ static COLUMN_ITEMS: &[MenuItem] = &[
     MenuItem {
         verb: Verb::ColumnArrives,
         label: |c| match c.col_arrives_word {
-            "deployed to" => format!(
-                "Arrives here when: deployed to {}",
-                or(&c.col_arrives_env, "…")
-            ),
+            "deployed to" => {
+                format!("Arrives here when: deployed to {}", or(&c.col_arrives_env, "…"))
+            }
             "" => "Arrives here when: nothing".into(),
             w => format!("Arrives here when: {w}"),
         },
         detail: |c| match c.col_arrives_word {
-            "nothing" => "a PR opened, its pipeline passing, every PR merged or a deployment".into(),
+            "nothing" => {
+                "a PR opened, its pipeline passing, every PR merged or a deployment".into()
+            }
             "deployed to" => "the merge commit reached that environment on the forge".into(),
             _ => "the card moves here on its own when the forge says so".into(),
         },
@@ -10421,6 +10427,36 @@ mod tests {
         assert_eq!(scope_word(row(Verb::McpTools), &board), None, "board state");
         let door = item_detail(row(Verb::McpTools), &board);
         assert_eq!(door, (row(Verb::McpTools).detail)(&board), "board state has no scope words");
+        // Machine scope reads this board's value too (T-751), so a row the
+        // board sets says so and names the machine's beside it.
+        let overridden = Ctx { pref_scope_board: false, ..board };
+        let here = item_detail(row(Verb::KeepAwake), &overridden);
+        assert!(here.starts_with("set on this board ∙ machine: off ∙ "), "{here}");
+        assert!(!here.contains("inherit last"), "{here}");
+        let plain = item_detail(row(Verb::MergeTrain), &overridden);
+        assert_eq!(plain, (row(Verb::MergeTrain).detail)(&overridden));
+    }
+
+    /// The Default tier row's detail (T-751): the row names this board's
+    /// tier in either scope, so a board's own pick names the machine's
+    /// beside it in both, and machine scope says it is the board's.
+    #[test]
+    fn default_tier_detail_names_the_other_layer() {
+        let row = SETTINGS_ITEMS.iter().find(|i| i.verb == Verb::DefaultTier).expect("row");
+        let here = Ctx {
+            tier_default: "quick".into(),
+            tier_default_summary: "sonnet".into(),
+            tier_default_here: true,
+            tier_machine_default: "coder".into(),
+            ..Default::default()
+        };
+        assert_eq!(value(Verb::DefaultTier, &here), Some(Value::Word("quick".into())));
+        assert_eq!(item_detail(row, &here), "set on this board ∙ machine: coder ∙ sonnet");
+        let board = Ctx { pref_scope_board: true, ..here.clone() };
+        assert_eq!(value(Verb::DefaultTier, &board), Some(Value::Word("quick".into())));
+        assert_eq!(item_detail(row, &board), "set here ∙ machine: coder ∙ sonnet");
+        let inherits = Ctx { tier_default_here: false, ..board };
+        assert_eq!(item_detail(row, &inherits), "inherited from the machine ∙ sonnet");
     }
 
     /// A clicked hint presses one key (T-716): a binding's first atom when

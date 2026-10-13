@@ -4297,6 +4297,27 @@ impl App {
         true
     }
 
+    /// Enter on a row in machine scope (T-751). The row reads what runs on
+    /// this board, but Enter edits the machine's value: on a row this board
+    /// overrides, the arm takes its next step from the machine's copy, and
+    /// the status says which value this board keeps.
+    fn machine_scope_takes(&mut self, verb: Verb, ctx: &Ctx) -> Result<()> {
+        let held = keymap::pref_key(verb).filter(|k| {
+            !self.settings_board_scope
+                && k.board_overridable()
+                && self.board_prefs.overridden().contains(k)
+        });
+        let Some(key) = held else {
+            return self.dispatch(verb, Key::Enter, Scope::Board, ctx);
+        };
+        self.prefs = self.machine_prefs.clone();
+        let done = self.dispatch(verb, Key::Enter, Scope::Board, ctx);
+        self.resolve_prefs();
+        let kept = self.prefs.word(key);
+        self.status.push_str(&format!(" ∙ this board keeps {kept}"));
+        done
+    }
+
     /// One step of the board's override: `inherit → on → off → inherit`
     /// for a switch, `inherit → each sound → inherit` for a sound. A key the
     /// machine keeps says so and does nothing.
@@ -5843,7 +5864,6 @@ impl App {
             tier_default_summary: String::new(),
             tier_default_here: false,
             tier_machine_default: String::new(),
-            tier_board_uses: String::new(),
             tier_names: String::new(),
             claude_unused: false,
             codex_in_use: false,
@@ -7986,7 +8006,7 @@ impl App {
                 let done = if self.board_scope_takes(verb) {
                     Ok(())
                 } else {
-                    self.dispatch(verb, Key::Enter, Scope::Board, &ctx)
+                    self.machine_scope_takes(verb, &ctx)
                 };
                 // Turned to lightning: the preview shows what that means,
                 // once (T-717).
@@ -16940,6 +16960,62 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.board.default_tier.as_deref(), Some("claude"));
         assert!(app.ctx().tier_default_here);
+    }
+
+    /// The Default tier row reads what runs on this board in machine scope
+    /// too (T-751): a board's own default is the row's value, the detail
+    /// names the machine's, and Enter there moves the machine's alone.
+    #[test]
+    fn default_tier_row_reads_the_boards_pick_in_machine_scope() {
+        let (mut app, _sent, _sid) = app_with_claude(SessionState::Sleeping, false);
+        app.settings_section = keymap::SettingsSection::Agents;
+        let idx = app.settings_row(Verb::DefaultTier);
+        app.mode = Mode::Settings { idx };
+        // The machine on codex, then this board on claude, back to the
+        // machine's scope.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        press(&mut app, 'b');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        press(&mut app, 'b');
+        assert!(!app.settings_board_scope);
+        assert_eq!(app.tiers().machine_default().name, "codex");
+        let c = app.ctx();
+        assert_eq!(c.tier_default, "claude", "the board's pick, not the machine's");
+        assert_eq!(
+            keymap::value(Verb::DefaultTier, &c),
+            Some(keymap::Value::Word("claude".into()))
+        );
+        let row = keymap::settings_items(&c)[idx];
+        let detail = keymap::item_detail(row, &c);
+        assert!(detail.starts_with("set on this board ∙ machine: codex"), "{detail}");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.tiers().machine_default().name, "claude", "Enter moved the machine's");
+        assert!(app.status.contains("this board keeps claude"), "{}", app.status);
+    }
+
+    /// An overridable pref reads the resolved value in machine scope
+    /// (T-751), and Enter there steps the MACHINE's value from where the
+    /// machine has it, not from the board's override on the row.
+    #[test]
+    fn a_board_override_is_the_rows_value_in_machine_scope() {
+        use crate::prefs::FetchEvery;
+        let (mut app, _sent, _sid) = app_with_claude(SessionState::Sleeping, false);
+        app.seed_pref(|p| p.fetch_every = FetchEvery::One);
+        app.board_prefs.set_word(PrefKey::FetchEvery, "15m");
+        app.resolve_prefs();
+        app.settings_section = keymap::SettingsSection::for_verb(Verb::FetchEvery);
+        let idx = app.settings_row(Verb::FetchEvery);
+        app.mode = Mode::Settings { idx };
+        let c = app.ctx();
+        assert!(!c.pref_scope_board);
+        assert_eq!(c.fetch_every_word, "15m", "the board's, which is what runs");
+        let row = keymap::settings_items(&c)[idx];
+        let detail = keymap::item_detail(row, &c);
+        assert!(detail.starts_with("set on this board ∙ machine: 1m"), "{detail}");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.machine_prefs.fetch_every, FetchEvery::Five, "one step on from 1m");
+        assert_eq!(app.prefs.fetch_every, FetchEvery::Fifteen, "the board's still runs");
+        assert!(app.status.contains("this board keeps 15m"), "{}", app.status);
     }
 
     #[test]

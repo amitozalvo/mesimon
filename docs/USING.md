@@ -300,7 +300,10 @@ something else, and any key closes it.
 ## Agents and follow-ups
 
 Choose the provider for new sessions with **Settings › Agents › Default tier**: `claude` runs
-Claude Code and `codex` runs Codex. Claude Code is the initial default. Switching providers
+Claude Code and `codex` runs Codex. Claude Code is the initial default. Settings opens on the
+machine's settings and `b` switches it to this board's; either way a row shows what this board
+runs, and where the board sets its own value the row's description names the machine's beside
+it. Switching providers
 leaves existing sessions, including sleeping ones, with their original provider. Accepted queued
 starts keep their choice.
 Each ticket has one live agent seat across both providers.

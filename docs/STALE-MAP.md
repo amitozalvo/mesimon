@@ -24132,3 +24132,29 @@ that one switch; this is a second switch, whose scope Theme alone reads. A pick 
 board's `prefs.json`; `inherit` returns the slot to the machine's. Tests: TUI
 `the_theme_section_opens_on_this_board`; the machine-scope picker tests open through
 `open_machine_theme_picker`, which presses `b`; goldens `settings_120x30`, `settings_60x20`.
+
+## Settings reads what runs on this board, in either scope (T-751, 2026-10-13)
+
+Seen on the forge-lab board: its default tier was `quick` (board scope, `doctor` agreed), and
+Settings › Agents › Default tier read `coder`, the machine's, with the board's pick only in the
+row's detail. Settings opens in machine scope (T-717), and `fill_tier_ctx` showed the machine
+layer there.
+
+- **The value column is the resolved one in every scope.** `Ctx::tier_default` is
+  `Book::default_tier()` whatever the scope; the scope decides what Enter edits, not what the
+  row reads. The overridable prefs already read `App::prefs` (the resolved view) in `App::ctx`;
+  nothing there read `machine_prefs` but `board_overrides`' words.
+- **The detail carries the other layer.** In machine scope a row this board sets reads
+  `set on this board ∙ machine: <word>` before its own detail (`keymap::item_detail` for a pref,
+  the Default tier row's own `detail`, which keeps board scope's `set here ∙ machine: …` and
+  `inherited from the machine`). `Ctx::tier_board_uses` went with the old `this board uses … (b)`
+  line. A key the machine alone keeps is untouched.
+- **Enter in machine scope steps the machine's value** (`App::machine_scope_takes`). Every pref
+  arm takes its next step from `self.prefs`; on a row the board overrides that was the board's
+  value, so the machine's write could land where it already was and nothing moved. For the one
+  dispatch the arm reads the machine's copy, the resolve follows, and the status adds `this board
+  keeps <word>`; `cycle_default_tier` says the same for the tier.
+
+**Tests.** Core `default_tier_detail_names_the_other_layer`, `scope_words_say_inherited_set_or_machine`
+(the machine-scope half); TUI `default_tier_row_reads_the_boards_pick_in_machine_scope`,
+`a_board_override_is_the_rows_value_in_machine_scope`; golden `settings_codex_60x20`.
