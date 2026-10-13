@@ -24006,6 +24006,31 @@ open PR, a conflict, a stale verdict), `prefs` (both new keys), the keymap laws,
 the board woke the crown `pipeline`, the crown's `ask_agent` reached the worker, which replied
 `noted`. `cargo nextest run --workspace`: 2319 passed.
 
+## A running pipeline sweeps, a waiting one is a target (T-747, 2026-10-13, follow-up to T-739)
+
+**Why.** T-739's `glyphs::pr_mark` folded four states into two rings: `◯` for open with no
+pipeline and open with one running, `◉` for passed and for waiting on a manual job. On the forge
+lab a worker opened MR !1 with its pipeline running and the card read `◯!1`, nothing in
+progress; a manual job a person must press read as green.
+
+**What.** Running is a clock hand, `◴ ◷ ◶ ◵` (U+25F4–25F7, East Asian Neutral) clockwise, grey;
+waiting is `◎` (U+25CE, Ambiguous, the class `◯` already ships), calm like passed. Ascii:
+`' > v <` and `@`. The brief asked for `^ > v <`, but `^` is already merged + deployed on that
+tier, so the up frame is the tick at the top of the cell. `pr_mark` takes the redraw clock's
+frame (`App::spin_frame`), on the card's brief and the ticket page's rows alike.
+
+**Refused: the agent's spinner, or the slow register.** A second thing moving at the spinner's
+100 ms would be two things moving at one speed, and D19's motion ban bends once, for the working
+agent. The slow register (400 ms) says a session is in flight. The sweep is its own, slowest
+cadence, `PIPE_STEP_TICKS = 10` (one second a frame): something is happening elsewhere, and no
+more. No redraw predicate was needed: the loop draws every 100 ms whatever is on screen
+(`lib.rs`, T-496 writes only a changed frame), so the hand moves with no new clock.
+
+**Tests.** `pr_marks_are_distinct_one_cell_and_the_sweep_is_the_slowest` (seven marks plus every
+sweep frame pairwise distinct per tier, one cell, outside 0x2500–0x259F; clockwise; a frame holds
+a whole step; the step outruns the slow register); goldens `board_prs_120` (gains a waiting MR)
+and `ticket_prs_120`, at the sweep's first frame.
+
 ## The crown hears the forge's edges (T-744, 2026-10-13, follow-up to T-739)
 
 **Why.** T-739's crown heard two forge facts: a failed pipeline and a merge. With a PR open the

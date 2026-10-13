@@ -462,8 +462,9 @@ If your team merges through pull requests, the board reads them through the `gh`
 are signed in to: `gh` for a github.com remote, `glab` for a GitLab host. Nothing to configure:
 with the CLI on your PATH and signed in, each ticket's pull requests show on its page under the
 branch row and on its card's second line, one glyph and the forge's own number per PR, newest
-first. `◯` is open with its pipeline running, `◉` open and green (your turn: a review, the merge
-button, a manual job), `✗` a failed pipeline, `●` merged, `◆` merged and deployed. **Settings ›
+first. `◯` is open with no pipeline, `◴` (turning once a second) open with its pipeline running,
+`◎` open with a manual job waiting for someone to start it, `◉` open and green (your turn: a
+review, the merge button), `✗` a failed pipeline, `●` merged, `◆` merged and deployed. **Settings ›
 Appearance › Pull requests on cards** shows the line always, only as news until you rest on the
 card, or never. `ctrl-k` on the ticket opens the PR.
 

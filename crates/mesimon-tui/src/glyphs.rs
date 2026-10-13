@@ -258,21 +258,49 @@ pub(crate) fn awake_label(tier: Tier, held: bool) -> &'static str {
     }
 }
 
+/// A running pipeline's frames (T-747): a quarter-circle clock hand
+/// sweeping clockwise, `◴ ◷ ◶ ◵` (U+25F4–25F7, East Asian Neutral, one
+/// cell). Ascii points the hand the same way round, `' > v <`: `^` is the
+/// deployed mark, so the up frame is the tick at the top of the cell.
+const PIPE_UNICODE: &[char] = &['◴', '◷', '◶', '◵'];
+const PIPE_ASCII: &[char] = &['\'', '>', 'v', '<'];
+
+/// Redraw ticks per sweep step: 10 × `SPIN_STEP_MS` = one second a frame,
+/// the slowest motion on the board. A pipeline is not the agent working and
+/// must not move at the agent's speed — D19's motion ban bends for the
+/// working spinner, and it must not bend twice at one cadence — nor at the
+/// slow register's, which says a session is in flight. A clock hand says
+/// "in progress somewhere else" and nothing more.
+const PIPE_STEP_TICKS: usize = 10;
+
 /// A pull request's one glyph (T-739), from its state word and its
-/// pipeline word as the snapshot spells them: a failed pipeline is the
-/// loudest and wears the err register, as `⎇!` does; an open PR whose
-/// pipeline passed or waits is a person's turn (review, the merge button, a
-/// manual job) and wears the calm register `⎇↑` offers a merge in; a
+/// pipeline word as the snapshot spells them, and the redraw clock's frame
+/// for the sweep: a failed pipeline is the loudest and wears the err
+/// register, as `⎇!` does; an open PR whose pipeline passed is a person's
+/// turn (review, the merge button) and wears the calm register `⎇↑` offers
+/// a merge in, and one waiting on a manual job is a target in the same
+/// register (T-747) — a person must press it; a running one sweeps, grey; a
 /// merged one is grey, and one deployed somewhere is the filled diamond.
-/// Everything else — open with its pipeline running or absent — is the
-/// hollow ring. One cell on both tiers.
-pub(crate) fn pr_mark(tier: Tier, state: &str, pipeline: &str, deployed: bool) -> (char, Register) {
+/// Everything else — open with no pipeline, or one the forge did not name —
+/// is the hollow ring. One cell on both tiers.
+pub(crate) fn pr_mark(
+    tier: Tier,
+    state: &str,
+    pipeline: &str,
+    deployed: bool,
+    frame: usize,
+) -> (char, Register) {
     let ascii = tier == Tier::Ascii;
     match (state, pipeline) {
         (_, "failed") => (if ascii { 'x' } else { '✗' }, Register::Err),
         ("merged", _) if deployed => (if ascii { '^' } else { '◆' }, Register::Grey),
         ("merged", _) => (if ascii { '*' } else { '●' }, Register::Grey),
-        (_, "passed" | "waiting") => (if ascii { 'O' } else { '◉' }, Register::Calm),
+        (_, "passed") => (if ascii { 'O' } else { '◉' }, Register::Calm),
+        (_, "waiting") => (if ascii { '@' } else { '◎' }, Register::Calm),
+        (_, "running") => {
+            let frames = if ascii { PIPE_ASCII } else { PIPE_UNICODE };
+            (frames[(frame / PIPE_STEP_TICKS) % frames.len()], Register::Grey)
+        }
         _ => (if ascii { 'o' } else { '◯' }, Register::Grey),
     }
 }
@@ -1360,6 +1388,56 @@ mod tests {
                 assert_eq!(awake_label(tier, held).width(), width);
             }
         }
+    }
+
+    /// T-747: a pull request's marks are one cell, out of the banned box
+    /// range, and pairwise distinct on each tier — every frame of the sweep
+    /// included — and the sweep turns clockwise, slower than anything else
+    /// that moves on the board.
+    #[test]
+    fn pr_marks_are_distinct_one_cell_and_the_sweep_is_the_slowest() {
+        use unicode_width::UnicodeWidthChar;
+        let cases = [
+            ("open", "none", false),
+            ("open", "waiting", false),
+            ("open", "passed", false),
+            ("open", "failed", false),
+            ("merged", "passed", false),
+            ("merged", "passed", true),
+        ];
+        for tier in [Tier::Unicode, Tier::Ascii] {
+            let mut marks: Vec<char> =
+                cases.iter().map(|&(s, p, d)| pr_mark(tier, s, p, d, 0).0).collect();
+            let sweep: Vec<char> = (0..4)
+                .map(|i| pr_mark(tier, "open", "running", false, i * PIPE_STEP_TICKS).0)
+                .collect();
+            marks.extend(&sweep);
+            for (i, a) in marks.iter().enumerate() {
+                assert_eq!(a.width(), Some(1), "{a:?}");
+                assert!(!(0x2500..=0x259F).contains(&(*a as u32)), "{a:?} is in the range L1 bans");
+                assert!(!marks[i + 1..].contains(a), "{a:?} names two states on {tier:?}");
+            }
+            assert_eq!(
+                pr_mark(tier, "open", "unknown", false, 0),
+                pr_mark(tier, "open", "none", false, 0)
+            );
+            // A frame holds for a whole step, then the hand moves on.
+            let held = pr_mark(tier, "open", "running", false, PIPE_STEP_TICKS - 1).0;
+            assert_eq!(held, sweep[0]);
+        }
+        assert_eq!(
+            (0..4)
+                .map(|i| pr_mark(Tier::Unicode, "open", "running", false, i * PIPE_STEP_TICKS).0)
+                .collect::<String>(),
+            "◴◷◶◵",
+            "clockwise from the top"
+        );
+        assert_eq!(pr_mark(Tier::Unicode, "open", "waiting", false, 0), ('◎', Register::Calm));
+        assert_eq!(pr_mark(Tier::Ascii, "open", "waiting", false, 0), ('@', Register::Calm));
+        assert_eq!(pr_mark(Tier::Unicode, "open", "running", false, 0).1, Register::Grey);
+        // The slowest motion on the board: slower than the slow register,
+        // which is itself slower than the spinner's one tick a frame.
+        const { assert!(PIPE_STEP_TICKS > SLOW_STEP_TICKS && SLOW_STEP_TICKS > 1) };
     }
 
     /// The branch glyph and both arrows are one cell at both tiers and stay

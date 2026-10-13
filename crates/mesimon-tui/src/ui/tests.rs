@@ -4625,9 +4625,15 @@ fn golden_ticket_prs_120() {
     app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
     let lines = render(&app, 120, 30);
     let text = lines.join("\n");
-    assert!(text.contains("✗ PR #43 open ∙ pipeline failed: test-linux ∙ changes requested"), "{text}");
-    assert!(text.contains("◯ PR #42 open ∙ pipeline running"), "{text}");
-    assert!(text.contains("◆ MR !7 merged ∙ g/api ∙ pipeline passed ∙ deployed: staging"), "{text}");
+    assert!(
+        text.contains("✗ PR #43 open ∙ pipeline failed: test-linux ∙ changes requested"),
+        "{text}"
+    );
+    assert!(text.contains("◴ PR #42 open ∙ pipeline running"), "{text}");
+    assert!(
+        text.contains("◆ MR !7 merged ∙ g/api ∙ pipeline passed ∙ deployed: staging"),
+        "{text}"
+    );
     assert!(text.contains("∙ +1 more"), "the fourth folds into a count:\n{text}");
     golden("ticket_prs_120x30", &lines);
     let links = app.ticket_links(ulid_n(5));
@@ -8150,7 +8156,10 @@ fn golden_board_prs_120() {
         pr(5, 41, "github", "merged", "none"),
         pr(5, 40, "github", "merged", "none"),
         pr(5, 39, "github", "merged", "none"),
+        pr(3, 6, "gitlab", "open", "waiting"),
     ];
+    // The sweep's first frame (T-747): the clock starts at the render.
+    app.spin_epoch.set(Some(std::time::Instant::now()));
     let lines = render(&app, 120, 30);
     golden("board_prs_120x30", &lines);
     let under = |lines: &[String], title: &str| {
@@ -8158,17 +8167,20 @@ fn golden_board_prs_120() {
         lines[y + 1].clone()
     };
     let t3 = under(&lines, "Fix OSC-11");
-    assert!(t3.contains("Fixed the OSC~ ✗#42 ●!7"), "the reply is cut against the brief: {t3}");
+    assert!(t3.contains("Fixed the~ ✗#42 ●!7 ◎!6"), "the reply is cut against the brief: {t3}");
     let t5 = under(&lines, "Grapheme truncation");
-    assert!(t5.contains("◯#44 ◉#43 +3"), "the oldest fold into a count: {t5}");
+    assert!(t5.contains("◴#44 ◉#43 +3"), "the oldest fold into a count: {t5}");
     // `news`: the line stays until the cursor rests on the card, then goes;
     // a change brings it back.
     app.seed_pref(|p| p.card_prs = crate::prefs::CardPrs::News);
-    assert!(under(&render(&app, 120, 30), "Grapheme truncation").contains("◯#44"));
+    assert!(under(&render(&app, 120, 30), "Grapheme truncation").contains("◴#44"));
     assert!(app.ack_prs(ulid_n(5)));
-    assert!(!under(&render(&app, 120, 30), "Grapheme truncation").contains("◯#44"), "seen");
+    assert!(!under(&render(&app, 120, 30), "Grapheme truncation").contains("#44"), "seen");
     app.prs[2].pipeline = "failed".into();
-    assert!(under(&render(&app, 120, 30), "Grapheme truncation").contains("✗#44"), "changed: news again");
+    assert!(
+        under(&render(&app, 120, 30), "Grapheme truncation").contains("✗#44"),
+        "changed: news again"
+    );
     // `off`: nothing on the card.
     app.seed_pref(|p| p.card_prs = crate::prefs::CardPrs::Off);
     assert!(!render(&app, 120, 30).iter().any(|l| l.contains("#44")));

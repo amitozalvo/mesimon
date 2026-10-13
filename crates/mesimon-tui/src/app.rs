@@ -3398,9 +3398,9 @@ impl App {
             | Mode::TierEdit { idx, field: None, .. }
             | Mode::Links { idx, .. }
             | Mode::Summary { idx, .. }
-            | Mode::ColumnSettings { idx, naming: None, describing: None, env_naming: None, .. } => {
-                Some(*idx)
-            }
+            | Mode::ColumnSettings {
+                idx, naming: None, describing: None, env_naming: None, ..
+            } => Some(*idx),
             Mode::Search(s) => Some(s.idx),
             _ => None,
         }
@@ -3876,11 +3876,17 @@ impl App {
             _ => {}
         }
         let tier = self.theme.glyph_tier();
+        let frame = self.spin_frame();
         self.prs_of(ticket)
             .iter()
             .map(|p| {
-                let (mark, reg) =
-                    crate::glyphs::pr_mark(tier, &p.state, &p.pipeline, !p.deployed.is_empty());
+                let (mark, reg) = crate::glyphs::pr_mark(
+                    tier,
+                    &p.state,
+                    &p.pipeline,
+                    !p.deployed.is_empty(),
+                    frame,
+                );
                 let sign = if p.forge == "gitlab" { '!' } else { '#' };
                 (format!("{mark}{sign}{}", p.number), reg)
             })
@@ -4201,8 +4207,7 @@ impl App {
             .filter_map(|g| self.board_prefs.flavor(*g).map(|f| (*g, f)))
             .collect();
         let (_, first) = *held.first()?;
-        let words = if held.len() == slot.grounds().len() && held.iter().all(|(_, f)| *f == first)
-        {
+        let words = if held.len() == slot.grounds().len() && held.iter().all(|(_, f)| *f == first) {
             first.name().to_string()
         } else {
             held.iter()

@@ -136,7 +136,12 @@ const PR_ROWS: usize = 3;
 /// pipeline failed: test-linux ∙ changes requested`, newest first. The
 /// forge's words — a job's name, a repository's path — are untrusted text
 /// and cross `scrub_cells` here.
-fn pr_rows(app: &App, ticket: ulid::Ulid, ink: &crate::theme::Ramp, room: usize) -> Vec<Line<'static>> {
+fn pr_rows(
+    app: &App,
+    ticket: ulid::Ulid,
+    ink: &crate::theme::Ramp,
+    room: usize,
+) -> Vec<Line<'static>> {
     use mesimon_core::text::scrub_cells;
     let theme = &app.theme;
     let d2 = Style::default().fg(ink.dim2);
@@ -149,7 +154,8 @@ fn pr_rows(app: &App, ticket: ulid::Ulid, ink: &crate::theme::Ramp, room: usize)
             break;
         }
         let tier = theme.glyph_tier();
-        let (mark, reg) = glyphs::pr_mark(tier, &p.state, &p.pipeline, !p.deployed.is_empty());
+        let (mark, reg) =
+            glyphs::pr_mark(tier, &p.state, &p.pipeline, !p.deployed.is_empty(), app.spin_frame());
         let mark_style = match reg {
             glyphs::Register::Err => theme.err_text(),
             glyphs::Register::Calm => theme.calm_text(),
@@ -165,9 +171,13 @@ fn pr_rows(app: &App, ticket: ulid::Ulid, ink: &crate::theme::Ramp, room: usize)
             words.push(scrub_cells(&p.repo, false));
         }
         match (p.pipeline.as_str(), p.job.as_deref()) {
-            ("failed", Some(job)) => words.push(format!("pipeline failed: {}", scrub_cells(job, false))),
+            ("failed", Some(job)) => {
+                words.push(format!("pipeline failed: {}", scrub_cells(job, false)))
+            }
             ("failed", None) => words.push("pipeline failed".into()),
-            ("waiting", Some(job)) => words.push(format!("pipeline waiting: {}", scrub_cells(job, false))),
+            ("waiting", Some(job)) => {
+                words.push(format!("pipeline waiting: {}", scrub_cells(job, false)))
+            }
             ("waiting", None) => words.push("pipeline waiting".into()),
             ("running", _) => words.push("pipeline running".into()),
             ("passed", _) => words.push("pipeline passed".into()),
