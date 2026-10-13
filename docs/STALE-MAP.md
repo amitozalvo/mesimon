@@ -24151,6 +24151,18 @@ sweep frame pairwise distinct per tier, one cell, outside 0x2500–0x259F; clock
 a whole step; the step outruns the slow register); goldens `board_prs_120` (gains a waiting MR)
 and `ticket_prs_120`, at the sweep's first frame.
 
+## A merged PR's pipeline moves the mark too (T-758, 2026-10-13, follow-up to T-747)
+
+**Why.** On the forge lab MR !2's merge commit ran a deploy pipeline for a minute while the card
+held a still `●!2`: `pr_mark` gave every merged PR `●` whatever its pipeline did.
+
+**What.** In `glyphs::pr_mark` the `running` and `waiting` arms now sit before the plain merged
+`●`, so a merged PR sweeps or shows `◎` until the pipeline settles. Order of precedence: failed,
+deployed `◆` (a later pipeline on a deployed commit keeps `◆`), running, waiting, merged `●`.
+Same frames, cadence and ascii as T-747; the redraw loop already ticks every 100 ms, so no
+predicate was added. Test: the T-747 mark test grew the merged rows. No golden changed (none
+shows a merged PR with a moving pipeline).
+
 ## The crown hears the forge's edges (T-744, 2026-10-13, follow-up to T-739)
 
 **Why.** T-739's crown heard two forge facts: a failed pipeline and a merge. With a PR open the

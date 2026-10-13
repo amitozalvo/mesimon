@@ -280,7 +280,9 @@ const PIPE_STEP_TICKS: usize = 10;
 /// turn (review, the merge button) and wears the calm register `⎇↑` offers
 /// a merge in, and one waiting on a manual job is a target in the same
 /// register (T-747) — a person must press it; a running one sweeps, grey; a
-/// merged one is grey, and one deployed somewhere is the filled diamond.
+/// merged one is grey, and one deployed somewhere is the filled diamond. A
+/// merged PR's merge-commit pipeline that is running or waiting moves the
+/// mark the same way until it settles (T-758); a deployed one keeps `◆`.
 /// Everything else — open with no pipeline, or one the forge did not name —
 /// is the hollow ring. One cell on both tiers.
 pub(crate) fn pr_mark(
@@ -294,13 +296,14 @@ pub(crate) fn pr_mark(
     match (state, pipeline) {
         (_, "failed") => (if ascii { 'x' } else { '✗' }, Register::Err),
         ("merged", _) if deployed => (if ascii { '^' } else { '◆' }, Register::Grey),
-        ("merged", _) => (if ascii { '*' } else { '●' }, Register::Grey),
-        (_, "passed") => (if ascii { 'O' } else { '◉' }, Register::Calm),
+        ("merged", "passed") => (if ascii { '*' } else { '●' }, Register::Grey),
         (_, "waiting") => (if ascii { '@' } else { '◎' }, Register::Calm),
         (_, "running") => {
             let frames = if ascii { PIPE_ASCII } else { PIPE_UNICODE };
             (frames[(frame / PIPE_STEP_TICKS) % frames.len()], Register::Grey)
         }
+        ("merged", _) => (if ascii { '*' } else { '●' }, Register::Grey),
+        (_, "passed") => (if ascii { 'O' } else { '◉' }, Register::Calm),
         _ => (if ascii { 'o' } else { '◯' }, Register::Grey),
     }
 }
@@ -1435,6 +1438,29 @@ mod tests {
         assert_eq!(pr_mark(Tier::Unicode, "open", "waiting", false, 0), ('◎', Register::Calm));
         assert_eq!(pr_mark(Tier::Ascii, "open", "waiting", false, 0), ('@', Register::Calm));
         assert_eq!(pr_mark(Tier::Unicode, "open", "running", false, 0).1, Register::Grey);
+        // A merged PR's merge-commit pipeline moves the mark while it is
+        // not settled (T-758); failed and deployed keep their own.
+        for tier in [Tier::Unicode, Tier::Ascii] {
+            for i in 0..4 {
+                let f = i * PIPE_STEP_TICKS;
+                assert_eq!(
+                    pr_mark(tier, "merged", "running", false, f),
+                    pr_mark(tier, "open", "running", false, f)
+                );
+            }
+            assert_eq!(
+                pr_mark(tier, "merged", "waiting", false, 0),
+                pr_mark(tier, "open", "waiting", false, 0)
+            );
+            let deployed = pr_mark(tier, "merged", "passed", true, 0);
+            assert_eq!(pr_mark(tier, "merged", "running", true, 0), deployed);
+            assert_eq!(pr_mark(tier, "merged", "waiting", true, 0), deployed);
+            assert_eq!(
+                pr_mark(tier, "merged", "none", false, 0),
+                pr_mark(tier, "merged", "passed", false, 0)
+            );
+            assert_eq!(pr_mark(tier, "merged", "failed", true, 0).1, Register::Err);
+        }
         // The slowest motion on the board: slower than the slow register,
         // which is itself slower than the spinner's one tick a frame.
         const { assert!(PIPE_STEP_TICKS > SLOW_STEP_TICKS && SLOW_STEP_TICKS > 1) };

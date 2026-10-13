@@ -467,7 +467,9 @@ with the CLI on your PATH and signed in, each ticket's pull requests show on its
 branch row and on its card's second line, one glyph and the forge's own number per PR, newest
 first. `◯` is open with no pipeline, `◴` (turning once a second) open with its pipeline running,
 `◎` open with a manual job waiting for someone to start it, `◉` open and green (your turn: a
-review, the merge button), `✗` a failed pipeline, `●` merged, `◆` merged and deployed. **Settings ›
+review, the merge button), `✗` a failed pipeline, `●` merged, `◆` merged and deployed. A merged
+PR whose merge commit's pipeline is still running turns `◴`, and one waiting on a manual job
+shows `◎`, until the pipeline settles (a deployed one stays `◆`). **Settings ›
 Appearance › Pull requests on cards** shows the line always, only as news until you rest on the
 card, or never. `ctrl-k` on the ticket opens the PR. `ctrl-h` on a card or a ticket page (or a
 click on its PR glyphs) lists every pull request with its pipeline, job, review and deployments,
