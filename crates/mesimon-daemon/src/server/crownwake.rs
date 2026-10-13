@@ -421,6 +421,16 @@ pub(super) fn verdict(
     fresh.then_some(WakeCause::Finished)
 }
 
+/// A state the restart's look may not judge (T-756): the transcript tail's
+/// guess at Low, or the stale clock's. After a restart a turn the last
+/// daemon saw open re-derives from the tail until a hook re-asserts, and a
+/// worker between two tool calls reads idle there; with its branch ahead,
+/// that idle read as a delivery the turn had not made. A hook's state is
+/// High, and the close T-663 dates in the gap is Medium: both are ends.
+pub(super) fn guessed(s: &SessionRecord) -> bool {
+    matches!(s.confidence, Confidence::Low | Confidence::Stale)
+}
+
 /// Whether this state change is a stop the crown is woken for, and why:
 /// a claude entering `RequiresAction{Question}` (T-569) or
 /// `RequiresAction{Plan}` (T-582) on a board whose crown mode lets it
@@ -890,15 +900,23 @@ impl Daemon {
     /// Only while a crown is worn, never for the crown's own ticket, and
     /// only for a worker this crown started or a turn that took its ask.
     pub(super) fn turn_ended(&mut self, worker: ulid::Ulid, end_turn: bool) {
+        // A worker the restart has yet to look at (T-602): this end is that
+        // look when its state is committed — a hook's, or the close in the
+        // gap T-663 proves at Medium. The tail's guess at Low is no end at
+        // all (T-756): it read a worker mid-turn as idle, its branch ahead
+        // as a delivery, and woke the crown a second after the restart. The
+        // look, the turn and its asks wait for an end that is one.
+        if self.crown_recheck.contains_key(&worker)
+            && self.board.live_agent(worker).is_some_and(guessed)
+        {
+            return;
+        }
         let pasted = self.late_asks.get(&worker).is_some_and(|l| !l.by_mod);
         let late = if pasted { self.late_asks.remove(&worker).map(|l| l.ask) } else { None };
         let asked = self.turn_asks.remove(&worker).or(late);
-        // A worker the restart has yet to look at (T-602): this end, at any
-        // confidence — the transcript's re-derivation is Low — is that look.
-        // Only a turn's end that is one says the turn finished (T-731): the
-        // tail's guess at a quiet turn read a model still thinking as idle,
-        // and the crown was told it had finished. The turn stays open for
-        // the end that is one; a proven close in the gap is Medium (T-663).
+        // Only a turn's end that is one says the turn finished (T-731): a
+        // guessed idle read a model still thinking as done. A proven close
+        // in the gap is Medium (T-663).
         if let Some(owed) = self.crown_recheck.remove(&worker) {
             let fresh = end_turn && self.turns_open.remove(&worker);
             let u = owed.join(Unjudged { asked, fresh });
@@ -914,8 +932,9 @@ impl Daemon {
     /// Workers the restored ledger names (T-602), looked at once on the
     /// tick when their agent is settled — idle, parked, on a dialog, or
     /// gone — with the turn the last daemon left unjudged, if any. One
-    /// still working, or `Unknown` until a hook or the transcript speaks,
-    /// is left to its turn's end (`turn_ended`); past `RECHECK_MS` it is
+    /// still working, `Unknown` until a hook or the transcript speaks, or
+    /// settled only by the tail's guess (T-756), is left to its turn's end
+    /// (`turn_ended`); past `RECHECK_MS` it is
     /// let go, its merge is the flags' to hear, and what is owed from then
     /// on is current news: no line says `after a restart` any more.
     pub(super) fn hear_restored(&mut self) -> bool {
@@ -925,6 +944,7 @@ impl Daemon {
         let expired = now_ms() >= self.crown_recheck_until;
         let settled = |s: &SessionRecord| {
             !s.pending_submit
+                && !guessed(s)
                 && !matches!(
                     s.state,
                     SessionState::Unknown { .. }
@@ -1596,6 +1616,69 @@ mod tests {
     };
     const TRAIN: Pending = Pending { train: true, ..IDLE };
     const STEP: Pending = Pending { merge_step: true, ..IDLE };
+
+    /// T-756: a worker mid-turn across a restart reads `Unknown`, then the
+    /// tail's guess, idle at Low, between two of its tool calls. With its
+    /// branch ahead that idle would be a delivery, so the restart's look
+    /// waits; the close T-663 dates in the gap, or the hook's `Stop`, is
+    /// the turn's end, and the same branch is the delivery.
+    #[test]
+    fn the_restart_s_look_waits_for_an_end_that_is_one() {
+        use mesimon_core::attention::{Machine, Signal, TailHint};
+        use mesimon_core::board::{SessionKind, UnknownReason};
+        let restarted = || {
+            Machine::restore(
+                SessionState::Unknown { reason: UnknownReason::DaemonRestarted },
+                Confidence::High,
+                0,
+            )
+        };
+        let record = |m: &Machine| {
+            let mut r = SessionRecord::new(
+                uuid::Uuid::from_u128(1),
+                SessionKind::Claude,
+                ulid::Ulid::from_parts(1, 1),
+                vec![],
+                "/tmp".into(),
+                m.state().clone(),
+            );
+            r.confidence = m.confidence();
+            r
+        };
+        let stop = Signal::Stop {
+            stop_hook_active: false,
+            has_agent_id: false,
+            blocking_tasks: false,
+            monitoring_tasks: false,
+            teammates: 0,
+        };
+        let ahead = branch("bbb", "needs_rebase", 2, "IN PROGRESS");
+        let before = branch("aaa", "ahead", 1, "IN PROGRESS");
+        assert_eq!(verdict(Some(&before), &ahead, false, false, false), DELIVERED, "if looked");
+
+        for hint in [TailHint::TurnComplete, TailHint::StaleQuiet] {
+            let mut m = restarted();
+            let c = m.apply(&Signal::TranscriptHint { kind: hint }, 1_000).unwrap();
+            assert!(matches!(c.to, SessionState::Idle { .. }), "{hint:?}");
+            assert!(guessed(&record(&m)), "{hint:?}: the tail's guess holds the look");
+            m.apply(&Signal::ToolCompleted { nested: false }, 2_000).unwrap();
+            // Leaving `Running` settles before it commits.
+            if m.apply(&stop, 3_000).is_none() {
+                m.tick(10_000).unwrap();
+            }
+            assert_eq!(m.state(), &SessionState::Idle { stop_reason: StopReason::EndTurn });
+            assert!(!guessed(&record(&m)), "{hint:?}: the hook's Stop is the end");
+        }
+
+        let mut m = restarted();
+        m.apply(&Signal::TranscriptTurnEnded, 1_000).unwrap();
+        assert_eq!(m.confidence(), Confidence::Medium);
+        assert!(!guessed(&record(&m)), "a close dated in the gap is the end");
+
+        let mut m = restarted();
+        m.apply(&stop, 1_000).unwrap();
+        assert!(!guessed(&record(&m)), "a hook re-asserting after the restart");
+    }
 
     /// Once per delivery (T-469): a second idle at the same tip delivers
     /// nothing, and neither does an idle with nothing to merge. Each is a

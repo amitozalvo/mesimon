@@ -23631,6 +23631,31 @@ Tests: `recovery_tests::a_quiet_tail_claude_code_calls_busy_seeds_no_idle_after_
 `crown_e2e::a_turn_thinking_across_a_restart_is_not_heard_as_finished` (fails at its second phase
 without the crown half).
 
+## The tail's guess is no turn's end for the restart's look (T-756, 2026-10-13, "After a daemon restart the crown is told 'delivered' for a worker still mid-turn")
+
+The author's board, 2026-10-13 22:58: T-754's crown-started worker went `running` at 22:57:37,
+the TUI restarted the daemon at 22:58:33, and at 22:58:34 the crown was woken `delivered
+(merge_state needs_rebase, merge: crown, column IN PROGRESS, after a restart)`. The worker read
+`running` again at 22:58:35 and ended its turn at 22:58:58. T-731 had stopped the restart's look
+from saying `finished` on the tail's guess, and left the guess as a look so a merge while down is
+said; a delivery needs no `fresh`, only a branch ahead at a tip the crown has not heard of, so the
+same guess woke the crown for a turn still running.
+
+**The restart's look waits for a committed end** (`crownwake::guessed`: a record at Low or Stale
+confidence). `turn_ended` leaves a worker the restart has yet to look at untouched on a guessed
+state — the look, `turns_open` and its asks all stay for the end that is one — and
+`hear_restored` counts a guessed state as unsettled, as it does `Unknown`. A hook's state is High
+and T-663's close dated in the gap is Medium, so either is the look, still `after a restart`. Past
+`RECHECK_MS` a guessed record is let go like a working one: its next real end is judged on the
+live road, and a merge while down is the flags' to hear then. **What it cannot do**: a turn that
+really ended in the window with a close the tail cannot date (T-663's undated case) waits for the
+worker's next turn's end for its delivery, where before it was said at once.
+
+Tests: `crownwake::tests::the_restart_s_look_waits_for_an_end_that_is_one` (the real attention
+machine: both tail guesses hold, a hook's `Stop` and `TranscriptTurnEnded` do not) and
+`crown_e2e::a_worker_mid_turn_across_a_restart_delivers_at_its_real_end` (a commit, a restart
+between two tool calls; it fails at its first phase without the fix with the incident's line).
+
 ## The crown watches tickets by default (T-732, 2026-10-12, "crown can watch tickets on by default")
 
 T-712 shipped Settings → Crown → **Watches tickets** off, T-590's shape. It is now **on by

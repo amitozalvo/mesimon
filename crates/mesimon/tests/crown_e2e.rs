@@ -2286,6 +2286,122 @@ fn a_turn_thinking_across_a_restart_is_not_heard_as_finished() {
     );
 }
 
+/// A worker mid-turn across a restart is not heard as delivered (T-756):
+/// the crown started it in a worktree, its turn committed and went on, and
+/// the daemon went down between two tool calls. The new daemon's tail read
+/// the quiet turn as idle at Low and, the branch ahead, told the crown
+/// `delivered (…, after a restart)` a second after it started, while the
+/// worker was still working. The tail's guess is no turn's end: the crown
+/// hears the delivery once, at the turn's real `Stop`, still `after a
+/// restart`.
+#[test]
+fn a_worker_mid_turn_across_a_restart_delivers_at_its_real_end() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_midturn",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_midturn");
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+
+    let a = create(&mut c, "coordinate");
+    let title = "mesimon-probe-756 mid-turn across a restart";
+    let w = create(&mut c, title);
+    let kw = key_of(&mut c, w);
+    let sa = spawn(&mut c, a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sa, "running", |s| *s == SessionState::Running);
+    hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let seat = c.board().live_agent(w).unwrap().clone();
+    let ws = seat.id;
+
+    // The turn commits, calls a tool, and rests on its result.
+    let transcript = h.dir.join(format!("{ws}.jsonl"));
+    let lines = [
+        serde_json::json!({"uuid":"p", "type":"user", "message":{"content":"brief"}}),
+        serde_json::json!({"uuid":"c", "type":"assistant", "message":{"stop_reason":"tool_use",
+            "content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}),
+        serde_json::json!({"uuid":"r", "type":"user",
+            "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}),
+    ];
+    let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    std::fs::write(&transcript, body).unwrap();
+    let start = format!(
+        r#"{{"session_id":"x","transcript_path":"{}","cwd":"/tmp"}}"#,
+        transcript.display()
+    );
+    hook_send_with(&hook_sock, &ws.to_string(), "SessionStart", Some("startup"), &start);
+    c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"brief"}"#);
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+    commit(std::path::Path::new(&seat.cwd), "b.txt");
+    let quiet = || {
+        let ago = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+        std::fs::File::options().write(true).open(&transcript).unwrap().set_modified(ago).unwrap();
+    };
+    drop(c);
+    let worker = format!("{kw} \"{title}\"");
+
+    // ---- 1. the tail's guess, with the branch ahead: no delivery yet ------
+    h.restart_after(quiet);
+    let mut c = h.client("crown_midturn_2");
+    wait_until(std::time::Duration::from_secs(10), "the tail's guess", || {
+        matches!(c.board().live_agent(w).unwrap().state, SessionState::Idle { .. })
+    });
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    assert!(lines_with(&worker).is_empty(), "{}", std::fs::read_to_string(&got).unwrap());
+
+    // ---- 2. the turn goes on and ends: that is the delivery, once ---------
+    hook_send(&hook_sock, &ws.to_string(), "PostToolUse", r#"{"tool_name":"Bash"}"#);
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+    hook_send(&hook_sock, &ws.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
+        lines_with(&worker).len() == 1
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let said = lines_with(&worker);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains(&format!("{worker} delivered")), "{said:?}");
+    assert!(said[0].contains("after a restart"), "{said:?}");
+}
+
 /// The crown sends its own asks (T-550), where the person lets it: in
 /// supervised mode the words wait for `^y` as T-413 built them; autonomous
 /// (the default since T-610), an ask to an agent the crown STARTED goes by
