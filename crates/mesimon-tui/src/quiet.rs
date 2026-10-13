@@ -66,6 +66,29 @@ impl<W: Write> Quiet<W> {
         }
     }
 
+    /// A hidden cursor goes to the bottom-right cell, the same cell every
+    /// frame (T-760). It is still where macOS draws the input-source
+    /// indicator: iTerm2 reports the caret to the text system hidden or
+    /// not, and the indicator stands under it. Left where the last changed
+    /// cell put it, the caret sat beside a working card's spinner and moved
+    /// with every tick, and the indicator, which fades only once the caret
+    /// is still, stayed on the board. Parked, it moves only when the window
+    /// does, and it leaves the indicator below the last row, off the board.
+    /// A frame that wrote nothing costs nothing: the cursor is already there.
+    fn park(&mut self, area: ratatui::layout::Rect) -> io::Result<()> {
+        let corner = Position {
+            x: area.right().saturating_sub(1),
+            y: area.bottom().saturating_sub(1),
+        };
+        if self.at == Some(corner) {
+            return Ok(());
+        }
+        self.begin()?;
+        self.inner.set_cursor_position(corner)?;
+        self.at = Some(corner);
+        Ok(())
+    }
+
     /// Called before every write: inside a frame, the first one opens the
     /// synchronized update.
     fn begin(&mut self) -> io::Result<()> {
@@ -87,8 +110,17 @@ pub(crate) fn draw<W: Write>(
     render: impl FnOnce(&mut ratatui::Frame),
 ) -> io::Result<()> {
     terminal.backend_mut().framing = true;
-    let drawn = terminal.draw(render).map(drop);
+    let mut area = ratatui::layout::Rect::default();
+    let drawn = terminal
+        .draw(|f| {
+            area = f.area();
+            render(f)
+        })
+        .map(drop);
     let backend = terminal.backend_mut();
+    if drawn.is_ok() && backend.hidden == Some(true) {
+        backend.park(area)?;
+    }
     backend.framing = false;
     if std::mem::take(&mut backend.open) {
         queue!(backend.inner, EndSynchronizedUpdate)?;
@@ -355,9 +387,29 @@ mod tests {
         frame(&mut t, "titlE", Some((3, 1)));
         let typed = tty.take();
         assert!(typed.contains('E') && typed.ends_with(&format!("\x1b[2;4H{END}")), "{typed:?}");
+        // Hidden, it is parked in the corner (T-760).
         frame(&mut t, "titlE", None);
-        assert_eq!(tty.take(), format!("{BEGIN}\x1b[?25l{END}"));
+        assert_eq!(tty.take(), format!("{BEGIN}\x1b[?25l\x1b[2;12H{END}"));
         frame(&mut t, "titlE", None);
+        assert_eq!(tty.take(), "");
+    }
+
+    /// T-760: a hidden cursor rests in the same cell after every frame, so
+    /// a spinner's tick never moves the caret macOS hangs its input-source
+    /// indicator from.
+    #[test]
+    fn a_hidden_cursor_rests_in_the_corner_whatever_the_frame_wrote() {
+        let (mut t, tty) = term();
+        let mut seen = String::new();
+        for text in ["⠋ working", "⠙ working", "⠹ working"] {
+            frame(&mut t, text, None);
+            let bytes = tty.take();
+            assert!(bytes.ends_with(&format!("\x1b[2;12H{END}")), "{bytes:?}");
+            seen += &bytes;
+        }
+        assert_eq!(play(&seen, (12, 2))[0], "⠹ working   ");
+        // Nothing changed: not a byte, the cursor is already parked.
+        frame(&mut t, "⠹ working", None);
         assert_eq!(tty.take(), "");
     }
 

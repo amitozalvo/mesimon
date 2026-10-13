@@ -24447,3 +24447,25 @@ Input keeps its own `^h`); `golden_ticket_prs_dialog_120` (all four PRs where th
 one, the cut row whole above the footer, Enter's URL, `^h` closes, the read time);
 `ctrl_h_is_inert_without_prs_and_the_empty_dialog_says_why`;
 `a_click_on_a_cards_prs_opens_the_dialog` (the card's brief and the page's rows).
+
+## T-760: the hidden cursor rests in one cell
+
+**Report.** macOS's input-source indicator (the blue `A` / `א` bubble) stood on the board,
+always at the same spot beside a working card's spinner, and went only after several layout
+switches. The bubble is the system's, not ours: since Sonoma macOS draws it under the text
+caret, and iTerm2 reports the caret to the text system whether DECTCEM has hidden it or not.
+
+**Cause.** ratatui hides the cursor when a frame sets no position and never moves it, so it
+rested wherever the last changed cell left it. On a board with a working session that is the
+spinner, which changes every 100 ms tick: the caret moved on every tick, and the indicator,
+which fades once the caret is still, stayed.
+
+**What.** `Quiet::park`: at the end of every frame with the cursor hidden, it goes to the
+bottom-right cell, the same cell every time, inside the frame's synchronized update. The
+indicator then shows only when the layout changes, as in any app, below the last row, and
+fades. The T-496 rule holds: a frame that wrote nothing writes no park either (`at` already
+names the corner). A frame with a text field shows its cursor where the field asks, as before.
+
+**Tests.** `quiet::a_hidden_cursor_rests_in_the_corner_whatever_the_frame_wrote`;
+`the_cursor_is_told_only_what_it_was_not_told_last` now expects the park after the hide. Not
+measured against the real indicator in this ticket: the person's board is the check.
