@@ -76,10 +76,8 @@ impl<W: Write> Quiet<W> {
     /// does, and it leaves the indicator below the last row, off the board.
     /// A frame that wrote nothing costs nothing: the cursor is already there.
     fn park(&mut self, area: ratatui::layout::Rect) -> io::Result<()> {
-        let corner = Position {
-            x: area.right().saturating_sub(1),
-            y: area.bottom().saturating_sub(1),
-        };
+        let corner =
+            Position { x: area.right().saturating_sub(1), y: area.bottom().saturating_sub(1) };
         if self.at == Some(corner) {
             return Ok(());
         }

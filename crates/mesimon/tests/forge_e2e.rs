@@ -14,6 +14,10 @@
 //! carries it while the forge has not answered yet, and the first live pass
 //! says only what moved while the daemon was down.
 //!
+//! The train reads the forge at a turn's end (T-761): a turn that pushed
+//! nothing merges on the look after it with no read at all, and one that
+//! pushed is read at once rather than on the minute.
+//!
 //! The stub is the forge: `auth status` passes, `pr list` prints the file
 //! the test writes, `api …/check-runs` the merge commit's pipeline. No
 //! network, no token, nothing of the real CLI.
@@ -35,6 +39,7 @@ use mesimon_core::Principal;
 /// The stub forge CLI: one shell script answering as `gh` would, from the
 /// files the test points it at.
 const GH_STUB: &str = r#"#!/bin/sh
+[ -n "$MSMN_GH_LOG" ] && echo "$*" >> "$MSMN_GH_LOG"
 case "$1 $2" in
   "auth status") exit 0 ;;
   "pr list") cat "$MSMN_GH_PRS" 2>/dev/null || echo '[]' ;;
@@ -989,4 +994,108 @@ fn a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_co
         !lines_with(&format!("{worker} merged (")).is_empty()
     });
     let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// One train ticket's turn ends with the forge's minute far away (T-761):
+/// the train merges it on the turn's own look. `push` moves the branch's
+/// remote-tracking ref in the turn, as a `git push` does. The calls `gh pr
+/// list` made after the first read, and how long the merge took.
+fn turn_end_merges(name: &str, push: bool) -> Option<(usize, Duration)> {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    let stub_dir = std::env::temp_dir().join(format!("msmn-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&stub_dir);
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    let gh = stub_dir.join("gh");
+    std::fs::write(&gh, GH_STUB).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let prs_file = stub_dir.join("prs.json");
+    let log = stub_dir.join("calls.log");
+    write(&prs_file, "[]");
+    let path_var = format!(
+        "{}:{}",
+        stub_dir.display(),
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+    );
+    // The minute is ten: after the first pass, any read is the turn's.
+    let h = Harness::boot_with_env(
+        name,
+        Some(STUB),
+        &[
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "600000"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs_file.display().to_string()),
+            ("MSMN_GH_LOG", &log.display().to_string()),
+        ],
+    )?;
+    let lists = || {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.starts_with("pr list"))
+            .count()
+    };
+    let repo = h.repo.clone();
+    init_repo(&repo, "a.txt", "hello\n");
+    git(&repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client(name);
+    assert!(matches!(
+        c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
+        Response::Ok
+    ));
+    let (id, sid, branch, path) = ready(&mut c, "alpha");
+    // The first pass reads the ticket, before its turn.
+    wait_until(Duration::from_secs(20), "the first forge pass to list", || lists() >= 1);
+    std::thread::sleep(Duration::from_millis(500));
+    let first = lists();
+    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sid, "running", |s| *s == SessionState::Running);
+    if push {
+        let tip = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
+        git(&path, &["update-ref", &format!("refs/remotes/origin/{branch}"), &tip]);
+    }
+    let stopped = std::time::Instant::now();
+    hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    wait_until(Duration::from_secs(30), "the train to merge on the turn's end", || {
+        git_ok(&repo, &["merge-base", "--is-ancestor", &branch, "main"])
+    });
+    let took = stopped.elapsed();
+    assert!(c.board().ticket(id).is_some());
+    let reads = lists() - first;
+    let _ = c.request(Command::Shutdown);
+    let _ = std::fs::remove_dir_all(&stub_dir);
+    Some((reads, took))
+}
+
+fn git_ok(repo: &Path, args: &[&str]) -> bool {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+#[test]
+fn a_turn_that_pushed_nothing_merges_on_its_look_with_no_read() {
+    let Some((reads, took)) = turn_end_merges("forge_nopush", false) else { return };
+    assert_eq!(reads, 0, "nothing pushed, nothing opened: no forge read");
+    // The look is a few git forks; the minute is ten.
+    assert!(took < Duration::from_secs(10), "merged {took:?} after the turn's end");
+}
+
+#[test]
+fn a_turn_that_pushed_is_read_at_its_end_not_on_the_minute() {
+    let Some((reads, took)) = turn_end_merges("forge_pushed", true) else { return };
+    assert_eq!(reads, 1, "the turn's own read, of its repository alone");
+    // Under the floor of one read per repository per ten seconds from the
+    // first pass; the minute is ten.
+    assert!(took < Duration::from_secs(20), "merged {took:?} after the turn's end");
 }

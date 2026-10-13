@@ -323,33 +323,27 @@ impl Ledger {
     /// ledger has not learned is read whole). `None` when a tail could not
     /// be read: the gate reads that as unknown, never as none opened.
     pub fn opened_any(&self, ticket: ulid::Ulid, live: &[String]) -> Option<bool> {
-        let empty = TicketLedger::default();
-        let t = self.tickets.get(&ticket).unwrap_or(&empty);
-        if !t.pr_urls.is_empty() {
+        if self.tickets.get(&ticket).is_some_and(|t| !t.pr_urls.is_empty()) {
             return Some(true);
         }
-        let mut paths: Vec<String> = t.conversations.keys().cloned().collect();
+        opened_in_tails(&self.tails(ticket, live))
+    }
+
+    /// A ticket's transcripts with how far the pass read each, `live` as
+    /// `opened_any` takes it: what a worker looks past for a `pr create`
+    /// the ledger has not reached yet (T-761).
+    pub fn tails(&self, ticket: ulid::Ulid, live: &[String]) -> Vec<(String, Cursor)> {
+        let mut out: Vec<(String, Cursor)> = self
+            .tickets
+            .get(&ticket)
+            .map(|t| t.conversations.iter().map(|(p, c)| (p.clone(), c.clone())).collect())
+            .unwrap_or_default();
         for path in live {
-            if !paths.contains(path) {
-                paths.push(path.clone());
+            if !out.iter().any(|(p, _)| p == path) {
+                out.push((path.clone(), Cursor::default()));
             }
         }
-        let subs: Vec<String> = paths.iter().flat_map(|p| subagents(p)).collect();
-        for path in subs {
-            if !paths.contains(&path) {
-                paths.push(path);
-            }
-        }
-        let fresh = Cursor::default();
-        let mut unread = false;
-        for path in &paths {
-            match opened_in_tail(path, t.conversations.get(path).unwrap_or(&fresh)) {
-                Ok(true) => return Some(true),
-                Ok(false) => {}
-                Err(()) => unread = true,
-            }
-        }
-        (!unread).then_some(false)
+        out
     }
 
     /// Drop the tickets the board no longer has. True when any went.
@@ -492,6 +486,29 @@ fn opened_on(line: &str, pending: &mut Vec<String>) -> Vec<String> {
         return mesimon_core::forge::pr_create_line(line, pending);
     }
     Vec::new()
+}
+
+/// Whether a tail past the ledger's cursor holds a `pr create`'s result,
+/// its subagents' transcripts included (read whole where the ledger has
+/// none). `None` when a tail could not be read: unknown, never none.
+pub fn opened_in_tails(tails: &[(String, Cursor)]) -> Option<bool> {
+    let mut all: Vec<(String, Cursor)> = tails.to_vec();
+    for (path, _) in tails {
+        for sub in subagents(path) {
+            if !all.iter().any(|(p, _)| *p == sub) {
+                all.push((sub, Cursor::default()));
+            }
+        }
+    }
+    let mut unread = false;
+    for (path, cursor) in &all {
+        match opened_in_tail(path, cursor) {
+            Ok(true) => return Some(true),
+            Ok(false) => {}
+            Err(()) => unread = true,
+        }
+    }
+    (!unread).then_some(false)
 }
 
 /// Whether one transcript's tail past `cursor` holds a PR URL its session

@@ -24525,3 +24525,61 @@ modal and writes no `~/.claude.json`, so the way out is the person's: `git init`
 README and a `.gitignore` naming the nested repos, run `claude` there once and accept.
 `doctor`'s `workspace` line carries that as a second advice paragraph where the root has no
 `.git`, and USING.md says it beside the worktree init script. No behaviour change.
+
+## The train reads the forge at a turn's end, and not at all when nothing was pushed (T-761, 2026-10-14, follow-up to T-739 and T-753)
+
+**Why.** T-753 asked why T-752 took 4 min 9 s from REVIEW to merged: 1 min 45 s of it was
+`forge_fresh` (T-739) waiting for a forge reading. The train acts on a ticket only once the
+forge was read after its agent's last turn end, since that turn may have opened a PR, and the
+forge is read once a minute on the 10 s sweep: 0 to 70 s per turn end, two turn ends per rebase
+cycle. Measured on T-749 and T-758 the same day: 36 s each before the rebase ask, up to a minute
+again before the merge. The rule stays; the wait goes.
+
+**No read when nothing could have changed.** A PR the forge would show and the last read did
+not is one a push or a `pr create` made since, and both leave a local trace. Every forge read
+now records its **basis** per ticket before any list call (`forge::Basis`): what the legs had
+pushed (`forge::pushed`: every `refs/remotes/*` ref pointing at a commit in a leg's HEAD reflog,
+`<repo> <ref> <oid>`, sorted; one `for-each-ref` per leg beside the reflog the binding already
+read) and the ledger's PR URLs the query carried. The turn's end's own look (T-678's
+`look_after_turn`, already a worker at the `Stop`) now reads the same `pushed` and whether a
+transcript tail past the cost ledger's cursor holds a `pr create` (`cost::opened_in_tails`,
+factored out of `opened_any`), into `forge::Local`. `forge::State::fresh` (the old `forge_fresh`
+body, moved so it is unit-tested) answers true when the look began after the turn's end, both
+`pushed` agree and are known, the tail held no `pr create`, and the ledger has no URL the read
+lacked. All on the writer from memory; git runs only on the look's worker. A look from before
+the turn's end, or `None` anywhere (git or a tail unreadable), proves nothing. The basis and the
+look are memory only: after a restart the first read sets them, so no schema moved.
+
+**A read at the turn's end otherwise.** A look that proves nothing marks the ticket **owed**
+(`forge.owed`, with the look's time) and `queue_forge_burst` reads that ticket's repositories
+alone (`forge_query(Some(only))`, the minute's builder with a ticket filter; it probes no host,
+so a host never probed waits for the minute), under a floor of one read per repository per
+`forge::BURST_MS` (10 s, `forge.asked` stamped by both roads; a repository whose last call
+failed waits for the minute's backoff). A floor or a read already out holds it to the next
+tick. It lands as `Msg::ForgeBurst`, absorbed by the minute's code (`absorb_forge`), which
+replaces only its repositories' errors and leaves the minute's clock alone. A read begun at or
+after the owed time answers it. Two reads out at once is now possible, so a set is never
+replaced by one read earlier than the set on hand. **The train now runs on every forge read**,
+changed or not: a read that only made a ticket current used to wait for the next 10 s sweep.
+
+**Measured** (`forge_e2e`, the minute set to ten): a turn that pushed nothing merges 1.9 s after
+its `Stop` with no `gh` call (1.5 s of it the attention settle before the turn reads ended); a
+turn that pushed (its tracking ref moved) merges 9.4 s after, the floor from the first pass just
+before, with exactly one `pr list`. Every mesimon-board ticket today pushes nothing, so the first
+half alone takes the forge out of the train's wait there; the second is the lab's shape and
+costs one CLI call per turn end that pushed.
+
+**Not done.** The base branch's own tracking ref moving (a fetch, the person pushing main) also
+changes `pushed` when it points at a reflog commit: a read is owed where none was needed. Safe
+side, one call. A PR opened from a browser leaves no local trace; the minute still finds it.
+
+**Tests.** `forge::the_forge_is_current_with_no_forge_after_a_read_or_on_a_look_that_found_nothing`
+(no forge; never read; no look; the look agrees; a new URL; that URL in the basis; a `pr create`
+in the tail; an unreadable tail; pushed then a read at the turn's end; a look before the turn's
+end; git unknown), `forge::the_floor_holds_a_repository_read_inside_the_burst_and_one_that_failed`,
+`forge::a_push_moves_what_a_ticket_pushed_and_a_commit_alone_does_not` (a real repository: a
+commit moves nothing, `update-ref` of a tracking ref does, a ref at a foreign commit does not);
+`forge_e2e::a_turn_that_pushed_nothing_merges_on_its_look_with_no_read` and
+`forge_e2e::a_turn_that_pushed_is_read_at_its_end_not_on_the_minute` (the stub `gh` logs its
+calls). Each e2e fails with its half disabled: `unchanged` forced false reads once, the burst
+off never merges. They sit in `forge_e2e` rather than `merge_train_e2e`, which has no `gh` stub.

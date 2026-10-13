@@ -394,9 +394,12 @@ enum Msg {
     /// A forge pass landed (T-739): the generation it was asked under, and
     /// what it found.
     ForgeSampled(u64, crate::forge::Sample),
+    /// A turn's end's read of its tickets' repositories landed (T-761).
+    ForgeBurst(crate::forge::Sample),
     /// One ticket's own flags sample (T-678): a turn's end on a branch the
-    /// train may take, and the number it started under.
-    TicketFlags(ulid::Ulid, u64, Vec<worktree::RepoSample>),
+    /// train may take, and the number it started under; with the look at
+    /// what its legs pushed (T-761) where a forge may read them.
+    TicketFlags(ulid::Ulid, u64, Vec<worktree::RepoSample>, Option<crate::forge::Local>),
     /// A worktree's teardown finished on a worker (T-561): `worktree remove
     /// --force` walks and unlinks the whole tree, `target/` included, and
     /// an `archive_all` queued a dozen of them for one tick, so the board
@@ -1411,6 +1414,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::ClientGone(_) => "client gone".into(),
             Msg::WorktreeFlags(..) => "worktree flags".into(),
             Msg::ForgeSampled(..) => "forge sampled".into(),
+            Msg::ForgeBurst(..) => "forge burst".into(),
             Msg::TicketFlags(..) => "ticket flags".into(),
             Msg::TornDown { .. } => "torn down".into(),
             Msg::TurnProbed(..) => "turn probed".into(),
@@ -1456,7 +1460,10 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::ClientGone(stream) => d.on_client_gone(&stream),
             Msg::WorktreeFlags(gen, flags) => d.on_worktree_flags(gen, flags),
             Msg::ForgeSampled(gen, sample) => d.on_forge_sampled(gen, sample),
-            Msg::TicketFlags(ticket, seq, flags) => d.on_ticket_flags(ticket, seq, flags),
+            Msg::ForgeBurst(sample) => d.on_forge_burst(sample),
+            Msg::TicketFlags(ticket, seq, flags, local) => {
+                d.on_ticket_flags(ticket, seq, flags, local)
+            }
             Msg::TornDown { ticket, archived, branch_kept, took } => {
                 d.on_torn_down(ticket, archived, branch_kept, took)
             }
@@ -2914,6 +2921,10 @@ impl Daemon {
             // The forge pass (T-739) rides the same bucket, on its own
             // minute: one list call per repository, never per ticket.
             stage!("queue_forge_sample", self.queue_forge_sample());
+        }
+        // A turn's end's read held by the floor goes when it passes (T-761).
+        if !self.forge.owed.is_empty() {
+            stage!("queue_forge_burst", self.queue_forge_burst());
         }
         if self.ticks.is_multiple_of(server_guard_ticks()) {
             changed |= stage!("guard_server", self.guard_server());
@@ -10093,27 +10104,16 @@ impl Daemon {
         }
     }
 
-    /// The forge's verdict on a ticket is current (T-739): no forge reads
-    /// this board (every remote parsed to none, or every host probed to no
-    /// CLI), or the ticket's set was read since its agent's last end of
-    /// turn — the turn that may have opened the PR. Before the first probe
-    /// nothing is known and nothing is fresh: the train waits a bucket.
+    /// The forge's verdict on a ticket is current (`forge::State::fresh`),
+    /// judged against its agent's last end of turn.
     fn forge_fresh(&self, ticket: ulid::Ulid) -> bool {
-        let no_forge = !self.forge.remotes.is_empty()
-            && (self.forge.remotes.values().all(Option::is_none)
-                || (!self.forge.probes.is_empty()
-                    && self.forge.probes.values().all(|p| p.cli.is_none())));
-        if no_forge {
-            return true;
-        }
-        let Some(read_at) = self.forge.at_ms.get(&ticket).copied() else { return false };
         let turn_end = self
             .board
             .live_agent(ticket)
             .filter(|s| matches!(s.state, SessionState::Idle { .. }))
             .and_then(|s| s.state_changed_at)
             .unwrap_or(0);
-        read_at >= turn_end
+        self.forge.fresh(ticket, turn_end, &self.costs.opened_urls(ticket))
     }
 
     /// What the train would do, over the cached flags — no git on this road.
@@ -13393,10 +13393,91 @@ impl Daemon {
         if !self.forge.due() || self.worktrees.is_empty() {
             return;
         }
+        let Some(query) = self.forge_query(None) else { return };
+        self.forge.inflight = true;
+        self.forge.gen = self.forge.gen.wrapping_add(1);
+        let gen = self.forge.gen;
+        self.forge_asked(&query);
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::ForgeSampled(gen, crate::forge::sample(query, now_ms())));
+        });
+    }
+
+    /// A turn's end's read (T-761): the owed tickets' repositories alone,
+    /// at once rather than on the minute, under `forge::BURST_MS` per
+    /// repository; a host not probed yet is the minute's. Held by the floor
+    /// or a read already out, it is asked again on the next tick.
+    fn queue_forge_burst(&mut self) {
+        // A ticket the minute's read or a look made current is owed nothing.
+        let current: Vec<ulid::Ulid> =
+            self.forge.owed.keys().copied().filter(|t| self.forge_fresh(*t)).collect();
+        for t in current {
+            self.forge.owed.remove(&t);
+        }
+        if self.forge.burst_inflight || self.forge.owed.is_empty() {
+            return;
+        }
+        let only: std::collections::HashSet<ulid::Ulid> = self.forge.owed.keys().copied().collect();
+        let Some(query) = self.forge_query(Some(&only)) else { return };
+        if query.repos.is_empty() || query.repos.iter().any(|r| !self.forge.due_for(&r.key())) {
+            return;
+        }
+        self.forge.burst_inflight = true;
+        self.forge_asked(&query);
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::ForgeBurst(crate::forge::sample(query, now_ms())));
+        });
+    }
+
+    /// The repositories a read is about to ask, stamped for the floor.
+    fn forge_asked(&mut self, query: &crate::forge::Query) {
+        let now = Instant::now();
+        for key in query
+            .repos
+            .iter()
+            .map(|r| r.key())
+            .chain(query.pending.iter().map(|p| format!("{}/{}", p.remote.host, p.remote.path)))
+        {
+            self.forge.asked.insert(key, now);
+        }
+    }
+
+    /// The legs of a ticket a forge may read (T-761): each leg whose
+    /// repository has a remote, by that remote's path and the worktree.
+    fn forge_legs(&mut self, legs: &[worktree::Leg]) -> Vec<crate::forge::LegQuery> {
+        let mut out = Vec::new();
+        for leg in legs {
+            let remote = self
+                .forge
+                .remotes
+                .entry(leg.repo.clone())
+                .or_insert_with(|| crate::forge::remote_of(&leg.repo, &leg.base))
+                .clone();
+            let Some(remote) = remote else { continue };
+            out.push(crate::forge::LegQuery {
+                repo_path: remote.path.clone(),
+                dir: leg.path.clone(),
+            });
+        }
+        out
+    }
+
+    /// What a forge read asks: every ticket's set, or `only` those (a
+    /// turn's end, T-761, which probes no host). `None` when there is
+    /// nothing to ask.
+    fn forge_query(
+        &mut self,
+        only: Option<&std::collections::HashSet<ulid::Ulid>>,
+    ) -> Option<crate::forge::Query> {
         let base = self.base_branch.clone().unwrap_or_default();
         let mut tickets: Vec<(ulid::Ulid, String, Vec<worktree::Leg>)> = Vec::new();
         for (t, b) in &self.worktrees {
-            if b.branch.is_empty() || self.tearing_down.contains(t) {
+            if b.branch.is_empty()
+                || self.tearing_down.contains(t)
+                || only.is_some_and(|o| !o.contains(t))
+            {
                 continue;
             }
             tickets.push((*t, b.branch.clone(), b.legs(&self.paths.repo_root, &base)));
@@ -13404,7 +13485,7 @@ impl Daemon {
         if tickets.is_empty() {
             // Every binding still provisioning (no branch yet): asked again
             // on the next bucket, not a whole cadence later (T-752).
-            return;
+            return None;
         }
         // Every repository on the pass, by host and path, and where to run.
         let mut repos: Vec<(mesimon_core::forge::Remote, std::path::PathBuf)> = Vec::new();
@@ -13419,20 +13500,11 @@ impl Daemon {
         }
         let mut queries = Vec::new();
         for (t, branch, legs) in &tickets {
-            let mut leg_queries = Vec::new();
+            let leg_queries = self.forge_legs(legs);
             for leg in legs {
-                let remote = self
-                    .forge
-                    .remotes
-                    .entry(leg.repo.clone())
-                    .or_insert_with(|| crate::forge::remote_of(&leg.repo, &leg.base))
-                    .clone();
-                let Some(remote) = remote else { continue };
-                leg_queries.push(crate::forge::LegQuery {
-                    repo_path: remote.path.clone(),
-                    dir: leg.path.clone(),
-                });
-                add_repo(&mut repos, remote, leg.repo.clone());
+                if let Some(Some(remote)) = self.forge.remotes.get(&leg.repo) {
+                    add_repo(&mut repos, remote.clone(), leg.repo.clone());
+                }
             }
             // A URL a session printed may name another repository of a host
             // a leg's remote already reaches (the account's own forge), and
@@ -13459,7 +13531,10 @@ impl Daemon {
         let mut probes = Vec::new();
         for (remote, _) in &repos {
             let fresh = self.forge.probes.get(&remote.host).is_some_and(|p| !p.stale());
-            if fresh || probes.iter().any(|p: &crate::forge::ProbeQuery| p.host == remote.host) {
+            if fresh
+                || only.is_some()
+                || probes.iter().any(|p: &crate::forge::ProbeQuery| p.host == remote.host)
+            {
                 continue;
             }
             let order = match remote.known_forge() {
@@ -13510,12 +13585,11 @@ impl Daemon {
         if probes.is_empty() && repo_queries.is_empty() {
             // No forge reads this board: nothing to ask, and no pass to
             // wait for.
-            self.forge.last = Some(Instant::now());
-            return;
+            if only.is_none() {
+                self.forge.last = Some(Instant::now());
+            }
+            return None;
         }
-        self.forge.inflight = true;
-        self.forge.gen = self.forge.gen.wrapping_add(1);
-        let gen = self.forge.gen;
         // The environments some column waits for, so a deployment is read
         // only where one is asked for; and what earlier passes settled.
         let mut envs: Vec<String> = Vec::new();
@@ -13528,7 +13602,7 @@ impl Daemon {
                 }
             }
         }
-        let query = crate::forge::Query {
+        Some(crate::forge::Query {
             probes,
             repos: repo_queries,
             pending,
@@ -13536,11 +13610,7 @@ impl Daemon {
             envs,
             commit_pipelines: self.forge.commit_pipelines.clone(),
             deployed: self.forge.deployed.clone(),
-        };
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(Msg::ForgeSampled(gen, crate::forge::sample(query, now_ms())));
-        });
+        })
     }
 
     /// A forge pass landed (T-739): the probes and the sets are taken, the
@@ -13553,12 +13623,33 @@ impl Daemon {
             return;
         }
         self.forge.last = Some(Instant::now());
-        self.forge.last_ms = sample.at_ms;
+        self.forge.errors =
+            sample.repos.iter().filter_map(|r| Some((r.key.clone(), r.error.clone()?))).collect();
+        self.absorb_forge(sample);
+    }
+
+    /// A turn's end's read landed (T-761): taken as a pass is, its
+    /// repositories' errors alone replaced; the minute is not reset.
+    fn on_forge_burst(&mut self, sample: crate::forge::Sample) {
+        self.forge.burst_inflight = false;
+        for r in &sample.repos {
+            self.forge.errors.retain(|(k, _)| *k != r.key);
+            if let Some(e) = &r.error {
+                self.forge.errors.push((r.key.clone(), e.clone()));
+            }
+        }
+        self.absorb_forge(sample);
+        // Owed while this one was out: asked now, or on the tick.
+        self.queue_forge_burst();
+    }
+
+    fn absorb_forge(&mut self, sample: crate::forge::Sample) {
+        self.forge.last_ms = self.forge.last_ms.max(sample.at_ms);
         for (host, probe) in sample.probes {
             self.forge.probes.insert(host, probe);
         }
-        self.forge.errors =
-            sample.repos.iter().filter_map(|r| Some((r.key.clone(), r.error.clone()?))).collect();
+        // A read begun since a turn's end answers it.
+        self.forge.owed.retain(|t, since| !(sample.sets.contains_key(t) && sample.at_ms >= *since));
         // What the merged commits' reads taught: terminal pipelines and the
         // environments reached are kept, so a landed ticket costs no call
         // on the next pass.
@@ -13585,8 +13676,13 @@ impl Daemon {
         let mut arrivals: Vec<(ulid::Ulid, crate::forge::Edge)> = Vec::new();
         let failed: Vec<&str> =
             sample.repos.iter().filter(|r| r.error.is_some()).map(|r| r.path.as_str()).collect();
+        let mut basis = sample.basis;
         for (t, set) in sample.sets {
-            if self.board.ticket(t).is_none() {
+            // A ticket a later read already answered (a turn's end's, while
+            // the minute's was out) keeps that one.
+            if self.board.ticket(t).is_none()
+                || self.forge.at_ms.get(&t).is_some_and(|at| *at > sample.at_ms)
+            {
                 continue;
             }
             let old = self.forge.sets.get(&t);
@@ -13631,6 +13727,9 @@ impl Daemon {
             changed |= old != Some(&set);
             self.forge.sets.insert(t, set);
             self.forge.at_ms.insert(t, sample.at_ms);
+            if let Some(b) = basis.remove(&t) {
+                self.forge.basis.insert(t, b);
+            }
         }
         // After the arrivals, so the crown reads the ticket where the
         // arrival rule put it.
@@ -13639,6 +13738,9 @@ impl Daemon {
         let live: Vec<ulid::Ulid> = self.board.tickets.iter().map(|t| t.id).collect();
         self.forge.sets.retain(|t, _| live.contains(t));
         self.forge.at_ms.retain(|t, _| live.contains(t));
+        self.forge.basis.retain(|t, _| live.contains(t));
+        self.forge.local.retain(|t, _| live.contains(t));
+        self.forge.owed.retain(|t, _| live.contains(t));
         self.persist_forge();
         let tickets: Vec<ulid::Ulid> = self.wt_repos.keys().copied().collect();
         for t in tickets {
@@ -13658,15 +13760,20 @@ impl Daemon {
                 self.wt_repos.insert(t, legs);
             }
         }
-        if !changed {
-            return;
+        if changed {
+            self.reclaim_archived();
         }
-        self.reclaim_archived();
-        if self.train_pass() {
+        // On every read, changed or not: a read after a turn's end is what
+        // makes its ticket's forge verdict current (T-761), and the train
+        // waits on exactly that.
+        let acted = self.train_pass();
+        if acted {
             self.persist_sessions();
         }
-        self.settle_looks();
-        self.broadcast();
+        let settled = self.settle_looks();
+        if changed || acted || settled {
+            self.broadcast();
+        }
     }
 
     /// A column's `Arrives here when` (T-739): the first column, in board

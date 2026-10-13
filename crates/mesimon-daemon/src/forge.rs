@@ -35,6 +35,9 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(20);
 pub const EVERY: Duration = Duration::from_secs(60);
 /// The cadence after a repository failed to answer.
 pub const BACKOFF: Duration = Duration::from_secs(300);
+/// The floor between two reads of one repository (T-761): a turn's end
+/// asks its ticket's repositories at once, at most this often each.
+pub const BURST_MS: u64 = 10_000;
 /// How long a host's probe (which CLI, signed in or not) is believed.
 const PROBE_FOR: Duration = Duration::from_secs(6 * 3600);
 /// How many reflog entries a leg offers for binding.
@@ -350,6 +353,71 @@ pub struct Sample {
     /// is present with an empty set, so the writer can tell "read, none"
     /// from "not read".
     pub sets: HashMap<ulid::Ulid, Vec<Pr>>,
+    /// What each queried ticket had pushed and opened as the pass began
+    /// (T-761): a later look that finds the same knows the set still holds.
+    pub basis: HashMap<ulid::Ulid, Basis>,
+}
+
+/// The local facts a ticket's set was read on (T-761): what its legs had
+/// pushed (`pushed`) and the PR URLs its sessions had printed. A PR the
+/// forge would show that this read did not is one a push or a `pr create`
+/// made since, and each leaves a local trace.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Basis {
+    pub pushed: Option<Vec<String>>,
+    pub opened: Vec<String>,
+}
+
+/// A look at a ticket after its turn ended (T-761): what its legs have
+/// pushed now, and whether a transcript tail the cost pass has not reached
+/// holds a `pr create`. `None` in either is unknown.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Local {
+    pub at_ms: u64,
+    pub pushed: Option<Vec<String>>,
+    pub tail_opened: Option<bool>,
+}
+
+/// What a ticket's legs have pushed (T-761): every remote-tracking ref that
+/// points at a commit in a leg's HEAD reflog, as `<repo> <ref> <oid>`,
+/// sorted, `logs[i]` being `legs[i]`'s reflog. A push from the worktree
+/// moves one of them; a commit nobody pushed moves none. `None` when git
+/// could not list a leg's refs.
+pub fn pushed(legs: &[LegQuery], logs: &[Vec<String>]) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    for (leg, log) in legs.iter().zip(logs) {
+        if log.is_empty() {
+            continue;
+        }
+        let o = crate::git::git(&leg.dir)
+            .args([
+                "--no-optional-locks",
+                "for-each-ref",
+                "--format=%(objectname) %(refname)",
+                "refs/remotes",
+            ])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())?;
+        let log: std::collections::HashSet<&str> = log.iter().map(String::as_str).collect();
+        for line in String::from_utf8_lossy(&o.stdout).lines() {
+            let Some((oid, name)) = line.trim().split_once(' ') else { continue };
+            if log.contains(oid) {
+                out.push(format!("{} {name} {oid}", leg.repo_path));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    Some(out)
+}
+
+/// The look's half (T-761), on a worker: the legs' pushes and the tails.
+pub fn look(legs: &[LegQuery], tails: &[(String, crate::cost::Cursor)], at_ms: u64) -> Local {
+    let logs: Vec<Vec<String>> = legs.iter().map(|l| reflog(&l.dir)).collect();
+    Local { at_ms, pushed: pushed(legs, &logs), tail_opened: crate::cost::opened_in_tails(tails) }
 }
 
 /// The pass, on a worker thread.
@@ -359,6 +427,15 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
         out.probes.push((p.host.clone(), probe_host(&p.host, &p.candidates)));
     }
     list_probed(&mut q, &out.probes);
+    // What each ticket had pushed, read before any list (T-761): a push
+    // after this read is one the lists may miss, so it must move the basis.
+    let mut logs: Vec<Vec<Vec<String>>> = Vec::new();
+    for t in &q.tickets {
+        let legs: Vec<Vec<String>> = t.legs.iter().map(|l| reflog(&l.dir)).collect();
+        out.basis
+            .insert(t.ticket, Basis { pushed: pushed(&t.legs, &legs), opened: t.opened.clone() });
+        logs.push(legs);
+    }
     let mut prs: Vec<Pr> = Vec::new();
     for r in &q.repos {
         match list(r) {
@@ -377,13 +454,14 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
             }),
         }
     }
-    for t in &q.tickets {
+    for (t, logs) in q.tickets.iter().zip(logs) {
         let facts = Facts {
             branch: t.branch.clone(),
             reflog: t
                 .legs
                 .iter()
-                .flat_map(|l| reflog(&l.dir).into_iter().map(move |oid| (l.repo_path.clone(), oid)))
+                .zip(logs)
+                .flat_map(|(l, log)| log.into_iter().map(move |oid| (l.repo_path.clone(), oid)))
                 .collect(),
             opened: t.opened.clone(),
         };
@@ -759,6 +837,17 @@ pub struct State {
     pub last_ms: u64,
     pub inflight: bool,
     pub gen: u64,
+    /// What each ticket's last read was taken on, and the look after its
+    /// last turn (T-761): equal, the set read then still holds.
+    pub basis: HashMap<ulid::Ulid, Basis>,
+    pub local: HashMap<ulid::Ulid, Local>,
+    /// The tickets whose turn's end asked a read (T-761), with when: a
+    /// pass begun since answers them.
+    pub owed: HashMap<ulid::Ulid, u64>,
+    /// When each repository was last asked, by `RepoQuery::key`.
+    pub asked: HashMap<String, Instant>,
+    /// A turn's end's read is out.
+    pub burst_inflight: bool,
 }
 
 impl State {
@@ -780,6 +869,45 @@ impl State {
         }
         let wait = if self.errors.is_empty() { every() } else { every().max(BACKOFF) };
         self.last.is_none_or(|t| t.elapsed() >= wait)
+    }
+
+    /// Whether a repository may be read for a turn's end (T-761): not read
+    /// in the last `BURST_MS`, and not one whose last call failed (the
+    /// minute's backoff has it).
+    pub fn due_for(&self, key: &str) -> bool {
+        !self.errors.iter().any(|(k, _)| k == key)
+            && self.asked.get(key).is_none_or(|t| t.elapsed() >= Duration::from_millis(BURST_MS))
+    }
+
+    /// The forge's verdict on a ticket is current (T-739): no forge reads
+    /// this board (every remote parsed to none, or every host probed to no
+    /// CLI), or the ticket's set was read since its agent's last end of
+    /// turn (`turn_end`, unix ms) — the turn that may have opened the PR —
+    /// or the look after that turn found nothing a read could miss
+    /// (`unchanged`, T-761). Before the first probe nothing is known and
+    /// nothing is fresh: the train waits a bucket.
+    pub fn fresh(&self, ticket: ulid::Ulid, turn_end: u64, opened: &[String]) -> bool {
+        let no_forge = !self.remotes.is_empty()
+            && (self.remotes.values().all(Option::is_none)
+                || (!self.probes.is_empty() && self.probes.values().all(|p| p.cli.is_none())));
+        no_forge
+            || self.at_ms.get(&ticket).is_some_and(|read_at| *read_at >= turn_end)
+            || self.unchanged(ticket, turn_end, opened)
+    }
+
+    /// The set read before `ticket`'s turn ended still holds (T-761): the
+    /// look after the turn found the legs' pushes as the read did, no `pr
+    /// create` in a tail the cost pass has not reached, and no URL in
+    /// `opened` (the ledger's now) that the read did not have.
+    pub fn unchanged(&self, ticket: ulid::Ulid, turn_end: u64, opened: &[String]) -> bool {
+        let (Some(basis), Some(local)) = (self.basis.get(&ticket), self.local.get(&ticket)) else {
+            return false;
+        };
+        local.at_ms >= turn_end
+            && local.pushed.is_some()
+            && local.pushed == basis.pushed
+            && local.tail_opened == Some(false)
+            && opened.iter().all(|u| basis.opened.iter().any(|b| forge::same_url(b, u)))
     }
 
     /// The open PRs of a ticket's set.
@@ -1186,6 +1314,123 @@ mod tests {
             words(std::slice::from_ref(&running), &[both]),
             ["pipeline passed !1", "review approved !1"]
         );
+    }
+
+    #[test]
+    fn the_forge_is_current_with_no_forge_after_a_read_or_on_a_look_that_found_nothing() {
+        let t = ulid::Ulid::new();
+        let remote = Remote { host: "github.com".into(), path: "o/r".into() };
+        let cli = Cli { forge: Forge::GitHub, bin: PathBuf::from("/bin/gh") };
+        // No forge: every remote parsed to none.
+        let mut s = State::default();
+        s.remotes.insert(PathBuf::from("/r"), None);
+        assert!(s.fresh(t, 5_000, &[]), "no forge reads this board");
+        // A forge: nothing read, nothing known.
+        let mut s = State::default();
+        s.remotes.insert(PathBuf::from("/r"), Some(remote));
+        s.probes.insert(
+            "github.com".into(),
+            HostProbe { cli: Some(cli), at: Instant::now(), viewer: None },
+        );
+        assert!(!s.fresh(t, 5_000, &[]), "never read");
+        // Read before the turn ended, on a basis that had pushed one ref.
+        let pushed = vec!["o/r refs/remotes/origin/msmn/T-1 abc".to_string()];
+        s.at_ms.insert(t, 4_000);
+        s.basis.insert(t, Basis { pushed: Some(pushed.clone()), opened: Vec::new() });
+        assert!(!s.fresh(t, 5_000, &[]), "no look yet: wait for the read");
+        // The look after the turn found the same: current, no network.
+        s.local.insert(
+            t,
+            Local { at_ms: 5_100, pushed: Some(pushed.clone()), tail_opened: Some(false) },
+        );
+        assert!(s.fresh(t, 5_000, &[]), "nothing pushed, nothing opened");
+        // A URL the read did not have, or a `pr create` in the unread tail.
+        let url = "https://github.com/o/r/pull/7".to_string();
+        assert!(!s.fresh(t, 5_000, std::slice::from_ref(&url)), "a PR opened since");
+        s.basis.get_mut(&t).unwrap().opened.push(url.clone());
+        assert!(s.fresh(t, 5_000, std::slice::from_ref(&url)), "that URL the read had");
+        s.local.get_mut(&t).unwrap().tail_opened = Some(true);
+        assert!(!s.fresh(t, 5_000, &[]), "a pr create the ledger has not reached");
+        s.local.get_mut(&t).unwrap().tail_opened = None;
+        assert!(!s.fresh(t, 5_000, &[]), "an unreadable tail is unknown");
+        // Pushed in the turn: waits for a read begun after the turn's end.
+        s.local.insert(
+            t,
+            Local {
+                at_ms: 5_100,
+                pushed: Some(vec!["o/r refs/remotes/origin/msmn/T-1 def".into()]),
+                tail_opened: Some(false),
+            },
+        );
+        assert!(!s.fresh(t, 5_000, &[]), "pushed: the read is owed");
+        s.at_ms.insert(t, 5_000);
+        assert!(s.fresh(t, 5_000, &[]), "a read at the turn's end answers it");
+        // A look from before the turn's end proves nothing about it.
+        s.at_ms.insert(t, 4_000);
+        s.local.insert(t, Local { at_ms: 4_900, pushed: Some(pushed), tail_opened: Some(false) });
+        assert!(!s.fresh(t, 5_000, &[]), "the look predates the turn's end");
+        // Git could not say what was pushed: unknown, never unchanged.
+        s.basis.insert(t, Basis { pushed: None, opened: Vec::new() });
+        s.local.insert(t, Local { at_ms: 5_100, pushed: None, tail_opened: Some(false) });
+        assert!(!s.fresh(t, 5_000, &[]));
+    }
+
+    #[test]
+    fn the_floor_holds_a_repository_read_inside_the_burst_and_one_that_failed() {
+        let mut s = State::default();
+        assert!(s.due_for("github.com/o/r"), "never asked");
+        s.asked.insert("github.com/o/r".into(), Instant::now());
+        assert!(!s.due_for("github.com/o/r"), "inside the floor");
+        s.asked
+            .insert("github.com/o/r".into(), Instant::now() - Duration::from_millis(BURST_MS + 1));
+        assert!(s.due_for("github.com/o/r"), "past the floor");
+        s.errors.push(("github.com/o/r".into(), "boom".into()));
+        assert!(!s.due_for("github.com/o/r"), "a failing repository waits for the backoff");
+    }
+
+    #[test]
+    fn a_push_moves_what_a_ticket_pushed_and_a_commit_alone_does_not() {
+        let dir = std::env::temp_dir().join(format!("msmn-forge-pushed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .stderr(Stdio::null())
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("a"), "a").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "one"]);
+        let legs = vec![LegQuery { repo_path: "o/r".into(), dir: dir.clone() }];
+        let now = |legs: &[LegQuery]| {
+            let logs: Vec<Vec<String>> = legs.iter().map(|l| reflog(&l.dir)).collect();
+            pushed(legs, &logs)
+        };
+        assert_eq!(now(&legs), Some(Vec::new()), "nothing pushed");
+        std::fs::write(dir.join("a"), "b").unwrap();
+        git(&["commit", "-qam", "two"]);
+        assert_eq!(now(&legs), Some(Vec::new()), "a commit is not a push");
+        // A push updates the remote-tracking ref to the pushed commit.
+        let tip = git(&["rev-parse", "HEAD"]);
+        git(&["update-ref", "refs/remotes/origin/msmn/T-1", &tip]);
+        assert_eq!(now(&legs), Some(vec![format!("o/r refs/remotes/origin/msmn/T-1 {tip}")]));
+        // A ref at a commit this worktree never held is someone else's.
+        git(&["commit", "-q", "--allow-empty", "-m", "three"]);
+        let other = git(&["commit-tree", "-m", "x", &format!("{tip}^{{tree}}")]);
+        git(&["update-ref", "refs/remotes/origin/other", &other]);
+        assert_eq!(now(&legs).unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

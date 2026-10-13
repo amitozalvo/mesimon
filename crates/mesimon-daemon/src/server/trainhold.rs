@@ -72,8 +72,26 @@ impl Daemon {
         self.wt_seq = self.wt_seq.wrapping_add(1);
         let seq = self.wt_seq;
         let cached: HashMap<String, Option<String>> = self.upstreams.clone();
+        // What the forge would need to read again (T-761): the legs a forge
+        // may read and the transcripts' tails, looked at beside the flags.
+        let forge_legs = self.look_legs(ticket);
+        let tails = if forge_legs.is_empty() {
+            Vec::new()
+        } else {
+            let live: Vec<String> = self
+                .board
+                .sessions
+                .iter()
+                .filter(|r| r.ticket == ticket)
+                .filter_map(crate::cost::transcript_of)
+                .map(|(p, _)| p.display().to_string())
+                .collect();
+            self.costs.tails(ticket, &live)
+        };
         let tx = self.tx.clone();
         std::thread::spawn(move || {
+            let local =
+                (!forge_legs.is_empty()).then(|| crate::forge::look(&forge_legs, &tails, now_ms()));
             // The board's sample's terms (`queue_worktree_flags`): the base
             // and the upstream filled in here where the writer had none. A
             // single-repo leg with no base known is not judged this look;
@@ -92,7 +110,7 @@ impl Daemon {
                 }
             }
             let samples = worktree::compute_repo_flags(&queries);
-            let _ = tx.send(Msg::TicketFlags(ticket, seq, samples));
+            let _ = tx.send(Msg::TicketFlags(ticket, seq, samples, local));
         });
     }
 
@@ -104,10 +122,22 @@ impl Daemon {
         ticket: ulid::Ulid,
         seq: u64,
         samples: Vec<worktree::RepoSample>,
+        local: Option<crate::forge::Local>,
     ) {
         let again = self.ticket_looks.remove(&ticket).unwrap_or(false);
         let mut changed = false;
         let mut acted = false;
+        // The look's forge half (T-761), before the train's pass reads it:
+        // a turn that pushed or opened something waits for a read, asked
+        // now for this ticket's repositories alone.
+        if let Some(local) = local {
+            let at_ms = local.at_ms;
+            self.forge.local.insert(ticket, local);
+            if self.board.ticket(ticket).is_some() && !self.forge_fresh(ticket) {
+                self.forge.owed.insert(ticket, at_ms);
+                self.queue_forge_burst();
+            }
+        }
         if !samples.is_empty() && !self.tearing_down.contains(&ticket) {
             changed = self.absorb_worktree_flags(samples, seq, Some(ticket));
             acted = self.train_pass();
@@ -122,6 +152,16 @@ impl Daemon {
         if changed || acted || settled {
             self.broadcast();
         }
+    }
+
+    /// The legs of `ticket` a forge may read, for its look (T-761).
+    fn look_legs(&mut self, ticket: ulid::Ulid) -> Vec<crate::forge::LegQuery> {
+        let base = self.base_branch.clone().unwrap_or_default();
+        let legs = match self.worktrees.get(&ticket) {
+            Some(b) if !b.branch.is_empty() => b.legs(&self.paths.repo_root, &base),
+            _ => return Vec::new(),
+        };
+        self.forge_legs(&legs)
     }
 
     /// The train's static half of `train::lane`, before any flag: armed,
