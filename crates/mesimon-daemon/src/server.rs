@@ -9936,6 +9936,25 @@ impl Daemon {
             .collect()
     }
 
+    /// Each worktree leg's repository remote, parsed once (T-739): what
+    /// says whether a forge reads this board at all. A few git reads per
+    /// repository directory, on the writer thread, the first time only.
+    fn learn_remotes(&mut self) {
+        let base = self.base_branch.clone().unwrap_or_default();
+        let legs: Vec<worktree::Leg> = self
+            .worktrees
+            .values()
+            .filter(|b| !b.branch.is_empty())
+            .flat_map(|b| b.legs(&self.paths.repo_root, &base))
+            .collect();
+        for leg in legs {
+            self.forge
+                .remotes
+                .entry(leg.repo.clone())
+                .or_insert_with(|| crate::forge::remote_of(&leg.repo, &leg.base));
+        }
+    }
+
     /// The forge's verdict on a ticket is current (T-739): no forge reads
     /// this board (every remote parsed to none, or every host probed to no
     /// CLI), or the ticket's set was read since its agent's last end of
@@ -9997,6 +10016,10 @@ impl Daemon {
         {
             return false;
         }
+        // Whether a forge reads this board is known before the train judges
+        // freshness (T-739): a board with no remote must not wait a bucket
+        // for the forge pass to say so, and neither must one after a restart.
+        self.learn_remotes();
         if !self.train_busy().is_empty() {
             return false;
         }
@@ -13677,6 +13700,10 @@ impl Daemon {
         seq: u64,
         only: Option<ulid::Ulid>,
     ) -> bool {
+        // Whether a forge reads this board is learned with the flags
+        // (T-739): the snapshot's owed row plans on the flags the moment
+        // they land, and must not wait a pass of the train to be told.
+        self.learn_remotes();
         // Whether any of it is NEWS — what the board would draw differently.
         // The tick's road broadcasts on that and nothing else: a fetch that
         // lands a merge moves no session and fires no hook, so without this
