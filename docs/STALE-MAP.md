@@ -24448,7 +24448,7 @@ one, the cut row whole above the footer, Enter's URL, `^h` closes, the read time
 `ctrl_h_is_inert_without_prs_and_the_empty_dialog_says_why`;
 `a_click_on_a_cards_prs_opens_the_dialog` (the card's brief and the page's rows).
 
-## T-760: the hidden cursor rests in one cell
+## The hidden cursor rests in one cell (T-760, 2026-10-14)
 
 **Report.** macOS's input-source indicator (the blue `A` / `א` bubble) stood on the board,
 always at the same spot beside a working card's spinner, and went only after several layout
