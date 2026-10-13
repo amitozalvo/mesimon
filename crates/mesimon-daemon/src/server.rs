@@ -2855,6 +2855,7 @@ impl Daemon {
             changed |= stage!("hear_merges", self.hear_merges());
             changed |= stage!("hear_deferred", self.hear_deferred());
             changed |= stage!("hear_stepped", self.hear_stepped());
+            changed |= stage!("hear_forged", self.hear_forged(HashMap::new()));
             changed |= stage!("settle_looks", self.settle_looks());
             changed |= stage!("drain_crown_wakes", self.drain_crown_wakes());
             stage!("persist_crown", self.persist_crown());
@@ -13709,7 +13710,7 @@ impl Daemon {
             self.forge.probes.insert(host, probe);
         }
         // A read begun since a turn's end answers it.
-        self.forge.owed.retain(|t, since| !(sample.sets.contains_key(t) && sample.at_ms >= *since));
+        self.forge.answer(sample.sets.keys(), sample.at_ms);
         // What the merged commits' reads taught, per PR (T-771): pipelines
         // and the environments reached are kept, so a settled one costs no
         // call on the next pass and an older PR keeps its own.
@@ -13730,6 +13731,7 @@ impl Daemon {
         }
         let mut changed = false;
         let mut news: Vec<(ulid::Ulid, String)> = Vec::new();
+        let mut openings: HashMap<ulid::Ulid, String> = HashMap::new();
         let mut arrivals: Vec<(ulid::Ulid, crate::forge::Edge)> = Vec::new();
         let failed: Vec<&str> =
             sample.repos.iter().filter(|r| r.error.is_some()).map(|r| r.path.as_str()).collect();
@@ -13795,6 +13797,11 @@ impl Daemon {
                 if !words.is_empty() {
                     news.push((t, words.join(", ")));
                 }
+                // An opening is said on the wake of the turn that opened
+                // it, never on its own (T-773).
+                if !edge.opened.is_empty() {
+                    openings.insert(t, edge.opening().join(", "));
+                }
                 if edge.any() {
                     arrivals.push((t, edge));
                 }
@@ -13836,8 +13843,15 @@ impl Daemon {
         // After the arrivals, so the crown reads the ticket where the
         // arrival rule put it, and after the merged clause's fold, so a
         // merge the pass read is in the line's state and the flags' wake on
-        // the tick finds it told (T-769).
+        // the tick finds it told (T-769). A turn's end held for this read
+        // goes first, undrained, so the read's own news folds into its line
+        // (T-773).
+        let forged = self.hear_forged(openings);
         changed |= self.hear_forge(news);
+        if forged {
+            self.drain_crown_wakes();
+            changed = true;
+        }
         if changed {
             self.reclaim_archived();
         }
@@ -13898,7 +13912,7 @@ impl Daemon {
                         }
                         Arrival::Merged if edge.merged => 3,
                         Arrival::PipelinePasses if edge.passed => 2,
-                        Arrival::PrOpened if edge.opened => 1,
+                        Arrival::PrOpened if !edge.opened.is_empty() => 1,
                         _ => return None,
                     };
                     Some((rank, c.name.clone()))

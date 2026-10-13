@@ -35,6 +35,10 @@
 //! a person's move of another such ticket into DONE is refused in the merge
 //! refusal's words, and once the PRs merge DONE admits it.
 //!
+//! A turn's end's wake waits for that turn's forge read (T-773): a worker
+//! that pushed and opened a PR wakes the crown once, after the read, the
+//! line saying the opening and the crown's `get_ticket` listing the PR.
+//!
 //! The stub is the forge: `auth status` passes, `pr list` prints the file
 //! the test writes, `api …/check-runs` the merge commit's pipeline and
 //! `api …/deployments` its deployments, by sha where the test wrote one. No
@@ -60,7 +64,9 @@ const GH_STUB: &str = r#"#!/bin/sh
 [ -n "$MSMN_GH_LOG" ] && echo "$*" >> "$MSMN_GH_LOG"
 case "$1 $2" in
   "auth status") exit 0 ;;
-  "pr list") cat "$MSMN_GH_PRS" 2>/dev/null || echo '[]' ;;
+  "pr list")
+    [ -f "$MSMN_GH_SLOW" ] && sleep "$(cat "$MSMN_GH_SLOW")"
+    cat "$MSMN_GH_PRS" 2>/dev/null || echo '[]' ;;
   api\ *)
     case "$4" in
       *check-runs*)
@@ -2068,5 +2074,81 @@ fn an_open_pr_holds_done_and_a_ticket_there_reads_unmerged() {
         c.request(Command::MoveTicket { id: b, column: "DONE".into(), before: None }),
         Response::Ok
     ));
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// T-773, lab finding 1: a worker's turn that pushed and opened #42 wakes
+/// the crown once, after the read that turn owed: the line says `opened
+/// #42`, and the crown's `get_ticket` at that wake lists the PR. Every `pr
+/// list` takes two seconds from the turn on, so a wake sent on the turn's
+/// look alone would arrive before any read could have seen the PR.
+#[test]
+fn a_turn_end_wake_waits_for_the_turns_forge_read() {
+    let (stub_dir, path_var) = gh_stub("forge-wait");
+    let prs_file = stub_dir.join("prs.json");
+    let slow = stub_dir.join("slow");
+    write(&prs_file, "[]");
+    let Some(h) = Harness::boot_with_env(
+        "forge_wait",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs_file.display().to_string()),
+            ("MSMN_GH_SLOW", &slow.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("forge_wait");
+    let k = crowned(&h, &mut c);
+    let key = c.board().ticket(k.worker).unwrap().short_key.clone();
+    let got = h.dir.join("got.txt");
+    let finished = format!("{} finished its turn (", k.named);
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    // The ticket's set has been read empty.
+    std::thread::sleep(Duration::from_millis(1500));
+
+    // The worker's turn pushes its branch and opens #42.
+    write(&slow, "2");
+    git(&k.path, &["update-ref", &format!("refs/remotes/origin/{}", k.branch), &k.tip]);
+    write(&prs_file, &open_pr_json(&k.branch, &k.tip, "[]", "MERGEABLE", "REVIEW_REQUIRED"));
+    let ended = std::time::Instant::now();
+    turn(&mut c, &hook_sock, k.ws);
+    wait_until(Duration::from_secs(30), "the turn's wake", || !lines_with(&finished).is_empty());
+    let waited = ended.elapsed();
+    let prs = match c
+        .send(Principal::Agent { session: k.crown }, Command::AgentReadTicket { key: key.clone() })
+    {
+        Response::AgentTicket { ticket } => ticket.prs,
+        other => panic!("read: {other:?}"),
+    };
+    let line = lines_with(&finished).remove(0);
+    assert!(prs.iter().any(|p| p.label == "#42"), "get_ticket at the wake: {prs:?}; {line}");
+    assert!(line.contains("opened #42"), "{line}");
+    assert!(waited >= Duration::from_secs(2), "woken {waited:?} after the turn, before a read");
+    assert!(waited < Duration::from_secs(16), "the wait is bounded: {waited:?}");
+
+    // One wake for that turn: the read's opening said nothing of its own.
+    turn(&mut c, &hook_sock, k.crown);
+    std::thread::sleep(Duration::from_millis(3000));
+    let all = std::fs::read_to_string(&got).unwrap();
+    assert_eq!(wakes(&h, k.worker, "finished"), 1, "{all}");
+    assert_eq!(wakes(&h, k.worker, "forge"), 0, "{all}");
+    assert_eq!(all.matches("opened #42").count(), 1, "{all}");
+    let _ = std::fs::remove_file(&slow);
     let _ = std::fs::remove_dir_all(&stub_dir);
 }

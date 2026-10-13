@@ -142,7 +142,9 @@ pub const CROWN_WAKES: &str = concat!(
      or passed, a job waiting, a deployment, a conflict, a review, a later PR merged, each \
      named with its PR; \
      its get_ticket carries the PR under prs), one sentence naming \
-     the ticket and what changed arrives as this session's next prompt, once it is idle. A finished turn that left nothing new to \
+     the ticket and what changed arrives as this session's next prompt, once it is idle. A turn \
+     that opened a pull request says so in its line (opened #42), and that line waits for the \
+     board's read of the forge, so get_ticket already lists the PR. A finished turn that left nothing new to \
      merge says so: the agent is done with what it was asked, and what comes next is the \
      crown's to decide. Nothing needs \
      polling. A background task or monitor left running does not hold the wake or a queued \

@@ -24969,6 +24969,7 @@ is untouched. A header being renamed does not flash.
 
 **Tests.** `ui::tests::test_armed_column_delete_flashes_the_header`: at rest no header cell is
 tinted, after `d` the row is and the name is in `err`, a stray key clears it.
+
 ## The guided tour (T-763, 2026-10-14)
 
 **The ask.** A walkthrough for newcomers, in the Esc menu for now: a big dialog, the concepts
@@ -25028,3 +25029,49 @@ first drafts for the author to tune.
 `MESIMON_TOUR_DUMP=<n> cargo test -p mesimon-tui dump_a_lesson -- --nocapture` prints lesson n
 beat by beat: how a lesson is written against what the board really does. Menu goldens reminted
 for the new row.
+
+## A turn's end's crown wake waits for that turn's forge read (T-773, 2026-10-14, follow-up to T-744 and T-761)
+
+**Why.** Forge lab 2026-10-13, finding 1: the `finished`, `answered your ask` and `delivered`
+wakes reached the crown before the board had read the MR the turn had just opened, and
+`get_ticket` showed no PR row for 30 to 90 s (A1 ~30 s, B3 ~90 s, C1 ~40 s). T-761 now reads
+the forge at a turn's end that pushed or opened something; the wake did not wait for it.
+
+**What.** `crownwake::owe_turn_end` is the one road a turn's end's wake takes out of
+`judge_probe` (both the look's and git's `Unknown`). Where `forge::State::awaited` says a read
+is coming, the wake is held in `Heard::forging` (in `crown.json`, beside `stepped`; feed word
+`crown_wake_deferred:forge`), folding a second turn's end into it. `awaited` is: a forge reads
+the board, and either the ticket's own look is out with a forge half (`State::looking`, set in
+`queue_ticket_flags`, cleared when the look lands: the look may yet find a push) or the look
+owed a read none has answered (`State::owed`, T-761). `hear_forged` lets it go when
+`awaited` turns false (the look found nothing to read, or a read begun since the turn's end
+landed, `State::answer`) or `FORGE_WAIT_MS` (15 s) pass, on the look's landing, on each forge
+read and on the tick. It enters the wake without draining, before `hear_forge`, so a forge edge
+the same read brings (a PR bound passed) folds into the one line. The ticket's id in the brief
+was `Msg::ForgeSampled`'s; T-761's own read lands as `Msg::ForgeBurst`, and either answers.
+
+**The look runs for the crown, train or not.** T-761's look was asked only where the train
+could take the ticket (`look_after_turn`); with the train off, a turn's end owed no read and
+the hold had nothing to wait for. `look_after_turn` now also takes it for a worker the crown
+hears (`crown_hears_turn`), without the person's banner hold (`awaiting_looks` stays the
+train's).
+
+**The opening is said.** `forge::Edge::opened` became the labels, and `Edge::opening` says them
+(`opened !2`). T-744 kept the opening out of `news` because the turn's end carried it; now it
+does: `absorb_forge` hands each ticket's openings to `hear_forged`, which puts them first in a
+held wake's forge words, or keeps them (`Heard::opening`, memory) for a turn whose probe is
+still out. An opening found with no turn's end to ride (a PR opened from a browser, a read past
+the 15 s) still wakes no one by itself. The crown's brief (`mcp::CROWN_WAKES`) and USING.md
+say it.
+
+**Not re-judged at release.** The wake is the one `due` gave at the look, as `hear_stepped`
+does: a turn begun in the 15 s folds its own end into it.
+
+**Tests.** Unit `a_turn_end_waits_for_its_forge_read_only_where_one_is_owed` (no forge; the look
+out; nothing pushed; pushed, a read begun before answers nothing, the 15 s, the read; the
+opening first in the line beside a bound PR's edge). `forge_e2e::a_turn_end_wake_waits_for_the_turns_forge_read`:
+the stub's `pr list` takes 2 s from the turn on; the worker pushes and #42 appears; one
+`finished` wake, at least 2 s after the `Stop`, saying `opened #42`, the crown's `get_ticket`
+at that moment listing #42, and no `forge` wake. With the hold off it fails on `get_ticket`.
+`crown_e2e`, `merge_train_e2e`, `pr_merge_e2e` and all of `forge_e2e` pass. The rig: F1 on the
+real Sonnet (claude 2.1.296), 2026-10-14: PASS in 44 s, wakes `finished`, `forge`.

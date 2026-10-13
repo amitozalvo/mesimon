@@ -45,12 +45,15 @@ impl Daemon {
     /// A turn ended on `ticket`'s agent: on a branch the armed train could
     /// take, the person's banner waits for a sample started from here, and
     /// the ticket's own is asked for now rather than on the next bucket.
+    /// A worker the crown hears is looked at too, train or not: its forge
+    /// half is the read the crown's wake waits for (T-773).
     pub(super) fn look_after_turn(&mut self, ticket: ulid::Ulid) {
-        if !self.train_could_take(ticket) {
+        if self.train_could_take(ticket) {
+            let need = self.wt_seq.wrapping_add(1);
+            self.awaiting_looks.insert(ticket, AwaitingLook { need, since_ms: now_ms() });
+        } else if !self.crown_hears_turn(ticket) {
             return;
         }
-        let need = self.wt_seq.wrapping_add(1);
-        self.awaiting_looks.insert(ticket, AwaitingLook { need, since_ms: now_ms() });
         self.queue_ticket_flags(ticket);
     }
 
@@ -88,6 +91,9 @@ impl Daemon {
                 .collect();
             self.costs.tails(ticket, &live)
         };
+        if !forge_legs.is_empty() {
+            self.forge.looking.insert(ticket);
+        }
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let local =
@@ -125,6 +131,7 @@ impl Daemon {
         local: Option<crate::forge::Local>,
     ) {
         let again = self.ticket_looks.remove(&ticket).unwrap_or(false);
+        self.forge.looking.remove(&ticket);
         let mut changed = false;
         let mut acted = false;
         // The look's forge half (T-761), before the train's pass reads it:
@@ -148,6 +155,11 @@ impl Daemon {
         let settled = self.settle_looks();
         if again {
             self.queue_ticket_flags(ticket);
+        }
+        // A look that found nothing to read lets the crown's wake go (T-773).
+        if self.hear_forged(HashMap::new()) {
+            self.drain_crown_wakes();
+            changed = true;
         }
         if changed || acted || settled {
             self.broadcast();

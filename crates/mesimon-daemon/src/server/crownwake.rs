@@ -80,6 +80,14 @@
 //! lingering: the crown's words do reach a watched agent (T-734), but a
 //! person's agent's background tasks are the person's to end.
 //! `crown_hears` is the one claim.
+//!
+//! **A turn's end waits for its forge read (T-773).** A turn that pushed or
+//! opened a PR owes a forge read (T-761's look and burst); its wake —
+//! delivered, finished, answered — is held in `Heard::forging` until that
+//! read lands or `FORGE_WAIT_MS` pass, so the crown's `get_ticket` lists the
+//! PR the turn opened, and the line says the opening (`opened !2`), which
+//! wakes no one by itself. A board no forge reads, or a turn whose look
+//! found nothing to read, holds nothing.
 
 use super::*;
 use serde::{Deserialize, Serialize};
@@ -667,6 +675,14 @@ pub(super) struct Heard {
     /// line as it will be said; `told` already moved to it.
     #[serde(skip_serializing_if = "Option::is_none")]
     stepped: Option<CrownWake>,
+    /// A turn's end's wake waiting for the forge read that turn owes
+    /// (T-773), the line as it will be said; `told` already moved to it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    forging: Option<Forging>,
+    /// An opening a read saw while this worker's turn probe was out
+    /// (T-773): the turn's wake says it.
+    #[serde(skip)]
+    opening: Option<String>,
     /// What the turn probes out for this worker were asked for (T-602):
     /// a probe sent on the way down never lands, so the restart's look
     /// judges the turn it was for.
@@ -760,6 +776,37 @@ impl Heard {
 pub(super) struct Held {
     cause: WakeCause,
     look: BranchLook,
+}
+
+/// A turn's end's wake held for the forge read the turn owes (T-773), and
+/// when the hold began.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct Forging {
+    wake: CrownWake,
+    since_ms: u64,
+}
+
+/// How long a turn's end's wake waits for its forge read (T-773). A burst
+/// read is one CLI call per repository, under `forge::BURST_MS`'s floor;
+/// past this the crown hears the turn without it, and the PR rides
+/// `get_ticket` once the read lands.
+pub(super) const FORGE_WAIT_MS: u64 = 15_000;
+
+/// Whether a turn's end's wake still waits (T-773): a read is `awaited`
+/// (`forge::State::awaited`) and the hold began under `FORGE_WAIT_MS` ago.
+pub(super) fn forge_holds(awaited: bool, since_ms: u64, now_ms: u64) -> bool {
+    awaited && now_ms.saturating_sub(since_ms) < FORGE_WAIT_MS
+}
+
+/// Put the forge's words first in a wake's: an opening comes before what
+/// the read says of the PR it opened.
+fn say_first(to: &mut Option<Told>, words: String) {
+    if let Some(to) = to.as_mut() {
+        to.forge = Some(match to.forge.take() {
+            Some(rest) => format!("{words}, {rest}"),
+            None => words,
+        });
+    }
 }
 
 /// What a probe was for.
@@ -1166,7 +1213,9 @@ impl Daemon {
                 // a finished turn still finished.
                 let cause = verdict(None, &Told::default(), answered, merge_step, fresh);
                 if let Due::Wake(cause) = due(cause, None, &self.pending_on(p.worker, None)) {
-                    self.note_crown_wake(p.worker, cause, None, None);
+                    if self.crown_claims(p.worker, p.crown, cause) {
+                        self.owe_turn_end(p.crown, p.worker, cause, None, None);
+                    }
                 }
                 return;
             }
@@ -1211,13 +1260,100 @@ impl Daemon {
         let heard = self.crown_heard.entry(p.worker).or_default();
         heard.deferred = None;
         let from = heard.told.replace(now.clone());
-        if held.is_some() {
-            // Held, so the claim was judged when it was: the seat may have
-            // gone since.
-            self.owe_crown_wake(p.crown, p.worker, cause, from, Some(now), false);
-        } else {
-            self.note_crown_wake(p.worker, cause, from, Some(now));
+        // Held, so the claim was judged when it was: the seat may have gone
+        // since.
+        if held.is_some() || self.crown_claims(p.worker, p.crown, cause) {
+            self.owe_turn_end(p.crown, p.worker, cause, from, Some(now));
         }
+    }
+
+    /// A turn's end's wake (T-773): owed now, or held for the forge read
+    /// the turn owes, which `hear_forged` lets go. An opening a read saw
+    /// before this look landed is said first in its forge words.
+    fn owe_turn_end(
+        &mut self,
+        crown: ulid::Ulid,
+        worker: ulid::Ulid,
+        cause: WakeCause,
+        from: Option<Told>,
+        mut to: Option<Told>,
+    ) {
+        let heard = self.crown_heard.entry(worker).or_default();
+        if let Some(words) = heard.opening.take() {
+            say_first(&mut to, words);
+        }
+        if !self.forge.awaited(worker) {
+            self.owe_crown_wake(crown, worker, cause, from, to, false);
+            return;
+        }
+        let heard = self.crown_heard.entry(worker).or_default();
+        if let Some(f) = heard.forging.as_mut() {
+            f.wake.fold(cause, from, to);
+            return;
+        }
+        let late = heard.restored;
+        let wake = CrownWake { worker, cause, from, to, finished: false, linger: None, late };
+        heard.forging = Some(Forging { wake, since_ms: now_ms() });
+        self.feed.board("automation", "crown_wake_deferred:forge", Some(worker));
+    }
+
+    /// Turn ends held for their forge read (T-773) whose read landed, or
+    /// that waited `FORGE_WAIT_MS`: each is owed as it was held, without
+    /// draining, so a forge wake the same read brings folds into it and
+    /// the crown hears one line; the caller drains. `openings` are the
+    /// reads' `opened !2`, per ticket: said on a held wake, kept for a
+    /// turn whose probe is still out, and otherwise said by no one. True
+    /// when one was let go.
+    pub(super) fn hear_forged(&mut self, openings: HashMap<ulid::Ulid, String>) -> bool {
+        let Some(crown) = self.board.crown_holder().map(|t| t.id) else { return false };
+        for (worker, words) in openings {
+            let Some(h) = self.crown_heard.get_mut(&worker) else { continue };
+            if let Some(f) = h.forging.as_mut() {
+                say_first(&mut f.wake.to, words);
+            } else if h.looks > 0 {
+                h.opening = Some(match h.opening.take() {
+                    Some(was) => format!("{was}, {words}"),
+                    None => words,
+                });
+            }
+        }
+        let now = now_ms();
+        let over: Vec<ulid::Ulid> = self
+            .crown_heard
+            .iter()
+            .filter(|(w, h)| {
+                h.forging
+                    .as_ref()
+                    .is_some_and(|f| !forge_holds(self.forge.awaited(**w), f.since_ms, now))
+            })
+            .map(|(w, _)| *w)
+            .collect();
+        let mut woke = false;
+        for worker in over {
+            let Some(Forging { wake, .. }) =
+                self.crown_heard.get_mut(&worker).and_then(|h| h.forging.take())
+            else {
+                continue;
+            };
+            let Some(column) = self.board.ticket(worker).map(|t| t.column.clone()) else {
+                continue;
+            };
+            // The column the read's arrival left the card in, which is
+            // also what the crown has now heard.
+            let mut to = wake.to;
+            if let Some(to) = to.as_mut() {
+                if let Some(h) = self.crown_heard.get_mut(&worker) {
+                    if let Some(told) = h.told.as_mut().filter(|t| t.tip == to.tip) {
+                        told.column.clone_from(&column);
+                    }
+                }
+                to.column = column;
+            }
+            let owed = Owed { finished: wake.finished, linger: None, late: wake.late };
+            self.enter_wake(crown, worker, wake.cause, wake.from, to, owed);
+            woke = true;
+        }
+        woke
     }
 
     /// A landing that waits for the merge step in flight on its worker
@@ -1450,19 +1586,34 @@ impl Daemon {
         to: Option<Told>,
     ) {
         let Some(crown) = self.board.crown_holder().map(|t| t.id) else { return };
+        if self.crown_claims(worker, crown, cause) {
+            self.owe_crown_wake(crown, worker, cause, from, to, false);
+        }
+    }
+
+    /// `note_crown_wake`'s guards: never the crown's own ticket, and, an
+    /// answer aside, a worker it started, or a watched ticket's news.
+    fn crown_claims(&self, worker: ulid::Ulid, crown: ulid::Ulid, cause: WakeCause) -> bool {
         if worker == crown {
-            return;
+            return false;
         }
-        if cause != WakeCause::Answered && !self.started_by_crown(worker, crown) {
-            let watched_news = matches!(
-                cause,
-                WakeCause::Delivered | WakeCause::Finished | WakeCause::Merged | WakeCause::Raised
-            );
-            if !(watched_news && self.watched_by_crown(worker, crown)) {
-                return;
-            }
+        if cause == WakeCause::Answered || self.started_by_crown(worker, crown) {
+            return true;
         }
-        self.owe_crown_wake(crown, worker, cause, from, to, false);
+        let watched_news = matches!(
+            cause,
+            WakeCause::Delivered | WakeCause::Finished | WakeCause::Merged | WakeCause::Raised
+        );
+        watched_news && self.watched_by_crown(worker, crown)
+    }
+
+    /// A turn ended on `ticket`'s agent that the crown hears (T-773): its
+    /// look is taken, train or not, for the forge read the wake waits on.
+    pub(super) fn crown_hears_turn(&self, ticket: ulid::Ulid) -> bool {
+        self.board
+            .crown_holder()
+            .map(|t| t.id)
+            .is_some_and(|crown| ticket != crown && self.crown_hears(ticket, crown))
     }
 
     /// `note_crown_wake` past its guards: for a caller that judged the
@@ -1493,6 +1644,22 @@ impl Daemon {
         to: Option<Told>,
         owed: Owed,
     ) {
+        self.enter_wake(crown, worker, cause, from, to, owed);
+        self.drain_crown_wakes();
+        self.broadcast();
+    }
+
+    /// `owe_wake` without the delivery: the wake is entered and said in the
+    /// feed, and the caller drains.
+    fn enter_wake(
+        &mut self,
+        crown: ulid::Ulid,
+        worker: ulid::Ulid,
+        cause: WakeCause,
+        from: Option<Told>,
+        to: Option<Told>,
+        owed: Owed,
+    ) {
         let Owed { finished, linger, late } = owed;
         let late = late || self.crown_heard.get(&worker).is_some_and(|h| h.restored);
         let landed =
@@ -1513,8 +1680,6 @@ impl Daemon {
         }
         self.feed.crown_wake(crown, worker, cause.word());
         self.crown_touched(worker, crown, "woke");
-        self.drain_crown_wakes();
-        self.broadcast();
     }
 
     /// Workers the crown started that have sat idle at their composer with
@@ -2499,5 +2664,64 @@ mod tests {
         .unwrap();
         assert_eq!(old.cause, WakeCause::Forge);
         assert_eq!(old.to.and_then(|t| t.forge).as_deref(), Some("failed #4: lint"));
+    }
+
+    /// T-773: a turn's end waits for a forge read only where one may be
+    /// owed. No forge: nothing. A look that found nothing pushed: nothing.
+    /// A push: held until a read begun after the turn's end lands, or
+    /// `FORGE_WAIT_MS` pass. The opening is said first in the line.
+    #[test]
+    fn a_turn_end_waits_for_its_forge_read_only_where_one_is_owed() {
+        use mesimon_core::forge::Remote;
+        let t = ulid::Ulid::new();
+        // No forge reads this board: the look out holds nothing.
+        let mut s = crate::forge::State::default();
+        s.remotes.insert("/r".into(), None);
+        s.looking.insert(t);
+        assert!(!forge_holds(s.awaited(t), 5_000, 5_000), "no forge");
+        // A forge: while the look is out, it may find a push.
+        let mut s = crate::forge::State::default();
+        s.remotes
+            .insert("/r".into(), Some(Remote { host: "github.com".into(), path: "o/r".into() }));
+        s.looking.insert(t);
+        assert!(forge_holds(s.awaited(t), 5_000, 5_000), "the look is out");
+        // It found nothing pushed and nothing opened: no read is owed.
+        s.looking.remove(&t);
+        assert!(!forge_holds(s.awaited(t), 5_000, 5_000), "nothing pushed");
+        // It found a push: held until a read begun after the turn's end.
+        s.owed.insert(t, 5_000);
+        assert!(forge_holds(s.awaited(t), 5_000, 6_000), "pushed");
+        s.answer([t].iter(), 4_000);
+        assert!(forge_holds(s.awaited(t), 5_000, 6_000), "a read begun before answers nothing");
+        assert!(!forge_holds(s.awaited(t), 5_000, 5_000 + FORGE_WAIT_MS), "15 s pass");
+        s.answer([t].iter(), 5_100);
+        assert!(!forge_holds(s.awaited(t), 5_000, 6_000), "the read landed");
+        // The line says the opening, before what the read says of the PR.
+        let mut to = Some(branch("aaa", "ahead", 1, "REVIEW"));
+        say_first(&mut to, "opened !2".into());
+        let mut wake = CrownWake {
+            worker: t,
+            cause: WakeCause::Delivered,
+            from: Some(branch("000", "clean", 0, "IN PROGRESS")),
+            to,
+            finished: false,
+            linger: None,
+            late: false,
+        };
+        let passed = Told {
+            forge: Some("pipeline passed !2".into()),
+            ..branch("aaa", "ahead", 1, "REVIEW")
+        };
+        wake.fold(WakeCause::Forge, None, Some(passed));
+        assert_eq!(wake.cause, WakeCause::Delivered);
+        assert_eq!(
+            wake.changed(),
+            [
+                "merge_state clean → ahead",
+                "ahead 0 → 1",
+                "column REVIEW",
+                "opened !2, pipeline passed !2"
+            ]
+        );
     }
 }

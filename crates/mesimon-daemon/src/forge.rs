@@ -17,7 +17,7 @@
 //! door shut. A repository whose call failed is reported, not retried in a
 //! loop: the next sample waits `BACKOFF`.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -171,9 +171,9 @@ pub struct Query {
 /// against the previous read, never a first one, which is a baseline.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Edge {
-    /// An open PR its ticket's reads never held (T-767): an opening, never
-    /// a re-read.
-    pub opened: bool,
+    /// Open PRs, by label, its ticket's reads never held (T-767): an
+    /// opening, never a re-read.
+    pub opened: Vec<String>,
     /// Newly held open PRs, by label, bound with a settled pipeline:
     /// passed, failed or waiting (T-769). A PR opened and judged between
     /// two reads says that state as its first edge.
@@ -226,7 +226,7 @@ pub struct Conflict {
 
 impl Edge {
     pub fn any(&self) -> bool {
-        self.opened
+        !self.opened.is_empty()
             || !self.bound.is_empty()
             || self.passed
             || self.merged
@@ -244,11 +244,17 @@ impl Edge {
     /// deploy:production !1`, `deployed to staging !1`, `conflict !1`,
     /// `conflict cleared !1`, `review approved !1`, `changes requested !1`,
     /// `pipeline failed !1: test-linux`, in the forge's order: merged, then
-    /// the pipelines, then deployed (T-769). Never an opening (the worker's
-    /// turn end carries it), but a newly bound PR's settled state is said
-    /// (T-769). A merge is said only where the caller left it in `landed`:
+    /// the pipelines, then deployed (T-769). Never an opening, which wakes
+    /// no one by itself: the worker's turn end carries it (`opening`,
+    /// T-773). A newly bound PR's settled state is said (T-769). A merge is said only where the caller left it in `landed`:
     /// the flags' merged wake says the one that lands the worktree's branch
     /// (T-757). `new` is the read the edge was taken on, for the labels.
+    /// The openings in the crown's words (T-773): `opened !2`, said only
+    /// on the wake of the turn that opened them.
+    pub fn opening(&self) -> Vec<String> {
+        self.opened.iter().map(|l| format!("opened {l}")).collect()
+    }
+
     pub fn news(&self, new: &[Pr]) -> Vec<String> {
         let labels = |pick: &dyn Fn(&Pr) -> bool| -> String {
             new.iter().filter(|p| pick(p)).map(Pr::label).collect::<Vec<_>>().join(" ")
@@ -354,7 +360,7 @@ pub fn edge(old: &[Pr], new: &[Pr], held: &[(String, u64)]) -> Edge {
         .collect();
     let verdict = |r: Review| matches!(r, Review::Approved | Review::ChangesRequested);
     Edge {
-        opened: !fresh.is_empty(),
+        opened: fresh.iter().map(|p| p.label()).collect(),
         bound: fresh
             .iter()
             .filter(|p| {
@@ -980,6 +986,9 @@ pub struct State {
     pub asked: HashMap<String, Instant>,
     /// A turn's end's read is out.
     pub burst_inflight: bool,
+    /// The tickets whose own look (T-761's) is out with a forge half: not
+    /// yet known whether their turn's end owes a read (T-773).
+    pub looking: HashSet<ulid::Ulid>,
 }
 
 impl State {
@@ -1056,12 +1065,34 @@ impl State {
     /// (`unchanged`, T-761). Before the first probe nothing is known and
     /// nothing is fresh: the train waits a bucket.
     pub fn fresh(&self, ticket: ulid::Ulid, turn_end: u64, opened: &[String]) -> bool {
-        let no_forge = !self.remotes.is_empty()
-            && (self.remotes.values().all(Option::is_none)
-                || (!self.probes.is_empty() && self.probes.values().all(|p| p.cli.is_none())));
-        no_forge
+        self.none()
             || self.at_ms.get(&ticket).is_some_and(|read_at| *read_at >= turn_end)
             || self.unchanged(ticket, turn_end, opened)
+    }
+
+    /// No forge reads this board: every remote parsed to none, or every
+    /// host probed to no CLI.
+    fn none(&self) -> bool {
+        !self.remotes.is_empty()
+            && (self.remotes.values().all(Option::is_none)
+                || (!self.probes.is_empty() && self.probes.values().all(|p| p.cli.is_none())))
+    }
+
+    /// A read the ticket's turn's end waits for (T-773): its look is out
+    /// and may find a push, or it found one and no read begun since has
+    /// answered. Nothing on a board no forge reads.
+    pub fn awaited(&self, ticket: ulid::Ulid) -> bool {
+        !self.none() && (self.looking.contains(&ticket) || self.owed.contains_key(&ticket))
+    }
+
+    /// A read begun at `at_ms` landed with these tickets' sets: each owed
+    /// since then is answered.
+    pub fn answer<'a>(&mut self, tickets: impl IntoIterator<Item = &'a ulid::Ulid>, at_ms: u64) {
+        for t in tickets {
+            if self.owed.get(t).is_some_and(|since| at_ms >= *since) {
+                self.owed.remove(t);
+            }
+        }
     }
 
     /// The set read before `ticket`'s turn ended still holds (T-761): the
@@ -1372,14 +1403,14 @@ mod tests {
         m.merge_oid = "m1".into();
         let old = [pr(1, PrState::Open, Pipeline::Running)];
         let e = edge(&old, &[m.clone()]);
-        assert!(e.merged && !e.opened && e.deployed.is_empty());
+        assert!(e.merged && e.opened.is_empty() && e.deployed.is_empty());
         assert!(!e.passed, "the merge commit's pipeline is no pass (T-767)");
         m.deployed = vec!["staging".into()];
         let e = edge(&[pr(1, PrState::Merged, Pipeline::Passed)], &[m.clone()]);
         assert_eq!(e.deployed, ["staging"]);
         assert!(!e.merged, "merged before too");
         let e = edge(&[m.clone()], &[pr(2, PrState::Open, Pipeline::None), m.clone()]);
-        assert!(e.opened && !e.merged, "a follow-up PR opens");
+        assert!(!e.opened.is_empty() && !e.merged, "a follow-up PR opens");
         assert!(!edge(&[], &[]).any());
     }
 
@@ -1516,7 +1547,7 @@ mod tests {
         // A follow-up PR opening green on a merged, passed set is a pass too.
         let done = [merged(Pipeline::Passed, &[])];
         let e = edge(&done, &[open(Pipeline::Passed), merged(Pipeline::Passed, &[])]);
-        assert!(e.passed && e.opened);
+        assert!(e.passed && !e.opened.is_empty());
     }
 
     /// T-767: an opening is a PR the ticket's reads never held; one read
@@ -1693,11 +1724,11 @@ mod tests {
         fresh.conflict = true;
         fresh.review = Review::Approved;
         let e = edge(std::slice::from_ref(&running), &[fresh.clone(), running.clone()]);
-        assert!(e.opened);
+        assert!(!e.opened.is_empty());
         assert_eq!(e.news(&[fresh, running.clone()]), ["conflict !2", "review approved !2"]);
         let quiet = gl(2, Pipeline::Running);
         let e = edge(std::slice::from_ref(&running), &[quiet.clone(), running.clone()]);
-        assert!(e.opened);
+        assert!(!e.opened.is_empty());
         assert!(e.news(&[quiet, running.clone()]).is_empty());
         // The merge commit reached an environment; several edges on one
         // pass are one list.
@@ -1729,7 +1760,7 @@ mod tests {
         let one = gl(1, PrState::Merged, Pipeline::Passed);
         let now = [gl(2, PrState::Open, Pipeline::Passed), one.clone()];
         let e = edge(std::slice::from_ref(&one), &now);
-        assert!(e.opened && e.passed);
+        assert!(!e.opened.is_empty() && e.passed);
         assert_eq!(e.news(&now), ["pipeline passed !2"]);
         // Beside an open PR that passed already: the set's edge is silent,
         // the new PR's is not.
