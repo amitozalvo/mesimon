@@ -24615,3 +24615,12 @@ present and one dead board (a T-215 board, 52 KB); a fabricated dead board with 
 worktree, a branch and a live tmux server was listed by the dry pass untouched, then cleared
 whole; a board found by its `rig/parent` record alone was cleared; the init script skips for a
 ticket-worktree checkout and seeds for a `main` one.
+
+## The composer's workspace row drops `(default)` (T-766, 2026-10-14)
+
+The new-ticket card's workspace row said `⎇ worktree (default)` while the pick was the column's
+own workspace default (T-117's readout, kept when T-117's ring went to two explicit stops). The
+author asked for the tail to go: the row now names the pick alone, on every column, and the
+`shift+tab` hint takes the room the tail held. `render_workspace_selector` no longer takes the
+column's default. The multi-line composer dialog never spelled it. Golden
+`composer_column_default_120x30` reminted; its test asserts no `(default)`.

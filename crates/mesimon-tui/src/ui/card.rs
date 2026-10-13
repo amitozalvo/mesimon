@@ -178,7 +178,6 @@ pub(super) fn render_ask_field(
 pub(super) fn render_workspace_selector(
     ctx: &CardCtx,
     workspace: Option<mesimon_core::board::WorkspaceStrategy>,
-    column_default: Option<mesimon_core::board::WorkspaceStrategy>,
     plan: bool,
     tier_word: Option<&str>,
 ) -> Line<'static> {
@@ -188,9 +187,8 @@ pub(super) fn render_workspace_selector(
         Some(mesimon_core::board::WorkspaceStrategy::AdoptExisting) => "adopt",
         Some(mesimon_core::board::WorkspaceStrategy::SharedCheckout) | None => "shared",
     };
-    // The column's own default, while the field still stands on it (T-117).
-    let from_column = column_default.is_some() && workspace == column_default;
-    let word = if from_column { format!("{word} (default)") } else { word.to_string() };
+    // No `(default)` tail when the pick is the column's own (T-766): the
+    // word is the workspace the ticket gets, wherever it came from.
     let mut spans = vec![
         Span::raw(" ".repeat(BAR_WIDTH + 1)),
         Span::styled(format!("⎇ {word}"), Style::default().fg(theme.sel.dim1)),

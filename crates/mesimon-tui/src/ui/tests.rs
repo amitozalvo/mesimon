@@ -1773,7 +1773,8 @@ fn golden_help_header_bar_120() {
     golden("help_header_bar_120x30", &lines);
 }
 
-/// The composer on a column with a workspace default says so on its row.
+/// The composer on a column with a workspace default names the pick alone,
+/// with no `(default)` tail (T-766).
 #[test]
 fn golden_composer_column_default_120() {
     let mut board = fixture(false);
@@ -1781,7 +1782,8 @@ fn golden_composer_column_default_120() {
     let mut app = app_graphite(board);
     press(&mut app, 'o');
     let lines = render(&app, 120, 30);
-    assert!(lines.iter().any(|l| l.contains("worktree (default)")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("⎇ worktree")), "{lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("(default)")), "{lines:?}");
     golden("composer_column_default_120x30", &lines);
 }
 

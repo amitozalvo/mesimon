@@ -12765,10 +12765,9 @@ impl App {
 /// shared, shared, and coming back from `worktree` took two presses to reach
 /// it again (user, 2026-09-07). Naming the pick outright costs nothing —
 /// `create_ticket` stamps the column's default only where the field is
-/// absent, and both stops resolve to the same two outcomes — while the row's
-/// `(column default)` tail (`card::render_workspace_selector`) is what says
-/// when the pick happens to BE the column's own, which is the readout the
-/// third stop was standing in for.
+/// absent, and both stops resolve to the same two outcomes. The row says the
+/// pick alone; a `(default)` tail for the column's own pick was dropped
+/// (T-766).
 fn cycled_workspace(current: Option<WorkspaceStrategy>) -> Option<WorkspaceStrategy> {
     Some(match current.unwrap_or(mesimon_core::board::DEFAULT_WORKSPACE) {
         WorkspaceStrategy::Worktree => WorkspaceStrategy::SharedCheckout,

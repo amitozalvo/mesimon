@@ -396,12 +396,10 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             // blind until the ticket exists.
             let painted = crate::tags::painted(&app.board, tags);
             let (line, x_off) = card::render_edit(&ctx, buf, &painted);
-            let column_default = app.board.column(name).and_then(|c| c.settings.workspace);
             let tier_word = app.field_tier_word(None, tier.as_deref());
             let selector = card::render_workspace_selector(
                 &ctx,
                 *workspace,
-                column_default,
                 *plan,
                 tier_word.as_deref(),
             );
