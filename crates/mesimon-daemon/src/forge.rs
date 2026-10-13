@@ -175,14 +175,22 @@ pub struct Edge {
     /// `requires_pipeline` waits for, never a merged commit's pipeline,
     /// which is the deploy edges' (`waiting`, `deployed`).
     pub passed: bool,
-    /// Every PR of the set is merged, and was not before.
+    /// Every PR of the set is merged, and was not before: the ticket's
+    /// arrival, on every repository at once (T-768). A closed PR is out of
+    /// the set (`forge::ticket_set`).
     pub merged: bool,
     /// PRs, by label, read merged that were read open before (T-757): what
     /// the crown hears of a merge the worktree flags cannot say, the caller
     /// keeping them only then.
     pub landed: Vec<String>,
-    /// Environments a merge commit reached since.
+    /// Environments the ticket reached since, as a whole (T-768): no PR
+    /// open, and every repository's newest merged PR's merge commit there.
+    /// One repository's progress is not the ticket's.
     pub deployed: Vec<String>,
+    /// PRs, by label, whose merge commit reached an environment since, with
+    /// the environment: what the crown hears, per PR, before the ticket
+    /// has arrived.
+    pub reached: Vec<(String, String)>,
     /// The set's pipeline turned failed: the job's word, empty where the
     /// forge named none.
     pub failed: Option<String>,
@@ -203,6 +211,7 @@ impl Edge {
             || self.merged
             || !self.landed.is_empty()
             || !self.deployed.is_empty()
+            || !self.reached.is_empty()
             || self.failed.is_some()
             || self.waiting.is_some()
             || !self.conflict.is_empty()
@@ -242,13 +251,8 @@ impl Edge {
                 j => out.push(format!("waiting on {j}{}", tail(label))),
             }
         }
-        for env in &self.deployed {
-            let label = new
-                .iter()
-                .find(|p| p.state == PrState::Merged && p.deployed.contains(env))
-                .map(Pr::label)
-                .unwrap_or_default();
-            out.push(format!("deployed to {}{}", forge::job_word(env), tail(label)));
+        for (label, env) in &self.reached {
+            out.push(format!("deployed to {} {label}", forge::job_word(env)));
         }
         for (label, on) in &self.conflict {
             out.push(if *on {
@@ -268,22 +272,29 @@ impl Edge {
     }
 }
 
+/// The environments a ticket's set has reached as a whole (T-768): none
+/// while a PR is open, else those every repository's newest merged PR's
+/// merge commit reached — the one a read asks of (`sample`), an older
+/// merge there being in its history.
+fn arrived_envs(set: &[Pr]) -> Vec<String> {
+    if set.iter().any(|p| p.state.is_open()) {
+        return Vec::new();
+    }
+    let mut newest: Vec<&Pr> = Vec::new();
+    for p in set.iter().filter(|p| p.state == PrState::Merged) {
+        if !newest.iter().any(|n| n.repo == p.repo) {
+            newest.push(p);
+        }
+    }
+    let Some((first, rest)) = newest.split_first() else { return Vec::new() };
+    first.deployed.iter().filter(|e| rest.iter().all(|p| p.deployed.contains(e))).cloned().collect()
+}
+
 /// The edge between two reads of one ticket's set.
 pub fn edge(old: &[Pr], new: &[Pr]) -> Edge {
     let was = |p: &Pr| old.iter().find(|o| o.repo == p.repo && o.number == p.number);
     let all_merged = |s: &[Pr]| !s.is_empty() && s.iter().all(|p| p.state == PrState::Merged);
-    let envs = |s: &[Pr]| -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
-        for p in s.iter().filter(|p| p.state == PrState::Merged) {
-            for e in &p.deployed {
-                if !out.contains(e) {
-                    out.push(e.clone());
-                }
-            }
-        }
-        out
-    };
-    let before = envs(old);
+    let before = arrived_envs(old);
     let (then, now) = (forge::pipeline_of(old), forge::pipeline_of(new));
     // The open set's own: a merged commit's pipeline passing is its deploy
     // run finishing, never a ticket's pipeline passing (T-767).
@@ -306,7 +317,18 @@ pub fn edge(old: &[Pr], new: &[Pr]) -> Edge {
             .filter(|p| was(p).is_some_and(|o| o.state.is_open()))
             .map(Pr::label)
             .collect(),
-        deployed: envs(new).into_iter().filter(|e| !before.contains(e)).collect(),
+        deployed: arrived_envs(new).into_iter().filter(|e| !before.contains(e)).collect(),
+        reached: new
+            .iter()
+            .filter(|p| p.state == PrState::Merged)
+            .flat_map(|p| {
+                let had = was(p).filter(|o| o.state == PrState::Merged);
+                p.deployed
+                    .iter()
+                    .filter(move |e| !had.is_some_and(|o| o.deployed.contains(e)))
+                    .map(move |e| (p.label(), e.clone()))
+            })
+            .collect(),
         failed: match &now {
             Pipeline::Failed(job) if !matches!(then, Pipeline::Failed(_)) => Some(job.clone()),
             _ => None,
@@ -1278,6 +1300,67 @@ mod tests {
         assert!(!s.opens(t, &[two, one.clone()]), "a merged PR opens nothing");
         assert!(s.opens(t, &[pr(3, PrState::Draft, Pipeline::None), one]));
         assert!(!s.opens(ulid::Ulid::new(), &[]));
+    }
+
+    /// T-768: a ticket with a PR on two repositories arrives as its least
+    /// advanced PR: one merged and deployed beside one open is neither
+    /// merged nor deployed, both merged and one deployed is merged and not
+    /// deployed, both deployed is deployed. The crown hears each PR's
+    /// deployment as it comes.
+    #[test]
+    fn a_ticket_arrives_as_its_least_advanced_pr() {
+        let gl = |repo: &str, n: u64, state: PrState, deployed: &[&str]| {
+            let mut p = pr(n, state, Pipeline::Passed);
+            p.forge = Forge::GitLab;
+            p.repo = repo.into();
+            p.merge_oid = if state == PrState::Merged { format!("m{n}") } else { String::new() };
+            p.deployed = deployed.iter().map(|d| d.to_string()).collect();
+            p
+        };
+        let open = [gl("g/web", 1, PrState::Open, &[]), gl("g/api", 3, PrState::Open, &[])];
+        let web =
+            [gl("g/web", 1, PrState::Merged, &["staging"]), gl("g/api", 3, PrState::Open, &[])];
+        let e = edge(&open, &web);
+        assert!(!e.merged && e.deployed.is_empty(), "api's !3 is open: {e:?}");
+        assert_eq!(e.news(&web), ["merged !1", "deployed to staging !1"]);
+        let both =
+            [gl("g/web", 1, PrState::Merged, &["staging"]), gl("g/api", 3, PrState::Merged, &[])];
+        let e = edge(&web, &both);
+        assert!(e.merged && e.deployed.is_empty(), "api's merge commit is not on staging: {e:?}");
+        assert_eq!(e.news(&both), ["merged !3"]);
+        let staged = [
+            gl("g/web", 1, PrState::Merged, &["staging"]),
+            gl("g/api", 3, PrState::Merged, &["staging"]),
+        ];
+        let e = edge(&both, &staged);
+        assert!(!e.merged);
+        assert_eq!(e.deployed, ["staging"]);
+        assert_eq!(e.news(&staged), ["deployed to staging !3"]);
+        // web on production first: heard, and no arrival until api is too.
+        let prod = [
+            gl("g/web", 1, PrState::Merged, &["staging", "production"]),
+            gl("g/api", 3, PrState::Merged, &["staging"]),
+        ];
+        let e = edge(&staged, &prod);
+        assert!(e.deployed.is_empty());
+        assert_eq!(e.news(&prod), ["deployed to production !1"]);
+        let all = [
+            gl("g/web", 1, PrState::Merged, &["staging", "production"]),
+            gl("g/api", 3, PrState::Merged, &["staging", "production"]),
+        ];
+        assert_eq!(edge(&prod, &all).deployed, ["production"]);
+        // An older merged PR on a repository is in its newer one's history:
+        // only the newest is asked, and the newest decides.
+        let older = [all[0].clone(), all[1].clone(), gl("g/api", 2, PrState::Merged, &[])];
+        assert_eq!(edge(&both, &older).deployed, ["staging", "production"]);
+        // A pass is every open PR's.
+        let running = [gl("g/web", 1, PrState::Open, &[]), {
+            let mut p = gl("g/api", 3, PrState::Open, &[]);
+            p.pipeline = Pipeline::Running;
+            p
+        }];
+        assert!(!edge(&running, &running).passed);
+        assert!(edge(&running, &open).passed);
     }
 
     /// T-757: a PR read open and then merged is `landed`, by label, and the

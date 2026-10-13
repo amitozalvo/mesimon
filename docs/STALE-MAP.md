@@ -24031,6 +24031,37 @@ open PR, a conflict, a stale verdict), `prefs` (both new keys), the keymap laws,
 the board woke the crown `pipeline`, the crown's `ask_agent` reached the worker, which replied
 `noted`. `cargo nextest run --workspace`: 2319 passed.
 
+## A ticket arrives as its least advanced PR (T-768, 2026-10-14, follow-up to T-739)
+
+**Why.** The forge lab's finding 8 (2026-10-13, scenario C1: one ticket, MRs on `api` and `web`).
+STAGING took the ticket when web's !1 was merged and on staging while api's !3 was still open,
+and PROD when web's !1 reached production while api's !3 waited on `deploy:production`.
+`forge::edge` built `deployed` from the union of every merged PR's environments, so one
+repository's progress was the ticket's.
+
+**The rule.** An arrival is the ticket's, and the ticket is as far as its least advanced PR:
+- `Edge.merged`: every PR of the set merged. Already so (`all_merged`; a closed PR is out of the
+  set, `forge::ticket_set`), and what `ticket_merged`'s forge clause asks per leg.
+- `Edge.deployed` to E (`forge::arrived_envs`): no PR open, and each repository's newest merged
+  PR's merge commit reached E. The newest alone, because it is the one a read asks deployments
+  of, and an older merge on that repository is in its history.
+- `Edge.passed`: every open PR passed, which T-767's worst-over-open already reads.
+
+**The crown's words stay per PR.** `Edge.reached` keeps each merged PR's newly reached
+environments by label, read against that PR's own last read, and `Edge::news` says
+`deployed to staging !1` from it: an edge, heard before the ticket arrives. It also names the PR
+correctly where the old fallback found the first merged PR with the environment, and it says a
+later PR's deployment on a repository an earlier one had already put there.
+
+**Tests.** Unit `a_ticket_arrives_as_its_least_advanced_pr` (web merged and on staging beside
+api open: neither merged nor deployed, `deployed to staging !1` heard; both merged, one on
+staging: merged, not deployed; both: deployed, `deployed to staging !3` heard; production the
+same; an older merged PR on a repository does not hold it back; a pass is every open PR's).
+`forge_e2e::a_deployed_arrival_waits_for_every_repositorys_pr`: a folder workspace with `api`
+and `web`, a PR in each, REVIEW on `deployed: staging`; the ticket stays put while api's PR is
+open and while its merge commit is off staging, and arrives once it is on. It fails on the old
+rule.
+
 ## A merged PR's pipeline is no pass (T-767, 2026-10-14, follow-up to T-739)
 
 **Why.** The forge lab's worst finding (2026-10-13, scenario C1): a ticket whose two MRs had

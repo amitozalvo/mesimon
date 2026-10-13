@@ -23,6 +23,9 @@
 //! nothing; a second conflict at the same local base is asked about again;
 //! and a restart asks nothing it already asked.
 //!
+//! A ticket arrives as its least advanced PR (T-768): with a PR on each of
+//! two repositories, a `deployed` column waits for the second one.
+//!
 //! The stub is the forge: `auth status` passes, `pr list` prints the file
 //! the test writes, `api …/check-runs` the merge commit's pipeline. No
 //! network, no token, nothing of the real CLI.
@@ -1257,5 +1260,167 @@ fn a_pr_conflict_is_asked_about_once_and_again_only_when_it_returns() {
     passes();
     assert_eq!(asks(), 2, "a restart asks nothing it asked");
     let _ = c.request(Command::Shutdown);
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// The stub `gh` for two repositories (T-768): `pr list` and the
+/// deployments answer per repository, from `<file>.<repo name>`.
+const GH_TWO_STUB: &str = r#"#!/bin/sh
+case "$1 $2" in
+  "auth status") exit 0 ;;
+  "pr list") cat "$MSMN_GH_PRS.${4##*/}" 2>/dev/null || echo '[]' ;;
+  api\ *)
+    repo=$(echo "$4" | cut -d/ -f3)
+    case "$4" in
+      *check-runs*) echo '{"check_runs":[]}' ;;
+      *deployments/*/statuses*) echo '[{"state":"success"}]' ;;
+      *deployments*) cat "$MSMN_GH_DEPLOYS.$repo" 2>/dev/null || echo '[]' ;;
+      *) echo '{}' ;;
+    esac ;;
+  *) echo "stub gh: $*" >&2; exit 1 ;;
+esac
+"#;
+
+/// A ticket's arrival is its least advanced PR (T-768): on a folder
+/// workspace with a PR in each of two repositories, a column that arrives
+/// on `deployed: staging` waits while one PR is open, and while one merged
+/// commit is not on staging, and takes the ticket once both are.
+#[test]
+fn a_deployed_arrival_waits_for_every_repositorys_pr() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    let stub_dir = std::env::temp_dir().join(format!("msmn-forge-two-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&stub_dir);
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    let gh = stub_dir.join("gh");
+    std::fs::write(&gh, GH_TWO_STUB).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let prs = stub_dir.join("prs");
+    let deploys = stub_dir.join("deploys");
+    let path_var = format!(
+        "{}:{}",
+        stub_dir.display(),
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+    );
+    let Some(h) = Harness::boot_with_env(
+        "forge_two",
+        Some(STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs.display().to_string()),
+            ("MSMN_GH_DEPLOYS", &deploys.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    // The root stays a folder; each nested repository has its own remote.
+    let root = h.repo.clone();
+    for name in ["api", "web"] {
+        init_repo(&root.join(name), "a.txt", "one\n");
+        let url = format!("https://github.com/example/{name}.git");
+        git(&root.join(name), &["remote", "add", "origin", &url]);
+    }
+    let mut c = h.client("forge_two");
+    let id = match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "two repos".into(),
+        workspace: None,
+        tier: None,
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("create: {other:?}"),
+    };
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    assert!(matches!(
+        c.request(Command::SpawnSession {
+            ticket: id,
+            kind: SessionKind::Claude,
+            submit_prompt: false,
+            plan: false
+        }),
+        Response::Provisioning
+    ));
+    let wt = wait_attached(&mut c, id);
+    let names: Vec<&str> = wt.repos.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, ["api", "web"]);
+    let container = PathBuf::from(wt.path.clone().expect("a path"));
+    let tip = |name: &str| git(&container.join(name), &["rev-parse", "HEAD"]).trim().to_string();
+    let (api_tip, web_tip) = (tip("api"), tip("web"));
+
+    let mut review = c.board().column("REVIEW").unwrap().settings.clone();
+    review.arrives_on = Arrival::Deployed;
+    review.arrives_env = Some("staging".into());
+    assert!(matches!(
+        c.request(Command::SetColumnSettings { name: "REVIEW".into(), settings: review }),
+        Response::Ok
+    ));
+    let pr = |repo: &str, number: u64, head: &str, merge: Option<&str>| {
+        let (state, merge) = match merge {
+            Some(oid) => ("MERGED", format!(r#"{{"oid":"{oid}"}}"#)),
+            None => ("OPEN", "null".to_string()),
+        };
+        format!(
+            r#"[{{"number":{number},"url":"https://github.com/example/{repo}/pull/{number}","state":"{state}",
+              "isDraft":false,"headRefName":"{}","headRefOid":"{head}","mergeCommit":{merge},
+              "mergeable":"MERGEABLE","reviewDecision":"APPROVED","updatedAt":"2026-10-13T06:00:00Z",
+              "statusCheckRollup":[]}}]"#,
+            wt.branch
+        )
+    };
+    let staging = |repo: &str, sha: &str| {
+        write(
+            &deploys.with_extension(repo),
+            &format!(r#"[{{"id":7,"sha":"{sha}","environment":"staging"}}]"#),
+        );
+    };
+    let deployed_of = |c: &mut TestClient, number: u64| {
+        prs_of(c)
+            .into_iter()
+            .find(|p| p.ticket == id && p.number == number)
+            .is_some_and(|p| p.deployed.iter().any(|d| d == "staging"))
+    };
+    let column = |c: &mut TestClient| c.board().ticket(id).unwrap().column.clone();
+    let (web_merge, api_merge) =
+        ("1111111111111111111111111111111111111111", "3333333333333333333333333333333333333333");
+
+    // ---- both open: the baseline -------------------------------------------
+    write(&prs.with_extension("web"), &pr("web", 1, &web_tip, None));
+    write(&prs.with_extension("api"), &pr("api", 3, &api_tip, None));
+    wait_until(Duration::from_secs(20), "both PRs to bind", || {
+        let got = prs_of(&mut c);
+        [1, 3].iter().all(|n| got.iter().any(|p| p.ticket == id && p.number == *n))
+    });
+
+    // ---- web merged and on staging, api open: no arrival --------------------
+    staging("web", web_merge);
+    write(&prs.with_extension("web"), &pr("web", 1, &web_tip, Some(web_merge)));
+    wait_until(Duration::from_secs(20), "web's merge commit on staging", || deployed_of(&mut c, 1));
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_ne!(column(&mut c), "REVIEW", "api's PR is open");
+
+    // ---- api merged, its merge commit not on staging: still none -----------
+    write(&prs.with_extension("api"), &pr("api", 3, &api_tip, Some(api_merge)));
+    wait_until(Duration::from_secs(20), "api's merge", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == id && p.number == 3 && p.state == "merged")
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_ne!(column(&mut c), "REVIEW", "api's merge commit is not on staging");
+
+    // ---- api on staging too: the ticket arrives ----------------------------
+    staging("api", api_merge);
+    wait_until(Duration::from_secs(20), "the ticket to arrive in REVIEW", || {
+        column(&mut c) == "REVIEW"
+    });
+    assert!(deployed_of(&mut c, 3));
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
