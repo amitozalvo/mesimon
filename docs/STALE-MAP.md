@@ -24253,3 +24253,28 @@ layer there.
 **Tests.** Core `default_tier_detail_names_the_other_layer`, `scope_words_say_inherited_set_or_machine`
 (the machine-scope half); TUI `default_tier_row_reads_the_boards_pick_in_machine_scope`,
 `a_board_override_is_the_rows_value_in_machine_scope`; golden `settings_codex_60x20`.
+
+## The peek keeps the agent's last words through a long tool run (T-755, 2026-10-13)
+
+Seen on T-754's card: the pane's newest line was a progress note, and the card showed the
+turn's prompt. Replayed record by record over that transcript, the reader was right about the
+note at every step it could see it. After the note at 19:32:47Z came 6 m 42 s of private thinking
+and tool output, more than 256 KiB of it. The note fell out of the last window
+(`TAIL_BYTES_MAX`), and the walk took the `last-prompt` latch, the prompt, as the agent's words
+until the next note landed. Narration was never the problem (T-604 reads it).
+
+- **A cached read resumes where the last one stood** (`agents::read_preview_after`,
+  `history::preview_after`). It reads only the bytes appended since. If they hold no reply and no
+  prompt, the prior words carry forward and only the activity is renewed: nothing between the
+  words and the prior end said anything, so no amount of tool traffic pushes them out. The
+  `PreviewRead` mark is the offset past the last whole line, so a record half-written at one read
+  is read whole at the next, plus a hash of the 256 bytes before it. A file that shrank or was
+  rewritten reads afresh. Both caches resume: the TUI's `PeekCache` (card, ticket page, spoke
+  scan, notifier) and the phone's `control_words`. Codex keeps the default, a fresh read.
+- **A fresh read adds a 4 MiB rung** (`TAIL_BYTES_DEEP`) after 64 KiB and 256 KiB. Since every
+  later read is incremental, a board opened mid-gap pays it once per transcript, not once a
+  second. The census's drawer preview keeps its own two rungs.
+
+**Tests.** Daemon `the_last_words_outlive_any_amount_of_tool_traffic` (600 KiB of tool traffic
+carried, a half-written record, a fresh read 400 KiB deep, a shorter and a longer rewrite); TUI
+`test_preview_pages_a_long_reply` holds the longer rewrite on the card.

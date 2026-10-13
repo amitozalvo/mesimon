@@ -40,6 +40,9 @@ struct Entry {
     len: u64,
     mtime_ms: u64,
     peek: Rc<Peek>,
+    /// The read `peek` was sanitized from: the next read of the grown file
+    /// resumes where it stood (T-755).
+    read: mesimon_daemon::agents::PreviewRead,
     /// When the file was last stat'ed. A read under `FRESH` after it is
     /// answered from the entry without touching the disk.
     checked_at: Instant,
@@ -93,19 +96,21 @@ impl PeekCache {
                 return Some(Rc::clone(&e.peek));
             }
         }
-        let raw = mesimon_daemon::agents::read_preview(kind, Path::new(path))?;
+        let prior = map.get(path).filter(|e| e.kind == kind).map(|e| &e.read);
+        let read = mesimon_daemon::agents::read_preview_after(kind, Path::new(path), prior)?;
+        let raw = &read.preview;
         let peek = Rc::new(Peek {
             text: raw.text.as_deref().map(sanitize),
-            activity: raw.activity.map(|d| match d {
+            activity: raw.activity.as_ref().map(|d| match d {
                 // A step title is a row, never a block: flatten it here.
-                Doing::Tool(t) => Doing::Tool(crate::text::one_line(&sanitize(&t))),
+                Doing::Tool(t) => Doing::Tool(crate::text::one_line(&sanitize(t))),
                 Doing::Thinking => Doing::Thinking,
             }),
             reply_key: raw.reply_key,
         });
         map.insert(
             path.to_string(),
-            Entry { kind, len, mtime_ms, peek: Rc::clone(&peek), checked_at: now },
+            Entry { kind, len, mtime_ms, peek: Rc::clone(&peek), read, checked_at: now },
         );
         Some(peek)
     }

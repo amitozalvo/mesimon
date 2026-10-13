@@ -17,6 +17,23 @@ pub struct AgentPreview {
     pub reply_key: Option<u64>,
 }
 
+/// A preview and where its read stood in the file, so the next read of a
+/// grown file can begin there (T-755). `settled` is `None` for an adapter
+/// that always reads afresh.
+#[derive(Clone, Debug, Default)]
+pub struct PreviewRead {
+    pub preview: AgentPreview,
+    settled: Option<Settled>,
+}
+
+/// The offset a read stopped at, and a hash of the bytes just before it: a
+/// file rewritten rather than appended to reads afresh.
+#[derive(Clone, Copy, Debug)]
+struct Settled {
+    at: u64,
+    seal: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AgentActivity {
     Tool(String),
@@ -54,6 +71,18 @@ pub fn adapter(kind: SessionKind) -> Option<&'static dyn AgentAdapter> {
 /// Native history formats are interpreted only by their owning adapter.
 pub fn read_preview(provider: SessionKind, path: &Path) -> Option<AgentPreview> {
     adapter(provider)?.preview(path)
+}
+
+/// `read_preview`, resumed from `prior`, a read of the same file by the same
+/// provider: what a cache that re-reads a growing transcript asks, since
+/// only the appended bytes are read and the words already found carry
+/// forward (T-755).
+pub fn read_preview_after(
+    provider: SessionKind,
+    path: &Path,
+    prior: Option<&PreviewRead>,
+) -> Option<PreviewRead> {
+    adapter(provider)?.preview_after(path, prior)
 }
 
 /// A page of a session's transcript for Remote Control (T-626), each record
@@ -232,6 +261,11 @@ pub trait AgentAdapter {
         HookObservation::default()
     }
     fn preview(&self, path: &Path) -> Option<AgentPreview>;
+    /// `preview`, resumed from a prior read of the same file; an adapter
+    /// that cannot resume reads afresh.
+    fn preview_after(&self, path: &Path, _prior: Option<&PreviewRead>) -> Option<PreviewRead> {
+        self.preview(path).map(|preview| PreviewRead { preview, settled: None })
+    }
     /// What one transcript record at byte offset `at` shows a phone (T-626):
     /// none, or its rows in order.
     fn rows(

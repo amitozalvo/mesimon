@@ -3,7 +3,7 @@
 //! "What the agent said" is `adopt::assistant_text`'s word: a text block, or
 //! the progress note a Claude 5 model writes before a tool call (T-604).
 
-use crate::agents::{AgentActivity, AgentPreview};
+use crate::agents::{AgentActivity, AgentPreview, PreviewRead};
 use mesimon_core::adopt::{
     assistant_text, is_compact_summary, is_interrupt, narration, record_ms, tool_activity,
     tool_label, user_prompt,
@@ -65,28 +65,108 @@ const TAIL_BYTES: u64 = 64 * 1024;
 /// Read only when the first window holds no reply — same escalation, same
 /// size, and for the same measured reason as the census's drawer preview.
 const TAIL_BYTES_MAX: u64 = 256 * 1024;
+/// The last rung, for a first read only: a turn of private thinking and big
+/// tool results put the agent's last words ~300 KiB back on T-754 within
+/// eight minutes, and below that rung the peek read the `last-prompt` latch
+/// — the turn's prompt — as what the agent was on (T-755). Every read after
+/// the first scans only what was appended (`preview_after`), so this cost is
+/// paid once per transcript, not once a second.
+const TAIL_BYTES_DEEP: u64 = 4 * 1024 * 1024;
 
 pub(super) fn latest_preview(path: &Path) -> Option<AgentPreview> {
+    preview_after(path, None).map(|read| read.preview)
+}
+
+/// The preview of `path`, read from where `prior` stood: only the bytes
+/// appended since, carrying `prior`'s words forward when those bytes hold
+/// none. The words a walk stops at are the newest in the file, and nothing
+/// between them and `prior`'s end said anything, so appended tool traffic
+/// cannot push them out of reach the way a fixed window does (T-755). A file
+/// that shrank, or a `prior` with no mark, is read from its end afresh.
+pub(super) fn preview_after(path: &Path, prior: Option<&PreviewRead>) -> Option<PreviewRead> {
     let len = std::fs::metadata(path).ok()?.len();
-    let mut tail = scan_window(path, len, TAIL_BYTES)?;
-    // The deep read is for a walk that ran out of window, not for one that
-    // stopped where it meant to: the tool call and the `last-prompt` latch
-    // both ride near EOF by construction.
-    if tail.assistant.is_none() && tail.prompt.is_none() && len > TAIL_BYTES {
+    if let Some((prior, mark)) =
+        prior.and_then(|p| Some((p, p.settled?))).filter(|(_, m)| m.at <= len)
+    {
+        let from = mark.at.saturating_sub(SEAL_BYTES);
+        let buf = read_bytes(path, from, len)?;
+        let (sealed, appended) = buf.split_at((mark.at - from) as usize);
+        if seal(sealed) == mark.seal {
+            let (text, whole) = whole_lines(appended, false);
+            let tail = walk(&text);
+            let preview = if tail.assistant.is_some() || tail.prompt.is_some() {
+                tail.preview()
+            } else {
+                AgentPreview {
+                    activity: tail.activity.or_else(|| prior.preview.activity.clone()),
+                    ..prior.preview.clone()
+                }
+            };
+            let at = mark.at + whole;
+            return Some(PreviewRead { preview, settled: Some(settle(&buf, from, at)) });
+        }
+    }
+    let mut read = None;
+    for window in [TAIL_BYTES, TAIL_BYTES_MAX, TAIL_BYTES_DEEP] {
+        let start = len.saturating_sub(window);
+        let buf = read_bytes(path, start, len)?;
+        let (text, whole) = whole_lines(&buf, start > 0);
         // The deep walk repeats the shallow one from EOF, so it re-finds the
         // same newest tool call and simply reaches further back.
-        tail = scan_window(path, len, TAIL_BYTES_MAX)?;
+        let tail = walk(&text);
+        // The deep read is for a walk that ran out of window, not for one that
+        // stopped where it meant to: the tool call and the `last-prompt` latch
+        // both ride near EOF by construction.
+        let done = tail.assistant.is_some() || tail.prompt.is_some() || start == 0;
+        let at = start + whole;
+        read =
+            Some(PreviewRead { preview: tail.preview(), settled: Some(settle(&buf, start, at)) });
+        if done {
+            break;
+        }
     }
-    let words = tail.prompt.or(tail.latch_prompt);
-    Some(AgentPreview {
-        text: match tail.assistant {
-            Some(reply) => Some(reply),
-            // The user's own words, marked as theirs (census parity).
-            None => words.map(|p| format!("> {p}")),
-        },
-        activity: tail.activity,
-        reply_key: tail.assistant_key,
-    })
+    read
+}
+
+/// How many bytes before a read's end its seal covers.
+const SEAL_BYTES: u64 = 256;
+
+fn seal(bytes: &[u8]) -> u64 {
+    use std::hash::{DefaultHasher, Hasher};
+    let mut hash = DefaultHasher::new();
+    hash.write(bytes);
+    hash.finish()
+}
+
+/// The mark for a read of `buf` (which began at `start`) that stopped at `at`.
+fn settle(buf: &[u8], start: u64, at: u64) -> super::super::Settled {
+    let end = (at - start) as usize;
+    let from = end.saturating_sub(SEAL_BYTES as usize);
+    super::super::Settled { at, seal: seal(&buf[from..end]) }
+}
+
+/// The bytes of `path` between `start` and `len`. `None` only when the file
+/// cannot be read.
+fn read_bytes(path: &Path, start: u64, len: u64) -> Option<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    f.seek(SeekFrom::Start(start)).ok()?;
+    let mut buf = Vec::new();
+    f.take(len - start).read_to_end(&mut buf).ok()?;
+    Some(buf)
+}
+
+/// `buf`'s whole lines as text, and how many bytes they span — where the
+/// next read resumes, so a record half written now is read whole then.
+/// `ragged` drops the first line, which a read opening mid-file can start
+/// inside of.
+fn whole_lines(buf: &[u8], ragged: bool) -> (String, u64) {
+    let whole = buf.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+    let mut lines = &buf[..whole];
+    if ragged {
+        lines = lines.iter().position(|&b| b == b'\n').map_or(&[][..], |i| &lines[i + 1..]);
+    }
+    (String::from_utf8_lossy(lines).into_owned(), whole as u64)
 }
 
 #[derive(Default)]
@@ -101,11 +181,24 @@ struct Tail {
     activity: Option<AgentActivity>,
 }
 
-/// Reverse-scan the final `window` bytes; the first hit of each kind is the
-/// latest write, so an assistant reply ends the walk immediately. `None` only
-/// when the file cannot be read.
-fn scan_window(path: &Path, len: u64, window: u64) -> Option<Tail> {
-    let text = super::tail::window_text(path, len, window)?;
+impl Tail {
+    fn preview(self) -> AgentPreview {
+        let words = self.prompt.or(self.latch_prompt);
+        AgentPreview {
+            text: match self.assistant {
+                Some(reply) => Some(reply),
+                // The user's own words, marked as theirs (census parity).
+                None => words.map(|p| format!("> {p}")),
+            },
+            activity: self.activity,
+            reply_key: self.assistant_key,
+        }
+    }
+}
+
+/// Reverse-walk `text`'s records; the first hit of each kind is the latest
+/// write, so an assistant reply ends the walk immediately.
+fn walk(text: &str) -> Tail {
     let mut tail = Tail::default();
     for line in text.lines().rev() {
         if line.trim().is_empty() {
@@ -137,7 +230,7 @@ fn scan_window(path: &Path, len: u64, window: u64) -> Option<Tail> {
         if let Some(p) = user_prompt(&v) {
             tail.prompt = Some(p);
             tail.activity.get_or_insert(AgentActivity::Thinking);
-            return Some(tail);
+            return tail;
         }
         // `adopt::assistant_text`, never `classify_tail_record`: the classifier
         // answers what STATE a record puts the session in, and the record that
@@ -151,10 +244,10 @@ fn scan_window(path: &Path, len: u64, window: u64) -> Option<Tail> {
         if let Some(text) = assistant_text(&v) {
             tail.assistant = Some(text.to_string());
             tail.assistant_key = v.get("uuid").and_then(serde_json::Value::as_str).map(record_key);
-            return Some(tail);
+            return tail;
         }
     }
-    Some(tail)
+    tail
 }
 
 /// What one record shows on a phone's transcript (T-626): the person's
@@ -356,12 +449,65 @@ mod tests {
         std::fs::write(&p, format!("{}{}", reply("u1", "the reply"), tool_noise(80))).unwrap();
         let len = std::fs::metadata(&p).unwrap().len();
         assert!(
-            scan_window(&p, len, TAIL_BYTES).unwrap().assistant.is_none(),
+            walk(&whole_lines(&read_bytes(&p, len - TAIL_BYTES, len).unwrap(), true).0)
+                .assistant
+                .is_none(),
             "fixture must actually bury the reply past the first window"
         );
         let pk = latest_preview(&p).expect("peek");
         assert_eq!(pk.text.as_deref(), Some("the reply"));
         assert_eq!(pk.activity, Some(AgentActivity::Tool("Count the lines".into())));
+        std::fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+
+    /// T-754's card (T-755): after a progress note, six minutes of private
+    /// thinking and tool output put the note ~300 KiB back, past every
+    /// window, and the card read the `last-prompt` latch — the turn's
+    /// prompt — as the agent's newest words. A read resumed from the last
+    /// one reads only what was appended, so the note stays on the card until
+    /// newer words land; a half-written record is read whole next time.
+    #[test]
+    fn the_last_words_outlive_any_amount_of_tool_traffic() {
+        let p = tmp("carry");
+        let latch = "{\"type\":\"last-prompt\",\"lastPrompt\":\"the prompt\"}\n";
+        let prompt =
+            "{\"uuid\":\"p0\",\"type\":\"user\",\"message\":{\"content\":\"the prompt\"}}\n";
+        std::fs::write(&p, format!("{prompt}{}{latch}", reply("u1", "the note"))).unwrap();
+        let mut read = preview_after(&p, None).expect("peek");
+        assert_eq!(read.preview.text.as_deref(), Some("the note"));
+        let append = |bytes: &str| {
+            let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+            f.write_all(bytes.as_bytes()).unwrap();
+        };
+        for _ in 0..6 {
+            append(&format!("{}{latch}", tool_noise(100)));
+            read = preview_after(&p, Some(&read)).expect("peek");
+            assert_eq!(read.preview.text.as_deref(), Some("the note"), "carried, never the latch");
+            assert_eq!(read.preview.activity, Some(AgentActivity::Tool("Count the lines".into())));
+        }
+        let note_key = read.preview.reply_key;
+        // The next words, caught mid-write: nothing new until the line is whole.
+        let next = reply("u2", "the next note");
+        let (head, rest) = next.split_at(next.len() / 2);
+        append(head);
+        read = preview_after(&p, Some(&read)).expect("peek");
+        assert_eq!(read.preview.text.as_deref(), Some("the note"));
+        append(rest);
+        read = preview_after(&p, Some(&read)).expect("peek");
+        assert_eq!(read.preview.text.as_deref(), Some("the next note"));
+        assert_eq!(read.preview.activity, None, "the agent spoke last");
+        assert_ne!(read.preview.reply_key, note_key);
+        // A file read afresh — a new reader, or one that shrank — finds the
+        // note however far back it sits, up to the deep rung.
+        append(&tool_noise(400));
+        assert_eq!(latest_preview(&p).expect("peek").text.as_deref(), Some("the next note"));
+        std::fs::write(&p, reply("u3", "rewritten")).unwrap();
+        read = preview_after(&p, Some(&read)).expect("peek");
+        assert_eq!(read.preview.text.as_deref(), Some("rewritten"));
+        // Rewritten longer, the old offset lands mid-record: the seal says so.
+        std::fs::write(&p, reply("u4", "rewritten again, and longer than before")).unwrap();
+        read = preview_after(&p, Some(&read)).expect("peek");
+        assert_eq!(read.preview.text.as_deref(), Some("rewritten again, and longer than before"));
         std::fs::remove_dir_all(p.parent().unwrap()).ok();
     }
 

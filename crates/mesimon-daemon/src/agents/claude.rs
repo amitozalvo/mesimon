@@ -233,6 +233,14 @@ impl AgentAdapter for Claude {
         history::latest_preview(path)
     }
 
+    fn preview_after(
+        &self,
+        path: &std::path::Path,
+        prior: Option<&super::PreviewRead>,
+    ) -> Option<super::PreviewRead> {
+        history::preview_after(path, prior)
+    }
+
     fn rows(
         &self,
         at: u64,

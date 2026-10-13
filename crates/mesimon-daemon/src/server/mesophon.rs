@@ -282,6 +282,8 @@ struct Words {
     mtime_ms: u64,
     doing: Option<String>,
     said: Option<String>,
+    /// The read both came from; the next one resumes there (T-755).
+    read: crate::agents::PreviewRead,
 }
 impl Control {
     pub(super) fn new(tx: Sender<Msg>) -> Self {
@@ -3047,13 +3049,17 @@ impl Daemon {
         let mut words = self.control.words.borrow_mut();
         let fresh = words.get(path).is_some_and(|w| w.len == meta.len() && w.mtime_ms == mtime_ms);
         if !fresh {
-            let preview = crate::agents::read_preview(s.kind, std::path::Path::new(path));
-            let doing = preview.as_ref().and_then(|p| match p.activity.as_ref()? {
-                crate::agents::AgentActivity::Tool(step) => api::step_line(step),
-                crate::agents::AgentActivity::Thinking => Some("thinking".into()),
-            });
-            let said = preview.and_then(|p| api::reply_line(p.text.as_deref()?));
-            words.insert(path.to_string(), Words { len: meta.len(), mtime_ms, doing, said });
+            let prior = words.get(path).map(|w| &w.read);
+            let read = crate::agents::read_preview_after(s.kind, std::path::Path::new(path), prior)
+                .unwrap_or_default();
+            let preview = &read.preview;
+            let doing = match preview.activity.as_ref() {
+                Some(crate::agents::AgentActivity::Tool(step)) => api::step_line(step),
+                Some(crate::agents::AgentActivity::Thinking) => Some("thinking".into()),
+                None => None,
+            };
+            let said = preview.text.as_deref().and_then(api::reply_line);
+            words.insert(path.to_string(), Words { len: meta.len(), mtime_ms, doing, said, read });
         }
         let w = &words[path];
         // A step is only news while the turn runs; a finished turn's
