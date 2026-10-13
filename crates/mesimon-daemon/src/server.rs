@@ -13417,7 +13417,7 @@ impl Daemon {
             }
         }
         let mut changed = false;
-        let mut failed: Vec<(ulid::Ulid, String)> = Vec::new();
+        let mut news: Vec<(ulid::Ulid, String)> = Vec::new();
         let mut arrivals: Vec<(ulid::Ulid, crate::forge::Edge)> = Vec::new();
         for (t, set) in sample.sets {
             if self.board.ticket(t).is_none() {
@@ -13427,39 +13427,27 @@ impl Daemon {
             for line in crate::forge::delta(old.map(Vec::as_slice), &set) {
                 self.feed.board_outcome("forge", "pr", Some(t), &line);
             }
+            // The edge since the last read: what a column arrives on, and
+            // what the crown hears (T-744), one line per ticket per pass. A
+            // first read is a baseline and says nothing.
             if let Some(old) = old {
                 let edge = crate::forge::edge(old, &set);
+                let words = edge.news(&set);
+                if !words.is_empty() {
+                    news.push((t, words.join(", ")));
+                }
                 if edge.any() {
                     arrivals.push((t, edge));
-                }
-            }
-            // A pipeline that failed since the last read (T-739): the edge
-            // the crown hears. A first read is a baseline and says nothing.
-            if let Some(old) = old {
-                let was = mesimon_core::forge::pipeline_of(old);
-                let now = mesimon_core::forge::pipeline_of(&set);
-                if let mesimon_core::forge::Pipeline::Failed(job) = &now {
-                    if !matches!(was, mesimon_core::forge::Pipeline::Failed(_)) {
-                        let label = set
-                            .iter()
-                            .find(|p| matches!(p.pipeline, mesimon_core::forge::Pipeline::Failed(_)))
-                            .map(|p| p.label())
-                            .unwrap_or_default();
-                        let words = if job.is_empty() {
-                            format!("failed {label}")
-                        } else {
-                            format!("failed {label}: {job}")
-                        };
-                        failed.push((t, words));
-                    }
                 }
             }
             changed |= old != Some(&set);
             self.forge.sets.insert(t, set);
             self.forge.at_ms.insert(t, sample.at_ms);
         }
-        changed |= self.hear_pipelines(failed);
+        // After the arrivals, so the crown reads the ticket where the
+        // arrival rule put it.
         changed |= self.forge_arrivals(arrivals);
+        changed |= self.hear_forge(news);
         let live: Vec<ulid::Ulid> = self.board.tickets.iter().map(|t| t.id).collect();
         self.forge.sets.retain(|t, _| live.contains(t));
         self.forge.at_ms.retain(|t, _| live.contains(t));

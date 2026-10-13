@@ -5,6 +5,10 @@
 //! merged by the forge's word and a column's `Arrives here when: merged`
 //! takes it.
 //!
+//! The crown hears the forge's edges (T-744): a pipeline that passes, a job
+//! that waits on a person, a conflict and a review on one pass, each a
+//! `forge` wake in the edge's words.
+//!
 //! The stub is the forge: `auth status` passes, `pr list` prints the file
 //! the test writes, `api …/check-runs` the merge commit's pipeline. No
 //! network, no token, nothing of the real CLI.
@@ -19,8 +23,9 @@ use common::*;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use mesimon_core::board::{Arrival, SessionKind, WorkspaceStrategy};
+use mesimon_core::board::{Arrival, SessionKind, SessionState, WorkspaceStrategy};
 use mesimon_core::command::{Command, MergeOutcome, PrItem, Response};
+use mesimon_core::Principal;
 
 /// The stub forge CLI: one shell script answering as `gh` would, from the
 /// files the test points it at.
@@ -219,5 +224,192 @@ fn a_pull_request_binds_pipelines_gate_and_the_forges_merge_lands() {
     assert_eq!(pr.state, "merged");
     assert_eq!(pr.pipeline, "passed", "the merge commit's pipeline, off check-runs");
     wait_until(Duration::from_secs(10), "the feed to say the merge", || feed_count(&h, "pr", id) >= 1);
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// The crown's stub: each line it reads is appended to `got.txt` beside it.
+const RECORDING_STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+                              printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+
+/// An open PR as `gh pr list --json` prints it, with the checks, the
+/// mergeability and the review decision the test names.
+fn open_pr_json(branch: &str, tip: &str, checks: &str, mergeable: &str, review: &str) -> String {
+    format!(
+        r#"[{{"number":42,"url":"https://github.com/example/forge/pull/42","state":"OPEN","isDraft":false,
+          "headRefName":"{branch}","headRefOid":"{tip}","mergeCommit":null,"mergeable":"{mergeable}",
+          "reviewDecision":"{review}","updatedAt":"2026-10-13T06:00:00Z","statusCheckRollup":{checks}}}]"#
+    )
+}
+
+/// The crown hears its worker's PR (T-744): the pipeline passing, a job
+/// waiting on a person, and a conflict with a review on one pass — one
+/// `forge` wake each, the second pass's two edges in one line.
+#[test]
+fn the_crown_hears_the_forges_edges() {
+    let stub_dir = std::env::temp_dir().join(format!("msmn-forge-crown-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&stub_dir);
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    let gh = stub_dir.join("gh");
+    std::fs::write(&gh, GH_STUB).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let prs_file = stub_dir.join("prs.json");
+    write(&prs_file, "[]");
+    let path_var = format!(
+        "{}:{}",
+        stub_dir.display(),
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+    );
+    let Some(h) = Harness::boot_with_env(
+        "forge_crown",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs_file.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("forge_crown");
+    let got = h.dir.join("got.txt");
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    let turn = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let create = |c: &mut TestClient, title: &str| match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: title.into(),
+        workspace: None,
+        tier: None,
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("create: {other:?}"),
+    };
+
+    // The crown, idle, and a worker it started on a worktree.
+    let a = create(&mut c, "coordinate");
+    let w = create(&mut c, "forge worker");
+    let kw = c.board().ticket(w).unwrap().short_key.clone();
+    let sa = match c.request(Command::SpawnSession {
+        ticket: a,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn: {other:?}"),
+    };
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(Duration::from_millis(500));
+    turn(&mut c, sa);
+    let seen = match c.send(Principal::Agent { session: sa }, Command::AgentReadTicket { key: kw.clone() }) {
+        Response::AgentTicket { ticket } => ticket.seen,
+        other => panic!("read: {other:?}"),
+    };
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    let wt = wait_attached(&mut c, w);
+    let path = PathBuf::from(wt.path.clone().expect("a path"));
+    wait_until(Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    std::thread::sleep(Duration::from_millis(500));
+    std::fs::write(path.join("work.txt"), "work\n").unwrap();
+    git(&path, &["add", "."]);
+    git(&path, &["commit", "-qm", "work"]);
+    let tip = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
+    let worker = format!("{kw} \"forge worker\"");
+    turn(&mut c, ws);
+    wait_until(Duration::from_secs(10), "the delivery's wake", || {
+        lines_with(&format!("{worker} delivered")).len() == 1
+    });
+    turn(&mut c, sa);
+
+    // The PR opens with its pipeline running: the baseline, no wake.
+    let running = r#"[{"__typename":"CheckRun","name":"test","status":"IN_PROGRESS","conclusion":null}]"#;
+    let passed = r#"[{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS"}]"#;
+    let waiting = r#"[{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS"},
+                      {"__typename":"CheckRun","name":"deploy:production","status":"WAITING","conclusion":null}]"#;
+    write(&prs_file, &open_pr_json(&wt.branch, &tip, running, "MERGEABLE", "REVIEW_REQUIRED"));
+    wait_until(Duration::from_secs(20), "the PR to bind", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == w && p.number == 42)
+    });
+    let forge_wakes = || {
+        std::fs::read_to_string(&feed_path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| {
+                l.contains("\"kind\":\"crown_wake\"")
+                    && l.contains(&format!("\"worker\":\"{w}\""))
+                    && l.contains("\"cause\":\"forge\"")
+            })
+            .count()
+    };
+    assert_eq!(forge_wakes(), 0, "an opening is the worker's turn end's to say");
+    // The edge's words close the bracket; a column the worker's turn moved
+    // may stand before them.
+    let news = format!("{worker} has news from the forge (");
+    let heard = |lines: &[String], words: &str| lines.iter().any(|l| l.contains(words));
+
+    // ---- the pipeline passes ----------------------------------------------
+    write(&prs_file, &open_pr_json(&wt.branch, &tip, passed, "MERGEABLE", "REVIEW_REQUIRED"));
+    wait_until(Duration::from_secs(20), "the passed wake", || {
+        heard(&lines_with(&news), "pipeline passed #42)")
+    });
+    wait_until(Duration::from_secs(5), "the forge wake's feed line", || forge_wakes() == 1);
+    turn(&mut c, sa);
+
+    // ---- a job waits on a person ------------------------------------------
+    write(&prs_file, &open_pr_json(&wt.branch, &tip, waiting, "MERGEABLE", "REVIEW_REQUIRED"));
+    wait_until(Duration::from_secs(20), "the waiting wake", || {
+        heard(&lines_with(&news), "waiting on deploy:production #42)")
+    });
+    wait_until(Duration::from_secs(5), "the forge wake's feed line", || forge_wakes() == 2);
+    turn(&mut c, sa);
+
+    // ---- a conflict and an approval on one pass: one line -----------------
+    write(&prs_file, &open_pr_json(&wt.branch, &tip, waiting, "CONFLICTING", "APPROVED"));
+    wait_until(Duration::from_secs(20), "the conflict's and the review's wake", || {
+        heard(&lines_with(&news), "conflict #42, review approved #42)")
+    });
+    wait_until(Duration::from_secs(5), "the forge wake's feed line", || forge_wakes() == 3);
+    turn(&mut c, sa);
+
+    // A pass that sees nothing new says nothing.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(forge_wakes(), 3, "{}", std::fs::read_to_string(&got).unwrap());
     let _ = std::fs::remove_dir_all(&stub_dir);
 }

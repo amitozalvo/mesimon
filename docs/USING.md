@@ -480,7 +480,10 @@ settings, **Arrives here when** moves a ticket there on its own when a PR opens,
 passes, every PR is merged, or the merge reached an environment you name (`deployed to staging`),
 and **Entry needs a passed pipeline** refuses a ticket whose pipeline failed, still runs or was
 never read. A board without `gh` or `glab` changes nothing; **Settings › Behaviour › Fetch from
-the remote** alone makes a merged PR read merged once fetched.
+the remote** alone makes a merged PR read merged once fetched. A crown hears what the forge says of the
+tickets it started or watches: it is woken when a pipeline fails or passes, a job waits on a
+person, the merge reaches an environment, a conflict comes or clears, or a review approves or
+asks for changes, and what it does then is up to its brief.
 
 mesimon reads the forge and never writes to it: no PR is opened, merged or commented on from the
 board, and no token is stored; the CLI's own sign-in is the only credential. The activity feed

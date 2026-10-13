@@ -299,6 +299,17 @@ def tool_calls(rows):
     return out
 
 
+def tool_inputs(rows):
+    """(tool name, its input) for every tool use in a transcript, in order."""
+    out = []
+    for row in rows:
+        content = (row.get("message") or {}).get("content")
+        for b in content if isinstance(content, list) else []:
+            if isinstance(b, dict) and b.get("type") == "tool_use":
+                out.append((b.get("name"), b.get("input") or {}))
+    return out
+
+
 def user_prompts(rows, at=False):
     """The person's prompts in a transcript, in order: user rows with text,
     not a background task's notification (the engine's, not the person's).
@@ -1248,10 +1259,7 @@ Reply with the single word ready and end your turn."""
             d = self.forge_stub()
             mark = len(self.feed_lines)
             self.write_pr(d, self.forge_branch, "OPEN", "failed")
-            wake = self.wait_for("the crown's pipeline wake", lambda: next((
-                l for l in self.feed_lines[mark:] if l.get("kind") == "crown_wake"
-                and l.get("worker") == test["ticket"] and l.get("cause") == "pipeline"), None),
-                WAKE_GRACE * 2, self.watch)
+            wake = self.forge_wake(test, mark)
             record["wakes"].append(wake.get("cause") if wake else "none came")
             if not wake:
                 record["failures"].append("the board never woke the crown for the failed pipeline")
@@ -1264,6 +1272,25 @@ Reply with the single word ready and end your turn."""
                 record["failures"].append("the crown never told the worker of its failed pipeline")
                 return False
             return True
+        if what == "forge_pass":
+            # The pipeline passes on the forge (T-744): the board wakes the
+            # crown with the news, and the step ends when the crown's turn
+            # on it did; what it did is the checks'.
+            d = self.forge_stub()
+            mark = len(self.feed_lines)
+            self.write_pr(d, self.forge_branch, "OPEN", "passed")
+            wake = self.forge_wake(test, mark)
+            record["wakes"].append(wake.get("cause") if wake else "none came")
+            if not wake:
+                record["failures"].append("the board never woke the crown for the passed pipeline")
+                return False
+            self.quiet_since = None
+            if not self.wait_for("the crown's turn on the forge's news",
+                                 lambda: self.crown_settled(after_ms=wake.get("at_ms", 0)),
+                                 STEP_TIMEOUT, self.watch):
+                record["failures"].append("the crown's turn on the forge's news never ended")
+                return False
+            return True
         if what == "forge_off":
             # The board's own Claude Code and PATH back: the stub is gone.
             d = self.forge_stub()
@@ -1274,6 +1301,13 @@ Reply with the single word ready and end your turn."""
                     pass
             return bool(self.restart())
         die(f"unknown rig step {what}")
+
+    def forge_wake(self, test, mark):
+        """The board's forge wake for the test's worker since `mark`."""
+        return self.wait_for("the crown's forge wake", lambda: next((
+            l for l in self.feed_lines[mark:] if l.get("kind") == "crown_wake"
+            and l.get("worker") == test["ticket"] and l.get("cause") == "forge"), None),
+            WAKE_GRACE * 2, self.watch)
 
     def forge_stub(self):
         """A stub `gh` (T-739): `auth status` passes, `pr list` prints the
@@ -1484,6 +1518,16 @@ Reply with the single word ready and end your turn."""
                 check(c, seen, f"claude_road:mod ({seen[-1].get('outcome')})" if seen else "never written")
             elif name == "crown":
                 check(c, arg in crown_cmds, f"{arg}×{crown_cmds.count(arg)}")
+            elif name == "crown_hand":
+                # The crown's own hand (T-744), its reason naming `arg`: a
+                # hand is on the crown's ticket, so the feed's line is not
+                # this one's; the crown's transcript says what it wrote.
+                crown = self.agent_of(board, self.crown)
+                hands = [i.get("reason", "") for n, i in tool_inputs(transcript(crown) if crown else [])
+                         if (n or "").endswith("raise_hand")]
+                said = [h for h in hands if arg in h]
+                check(c, said, repr(said[-1][:100]) if said
+                      else f"{len(hands)} hands, none naming {arg}: {[h[:60] for h in hands[-2:]]}")
             elif name == "fed":
                 check(c, arg in fed, f"{arg}×{fed.count(arg)}")
             elif name == "board_fed":

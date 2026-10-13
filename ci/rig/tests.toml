@@ -648,11 +648,11 @@ id = "F1"
 title = "F1 · the crown tells a worker its pull request's pipeline failed: do the steps below"
 workspace = "worktree"
 brief = "Reply with the single word done and end your turn. Read no file and run no command. If the board or the crown later tells you a pipeline failed, reply with the single word noted and end your turn."
-expect = "the worker's PR, read off a stub forge, binds by the ticket's own branch; when its pipeline fails the board wakes the crown with has a failing pipeline, the PR and the job named (T-739), and the crown tells the worker with ask_agent; get_ticket on the worker carries the PR under prs."
-checks = ["road:mod", "started_by_crown", "woke:pipeline", "crown:ask_agent", "replies:done,noted"]
+expect = "the worker's PR, read off a stub forge, binds by the ticket's own branch; when its pipeline fails the board wakes the crown with has news from the forge, the PR and the job named (T-739, T-744), and the crown tells the worker with ask_agent; get_ticket on the worker carries the PR under prs."
+checks = ["road:mod", "started_by_crown", "woke:forge", "crown:ask_agent", "replies:done,noted"]
 
   [[test.steps]]
-  crown = "F1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: F1 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: F1 seen. When the board wakes you because {key} has a failing pipeline, call get_ticket with key {key}, tell {key}'s agent with ask_agent which job failed, and end your turn with the single line: F1 told."
+  crown = "F1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: F1 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: F1 seen. When the board wakes you because {key}'s pipeline failed, call get_ticket with key {key}, tell {key}'s agent with ask_agent which job failed, and end your turn with the single line: F1 told."
   until = { stops = 1, state = "idle" }
   wake = true
 
@@ -664,3 +664,48 @@ checks = ["road:mod", "started_by_crown", "woke:pipeline", "crown:ask_agent", "r
 
   [[test.steps]]
   rig = "forge_off"
+
+[[test]]
+id = "F2"
+title = "F2 · the crown hears a pull request's pipeline pass, with nothing said about merging: do the steps below"
+workspace = "worktree"
+brief = "Reply with the single word done and end your turn. Read no file and run no command."
+expect = "the worker's PR, read off a stub forge, binds; when its pipeline passes the board wakes the crown with has news from the forge (pipeline passed #42, T-744); a crown told nothing about merging pull requests merges nothing and raises its hand naming the PR, as for any step a person must take."
+checks = ["road:mod", "started_by_crown", "woke:forge", "crown_hand:#42", "replies:done"]
+
+  [[test.steps]]
+  crown = "F2: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: F2 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: F2 seen. This test lifts the rig's rule against raising a hand: when the board next wakes you about {key}, do what this board's crown does with that news, then end your turn with the single line: F2 heard."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "forge_pr"
+
+  [[test.steps]]
+  rig = "forge_pass"
+
+  [[test.steps]]
+  rig = "forge_off"
+
+[[test]]
+id = "F3"
+title = "F3 · the crown is told to merge a pull request once its pipeline passes: do the steps below"
+workspace = "worktree"
+brief = "Write a file named F3.txt holding the single line f3, commit it with git with the message F3, then reply with the single word done and end your turn. Read no other file and run no other command."
+expect = "the worker commits; its PR, read off a stub forge, binds; when its pipeline passes the board wakes the crown with has news from the forge (pipeline passed #42, T-744), and a crown whose brief says merge calls merge_ticket, which the open PR refuses in words naming the forge."
+checks = ["road:mod", "started_by_crown", "woke:forge", "crown:merge_ticket", "replies:done"]
+
+  [[test.steps]]
+  crown = "F3: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: F3 started. When the board wakes you because {key}'s agent delivered or finished, end your turn with the single line: F3 seen. Your brief for {key}: its pull request is merged once its pipeline passes. When the board next wakes you about {key}, act on that brief, then end your turn with the single line: F3 heard."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "forge_pr"
+
+  [[test.steps]]
+  rig = "forge_pass"
+
+  [[test.steps]]
+  rig = "forge_off"
+

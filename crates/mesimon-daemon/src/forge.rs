@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use mesimon_core::forge::{self, Facts, Forge, Pipeline, Pr, PrState, Remote};
+use mesimon_core::forge::{self, Facts, Forge, Pipeline, Pr, PrState, Remote, Review};
 
 /// How long one CLI call may take before its group is killed.
 const CALL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -148,8 +148,8 @@ pub struct Query {
 }
 
 /// What a pass saw change in a ticket's set (T-739): the edges a column's
-/// `Arrives here when` fires on. Read against the previous read, never a
-/// first one, which is a baseline.
+/// `Arrives here when` fires on, and the ones the crown hears (T-744). Read
+/// against the previous read, never a first one, which is a baseline.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Edge {
     /// A PR newly bound and open.
@@ -160,17 +160,96 @@ pub struct Edge {
     pub merged: bool,
     /// Environments a merge commit reached since.
     pub deployed: Vec<String>,
+    /// The set's pipeline turned failed: the job's word, empty where the
+    /// forge named none.
+    pub failed: Option<String>,
+    /// The set's pipeline stopped on a person at a job it was not stopped
+    /// on before: the job's word, empty where the forge named none.
+    pub waiting: Option<String>,
+    /// Open PRs, by label, whose conflict appeared (`true`) or cleared.
+    pub conflict: Vec<(String, bool)>,
+    /// Open PRs, by label, a reviewer's verdict newly landed on: approved
+    /// or changes requested.
+    pub review: Vec<(String, Review)>,
 }
 
 impl Edge {
     pub fn any(&self) -> bool {
-        self.opened || self.passed || self.merged || !self.deployed.is_empty()
+        self.opened
+            || self.passed
+            || self.merged
+            || !self.deployed.is_empty()
+            || self.failed.is_some()
+            || self.waiting.is_some()
+            || !self.conflict.is_empty()
+            || !self.review.is_empty()
+    }
+
+    /// What the crown hears of the edge (T-744), one phrase per edge, each
+    /// naming its PR: `pipeline passed !1`, `waiting on deploy:production
+    /// !1`, `deployed to staging !1`, `conflict !1`, `conflict cleared !1`,
+    /// `review approved !1`, `changes requested !1`, `pipeline failed !1:
+    /// test-linux`. Never an opening (the worker's turn end carries it) and
+    /// never a merge (the flags' merged wake says it). `new` is the read the
+    /// edge was taken on, for the labels.
+    pub fn news(&self, new: &[Pr]) -> Vec<String> {
+        let labels = |pick: &dyn Fn(&Pr) -> bool| -> String {
+            new.iter().filter(|p| pick(p)).map(Pr::label).collect::<Vec<_>>().join(" ")
+        };
+        // The PRs `pipeline_of` read the set's word off: the open ones, or
+        // the newest merged once nothing is open.
+        let lead = || {
+            let open = labels(&|p| p.state.is_open());
+            if open.is_empty() {
+                new.iter().find(|p| p.state == PrState::Merged).map(Pr::label).unwrap_or_default()
+            } else {
+                open
+            }
+        };
+        let tail = |label: String| if label.is_empty() { String::new() } else { format!(" {label}") };
+        let mut out = Vec::new();
+        if let Some(job) = &self.failed {
+            let label = labels(&|p| matches!(p.pipeline, Pipeline::Failed(_)));
+            match forge::job_word(job) {
+                j if j.is_empty() => out.push(format!("pipeline failed{}", tail(label))),
+                j => out.push(format!("pipeline failed{}: {j}", tail(label))),
+            }
+        }
+        if self.passed {
+            out.push(format!("pipeline passed{}", tail(lead())));
+        }
+        if let Some(job) = &self.waiting {
+            let label = labels(&|p| matches!(p.pipeline, Pipeline::Waiting(_)));
+            match forge::job_word(job) {
+                j if j.is_empty() => out.push(format!("waiting on a manual job{}", tail(label))),
+                j => out.push(format!("waiting on {j}{}", tail(label))),
+            }
+        }
+        for env in &self.deployed {
+            let label = new
+                .iter()
+                .find(|p| p.state == PrState::Merged && p.deployed.contains(env))
+                .map(Pr::label)
+                .unwrap_or_default();
+            out.push(format!("deployed to {}{}", forge::job_word(env), tail(label)));
+        }
+        for (label, on) in &self.conflict {
+            out.push(if *on { format!("conflict {label}") } else { format!("conflict cleared {label}") });
+        }
+        for (label, verdict) in &self.review {
+            match verdict {
+                Review::Approved => out.push(format!("review approved {label}")),
+                Review::ChangesRequested => out.push(format!("changes requested {label}")),
+                Review::None | Review::Required => {}
+            }
+        }
+        out
     }
 }
 
 /// The edge between two reads of one ticket's set.
 pub fn edge(old: &[Pr], new: &[Pr]) -> Edge {
-    let known = |p: &Pr| old.iter().any(|o| o.repo == p.repo && o.number == p.number);
+    let was = |p: &Pr| old.iter().find(|o| o.repo == p.repo && o.number == p.number);
     let all_merged = |s: &[Pr]| !s.is_empty() && s.iter().all(|p| p.state == PrState::Merged);
     let envs = |s: &[Pr]| -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
@@ -184,12 +263,40 @@ pub fn edge(old: &[Pr], new: &[Pr]) -> Edge {
         out
     };
     let before = envs(old);
+    let (then, now) = (forge::pipeline_of(old), forge::pipeline_of(new));
+    // An open PR read open before too: a conflict or a review on one just
+    // bound is part of its opening, which is not news.
+    let kept: Vec<(&Pr, &Pr)> = new
+        .iter()
+        .filter(|p| p.state.is_open())
+        .filter_map(|p| was(p).filter(|o| o.state.is_open()).map(|o| (o, p)))
+        .collect();
     Edge {
-        opened: new.iter().any(|p| p.state.is_open() && !known(p)),
-        passed: forge::pipeline_of(new) == Pipeline::Passed
-            && forge::pipeline_of(old) != Pipeline::Passed,
+        opened: new.iter().any(|p| p.state.is_open() && was(p).is_none()),
+        passed: now == Pipeline::Passed && then != Pipeline::Passed,
         merged: all_merged(new) && !all_merged(old),
         deployed: envs(new).into_iter().filter(|e| !before.contains(e)).collect(),
+        failed: match &now {
+            Pipeline::Failed(job) if !matches!(then, Pipeline::Failed(_)) => Some(job.clone()),
+            _ => None,
+        },
+        waiting: match &now {
+            Pipeline::Waiting(job) if then != now => Some(job.clone()),
+            _ => None,
+        },
+        conflict: kept
+            .iter()
+            .filter(|(o, p)| o.conflict != p.conflict)
+            .map(|(_, p)| (p.label(), p.conflict))
+            .collect(),
+        review: kept
+            .iter()
+            .filter(|(o, p)| {
+                o.review != p.review
+                    && matches!(p.review, Review::Approved | Review::ChangesRequested)
+            })
+            .map(|(_, p)| (p.label(), p.review))
+            .collect(),
     }
 }
 
@@ -728,6 +835,72 @@ mod tests {
         let e = edge(&[m.clone()], &[pr(2, PrState::Open, Pipeline::None), m.clone()]);
         assert!(e.opened && !e.merged, "a follow-up PR opens");
         assert!(!edge(&[], &[]).any());
+    }
+
+    /// T-744: each edge the crown hears, in its words, naming its PR — and
+    /// nothing for a first read's facts, an opening, or a comment.
+    #[test]
+    fn the_crown_hears_each_forge_edge_by_its_pr() {
+        let gl = |n: u64, pipeline: Pipeline| {
+            let mut p = pr(n, PrState::Open, pipeline);
+            p.forge = Forge::GitLab;
+            p
+        };
+        let running = gl(1, Pipeline::Running);
+        let words = |old: &[Pr], new: &[Pr]| edge(old, new).news(new);
+        assert_eq!(words(std::slice::from_ref(&running), &[gl(1, Pipeline::Passed)]), ["pipeline passed !1"]);
+        let e = edge(std::slice::from_ref(&running), &[gl(1, Pipeline::Waiting("deploy:production".into()))]);
+        assert_eq!(e.waiting.as_deref(), Some("deploy:production"));
+        assert_eq!(
+            e.news(&[gl(1, Pipeline::Waiting("deploy:production".into()))]),
+            ["waiting on deploy:production !1"]
+        );
+        // A manual job GitLab named nothing for; the same wait read twice
+        // is no second edge.
+        let manual = gl(1, Pipeline::Waiting(String::new()));
+        assert_eq!(words(std::slice::from_ref(&running), std::slice::from_ref(&manual)), ["waiting on a manual job !1"]);
+        assert!(words(std::slice::from_ref(&manual), std::slice::from_ref(&manual)).is_empty());
+        assert_eq!(
+            words(std::slice::from_ref(&running), &[gl(1, Pipeline::Failed("test".into()))]),
+            ["pipeline failed !1: test"]
+        );
+        let mut conflicted = gl(1, Pipeline::Running);
+        conflicted.conflict = true;
+        assert_eq!(words(std::slice::from_ref(&running), std::slice::from_ref(&conflicted)), ["conflict !1"]);
+        assert_eq!(words(std::slice::from_ref(&conflicted), std::slice::from_ref(&running)), ["conflict cleared !1"]);
+        let mut approved = gl(1, Pipeline::Running);
+        approved.review = Review::Approved;
+        assert_eq!(words(std::slice::from_ref(&running), std::slice::from_ref(&approved)), ["review approved !1"]);
+        let mut asked = approved.clone();
+        asked.review = Review::ChangesRequested;
+        assert_eq!(words(std::slice::from_ref(&approved), &[asked]), ["changes requested !1"]);
+        let mut required = approved.clone();
+        required.review = Review::Required;
+        assert!(words(std::slice::from_ref(&approved), &[required]).is_empty(), "a dismissal is no verdict");
+        // A comment moves `updated_ms` alone: no edge.
+        let mut touched = running.clone();
+        touched.updated_ms += 1000;
+        assert!(!edge(std::slice::from_ref(&running), &[touched]).any());
+        // A PR bound already conflicted and approved: its opening, not news.
+        let mut fresh = gl(2, Pipeline::Running);
+        fresh.conflict = true;
+        fresh.review = Review::Approved;
+        let e = edge(std::slice::from_ref(&running), &[fresh.clone(), running.clone()]);
+        assert!(e.opened);
+        assert!(e.news(&[fresh, running.clone()]).is_empty());
+        // The merge commit reached an environment; several edges on one
+        // pass are one list.
+        let mut merged = gl(1, Pipeline::Passed);
+        merged.state = PrState::Merged;
+        let mut deployed = merged.clone();
+        deployed.deployed = vec!["staging".into()];
+        assert_eq!(words(std::slice::from_ref(&merged), &[deployed]), ["deployed to staging !1"]);
+        let mut both = gl(1, Pipeline::Passed);
+        both.review = Review::Approved;
+        assert_eq!(
+            words(std::slice::from_ref(&running), &[both]),
+            ["pipeline passed !1", "review approved !1"]
+        );
     }
 
     #[test]

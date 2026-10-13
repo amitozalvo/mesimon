@@ -127,9 +127,9 @@ pub(super) struct Told {
     /// Commits ahead of the base; 0 on a checkout.
     pub(super) ahead: u32,
     pub(super) column: String,
-    /// The pipeline's word when a wake is about it (T-739): `failed: test-linux`
-    /// on PR #42 reads `failed #42: test-linux`. `None` where no forge spoke.
-    pub(super) pipeline: Option<String>,
+    /// The forge's words when a wake is about its edge (T-739, T-744):
+    /// `pipeline passed !1, review approved !1`. `None` where no forge spoke.
+    pub(super) forge: Option<String>,
 }
 
 /// `Told` in `crown.json` (T-602): the merge word as written, read back as
@@ -143,8 +143,9 @@ struct ToldOnDisk {
     merge: Option<String>,
     ahead: u32,
     column: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pipeline: Option<String>,
+    /// T-739 wrote it `pipeline`.
+    #[serde(skip_serializing_if = "Option::is_none", alias = "pipeline")]
+    forge: Option<String>,
 }
 
 impl From<ToldOnDisk> for Told {
@@ -152,7 +153,7 @@ impl From<ToldOnDisk> for Told {
         let merge = d.merge.and_then(|w| {
             ["merged", "needs_rebase", "ahead", "clean"].into_iter().find(|k| *k == w)
         });
-        Told { tip: d.tip, merge, ahead: d.ahead, column: d.column, pipeline: d.pipeline }
+        Told { tip: d.tip, merge, ahead: d.ahead, column: d.column, forge: d.forge }
     }
 }
 
@@ -163,7 +164,7 @@ impl From<Told> for ToldOnDisk {
             merge: t.merge.map(str::to_string),
             ahead: t.ahead,
             column: t.column,
-            pipeline: t.pipeline,
+            forge: t.forge,
         }
     }
 }
@@ -200,7 +201,7 @@ impl BranchLook {
             merge: Some(worktree::merge_word(self.merged, self.needs_rebase, self.ahead)),
             ahead: self.ahead,
             column,
-            pipeline: None,
+            forge: None,
         }
     }
 }
@@ -220,10 +221,14 @@ pub(super) enum WakeCause {
     /// Idle with background tasks for `LINGER_MS` (T-599): the weakest.
     Lingering,
     Finished,
-    /// Its pull request's pipeline failed (T-739): above a finished turn,
-    /// since there is something to do, under a merge and a delivery, whose
-    /// delta carries the pipeline's word anyway.
-    Pipeline,
+    /// Its pull request has news from the forge (T-739, T-744): a pipeline
+    /// failed or passed, a job waits on a person, the merge reached an
+    /// environment, a conflict came or went, a review landed. Above a
+    /// finished turn, since each is a decision someone may take; under a
+    /// merge and a delivery, whose delta carries the forge's words anyway.
+    /// T-739's crown.json spelled it `pipeline`.
+    #[serde(alias = "pipeline")]
+    Forge,
     Merged,
     Delivered,
     Answered,
@@ -238,7 +243,7 @@ impl WakeCause {
         match self {
             WakeCause::Lingering => "has been idle with background tasks",
             WakeCause::Finished => "finished its turn",
-            WakeCause::Pipeline => "has a failing pipeline",
+            WakeCause::Forge => "has news from the forge",
             WakeCause::Merged => "merged",
             WakeCause::Delivered => "delivered",
             WakeCause::Answered => "answered your ask",
@@ -257,7 +262,7 @@ impl WakeCause {
         match self {
             WakeCause::Lingering => "lingering",
             WakeCause::Finished => "finished",
-            WakeCause::Pipeline => "pipeline",
+            WakeCause::Forge => "forge",
             WakeCause::Merged => "merged",
             WakeCause::Delivered => "delivered",
             WakeCause::Answered => "answered",
@@ -333,14 +338,22 @@ pub(super) fn lingering_clause(l: Linger) -> String {
 impl CrownWake {
     /// A second event on the same worker before delivery: the stronger
     /// cause, the latest work, and `from` kept unless nothing was described
-    /// yet — the delta runs from what the crown last heard to now.
+    /// yet — the delta runs from what the crown last heard to now. The
+    /// forge's words are edges, not a state (T-744): a later fold keeps
+    /// what the earlier ones said, so a pass and a review between two crown
+    /// turns are both in the line.
     fn fold(&mut self, cause: WakeCause, from: Option<Told>, to: Option<Told>) {
         self.cause = self.cause.max(cause);
         if self.to.is_none() {
             self.from = from;
         }
-        if to.is_some() {
-            self.to = to;
+        if let Some(mut to) = to {
+            let said = self.to.as_mut().and_then(|t| t.forge.take());
+            to.forge = match (said, to.forge.take()) {
+                (Some(a), Some(b)) if a != b => Some(format!("{a}, {b}")),
+                (a, b) => b.or(a),
+            };
+            self.to = Some(to);
         }
     }
 
@@ -559,11 +572,10 @@ fn changes(before: Option<&Told>, now: &Told, head: bool) -> Vec<String> {
     if before.is_none_or(|b| b.column != now.column) {
         out.push(format!("column {}", mesimon_core::text::scrub_text(&now.column)));
     }
-    // The pipeline's word (T-739), where the forge spoke and it moved.
-    if let Some(p) = &now.pipeline {
-        if before.and_then(|b| b.pipeline.as_ref()) != Some(p) {
-            out.push(format!("pipeline {}", mesimon_core::text::scrub_text(p)));
-        }
+    // The forge's words (T-739, T-744): each is an edge a pass saw, never
+    // a state, so a second `review approved` after a dismissal is said again.
+    if let Some(p) = &now.forge {
+        out.push(mesimon_core::text::scrub_text(p));
     }
     out
 }
@@ -1059,7 +1071,7 @@ impl Daemon {
         let (now, branch) = match p.found {
             Found::Branch(look) => (look.told(column), Some(look)),
             Found::Checkout { head } => {
-                (Told { tip: head, merge: None, ahead: 0, column, pipeline: None }, None)
+                (Told { tip: head, merge: None, ahead: 0, column, forge: None }, None)
             }
             Found::Unknown => {
                 // Git could not say what the turn left — nothing seen is
@@ -1304,7 +1316,7 @@ impl Daemon {
                 merge: Some("merged"),
                 ahead: self.wt_agg.get(&worker).map_or(0, |a| a.ahead),
                 column,
-                pipeline: None,
+                forge: None,
             };
             let heard = self.crown_heard.get(&worker).cloned().unwrap_or_default();
             // A delivery held for the train is this crown's to hear (T-554),
@@ -1456,14 +1468,16 @@ impl Daemon {
         !due.is_empty()
     }
 
-    /// A worker's pipeline failed (T-739): the forge pass saw the edge, and
-    /// the crown hears it for a worker it started or watches, as it hears a
-    /// merge — the same table (`due`), so a turn in flight holds it. The
-    /// words name the PR and the job: `failed #42: test-linux`.
-    pub(super) fn hear_pipelines(&mut self, failed: Vec<(ulid::Ulid, String)>) -> bool {
+    /// A worker's pull request has news (T-739, T-744): the forge pass saw
+    /// an edge — a pipeline failed or passed, a job waits, a deployment, a
+    /// conflict, a review — and the crown hears it for a worker it started
+    /// or watches, through the same table (`due`) as a merge. One line per
+    /// ticket per pass, every edge in it: `pipeline passed !1, review
+    /// approved !1`. What the crown does with it is its brief's to say.
+    pub(super) fn hear_forge(&mut self, news: Vec<(ulid::Ulid, String)>) -> bool {
         let Some(crown) = self.board.crown_holder().map(|t| t.id) else { return false };
         let mut woke = false;
-        for (worker, words) in failed {
+        for (worker, words) in news {
             if worker == crown || !self.crown_hears(worker, crown) {
                 continue;
             }
@@ -1476,9 +1490,9 @@ impl Daemon {
                 merge: agg.map(|a| worktree::merge_word(a.merged, a.needs_rebase, a.ahead)),
                 ahead: agg.map_or(0, |a| a.ahead),
                 column,
-                pipeline: Some(words),
+                forge: Some(words),
             };
-            match due(Some(WakeCause::Pipeline), None, &self.pending_on(worker, None)) {
+            match due(Some(WakeCause::Forge), None, &self.pending_on(worker, None)) {
                 Due::Step(cause) => self.hold_for_step(worker, cause, now),
                 Due::Wake(cause) => {
                     let heard = self.crown_heard.entry(worker).or_default();
@@ -1550,11 +1564,11 @@ mod tests {
     use super::*;
 
     fn branch(tip: &str, merge: &'static str, ahead: u32, column: &str) -> Told {
-        Told { tip: tip.into(), merge: Some(merge), ahead, column: column.into(), pipeline: None }
+        Told { tip: tip.into(), merge: Some(merge), ahead, column: column.into(), forge: None }
     }
 
     fn checkout(head: &str, column: &str) -> Told {
-        Told { tip: head.into(), merge: None, ahead: 0, column: column.into(), pipeline: None }
+        Told { tip: head.into(), merge: None, ahead: 0, column: column.into(), forge: None }
     }
 
     const DELIVERED: Option<WakeCause> = Some(WakeCause::Delivered);
@@ -2228,5 +2242,47 @@ mod tests {
         assert_eq!(wake.changed(), ["merge_state merged", "column DONE", "after a restart"]);
         let back: CrownWake = serde_json::from_str(&serde_json::to_string(&wake).unwrap()).unwrap();
         assert_eq!((back.cause, back.late), (WakeCause::Raised, true));
+    }
+
+    /// T-744: a forge wake says its edges' words, every one a pass saw
+    /// between two crown turns, ranks over a finished turn and under a
+    /// merge, and comes back from `crown.json` — T-739's spelling included.
+    #[test]
+    fn a_forge_wake_says_every_edge_and_round_trips() {
+        assert!(WakeCause::Forge > WakeCause::Finished);
+        assert!(WakeCause::Merged > WakeCause::Forge);
+        assert_eq!(WakeCause::Forge.word(), "forge");
+        assert_eq!(WakeCause::Forge.clause(), "has news from the forge");
+        let before = branch("aaa", "ahead", 1, "REVIEW");
+        let news = |words: &str| Told { forge: Some(words.into()), ..before.clone() };
+        assert_eq!(delta(Some(&before), &news("pipeline passed !1")), ["pipeline passed !1"]);
+        // An edge is news each time it happens: a second approval after a
+        // dismissal is said again.
+        let approved = news("review approved !1");
+        assert_eq!(delta(Some(&approved), &approved), ["review approved !1"]);
+        let mut wake = CrownWake {
+            worker: ulid::Ulid::nil(),
+            cause: WakeCause::Forge,
+            from: Some(before.clone()),
+            to: Some(news("pipeline passed !1")),
+            finished: false,
+            linger: None,
+            late: false,
+        };
+        wake.fold(WakeCause::Forge, None, Some(news("review approved !1")));
+        assert_eq!(wake.changed(), ["pipeline passed !1, review approved !1"]);
+        // A delivery folded over it keeps the forge's words in its delta.
+        wake.fold(WakeCause::Delivered, None, Some(branch("bbb", "ahead", 2, "REVIEW")));
+        assert_eq!(wake.cause, WakeCause::Delivered);
+        assert_eq!(wake.changed(), ["ahead 1 → 2", "pipeline passed !1, review approved !1"]);
+        let back: CrownWake = serde_json::from_str(&serde_json::to_string(&wake).unwrap()).unwrap();
+        assert_eq!(back.to, wake.to);
+        let old: CrownWake = serde_json::from_str(
+            r#"{"worker":"00000000000000000000000000","cause":"pipeline",
+                "to":{"tip":"a","ahead":1,"column":"REVIEW","pipeline":"failed #4: lint"}}"#,
+        )
+        .unwrap();
+        assert_eq!(old.cause, WakeCause::Forge);
+        assert_eq!(old.to.and_then(|t| t.forge).as_deref(), Some("failed #4: lint"));
     }
 }
