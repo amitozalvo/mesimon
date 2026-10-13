@@ -171,9 +171,13 @@ pub struct Query {
 /// against the previous read, never a first one, which is a baseline.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Edge {
-    /// A PR newly bound and open. The caller keeps it only for a PR its
-    /// ticket never read before (T-767): an opening, never a re-read.
+    /// An open PR its ticket's reads never held (T-767): an opening, never
+    /// a re-read.
     pub opened: bool,
+    /// Newly held open PRs, by label, bound with a settled pipeline:
+    /// passed, failed or waiting (T-769). A PR opened and judged between
+    /// two reads says that state as its first edge.
+    pub bound: Vec<(String, Pipeline)>,
     /// The worst pipeline over the open PRs turned passed (T-767): what
     /// `requires_pipeline` waits for, never a merged commit's pipeline,
     /// which is the deploy edges' (`waiting`, `deployed`).
@@ -200,16 +204,30 @@ pub struct Edge {
     /// The set's pipeline stopped on a person at a job it was not stopped
     /// on before: the job's word, empty where the forge named none.
     pub waiting: Option<String>,
-    /// Open PRs, by label, whose conflict appeared (`true`) or cleared.
-    pub conflict: Vec<(String, bool)>,
-    /// Open PRs, by label, a reviewer's verdict newly landed on: approved
-    /// or changes requested.
+    /// Open PRs whose conflict appeared or cleared, and newly held ones
+    /// bound in conflict (T-769). The caller keeps a clear only where its
+    /// conflict was said (`State::say_conflicts`).
+    pub conflict: Vec<Conflict>,
+    /// Open PRs, by label, a reviewer's verdict newly landed on, a newly
+    /// held one's included (T-769): approved or changes requested.
     pub review: Vec<(String, Review)>,
+}
+
+/// A conflict edge (T-744): which PR, and whether it appeared or cleared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Conflict {
+    pub repo: String,
+    pub number: u64,
+    pub label: String,
+    pub on: bool,
+    /// The PR is newly held, so its conflict is part of no earlier read.
+    pub fresh: bool,
 }
 
 impl Edge {
     pub fn any(&self) -> bool {
         self.opened
+            || !self.bound.is_empty()
             || self.passed
             || self.merged
             || !self.landed.is_empty()
@@ -225,11 +243,12 @@ impl Edge {
     /// naming its PR: `merged !2`, `pipeline passed !1`, `waiting on
     /// deploy:production !1`, `deployed to staging !1`, `conflict !1`,
     /// `conflict cleared !1`, `review approved !1`, `changes requested !1`,
-    /// `pipeline failed !1: test-linux`. Never an opening (the worker's turn
-    /// end carries it). A merge is said only where the caller left it in
-    /// `landed`: the flags' merged wake says the one that lands the
-    /// worktree's branch (T-757). `new` is the read the edge was taken on,
-    /// for the labels.
+    /// `pipeline failed !1: test-linux`, in the forge's order: merged, then
+    /// the pipelines, then deployed (T-769). Never an opening (the worker's
+    /// turn end carries it), but a newly bound PR's settled state is said
+    /// (T-769). A merge is said only where the caller left it in `landed`:
+    /// the flags' merged wake says the one that lands the worktree's branch
+    /// (T-757). `new` is the read the edge was taken on, for the labels.
     pub fn news(&self, new: &[Pr]) -> Vec<String> {
         let labels = |pick: &dyn Fn(&Pr) -> bool| -> String {
             new.iter().filter(|p| pick(p)).map(Pr::label).collect::<Vec<_>>().join(" ")
@@ -254,14 +273,30 @@ impl Edge {
                 j => out.push(format!("waiting on {j}{}", tail(label))),
             }
         }
+        // A newly bound PR's pipeline, where the set's own edge above did
+        // not already name it.
+        for (label, pipeline) in &self.bound {
+            match pipeline {
+                Pipeline::Passed if !self.passed => out.push(format!("pipeline passed {label}")),
+                Pipeline::Failed(job) if self.failed.is_none() => match forge::job_word(job) {
+                    j if j.is_empty() => out.push(format!("pipeline failed {label}")),
+                    j => out.push(format!("pipeline failed {label}: {j}")),
+                },
+                Pipeline::Waiting(job) if self.waiting.is_none() => match forge::job_word(job) {
+                    j if j.is_empty() => out.push(format!("waiting on a manual job {label}")),
+                    j => out.push(format!("waiting on {j} {label}")),
+                },
+                _ => {}
+            }
+        }
         for (label, env) in &self.reached {
             out.push(format!("deployed to {} {label}", forge::job_word(env)));
         }
-        for (label, on) in &self.conflict {
-            out.push(if *on {
-                format!("conflict {label}")
+        for c in &self.conflict {
+            out.push(if c.on {
+                format!("conflict {}", c.label)
             } else {
-                format!("conflict cleared {label}")
+                format!("conflict cleared {}", c.label)
             });
         }
         for (label, verdict) in &self.review {
@@ -293,9 +328,16 @@ fn arrived_envs(set: &[Pr]) -> Vec<String> {
     first.deployed.iter().filter(|e| rest.iter().all(|p| p.deployed.contains(e))).cloned().collect()
 }
 
-/// The edge between two reads of one ticket's set.
-pub fn edge(old: &[Pr], new: &[Pr]) -> Edge {
+/// The edge between two reads of one ticket's set. `held` is every PR, by
+/// repository and number, the ticket's reads held before this one
+/// (`State::held`): an open PR outside it is newly bound, and brings its
+/// settled state in as its first edge (T-769).
+pub fn edge(old: &[Pr], new: &[Pr], held: &[(String, u64)]) -> Edge {
     let was = |p: &Pr| old.iter().find(|o| o.repo == p.repo && o.number == p.number);
+    let fresh: Vec<&Pr> = new
+        .iter()
+        .filter(|p| p.state.is_open() && !held.iter().any(|(r, n)| *r == p.repo && *n == p.number))
+        .collect();
     let all_merged = |s: &[Pr]| !s.is_empty() && s.iter().all(|p| p.state == PrState::Merged);
     let before = arrived_envs(old);
     let (then, now) = (forge::pipeline_of(old), forge::pipeline_of(new));
@@ -303,15 +345,23 @@ pub fn edge(old: &[Pr], new: &[Pr]) -> Edge {
     // run finishing, never a ticket's pipeline passing (T-767).
     let open_passed =
         |s: &[Pr]| s.iter().any(|p| p.state.is_open()) && forge::pipeline_of(s) == Pipeline::Passed;
-    // An open PR read open before too: a conflict or a review on one just
-    // bound is part of its opening, which is not news.
+    // An open PR read open before too: its conflict and its review are
+    // edges between the two reads. One newly bound says them as they stand.
     let kept: Vec<(&Pr, &Pr)> = new
         .iter()
         .filter(|p| p.state.is_open())
         .filter_map(|p| was(p).filter(|o| o.state.is_open()).map(|o| (o, p)))
         .collect();
+    let verdict = |r: Review| matches!(r, Review::Approved | Review::ChangesRequested);
     Edge {
-        opened: new.iter().any(|p| p.state.is_open() && was(p).is_none()),
+        opened: !fresh.is_empty(),
+        bound: fresh
+            .iter()
+            .filter(|p| {
+                matches!(p.pipeline, Pipeline::Passed | Pipeline::Failed(_) | Pipeline::Waiting(_))
+            })
+            .map(|p| (p.label(), p.pipeline.clone()))
+            .collect(),
         passed: open_passed(new) && !open_passed(old),
         merged: all_merged(new) && !all_merged(old),
         landed: new
@@ -343,15 +393,22 @@ pub fn edge(old: &[Pr], new: &[Pr]) -> Edge {
         conflict: kept
             .iter()
             .filter(|(o, p)| o.conflict != p.conflict)
-            .map(|(_, p)| (p.label(), p.conflict))
+            .map(|(_, p)| (*p, false))
+            .chain(fresh.iter().filter(|p| p.conflict).map(|p| (*p, true)))
+            .map(|(p, fresh)| Conflict {
+                repo: p.repo.clone(),
+                number: p.number,
+                label: p.label(),
+                on: p.conflict,
+                fresh,
+            })
             .collect(),
         review: kept
             .iter()
-            .filter(|(o, p)| {
-                o.review != p.review
-                    && matches!(p.review, Review::Approved | Review::ChangesRequested)
-            })
-            .map(|(_, p)| (p.label(), p.review))
+            .filter(|(o, p)| o.review != p.review && verdict(p.review))
+            .map(|(_, p)| *p)
+            .chain(fresh.iter().filter(|p| verdict(p.review)).copied())
+            .map(|p| (p.label(), p.review))
             .collect(),
     }
 }
@@ -884,6 +941,11 @@ pub struct State {
     /// since this start or in `forge.json` (T-767): a PR read again after
     /// a read that missed it, or reopened, is no opening.
     pub held: HashMap<ulid::Ulid, Vec<(String, u64)>>,
+    /// The open PRs, by repository and number, whose `conflict` edge was
+    /// said since this start and not cleared (T-769): a clear is said only
+    /// where its conflict was. Memory only, so a restart's first read is a
+    /// baseline for both.
+    pub conflicted: HashMap<ulid::Ulid, Vec<(String, u64)>>,
     /// The repositories whose last call failed, with the CLI's words.
     pub errors: Vec<(String, String)>,
     /// Merge commits' pipelines as last read, by repository path and oid
@@ -928,6 +990,28 @@ impl State {
             }
         }
         opens
+    }
+
+    /// Keeps the conflict edges that are news (T-769): a conflict once,
+    /// until a clear that follows it, which is said only where the conflict
+    /// was. `baseline`: the read is the first live one against a set
+    /// `forge.json` brought back, which says no conflict and no clear of a
+    /// PR that set held (a newly bound one's conflict is said).
+    pub fn say_conflicts(&mut self, t: ulid::Ulid, edge: &mut Edge, baseline: bool) {
+        let said = self.conflicted.entry(t).or_default();
+        edge.conflict.retain(|c| {
+            let id = (c.repo.clone(), c.number);
+            let was = said.contains(&id);
+            if !c.on {
+                said.retain(|s| *s != id);
+                return was;
+            }
+            if was || (baseline && !c.fresh) {
+                return false;
+            }
+            said.push(id);
+            true
+        });
     }
 
     /// Something reads a forge on this board: a probe found a CLI.
@@ -1227,6 +1311,13 @@ pub fn delta(old: Option<&[Pr]>, new: &[Pr]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The edge with `old` as everything held before: a PR outside it is
+    /// newly bound.
+    fn edge(old: &[Pr], new: &[Pr]) -> Edge {
+        let held: Vec<(String, u64)> = old.iter().map(|p| (p.repo.clone(), p.number)).collect();
+        super::edge(old, new, &held)
+    }
 
     fn pr(number: u64, state: PrState, pipeline: Pipeline) -> Pr {
         Pr {
@@ -1585,13 +1676,18 @@ mod tests {
         let mut touched = running.clone();
         touched.updated_ms += 1000;
         assert!(!edge(std::slice::from_ref(&running), &[touched]).any());
-        // A PR bound already conflicted and approved: its opening, not news.
+        // A PR bound already conflicted and approved says both (T-769);
+        // bound running and clean, its opening alone, which is not news.
         let mut fresh = gl(2, Pipeline::Running);
         fresh.conflict = true;
         fresh.review = Review::Approved;
         let e = edge(std::slice::from_ref(&running), &[fresh.clone(), running.clone()]);
         assert!(e.opened);
-        assert!(e.news(&[fresh, running.clone()]).is_empty());
+        assert_eq!(e.news(&[fresh, running.clone()]), ["conflict !2", "review approved !2"]);
+        let quiet = gl(2, Pipeline::Running);
+        let e = edge(std::slice::from_ref(&running), &[quiet.clone(), running.clone()]);
+        assert!(e.opened);
+        assert!(e.news(&[quiet, running.clone()]).is_empty());
         // The merge commit reached an environment; several edges on one
         // pass are one list.
         let mut merged = gl(1, Pipeline::Passed);
@@ -1604,6 +1700,106 @@ mod tests {
         assert_eq!(
             words(std::slice::from_ref(&running), &[both]),
             ["pipeline passed !1", "review approved !1"]
+        );
+    }
+
+    /// T-769, finding 4: a PR bound with a settled state says it as its
+    /// first edge — a pipeline passed, failed or waiting beside a set whose
+    /// own edge does not name it, a conflict, a verdict — and one read
+    /// again after a read that missed it says nothing.
+    #[test]
+    fn a_freshly_bound_pr_says_its_settled_state() {
+        let gl = |n: u64, state: PrState, pipeline: Pipeline| {
+            let mut p = pr(n, state, pipeline);
+            p.forge = Forge::GitLab;
+            p
+        };
+        // B3: !1 merged, !2 bound already passed.
+        let one = gl(1, PrState::Merged, Pipeline::Passed);
+        let now = [gl(2, PrState::Open, Pipeline::Passed), one.clone()];
+        let e = edge(std::slice::from_ref(&one), &now);
+        assert!(e.opened && e.passed);
+        assert_eq!(e.news(&now), ["pipeline passed !2"]);
+        // Beside an open PR that passed already: the set's edge is silent,
+        // the new PR's is not.
+        let green = gl(1, PrState::Open, Pipeline::Passed);
+        let now = [gl(2, PrState::Open, Pipeline::Passed), green.clone()];
+        let e = edge(std::slice::from_ref(&green), &now);
+        assert!(!e.passed, "the set was green before");
+        assert_eq!(e.news(&now), ["pipeline passed !2"]);
+        let red = gl(1, PrState::Open, Pipeline::Failed("lint".into()));
+        let now = [gl(2, PrState::Open, Pipeline::Failed("test".into())), red.clone()];
+        assert_eq!(edge(std::slice::from_ref(&red), &now).news(&now), ["pipeline failed !2: test"]);
+        let now = [gl(2, PrState::Open, Pipeline::Waiting("deploy".into())), red.clone()];
+        assert_eq!(edge(std::slice::from_ref(&red), &now).news(&now), ["waiting on deploy !2"]);
+        // C1: !3 bound in conflict, with changes requested.
+        let mut three = gl(3, PrState::Open, Pipeline::Running);
+        three.conflict = true;
+        three.review = Review::ChangesRequested;
+        let now = [three.clone()];
+        let e = edge(&[], &now);
+        assert_eq!(e.news(&now), ["conflict !3", "changes requested !3"]);
+        assert!(e.conflict[0].fresh && e.conflict[0].on);
+        // Held before (a read missed it): no opening, nothing said.
+        let held = [("o/r".to_string(), 3)];
+        let e = super::edge(&[], &now, &held);
+        assert!(!e.any(), "{e:?}");
+    }
+
+    /// T-769, finding 6: a conflict is said once, and its clear only after
+    /// it; the first live read against `forge.json`'s set says neither for
+    /// a PR that set held, and a newly bound PR's conflict is still said.
+    #[test]
+    fn a_conflict_cleared_follows_a_conflict_said() {
+        let t = ulid::Ulid::new();
+        let mut s = State::default();
+        let clean = pr(4, PrState::Open, Pipeline::Running);
+        let mut stuck = clean.clone();
+        stuck.conflict = true;
+        let said = |s: &mut State, old: &Pr, new: &Pr, baseline: bool| {
+            let mut e = edge(std::slice::from_ref(old), std::slice::from_ref(new));
+            s.say_conflicts(t, &mut e, baseline);
+            e.news(std::slice::from_ref(new))
+        };
+        // D1: the set held !4 in conflict from a read whose edge said
+        // nothing; its clear is no news.
+        assert!(said(&mut s, &stuck, &clean, false).is_empty(), "a phantom clear");
+        // Said, then cleared: both.
+        assert_eq!(said(&mut s, &clean, &stuck, false), ["conflict #4"]);
+        assert_eq!(said(&mut s, &stuck, &clean, false), ["conflict cleared #4"]);
+        assert!(said(&mut s, &stuck, &clean, false).is_empty(), "cleared once");
+        // A restart: the loaded set is a baseline both ways.
+        let mut s = State::default();
+        assert!(said(&mut s, &clean, &stuck, true).is_empty());
+        assert!(said(&mut s, &stuck, &clean, false).is_empty());
+        let mut s = State::default();
+        assert_eq!(said(&mut s, &clean, &stuck, false), ["conflict #4"]);
+        let mut s = State::default();
+        assert!(said(&mut s, &stuck, &clean, true).is_empty(), "said by the last daemon, or not");
+        // A PR bound since: its conflict is said on the baseline read too,
+        // and said once.
+        let mut s = State::default();
+        let mut e = edge(&[], std::slice::from_ref(&stuck));
+        s.say_conflicts(t, &mut e, true);
+        assert_eq!(e.news(std::slice::from_ref(&stuck)), ["conflict #4"]);
+        let mut again = edge(&[], std::slice::from_ref(&stuck));
+        s.say_conflicts(t, &mut again, false);
+        assert!(again.conflict.is_empty(), "said already");
+        assert_eq!(said(&mut s, &stuck, &clean, false), ["conflict cleared #4"]);
+    }
+
+    /// T-769, finding 3: one pass's words in the forge's order — merged,
+    /// the pipeline, deployed.
+    #[test]
+    fn a_pass_says_merged_before_its_pipeline_and_its_deployment() {
+        let open = pr(1, PrState::Open, Pipeline::Passed);
+        let mut merged = pr(1, PrState::Merged, Pipeline::Waiting("deploy:production".into()));
+        merged.merge_oid = "m1".into();
+        merged.deployed = vec!["staging".into()];
+        let now = [merged];
+        assert_eq!(
+            edge(&[open], &now).news(&now),
+            ["merged #1", "waiting on deploy:production #1", "deployed to staging #1"]
         );
     }
 

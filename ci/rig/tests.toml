@@ -736,6 +736,28 @@ checks = ["road:mod", "started_by_crown", "woke:merged", "woke:forge", "crown:as
   rig = "forge_off"
 
 [[test]]
+id = "F5"
+title = "F5 · the crown hears a pull request first read with its pipeline already passed: do the steps below"
+workspace = "worktree"
+brief = "Reply with the single word done and end your turn. Read no file and run no command."
+expect = "the worker's ticket is read on a stub forge with no PR; its PR then binds open with its pipeline already passed, and the board wakes the crown with has news from the forge (pipeline passed #42, T-769) though no read saw it running; a crown told nothing about merging pull requests merges nothing and raises its hand naming the PR."
+checks = ["road:mod", "started_by_crown", "woke:forge", "crown_hand:#42", "replies:done"]
+
+  [[test.steps]]
+  crown = "F5: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: F5 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: F5 seen. This test lifts the rig's rule against raising a hand: when the board next wakes you about {key}, do what this board's crown does with that news, then end your turn with the single line: F5 heard."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "forge_empty"
+
+  [[test.steps]]
+  rig = "forge_bound_passed"
+
+  [[test.steps]]
+  rig = "forge_off"
+
+[[test]]
 id = "H1"
 title = "H1 · a worker asked why its ticket did not move finds the held move: do the steps below"
 workspace = "worktree"

@@ -506,7 +506,9 @@ the remote** alone makes a merged PR read merged once fetched. A crown hears wha
 tickets it started or watches: it is woken when a pipeline fails or passes, a job waits on a
 person, the merge reaches an environment, a conflict comes or clears, or a review approves or
 asks for changes, and when a later pull request merges on a ticket whose branch already
-landed, and what it does then is up to its brief.
+landed. A pull request first seen already passed, failed, waiting, in conflict or reviewed says
+so, and a merge read with its deployment is said first, in the same line. What the crown does
+then is up to its brief.
 
 mesimon reads the forge and never writes to it: no PR is opened, merged or commented on from the
 board, and no token is stored; the CLI's own sign-in is the only credential. The activity feed

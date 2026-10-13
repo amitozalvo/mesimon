@@ -1508,6 +1508,10 @@ impl Daemon {
     /// or watches, through the same table (`due`) as a merge. One line per
     /// ticket per pass, every edge in it: `pipeline passed !1, review
     /// approved !1`. What the crown does with it is its brief's to say.
+    /// A pass that also flipped the branch to merged (the forge's merged
+    /// clause, T-769) says the merge in this line, as `merged`, and moves
+    /// both baselines to it as `hear_merges` does: the flags' wake on the
+    /// tick then finds it told and folds into it.
     pub(super) fn hear_forge(&mut self, news: Vec<(ulid::Ulid, String)>) -> bool {
         let Some(crown) = self.board.crown_holder().map(|t| t.id) else { return false };
         let mut woke = false;
@@ -1526,10 +1530,22 @@ impl Daemon {
                 column,
                 forge: Some(words),
             };
-            match due(Some(WakeCause::Forge), None, &self.pending_on(worker, None)) {
+            let landing = self.crown_landed.contains(&worker)
+                && now.merge == Some("merged")
+                && !self
+                    .crown_heard
+                    .get(&worker)
+                    .and_then(|h| h.told.as_ref())
+                    .is_some_and(|t| t.merge == Some("merged") && t.tip == now.tip);
+            let cause = if landing { WakeCause::Merged } else { WakeCause::Forge };
+            match due(Some(cause), None, &self.pending_on(worker, None)) {
                 Due::Step(cause) => self.hold_for_step(worker, cause, now),
                 Due::Wake(cause) => {
                     let heard = self.crown_heard.entry(worker).or_default();
+                    if landing {
+                        heard.judged = Some(now.clone());
+                        heard.deferred = None;
+                    }
                     let from = heard.told.replace(now.clone());
                     self.owe_crown_wake(crown, worker, cause, from, Some(now), false);
                     woke = true;

@@ -13706,32 +13706,46 @@ impl Daemon {
             // The edge since the last read: what a column arrives on, and
             // what the crown hears (T-744), one line per ticket per pass. A
             // first read is a baseline and says nothing, but what it held is
-            // remembered, so an opening is said once (T-767).
-            let opens = self.forge.opens(t, &set);
-            let old = self.forge.sets.get(&t);
-            if let Some(old) = old {
-                let mut edge = crate::forge::edge(old, &set);
-                edge.opened &= opens;
+            // remembered, so an opening is said once (T-767) and a PR bound
+            // since says its settled state (T-769).
+            let held = self.forge.held.get(&t).cloned().unwrap_or_default();
+            self.forge.opens(t, &set);
+            let unchanged = self.forge.sets.get(&t) == Some(&set);
+            let edge = self.forge.sets.get(&t).map(|old| crate::forge::edge(old, &set, &held));
+            if let Some(mut edge) = edge {
+                // A conflict is said once and its clear only after it
+                // (T-769); the first live read against `forge.json`'s set
+                // is a baseline for both.
+                let baseline = !self.forge.at_ms.contains_key(&t);
+                self.forge.say_conflicts(t, &mut edge, baseline);
                 // A merge is the flags' to say where they flip on it (T-757):
                 // the PR whose head is a leg's tip lands the branch the flags
                 // read (`forge_fold_legs` folds exactly that one), and a flip
                 // waiting for the tick is being said. Any other PR — a later
                 // one on a ticket already merged, one from another branch —
-                // moves no flag, so the forge says it.
+                // moves no flag, so the forge says it. And a merge read on the
+                // pass that reads its deployment, which the flags have not
+                // said, is said here, first (T-769): the forge's order, the
+                // flags' wake folding into this one (`hear_forge`).
                 let mut heard = edge.clone();
                 let flipping = self.crown_landed.contains(&t);
+                let flags_said = self.wt_agg.get(&t).is_some_and(|a| a.merged) && !flipping;
                 let tips: Vec<&str> = self
                     .wt_repos
                     .get(&t)
                     .map(|legs| legs.iter().map(|l| l.tip.as_str()).collect())
                     .unwrap_or_default();
+                let reached: Vec<String> = heard.reached.iter().map(|(l, _)| l.clone()).collect();
                 heard.landed.retain(|label| {
-                    !flipping
-                        && set.iter().any(|p| {
-                            p.label() == *label
-                                && p.state == mesimon_core::forge::PrState::Merged
-                                && !tips.contains(&p.head_oid.as_str())
-                        })
+                    set.iter().any(|p| {
+                        p.label() == *label
+                            && p.state == mesimon_core::forge::PrState::Merged
+                            && if tips.contains(&p.head_oid.as_str()) {
+                                reached.contains(label) && !flags_said
+                            } else {
+                                !flipping
+                            }
+                    })
                 });
                 let words = heard.news(&set);
                 if !words.is_empty() {
@@ -13741,17 +13755,14 @@ impl Daemon {
                     arrivals.push((t, edge));
                 }
             }
-            changed |= old != Some(&set);
+            changed |= !unchanged;
             self.forge.sets.insert(t, set);
             self.forge.at_ms.insert(t, sample.at_ms);
             if let Some(b) = basis.remove(&t) {
                 self.forge.basis.insert(t, b);
             }
         }
-        // After the arrivals, so the crown reads the ticket where the
-        // arrival rule put it.
         changed |= self.forge_arrivals(arrivals);
-        changed |= self.hear_forge(news);
         let live: Vec<ulid::Ulid> = self.board.tickets.iter().map(|t| t.id).collect();
         self.forge.sets.retain(|t, _| live.contains(t));
         self.forge.at_ms.retain(|t, _| live.contains(t));
@@ -13778,6 +13789,11 @@ impl Daemon {
                 self.wt_repos.insert(t, legs);
             }
         }
+        // After the arrivals, so the crown reads the ticket where the
+        // arrival rule put it, and after the merged clause's fold, so a
+        // merge the pass read is in the line's state and the flags' wake on
+        // the tick finds it told (T-769).
+        changed |= self.hear_forge(news);
         if changed {
             self.reclaim_archived();
         }

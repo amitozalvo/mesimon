@@ -24363,6 +24363,59 @@ new edge. On the real Sonnet (claude 2.1.296), 2026-10-13: F4 PASS twice (the se
 brief, 107 s), wakes `delivered`, `merged`, `forge`, `answered`; the crown asked the worker once
 and the worker said `noted`.
 
+## The forge's edges: a freshly bound PR's state, the rebase turn's read, no phantom clear, merged before deployed (T-769, 2026-10-14, follow-up to T-744 and T-757)
+
+**Why.** The forge lab's findings 3 to 6 (2026-10-13), all on the edge road (`forge::edge`,
+`absorb_forge`, `hear_forge`).
+
+**4. A newly bound PR says its settled state.** T-744 kept a fresh PR's conflict and review out
+as "part of its opening", so a PR opened and judged between two reads said nothing (C1's !3
+first read in conflict). `forge::edge` now takes `held`, every PR the ticket's reads held
+before this one (`State::held`, T-767), and a PR outside it is newly bound: `opened` is that
+(the caller's `&= opens` folded in), `Edge.bound` carries its pipeline where passed, failed or
+waiting, and its conflict and verdict join `conflict` and `review`. `Edge::news` says the
+pipeline only where the set's own edge did not already name it (another open PR passed or
+failed before). A PR held before and missed by a read is no fresh PR and says nothing. B3's
+`pipeline passed !2` beside a merged !1 was T-767's fix already: the merged commit's pipeline no
+longer read as the set's pass.
+
+**6. A clear follows a conflict said.** `forge::State::conflicted` keeps, per ticket, the PRs
+whose `conflict` edge was said and not cleared; `State::say_conflicts` drops a second
+`conflict` and any `conflict cleared` with no conflict before it. The first live read against a
+set `forge.json` brought back (`at_ms` empty for the ticket) is a baseline for both directions,
+for the PRs that set held; a PR bound since says its conflict. Memory only, as the brief asked.
+D1's phantom was T-770's "fix read back" of a conflict the first read held and never said.
+
+**3. Merged before deployed.** C2's `deployed to staging #1` came 40 s before `merged`:
+`hear_forge` delivered its line at once, and the flags' merged wake (the same pass's
+`forge_fold_legs`, heard on the tick) waited for the crown's turn on it. Now a tip PR's merge
+read on the pass that reads its deployment, which the flags have not said (`wt_agg` not merged,
+or a flip waiting for the tick), keeps `merged !N` in the forge's line, first, as `news` orders
+every line (merged, the pipelines, deployed). `hear_forge` runs after the fold loop, so its
+`Told` reads `merged`; for a worker in `crown_landed` it owes the wake as `Merged`, moves
+`judged` and `told` as `hear_merges` does, and the tick's `merge_verdict` finds the merge told
+and says nothing. A tip merge alone is still the flags' wake (T-757's e2e).
+
+**5. The rebase turn is read at its end.** Checked, nothing to fix: the lab ran before T-761.
+`look_after_turn` asks the ticket's own look on every `EndTurn` the train could take, the
+train's rebase turn included, and a look whose `pushed` moved (the rebase's force-push) owes
+the burst read. `forge_e2e::a_train_rebase_turn_is_read_at_its_end` pins it with the minute at
+ten: the conflict clears seconds after the rebase turn's `Stop`, on one `pr list`. A GitLab
+recompute still reading `conflict` right after the push (T-770's note) waits for the next read.
+
+**Tests.** Units `a_freshly_bound_pr_says_its_settled_state`,
+`a_conflict_cleared_follows_a_conflict_said`, `a_pass_says_merged_before_its_pipeline_and_its_deployment`;
+`the_crown_hears_each_forge_edge_by_its_pr` now hears a PR bound conflicted and approved.
+`forge_e2e`: `a_freshly_bound_prs_state_is_news_and_its_merge_comes_before_its_deployment` (a PR
+bound passed: one `pipeline passed #42`; merged and on staging in one pass: one `merged` line
+ending `merged #42, deployed to staging #42)`, no second merged wake),
+`a_conflict_cleared_across_a_restart_says_nothing` (then a conflict after it and its clear are
+said), `a_train_rebase_turn_is_read_at_its_end`. The first two fail with their fix disabled.
+`the_crown_hears_the_forges_edges`' later PR opens with no verdict, since one bound approved is
+now news. The rig: F5 (`forge_empty`, `forge_bound_passed`), on the real Sonnet (claude 2.1.296),
+2026-10-14: PASS in 50 s, woken `forge` on the PR first read passed, the crown merged nothing and
+raised its hand naming #42.
+
 ## A board's own theme is named where it hides a pick (T-746, 2026-10-13)
 
 The author, on the personal-life board: "it says green saved for dark and light terminals but not

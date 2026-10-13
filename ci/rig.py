@@ -1407,6 +1407,57 @@ Reply with the single word ready and end your turn."""
                 record["failures"].append("the stub forge's PR never bound to the ticket")
                 return False
             return True
+        if what == "forge_empty":
+            # The stub forge with no PR yet (T-769): the ticket's set is read
+            # empty, so a PR that appears later is newly bound, not a
+            # baseline.
+            branch = next((w["branch"] for w in self.snapshot().get("worktrees", [])
+                           if w["ticket"] == test["ticket"]), None)
+            if not branch:
+                record["failures"].append("the worker has no worktree branch to open a PR from")
+                return False
+            d = self.forge_stub()
+            self.forge_branch = branch
+            path = os.path.join(d, "prs.json")
+            with open(path + ".tmp", "w") as f:
+                f.write("[]")
+            os.replace(path + ".tmp", path)
+            env = {
+                "PATH": d + ":" + os.environ.get("PATH", ""),
+                "MSMN_GH_PRS": path,
+                "MSMN_GH_CHECKS": os.path.join(d, "checks.json"),
+                "MESIMON_FORGE_EVERY_MS": "2000",
+            }
+            if not self.restart(env):
+                record["failures"].append("the daemon would not restart with the stub forge")
+                return False
+            read = self.wait_for("the forge's first pass", lambda: (
+                self.snapshot().get("forge", {}).get("sampled_at_ms", 0) > 0),
+                STEP_TIMEOUT, self.watch)
+            if not read:
+                record["failures"].append("the stub forge was never read")
+                return False
+            # A second pass, so the empty read is the ticket's own.
+            time.sleep(3)
+            return True
+        if what == "forge_bound_passed":
+            # A PR opened and judged between two reads (T-769): bound with
+            # its pipeline already passed, which is its first edge.
+            d = self.forge_stub()
+            mark = len(self.feed_lines)
+            self.write_pr(d, self.forge_branch, "OPEN", "passed")
+            wake = self.forge_wake(test, mark)
+            record["wakes"].append(wake.get("cause") if wake else "none came")
+            if not wake:
+                record["failures"].append("the board never woke the crown for the bound PR")
+                return False
+            self.quiet_since = None
+            if not self.wait_for("the crown's turn on the forge's news",
+                                 lambda: self.crown_settled(after_ms=wake.get("at_ms", 0)),
+                                 STEP_TIMEOUT, self.watch):
+                record["failures"].append("the crown's turn on the forge's news never ended")
+                return False
+            return True
         if what == "forge_fail":
             # The pipeline fails on the forge: the next read sees the edge,
             # the board wakes the crown, and the crown tells the worker.
