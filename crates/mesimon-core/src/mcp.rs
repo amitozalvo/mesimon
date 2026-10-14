@@ -146,7 +146,11 @@ pub const CROWN_WAKES: &str = concat!(
      that opened a pull request says so in its line (opened #42), and that line waits for the \
      board's read of the forge, so get_ticket already lists the PR. A finished turn that left nothing new to \
      merge says so: the agent is done with what it was asked, and what comes next is the \
-     crown's to decide. Nothing needs \
+     crown's to decide. A start_agent whose worktree could not be cut (a repository with no \
+     commits yet, a checkout on no branch) wakes it too: could not start, with the reason and \
+     its fix, which get_ticket on that ticket also carries (worktree_error). A fix outside \
+     the ticket's brief is the person's: raise_hand on the crown's own ticket says it, and \
+     start_agent once it is made tries again. Nothing needs \
      polling. A background task or monitor left running does not hold the wake or a queued \
      word: they land at this session's composer as at any idle one. A worker the crown started \
      that sits idle with background tasks for 30 minutes wakes this session once (has been \

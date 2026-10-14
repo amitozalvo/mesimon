@@ -25089,3 +25089,43 @@ the stub's `pr list` takes 2 s from the turn on; the worker pushes and #42 appea
 at that moment listing #42, and no `forge` wake. With the hold off it fails on `get_ticket`.
 `crown_e2e`, `merge_train_e2e`, `pr_merge_e2e` and all of `forge_e2e` pass. The rig: F1 on the
 real Sonnet (claude 2.1.296), 2026-10-14: PASS in 44 s, wakes `finished`, `forge`.
+
+## A worktree that cannot be cut says why, and the crown hears it (T-777, 2026-10-14)
+
+**The words.** A repository with no commits read on the card as `precheck: git
+--no-optional-locks failed: fatal: ambiguous argument 'HEAD': …`, cut mid-sentence. The cause
+was `default_branch`'s last rung, `rev-parse --abbrev-ref HEAD`, which refuses an unborn HEAD; the
+precheck's own `base branch main has no commits` was never reached. The rung now asks
+`symbolic-ref --short HEAD` first (it names an unborn branch), so the precheck says
+`no commits on main yet — make a first commit, then start again` (`worktree::no_commits_yet`); a
+detached HEAD with no main/master/trunk says `DETACHED_HEAD` instead of `base branch HEAD …`, and
+a workspace leg says `api has no commits on main yet — …`. The card's detail
+(`worktree::error_words`) drops the stage word for a precheck, whose message is always mesimon's
+sentence; a later stage (`add`, `mark`, `include`) keeps `stage: git's words`, because the
+stage is what places them.
+
+**The crown.** `start_agent` on a ticket whose tree is still to be cut answers `session_started:
+false`, and a provision that then failed dropped the parked spawn in silence: the crown waited
+on a worker that would never come. `on_provisioned`'s failure now owes the crown a wake when
+the parked spawn was the crown's (`PendingSpawn::started_by`) or the parked wake was of a
+worker it started: `WakeCause::Unstarted`, the strongest cause (no agent exists, so nothing
+else about the ticket is news), said `T-12 "…" could not start (its worktree: <the card's
+words>)`, with the reason on `CrownWake::unstarted` (serde default; crown.json's schema stays 1,
+as T-739's `Forge` did). `get_ticket` carries the same words as `worktree_error` while the
+binding is in error. `CROWN_WAKES` tells the crown that a fix outside the brief is the person's,
+by `raise_hand`, and that `start_agent` tries again once it is made.
+
+**The root's failure takes the same road.** `queue_provision`'s `ensure_root` failure set
+`Error { stage: "root" }` and returned, leaving its parked spawn parked for good and the queue
+behind it unstarted; it now goes through `on_provisioned`'s failure arm like any stage's.
+
+**Not done.** A later stage's git text is still git's own, behind its stage word.
+
+**Tests.** Unit `provision_refuses_an_unborn_or_detached_base_in_plain_words`.
+`crown_e2e::a_crown_start_whose_worktree_cannot_be_cut_wakes_the_crown_with_why`: a repository
+with `git init` alone, the crown's `start_agent` on a worktree; the crown's pane reads the
+`could not start` line, the card's detail and `get_ticket`'s `worktree_error` are the sentence,
+no agent started. The rig: U1 (new; `hold_branch` makes the ticket's branch before the start, so
+the precheck refuses; an `until = { woke = … }` for a step with no worker) on the real Sonnet
+(claude 2.1.299), 2026-10-14: PASS in 30 s, wake `unstarted`, and the crown, told nothing of
+what to do, raised its hand naming the branch that already exists.

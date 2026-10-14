@@ -351,6 +351,29 @@ def replies(rows):
     return out
 
 
+def slug(title):
+    """`mesimon_core::workspace::slug` for the rig's ASCII titles: the branch
+    a worktree ticket is cut on is `msmn/<KEY>-<slug>` (U1 holds it)."""
+    out, last_dash = [], True
+    for ch in title:
+        c = ch.lower() if ch.isascii() and (ch.isalnum() or ch in "._") else "-"
+        if c == "-":
+            if not last_dash:
+                out.append("-")
+                last_dash = True
+        else:
+            out.append(c)
+            last_dash = False
+    s = "".join(out).strip("-.")
+    if len(s) > 32:
+        cut = 32
+        dash = s[:cut + 1].rfind("-")
+        if dash >= 8:
+            cut = dash
+        s = s[:cut].rstrip("-.")
+    return s or "t"
+
+
 def sid16(session):
     """The tmux session name: a pane-died frame names its session by it."""
     return session.replace("-", "")[:16]
@@ -1131,6 +1154,10 @@ Reply with the single word ready and end your turn."""
             tickets = [t for t, k, _ in self.test_tickets(test) if k == on]
 
         def one_done(tid):
+            if until.get("woke"):
+                # A start that makes no agent (U1): the board's wake for it.
+                return any(l.get("kind") == "crown_wake" and l.get("worker") == tid
+                           and l.get("cause") == until["woke"] for l in self.feed_lines[mark:])
             rec = self.agent_of(self.board(), tid)
             if not rec:
                 return False
@@ -1164,7 +1191,7 @@ Reply with the single word ready and end your turn."""
         # been quiet; elsewhere, when it has been quiet. A wake the step did
         # not expect still resets the quiet, since the crown works on it.
         recs = [self.agent_of(self.board(), t) for t in tickets]
-        final_at = max((l["at_ms"] for rec in recs for l in self.worker_lines(rec["id"], mark)
+        final_at = max((l["at_ms"] for rec in recs if rec for l in self.worker_lines(rec["id"], mark)
                         if l.get("kind") == "session_state"), default=0)
         wake = None
         if step.get("wake"):
@@ -1173,6 +1200,15 @@ Reply with the single word ready and end your turn."""
                 and l.get("worker") in tickets and l.get("at_ms", 0) >= final_at - 500),
                 None), WAKE_GRACE, self.watch)
             record["wakes"].append(wake.get("cause") if wake else "none came")
+            if wake and until.get("woke"):
+                # No worker turn paced this wake (U1): it can land inside the
+                # crown's turn on the step's words, and the crown's turn on it
+                # starts when it is sent.
+                sent = self.wait_for("the wake's delivery", lambda: next((
+                    l for l in self.feed_lines[mark:] if l.get("kind") == "board"
+                    and l.get("cmd") == "crown_wake_sent"
+                    and l.get("at_ms", 0) >= wake["at_ms"]), None), WAKE_GRACE, self.watch)
+                wake = sent or wake
         self.quiet_since = None
         # Every crown step is a turn of the crown's on the step's words: it
         # has settled once a Stop of its came after them (or after the wake).
@@ -1313,6 +1349,16 @@ Reply with the single word ready and end your turn."""
             record["pings"].append("no pong")
             record["failures"].append("ping: no pong")
             return False
+        if what in ("hold_branch", "free_branch"):
+            # U1 (T-777): the ticket's own branch made before its start, so
+            # the worktree's precheck refuses it; freed when the test ends.
+            branch = f"msmn/{test['key']}-{slug(test['title'])}"
+            if what == "hold_branch":
+                git(self.repo, "branch", branch, "HEAD")
+            else:
+                git(self.repo, "branch", "-D", branch)
+            self.log(f"{'held' if what == 'hold_branch' else 'freed'} {branch}")
+            return True
         if what == "restart":
             self.restart()
             self.restarted = True
@@ -1713,7 +1759,9 @@ Reply with the single word ready and end your turn."""
 
         for c in test["checks"]:
             name, _, arg = c.partition(":")
-            if rec is None:
+            # A start that made no agent (U1) is judged on the board's and
+            # the crown's side alone.
+            if rec is None and name not in ("woke", "crown_hand", "crown_reply", "crown"):
                 check(c, False, "no agent record on the ticket")
             elif name == "road":
                 check(c, rec.get("road", "hooks") == arg, f"road {rec.get('road', 'hooks')}")

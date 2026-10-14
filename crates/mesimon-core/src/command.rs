@@ -2074,6 +2074,12 @@ pub struct AgentTicketView {
     /// which is the agent's call and not a token the board adds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_init: Option<AgentWorktreeInitView>,
+    /// Why the ticket's worktree could not be cut (T-777), in the card's
+    /// words, which end on the fix: `no commits on main yet — make a first
+    /// commit, then start again`. Absent while the tree is fine or none was
+    /// asked for. The crown's `could not start` wake points here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_error: Option<String>,
     /// Where `move_ticket` will accept a move to, right now. This is why
     /// `to_column` needs no schema enum: the valid set travels as transient
     /// result data instead of permanent context.
@@ -3378,6 +3384,7 @@ mod tests {
             merge: None,
             prs: vec![],
             worktree_init: None,
+            worktree_error: None,
             allowed_columns: vec![],
             column_descriptions: Default::default(),
             automove: AgentAutomoveView::default(),

@@ -7381,6 +7381,12 @@ impl Daemon {
                 about: mesimon_core::mcp::WORKTREE_INIT_ABOUT.into(),
                 last: self.worktrees.get(&id).and_then(|b| b.init.as_ref()).map(|r| r.word()),
             }),
+            worktree_error: self.worktrees.get(&id).and_then(|b| match &b.status {
+                BindingStatus::Error { stage, message } => {
+                    Some(mesimon_core::text::scrub_text(&worktree::error_words(stage, message)))
+                }
+                _ => None,
+            }),
             allowed_columns: self.agent_allowed_columns(id),
             column_descriptions: self.agent_column_descriptions(),
             automove: self
@@ -7818,7 +7824,9 @@ impl Daemon {
             ahead: self.wt_agg.get(tid).map_or(0, |a| a.ahead),
             needs_rebase: self.wt_agg.get(tid).is_some_and(|a| a.needs_rebase),
             detail: match &b.status {
-                BindingStatus::Error { stage, message } => Some(format!("{stage}: {message}")),
+                BindingStatus::Error { stage, message } => {
+                    Some(worktree::error_words(stage, message))
+                }
                 BindingStatus::Provisioning if self.wt_init.contains(tid) => {
                     Some("init script running".into())
                 }
@@ -13079,10 +13087,12 @@ impl Daemon {
         let root = match worktree::ensure_root(&self.paths) {
             Ok(r) => r,
             Err(e) => {
-                if let Some(b) = self.worktrees.get_mut(&ticket) {
-                    b.status =
-                        BindingStatus::Error { stage: "root".into(), message: e.to_string() };
-                }
+                // The failure road a cut's own takes (T-777): the parked
+                // spawn is dropped, the crown told if it asked, the next
+                // queued tree started. It returned here, the spawn parked
+                // for good and nobody told.
+                let failed = Err(("root".to_string(), e.to_string()));
+                self.on_provisioned(ticket, failed, Duration::ZERO, Vec::new());
                 return;
             }
         };
@@ -13270,10 +13280,26 @@ impl Daemon {
                 self.note_stage("spawn_replay", replay.elapsed());
             }
             Err((stage, message)) => {
+                // A start the crown asked for, or a wake of a worker it
+                // started, is told to the crown (T-777): its receipt said
+                // the tree was being cut, and nothing else would say it
+                // never was.
+                let crown = self.board.crown_holder().map(|t| t.id);
+                let by_crown = crown.is_some_and(|c| {
+                    self.pending_spawns
+                        .iter()
+                        .any(|s| s.ticket == ticket && s.started_by == Some(c))
+                        || (self.pending_resumes.iter().any(|r| r.ticket == ticket)
+                            && self.board.started_by_crown(ticket))
+                });
                 self.pending_spawns.retain(|s| s.ticket != ticket);
                 self.pending_resumes.retain(|r| r.ticket != ticket);
+                let words = worktree::error_words(&stage, &message);
                 if let Some(b) = self.worktrees.get_mut(&ticket) {
                     b.status = BindingStatus::Error { stage, message };
+                }
+                if let Some(c) = crown.filter(|_| by_crown) {
+                    self.hear_unstarted(c, ticket, format!("its worktree: {words}"));
                 }
             }
         }

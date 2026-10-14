@@ -820,3 +820,22 @@ checks = ["road:mod", "started_by_crown", "tools:get_ticket", "reply:pipeline"]
 
   [[test.steps]]
   rig = "forge_off"
+
+[[test]]
+id = "U1"
+title = "U1 · a start whose worktree cannot be cut: do the steps below"
+workspace = "worktree"
+brief = "Reply with the single word done and end your turn. Read no file and run no command."
+expect = "the ticket's branch already exists when the crown starts it on a worktree, so the precheck refuses and no agent starts; start_agent's receipt reads session_started false, then the board wakes the crown, could not start, with the card's words (T-777). Told nothing of what to do on that wake, the crown passes the reason to the person with raise_hand on its own ticket, naming it (already exists), and does not delete the branch itself."
+checks = ["woke:unstarted", "crown_hand:already exists"]
+
+  [[test.steps]]
+  rig = "hold_branch"
+
+  [[test.steps]]
+  crown = "U1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: U1 started."
+  until = { woke = "unstarted" }
+  wake = true
+
+  [[test.steps]]
+  rig = "free_branch"

@@ -490,8 +490,35 @@ pub fn default_branch(repo: &Path) -> Result<String> {
             return Ok(cand.to_string());
         }
     }
+    // The branch HEAD names, born or not (T-777): `rev-parse` refuses an
+    // unborn HEAD in raw git words, where `symbolic-ref` names the branch
+    // and the precheck can say it has no commits yet.
+    if let Ok(s) = git_read(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
+        return Ok(s.trim().to_string());
+    }
     Ok(git_read(repo, &["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string())
 }
+
+/// What a worktree cannot be cut from, in words a person acts on (T-777):
+/// a base with no commits, or a checkout on no branch. The card and the
+/// crown's wake show it whole, so it is short and ends on the fix.
+pub fn no_commits_yet(branch: &str) -> String {
+    format!("no commits on {branch} yet — make a first commit, then start again")
+}
+
+/// A failed provision as the card and the crown's wake say it (T-777): a
+/// precheck's refusal is mesimon's own sentence and reads alone; a later
+/// stage's carries git's words, which the stage places.
+pub fn error_words(stage: &str, message: &str) -> String {
+    if stage == "precheck" {
+        message.to_string()
+    } else {
+        format!("{stage}: {message}")
+    }
+}
+
+/// See `no_commits_yet`.
+pub const DETACHED_HEAD: &str = "the checkout is on a detached HEAD — check out a branch first";
 
 /// The remote-tracking ref the base branch is mirrored by — `origin/main` —
 /// when git has one (T-267). A forge merges a PR THERE, and a fetch is the
@@ -540,9 +567,12 @@ pub fn provision(
 
     // Stage 0 — precheck.
     let base = default_branch(repo).map_err(|e| ("precheck".into(), e.to_string()))?;
+    if base == "HEAD" {
+        return Err(("precheck".into(), DETACHED_HEAD.into()));
+    }
     let base_ref = format!("refs/heads/{base}");
     let base_oid = git_read(repo, &["rev-parse", "--verify", "--quiet", &base_ref])
-        .map_err(|_| ("precheck".into(), format!("base branch {base} has no commits")))?
+        .map_err(|_| ("precheck".into(), no_commits_yet(&base)))?
         .trim()
         .to_string();
     // Branch collision: refuse in mesimon's words, never raw git text.
@@ -621,7 +651,7 @@ fn checked_out(repo: &Path) -> std::result::Result<(String, String), String> {
     let refname = format!("refs/heads/{name}");
     let oid = git_read(repo, &["rev-parse", "--verify", "--quiet", &refname])
         .map(|s| s.trim().to_string())
-        .map_err(|_| format!("branch {name} has no commits"))?;
+        .map_err(|_| format!("has {}", no_commits_yet(&name)))?;
     Ok((name, oid))
 }
 
@@ -2375,6 +2405,32 @@ mod tests {
         // Second pass is a no-op.
         assert!(!reconcile_interrupted(&repo, &mut bindings));
 
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    /// A repository with no commits, or one on no branch, is refused in
+    /// words that say the fix (T-777), never git's `ambiguous argument
+    /// 'HEAD'`, and nothing is written.
+    #[test]
+    fn provision_refuses_an_unborn_or_detached_base_in_plain_words() {
+        let Some(repo) = scratch_repo("unborn") else { return };
+        let root = repo.join("_wtroot");
+        std::fs::create_dir_all(&root).unwrap();
+        let run = |args: &[&str]| {
+            let ok = Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap();
+            assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+        };
+        run(&["checkout", "-q", "--detach"]);
+        run(&["branch", "-q", "-D", "main"]);
+        let (stage, message) = provision(&repo, &root, ulid::Ulid(1), "T-1", "x").unwrap_err();
+        assert_eq!((stage.as_str(), message.as_str()), ("precheck", DETACHED_HEAD));
+
+        // Unborn: HEAD names a branch with no commits on it.
+        run(&["checkout", "-q", "--orphan", "trunk"]);
+        let (stage, message) = provision(&repo, &root, ulid::Ulid(1), "T-1", "x").unwrap_err();
+        assert_eq!(stage, "precheck");
+        assert_eq!(message, "no commits on trunk yet — make a first commit, then start again");
+        assert!(std::fs::read_dir(&root).unwrap().next().is_none(), "nothing written");
         std::fs::remove_dir_all(&repo).ok();
     }
 

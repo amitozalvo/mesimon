@@ -5800,3 +5800,67 @@ fn the_crown_watches_a_ticket_a_person_started() {
     let feed = std::fs::read_to_string(&feed_path).unwrap();
     assert!(!feed.contains("mesimon-probe-93"), "the feed never carries the words:\n{feed}");
 }
+
+/// A start the crown asks for whose worktree cannot be cut is told to the
+/// crown (T-777): the receipt said the tree was being cut, and the crown's
+/// next prompt says it never was, in the card's own words, which end on the
+/// fix. The card reads that sentence alone, never git's `ambiguous argument
+/// 'HEAD'` behind a stage word, and the crown's `get_ticket` carries it.
+#[test]
+fn a_crown_start_whose_worktree_cannot_be_cut_wakes_the_crown_with_why() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_unstarted",
+        Some(RECORDING_STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    // A repository with no commits yet: `main` is unborn.
+    std::fs::create_dir_all(&h.repo).unwrap();
+    git(&h.repo, &["init", "-q", "-b", "main"]);
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_unstarted");
+    let got = h.dir.join("got.txt");
+    let a = create(&mut c, "coordinate");
+    let w = create(&mut c, "mesimon-probe-777 worker");
+    let kw = key_of(&mut c, w);
+    let sa = spawn(&mut c, a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sa, "running", |s| *s == SessionState::Running);
+    hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
+
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+        },
+    ) {
+        Response::AgentStarted { session_started: false, .. } => {}
+        other => panic!("start_agent {kw}: {other:?}"),
+    }
+    let why = "no commits on main yet — make a first commit, then start again";
+    let sentence = format!(
+        "{kw} \"mesimon-probe-777 worker\" could not start (its worktree: {why}) ∙ get_ticket \
+         key={kw} for state and notes"
+    );
+    wait_until(std::time::Duration::from_secs(10), "the crown to hear the failed start", || {
+        // The stub reads the crown's unsubmitted title on the same line.
+        std::fs::read_to_string(&got).unwrap_or_default().lines().any(|l| l.ends_with(&sentence))
+    });
+    let item = match c.request(Command::Snapshot) {
+        Response::Board { worktrees, .. } => worktrees.into_iter().find(|i| i.ticket == w),
+        other => panic!("snapshot: {other:?}"),
+    }
+    .expect("W's binding");
+    assert_eq!((item.status.as_str(), item.detail.as_deref()), ("error", Some(why)));
+    assert_eq!(read(&mut c, sa, &kw).unwrap().worktree_error.as_deref(), Some(why));
+    assert!(c.board().live_agent(w).is_none(), "no agent was started");
+}

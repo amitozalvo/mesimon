@@ -25,6 +25,13 @@
 //!    or a `git merge` in a terminal. A shared-checkout worker has no branch,
 //!    so nothing to read; its commits are on the base the moment they exist.
 //!
+//! And one that is no worker's at all (T-777): **could not start** — a
+//! start the crown asked for (`start_agent`) whose worktree could not be
+//! cut, a repository with no commits yet the common case. The start's
+//! receipt said `session_started: false` while the tree was being cut, so
+//! without this line the crown waited on a worker that would never come.
+//! The line carries the card's own words, which end on the fix.
+//!
 //! And one that is no event at all (T-599): **lingering** — a worker it
 //! started has sat idle at its composer with background tasks running for
 //! `LINGER_MS` (30 min) with no foreground turn. Once per stretch, and the
@@ -264,6 +271,10 @@ pub(super) enum WakeCause {
     Raised,
     Planned,
     Asked,
+    /// A start the crown asked for whose worktree could not be cut (T-777).
+    /// The strongest: no agent exists, so nothing else about the worker
+    /// is news, and the crown is the one who must act.
+    Unstarted,
 }
 
 impl WakeCause {
@@ -283,6 +294,7 @@ impl WakeCause {
             // Never the question's words (T-414's rule for a hand's
             // reason): the crown reads them with `get_ticket`.
             WakeCause::Asked => "asks a question",
+            WakeCause::Unstarted => "could not start",
         }
     }
 
@@ -298,6 +310,7 @@ impl WakeCause {
             WakeCause::Raised => "raised",
             WakeCause::Planned => "planned",
             WakeCause::Asked => "asked",
+            WakeCause::Unstarted => "unstarted",
         }
     }
 }
@@ -325,6 +338,10 @@ pub(super) struct CrownWake {
     /// restart`, so the crown knows it may be late.
     #[serde(default)]
     pub(super) late: bool,
+    /// Why a start could not be made (T-777): the card's words for the
+    /// worktree that was not cut, said in the line's brackets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unstarted: Option<String>,
 }
 
 /// What rides a wake beside its cause and delta, as `owe_wake` folds it.
@@ -346,6 +363,10 @@ pub(super) struct Linger {
 /// How long a worker sits idle with background tasks before the crown is
 /// told (T-599). Not a verdict: the crown is told, and nothing else moves.
 pub(super) const LINGER_MS: u64 = 30 * 60 * 1000;
+
+/// How much of a failed start's reason rides the wake line (T-777): the
+/// card's sentence whole, a later stage's git text cut where it runs long.
+const UNSTARTED_MAX_BYTES: usize = 240;
 
 /// The lingering clause: `has been idle with 3 background tasks for 30
 /// min`, the count left out where the registry lost it (a restart starts
@@ -407,6 +428,9 @@ impl CrownWake {
     /// did not move. Nothing at all where git could not say. A wake owed
     /// across a restart says so last (T-602).
     fn changed(&self) -> Vec<String> {
+        if let (WakeCause::Unstarted, Some(why)) = (self.cause, &self.unstarted) {
+            return vec![why.clone()];
+        }
         let mut out = match &self.to {
             None => Vec::new(),
             Some(to) if self.cause != WakeCause::Finished => delta(self.from.as_ref(), to),
@@ -758,6 +782,7 @@ impl Heard {
             finished: true,
             linger: None,
             late: self.restored,
+            unstarted: None,
         });
         true
     }
@@ -1301,7 +1326,16 @@ impl Daemon {
             return;
         }
         let late = heard.restored;
-        let wake = CrownWake { worker, cause, from, to, finished: false, linger: None, late };
+        let wake = CrownWake {
+            worker,
+            cause,
+            from,
+            to,
+            finished: false,
+            linger: None,
+            late,
+            unstarted: None,
+        };
         heard.forging = Some(Forging { wake, since_ms: now_ms() });
         self.feed.board("automation", "crown_wake_deferred:forge", Some(worker));
     }
@@ -1684,7 +1718,16 @@ impl Daemon {
             w.linger = w.linger.or(linger);
             w.late |= late;
         } else {
-            self.crown_wakes.push(CrownWake { worker, cause, from, to, finished, linger, late });
+            self.crown_wakes.push(CrownWake {
+                worker,
+                cause,
+                from,
+                to,
+                finished,
+                linger,
+                late,
+                unstarted: None,
+            });
         }
         // A watch ends at the merge (T-712): the wait it was for is over,
         // and the line that says so is its last.
@@ -1694,6 +1737,23 @@ impl Daemon {
         }
         self.feed.crown_wake(crown, worker, cause.word());
         self.crown_touched(worker, crown, "woke");
+    }
+
+    /// A start the crown asked for could not be made (T-777): its worktree
+    /// failed to cut, and `why` is the card's words for it. The crown hears
+    /// it at once, with nothing pending to weigh, since no agent exists.
+    pub(super) fn hear_unstarted(&mut self, crown: ulid::Ulid, worker: ulid::Ulid, why: String) {
+        if worker == crown {
+            return;
+        }
+        let why = mesimon_core::text::scrub_text(&why);
+        let why = mesimon_core::text::cap_bytes(&why, UNSTARTED_MAX_BYTES).to_string();
+        self.enter_wake(crown, worker, WakeCause::Unstarted, None, None, Owed::default());
+        if let Some(w) = self.crown_wakes.iter_mut().find(|w| w.worker == worker) {
+            w.unstarted = Some(why);
+        }
+        self.drain_crown_wakes();
+        self.broadcast();
     }
 
     /// Workers the crown started that have sat idle at their composer with
@@ -2010,6 +2070,7 @@ mod tests {
             finished: false,
             linger: Some(l(3, 30)),
             late: false,
+            unstarted: None,
         };
         assert_eq!(w.clause(), "has been idle with 3 background tasks for 30 min");
         assert!(w.changed().is_empty(), "no delta: nothing about the work moved");
@@ -2136,6 +2197,7 @@ mod tests {
             finished: false,
             linger: None,
             late: false,
+            unstarted: None,
         };
         let head = checkout("1234567890abcdef", "REVIEW");
         assert_eq!(
@@ -2372,6 +2434,7 @@ mod tests {
             finished: false,
             linger: None,
             late: false,
+            unstarted: None,
         };
         let h = heard(Some(delivered.clone()), Some(delivered.clone()));
         let cause = merge_verdict(true, &h, &landed).unwrap();
@@ -2503,6 +2566,7 @@ mod tests {
             finished: false,
             linger: None,
             late: false,
+            unstarted: None,
         };
         assert_eq!(wake.clause(), "merged");
     }
@@ -2593,6 +2657,7 @@ mod tests {
             finished: false,
             linger: None,
             late: h.restored,
+            unstarted: None,
         };
         h.judged = Some(landed.clone());
         assert_eq!(wake.changed(), ["merge_state ahead → merged", "after a restart"]);
@@ -2641,6 +2706,7 @@ mod tests {
             finished: false,
             linger: None,
             late: false,
+            unstarted: None,
         };
         assert_eq!(wake.changed(), ["merge_state merged", "column DONE"]);
         // Owed across the restart, it says so; a fold keeps saying it.
@@ -2675,6 +2741,7 @@ mod tests {
             finished: false,
             linger: None,
             late: false,
+            unstarted: None,
         };
         wake.fold(WakeCause::Forge, None, Some(news("review approved !1")));
         assert_eq!(wake.changed(), ["pipeline passed !1, review approved !1"]);
@@ -2734,6 +2801,7 @@ mod tests {
             finished: false,
             linger: None,
             late: false,
+            unstarted: None,
         };
         let passed = Told {
             forge: Some("pipeline passed !2".into()),

@@ -406,6 +406,11 @@ the agent's. The crown is told that a plan it would change, or one that reaches 
 is yours: it raises its hand on its own card, and you answer the dialog. If you answer first, the
 crown presses nothing.
 
+When the crown starts an agent in a worktree and the worktree cannot be made (the repository has
+no commits yet, or the ticket's branch already exists), the crown is told why, in the words the
+card shows, and no agent starts. A fix outside the ticket's brief is yours: the crown raises its
+hand on its own card to say what it is, and starts the agent again once you have made it.
+
 **Settings › Crown › Archives tickets** (off by default) lets the crown archive a ticket and
 restore an archived one. While it is off, the crown is refused in words that name this row, and it
 moves a finished ticket to DONE instead; you decide when the card leaves the board and when its
