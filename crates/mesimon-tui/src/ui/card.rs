@@ -439,7 +439,7 @@ pub(super) fn render(
     summary_keys: Option<(&[&'static mesimon_core::keymap::Binding], &mesimon_core::keymap::Ctx)>,
     summary_pulse: Option<(u64, Option<mesimon_core::summary::Count>)>,
     summary_underline: bool,
-    fresh: Option<(&str, u64)>,
+    fresh: Option<(&str, u64, bool)>,
     prs: &[(String, Register)],
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
@@ -835,8 +835,11 @@ pub(super) fn render(
     let brief_w = super::spans_width(&brief);
     let brief_room = if brief_w > 0 { brief_w + 1 } else { 0 };
     let mut drew_line2 = false;
-    if let Some((words, ago)) = fresh.filter(|_| !(open || cursorish || trail || doomed)) {
+    if let Some((words, ago, crown)) = fresh.filter(|_| !(open || cursorish || trail || doomed)) {
         use unicode_segmentation::UnicodeSegmentation;
+        // The crown's words (T-783) settle in its tint, a reply in the
+        // quiet ink.
+        let reveal = if crown { Theme::crown_reveal } else { Theme::reply_reveal };
         let words = truncate(words, t_cells.saturating_sub(glyph_cells + brief_room));
         let cells = words.width();
         let mut row = bar_spans();
@@ -844,7 +847,7 @@ pub(super) fn render(
         let mut at = 0;
         for g in words.graphemes(true) {
             let w = g.width();
-            row.push(match theme.reply_reveal(ago, cells, at) {
+            row.push(match reveal(theme, ago, cells, at) {
                 Some(style) => Span::styled(g.to_string(), style),
                 None => Span::raw(" ".repeat(w)),
             });

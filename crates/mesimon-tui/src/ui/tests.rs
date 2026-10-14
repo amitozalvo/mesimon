@@ -8439,6 +8439,17 @@ fn a_resting_card_shows_what_went_between_it_and_the_crown() {
         "the words, behind its mark: {row:?}"
     );
     assert!(row.contains("  T-5 finished its turn"), "the crown's news, bare: {row:?}");
+    // In the crown's tint, quieter than a title wears it.
+    let y = render(&app, 120, 30).iter().position(|l| l.contains("Rebase onto")).expect("row");
+    let buf = cells(&app, 120, 30);
+    let ink = |word: &str| {
+        let x = row[..row.find(word).expect(word)].chars().count() as u16;
+        buf[(x, y as u16)].fg
+    };
+    let quiet = app.theme.crown_quiet();
+    assert_eq!((ink("Rebase"), ink("T-5 finished")), (quiet, quiet), "both in the crown's ink");
+    assert_ne!(quiet, app.theme.crown_text().fg.expect("tint"), "under a title's weight");
+    assert_ne!(quiet, app.theme.rest.dim2, "and never a reply's grey");
     assert!(!app.animating(), "a settled row asks for no frames");
 
     // Seen: the cursor rested on the card.

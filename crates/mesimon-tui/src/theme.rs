@@ -1372,6 +1372,9 @@ const SUMMARY_REVEAL_FADE: f32 = 12.0;
 pub(crate) const REPLY_REVEAL_MS: u64 = 1_400;
 /// Cells over which the reply's front fades a cell in.
 const REPLY_REVEAL_FADE: f32 = 10.0;
+/// How much of the crown's tint a crown message's line keeps over the
+/// ground (T-783): the colour reads as the crown's, the weight as a note's.
+const CROWN_QUIET: f32 = 0.7;
 /// The landing's front crosses the struck title in this long (T-544),
 /// whatever the title's length, like the crowning's.
 pub(crate) const LAND_SWEEP_MS: u64 = 600;
@@ -2223,7 +2226,29 @@ impl Theme {
     /// the ground's colour; where the ground or the ink is not a colour it
     /// steps from the faintest ink to the quiet one, so every tier reveals.
     pub fn reply_reveal(&self, elapsed: u64, cells: usize, cell: usize) -> Option<Style> {
-        let settled = self.dim2();
+        self.reveal(elapsed, cells, cell, self.rest.dim2)
+    }
+
+    /// The same reveal for words between the crown and an agent (T-783),
+    /// settling on `crown_quiet`: the crown's tint says whose words they
+    /// are, held under a title's weight.
+    pub fn crown_reveal(&self, elapsed: u64, cells: usize, cell: usize) -> Option<Style> {
+        self.reveal(elapsed, cells, cell, self.crown_quiet())
+    }
+
+    /// The crown's tint (`crown_text`) at `CROWN_QUIET` over the ground
+    /// (T-783): a line under a card's title in the crown's colour, quieter
+    /// than the title it sits under. Where the ground or the tint is not a
+    /// colour it is the tint itself.
+    pub fn crown_quiet(&self) -> Color {
+        match self.bg {
+            Some(g @ Color::Rgb(..)) => mix(self.pip(5), g, CROWN_QUIET),
+            _ => self.pip(5),
+        }
+    }
+
+    fn reveal(&self, elapsed: u64, cells: usize, cell: usize, ink: Color) -> Option<Style> {
+        let settled = Style::default().fg(ink);
         if cells == 0 || elapsed >= REPLY_REVEAL_MS {
             return Some(settled);
         }
@@ -2235,7 +2260,7 @@ impl Theme {
         }
         let k = (d / REPLY_REVEAL_FADE).clamp(0.0, 1.0);
         let k = k * k * (3.0 - 2.0 * k);
-        Some(match (self.bg, self.rest.dim2) {
+        Some(match (self.bg, ink) {
             (Some(g @ Color::Rgb(..)), ink @ Color::Rgb(..)) => Style::default().fg(mix(ink, g, k)),
             _ if k < 0.5 => self.dim3(),
             _ => settled,

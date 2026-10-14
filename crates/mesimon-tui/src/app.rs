@@ -3924,8 +3924,12 @@ impl App {
 
     /// The resting card's line under its title: the crown's words when
     /// they are the newest unseen news on it, else its agent's new reply.
-    pub(crate) fn card_news(&self, ticket: ulid::Ulid) -> Option<(String, u64)> {
-        self.crown_words(ticket).or_else(|| self.fresh_reply(ticket))
+    /// The flag says which: `true` for the crown's, drawn in its tint.
+    pub(crate) fn card_news(&self, ticket: ulid::Ulid) -> Option<(String, u64, bool)> {
+        match self.crown_words(ticket) {
+            Some((words, ago)) => Some((words, ago, true)),
+            None => self.fresh_reply(ticket).map(|(words, ago)| (words, ago, false)),
+        }
     }
 
     /// Is a new reply, or new crown words, fading in on some resting card?
@@ -17305,7 +17309,7 @@ mod tests {
         ]
         .into();
         let mark = crate::glyphs::crown(app.theme.glyph_tier());
-        let words = |app: &App, t| app.card_news(t).map(|(w, _)| w);
+        let words = |app: &App, t| app.crown_words(t).map(|(w, _)| w);
         assert_eq!(
             words(&app, worker).as_deref(),
             Some(format!("{mark} rebase onto main, then rerun cargo ut").as_str()),

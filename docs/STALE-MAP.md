@@ -25420,6 +25420,14 @@ later than the words still shows them (the daemon keeps the latest per ticket un
 or a restart); a reply already on the transcript when the board opens reads as newer, as T-720's
 first sight does.
 
+**The ink** (the author, after the first build: "indicate it's crown communication, maybe using
+the blue colored text, but with a slight opacity since it's not a title"). The line settles in
+`Theme::crown_quiet` — the crown's tint (`pip(5)`) mixed `CROWN_QUIET` (0.7) over the ground —
+through `Theme::crown_reveal`, the reply's fade with another ink; a reply keeps `rest.dim2`. Below
+an RGB ground it is the tint itself. The bolts were already there and stay as they were: the
+crown's ask strikes worker-ward on `asked`/`sent`, and the turn that answers it owes the crown a
+wake, whose `woke` touch strikes crown-ward.
+
 **Tests.** `app::crown_words_ride_the_card_until_seen_or_answered`,
 `ui::a_resting_card_shows_what_went_between_it_and_the_crown` (golden
 `board_crown_said_120x30`), and `crown_e2e`'s sent, answered and delivered-wake steps assert
