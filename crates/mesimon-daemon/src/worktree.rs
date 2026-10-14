@@ -553,6 +553,51 @@ pub fn upstream_base(repo: &Path, base: &str) -> Option<String> {
     None
 }
 
+/// Where a fresh branch starts (T-779): the commit, and, when that is not
+/// the local base, the upstream it was taken from and how far the local base
+/// is behind it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cut {
+    /// The branch's first commit, recorded as the leg's `base_oid`.
+    pub oid: String,
+    pub from: Option<(String, u32)>,
+}
+
+/// The cut point of a fresh branch on `base` (whose local tip is `local`).
+/// On a repository with a forge remote, a PR merges on the forge and a
+/// fetch moves only `origin/main`: nothing moves the local base, so a branch
+/// cut from it starts behind every merge since and its PR conflicts from
+/// birth. There, when the upstream strictly descends from the local base,
+/// the branch starts at the upstream's tip. A local base equal to, ahead of
+/// or diverged from its upstream keeps today's cut: unpushed commits are the
+/// person's. Reads only; the cut itself writes what provisioning always did.
+pub fn cut_point(repo: &Path, base: &str, local: &str) -> Cut {
+    let stay = Cut { oid: local.to_string(), from: None };
+    if crate::forge::remote_of(repo, base).is_none() {
+        return stay;
+    }
+    let Some(up) = upstream_base(repo, base) else { return stay };
+    let refname = format!("refs/remotes/{up}^{{commit}}");
+    let Ok(up_oid) = git_read(repo, &["rev-parse", "--verify", "--quiet", &refname]) else {
+        return stay;
+    };
+    let up_oid = up_oid.trim().to_string();
+    if up_oid == local || !ff_possible(repo, &up_oid, local) {
+        return stay;
+    }
+    let behind = git_read(repo, &["rev-list", "--count", &format!("{local}..{up_oid}")])
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    Cut { oid: up_oid, from: Some((up, behind)) }
+}
+
+/// Doctor's words for a base a fresh worktree is not cut from (T-779).
+pub fn cut_words(base: &str, cut: &Cut) -> Option<String> {
+    let (up, behind) = cut.from.as_ref()?;
+    Some(format!("local {base} is {behind} behind {up}; new worktrees start from {up}"))
+}
+
 /// Provisioning stages 0/1/1b/2/5. Runs OFF the writer thread (add is ~1.8 s of
 /// filesystem work). Returns the ready binding, or the failing stage.
 pub fn provision(
@@ -583,6 +628,8 @@ pub fn provision(
     if dir.exists() {
         return Err(("precheck".into(), format!("{} already exists", dir.display())));
     }
+
+    let base_oid = cut_point(repo, &base, &base_oid).oid;
 
     // Stages 1/1b/2.
     add_leg(repo, &dir, &branch, Some(&base_oid), ticket_id)?;
@@ -698,6 +745,7 @@ pub fn provision_workspace(
                 format!("branch {branch} already exists in {}", leg_word(&name)),
             ));
         }
+        let head = cut_point(&repo, &base, &head).oid;
         plan.push((name, repo, base, head));
     }
     if plan.is_empty() {
@@ -2930,6 +2978,67 @@ mod tests {
         r.run(&["checkout", "-q", "main"]);
         let after = r.flags("work", None, merged.seen);
         assert!(!after.merged, "the branch has work the base does not");
+    }
+
+    /// T-779: on a forge remote, a fresh branch starts at the upstream when
+    /// the upstream strictly descends from the local base, and at the local
+    /// base in every other shape, or with no forge remote at all.
+    #[test]
+    fn a_fresh_branch_starts_at_an_upstream_that_moved_ahead() {
+        let Some(r) = Repo::new("cut") else { return };
+        let tip = |b: &str| branch_tip(&r.dir, b);
+        let up_at = |oid: &str| r.run(&["update-ref", "refs/remotes/origin/main", oid]);
+        // A commit made away from local `main`: the forge's merge.
+        let forge_commit = |file: &str| {
+            r.run(&["checkout", "-q", "-b", "forge", "main"]);
+            r.commit(file, "forge\n", "merged on the forge");
+            let oid = tip("forge");
+            r.run(&["checkout", "-q", "main"]);
+            r.run(&["branch", "-qD", "forge"]);
+            oid
+        };
+        r.run(&["remote", "add", "origin", "https://gitlab.example.com/g/api.git"]);
+        let a = tip("main");
+        let local = |cut: Cut| (cut.oid, cut.from);
+
+        up_at(&a);
+        assert_eq!(local(cut_point(&r.dir, "main", &a)), (a.clone(), None), "equal: local");
+
+        let b = forge_commit("b.txt");
+        up_at(&b);
+        let cut = cut_point(&r.dir, "main", &a);
+        assert_eq!(cut.oid, b, "upstream ahead: the upstream's tip");
+        assert_eq!(cut.from, Some(("origin/main".to_string(), 1)));
+        assert_eq!(
+            cut_words("main", &cut).as_deref(),
+            Some("local main is 1 behind origin/main; new worktrees start from origin/main")
+        );
+
+        // The same shape with a remote no forge reads: today's cut.
+        r.run(&["remote", "set-url", "origin", "/srv/git/api"]);
+        assert_eq!(local(cut_point(&r.dir, "main", &a)), (a.clone(), None), "no forge: local");
+        r.run(&["remote", "set-url", "origin", "git@gitlab.example.com:g/api.git"]);
+
+        // Local ahead of its upstream: the person's unpushed commit stays.
+        up_at(&a);
+        r.commit("c.txt", "mine\n", "unpushed");
+        let c = tip("main");
+        assert_eq!(local(cut_point(&r.dir, "main", &c)), (c.clone(), None), "local ahead: local");
+
+        // Diverged: the forge moved and so did the person.
+        up_at(&b);
+        assert_eq!(local(cut_point(&r.dir, "main", &c)), (c.clone(), None), "diverged: local");
+        assert_eq!(cut_words("main", &cut_point(&r.dir, "main", &c)), None);
+
+        // And provisioning takes the cut: the branch starts at the upstream.
+        r.run(&["reset", "-q", "--hard", &a]);
+        let root = r.dir.join("_wtroot");
+        std::fs::create_dir_all(&root).unwrap();
+        let bound = provision(&r.dir, &root, ulid::Ulid(1), "T-1", "Cut").unwrap();
+        assert_eq!(bound.base_oid, b, "the cut point is the binding's base");
+        assert_eq!(tip(&bound.branch), b);
+        assert_eq!(tip("main"), a, "the local base never moves");
+        std::fs::remove_dir_all(&r.dir).ok();
     }
 
     /// The whole point of the upstream half: the PR is merged on the forge

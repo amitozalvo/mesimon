@@ -473,3 +473,73 @@ fn barred_bindings_refuse_a_queued_start_and_cut_no_tree() {
     assert!(git(&h.repo, &["branch", "--list", "msmn/*"]).trim().is_empty());
     assert!(c.board().sessions.is_empty());
 }
+
+/// T-779: on a board whose work merges on a forge, nothing moves the local
+/// base: the forge merges, a fetch moves `origin/main`, and a worktree cut
+/// from the stale local `main` starts behind every merge since. Here the
+/// remote moved ahead and was fetched; the remote's URL names a forge; the
+/// ticket's branch starts at the remote's tip, and local `main` stays put.
+#[test]
+fn a_forge_boards_worktree_starts_at_the_fetched_upstream() {
+    const STUB: &str = "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do sleep 1; done\n";
+    let Some(h) = Harness::boot("wtcut", Some(STUB)) else { return };
+    if Proc::new("git").arg("--version").output().is_err() {
+        eprintln!("git not installed; skipping");
+        return;
+    }
+    let repo = &h.repo;
+    git(repo, &["init", "-q", "-b", "main"]);
+    git(repo, &["config", "user.email", "e2e@t"]);
+    git(repo, &["config", "user.name", "e2e"]);
+    std::fs::write(repo.join("a.txt"), "hello\n").unwrap();
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "init"]);
+    let local = git(repo, &["rev-parse", "main"]).trim().to_string();
+
+    // The remote, and a merge on it this checkout never pulled.
+    let bare = h.dir.join("remote.git");
+    git(&h.dir, &["init", "-q", "--bare", "-b", "main", bare.to_str().unwrap()]);
+    git(repo, &["remote", "add", "origin", bare.to_str().unwrap()]);
+    git(repo, &["push", "-q", "-u", "origin", "main"]);
+    let other = h.dir.join("other");
+    git(&h.dir, &["clone", "-q", bare.to_str().unwrap(), other.to_str().unwrap()]);
+    git(&other, &["config", "user.email", "e2e@t"]);
+    git(&other, &["config", "user.name", "e2e"]);
+    std::fs::write(other.join("b.txt"), "merged on the forge\n").unwrap();
+    git(&other, &["add", "."]);
+    git(&other, &["commit", "-qm", "!4"]);
+    git(&other, &["push", "-q", "origin", "main"]);
+    git(repo, &["fetch", "-q", "origin"]);
+    let upstream = git(repo, &["rev-parse", "origin/main"]).trim().to_string();
+    assert_ne!(upstream, local);
+    // The URL a forge is read by; the fetch above is done with.
+    git(repo, &["remote", "set-url", "origin", "https://gitlab.example.com/g/api.git"]);
+
+    let mut c = h.client("wtcut");
+    let ticket = match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "starts current".into(),
+        workspace: Some(WorkspaceStrategy::Worktree),
+        tier: None,
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("create failed: {other:?}"),
+    };
+    assert!(matches!(
+        c.request(Command::SpawnSession {
+            ticket,
+            kind: SessionKind::Claude,
+            submit_prompt: false,
+            plan: false
+        }),
+        Response::Provisioning
+    ));
+    let wt = wait_wt_status(&mut c, ticket, "attached", Duration::from_secs(10));
+    assert_eq!(
+        git(repo, &["rev-parse", &wt.branch]).trim(),
+        upstream,
+        "the branch starts at the fetched upstream"
+    );
+    assert!(!wt.merged, "a fresh branch is no work, never merged");
+    assert_eq!(git(repo, &["rev-parse", "main"]).trim(), local, "local main never moves");
+}

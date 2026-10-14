@@ -1006,7 +1006,20 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
             [only] => format!("{only}: "),
             _ => String::new(),
         };
-        records.push(rec(Level::Ok, "branch", format!("{whose}{}, {upstream}, {fetch}", g.branch)));
+        let mut line = format!("{whose}{}, {upstream}, {fetch}", g.branch);
+        // Where a fresh worktree starts when the forge moved the upstream
+        // past a local base nothing else moves (T-779).
+        if let Ok(base) = mesimon_daemon::worktree::default_branch(repo) {
+            let local = mesimon_daemon::worktree::branch_tip(repo, &base);
+            if !local.is_empty() {
+                let cut = mesimon_daemon::worktree::cut_point(repo, &base, &local);
+                if let Some(words) = mesimon_daemon::worktree::cut_words(&base, &cut) {
+                    line.push_str("; ");
+                    line.push_str(&words);
+                }
+            }
+        }
+        records.push(rec(Level::Ok, "branch", line));
     }
     // Which ref a ticket's branch is judged merged against (T-267). A PR
     // squashed on a forge lands on the remote-tracking ref and on nothing

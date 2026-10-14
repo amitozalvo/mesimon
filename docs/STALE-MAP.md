@@ -24045,6 +24045,36 @@ open PR, a conflict, a stale verdict), `prefs` (both new keys), the keymap laws,
 the board woke the crown `pipeline`, the crown's `ask_agent` reached the worker, which replied
 `noted`. `cargo nextest run --workspace`: 2319 passed.
 
+## A forge board's worktree starts at the fetched upstream (T-779, 2026-10-14, follow-up to T-739)
+
+**Found in forge lab run 2.** On a board whose work merges on GitLab nothing moves the
+checkout's local `main`: the forge merges and the fetch row moves `origin/main` only (promise 1).
+The lab's `api` main sat at its first commit while `origin/main` held run 1's merges; the next
+ticket's worktree was cut from that stale `main`, its MR conflicted with `origin/main` from
+birth, and the train asked a rebase for a conflict the worker never made.
+
+**The cut point.** `worktree::cut_point(repo, base, local)` is asked by `provision` and by each
+leg of `provision_workspace` (in the precheck, which still writes nothing): when the repository's
+remote parses as a forge's (`forge::remote_of`, the same reader that fills `forge.remotes`) and
+its upstream (`upstream_base`, `origin/main`) strictly descends from the local base, the branch
+starts at the upstream's tip; equal, ahead or diverged, and any repository with no forge remote,
+keep the local base, so a person's unpushed commits stay theirs. The cut is the leg's `base_oid`
+as before, so the diff, "no work yet" (`tip == base_oid`) and teardown's branch delete read the
+new branch right. Everything else keeps reading the local base (`ahead`, the train's ff-merge,
+the DONE gate): such a branch counts the fetched merges as ahead of local `main`, which on a PR
+board the forge, not the local merge, lands. Writes are what provisioning wrote before: one
+branch ref and one worktree.
+
+**Doctor.** The `branch` line on such a checkout ends `; local main is N behind origin/main; new
+worktrees start from origin/main` (`worktree::cut_words`).
+
+**Tests.** `worktree::tests::a_fresh_branch_starts_at_an_upstream_that_moved_ahead` (equal,
+upstream ahead, no forge remote, local ahead, diverged, the doctor words, and `provision` taking
+the cut with local `main` unmoved); `worktree_e2e::a_forge_boards_worktree_starts_at_the_fetched_upstream`
+(a bare remote moved ahead by a second clone, fetched, the URL then a GitLab one: the ticket's
+branch starts at `origin/main`, reads unmerged, and local `main` never moves). `cargo nextest run
+--workspace`: 2399 passed.
+
 ## An open PR holds DONE, as it holds the train (T-774, 2026-10-14, follow-up to T-739)
 
 **Why.** The forge lab's finding 14 (2026-10-13, scenario B3): ticket A1's MR !1 merged, the
