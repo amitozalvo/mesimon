@@ -25565,3 +25565,12 @@ wake, whose `woke` touch strikes crown-ward.
 `ui::a_resting_card_shows_what_went_between_it_and_the_crown` (golden
 `board_crown_said_120x30`), and `crown_e2e`'s sent, answered and delivered-wake steps assert
 `crown_said`.
+
+## T-788 — the card's pull-request line wears the card's band (2026-10-15)
+
+The author: "the MR line below ticket title has a different background than the rest of the
+ticket". The T-739 brief's line 2 was pushed with no line style, so under the cursor it sat on
+the board's ground between a banded title row and banded accordion rows. Line 2 — the brief, or
+a reply sharing it — now takes the accordion's `acc_style` (the cursor band, or the delete row),
+hoisted above it; never the needs-you row's, which stays one row. Test:
+`ui::the_cursor_cards_pr_line_wears_the_cards_band`.

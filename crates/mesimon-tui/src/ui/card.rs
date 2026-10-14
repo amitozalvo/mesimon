@@ -816,6 +816,15 @@ pub(super) fn render(
     }
     spans.push(Span::raw(" ".to_string()));
     let mut lines = vec![Line::from(spans).style(row_style)];
+    // The rows under the title wear the card's surface (T-788): the cursor
+    // card's band, never the needs-you row's — that is one row only.
+    let acc_style = if doomed {
+        theme.delete_row()
+    } else if cursorish {
+        theme.selected_row()
+    } else {
+        Style::default()
+    };
 
     // A resting card's new reply (T-720): what its agent said that the
     // person has not been on the card for, one line under the title in the
@@ -857,7 +866,7 @@ pub(super) fn render(
         row.push(Span::raw(" ".repeat((ctx.width as usize).saturating_sub(used + brief_w + 1))));
         row.extend(brief.iter().cloned());
         row.push(Span::raw(" "));
-        lines.push(Line::from(row));
+        lines.push(Line::from(row).style(acc_style));
         drew_line2 = true;
     }
     if !drew_line2 && brief_w > 0 {
@@ -866,7 +875,7 @@ pub(super) fn render(
         row.push(Span::raw(" ".repeat((ctx.width as usize).saturating_sub(used + brief_w + 1))));
         row.extend(brief);
         row.push(Span::raw(" "));
-        lines.push(Line::from(row));
+        lines.push(Line::from(row).style(acc_style));
     }
 
     if held {
@@ -918,13 +927,6 @@ pub(super) fn render(
             || rows_shown);
     let opened = !selected && meta_row;
     if accordion || opened {
-        let acc_style = if doomed {
-            theme.delete_row()
-        } else if cursorish {
-            theme.selected_row()
-        } else {
-            Style::default()
-        };
         let ramp = if cursorish { &theme.sel } else { &theme.rest };
         // A trail is semi-transparent everything, its open rows included.
         let (dim, quiet, faint) = if trail {

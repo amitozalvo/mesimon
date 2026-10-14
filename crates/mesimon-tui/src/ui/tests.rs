@@ -8397,6 +8397,36 @@ fn golden_board_prs_120() {
     std::fs::remove_file(&path).ok();
 }
 
+/// T-788: the cursor card's pull-request line wears the card's band, the
+/// same surface as the title row above it, edge to edge.
+#[test]
+fn the_cursor_cards_pr_line_wears_the_cards_band() {
+    use mesimon_core::command::PrItem;
+    let mut app = app_graphite(fixture(false));
+    let ticket = app.selected_ticket().expect("a cursor card").clone();
+    app.prs = vec![PrItem {
+        ticket: ticket.id,
+        forge: "gitlab".into(),
+        repo: "o/r".into(),
+        number: 7,
+        url: "https://x/o/r/-/merge_requests/7".into(),
+        state: "open".into(),
+        pipeline: "passed".into(),
+        job: None,
+        conflict: false,
+        review: "none".into(),
+        merged_oid: String::new(),
+        deployed: Vec::new(),
+    }];
+    let buf = cells(&app, 120, 30);
+    let rows = render(&app, 120, 30);
+    let y = rows.iter().position(|r| r.contains("!7")).expect("the PR line");
+    let band = app.theme.selected_bg.expect("graphite paints a selection");
+    let x = rows[y][..rows[y].find("!7").expect("!7")].chars().count() as u16;
+    assert_eq!(buf[(x, y as u16)].bg, band, "the number sits on the band");
+    assert_eq!(buf[(x - 4, y as u16)].bg, band, "and so does the room before it");
+}
+
 /// T-720: a resting card whose agent said something the person has not
 /// been on the card for shows those words, one line under its title, in the
 /// quiet ink. Seen, opened, under the cursor or switched off, it is gone.
