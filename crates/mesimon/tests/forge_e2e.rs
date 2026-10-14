@@ -39,6 +39,11 @@
 //! that pushed and opened a PR wakes the crown once, after the read, the
 //! line saying the opening and the crown's `get_ticket` listing the PR.
 //!
+//! The pipeline gate judges the branch's tip (T-780): a commit after the
+//! PR's pipeline passed holds the turn's end out of REVIEW as not read,
+//! and the forge's pass at the new head is the arrival; a merge git read
+//! first is named by the forge's word once it says the PR merged.
+//!
 //! The stub is the forge: `auth status` passes, `pr list` prints the file
 //! the test writes, `api …/check-runs` the merge commit's pipeline and
 //! `api …/deployments` its deployments, by sha where the test wrote one. No
@@ -2239,5 +2244,101 @@ fn a_ticket_whose_work_went_through_a_pr_is_never_the_trains() {
         feed_count(&h, "merge_train_merged", beta) >= 1
     });
     assert_eq!(feed_count(&h, "merge_train_merged", id), 0);
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// T-780: MR !5's pipeline passed, the worker made a commit, and the turn
+/// ended before the forge read it. The pass is the commit before's: REVIEW
+/// refuses the turn's end as not read and `get_ticket` does not offer it.
+/// The forge then reads the new head passed, and REVIEW's `Arrives here
+/// when: pipeline passes` takes the ticket. A merge the git road reads
+/// first is named by the PR once the forge says it merged.
+#[test]
+fn the_pipeline_gate_judges_the_branchs_tip() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    let (stub_dir, path_var) = gh_stub("forge-tip");
+    let prs_file = stub_dir.join("prs.json");
+    write(&prs_file, "[]");
+    let Some(h) = Harness::boot_with_env(
+        "forge-tip",
+        Some(STUB),
+        &[
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs_file.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    let repo = h.repo.clone();
+    init_repo(&repo, "a.txt", "hello\n");
+    git(&repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("forge-tip");
+    let mut review = c.board().column("REVIEW").unwrap().settings.clone();
+    review.requires_pipeline = true;
+    review.arrives_on = Arrival::PipelinePasses;
+    assert!(matches!(
+        c.request(Command::SetColumnSettings { name: "REVIEW".into(), settings: review }),
+        Response::Ok
+    ));
+    let (id, sid, branch, path) = ready(&mut c, "alpha");
+    let first = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
+    write(&prs_file, &pr_json(&branch, &first, "OPEN", None, None));
+    wait_until(Duration::from_secs(20), "the PR to bind, passed", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == id && p.pipeline == "passed")
+    });
+    hook_send(&hook_sock, &sid.to_string(), "SessionStart", r#"{"session_id":"x"}"#);
+    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sid, "running", |s| *s == SessionState::Running);
+    wait_until(Duration::from_secs(10), "the turn to take the ticket to IN PROGRESS", || {
+        c.board().ticket(id).is_some_and(|t| t.column == "IN PROGRESS")
+    });
+
+    // The turn commits; the forge still says the head before it, passed.
+    std::fs::write(path.join("FAIL"), "fail\n").unwrap();
+    git(&path, &["add", "."]);
+    git(&path, &["commit", "-qm", "fail"]);
+    let second = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
+    hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    let feed = h.paths.state_dir.join("activity.jsonl");
+    wait_until(Duration::from_secs(10), "the turn's end to be held as not read", || {
+        std::fs::read_to_string(&feed).unwrap_or_default().lines().any(|l| {
+            l.contains("\"kind\":\"movement_decision\"")
+                && l.contains(&id.to_string())
+                && l.contains("refused: pipeline not read — before REVIEW")
+        })
+    });
+    assert_eq!(c.board().ticket(id).unwrap().column, "IN PROGRESS");
+    match c.send(Principal::Agent { session: sid }, Command::AgentGetTicket) {
+        Response::AgentTicket { ticket } => {
+            assert!(!ticket.allowed_columns.iter().any(|c| c == "REVIEW"), "{ticket:?}")
+        }
+        other => panic!("get_ticket: {other:?}"),
+    }
+
+    // The forge reads the new head, passed: a new commit's pass, and the
+    // arrival.
+    write(&prs_file, &pr_json(&branch, &second, "OPEN", None, None));
+    wait_until(Duration::from_secs(20), "REVIEW to take the ticket on the new head's pass", || {
+        c.board().ticket(id).is_some_and(|t| t.column == "REVIEW")
+    });
+
+    // Git reads the merge first, the forge listing nothing (an open PR
+    // holds the branch unmerged, T-774); its merged PR then names it.
+    write(&prs_file, "[]");
+    git(&repo, &["merge", "-q", "--ff-only", &branch]);
+    wait_until(Duration::from_secs(20), "the git road to read the merge", || {
+        worktrees_of(&mut c).iter().any(|w| w.ticket == id && w.merged)
+    });
+    let by_git = worktrees_of(&mut c).into_iter().find(|w| w.ticket == id).unwrap();
+    assert!(!by_git.merged_in.contains("PR"), "{}", by_git.merged_in);
+    write(&prs_file, &pr_json(&branch, &second, "MERGED", Some(&second), None));
+    wait_until(Duration::from_secs(20), "the merge to read in the PR's words", || {
+        worktrees_of(&mut c).iter().any(|w| w.ticket == id && w.merged_in == "main (PR #42)")
+    });
     let _ = std::fs::remove_dir_all(&stub_dir);
 }

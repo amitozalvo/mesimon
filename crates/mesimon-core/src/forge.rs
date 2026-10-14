@@ -710,6 +710,21 @@ pub fn entry_refusal(set: Option<&[Pr]>, opened_here: Option<bool>) -> Option<St
     }
 }
 
+/// An open PR from the ticket's branch whose head is not its leg's tip now
+/// (T-780): the forge read the commit before a push, or the tip was never
+/// pushed, so its pipeline says nothing of the branch as it stands and
+/// reads as not read. `tips` is each leg's repository, as a `Pr`'s `repo`
+/// spells it, with its branch's tip. A PR from another branch, one on a
+/// repository with no leg, and an empty head or tip are not judged.
+pub fn head_unread(set: &[Pr], branch: &str, tips: &[(String, String)]) -> bool {
+    set.iter()
+        .filter(|p| p.state.is_open() && !p.head_oid.is_empty())
+        .filter(|p| p.head_ref.is_empty() || p.head_ref == branch)
+        .any(|p| {
+            tips.iter().any(|(repo, tip)| *repo == p.repo && !tip.is_empty() && *tip != p.head_oid)
+        })
+}
+
 /// The transcript detector (the `opened here` fact). A pass keeps the ids
 /// of `pr create` tool calls whose result has not come yet in `pending`,
 /// and returns the PR URLs a result printed. Claude's JSONL (`tool_use` /
@@ -1216,6 +1231,29 @@ mod tests {
         // Unbound and nothing opened here: nothing to pass.
         assert_eq!(entry_refusal(None, Some(false)), None);
         assert_eq!(entry_refusal(Some(&[]), Some(false)), None);
+    }
+
+    /// T-780: MR !5 passed at `a`, the worker pushed `b`, and the forge has
+    /// not read it: the pass is the commit before's, so the head is unread.
+    /// At the tip it is read; another branch's PR, a repository with no leg
+    /// and a branch git no longer has are not judged.
+    #[test]
+    fn a_pr_whose_head_is_not_the_tip_is_unread() {
+        let mut p = pr("g/r", 5, PrState::Open, "a", 1);
+        p.head_ref = "msmn/T-9-x".into();
+        p.pipeline = Pipeline::Passed;
+        let tips = |t: &str| vec![("g/r".to_string(), t.to_string())];
+        assert!(head_unread(std::slice::from_ref(&p), "msmn/T-9-x", &tips("b")));
+        assert!(!head_unread(std::slice::from_ref(&p), "msmn/T-9-x", &tips("a")));
+        assert!(!head_unread(std::slice::from_ref(&p), "msmn/T-9-x", &tips("")));
+        assert!(!head_unread(std::slice::from_ref(&p), "msmn/T-9-x", &[]));
+        assert!(!head_unread(std::slice::from_ref(&p), "msmn/T-1-y", &tips("b")));
+        let mut merged = p.clone();
+        merged.state = PrState::Merged;
+        assert!(
+            !head_unread(&[merged], "msmn/T-9-x", &tips("b")),
+            "a merged PR's is not the gate's"
+        );
     }
 
     /// T-774: a branch merged by its first MR, then a second MR opened from

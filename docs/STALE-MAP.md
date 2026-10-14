@@ -24045,6 +24045,47 @@ open PR, a conflict, a stale verdict), `prefs` (both new keys), the keymap laws,
 the board woke the crown `pipeline`, the crown's `ask_agent` reached the worker, which replied
 `noted`. `cargo nextest run --workspace`: 2319 passed.
 
+## The pipeline gate judges the branch's tip, and the forge names a merge git found first (T-780, 2026-10-14, follow-up to T-739)
+
+**Found in forge lab run 2.** T-9: MR !5's pipeline had passed; the worker pushed a `FAIL` commit
+and its turn ended at ~17:41:07, and the `on_done` move into REVIEW (`requires_pipeline`) was
+allowed on the board's last reading, `passed`, which was the commit before the push's. The read
+at 17:41:31 showed the new pipeline running, then failed; the fix's push was then held on that
+old `failed`, the right outcome for the wrong reason. T-10: both legs read merged by the git
+road's patch-id against `origin/main` before the forge's read, so the fold skipped them and the
+card said `origin/main` where T-9 had said `main (MR !5)`.
+
+**The gate.** `forge::head_unread(set, branch, tips)`: an open PR from the ticket's branch (or
+with no `head_ref`) whose `head_oid` is not that leg's tip now. Its pipeline says nothing of the
+branch as it stands, whether the forge has not read the push yet or the commit was never pushed,
+and `pipeline_refusal` answers `pipeline not read` before anything else, so `column_gate`,
+`agent_allowed_columns` and the held-automove line say it alike. The tip is read fresh
+(`worktree::branch_tip`, one `rev-parse` per leg that holds an open PR, writer thread):
+`wt_repos`' tip is a slow bucket old at the turn's end that pushed, which is exactly the window
+the lab hit. Not judged: a PR from another branch (bound by URL or reflog, whose head need not
+be ours), a repository with no leg, an empty head or tip, and merged PRs (their pipeline is the
+merge commit's, T-767).
+
+**The arrival.** `Edge::passed` also fires when an open PR's head moved between two reads and
+the set reads passed: a push the forge ran and passed between reads is a new commit's pass,
+where before it read as passed-to-passed and no edge, which would have left the ticket the gate
+just held stuck. `Arrival::PipelinePasses` takes the ticket only when `head_unread` is false.
+
+**The merge words.** `forge_fold_legs` no longer skips a leg git read merged:
+`RepoFlags::fold_forge_merge` writes `merged_in = "{base} ({noun} {label})"` and the PR's merge
+commit wherever the repository's newest PR is merged at the leg's tip, whichever road read the
+merge first, and returns false when the words are already those (every pass folds). A leg
+already merged is never a landing here (`was == Some(true)`), so the crown hears nothing twice.
+
+**Tests.** Unit `a_pr_whose_head_is_not_the_tip_is_unread` (core forge), `a_pass_on_a_moved_head_is_an_edge`
+(daemon forge), `the_forge_names_a_merge_the_git_road_found_first` (worktree).
+`forge_e2e::the_pipeline_gate_judges_the_branchs_tip`: PR #42 passed at the first commit, a
+commit in the turn, the turn's end refused `pipeline not read — before REVIEW` and REVIEW off
+`get_ticket`'s columns; the stub moves the head, passed, and REVIEW's `pipeline passes` arrival
+takes it; then git reads an ff-merge first (the stub listing nothing, since an open PR holds it
+unmerged) and the merged PR renames it `main (PR #42)`. `cargo nextest run --workspace`: 2403
+passed.
+
 ## A forge board's worktree starts at the fetched upstream (T-779, 2026-10-14, follow-up to T-739)
 
 **Found in forge lab run 2.** On a board whose work merges on GitLab nothing moves the

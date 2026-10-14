@@ -1984,6 +1984,28 @@ impl RepoFlags {
         self.merged = false;
         self.needs_rebase = self.tip != self.base_tip;
     }
+
+    /// The leg landed as `pr`, merged at its tip (T-739): merged, in the
+    /// forge's words and at its merge commit, whichever road read the merge
+    /// first (T-780) — a patch-id against `origin/main` is the same landing
+    /// the PR names. True when the leg changed.
+    pub fn fold_forge_merge(&mut self, pr: &mesimon_core::forge::Pr) -> bool {
+        let merged_in = format!("{} ({} {})", self.base, pr.forge.noun(), pr.label());
+        let merged_oid =
+            if pr.merge_oid.is_empty() { pr.head_oid.clone() } else { pr.merge_oid.clone() };
+        if self.merged
+            && !self.needs_rebase
+            && self.merged_in == merged_in
+            && self.merged_oid == merged_oid
+        {
+            return false;
+        }
+        self.merged = true;
+        self.needs_rebase = false;
+        self.merged_in = merged_in;
+        self.merged_oid = merged_oid;
+        true
+    }
 }
 
 /// The merge state as the agent tools spell it — `get_ticket`'s
@@ -3634,6 +3656,35 @@ mod tests {
             content: None,
             trouble: None,
         }
+    }
+
+    /// T-780: both legs read merged by patch-id against `origin/main` before
+    /// the forge's read; the MR merged at the tip names the landing all the
+    /// same, and a second fold changes nothing.
+    #[test]
+    fn the_forge_names_a_merge_the_git_road_found_first() {
+        let mut leg = leg_flags("", "b0", "t1", 0, true, false);
+        leg.merged_in = "origin/main".into();
+        leg.merged_oid = "pm".into();
+        let pr = mesimon_core::forge::Pr {
+            forge: mesimon_core::forge::Forge::GitLab,
+            repo: "g/r".into(),
+            number: 8,
+            url: "https://gitlab.com/g/r/-/merge_requests/8".into(),
+            state: mesimon_core::forge::PrState::Merged,
+            head_oid: "t1".into(),
+            head_ref: "msmn/T-10-x".into(),
+            merge_oid: "m8".into(),
+            conflict: false,
+            review: mesimon_core::forge::Review::None,
+            pipeline: mesimon_core::forge::Pipeline::Passed,
+            updated_ms: 1,
+            deployed: Vec::new(),
+        };
+        assert!(leg.fold_forge_merge(&pr));
+        assert_eq!((leg.merged_in.as_str(), leg.merged_oid.as_str()), ("main (MR !8)", "m8"));
+        assert!(leg.merged);
+        assert!(!leg.fold_forge_merge(&pr));
     }
 
     /// A single leg's aggregate is that leg, field for field — the

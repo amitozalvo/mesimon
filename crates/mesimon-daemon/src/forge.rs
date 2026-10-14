@@ -368,7 +368,10 @@ pub fn edge(old: &[Pr], new: &[Pr], held: &[(String, u64)]) -> Edge {
             })
             .map(|p| (p.label(), p.pipeline.clone()))
             .collect(),
-        passed: open_passed(new) && !open_passed(old),
+        // A PR whose head moved since (T-780) runs a new commit's pipeline:
+        // its pass is an edge though the last read's passed too.
+        passed: open_passed(new)
+            && (!open_passed(old) || kept.iter().any(|(o, p)| o.head_oid != p.head_oid)),
         merged: all_merged(new) && !all_merged(old),
         landed: new
             .iter()
@@ -1632,6 +1635,22 @@ mod tests {
         }];
         assert!(!edge(&running, &running).passed);
         assert!(edge(&running, &open).passed);
+    }
+
+    /// T-780: a push the forge ran and passed between two reads is a new
+    /// commit's pass, though the read before passed too; the same head
+    /// passing again is none.
+    #[test]
+    fn a_pass_on_a_moved_head_is_an_edge() {
+        let was = [pr(5, PrState::Open, Pipeline::Passed)];
+        let mut pushed = was.clone();
+        pushed[0].head_oid = "h2".into();
+        assert!(!edge(&was, &was).passed);
+        let e = edge(&was, &pushed);
+        assert!(e.passed);
+        assert_eq!(e.news(&pushed), ["pipeline passed #5"]);
+        pushed[0].pipeline = Pipeline::Running;
+        assert!(!edge(&was, &pushed).passed);
     }
 
     /// T-757: a PR read open and then merged is `landed`, by label, and the

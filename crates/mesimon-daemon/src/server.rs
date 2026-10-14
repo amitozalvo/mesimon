@@ -7116,6 +7116,11 @@ impl Daemon {
             return Some("pipeline not read".into());
         }
         let set = set.filter(|_| live);
+        // The reading is of a commit the branch has left, or of one never
+        // pushed (T-780): the push's pipeline is the next read's.
+        if set.is_some_and(|s| !s.is_empty()) && self.pipeline_head_unread(id) {
+            return Some("pipeline not read".into());
+        }
         let opened_here = if set.is_some_and(|s| !s.is_empty()) {
             None
         } else {
@@ -7130,6 +7135,29 @@ impl Daemon {
             self.costs.opened_any(id, &live)
         };
         mesimon_core::forge::entry_refusal(set, opened_here)
+    }
+
+    /// An open PR of the ticket's whose head is not its leg's tip
+    /// (`forge::head_unread`, T-780). The tip is read now, one `rev-parse`
+    /// per leg holding an open PR: the flags' is a slow bucket old at the
+    /// turn's end that pushed.
+    fn pipeline_head_unread(&self, id: ulid::Ulid) -> bool {
+        let Some(set) = self.forge.sets.get(&id) else { return false };
+        let Some(b) = self.worktrees.get(&id).filter(|b| !b.branch.is_empty()) else {
+            return false;
+        };
+        let base = self.base_branch.clone().unwrap_or_default();
+        let tips: Vec<(String, String)> = b
+            .legs(&self.paths.repo_root, &base)
+            .iter()
+            .filter_map(|leg| {
+                let remote = self.forge.remotes.get(&leg.repo)?.as_ref()?;
+                set.iter()
+                    .any(|p| p.state.is_open() && p.repo == remote.path)
+                    .then(|| (remote.path.clone(), worktree::branch_tip(&leg.repo, &b.branch)))
+            })
+            .collect();
+        mesimon_core::forge::head_unread(set, &b.branch, &tips)
     }
 
     /// Every column's description (T-467), keyed by name, for `get_ticket`
@@ -13957,7 +13985,11 @@ impl Daemon {
                             4
                         }
                         Arrival::Merged if edge.merged => 3,
-                        Arrival::PipelinePasses if edge.passed => 2,
+                        // A pass on a head the branch has left is the
+                        // commit before's (T-780).
+                        Arrival::PipelinePasses if edge.passed && !self.pipeline_head_unread(t) => {
+                            2
+                        }
                         Arrival::PrOpened if !edge.opened.is_empty() => 1,
                         _ => return None,
                     };
@@ -13980,24 +14012,16 @@ impl Daemon {
     }
 
     /// The merged clause the forge adds to a ticket's legs (T-739): a leg
-    /// the git road reads unmerged whose repository's newest PR is merged
-    /// at the leg's tip reads merged, landed as that PR's merge commit.
-    /// True when a leg changed.
+    /// whose repository's newest PR is merged at the leg's tip reads
+    /// merged, landed as that PR's merge commit — in the PR's words though
+    /// the git road read it merged first (T-780). True when a leg changed.
     fn forge_fold_legs(&self, t: ulid::Ulid, legs: &mut [worktree::RepoFlags]) -> bool {
         let mut changed = false;
         for leg in legs.iter_mut() {
-            if leg.merged {
-                continue;
-            }
             let dir = self.leg_dir(&leg.name);
             let Some(Some(remote)) = self.forge.remotes.get(&dir) else { continue };
             let Some(pr) = self.forge.merged_at(t, &remote.path, &leg.tip) else { continue };
-            leg.merged = true;
-            leg.needs_rebase = false;
-            leg.merged_in = format!("{} ({} {})", leg.base, pr.forge.noun(), pr.label());
-            leg.merged_oid =
-                if pr.merge_oid.is_empty() { pr.head_oid.clone() } else { pr.merge_oid.clone() };
-            changed = true;
+            changed |= leg.fold_forge_merge(pr);
         }
         changed
     }
