@@ -637,8 +637,15 @@ pub fn provision(
         .map_err(|_| ("precheck".into(), no_commits_yet(&base)))?
         .trim()
         .to_string();
-    // Branch collision: refuse in mesimon's words, never raw git text.
     let branch_ref = format!("refs/heads/{branch}");
+    // A tree this same ticket's provision cut and never reported (T-793): the
+    // daemon stopped while the init script ran, and the binding it had
+    // persisted was blank, so the restart dropped it and the tree was left
+    // with our marker. It is ours — adopt it rather than refuse every spawn.
+    if let Some(b) = adopt_interrupted(repo, &dir, &branch, &base_ref, ticket_id) {
+        return Ok(b);
+    }
+    // Branch collision: refuse in mesimon's words, never raw git text.
     if git_read(repo, &["rev-parse", "--verify", "--quiet", &branch_ref]).is_ok() {
         return Err(("precheck".into(), format!("branch {branch} already exists")));
     }
@@ -659,6 +666,37 @@ pub fn provision(
         branch_oid: base_oid.clone(),
         base_oid,
         branch,
+        status: BindingStatus::Attached,
+        locked: false,
+        repos: Vec::new(),
+        init: None,
+    })
+}
+
+/// The binding for a tree at `dir` that an interrupted provision of
+/// `ticket_id` cut: our marker names this ticket and the tree stands on
+/// `branch`. Anything else is not ours to take, and precheck refuses it.
+fn adopt_interrupted(
+    repo: &Path,
+    dir: &Path,
+    branch: &str,
+    base_ref: &str,
+    ticket_id: ulid::Ulid,
+) -> Option<Binding> {
+    if !dir.is_dir() || marker_ticket(dir) != Some(ticket_id) {
+        return None;
+    }
+    let head = git_read(dir, &["symbolic-ref", "--quiet", "--short", "HEAD"]).ok()?;
+    if head.trim() != branch {
+        return None;
+    }
+    let tip = branch_tip(repo, branch);
+    let base_oid = git_read(repo, &["merge-base", base_ref, &tip]).ok()?.trim().to_string();
+    Some(Binding {
+        path: dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()),
+        branch_oid: tip,
+        base_oid,
+        branch: branch.to_string(),
         status: BindingStatus::Attached,
         locked: false,
         repos: Vec::new(),
@@ -846,7 +884,9 @@ pub fn marker_ticket(dir: &Path) -> Option<ulid::Ulid> {
 /// Resolve each from what actually landed on disk:
 /// dir + our marker → `Attached`; dir without marker → fail closed (D26);
 /// branch only → `Evicted` (`provision_existing` replays); nothing → drop the
-/// binding, the next spawn provisions fresh. Returns whether anything changed.
+/// binding, the next spawn provisions fresh. A fresh provision's binding is
+/// blank until it reports, so a tree it cut reads as nothing here; `provision`
+/// adopts it by its marker (T-793). Returns whether anything changed.
 pub fn reconcile_interrupted(repo: &Path, bindings: &mut Bindings) -> bool {
     let mut changed = false;
     bindings.retain(|ticket, b| {
@@ -2622,6 +2662,30 @@ mod tests {
         // Same branch again refuses at precheck.
         let e = provision(&repo, &root, ulid::Ulid(2), "T-1", "Fix thing").unwrap_err();
         assert_eq!(e.0, "precheck");
+
+        // The same ticket again adopts its own tree (T-793): a daemon that
+        // stopped mid-provision persisted a blank binding, the restart
+        // dropped it, and the next spawn found the tree it had cut.
+        let mut bindings = Bindings::new();
+        let blank = Binding {
+            path: PathBuf::new(),
+            branch: String::new(),
+            base_oid: String::new(),
+            branch_oid: String::new(),
+            status: BindingStatus::Provisioning,
+            locked: false,
+            repos: Vec::new(),
+            init: None,
+        };
+        bindings.insert(ulid::Ulid(1), blank);
+        reconcile_interrupted(&repo, &mut bindings);
+        assert!(!bindings.contains_key(&ulid::Ulid(1)), "a blank binding is dropped");
+        let again = provision(&repo, &root, ulid::Ulid(1), "T-1", "Fix thing").unwrap();
+        assert_eq!(
+            (&again.path, &again.branch, &again.base_oid, &again.branch_oid),
+            (&b.path, &b.branch, &b.base_oid, &b.branch_oid)
+        );
+        assert_eq!(again.status, BindingStatus::Attached);
 
         // Commit in the worktree → merge check clean → merge into main.
         std::fs::write(b.path.join("b.txt"), "wt\n").unwrap();

@@ -25589,3 +25589,17 @@ not on line 2; the reply's cap goes from `PEEK_ROWS` (4) to 3 and the summary's 
 card keeps it on line 2, beside a new reply. The board finds the brief's click spot on line 2 or
 the card's last line (`Group::prs_at` carries its row). Test:
 `ui::an_open_cards_pr_line_comes_last_and_the_rows_above_give_way`.
+
+## T-793 — a provision cut before a restart is adopted, not refused (2026-10-15)
+
+T-792's start failed with `precheck: branch msmn/T-792-… already exists`. The spawn queued a
+fresh provision, the daemon was asked to shut down 6 s later (the `U` handover) while the
+worktree init script ran, and the tree was already cut and marked. `queue_provision` persists a
+fresh binding blank (no path, no branch) until the provision reports, so on restart
+`reconcile_interrupted` read it as "nothing landed" and dropped it; every later spawn then
+provisioned fresh and precheck refused the branch the first one had cut. `provision` now adopts
+a tree at its own directory whose ownership marker names the same ticket and which stands on
+the ticket's branch: `Attached`, `base_oid` the merge-base with the base branch, and the init
+script runs again (it is idempotent: `[ -e target ] && exit 0`). A tree marked for another
+ticket, or none, is refused as before. A workspace provision (T-368) still refuses its
+container in that case. Test: `worktree::provision_merge_teardown_roundtrip`.
