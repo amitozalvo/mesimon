@@ -192,6 +192,7 @@ impl World {
             conflict: false,
             ahead,
             needs_rebase: false,
+            counted: String::new(),
             detail: None,
             path: None,
             repos: Vec::new(),

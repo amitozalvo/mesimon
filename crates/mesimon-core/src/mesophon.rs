@@ -1384,6 +1384,7 @@ mod tests {
             conflict: false,
             ahead: 0,
             needs_rebase: false,
+            counted: String::new(),
             detail: None,
             path: Some("/Users/me/state/worktrees/T-1-fix".into()),
             repos: Vec::new(),

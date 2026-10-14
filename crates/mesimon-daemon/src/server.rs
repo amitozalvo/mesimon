@@ -7304,7 +7304,13 @@ impl Daemon {
             }
             "needs_rebase" => Some(format!(
                 "{key}'s branch is behind its base ({}): {}",
-                self.base_branch.as_deref().unwrap_or("main"),
+                // The upstream where the counts were taken against it (T-786).
+                self.wt_agg
+                    .get(&target)
+                    .map(|a| a.counted.as_str())
+                    .filter(|c| !c.is_empty())
+                    .or(self.base_branch.as_deref())
+                    .unwrap_or("main"),
                 rebase_first()
             )),
             _ => {
@@ -7897,6 +7903,7 @@ impl Daemon {
             conflict: !b.branch.is_empty() && self.wt_conflicts.contains(&b.branch),
             ahead: self.wt_agg.get(tid).map_or(0, |a| a.ahead),
             needs_rebase: self.wt_agg.get(tid).is_some_and(|a| a.needs_rebase),
+            counted: self.wt_agg.get(tid).map(|a| a.counted.clone()).unwrap_or_default(),
             detail: match &b.status {
                 BindingStatus::Error { stage, message } => {
                     Some(worktree::error_words(stage, message))
@@ -10008,6 +10015,11 @@ impl Daemon {
             return Response::Err { message: "no worktree on this ticket".into() };
         }
         let mut base = self.root_base().unwrap_or_else(|| "main".into());
+        // On a forge board the counts that asked it are the upstream's
+        // (T-786), so the rebase is onto that: `origin/main`.
+        if let Some(a) = self.wt_agg.get(&id).filter(|a| !a.counted.is_empty()) {
+            base = a.counted.clone();
+        }
         let b = &self.worktrees[&id];
         let branch = b.branch.clone();
         // On a workspace ticket (T-368) the base is per leg: the sentence
@@ -10018,13 +10030,13 @@ impl Daemon {
             let mut named: Vec<String> = legs
                 .iter()
                 .filter(|l| l.needs_rebase && l.ahead > 0)
-                .map(|l| format!("{} ({})", l.base, worktree::leg_word(&l.name)))
+                .map(|l| format!("{} ({})", l.against(), worktree::leg_word(&l.name)))
                 .collect();
             if named.is_empty() {
                 named = legs
                     .iter()
                     .filter(|l| l.touched())
-                    .map(|l| format!("{} ({})", l.base, worktree::leg_word(&l.name)))
+                    .map(|l| format!("{} ({})", l.against(), worktree::leg_word(&l.name)))
                     .collect();
             }
             if named.is_empty() {
@@ -13503,11 +13515,24 @@ impl Daemon {
                 } else {
                     self.upstreams.get(&leg.name).cloned().flatten()
                 };
+                // A forge's repository counts against its upstream (T-786):
+                // the remote parsed once, as `learn_remotes` does, and only
+                // where the upstream is asked too.
+                let forge = if ask_upstream {
+                    self.forge
+                        .remotes
+                        .entry(leg.repo.clone())
+                        .or_insert_with(|| crate::forge::remote_of(&leg.repo, &leg.base))
+                        .is_some()
+                } else {
+                    self.forge.remotes.get(&leg.repo).is_some_and(Option::is_some)
+                };
                 queries.push(worktree::RepoQuery {
                     name: leg.name.clone(),
                     repo: leg.repo.clone(),
                     base: leg.base.clone(),
                     upstream,
+                    forge,
                     inputs: vec![input],
                 });
             }
@@ -14175,6 +14200,7 @@ impl Daemon {
         let repo = self.paths.repo_root.clone();
         let base = self.base_branch.clone();
         let cached: HashMap<String, Option<String>> = self.upstreams.clone();
+        let parsed: Vec<std::path::PathBuf> = self.forge.remotes.keys().cloned().collect();
         // Single-repo legs need the base to make a query at all; with the
         // cache empty the worker resolves it and the queries are built here
         // against that answer once it lands. A workspace leg carries its
@@ -14206,6 +14232,10 @@ impl Daemon {
                 // answer yet.
                 if !cached.contains_key(&q.name) {
                     q.upstream = worktree::upstream_base(&q.repo, &q.base);
+                }
+                // So is whether a forge reads its remote (T-786).
+                if !parsed.contains(&q.repo) {
+                    q.forge = crate::forge::remote_of(&q.repo, &q.base).is_some();
                 }
             }
             let samples = worktree::compute_repo_flags(&queries);

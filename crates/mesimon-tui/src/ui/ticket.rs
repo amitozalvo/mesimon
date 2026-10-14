@@ -516,7 +516,12 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         } else if w.status != "attached" {
             format!(" ∙ {}", w.status)
         } else if w.needs_rebase {
-            format!(" ∙ main moved{offer}")
+            // The ref the counts are against, where it is not the local base
+            // (T-786): on a forge board, the upstream the forge merges into.
+            let moved = if w.counted.is_empty() { "main" } else { w.counted.as_str() };
+            format!(" ∙ {moved} moved{offer}")
+        } else if w.ahead > 0 && !w.counted.is_empty() {
+            format!(" ∙ {} ahead of {}{}", w.ahead, w.counted, if busy { "" } else { &offer })
         } else if w.ahead > 0 && busy {
             format!(" ∙ {} to merge", w.ahead)
         } else if w.ahead > 0 {

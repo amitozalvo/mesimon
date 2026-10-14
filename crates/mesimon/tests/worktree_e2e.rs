@@ -477,12 +477,17 @@ fn barred_bindings_refuse_a_queued_start_and_cut_no_tree() {
 /// T-779: on a board whose work merges on a forge, nothing moves the local
 /// base: the forge merges, a fetch moves `origin/main`, and a worktree cut
 /// from the stale local `main` starts behind every merge since. Here the
-/// remote moved ahead and was fetched; the remote's URL names a forge; the
-/// ticket's branch starts at the remote's tip, and local `main` stays put.
+/// remote moved ahead by four merges and was fetched; the remote's URL names
+/// a forge; the ticket's branch starts at the remote's tip, and local `main`
+/// stays put. T-786: one commit on the branch then reads `ahead` 1, counted
+/// against `origin/main`, not 5 against the local `main`.
 #[test]
 fn a_forge_boards_worktree_starts_at_the_fetched_upstream() {
     const STUB: &str = "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do sleep 1; done\n";
-    let Some(h) = Harness::boot("wtcut", Some(STUB)) else { return };
+    let Some(h) = Harness::boot_with_env("wtcut", Some(STUB), &[("MESIMON_WT_REFRESH_TICKS", "4")])
+    else {
+        return;
+    };
     if Proc::new("git").arg("--version").output().is_err() {
         eprintln!("git not installed; skipping");
         return;
@@ -505,9 +510,11 @@ fn a_forge_boards_worktree_starts_at_the_fetched_upstream() {
     git(&h.dir, &["clone", "-q", bare.to_str().unwrap(), other.to_str().unwrap()]);
     git(&other, &["config", "user.email", "e2e@t"]);
     git(&other, &["config", "user.name", "e2e"]);
-    std::fs::write(other.join("b.txt"), "merged on the forge\n").unwrap();
-    git(&other, &["add", "."]);
-    git(&other, &["commit", "-qm", "!4"]);
+    for n in 1..=4 {
+        std::fs::write(other.join(format!("b{n}.txt")), "merged on the forge\n").unwrap();
+        git(&other, &["add", "."]);
+        git(&other, &["commit", "-qm", &format!("!{n}")]);
+    }
     git(&other, &["push", "-q", "origin", "main"]);
     git(repo, &["fetch", "-q", "origin"]);
     let upstream = git(repo, &["rev-parse", "origin/main"]).trim().to_string();
@@ -542,4 +549,25 @@ fn a_forge_boards_worktree_starts_at_the_fetched_upstream() {
     );
     assert!(!wt.merged, "a fresh branch is no work, never merged");
     assert_eq!(git(repo, &["rev-parse", "main"]).trim(), local, "local main never moves");
+
+    // One commit of the ticket's own: one ahead of where it was cut from.
+    let path = std::path::PathBuf::from(wt.path.clone().expect("an attached tree has a path"));
+    git(&path, &["config", "user.email", "e2e@t"]);
+    git(&path, &["config", "user.name", "e2e"]);
+    std::fs::write(path.join("w.txt"), "the ticket's work\n").unwrap();
+    git(&path, &["add", "."]);
+    git(&path, &["commit", "-qm", "work"]);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let wt = loop {
+        let (_, wts) = board_of(c.request(Command::Snapshot));
+        let item = wts.iter().find(|w| w.ticket == ticket).cloned();
+        if let Some(w) = item.as_ref().filter(|w| w.ahead > 0) {
+            break w.clone();
+        }
+        assert!(Instant::now() < deadline, "the commit was never counted; last: {item:?}");
+        std::thread::sleep(Duration::from_millis(150));
+    };
+    assert_eq!(wt.ahead, 1, "counted against origin/main, not local main: {wt:?}");
+    assert_eq!(wt.counted, "origin/main");
+    assert!(!wt.needs_rebase && !wt.merged, "{wt:?}");
 }

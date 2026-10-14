@@ -2767,6 +2767,12 @@ pub struct WorktreeItem {
     /// flow's rebase stage comes first.
     #[serde(default)]
     pub needs_rebase: bool,
+    /// The upstream `ahead` and `needs_rebase` are counted against where it
+    /// is not the local base (T-786): `origin/main` on a repository a forge
+    /// merges into, while the local base is behind it. Empty otherwise, and
+    /// then left off the wire.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub counted: String,
     /// Error detail when status == "error" (names the failing stage), a
     /// workspace provision's `7/19` while it runs, or on an attached binding
     /// how its init script went wrong (T-614, `InitRun::detail`): `init
@@ -3380,6 +3386,7 @@ mod tests {
             conflict: false,
             ahead: 0,
             needs_rebase: false,
+            counted: String::new(),
             detail: None,
             path: None,
             repos: vec![],

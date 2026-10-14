@@ -1502,7 +1502,13 @@ pub struct Flags {
 #[derive(Debug, Clone, Default)]
 pub struct WtFlags {
     pub base: String,
+    /// The tip `ahead` and `needs_rebase` were counted against: the local
+    /// base's, or `counted`'s where that is set.
     pub base_tip: String,
+    /// The upstream the counts were taken against where it is not the local
+    /// base (T-786): `origin/main` on a forge's repository whose local base
+    /// is behind. Empty otherwise.
+    pub counted: String,
     pub flags: Vec<Flags>,
     pub conflicts: Vec<String>,
 }
@@ -1655,13 +1661,19 @@ fn content_verdict(
 /// behind, and the card would read "main moved" forever. `content_verdict`
 /// asks the second question — patch equality — against ONE target ref for
 /// the pass, and remembers the answer on `FlagInput::seen`, so the sample
-/// stays `2 + n` forks until a tip moves. `ahead` and `needs_rebase` keep
-/// meaning what they meant: they are about the LOCAL base, which is what a
-/// fast-forward here would move.
+/// stays `2 + n` forks until a tip moves. `ahead` and `needs_rebase` are
+/// about the LOCAL base, which is what a fast-forward here would move —
+/// except on a repository whose remote a forge reads (`forge`, T-786),
+/// where the forge merges and only the upstream moves: there, when the
+/// upstream has moved past the local base, they are counted against the
+/// upstream, the ref a fresh branch is cut from (T-779), and `counted`
+/// names it. That is one more fork per binding, and only while the local
+/// base is behind.
 pub fn compute_flags(
     repo: &Path,
     base: &str,
     upstream: Option<&str>,
+    forge: bool,
     inputs: &[FlagInput],
 ) -> WtFlags {
     let (tips, upstream_tip, read_trouble) = branch_tips(repo, upstream);
@@ -1681,6 +1693,7 @@ pub fn compute_flags(
         }
         _ => (base.clone(), base_tip.oid.clone()),
     };
+    let counted = count_against(forge, &base, &base_tip.oid, &target, &target_tip);
     let mut budget = CONTENT_SCANS_PER_PASS;
     let flags = inputs
         .iter()
@@ -1698,12 +1711,21 @@ pub fn compute_flags(
                 let mut it = s.split_whitespace().map(|n| n.parse::<u32>().ok());
                 Some((it.next()??, it.next()??))
             });
-            let (ancestor, ahead, ff) = match counts {
+            let (ancestor, mut ahead, mut ff) = match counts {
                 Some((behind, ahead)) => {
                     (!tip.oid.is_empty() && tip.oid != i.base_oid && ahead == 0, ahead, behind == 0)
                 }
                 None => (false, 0, false),
             };
+            // Ancestry stays the local base's (the ordinary merge is still
+            // `merged` with no words); the counts become the upstream's.
+            let mut trouble = trouble;
+            if !counted.is_empty() && trouble.is_none() {
+                match left_right(repo, &counted, &i.branch) {
+                    Ok((behind, up_ahead)) => (ahead, ff) = (up_ahead, behind == 0),
+                    Err(e) => trouble = Some(git_trouble(&e)),
+                }
+            }
             // The work can be up there without the commits being: a squashed
             // or rebased PR. Asked only where ancestry said no and the branch
             // has work at all — and, in the steady state, answered with no
@@ -1750,7 +1772,42 @@ pub fn compute_flags(
         })
         .collect();
     let conflicts = list_worktrees(repo).map(|rows| branch_conflicts(&rows)).unwrap_or_default();
-    WtFlags { base, base_tip: base_tip.oid, flags, conflicts }
+    // The tip the counts were taken against: what the train's rebase asks
+    // and refusals are keyed on, so a forge merge re-arms them.
+    let base_tip = if counted.is_empty() { base_tip.oid } else { target_tip };
+    WtFlags { base, base_tip, counted, flags, conflicts }
+}
+
+/// The ref `ahead` and `needs_rebase` are counted against where it is not
+/// the local base (T-786), else empty: on a forge's repository, the pass's
+/// target when that is the upstream and the upstream has moved past the
+/// local base (`compute_flags` picks the upstream as target only where it
+/// holds everything the base does). Equal tips count the same either way,
+/// and a diverged or ahead local base keeps its own counts: what is
+/// unpushed is the person's.
+fn count_against(
+    forge: bool,
+    base: &str,
+    base_tip: &str,
+    target: &str,
+    target_tip: &str,
+) -> String {
+    if forge && target != base && !target_tip.is_empty() && target_tip != base_tip {
+        target.to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// `rev-list --left-right --count from...branch`: (behind, ahead).
+fn left_right(repo: &Path, from: &str, branch: &str) -> Result<(u32, u32)> {
+    let out =
+        git_read(repo, &["rev-list", "--left-right", "--count", &format!("{from}...{branch}")])?;
+    let mut it = out.split_whitespace().map(|n| n.parse::<u32>().ok());
+    match (it.next().flatten(), it.next().flatten()) {
+        (Some(behind), Some(ahead)) => Ok((behind, ahead)),
+        _ => Err(anyhow::anyhow!("git rev-list: unreadable count {out:?}")),
+    }
 }
 
 /// Fast-forward `base` to the branch tip — the ONLY merge mesimon performs
@@ -1881,6 +1938,9 @@ pub struct RepoQuery {
     pub repo: PathBuf,
     pub base: String,
     pub upstream: Option<String>,
+    /// The repository's remote is a forge's (T-786): the counts follow the
+    /// upstream where it moved past the base.
+    pub forge: bool,
     pub inputs: Vec<FlagInput>,
 }
 
@@ -1901,7 +1961,7 @@ pub fn compute_repo_flags(queries: &[RepoQuery]) -> Vec<RepoSample> {
         .map(|q| RepoSample {
             name: q.name.clone(),
             base: q.base.clone(),
-            flags: compute_flags(&q.repo, &q.base, q.upstream.as_deref(), &q.inputs),
+            flags: compute_flags(&q.repo, &q.base, q.upstream.as_deref(), q.forge, &q.inputs),
         })
         .collect()
 }
@@ -1913,6 +1973,9 @@ pub struct RepoFlags {
     pub name: String,
     pub base: String,
     pub base_tip: String,
+    /// The upstream `ahead` and `needs_rebase` were counted against where
+    /// it is not `base` (T-786), else empty.
+    pub counted: String,
     pub base_oid: String,
     pub tip: String,
     pub ahead: u32,
@@ -1935,6 +1998,16 @@ impl RepoFlags {
         self.tip != self.base_oid
     }
 
+    /// The ref the counts are against: the upstream where the leg was
+    /// counted against one (T-786), else its base.
+    pub fn against(&self) -> &str {
+        if self.counted.is_empty() {
+            &self.base
+        } else {
+            &self.counted
+        }
+    }
+
     /// One leg's answer out of a sample: the leg, the repository's sample
     /// it was asked in, and the ticket's row there. `content` is the
     /// sampler's memo, carried for the next pass.
@@ -1943,6 +2016,7 @@ impl RepoFlags {
             name: leg.name.clone(),
             base: leg.base.clone(),
             base_tip: sample.flags.base_tip.clone(),
+            counted: sample.flags.counted.clone(),
             base_oid: leg.base_oid.clone(),
             tip: f.tip.clone(),
             ahead: f.ahead,
@@ -2033,6 +2107,9 @@ pub struct Aggregate {
     pub conflict: bool,
     pub tip: String,
     pub base_tip: String,
+    /// The upstream every leg was counted against (T-786), when they all
+    /// were against the same one; empty otherwise.
+    pub counted: String,
     pub merged_in: String,
     pub merged_oid: String,
 }
@@ -2061,6 +2138,10 @@ pub fn aggregate(legs: &[RepoFlags]) -> Aggregate {
         conflict: legs.iter().any(|l| l.conflict),
         tip: legs.iter().map(|l| l.tip.as_str()).collect::<Vec<_>>().join("+"),
         base_tip: legs.iter().map(|l| l.base_tip.as_str()).collect::<Vec<_>>().join("+"),
+        counted: match legs.first() {
+            Some(first) if legs.iter().all(|l| l.counted == first.counted) => first.counted.clone(),
+            _ => String::new(),
+        },
         merged_in: landed.map(|l| l.merged_in.clone()).unwrap_or_default(),
         merged_oid: landed.map(|l| l.merged_oid.clone()).unwrap_or_default(),
     }
@@ -2751,7 +2832,7 @@ mod tests {
                 base_oid,
                 seen,
             }];
-            let got = compute_flags(&self.dir, "main", upstream, &inputs);
+            let got = compute_flags(&self.dir, "main", upstream, false, &inputs);
             got.flags.into_iter().next().expect("one binding, one answer")
         }
     }
@@ -2814,12 +2895,13 @@ mod tests {
                 base_oid: base_oid.into(),
                 seen: None,
             }];
-            let got = compute_flags(&r.dir, "main", None, &inputs);
+            let got = compute_flags(&r.dir, "main", None, false, &inputs);
             let f = &got.flags[0];
             RepoFlags {
                 name: String::new(),
                 base: "main".into(),
                 base_tip: got.base_tip.clone(),
+                counted: String::new(),
                 base_oid: base_oid.into(),
                 tip: f.tip.clone(),
                 ahead: f.ahead,
@@ -3063,6 +3145,62 @@ mod tests {
         std::fs::remove_dir_all(&r.dir).ok();
     }
 
+    /// T-786: on a forge's repository whose upstream moved past the local
+    /// base, `ahead` and `needs_rebase` count against the upstream, the ref
+    /// T-779 cuts from; with no forge, equal tips, or a local base of its
+    /// own, against the local base as before.
+    #[test]
+    fn a_forge_repository_counts_against_the_upstream_that_moved_ahead() {
+        let Some(r) = Repo::new("count") else { return };
+        let tip = |b: &str| branch_tip(&r.dir, b);
+        let up_at = |oid: &str| r.run(&["update-ref", "refs/remotes/origin/main", oid]);
+        let a = tip("main");
+        // Four merges on the forge, none of them in local `main`.
+        r.run(&["checkout", "-q", "-b", "forge", "main"]);
+        for n in 0..4 {
+            r.commit(&format!("f{n}.txt"), "forge\n", "merged on the forge");
+        }
+        let up = tip("forge");
+        up_at(&up);
+        // The ticket's branch, cut from the upstream, one commit ahead.
+        r.run(&["checkout", "-q", "-b", "work", &up]);
+        r.commit("w.txt", "work\n", "the ticket's work");
+        r.run(&["checkout", "-q", "main"]);
+        let count = |forge: bool| {
+            let inputs = vec![FlagInput {
+                ticket: ulid::Ulid(1),
+                branch: "work".into(),
+                base_oid: up.clone(),
+                seen: None,
+            }];
+            let got = compute_flags(&r.dir, "main", Some("origin/main"), forge, &inputs);
+            let f = &got.flags[0];
+            (f.ahead, f.needs_rebase, f.merged, got.counted.clone(), got.base_tip.clone())
+        };
+        assert_eq!(count(true), (1, false, false, "origin/main".into(), up.clone()), "forge");
+        assert_eq!(count(false), (5, false, false, String::new(), a.clone()), "no forge");
+
+        // The forge merges once more: behind the upstream, not the base.
+        r.run(&["checkout", "-q", "forge"]);
+        r.commit("f4.txt", "forge\n", "merged on the forge");
+        r.run(&["checkout", "-q", "main"]);
+        up_at(&tip("forge"));
+        let (ahead, needs_rebase, ..) = count(true);
+        assert_eq!((ahead, needs_rebase), (1, true), "behind origin/main");
+        assert!(!count(false).1, "local main is still an ancestor");
+
+        // Equal tips count the same either way, and name no upstream.
+        up_at(&a);
+        assert_eq!(count(true).3, "", "equal: the local base");
+        assert_eq!(count(true).0, 5);
+
+        // A local base with a commit of its own keeps its own counts.
+        up_at(&tip("forge"));
+        r.commit("mine.txt", "mine\n", "unpushed");
+        let (_, _, _, counted, base_tip) = count(true);
+        assert_eq!((counted.as_str(), base_tip), ("", tip("main")), "diverged: the local base");
+    }
+
     /// The whole point of the upstream half: the PR is merged on the forge
     /// and the user only FETCHES. Local `main` never moves, and the ticket
     /// still reads merged — into `origin/main`, which is what the page says.
@@ -3130,7 +3268,7 @@ mod tests {
                 seen: None,
             })
             .collect();
-        let first = compute_flags(&r.dir, "main", None, &inputs);
+        let first = compute_flags(&r.dir, "main", None, false, &inputs);
         let merged = first.flags.iter().filter(|f| f.merged).count();
         assert_eq!(
             merged, CONTENT_SCANS_PER_PASS as usize,
@@ -3146,7 +3284,7 @@ mod tests {
             .zip(&first.flags)
             .map(|(i, f)| FlagInput { seen: f.seen.clone(), ..i })
             .collect();
-        let second = compute_flags(&r.dir, "main", None, &inputs);
+        let second = compute_flags(&r.dir, "main", None, false, &inputs);
         assert!(
             second.flags.iter().all(|f| f.merged),
             "every branch is merged: {:?}",
@@ -3200,7 +3338,7 @@ mod tests {
                 seen: None,
             })
             .collect();
-        let got = compute_flags(&repo, "main", None, &inputs);
+        let got = compute_flags(&repo, "main", None, false, &inputs);
         assert_eq!(got.base_tip, branch_tip(&repo, "main"));
         assert!(!got.base_tip.is_empty());
         for (f, i) in got.flags.iter().zip(&inputs) {
@@ -3288,6 +3426,7 @@ mod tests {
             repo,
             base: "main".into(),
             upstream: None,
+            forge: false,
             inputs: input(base_oid),
         };
         let queries = vec![
@@ -3645,6 +3784,7 @@ mod tests {
             name: name.into(),
             base: "main".into(),
             base_tip: format!("bt-{name}"),
+            counted: String::new(),
             base_oid: base_oid.into(),
             tip: tip.into(),
             ahead,
@@ -3685,6 +3825,39 @@ mod tests {
         assert_eq!((leg.merged_in.as_str(), leg.merged_oid.as_str()), ("main (MR !8)", "m8"));
         assert!(leg.merged);
         assert!(!leg.fold_forge_merge(&pr));
+    }
+
+    /// T-786: !9 from the ticket's branch merged and named the leg; then !11
+    /// from `fix/a` merged, `origin/main` moved, and the git road re-judged
+    /// the leg by patch-id against it (`origin/main`). The fold still finds
+    /// !9 at the tip and the leg keeps `main (MR !9)`.
+    #[test]
+    fn a_leg_merged_by_the_forge_keeps_its_words_after_a_later_merge() {
+        use mesimon_core::forge::{merged_at, ticket_set, Forge, Pipeline, Pr, PrState, Review};
+        let mr = |number: u64, head: &str, head_ref: &str, merge: &str, updated_ms: u64| Pr {
+            forge: Forge::GitLab,
+            repo: "g/api".into(),
+            number,
+            url: format!("https://gitlab.com/g/api/-/merge_requests/{number}"),
+            state: PrState::Merged,
+            head_oid: head.into(),
+            head_ref: head_ref.into(),
+            merge_oid: merge.into(),
+            conflict: false,
+            review: Review::None,
+            pipeline: Pipeline::Passed,
+            updated_ms,
+            deployed: Vec::new(),
+        };
+        let set =
+            ticket_set(vec![mr(9, "t1", "msmn/T-13-a", "m9", 1), mr(11, "f1", "fix/a", "m11", 2)]);
+        let mut leg = leg_flags("", "b0", "t1", 1, true, false);
+        leg.merged_in = "origin/main".into();
+        leg.merged_oid = "p11".into();
+        let pr = merged_at(&set, "g/api", &leg.tip).expect("!9 is merged at the tip");
+        assert!(leg.fold_forge_merge(pr));
+        assert_eq!((leg.merged_in.as_str(), leg.merged_oid.as_str()), ("main (MR !9)", "m9"));
+        assert!(!leg.fold_forge_merge(pr), "every later pass folds the same words");
     }
 
     /// A single leg's aggregate is that leg, field for field — the
@@ -3751,6 +3924,7 @@ mod tests {
                 repo: leg.repo.clone(),
                 base: leg.base.clone(),
                 upstream: None,
+                forge: false,
                 inputs: vec![FlagInput {
                     ticket: ulid::Ulid(1),
                     branch: b.branch.clone(),
@@ -3770,6 +3944,7 @@ mod tests {
                     name: s.name.clone(),
                     base: s.base.clone(),
                     base_tip: s.flags.base_tip.clone(),
+                    counted: String::new(),
                     base_oid: q.inputs[0].base_oid.clone(),
                     tip: f.tip.clone(),
                     ahead: f.ahead,

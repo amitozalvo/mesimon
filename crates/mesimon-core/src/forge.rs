@@ -701,12 +701,18 @@ pub fn ticket_set(mut prs: Vec<Pr>) -> Vec<Pr> {
     prs
 }
 
-/// The set's merged PR for one repository at one tip, if the newest PR
-/// there is merged and its head is that tip: a commit after the merge is
-/// work that has not landed, as the git road reads it.
+/// The set's merged PR for one repository at one tip: the newest merged PR
+/// there whose head is that tip. A commit after the merge is work that has
+/// not landed, as the git road reads it, since the tip is then no merged
+/// head. A later PR from another branch, merged or open, leaves the landing
+/// the one that names it (T-786): the lab's !11 from `fix/a` merged after
+/// !9 had, and the leg's words fell back to `origin/main`. An open one holds
+/// the ticket's merge on its own (`holding`, T-774).
 pub fn merged_at<'a>(set: &'a [Pr], repo: &str, tip: &str) -> Option<&'a Pr> {
-    let newest = set.iter().find(|p| p.repo == repo)?;
-    (newest.state == PrState::Merged && !tip.is_empty() && newest.head_oid == tip).then_some(newest)
+    if tip.is_empty() {
+        return None;
+    }
+    set.iter().find(|p| p.repo == repo && p.state == PrState::Merged && p.head_oid == tip)
 }
 
 /// The PR a ticket's merge waits on (T-774): the newest open one, on any
@@ -1201,6 +1207,17 @@ mod tests {
         assert_eq!(merged_at(&landed, "o/r", "a").map(|p| p.number), Some(1));
         assert_eq!(merged_at(&landed, "o/r", "a2"), None, "a commit after the merge is unlanded");
         assert_eq!(merged_at(&landed, "o/r", ""), None);
+        // A later PR from another branch keeps the landing named (T-786),
+        // merged or open, and on another repository it is not looked at.
+        let mut later = pr("o/r", 11, PrState::Merged, "f", 60);
+        later.head_ref = "fix/a".into();
+        let both = ticket_set(vec![pr("o/r", 1, PrState::Merged, "a", 10), later.clone()]);
+        assert_eq!(merged_at(&both, "o/r", "a").map(|p| p.number), Some(1));
+        assert_eq!(merged_at(&both, "o/r", "f").map(|p| p.number), Some(11));
+        later.state = PrState::Open;
+        let open = ticket_set(vec![pr("o/r", 1, PrState::Merged, "a", 10), later]);
+        assert_eq!(merged_at(&open, "o/r", "a").map(|p| p.number), Some(1));
+        assert_eq!(merged_at(&open, "o/x", "a"), None);
         let mut running = pr("o/r", 4, PrState::Open, "d", 40);
         running.pipeline = Pipeline::Running;
         let mut failed = pr("o/r", 5, PrState::Draft, "e", 50);

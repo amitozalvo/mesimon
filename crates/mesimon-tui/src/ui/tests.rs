@@ -324,6 +324,7 @@ fn install_diff(app: &mut App) {
         conflict: false,
         ahead: 2,
         needs_rebase: false,
+        counted: String::new(),
         detail: None,
         path: Some("/wt/T-3-fix-osc-11-detection".into()),
         repos: vec![],
@@ -3177,6 +3178,7 @@ fn golden_card_branch_line_120() {
         conflict: false,
         ahead: 2,
         needs_rebase: false,
+        counted: String::new(),
         detail: None,
         path: Some("/wt/T-3-fix-osc-11-detection".into()),
         repos: vec![],
@@ -3223,6 +3225,7 @@ fn a_worktree_asked_for_but_not_cut_wears_a_dormant_mark() {
         conflict: false,
         ahead: 0,
         needs_rebase: false,
+        counted: String::new(),
         detail: None,
         path: Some("/wt/T-1".into()),
         repos: vec![],
@@ -3251,6 +3254,7 @@ fn the_worktree_glyph_holds_one_column() {
         conflict: false,
         ahead,
         needs_rebase: false,
+        counted: String::new(),
         detail: None,
         path: Some("/wt/x".into()),
         repos: vec![],
@@ -3288,6 +3292,7 @@ fn a_provisioning_ticket_launches_too() {
         conflict: false,
         ahead: 0,
         needs_rebase: false,
+        counted: String::new(),
         detail: None,
         path: None,
         repos: vec![],
@@ -4621,6 +4626,7 @@ fn app_prs() -> App {
         conflict: false,
         ahead: 2,
         needs_rebase: false,
+        counted: String::new(),
         detail: None,
         path: Some("/wt/T-5-grapheme-truncation".into()),
         repos: vec![],
@@ -4807,6 +4813,7 @@ fn golden_merged_upstream_120() {
         conflict: false,
         ahead: 2,
         needs_rebase: false,
+        counted: String::new(),
         detail: None,
         path: Some("/wt/T-5-grapheme-truncation".into()),
         repos: vec![],
@@ -4859,6 +4866,7 @@ fn a_confirmed_merge_says_it_is_merging() {
         conflict: false,
         ahead: 2,
         needs_rebase: false,
+        counted: String::new(),
         detail: None,
         path: Some("/wt/T-5-grapheme-truncation".into()),
         repos: vec![],
@@ -4900,6 +4908,7 @@ fn the_board_merges_the_selected_card_in_the_same_dialog() {
         conflict: false,
         ahead: 2,
         needs_rebase: false,
+        counted: String::new(),
         detail: None,
         path: Some("/wt/T-5-grapheme-truncation".into()),
         repos: vec![],
@@ -4953,6 +4962,7 @@ fn golden_train_manual_120() {
         conflict: false,
         ahead: 2,
         needs_rebase: false,
+        counted: String::new(),
         detail: None,
         path: Some("/wt/T-5-grapheme-truncation".into()),
         repos: vec![],
@@ -5224,6 +5234,34 @@ fn the_workspace_row_says_when_the_init_script_failed() {
     assert!(row_of(&app).contains("∙ init timed out"), "{:?}", row_of(&app));
 }
 
+/// On a forge board whose local base is behind its upstream the counts are
+/// the upstream's (T-786), and the row names it: `1 ahead of origin/main`,
+/// `origin/main moved`. With no upstream named the row reads as before.
+#[test]
+fn the_workspace_row_names_the_upstream_it_counts_against() {
+    let mut app = app_graphite(fixture_tagged());
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let row_of = |app: &App| {
+        let lines = render(app, 120, 30);
+        let state = lines.iter().position(|l| l.contains("IN PROGRESS")).expect("state row");
+        lines[state + 1].clone()
+    };
+    let mut ahead = tagged_worktree();
+    ahead.ahead = 1;
+    ahead.counted = "origin/main".into();
+    app.worktrees = vec![ahead.clone()];
+    let row = row_of(&app);
+    assert!(row.contains("∙ 1 ahead of origin/main"), "{row:?}");
+    assert!(!row.contains("to merge"), "{row:?}");
+    let mut behind = ahead.clone();
+    behind.needs_rebase = true;
+    app.worktrees = vec![behind];
+    assert!(row_of(&app).contains("∙ origin/main moved"), "{:?}", row_of(&app));
+    ahead.counted = String::new();
+    app.worktrees = vec![ahead];
+    assert!(row_of(&app).contains("∙ 1 to merge"), "{:?}", row_of(&app));
+}
+
 /// The workspace row is the branch's own (T-346), so the name gives way to
 /// nothing but the merge state beside it — cut with the `~` marker, never
 /// below its floor and never off the right edge.
@@ -5265,6 +5303,7 @@ fn tagged_worktree() -> mesimon_core::command::WorktreeItem {
         conflict: false,
         ahead: 2,
         needs_rebase: false,
+        counted: String::new(),
         detail: None,
         path: Some("/wt/T-3".into()),
         repos: vec![],
@@ -5395,6 +5434,7 @@ fn workspace_worktree() -> mesimon_core::command::WorktreeItem {
         conflict: false,
         ahead: 4,
         needs_rebase: false,
+        counted: String::new(),
         detail: None,
         path: Some("/wt/T-5-grapheme-truncation".into()),
         repos: vec![

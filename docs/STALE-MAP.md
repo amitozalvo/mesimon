@@ -24045,6 +24045,43 @@ open PR, a conflict, a stale verdict), `prefs` (both new keys), the keymap laws,
 the board woke the crown `pipeline`, the crown's `ask_agent` reached the worker, which replied
 `noted`. `cargo nextest run --workspace`: 2319 passed.
 
+## On a forge board, ahead counts against the upstream, and a leg keeps the MR that merged it (T-786, 2026-10-15, follow-up to T-779 and T-780)
+
+**Found in forge lab run 3.** D1 (T-17): the `delivered` wake said `ahead api 5` for a branch one
+commit ahead of `origin/main`. Since T-779 a forge board's worktree is cut from the upstream when
+the local `main` is behind it, but `ahead` and `needs_rebase` were still counted against the local
+`main`, which nothing moves on a board whose merges happen on the forge: every PR ticket read
+ahead by everything the forge merged since the checkout last moved. A (T-13): !9 from the ticket
+branch merged and the leg read `main (MR !9)`; then !11 from `fix/a` merged, `origin/main` moved,
+the git road re-judged the leg by patch-id against it, and since `forge::merged_at` asked the
+repository's *newest* PR to be merged at the tip, !11 unnamed it and the card said `origin/main`.
+
+**The counts.** `compute_flags` takes `forge` (the `RepoQuery`'s, from `forge.remotes`, parsed on
+the worker where the cache has none). Where it is set and the pass's target is the upstream
+(which it is only when the upstream holds everything the local base holds) and the two tips
+differ, `ahead` and `needs_rebase` come from a second `rev-list --left-right --count
+origin/main...branch`, one more fork per binding and only while the local base is behind.
+`WtFlags::counted` names that ref, and `base_tip` is then the upstream's tip, so the train's
+rebase asks and refusals (keyed on it) re-arm when the forge merges. Ancestry, `merged` and
+`merged_in` stay the local base's: the DONE gate, the ff merge and the content verdict are
+unchanged. Equal tips, no forge remote, or a local base ahead or diverged keep today's counts.
+**The words:** the ticket page says `1 ahead of origin/main` and `origin/main moved`
+(`WorktreeItem.counted`, off the wire when empty); the rebase ask and `merge_ticket`'s refusal
+name `origin/main` (`RepoFlags::against`). The crown's words keep `ahead api 1`.
+
+**The merge words.** `merged_at` is now the newest merged PR in the repository whose head is the
+tip: a commit after the merge still leaves the tip no merged head, and a later PR from another
+branch, merged or open, no longer unnames the one that landed the leg. An open one holds the
+ticket's merge on its own (`holding`, T-774); `get_ticket`'s PR rows carry the rest.
+
+**Tests.** Unit `a_forge_repository_counts_against_the_upstream_that_moved_ahead` (forge and not,
+behind the upstream, equal, diverged) and `a_leg_merged_by_the_forge_keeps_its_words_after_a_later_merge`
+(worktree); `the_set_is_newest_first_without_the_abandoned` widened (core forge);
+`the_workspace_row_names_the_upstream_it_counts_against` (TUI).
+`worktree_e2e::a_forge_boards_worktree_starts_at_the_fetched_upstream` now moves the remote four
+merges ahead and commits once on the branch: `ahead` 1, `counted` `origin/main` (5 and empty with
+the choice switched off). `cargo nextest run --workspace`: 2419 passed.
+
 ## An open MR's head and pipeline are read from the MR itself (T-784, 2026-10-15, follow-up to T-739 and T-780)
 
 **Measured in forge lab run 3, on gitlab.com.** The worker pushed a fix (`ebf3084`) to MR !9's
