@@ -9614,6 +9614,7 @@ impl Daemon {
                     name: worktree::leg_word(&r.name).into(),
                     base: r.base.clone(),
                     merge_state: "clean".into(),
+                    ahead: 0,
                     merged_in: None,
                 })
                 .collect();
@@ -9625,6 +9626,7 @@ impl Daemon {
                 name: worktree::leg_word(&l.name).into(),
                 base: l.base.clone(),
                 merge_state: worktree::merge_word(l.merged, l.needs_rebase, l.ahead).into(),
+                ahead: l.ahead,
                 merged_in: (l.merged && !l.merged_in.is_empty())
                     .then(|| mesimon_core::text::scrub_text(&l.merged_in)),
             })

@@ -2311,6 +2311,10 @@ pub struct AgentTagView {
     pub group: u8,
 }
 
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
 /// One repository of a workspace ticket as the agent sees it (T-368).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentRepoView {
@@ -2322,6 +2326,11 @@ pub struct AgentRepoView {
     pub base: String,
     /// The same words as `merge_state`, for this repository alone.
     pub merge_state: String,
+    /// Commits this leg holds that its base lacks (T-791), counted against
+    /// the same ref the crown's wake counts: `origin/main` on a forge leg,
+    /// the local base otherwise. Omitted at zero.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ahead: u32,
     /// `merged_in`, for this repository alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merged_in: Option<String>,
@@ -3448,8 +3457,19 @@ mod tests {
             name: "api".into(),
             base: "main".into(),
             merge_state: "ahead".into(),
+            ahead: 1,
             merged_in: None,
         }];
+        t.repos.push(AgentRepoView {
+            name: "web".into(),
+            base: "main".into(),
+            merge_state: "clean".into(),
+            ahead: 0,
+            merged_in: None,
+        });
+        let rows = serde_json::to_value(&t).unwrap()["repos"].clone();
+        assert_eq!(rows[0]["ahead"], 1, "api reads ahead: 1");
+        assert!(rows[1].get("ahead").is_none(), "web at zero says nothing");
         t.column_descriptions.insert("BACKLOG".into(), "someday".into());
         t.asked = Some(AgentAskedView {
             status: "dropped".into(),
