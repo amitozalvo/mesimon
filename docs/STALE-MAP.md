@@ -24648,6 +24648,54 @@ now news. The rig: F5 (`forge_empty`, `forge_bound_passed`), on the real Sonnet 
 2026-10-14: PASS in 50 s, woken `forge` on the PR first read passed, the crown merged nothing and
 raised its hand naming #42.
 
+## A conflict said before a restart says its clear, and a wake says the column it is sent from (T-785, 2026-10-15, follow-up to T-752 and T-769)
+
+**Why.** Forge lab run 3. D1: `conflict !12` was said, the daemon restarted, the MR read
+conflicting on the first read after it and clear on a later one, and no `conflict cleared !12`
+came. T-769 kept `forge::State::conflicted` (the conflicts said) in memory and made the first live
+read against `forge.json`'s set a baseline both ways, so after a restart the clear had no conflict
+to follow. A: the crown moved T-13 to DONE; a wake owed earlier and held for the crown's turn went
+out three minutes later saying `column PROD`, while `get_ticket` read DONE.
+
+**The conflicts said persist.** `ForgeFile.conflicts` (per ticket, the PRs by repository and
+number, only PRs the ticket's set still holds) is written beside the sets and read back by
+`State::restore` for the tickets it restores. `say_conflicts` lost its `baseline` argument and
+`forge::Conflict` its `fresh` field: what was said is known across a restart, so the first read
+after one is judged like any other. A conflict said and cleared after the restart says the clear
+once, whether it cleared on a later read or while the daemon was down; a conflict never said
+(D1's T-769 phantom) stays silent across it; a conflict that came while the daemon was down is
+news (T-769's baseline swallowed it). No schema bump: an older build reads the file and drops the
+field, which only silences a clear, and a file from before this build has no conflicts said, so
+its first clear is silent, as before. **The other edges the brief named needed nothing**: a
+waiting job and a review verdict are read off the PR's own fields, which `forge.json`'s
+`PrRecord` already keeps (`pipeline`, `job`, `review`), so T-752's first pass diffs them against
+the loaded set.
+
+**The column is read when the wake is sent.** `CrownWake::sent_at` gives the wake its card's
+column as it stands; `crown_wake_events` (the crown's sentence, the card's line, the ticket
+page's pending row) reads every wake through it, and `drain_crown_wakes`, once the words are
+delivered, moves each worker's `Heard::told` column there (`told_columns`), so the next wake's
+delta does not say the column again. The edges stay as heard. **`merge_state` is not re-read**,
+though the brief named it: a merge or a rebase between the owe and the send arrives as its own
+wake (the tick's `merge_verdict`, a turn's end) and folds into the held one with its words, its
+`judged` and its held delivery; re-reading the word at the send would say a merge whose own road
+has not run, and its wake would then find it told and say nothing. A column move is the one change
+no wake carries.
+
+**Tests.** Units `a_conflict_cleared_follows_a_conflict_said` (through `ForgeFile` and back:
+said, a restart, still conflicting, cleared, said once; cleared while down; never said; came while
+down), `the_forge_file_round_trips_and_a_newer_one_is_refused` (the conflicts, a PR gone from the
+set and a gone ticket not written), `crownwake::a_wake_says_the_column_it_is_sent_from`.
+`forge_e2e::a_conflict_said_before_a_restart_says_its_clear_after_it` replaces T-769's
+`a_conflict_cleared_across_a_restart_says_nothing`: a restart with the conflict standing, no wake
+on the first read, then the clear, held behind the crown's turn while the card moves to TODO,
+says `column TODO, conflict cleared #42`; the next conflict's line says no column; cleared while
+down, the first read says `conflict cleared #42, after a restart`. With `restore` dropping the
+conflicts it times out on the clear; without `told_columns` the next line says `column TODO`
+again. The rig: F8 (`forge_conflict`, `forge_restart`, `forge_clear`), on the real Sonnet
+(claude 2.1.300), 2026-10-15: PASS in 72 s, wakes `finished`, `forge`, `forge`, the crown's last
+words `F8 cleared #42`. All of `forge_e2e` passes, and the whole workspace under nextest (2417).
+
 ## A board's own theme is named where it hides a pick (T-746, 2026-10-13)
 
 The author, on the personal-life board: "it says green saved for dark and light terminals but not

@@ -788,6 +788,34 @@ checks = ["road:mod", "started_by_crown", "woke:forge", "crown_hand:#42", "repli
   rig = "forge_off"
 
 [[test]]
+id = "F8"
+title = "F8 · the crown hears a pull request's conflict clear after the board restarted: do the steps below"
+workspace = "worktree"
+brief = "Reply with the single word done and end your turn. Read no file and run no command."
+expect = "the worker's PR, read off a stub forge, binds; it turns conflicting and the board wakes the crown with has news from the forge (conflict #42); the board's daemon restarts with the conflict standing, and when the PR clears after the restart the board wakes the crown with conflict cleared #42 (T-785: the conflict said rides forge.json), and the crown names the clear."
+checks = ["road:mod", "started_by_crown", "woke:forge", "crown_reply:F8 cleared", "replies:done"]
+
+  [[test.steps]]
+  crown = "F8: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: F8 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: F8 seen. When the board wakes you because {key}'s pull request is in conflict, end your turn with the single line: F8 conflict. When the board wakes you because that conflict cleared, end your turn with the single line: F8 cleared, then the pull request the board named. Send {key}'s agent nothing."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "forge_pr"
+
+  [[test.steps]]
+  rig = "forge_conflict"
+
+  [[test.steps]]
+  rig = "forge_restart"
+
+  [[test.steps]]
+  rig = "forge_clear"
+
+  [[test.steps]]
+  rig = "forge_off"
+
+[[test]]
 id = "F7"
 title = "F7 · the crown reads who merges a ticket whose pull request merged on the forge: do the steps below"
 workspace = "worktree"

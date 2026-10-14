@@ -6761,6 +6761,7 @@ impl Daemon {
                 self.feed.board("automation", "crown_wake_failed", Some(crown));
             }
             _ => {
+                self.told_columns();
                 self.crown_wakes.clear();
                 self.feed.board("automation", "crown_wake_sent", Some(crown));
                 self.crown_said(crown, &news);
@@ -13919,10 +13920,9 @@ impl Daemon {
             }
             if let Some(mut edge) = edge {
                 // A conflict is said once and its clear only after it
-                // (T-769); the first live read against `forge.json`'s set
-                // is a baseline for both.
-                let baseline = !self.forge.at_ms.contains_key(&t);
-                self.forge.say_conflicts(t, &mut edge, baseline);
+                // (T-769), across a restart too: what was said came back
+                // with `forge.json`'s sets (T-785).
+                self.forge.say_conflicts(t, &mut edge);
                 // A merge is the flags' to say where they flip on it (T-757):
                 // the PR whose head is a leg's tip lands the branch the flags
                 // read (`forge_fold_legs` folds exactly that one), and a flip

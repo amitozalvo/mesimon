@@ -242,8 +242,6 @@ pub struct Conflict {
     pub number: u64,
     pub label: String,
     pub on: bool,
-    /// The PR is newly held, so its conflict is part of no earlier read.
-    pub fresh: bool,
 }
 
 impl Edge {
@@ -459,14 +457,13 @@ pub fn edge(old: &[Pr], new: &[Pr], held: &[(String, u64)]) -> Edge {
         conflict: kept
             .iter()
             .filter(|(o, p)| o.conflict != p.conflict)
-            .map(|(_, p)| (*p, false))
-            .chain(fresh.iter().filter(|p| p.conflict).map(|p| (*p, true)))
-            .map(|(p, fresh)| Conflict {
+            .map(|(_, p)| *p)
+            .chain(fresh.iter().filter(|p| p.conflict).copied())
+            .map(|p| Conflict {
                 repo: p.repo.clone(),
                 number: p.number,
                 label: p.label(),
                 on: p.conflict,
-                fresh,
             })
             .collect(),
         review: kept
@@ -1064,9 +1061,9 @@ pub struct State {
     /// a read that missed it, or reopened, is no opening.
     pub held: HashMap<ulid::Ulid, Vec<(String, u64)>>,
     /// The open PRs, by repository and number, whose `conflict` edge was
-    /// said since this start and not cleared (T-769): a clear is said only
-    /// where its conflict was. Memory only, so a restart's first read is a
-    /// baseline for both.
+    /// said and not cleared (T-769): a clear is said only where its
+    /// conflict was. In `forge.json` beside the sets (T-785), so a conflict
+    /// said before a restart says its clear after it.
     pub conflicted: HashMap<ulid::Ulid, Vec<(String, u64)>>,
     /// The repositories whose last call failed, with the CLI's words.
     pub errors: Vec<(String, String)>,
@@ -1119,10 +1116,9 @@ impl State {
 
     /// Keeps the conflict edges that are news (T-769): a conflict once,
     /// until a clear that follows it, which is said only where the conflict
-    /// was. `baseline`: the read is the first live one against a set
-    /// `forge.json` brought back, which says no conflict and no clear of a
-    /// PR that set held (a newly bound one's conflict is said).
-    pub fn say_conflicts(&mut self, t: ulid::Ulid, edge: &mut Edge, baseline: bool) {
+    /// was. The first read after a restart is no baseline (T-785): what was
+    /// said came back with the sets, so it is judged like any other.
+    pub fn say_conflicts(&mut self, t: ulid::Ulid, edge: &mut Edge) {
         let said = self.conflicted.entry(t).or_default();
         edge.conflict.retain(|c| {
             let id = (c.repo.clone(), c.number);
@@ -1131,7 +1127,7 @@ impl State {
                 said.retain(|s| *s != id);
                 return was;
             }
-            if was || (baseline && !c.fresh) {
+            if was {
                 return false;
             }
             said.push(id);
@@ -1355,6 +1351,11 @@ pub struct ForgeFile {
     pub sets: BTreeMap<ulid::Ulid, Vec<PrRecord>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub commits: Vec<CommitRecord>,
+    /// Each ticket's PRs whose conflict was said and not cleared (T-785):
+    /// `State::conflicted`, PRs its set still holds. An older file has
+    /// none, and a clear of a conflict it said is then silent.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub conflicts: BTreeMap<ulid::Ulid, Vec<(String, u64)>>,
 }
 
 impl ForgeFile {
@@ -1381,7 +1382,20 @@ impl ForgeFile {
                 }
             })
             .collect();
-        ForgeFile { schema_version: FORGE_SCHEMA, sets, commits }
+        let conflicts = state
+            .conflicted
+            .iter()
+            .filter_map(|(t, said)| {
+                let set = state.sets.get(t)?;
+                let kept: Vec<(String, u64)> = said
+                    .iter()
+                    .filter(|(r, n)| set.iter().any(|p| p.repo == *r && p.number == *n))
+                    .cloned()
+                    .collect();
+                (!kept.is_empty()).then_some((*t, kept))
+            })
+            .collect();
+        ForgeFile { schema_version: FORGE_SCHEMA, sets, commits, conflicts }
     }
 
     /// No sets, at this build's schema: what an absent file reads as.
@@ -1392,7 +1406,8 @@ impl ForgeFile {
 
 impl State {
     /// Take a loaded `forge.json` back (T-752): the sets of the tickets the
-    /// board still has, and the settled commits. `at_ms` stays empty — it
+    /// board still has, the conflicts said on them (T-785), and the settled
+    /// commits. `at_ms` stays empty — it
     /// is "read live since this start", what the train's freshness and the
     /// pipeline gate wait for.
     pub fn restore(&mut self, file: ForgeFile, live: impl Fn(ulid::Ulid) -> bool) {
@@ -1403,6 +1418,11 @@ impl State {
             let set = forge::ticket_set(records.into_iter().filter_map(PrRecord::pr).collect());
             self.opens(t, &set);
             self.sets.insert(t, set);
+        }
+        for (t, said) in file.conflicts {
+            if self.sets.contains_key(&t) {
+                self.conflicted.insert(t, said);
+            }
         }
         for c in file.commits {
             let key = (c.repo, c.oid);
@@ -1946,7 +1966,7 @@ mod tests {
         let now = [three.clone()];
         let e = edge(&[], &now);
         assert_eq!(e.news(&now), ["conflict !3", "changes requested !3"]);
-        assert!(e.conflict[0].fresh && e.conflict[0].on);
+        assert!(e.conflict[0].on);
         // Held before (a read missed it): no opening, nothing said.
         let held = [("o/r".to_string(), 3)];
         let e = super::edge(&[], &now, &held);
@@ -1954,8 +1974,9 @@ mod tests {
     }
 
     /// T-769, finding 6: a conflict is said once, and its clear only after
-    /// it; the first live read against `forge.json`'s set says neither for
-    /// a PR that set held, and a newly bound PR's conflict is still said.
+    /// it; a newly bound PR's conflict is said. And T-785: what was said
+    /// rides `forge.json`, so a conflict said before a restart says its
+    /// clear after it, and one never said stays silent across it.
     #[test]
     fn a_conflict_cleared_follows_a_conflict_said() {
         let t = ulid::Ulid::new();
@@ -1963,36 +1984,54 @@ mod tests {
         let clean = pr(4, PrState::Open, Pipeline::Running);
         let mut stuck = clean.clone();
         stuck.conflict = true;
-        let said = |s: &mut State, old: &Pr, new: &Pr, baseline: bool| {
+        let said = |s: &mut State, old: &Pr, new: &Pr| {
             let mut e = edge(std::slice::from_ref(old), std::slice::from_ref(new));
-            s.say_conflicts(t, &mut e, baseline);
+            s.say_conflicts(t, &mut e);
+            s.sets.insert(t, vec![new.clone()]);
             e.news(std::slice::from_ref(new))
+        };
+        // A restart: the state as `forge.json` brings it back.
+        let restart = |s: &State| {
+            let text = serde_json::to_string(&ForgeFile::of(s)).unwrap();
+            let mut back = State::default();
+            back.restore(crate::store::parse_versioned(&text, FORGE_SCHEMA).unwrap(), |_| true);
+            back
         };
         // D1: the set held !4 in conflict from a read whose edge said
         // nothing; its clear is no news.
-        assert!(said(&mut s, &stuck, &clean, false).is_empty(), "a phantom clear");
+        assert!(said(&mut s, &stuck, &clean).is_empty(), "a phantom clear");
         // Said, then cleared: both.
-        assert_eq!(said(&mut s, &clean, &stuck, false), ["conflict #4"]);
-        assert_eq!(said(&mut s, &stuck, &clean, false), ["conflict cleared #4"]);
-        assert!(said(&mut s, &stuck, &clean, false).is_empty(), "cleared once");
-        // A restart: the loaded set is a baseline both ways.
-        let mut s = State::default();
-        assert!(said(&mut s, &clean, &stuck, true).is_empty());
-        assert!(said(&mut s, &stuck, &clean, false).is_empty());
-        let mut s = State::default();
-        assert_eq!(said(&mut s, &clean, &stuck, false), ["conflict #4"]);
-        let mut s = State::default();
-        assert!(said(&mut s, &stuck, &clean, true).is_empty(), "said by the last daemon, or not");
-        // A PR bound since: its conflict is said on the baseline read too,
-        // and said once.
+        assert_eq!(said(&mut s, &clean, &stuck), ["conflict #4"]);
+        assert_eq!(said(&mut s, &stuck, &clean), ["conflict cleared #4"]);
+        assert!(said(&mut s, &stuck, &clean).is_empty(), "cleared once");
+        // Lab run 3's D1: said, a restart, still in conflict on the first
+        // read, then clear: the clear is said, once.
+        assert_eq!(said(&mut s, &clean, &stuck), ["conflict #4"]);
+        let mut s = restart(&s);
+        assert!(said(&mut s, &stuck, &stuck).is_empty(), "the first read after it");
+        assert_eq!(said(&mut s, &stuck, &clean), ["conflict cleared #4"]);
+        let mut s = restart(&s);
+        assert!(said(&mut s, &stuck, &clean).is_empty(), "cleared once, across a restart");
+        // Said, and cleared while the daemon was down: the first read says it.
+        assert_eq!(said(&mut s, &clean, &stuck), ["conflict #4"]);
+        let mut s = restart(&s);
+        assert_eq!(said(&mut s, &stuck, &clean), ["conflict cleared #4"]);
+        // Never said: a restart does not make its clear news.
+        s.sets.insert(t, vec![stuck.clone()]);
+        let mut s = restart(&s);
+        assert!(said(&mut s, &stuck, &clean).is_empty(), "never said, never cleared");
+        // A conflict that came while the daemon was down is news.
+        let mut s = restart(&s);
+        assert_eq!(said(&mut s, &clean, &stuck), ["conflict #4"]);
+        // A PR bound since: its conflict is said, and said once.
         let mut s = State::default();
         let mut e = edge(&[], std::slice::from_ref(&stuck));
-        s.say_conflicts(t, &mut e, true);
+        s.say_conflicts(t, &mut e);
         assert_eq!(e.news(std::slice::from_ref(&stuck)), ["conflict #4"]);
         let mut again = edge(&[], std::slice::from_ref(&stuck));
-        s.say_conflicts(t, &mut again, false);
+        s.say_conflicts(t, &mut again);
         assert!(again.conflict.is_empty(), "said already");
-        assert_eq!(said(&mut s, &stuck, &clean, false), ["conflict cleared #4"]);
+        assert_eq!(said(&mut s, &stuck, &clean), ["conflict cleared #4"]);
     }
 
     /// T-769, finding 3, and T-782: one pass's words in the forge's order
@@ -2327,7 +2366,8 @@ mod tests {
         assert_eq!(carry(None, new.clone(), &["o/r"]), new, "a first read carries nothing");
     }
 
-    /// `forge.json` round-trips the sets and the settled commits (T-752),
+    /// `forge.json` round-trips the sets, the conflicts said (T-785) and
+    /// the settled commits (T-752),
     /// leaves `at_ms` empty (no live read yet), drops a ticket the board no
     /// longer has, and a newer build's file is refused.
     #[test]
@@ -2346,6 +2386,10 @@ mod tests {
         s.sets.insert(a, set.clone());
         s.sets.insert(gone, vec![pr(5, PrState::Open, Pipeline::None)]);
         s.at_ms.insert(a, 7);
+        // The conflicts said (T-785): a PR the set no longer holds is not
+        // written, nor a ticket the board no longer has.
+        s.conflicted.insert(a, vec![("o/r".into(), 4), ("o/r".into(), 99)]);
+        s.conflicted.insert(gone, vec![("o/r".into(), 5)]);
         s.commit_pipelines.insert(("o/r".into(), "m".into()), Pipeline::Passed);
         s.deployed.insert(("o/r".into(), "m".into()), vec!["staging".into()]);
         s.deployed.insert(("o/r".into(), "n".into()), vec!["prod".into()]);
@@ -2359,6 +2403,7 @@ mod tests {
         assert!(restored.at_ms.is_empty());
         assert_eq!(restored.commit_pipelines, s.commit_pipelines);
         assert_eq!(restored.deployed, s.deployed);
+        assert_eq!(restored.conflicted, HashMap::from([(a, vec![("o/r".to_string(), 4)])]));
         assert_eq!(
             text,
             serde_json::to_string_pretty(&ForgeFile::of(&{

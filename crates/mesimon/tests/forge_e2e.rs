@@ -2096,11 +2096,13 @@ fn a_freshly_bound_prs_state_is_news_and_its_merge_comes_before_its_deployment()
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
 
-/// T-769, finding 6: a conflict the crown heard that clears while the
-/// daemon is down says nothing on the first read after the restart; a
-/// conflict after it is said, and so is its clear.
+/// T-785 (forge lab run 3's D1, follow-up to T-769's finding 6): a
+/// conflict the crown heard before a restart says its clear after it, once,
+/// whether it clears after the first read or while the daemon is down. And
+/// lab run 3's A: a wake held for the crown's turn says the column the card
+/// is in when it goes out, and the next wake runs from there.
 #[test]
-fn a_conflict_cleared_across_a_restart_says_nothing() {
+fn a_conflict_said_before_a_restart_says_its_clear_after_it() {
     let (stub_dir, path_var) = gh_stub("forge-clear");
     let prs_file = stub_dir.join("prs.json");
     write(&prs_file, "[]");
@@ -2126,10 +2128,27 @@ fn a_conflict_cleared_across_a_restart_says_nothing() {
     let got = h.dir.join("got.txt");
     let said =
         |words: &str| std::fs::read_to_string(&got).unwrap_or_default().matches(words).count();
+    let line_with = |words: &str| {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .rfind(|l| l.contains(words))
+            .map(str::to_string)
+            .unwrap_or_default()
+    };
     let running =
         r#"[{"__typename":"CheckRun","name":"test","status":"IN_PROGRESS","conclusion":null}]"#;
     let pr =
         |mergeable: &str| open_pr_json(&k.branch, &k.tip, running, mergeable, "REVIEW_REQUIRED");
+    let kept = h.paths.state_dir.join("forge.json");
+    let conflict_kept = || {
+        std::fs::read_to_string(&kept)
+            .is_ok_and(|t| t.contains("\"conflict\": true") && t.contains("\"conflicts\""))
+    };
+    let sampled = |c: &mut TestClient| match c.request(Command::Snapshot) {
+        Response::Board { forge, .. } => forge.sampled_at_ms,
+        other => panic!("not a board: {other:?}"),
+    };
     write(&prs_file, &pr("MERGEABLE"));
     wait_until(Duration::from_secs(20), "the PR to bind", || {
         prs_of(&mut c).iter().any(|p| p.ticket == k.worker && p.number == 42)
@@ -2137,31 +2156,57 @@ fn a_conflict_cleared_across_a_restart_says_nothing() {
     write(&prs_file, &pr("CONFLICTING"));
     wait_until(Duration::from_secs(20), "the conflict's wake", || said("conflict #42)") == 1);
     turn(&mut c, &hook_sock, k.crown);
-    let kept = h.paths.state_dir.join("forge.json");
-    wait_until(Duration::from_secs(10), "forge.json to hold the conflict", || {
-        std::fs::read_to_string(&kept).is_ok_and(|t| t.contains("\"conflict\": true"))
-    });
+    wait_until(Duration::from_secs(10), "forge.json to hold the conflict said", conflict_kept);
 
-    // Down, the conflict clears.
+    // D1: a restart with the conflict standing. The first read after it
+    // says nothing; the clear after that is said.
     drop(c);
-    h.restart_after(|| write(&prs_file, &pr("MERGEABLE")));
+    h.restart_after(|| {});
     let mut c = h.client("forge_clear-2");
     turn(&mut c, &hook_sock, k.crown);
-    wait_until(Duration::from_secs(20), "the first live read", || {
-        prs_of(&mut c).iter().any(|p| p.ticket == k.worker && p.number == 42 && !p.conflict)
-    });
+    wait_until(Duration::from_secs(20), "the first live read", || sampled(&mut c) > 0);
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(wakes(&h, k.worker, "forge"), 1, "{}", std::fs::read_to_string(&got).unwrap());
-    assert_eq!(said("conflict cleared"), 0);
 
-    // A conflict after the restart is news, and so is its clear.
+    // A: the clear is heard while the crown's turn runs, and the card is
+    // moved before the turn ends. The line says where the card is now.
+    hook_send(&hook_sock, &k.crown.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(k.crown, "running", |s| *s == SessionState::Running);
+    write(&prs_file, &pr("MERGEABLE"));
+    wait_until(Duration::from_secs(20), "the clear's wake, held", || {
+        wakes(&h, k.worker, "forge") == 2
+    });
+    assert_eq!(said("conflict cleared"), 0, "held for the crown's turn");
+    assert!(matches!(
+        c.request(Command::MoveTicket { id: k.worker, column: "TODO".into(), before: None }),
+        Response::Ok
+    ));
+    hook_send(&hook_sock, &k.crown.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    wait_until(Duration::from_secs(10), "the clear's line", || said("conflict cleared #42)") == 1);
+    let line = line_with("conflict cleared #42)");
+    assert!(line.contains("column TODO, conflict cleared #42)"), "{line}");
+    turn(&mut c, &hook_sock, k.crown);
+
+    // Said again, and cleared while the daemon is down: the first read
+    // after the restart says the clear. The column was told: not again.
     write(&prs_file, &pr("CONFLICTING"));
     wait_until(Duration::from_secs(20), "the second conflict's wake", || {
         said("conflict #42)") == 2
     });
+    let line = line_with("conflict #42)");
+    assert!(!line.contains("column"), "{line}");
     turn(&mut c, &hook_sock, k.crown);
-    write(&prs_file, &pr("MERGEABLE"));
-    wait_until(Duration::from_secs(20), "the clear's wake", || said("conflict cleared #42)") == 1);
+    wait_until(Duration::from_secs(10), "forge.json to hold it", conflict_kept);
+    drop(c);
+    h.restart_after(|| write(&prs_file, &pr("MERGEABLE")));
+    let mut c = h.client("forge_clear-3");
+    turn(&mut c, &hook_sock, k.crown);
+    // Owed across the restart, the line says so last.
+    wait_until(Duration::from_secs(20), "the clear's wake after the restart", || {
+        said("conflict cleared #42, after a restart)") == 1
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(said("conflict cleared"), 2, "{}", std::fs::read_to_string(&got).unwrap());
     let _ = (k.ws, &k.path);
     let _ = c.request(Command::Shutdown);
     let _ = std::fs::remove_dir_all(&stub_dir);

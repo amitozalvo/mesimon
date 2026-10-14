@@ -1631,6 +1631,52 @@ Reply with the single word ready and end your turn."""
                 record["failures"].append("the crown's turn on the forge's news never ended")
                 return False
             return True
+        if what in ("forge_conflict", "forge_clear"):
+            # The PR turns conflicting, or clears (T-785): the board wakes
+            # the crown with the edge, and the step ends when the crown's
+            # turn on it did.
+            d = self.forge_stub()
+            mark = len(self.feed_lines)
+            self.write_pr(d, self.forge_branch, "OPEN", "running", conflict=what == "forge_conflict")
+            wake = self.forge_wake(test, mark)
+            record["wakes"].append(wake.get("cause") if wake else "none came")
+            if not wake:
+                record["failures"].append(f"the board never woke the crown for {what}")
+                return False
+            self.quiet_since = None
+            if not self.wait_for("the crown's turn on the forge's news",
+                                 lambda: self.crown_settled(after_ms=wake.get("at_ms", 0)),
+                                 STEP_TIMEOUT, self.watch):
+                record["failures"].append("the crown's turn on the forge's news never ended")
+                return False
+            return True
+        if what == "forge_restart":
+            # The daemon restarts on the same stub forge (T-785), once
+            # forge.json holds the conflict said, and the step ends at the
+            # first live read after it, which says nothing.
+            d = self.forge_stub()
+            kept = os.path.join(self.paths.state_dir, "forge.json")
+            def said():
+                try:
+                    with open(kept) as f:
+                        return '"conflicts"' in f.read()
+                except OSError:
+                    return False
+            if not self.wait_for("forge.json to keep the conflict said", said,
+                                 STEP_TIMEOUT, self.watch):
+                record["failures"].append("forge.json never kept the conflict said")
+                return False
+            if not self.restart(self.forge_env(d)):
+                record["failures"].append("the daemon would not restart with the stub forge")
+                return False
+            read = self.wait_for("the first live read", lambda: (
+                self.snapshot().get("forge", {}).get("sampled_at_ms", 0) > 0),
+                STEP_TIMEOUT, self.watch)
+            if not read:
+                record["failures"].append("the stub forge was never read after the restart")
+                return False
+            time.sleep(3)
+            return True
         if what == "forge_later_open":
             # A second PR opens on the merged ticket (T-774) and stays open:
             # the ticket reads unmerged again, and DONE refuses it.
@@ -1664,6 +1710,15 @@ Reply with the single word ready and end your turn."""
             and l.get("worker") == test["ticket"] and l.get("cause") == "forge"), None),
             WAKE_GRACE * 2, self.watch)
 
+    def forge_env(self, d):
+        """The daemon's environment on the stub forge in `d`."""
+        return {
+            "PATH": d + ":" + os.environ.get("PATH", ""),
+            "MSMN_GH_PRS": os.path.join(d, "prs.json"),
+            "MSMN_GH_CHECKS": os.path.join(d, "checks.json"),
+            "MESIMON_FORGE_EVERY_MS": "2000",
+        }
+
     def forge_stub(self):
         """A stub `gh` (T-739): `auth status` passes, `pr list` prints the
         file the test writes, `api …/check-runs` the merge commit's pipeline.
@@ -1681,10 +1736,10 @@ Reply with the single word ready and end your turn."""
                 f.write('{"check_runs":[]}')
         return d
 
-    def write_pr(self, d, branch, state, pipeline, later=None, head=None):
-        """PR 42 on `branch` at its tip, or at `head` (T-778); `later`
-        (number, head, state) a newer PR on the same branch in front of it
-        (T-757)."""
+    def write_pr(self, d, branch, state, pipeline, later=None, head=None, conflict=False):
+        """PR 42 on `branch` at its tip, or at `head` (T-778), in conflict
+        where `conflict` (T-785); `later` (number, head, state) a newer PR
+        on the same branch in front of it (T-757)."""
         tip = head or subprocess.run(["git", "-C", self.repo, "rev-parse", branch],
                                      capture_output=True, text=True).stdout.strip()
         rollups = {
@@ -1697,9 +1752,10 @@ Reply with the single word ready and end your turn."""
             merge = f'{{"oid":"{head}"}}' if state == "MERGED" else "null"
             # The later PR opens running: its opening is no pipeline news.
             checks = rollups["running"] if state == "OPEN" and number != 42 else rollup
+            mergeable = "CONFLICTING" if conflict and number == 42 else "MERGEABLE"
             return (f'{{"number":{number},"url":"https://github.com/example/rig/pull/{number}",'
                     f'"state":"{state}","isDraft":false,"headRefName":"{branch}",'
-                    f'"headRefOid":"{head}","mergeCommit":{merge},"mergeable":"MERGEABLE",'
+                    f'"headRefOid":"{head}","mergeCommit":{merge},"mergeable":"{mergeable}",'
                     f'"reviewDecision":"REVIEW_REQUIRED","updatedAt":"{at}",'
                     f'"statusCheckRollup":{checks}}}')
         prs = [pr(42, tip, state, "2026-10-13T06:00:00Z")]

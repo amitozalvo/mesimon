@@ -407,6 +407,18 @@ impl CrownWake {
         }
     }
 
+    /// The wake as it is sent (T-785): its `column` read now, as the
+    /// crown's `get_ticket` will read it, not as it stood when the wake was
+    /// owed — a wake held for the crown's turn waited while the crown, or a
+    /// person, moved the card. The edges in it stay as heard.
+    pub(super) fn sent_at(&self, column: &str) -> CrownWake {
+        let mut w = self.clone();
+        if let Some(to) = w.to.as_mut() {
+            column.clone_into(&mut to.column);
+        }
+        w
+    }
+
     /// The clause after the ticket: the cause's, and for a landing held
     /// until its merge step's turn was over (T-596), that the turn ended —
     /// the crown's close-out (`sleep_agent`) goes through from here.
@@ -1868,6 +1880,20 @@ impl Daemon {
         woke
     }
 
+    /// The wakes just sent told the crown each card's column as it stands
+    /// (`CrownWake::sent_at`), so that is what the next wake's delta runs
+    /// from (T-785): a column said is not said again.
+    pub(super) fn told_columns(&mut self) {
+        for w in self.crown_wakes.iter().filter(|w| w.to.is_some()) {
+            let Some(column) = self.board.ticket(w.worker).map(|t| t.column.clone()) else {
+                continue;
+            };
+            if let Some(told) = self.crown_heard.get_mut(&w.worker).and_then(|h| h.told.as_mut()) {
+                told.column = column;
+            }
+        }
+    }
+
     /// The crown left, or another ticket took it: whatever it was owed goes
     /// with it, said once in the feed, and what it was told goes too — a
     /// new crown has heard nothing.
@@ -1915,6 +1941,7 @@ impl Daemon {
         let mut keys: Vec<String> = Vec::new();
         for w in &self.crown_wakes {
             let Some(t) = self.board.ticket(w.worker) else { continue };
+            let w = &w.sent_at(&t.column);
             let mut event = if titled {
                 let title = mesimon_core::text::scrub_text(&t.title);
                 format!("{} \"{title}\" {}", t.short_key, w.clause())
@@ -2404,6 +2431,31 @@ mod tests {
         assert!(WakeCause::Answered > WakeCause::Delivered);
         assert!(WakeCause::Delivered > WakeCause::Merged);
         assert!(WakeCause::Merged > WakeCause::Finished);
+    }
+
+    /// T-785, lab run 3's A: a forge wake owed with the card in PROD
+    /// waits for the crown's turn, the crown moves the card to DONE, and
+    /// the line that goes out says DONE, as `get_ticket` does then. The
+    /// edge stays as heard; a card sent where the crown last heard it says
+    /// no column. `forge_e2e` pins `told_columns`, the other half.
+    #[test]
+    fn a_wake_says_the_column_it_is_sent_from() {
+        let before = branch("aaa", "merged", 0, "REVIEW");
+        let mut owed = branch("aaa", "merged", 0, "PROD");
+        owed.forge = Some("deployed to production !11".into());
+        let wake = CrownWake {
+            worker: ulid::Ulid::new(),
+            cause: WakeCause::Forge,
+            from: Some(before.clone()),
+            to: Some(owed),
+            finished: false,
+            linger: None,
+            late: false,
+            unstarted: None,
+        };
+        assert_eq!(wake.changed(), ["column PROD", "deployed to production !11"]);
+        assert_eq!(wake.sent_at("DONE").changed(), ["column DONE", "deployed to production !11"]);
+        assert_eq!(wake.sent_at("REVIEW").changed(), ["deployed to production !11"]);
     }
 
     fn heard(judged: Option<Told>, told: Option<Told>) -> Heard {
