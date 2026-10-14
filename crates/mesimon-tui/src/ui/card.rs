@@ -843,7 +843,19 @@ pub(super) fn render(
         if trail || doomed { Vec::new() } else { brief_spans(theme, prs, t_cells) };
     let brief_w = super::spans_width(&brief);
     let brief_room = if brief_w > 0 { brief_w + 1 } else { 0 };
-    let mut drew_line2 = false;
+    // An open card draws the brief as its LAST line instead (T-789), under
+    // the reply and the summary, which each give up a row for it: the card
+    // reads title, then what the agent said, then where the work went.
+    let brief_last = open && !held && brief_w > 0;
+    let brief_row = |brief: Vec<Span<'static>>| {
+        let mut row = bar_spans();
+        let used = super::spans_width(&row);
+        row.push(Span::raw(" ".repeat((ctx.width as usize).saturating_sub(used + brief_w + 1))));
+        row.extend(brief);
+        row.push(Span::raw(" "));
+        Line::from(row).style(acc_style)
+    };
+    let mut drew_line2 = brief_last;
     if let Some((words, ago, crown)) = fresh.filter(|_| !(open || cursorish || trail || doomed)) {
         use unicode_segmentation::UnicodeSegmentation;
         // The crown's words (T-783) settle in its tint, a reply in the
@@ -870,12 +882,7 @@ pub(super) fn render(
         drew_line2 = true;
     }
     if !drew_line2 && brief_w > 0 {
-        let mut row = bar_spans();
-        let used = super::spans_width(&row);
-        row.push(Span::raw(" ".repeat((ctx.width as usize).saturating_sub(used + brief_w + 1))));
-        row.extend(brief);
-        row.push(Span::raw(" "));
-        lines.push(Line::from(row).style(acc_style));
+        lines.push(brief_row(brief.clone()));
     }
 
     if held {
@@ -1095,10 +1102,12 @@ pub(super) fn render(
             push(vec![Span::styled(format!("  +{} more", ranked.len() - 2), quiet)]);
         }
         // Peek rows: the latest assistant reply, wrapped inside the card's
-        // interior. Capped at 4 rows — the transcript itself is one focus away.
+        // interior. Capped at 4 rows, 3 above a brief — the transcript
+        // itself is one focus away.
         if let Some(pk) = peek {
             if let Some(text) = pk.text.as_deref() {
-                for row in crate::peek::wrap(text, t_cells.saturating_sub(2), 4) {
+                let cap = if brief_last { PEEK_ROWS - 1 } else { PEEK_ROWS };
+                for row in crate::peek::wrap(text, t_cells.saturating_sub(2), cap) {
                     push(vec![Span::styled(format!("  {row}"), dim)]);
                 }
             }
@@ -1129,7 +1138,8 @@ pub(super) fn render(
         // cells, so every row's words start in one column.
         if let Some(s) = summary.filter(|_| rows_shown) {
             let inner = t_cells;
-            let (shown, fold) = s.card_rows(SUMMARY_ROWS);
+            let cap = if brief_last { SUMMARY_ROWS - 1 } else { SUMMARY_ROWS };
+            let (shown, fold) = s.card_rows(cap);
             for r in shown {
                 let words = mesimon_core::text::scrub_cells(&r.text, false);
                 let (row, style) = match r.done {
@@ -1163,11 +1173,9 @@ pub(super) fn render(
                 push(row);
             }
         }
-        return lines;
     }
-    if selected {
-        // Session-less card: nothing to expand, nothing shifts.
-        return lines;
+    if brief_last {
+        lines.push(brief_row(brief));
     }
 
     // No meta strip at rest (author 2026-08-30): the session dots repeated
@@ -1178,6 +1186,9 @@ pub(super) fn render(
 
 /// How many summary boxes the open card lists before the fold (T-696).
 const SUMMARY_ROWS: usize = 3;
+
+/// How many rows of the agent's reply an open card shows.
+const PEEK_ROWS: usize = 4;
 
 /// A box as the card and the dialog draw it: ticked wears the board's own
 /// check (the note draws it the same, `rich.rs`), open is empty, and the

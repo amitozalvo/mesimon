@@ -8401,11 +8401,22 @@ fn golden_board_prs_120() {
 /// same surface as the title row above it, edge to edge.
 #[test]
 fn the_cursor_cards_pr_line_wears_the_cards_band() {
-    use mesimon_core::command::PrItem;
     let mut app = app_graphite(fixture(false));
     let ticket = app.selected_ticket().expect("a cursor card").clone();
-    app.prs = vec![PrItem {
-        ticket: ticket.id,
+    app.prs = vec![pr_on(ticket.id)];
+    let buf = cells(&app, 120, 30);
+    let rows = render(&app, 120, 30);
+    let y = rows.iter().position(|r| r.contains("!7")).expect("the PR line");
+    let band = app.theme.selected_bg.expect("graphite paints a selection");
+    let x = rows[y][..rows[y].find("!7").expect("!7")].chars().count() as u16;
+    assert_eq!(buf[(x, y as u16)].bg, band, "the number sits on the band");
+    assert_eq!(buf[(x - 4, y as u16)].bg, band, "and so does the room before it");
+}
+
+/// One open pull request on `ticket`, as the forge reported it.
+fn pr_on(ticket: ulid::Ulid) -> mesimon_core::command::PrItem {
+    mesimon_core::command::PrItem {
+        ticket,
         forge: "gitlab".into(),
         repo: "o/r".into(),
         number: 7,
@@ -8417,14 +8428,63 @@ fn the_cursor_cards_pr_line_wears_the_cards_band() {
         review: "none".into(),
         merged_oid: String::new(),
         deployed: Vec::new(),
-    }];
-    let buf = cells(&app, 120, 30);
-    let rows = render(&app, 120, 30);
-    let y = rows.iter().position(|r| r.contains("!7")).expect("the PR line");
-    let band = app.theme.selected_bg.expect("graphite paints a selection");
-    let x = rows[y][..rows[y].find("!7").expect("!7")].chars().count() as u16;
-    assert_eq!(buf[(x, y as u16)].bg, band, "the number sits on the band");
-    assert_eq!(buf[(x - 4, y as u16)].bg, band, "and so does the room before it");
+    }
+}
+
+/// T-789: an open card draws its pull-request line last, under the reply
+/// and the summary, which each give up a row for it; and it still opens
+/// the dialog on a click there.
+#[test]
+fn an_open_cards_pr_line_comes_last_and_the_rows_above_give_way() {
+    let card_rows = |app: &App| {
+        let lines = render(app, 120, 30);
+        let y = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("T-3");
+        // T-3 is the first card of IN PROGRESS: its rows run to the blank.
+        let col = |l: &String| l.chars().skip(30).take(30).collect::<String>();
+        let rows: Vec<String> =
+            lines[y..].iter().map(col).take_while(|r| !r.trim().is_empty()).collect();
+        (y, rows)
+    };
+    // The reply: four rows bare, three over the line.
+    let path = write_transcript(
+        "pr-last",
+        &reply_record("one one one one one\ntwo two two two two\nthree three three\nfour four four\nfive five"),
+    );
+    let mut b = fixture(false);
+    attach_transcript(&mut b, &path);
+    let mut app = app_graphite(b);
+    (app.cursor_col, app.cursor_row, app.peek) = (1, Some(0), true);
+    let words = |rows: &[String]| {
+        rows.iter()
+            .filter(|r| ["one", "two", "three", "four", "five"].iter().any(|w| r.contains(w)))
+            .count()
+    };
+    assert_eq!(words(&card_rows(&app).1), 4, "four reply rows: {:?}", card_rows(&app).1);
+    app.prs = vec![pr_on(ulid_n(3))];
+    let (y, rows) = card_rows(&app);
+    assert_eq!(words(&rows), 3, "the reply gives up a row: {rows:?}");
+    assert!(!rows[1].contains("!7"), "not on line 2 while open: {rows:?}");
+    assert!(rows.last().is_some_and(|r| r.contains("!7")), "the line is last: {rows:?}");
+    // Its click is the dialog's, on the row it moved to.
+    let at = spot_of(&render(&app, 120, 30)[y..], "!7");
+    click(&mut app, (at.0, at.1 + y as u16));
+    assert!(matches!(app.mode, Mode::PullRequests { .. }), "the click opened {:?}", app.mode);
+    // Closed, it is line 2 again.
+    (app.mode, app.peek) = (Mode::Normal, false);
+    let (_, rows) = card_rows(&app);
+    assert!(rows[1].contains("!7"), "line 2 at rest: {rows:?}");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+
+    // The summary: three boxes bare, two over the line, the fold after.
+    let mut app = app_summary();
+    app.peek = true;
+    let boxes = |rows: &[String]| rows.iter().filter(|r| r.contains("[ ]")).count();
+    assert_eq!(boxes(&card_rows(&app).1), 3);
+    app.prs = vec![pr_on(ulid_n(3))];
+    let (_, rows) = card_rows(&app);
+    assert_eq!(boxes(&rows), 2, "the summary gives up a row: {rows:?}");
+    assert!(rows[rows.len() - 2].contains("more"), "the fold, then the line: {rows:?}");
+    assert!(rows.last().is_some_and(|r| r.contains("!7")), "the line is last: {rows:?}");
 }
 
 /// T-720: a resting card whose agent said something the person has not

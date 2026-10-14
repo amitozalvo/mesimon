@@ -25574,3 +25574,18 @@ the board's ground between a banded title row and banded accordion rows. Line 2 
 a reply sharing it — now takes the accordion's `acc_style` (the cursor band, or the delete row),
 hoisted above it; never the needs-you row's, which stays one row. Test:
 `ui::the_cursor_cards_pr_line_wears_the_cards_band`.
+
+## T-789 — an open card draws its pull-request line last (2026-10-15)
+
+First built as "an open card names neither its key nor its tier; the hover row names the tier",
+merged, and reverted the same day on the author's word ("revert this, I changed my mind"): the
+open card names its key and tier as before.
+
+What shipped instead, in the author's words: "if there is a PR line on the ticket, when peeked,
+show it last and reduce the max preview lines and summary lines by one". An open card (`p`, `P`
+or the pointer) draws the T-739 brief as its last row, after the reply and the summary rows, and
+not on line 2; the reply's cap goes from `PEEK_ROWS` (4) to 3 and the summary's from
+`SUMMARY_ROWS` (3) to 2 while it does, so the card grows by at most the row it moved. A closed
+card keeps it on line 2, beside a new reply. The board finds the brief's click spot on line 2 or
+the card's last line (`Group::prs_at` carries its row). Test:
+`ui::an_open_cards_pr_line_comes_last_and_the_rows_above_give_way`.

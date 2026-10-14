@@ -162,9 +162,10 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         id: Option<ulid::Ulid>,
         /// A moved card's trail where it stood (T-544), not the card.
         trail: bool,
-        /// Where the pull-request brief sits on the card's second line
-        /// (T-759): its x offset and width, for its click.
-        prs_at: Option<(u16, u16)>,
+        /// Where the pull-request brief sits (T-759): its row in the card
+        /// (the second, or an open card's last, T-789), x offset and
+        /// width, for its click.
+        prs_at: Option<(usize, (u16, u16))>,
     }
     let mut groups: Vec<Group> = Vec::new();
     // `left`: this is the trail a card the crown moved out left behind
@@ -296,7 +297,11 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         };
         let mut lines = render(open, peek.as_deref());
         let t_cells = usize::from(ctx.width).saturating_sub(crate::tags::BAR_WIDTH + 2);
-        let prs_at = brief_at(lines.get(1), &card::brief_spans(ctx.theme, &brief, t_cells));
+        // Line 2, or an open card's last line (T-789).
+        let spans = card::brief_spans(ctx.theme, &brief, t_cells);
+        let prs_at = [1, lines.len().saturating_sub(1)]
+            .into_iter()
+            .find_map(|row| brief_at(lines.get(row), &spans).map(|at| (row, at)));
         // The card is drawn WHOLE first — glyph, title, sessions, peek — and
         // the field is added under it. That order is the point: what you are
         // about to talk to stays legible while you type at it.
@@ -451,8 +456,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 None
             };
             card_starts.push((start, end, id, mark, g.trail));
-            if let Some(at) = g.prs_at {
-                brief_spots.push((start + 1, id, at));
+            if let Some((row, at)) = g.prs_at {
+                brief_spots.push((start + row, id, at));
             }
         }
     }
