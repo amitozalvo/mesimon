@@ -282,7 +282,9 @@ const PIPE_STEP_TICKS: usize = 10;
 /// register (T-747) — a person must press it; a running one sweeps, grey; a
 /// merged one is grey, and one deployed somewhere is the filled diamond. A
 /// merged PR's merge-commit pipeline that is running or waiting moves the
-/// mark the same way until it settles (T-758); a deployed one keeps `◆`.
+/// mark the same way until it settles (T-758), deployed or not (T-781): a
+/// board with deploy columns deploys to staging and then waits on the
+/// manual production job, and that wait is the one thing to press.
 /// Everything else — open with no pipeline, or one the forge did not name —
 /// is the hollow ring. One cell on both tiers.
 pub(crate) fn pr_mark(
@@ -295,13 +297,12 @@ pub(crate) fn pr_mark(
     let ascii = tier == Tier::Ascii;
     match (state, pipeline) {
         (_, "failed") => (if ascii { 'x' } else { '✗' }, Register::Err),
-        ("merged", _) if deployed => (if ascii { '^' } else { '◆' }, Register::Grey),
-        ("merged", "passed") => (if ascii { '*' } else { '●' }, Register::Grey),
         (_, "waiting") => (if ascii { '@' } else { '◎' }, Register::Calm),
         (_, "running") => {
             let frames = if ascii { PIPE_ASCII } else { PIPE_UNICODE };
             (frames[(frame / PIPE_STEP_TICKS) % frames.len()], Register::Grey)
         }
+        ("merged", _) if deployed => (if ascii { '^' } else { '◆' }, Register::Grey),
         ("merged", _) => (if ascii { '*' } else { '●' }, Register::Grey),
         (_, "passed") => (if ascii { 'O' } else { '◉' }, Register::Calm),
         _ => (if ascii { 'o' } else { '◯' }, Register::Grey),
@@ -1452,9 +1453,22 @@ mod tests {
                 pr_mark(tier, "merged", "waiting", false, 0),
                 pr_mark(tier, "open", "waiting", false, 0)
             );
+            // Deployed to staging and waiting on production (T-781): the
+            // unsettled pipeline wins over `◆`.
+            for i in 0..4 {
+                let f = i * PIPE_STEP_TICKS;
+                assert_eq!(
+                    pr_mark(tier, "merged", "running", true, f),
+                    pr_mark(tier, "open", "running", false, f)
+                );
+            }
+            assert_eq!(
+                pr_mark(tier, "merged", "waiting", true, 0),
+                pr_mark(tier, "open", "waiting", false, 0)
+            );
             let deployed = pr_mark(tier, "merged", "passed", true, 0);
-            assert_eq!(pr_mark(tier, "merged", "running", true, 0), deployed);
-            assert_eq!(pr_mark(tier, "merged", "waiting", true, 0), deployed);
+            assert_eq!(deployed.0, if tier == Tier::Ascii { '^' } else { '◆' });
+            assert_eq!(pr_mark(tier, "merged", "none", true, 0), deployed);
             assert_eq!(
                 pr_mark(tier, "merged", "none", false, 0),
                 pr_mark(tier, "merged", "passed", false, 0)

@@ -2927,6 +2927,10 @@ impl Daemon {
         if !self.forge.owed.is_empty() {
             stage!("queue_forge_burst", self.queue_forge_burst());
         }
+        // A pipeline in flight is read every 15 s, not on the minute (T-781).
+        if self.ticks.is_multiple_of(4) {
+            stage!("queue_forge_busy", self.queue_forge_busy());
+        }
         if self.ticks.is_multiple_of(server_guard_ticks()) {
             changed |= stage!("guard_server", self.guard_server());
             changed |= stage!("recheck_server_access", self.recheck_server_access());
@@ -13555,7 +13559,38 @@ impl Daemon {
         }
         let only: std::collections::HashSet<ulid::Ulid> = self.forge.owed.keys().copied().collect();
         let Some(query) = self.forge_query(Some(&only)) else { return };
-        if query.repos.is_empty() || query.repos.iter().any(|r| !self.forge.due_for(&r.key())) {
+        let floor = Duration::from_millis(crate::forge::BURST_MS);
+        if query.repos.is_empty()
+            || query.repos.iter().any(|r| !self.forge.due_for(&r.key(), floor))
+        {
+            return;
+        }
+        self.forge.burst_inflight = true;
+        self.forge_asked(&query);
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::ForgeBurst(crate::forge::sample(query, now_ms())));
+        });
+    }
+
+    /// A pipeline in flight's read (T-781): the tickets whose PR's pipeline
+    /// runs or waits, their repositories alone, every `forge::busy_every`
+    /// rather than on the minute, so a deploy job of seconds shows. It
+    /// rides the turn's end's road, one read out at a time, and a
+    /// repository whose call failed is the minute's backoff's.
+    fn queue_forge_busy(&mut self) {
+        if self.forge.inflight || self.forge.burst_inflight {
+            return;
+        }
+        let busy = self.forge.busy();
+        if busy.is_empty() {
+            return;
+        }
+        let Some(query) = self.forge_query(Some(&busy)) else { return };
+        let floor = crate::forge::busy_every();
+        if query.repos.is_empty()
+            || query.repos.iter().any(|r| !self.forge.due_for(&r.key(), floor))
+        {
             return;
         }
         self.forge.burst_inflight = true;

@@ -44,6 +44,10 @@
 //! and the forge's pass at the new head is the arrival; a merge git read
 //! first is named by the forge's word once it says the PR merged.
 //!
+//! A pipeline in flight is read on the busy cadence (T-781): a merged PR
+//! whose merge commit's pipeline runs is read again within
+//! `MESIMON_FORGE_BUSY_MS`, and once it passes the minute's cadence is back.
+//!
 //! The stub is the forge: `auth status` passes, `pr list` prints the file
 //! the test writes, `api …/check-runs` the merge commit's pipeline and
 //! `api …/deployments` its deployments, by sha where the test wrote one. No
@@ -1593,6 +1597,75 @@ fn an_older_pr_keeps_its_pipeline_and_deployments_after_a_newer_one_merges() {
     let older = row(&mut c, 42).expect("#42 still bound");
     assert_eq!(older.pipeline, "passed", "{older:?}");
     assert_eq!(older.deployed, ["staging"], "{older:?}");
+    let _ = c.request(Command::Shutdown);
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// A pipeline in flight is read every `MESIMON_FORGE_BUSY_MS` (T-781): a
+/// merged PR's merge commit running its deploy is listed again and again
+/// inside one minute's cadence, and once it passes the reads go back to the
+/// minute.
+#[test]
+fn a_running_pipeline_is_read_on_the_busy_cadence_and_a_settled_one_on_the_minute() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    let (stub_dir, path_var) = gh_stub("forge-busy");
+    let prs_file = stub_dir.join("prs.json");
+    let checks_file = stub_dir.join("checks.json");
+    let log = stub_dir.join("gh.log");
+    write(&prs_file, "[]");
+    write(&checks_file, r#"{"check_runs":[{"name":"deploy","status":"in_progress"}]}"#);
+    let Some(h) = Harness::boot_with_env(
+        "forge_busy",
+        Some(STUB),
+        &[
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "6000"),
+            ("MESIMON_FORGE_BUSY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs_file.display().to_string()),
+            ("MSMN_GH_CHECKS", &checks_file.display().to_string()),
+            ("MSMN_GH_LOG", &log.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let mut c = h.client("forge_busy");
+    let (id, _sid, branch, path) = ready(&mut c, "alpha");
+    let tip = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
+    let merge_oid = "3333333333333333333333333333333333333333";
+    write(&prs_file, &pr_json(&branch, &tip, "MERGED", Some(merge_oid), None));
+    let pipeline = |c: &mut TestClient| {
+        prs_of(c).into_iter().find(|p| p.ticket == id).map(|p| p.pipeline).unwrap_or_default()
+    };
+    wait_until(Duration::from_secs(20), "the merged PR to read running", || {
+        pipeline(&mut c) == "running"
+    });
+    let lists = |window: Duration| {
+        let _ = std::fs::remove_file(&log);
+        std::thread::sleep(window);
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.starts_with("pr list"))
+            .count()
+    };
+    // Running: read every busy step, many times inside one minute's cadence.
+    let busy = lists(Duration::from_secs(4));
+    assert!(busy >= 2, "a running pipeline is listed {busy} times in 4 s");
+
+    // Passed: settled, and the minute's cadence (6 s here) is back.
+    write(
+        &checks_file,
+        r#"{"check_runs":[{"name":"deploy","status":"completed","conclusion":"success"}]}"#,
+    );
+    wait_until(Duration::from_secs(20), "the pipeline to read passed", || {
+        pipeline(&mut c) == "passed"
+    });
+    let idle = lists(Duration::from_secs(4));
+    assert!(idle <= 1, "a settled pipeline is listed {idle} times in 4 s");
     let _ = c.request(Command::Shutdown);
     let _ = std::fs::remove_dir_all(&stub_dir);
 }

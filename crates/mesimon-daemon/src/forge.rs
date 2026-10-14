@@ -33,6 +33,10 @@ use crate::paths::Paths;
 const CALL_TIMEOUT: Duration = Duration::from_secs(20);
 /// The cadence between samples with every repository answering.
 pub const EVERY: Duration = Duration::from_secs(60);
+/// The cadence for a repository holding a PR whose pipeline runs or waits
+/// (T-781): a deploy job can take seconds, and a minute's read never sees
+/// it run.
+pub const BUSY_EVERY: Duration = Duration::from_secs(15);
 /// The cadence after a repository failed to answer.
 pub const BACKOFF: Duration = Duration::from_secs(300);
 /// The floor between two reads of one repository (T-761): a turn's end
@@ -71,6 +75,15 @@ pub fn every() -> Duration {
         .and_then(|v| v.parse().ok())
         .map(Duration::from_millis)
         .unwrap_or(EVERY)
+}
+
+/// `MESIMON_FORGE_BUSY_MS`: the busy cadence, a test seam.
+pub fn busy_every() -> Duration {
+    std::env::var("MESIMON_FORGE_BUSY_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(BUSY_EVERY)
 }
 
 /// `gh` or `glab` on the captured shell `PATH`, else the daemon's own.
@@ -1052,12 +1065,29 @@ impl State {
         self.last.is_none_or(|t| t.elapsed() >= wait)
     }
 
-    /// Whether a repository may be read for a turn's end (T-761): not read
-    /// in the last `BURST_MS`, and not one whose last call failed (the
-    /// minute's backoff has it).
-    pub fn due_for(&self, key: &str) -> bool {
+    /// Whether a repository may be read off the minute: for a turn's end
+    /// (T-761, `floor` is `BURST_MS`) or a pipeline in flight (T-781,
+    /// `busy_every`): not read inside `floor`, and not one whose last call
+    /// failed (the minute's backoff has it).
+    pub fn due_for(&self, key: &str, floor: Duration) -> bool {
         !self.errors.iter().any(|(k, _)| k == key)
-            && self.asked.get(key).is_none_or(|t| t.elapsed() >= Duration::from_millis(BURST_MS))
+            && self.asked.get(key).is_none_or(|t| t.elapsed() >= floor)
+    }
+
+    /// The tickets holding an open or merged PR whose pipeline runs or
+    /// waits on a person (T-781): their repositories are read every
+    /// `busy_every`, so a deploy job of seconds shows on the card.
+    pub fn busy(&self) -> HashSet<ulid::Ulid> {
+        self.sets
+            .iter()
+            .filter(|(_, set)| {
+                set.iter().any(|p| {
+                    p.state != PrState::Closed
+                        && matches!(p.pipeline, Pipeline::Running | Pipeline::Waiting(_))
+                })
+            })
+            .map(|(t, _)| *t)
+            .collect()
     }
 
     /// The forge's verdict on a ticket is current (T-739): no forge reads
@@ -1932,14 +1962,42 @@ mod tests {
     #[test]
     fn the_floor_holds_a_repository_read_inside_the_burst_and_one_that_failed() {
         let mut s = State::default();
-        assert!(s.due_for("github.com/o/r"), "never asked");
+        let burst = Duration::from_millis(BURST_MS);
+        assert!(s.due_for("github.com/o/r", burst), "never asked");
         s.asked.insert("github.com/o/r".into(), Instant::now());
-        assert!(!s.due_for("github.com/o/r"), "inside the floor");
+        assert!(!s.due_for("github.com/o/r", burst), "inside the floor");
         s.asked
             .insert("github.com/o/r".into(), Instant::now() - Duration::from_millis(BURST_MS + 1));
-        assert!(s.due_for("github.com/o/r"), "past the floor");
+        assert!(s.due_for("github.com/o/r", burst), "past the floor");
         s.errors.push(("github.com/o/r".into(), "boom".into()));
-        assert!(!s.due_for("github.com/o/r"), "a failing repository waits for the backoff");
+        assert!(!s.due_for("github.com/o/r", burst), "a failing repository waits for the backoff");
+    }
+
+    #[test]
+    fn a_pipeline_in_flight_reads_its_repository_every_fifteen_seconds() {
+        let mut s = State::default();
+        let (open, merged, settled, closed) =
+            (ulid::Ulid::new(), ulid::Ulid::new(), ulid::Ulid::new(), ulid::Ulid::new());
+        s.sets.insert(open, vec![pr(1, PrState::Open, Pipeline::Running)]);
+        // Deployed to staging, waiting on the manual production job.
+        s.sets.insert(
+            merged,
+            vec![pr(2, PrState::Merged, Pipeline::Waiting("deploy:production".into()))],
+        );
+        s.sets.insert(settled, vec![pr(3, PrState::Merged, Pipeline::Passed)]);
+        s.sets.insert(closed, vec![pr(4, PrState::Closed, Pipeline::Running)]);
+        assert_eq!(s.busy(), HashSet::from([open, merged]));
+        // The minute's pass is not due, the busy repository is at 15 s.
+        s.last = Some(Instant::now());
+        assert!(!s.due());
+        s.asked.insert("github.com/o/r".into(), Instant::now() - Duration::from_secs(14));
+        assert!(!s.due_for("github.com/o/r", BUSY_EVERY));
+        s.asked.insert("github.com/o/r".into(), Instant::now() - BUSY_EVERY);
+        assert!(s.due_for("github.com/o/r", BUSY_EVERY));
+        // A repository whose call failed waits for the backoff.
+        s.errors.push(("github.com/o/r".into(), "boom".into()));
+        assert!(!s.due_for("github.com/o/r", BUSY_EVERY));
+        assert!(BUSY_EVERY < EVERY && EVERY < BACKOFF);
     }
 
     #[test]

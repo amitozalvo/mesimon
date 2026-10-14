@@ -486,7 +486,9 @@ first. `◯` is open with no pipeline, `◴` (turning once a second) open with i
 `◎` open with a manual job waiting for someone to start it, `◉` open and green (your turn: a
 review, the merge button), `✗` a failed pipeline, `●` merged, `◆` merged and deployed. A merged
 PR whose merge commit's pipeline is still running turns `◴`, and one waiting on a manual job
-shows `◎`, until the pipeline settles (a deployed one stays `◆`). **Settings ›
+shows `◎`, until the pipeline settles, deployed or not: a PR deployed to staging and waiting on
+the production job shows `◎`, and `◆` once that pipeline passes. While a pipeline runs or waits,
+its repository is read every 15 seconds instead of once a minute. **Settings ›
 Appearance › Pull requests on cards** shows the line always, only as news until you rest on the
 card, or never. `ctrl-k` on the ticket opens the PR. `ctrl-h` on a card or a ticket page (or a
 click on its PR glyphs) lists every pull request with its pipeline, job, review and deployments,

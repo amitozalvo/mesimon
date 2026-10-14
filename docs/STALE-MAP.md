@@ -24418,6 +24418,40 @@ Same frames, cadence and ascii as T-747; the redraw loop already ticks every 100
 predicate was added. Test: the T-747 mark test grew the merged rows. No golden changed (none
 shows a merged PR with a moving pipeline).
 
+## An unsettled pipeline beats `◆`, and one in flight is read every 15 s (T-781, 2026-10-14, follow-up to T-758)
+
+**Why.** Forge lab run 2: MR !5 merged, deployed to staging, its main pipeline waiting on the
+manual `deploy:production`. The card held `◆` (T-758 kept a deployed PR's `◆` over a later
+pipeline, calling one "unusual"; with deploy columns it is the normal case), so nothing said there
+was a job to press. And the forge was read once a minute: the production job ran for seconds, the
+reads went waiting → passed, and no sweep could have shown.
+
+**Mark.** `glyphs::pr_mark` now reads failed, waiting, running, then merged-and-deployed `◆`,
+then merged `●`: on a merged PR the unsettled pipeline wins whether or not it deployed, and `◆`
+means the pipeline passed (or there is none) and something deployed. The card, the ticket page's
+rows and `^h`'s dialog all call it. No golden changed (none draws a deployed PR with a moving
+pipeline); the T-747 mark test's merged rows say the new order.
+
+**Cadence.** `forge::State::busy` is the tickets holding an open or merged PR whose pipeline is
+`running` or `waiting` (a merged PR's is its merge commit's, T-771). `Daemon::queue_forge_busy`,
+asked every fourth tick, reads those tickets alone (`forge_query(Some(busy))`) when each of their
+repositories was last asked `forge::busy_every()` ago (15 s, `BUSY_EVERY`;
+`MESIMON_FORGE_BUSY_MS` the seam) — so only the repositories holding such a PR, and the minute
+pass for the rest. It rides the turn's end's road (T-761: `burst_inflight`, `Msg::ForgeBurst`,
+the minute not reset), never while a pass or a burst is out. `State::due_for` took a floor
+argument (`BURST_MS` for a turn's end, `busy_every()` here), so a repository whose last call
+failed keeps the minute's backoff on both. A waiting manual job nobody presses is read every 15 s
+for as long as it waits (a day at most, T-771's superseded read): one list call and one
+check-runs call per repository each time, far inside the forge's hourly limits.
+
+**Tests.** Units: `pr_marks_are_distinct_one_cell_and_the_sweep_is_the_slowest` (merged +
+deployed + running sweeps, + waiting `◎`, passed or none `◆`);
+`a_pipeline_in_flight_reads_its_repository_every_fifteen_seconds` (`busy` takes open and merged,
+not passed or closed; 14 s held, 15 s due; an error waits). E2e
+`forge_e2e::a_running_pipeline_is_read_on_the_busy_cadence_and_a_settled_one_on_the_minute`: with
+the minute at 6 s and busy at 500 ms, a merged PR whose commit runs is listed at least twice in
+4 s and at most once after it passes; it fails (0 lists) with busy set to ten minutes.
+
 ## The crown hears the forge's edges (T-744, 2026-10-13, follow-up to T-739)
 
 **Why.** T-739's crown heard two forge facts: a failed pipeline and a merge. With a PR open the
