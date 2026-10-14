@@ -1435,10 +1435,10 @@ impl Daemon {
             needs_rebase: look.needs_rebase,
             conflict: look.conflict,
             // What the train will do once it has read the forge (T-739): a
-            // PR open is the merge and the train leaves it, so the crown
-            // hears the delivery; the verdict's age is the pass's concern,
-            // not this hold's.
-            pr_open: !self.forge.open_of(worker).is_empty(),
+            // ticket with a PR bound is the forge's to merge and the train
+            // leaves it (T-778), so the crown hears the delivery; the
+            // verdict's age is the pass's concern, not this hold's.
+            has_pr: self.forge.has_pr(worker),
             pr_conflict: self.forge.open_of(worker).iter().any(|p| p.conflict),
             forge_fresh: true,
         };

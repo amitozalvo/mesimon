@@ -7167,6 +7167,11 @@ impl Daemon {
         if self.merge_state_word(id).as_deref() == Some("merged") {
             return view("nobody", "already merged");
         }
+        // A PR bound, open, merged or closed (T-778): the forge merges it,
+        // whatever the mode and the train, and `merge_ticket` refuses it.
+        if self.forge.has_pr(id) {
+            return view("forge", "its work goes through pull requests");
+        }
         if !self.board.crown_mode.merges() {
             return view("person", "crown mode is supervised");
         }
@@ -7201,8 +7206,9 @@ impl Daemon {
 
     /// Why the crown's `merge_ticket` on `target` is refused before the
     /// merge road is taken (T-613), or `None`: the mode, then the branch as
-    /// the flags read it — nothing to merge, merged, behind its base — and
-    /// the rebase turn the train asked for, which the train holds for.
+    /// the flags read it — nothing to merge, merged, a PR bound (T-778),
+    /// behind its base — and the rebase turn the train asked for, which the
+    /// train holds for.
     fn crown_merge_refusal(&self, target: ulid::Ulid, key: &str) -> Option<String> {
         if !self.board.crown_mode.merges() {
             return Some(format!(
@@ -7228,6 +7234,11 @@ impl Daemon {
         match state.as_str() {
             "merged" => Some(format!("{key}'s branch is already merged")),
             "clean" => Some(format!("{key}'s branch has no commits to merge yet")),
+            // The forge's merge (T-778), before a rebase the forge does not
+            // need.
+            _ if self.forge.has_pr(target) => {
+                self.pr_merge_refusal(target).map(|why| format!("{key}: {why}"))
+            }
             "needs_rebase" => Some(format!(
                 "{key}'s branch is behind its base ({}): {}",
                 self.base_branch.as_deref().unwrap_or("main"),
@@ -9448,6 +9459,12 @@ impl Daemon {
         self.open_pr(id).map(mesimon_core::forge::open_refusal)
     }
 
+    /// Why the board lands nothing of a ticket with a PR bound
+    /// (`forge::merge_refusal`, T-778): its work goes through pull requests.
+    fn pr_merge_refusal(&self, id: ulid::Ulid) -> Option<String> {
+        self.forge.sets.get(&id).and_then(|s| mesimon_core::forge::merge_refusal(s))
+    }
+
     /// The binding's legs, with the daemon's base branch for a single-repo
     /// one (a workspace leg carries its own).
     fn legs_of(&self, id: ulid::Ulid) -> Vec<worktree::Leg> {
@@ -9825,8 +9842,11 @@ impl Daemon {
         }
         // An open PR is the merge (T-739): the team reviews and presses the
         // forge's button, and mesimon never fast-forwards past it. `m`, the
-        // crown and the train all hear this one sentence.
-        if let Some(detail) = self.open_pr_refusal(id) {
+        // crown and the train all hear this one sentence. With every PR
+        // merged or closed the work still went through them (T-778): a
+        // branch reading ahead of a base the forge never moved is no work
+        // left to land here.
+        if let Some(detail) = self.pr_merge_refusal(id) {
             return Response::Merge { outcome: MergeOutcome::Refused, detail, notified: false };
         }
         // ff-only policy, leg by leg (T-368): every touched leg is judged
@@ -10142,7 +10162,7 @@ impl Daemon {
                         merged: self.wt_agg.get(t).is_some_and(|a| a.merged),
                         needs_rebase: self.wt_agg.get(t).is_some_and(|a| a.needs_rebase),
                         conflict: self.wt_conflicts.contains(&b.branch),
-                        pr_open: !self.forge.open_of(*t).is_empty(),
+                        has_pr: self.forge.has_pr(*t),
                         pr_conflict: self.forge.open_of(*t).iter().any(|p| p.conflict),
                         forge_fresh: self.forge_fresh(*t),
                     },

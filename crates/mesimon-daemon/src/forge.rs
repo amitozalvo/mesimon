@@ -1118,6 +1118,12 @@ impl State {
             .unwrap_or_default()
     }
 
+    /// Any PR bound to the ticket, open, merged or closed (T-778): its
+    /// work goes through pull requests, and the forge merges it.
+    pub fn has_pr(&self, ticket: ulid::Ulid) -> bool {
+        self.sets.get(&ticket).is_some_and(|s| !s.is_empty())
+    }
+
     /// The ticket's merged PR for a repository at a tip, if the newest
     /// there is merged at that tip (`forge::merged_at`).
     pub fn merged_at(&self, ticket: ulid::Ulid, repo_path: &str, tip: &str) -> Option<&Pr> {

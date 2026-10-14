@@ -25002,6 +25002,50 @@ second conflict's ask, and a restore without `settled` asks a third time.
 settled ask under `settled` rather than gone. There is no rig test: the words to the agent are
 unchanged, and only when they are sent moved.
 
+## The train never merges a ticket whose work goes through pull requests (T-778, 2026-10-14, follow-up to T-739 and T-770)
+
+**Why.** Forge lab run 2, 2026-10-14 17:52 (`~/Documents/code/forge-lab`, its T-9). T-9's work went
+to GitLab as MR !5 (merged), !6 (closed) and !7 (merged, from `fix/greeting-r2`). At 17:52:24 a
+forge read said `merged !7`. One second later the train fast-forwarded T-9's `msmn/` branch into
+the lab's local `api` main (`merge_train_merged`). GitLab had already merged that work as merge
+commits, so local main and `origin/main` diverged 4 and 4, and the next pull would have merged
+duplicates. The train held a ticket only while a PR was open (`pr_open`, T-739). Once every PR was
+merged or closed nothing held it. The branch's tip was no PR's head, so `forge::merged_at` did not
+fold it merged, and the local base had not moved, so the branch read `ahead`.
+
+**Built: a PR bound is the forge's merge.** `train::WtFlags::pr_open` became `has_pr`: any PR in
+the ticket's set, open, merged or closed, on any repository (`forge::State::has_pr`). `train::lane`
+never puts such a ticket on the merge list. A rebase is owed only on the forge's conflict (T-770's
+memo), never on `needs_rebase` alone. `pr_conflict` is about open PRs only, so a ticket whose PRs
+are all closed or merged is asked nothing. The crown's `train_takes` reads the same flag, so a
+delivery of such a ticket wakes the crown rather than waiting for a train that will not come.
+
+**Built: the words.** `get_ticket`'s `merge` reads `by: "forge", why: "its work goes through pull
+requests"` for any ticket with a PR bound, after the merged clause (a merged branch still reads
+`nobody`) and before the mode and the train: the forge merges it in either crown mode.
+`forge::merge_refusal` is the one refusal: the open PR's sentence while one is open (T-739's
+`open_refusal`), else `its pull requests carry the merge — merge on <forge>`. `merge_ticket` (a
+person's `m`, the crown, the train's pass) refuses with it after the already-merged check, and
+`crown_merge_refusal` says it with the key in front, before a `needs_rebase` refusal that would
+ask for a rebase the forge does not need. `CROWN_WAKES` names the fourth merger.
+
+**Not built.** The lab's recovery: its crown reset the local main. A ticket that went through a
+PR and should now be merged here (its PR closed unmerged and the work wanted locally) has no road
+on the board but git. The ticket asked for no exception, and a closed PR is still the team's
+decision about that work.
+
+**Tests.** `train::a_ticket_with_a_merged_pr_is_never_the_trains_to_merge` (core: ahead or behind,
+nothing; the same branches with no PR are the train's), `train::an_open_pr_is_the_merge_and_a_stale_verdict_holds`
+and the T-770 test on `has_pr`, and `forge::an_open_pr_on_a_merged_ticket_holds_the_merge` for
+`merge_refusal`'s three answers. `forge_e2e::a_ticket_whose_work_went_through_a_pr_is_never_the_trains`,
+on the stub `gh` with the train armed: PR 42 merged at a head the branch is not at, the branch ahead
+in REVIEW; after several passes there is no `merge_train_merged`, no rebase ask, the local main has
+not moved, and the snapshot's pending list does not hold the ticket. The agent's `get_ticket` reads
+`forge`, and `m` is refused in the new words. A ticket beside it with no PR is then merged by the
+same train. With the lane's flag forced off, the e2e fails on the pending list: the train tries the
+merge and only `merge_ticket`'s refusal stops it. Rig F7 (real Sonnet): a crown asked to land such
+a branch "if landing it is the crown's to do" reads `merge`, lands nothing and answers forge.
+
 ## The armed column flashes like an armed card (T-775, 2026-10-14)
 
 The first `d` on a column's header armed the delete with a footer sentence alone, while the

@@ -2335,8 +2335,10 @@ pub struct AgentPrView {
 /// (the crown's `merge_ticket`: the train is off, the ticket is out of it
 /// by `t`, or its column's train setting stops short of a merge) or
 /// `person` (crown mode is supervised, or the ticket's words came from
-/// outside and a person executes for it) or `nobody` (the branch is merged
-/// already, T-772). `why` is the one clause that decided it, in words a
+/// outside and a person executes for it), `forge` (a pull request is bound
+/// to the ticket, open, merged or closed: its work goes through pull
+/// requests and the board lands none of it, T-778) or `nobody` (the branch
+/// is merged already, T-772). `why` is the one clause that decided it, in words a
 /// crown relays.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentMergeView {

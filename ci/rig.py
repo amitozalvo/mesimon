@@ -1453,6 +1453,36 @@ Reply with the single word ready and end your turn."""
                 record["failures"].append("the stub forge's PR never bound to the ticket")
                 return False
             return True
+        if what == "forge_merged_elsewhere":
+            # The worker's work merged on the forge as PR 42 at a head its
+            # branch is not at (T-778): the branch reads ahead of the local
+            # base, which the forge never moved, and nothing folds it merged.
+            branch = next((w["branch"] for w in self.snapshot().get("worktrees", [])
+                           if w["ticket"] == test["ticket"]), None)
+            if not branch:
+                record["failures"].append("the worker has no worktree branch to open a PR from")
+                return False
+            d = self.forge_stub()
+            self.forge_branch = branch
+            self.write_pr(d, branch, "MERGED", "passed", head="c0ffee42" * 5)
+            env = {
+                "PATH": d + ":" + os.environ.get("PATH", ""),
+                "MSMN_GH_PRS": os.path.join(d, "prs.json"),
+                "MSMN_GH_CHECKS": os.path.join(d, "checks.json"),
+                "MESIMON_FORGE_EVERY_MS": "2000",
+            }
+            if not self.restart(env):
+                record["failures"].append("the daemon would not restart with the stub forge")
+                return False
+            bound = self.wait_for("the merged PR to bind", lambda: any(
+                p["ticket"] == test["ticket"] and p["number"] == 42 and p["state"] == "merged"
+                for p in self.snapshot().get("prs", [])) and any(
+                w["ticket"] == test["ticket"] and not w.get("merged")
+                for w in self.snapshot().get("worktrees", [])), STEP_TIMEOUT, self.watch)
+            if not bound:
+                record["failures"].append("the merged PR never bound, or the card read merged")
+                return False
+            return True
         if what == "forge_empty":
             # The stub forge with no PR yet (T-769): the ticket's set is read
             # empty, so a PR that appears later is newly bound, not a
@@ -1651,11 +1681,12 @@ Reply with the single word ready and end your turn."""
                 f.write('{"check_runs":[]}')
         return d
 
-    def write_pr(self, d, branch, state, pipeline, later=None):
-        """PR 42 on `branch` at its tip; `later` (number, head, state) a
-        newer PR on the same branch in front of it (T-757)."""
-        tip = subprocess.run(["git", "-C", self.repo, "rev-parse", branch], capture_output=True,
-                             text=True).stdout.strip()
+    def write_pr(self, d, branch, state, pipeline, later=None, head=None):
+        """PR 42 on `branch` at its tip, or at `head` (T-778); `later`
+        (number, head, state) a newer PR on the same branch in front of it
+        (T-757)."""
+        tip = head or subprocess.run(["git", "-C", self.repo, "rev-parse", branch],
+                                     capture_output=True, text=True).stdout.strip()
         rollups = {
             "running": '[{"__typename":"CheckRun","name":"test-linux","status":"IN_PROGRESS","conclusion":null}]',
             "failed": '[{"__typename":"CheckRun","name":"test-linux","status":"COMPLETED","conclusion":"FAILURE"}]',
@@ -2053,6 +2084,16 @@ Reply with the single word ready and end your turn."""
                 col = next((t.get("column") for t in board.get("tickets", [])
                             if t.get("id") == tid), None)
                 check(c, (col == arg) == (name == "column"), f"in {col}")
+            elif name == "unlanded":
+                # The ticket's branch is not on the checkout's base (T-778):
+                # nothing landed it here.
+                branch = next((w["branch"] for w in self.snapshot().get("worktrees", [])
+                               if w["ticket"] == tid), None)
+                landed = bool(branch) and subprocess.run(
+                    ["git", "-C", self.repo, "merge-base", "--is-ancestor", branch, "HEAD"],
+                    capture_output=True).returncode == 0
+                check(c, branch and not landed, f"{branch} landed on the base" if landed
+                      else f"{branch} not on the base" if branch else "no branch")
             elif name == "crown_reply":
                 # The crown's last words on the test (T-774), `arg` within.
                 crown = self.agent_of(board, self.crown)

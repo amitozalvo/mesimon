@@ -2152,3 +2152,92 @@ fn a_turn_end_wake_waits_for_the_turns_forge_read() {
     let _ = std::fs::remove_file(&slow);
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
+
+/// T-778: a ticket whose PR merged on the forge at another head, its branch
+/// still reading ahead of a local base the forge never moved, is the
+/// forge's. The armed train lands none of it — the lab's train had, and its
+/// local main and `origin/main` diverged 4 and 4 — `get_ticket` says the
+/// forge merges it, and `m` refuses in the forge's words. A ticket beside
+/// it with no PR is merged by the same train, so the hold is no idle train.
+#[test]
+fn a_ticket_whose_work_went_through_a_pr_is_never_the_trains() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    let (stub_dir, path_var) = gh_stub("forge-carried");
+    let prs_file = stub_dir.join("prs.json");
+    write(&prs_file, "[]");
+    let Some(h) = Harness::boot_with_env(
+        "forge-carried",
+        Some(STUB),
+        &[
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs_file.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    let repo = h.repo.clone();
+    init_repo(&repo, "a.txt", "hello\n");
+    git(&repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("forge-carried");
+    assert!(matches!(
+        c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
+        Response::Ok
+    ));
+    let main_before = git(&repo, &["rev-parse", "main"]).trim().to_string();
+    let (id, sid, branch, _path) = ready(&mut c, "alpha");
+    // The PR merged at a head the branch moved past, as merge commits on the
+    // forge: nothing folds it merged here.
+    let off_tip = "c0ffee42".repeat(5);
+    write(&prs_file, &format!("[{}]", numbered_pr(42, &branch, &off_tip, true).trim()));
+    wait_until(Duration::from_secs(20), "the merged PR to bind", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == id && p.number == 42 && p.state == "merged")
+    });
+    turn(&mut c, &hook_sock, sid);
+    wait_until(Duration::from_secs(10), "the turn's end to land it in REVIEW", || {
+        c.board().ticket(id).is_some_and(|t| t.column == "REVIEW")
+    });
+    // Several forge and train passes.
+    std::thread::sleep(Duration::from_secs(4));
+    let w = worktrees_of(&mut c).into_iter().find(|w| w.ticket == id).unwrap();
+    assert!(!w.merged && w.ahead > 0, "the branch reads ahead of the base: {w:?}");
+    assert_eq!(feed_count(&h, "merge_train_merged", id), 0, "the forge's merge, not the train's");
+    assert_eq!(feed_count(&h, "merge_train_rebase_asked", id), 0);
+    assert_eq!(git(&repo, &["rev-parse", "main"]).trim(), main_before, "local main untouched");
+    // Off the train's list, not a merge it tries and is refused.
+    let pending = match c.request(Command::Snapshot) {
+        Response::Board { pending, .. } => pending,
+        other => panic!("not a board: {other:?}"),
+    };
+    assert!(!pending.iter().any(|p| p.ticket == id), "{pending:?}");
+
+    // The agent reads who merges it, and `m` is refused in the forge's words.
+    let view = match c.send(Principal::Agent { session: sid }, Command::AgentGetTicket) {
+        Response::AgentTicket { ticket } => ticket,
+        other => panic!("get_ticket: {other:?}"),
+    };
+    let merge = view.merge.expect("a branch says who merges it");
+    assert_eq!(
+        (merge.by.as_str(), merge.why.as_str()),
+        ("forge", "its work goes through pull requests")
+    );
+    match c.request(Command::MergeTicket { id }) {
+        Response::Merge { outcome: MergeOutcome::Refused, detail, .. } => {
+            assert_eq!(detail, "its pull requests carry the merge — merge on GitHub");
+        }
+        other => panic!("m on a ticket its PRs carried: {other:?}"),
+    }
+    assert_eq!(git(&repo, &["rev-parse", "main"]).trim(), main_before);
+
+    // The same train merges a ticket with no PR.
+    let (beta, bsid, _, _) = ready(&mut c, "beta");
+    turn(&mut c, &hook_sock, bsid);
+    wait_until(Duration::from_secs(30), "the train to merge the ticket with no PR", || {
+        feed_count(&h, "merge_train_merged", beta) >= 1
+    });
+    assert_eq!(feed_count(&h, "merge_train_merged", id), 0);
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}

@@ -46,10 +46,14 @@ pub struct WtFlags {
     pub merged: bool,
     pub needs_rebase: bool,
     pub conflict: bool,
-    /// A pull request is open on the ticket (T-739): the PR is the merge,
-    /// so the train never fast-forwards past it, and a rebase is asked only
-    /// on a conflict the forge reports, not on a base that merely moved.
-    pub pr_open: bool,
+    /// A pull request is bound to the ticket, open, merged or closed, on
+    /// any repository (T-739, T-778): its work goes through pull requests,
+    /// so the forge merges it and the train never fast-forwards it. A PR
+    /// merged at a head other than the branch's tip leaves the branch
+    /// reading ahead of a local base the forge never moved, and landing it
+    /// there lands the work twice. A rebase is asked only on a conflict the
+    /// forge reports, not on a base that merely moved.
+    pub has_pr: bool,
     /// The forge reports a conflict on an open PR.
     pub pr_conflict: bool,
     /// The forge's verdict on this ticket is younger than its agent's last
@@ -160,18 +164,18 @@ pub fn lane(t: &Ticket, r: &Reading) -> Option<Lane> {
     if r.reach == TrainReach::Merge
         && f.ahead > 0
         && !f.needs_rebase
-        && !f.pr_open
+        && !f.has_pr
         && matches!(r.seat, Seat::Empty | Seat::Idle)
     {
         return Some(Lane::Merge);
     }
-    // With a PR open the base moving past the branch is not a reason: the
+    // With a PR bound the base moving past the branch is not a reason: the
     // forge merges a branch behind its base. A conflict it reports is, and
     // it is owed one ask (T-770): the local base tip is no memo for it, since
     // a forge merge never moves the checkout's base, so a second conflict at
     // the same local tip was never asked about and a moved local tip asked
     // again about the same one.
-    let owed = if f.pr_open {
+    let owed = if f.has_pr {
         f.pr_conflict && !r.conflict_asked
     } else {
         f.needs_rebase && r.asked.is_none_or(|at| at != r.base_tip)
@@ -269,7 +273,7 @@ mod tests {
             merged: false,
             needs_rebase,
             conflict: false,
-            pr_open: false,
+            has_pr: false,
             pr_conflict: false,
             forge_fresh: true,
         }
@@ -301,7 +305,7 @@ mod tests {
         };
         let mut f = flags(2, false);
         assert_eq!(reading(&f), Some(Lane::Merge), "no PR: the train's merge");
-        f.pr_open = true;
+        f.has_pr = true;
         assert_eq!(reading(&f), None, "an open PR is the merge");
         f.needs_rebase = true;
         assert_eq!(reading(&f), None, "a base moved past a PR branch is not a reason");
@@ -340,7 +344,7 @@ mod tests {
                 },
             )
         };
-        let conflict = WtFlags { pr_open: true, pr_conflict: true, ..flags(1, false) };
+        let conflict = WtFlags { has_pr: true, pr_conflict: true, ..flags(1, false) };
         assert_eq!(read(&conflict, None, false), Some(Lane::Rebase), "a clean local base asks");
         assert_eq!(
             read(&conflict, Some("tip1"), false),
@@ -349,7 +353,7 @@ mod tests {
         );
         assert_eq!(read(&conflict, None, true), None, "this conflict was asked about");
         assert_eq!(read(&conflict, Some("tip0"), true), None, "a moved local base changes nothing");
-        let open = WtFlags { pr_open: true, ..flags(1, true) };
+        let open = WtFlags { has_pr: true, ..flags(1, true) };
         assert_eq!(read(&open, None, false), None, "a PR behind its base and clean is the forge's");
         let behind = flags(1, true);
         assert_eq!(read(&behind, Some("tip1"), false), None, "no PR: once per base tip");
@@ -369,6 +373,27 @@ mod tests {
         };
         assert_eq!(p(&HashSet::new()).rebase, vec![t.id]);
         assert_eq!(p(&asked_about), Plan::default());
+    }
+
+    /// T-778: a ticket whose PRs are all merged or closed is still the
+    /// forge's. Its branch reads ahead of a local base the forge never
+    /// moved (the PR merged at another head, as merge commits), and the
+    /// train landing it there landed the work a second time: it is never a
+    /// merge candidate, and a base that moved asks no rebase.
+    #[test]
+    fn a_ticket_with_a_merged_pr_is_never_the_trains_to_merge() {
+        let mut b = board();
+        b.tickets.push(ticket(1, REVIEW, "a"));
+        b.tickets.push(ticket(2, REVIEW, "b"));
+        b.sessions.push(claude(1, idle(), Confidence::High));
+        let landed = WtFlags { has_pr: true, ..flags(4, false) };
+        let behind = WtFlags { has_pr: true, ..flags(4, true) };
+        let pr = HashMap::from([(ulid::Ulid(1), landed), (ulid::Ulid(2), behind)]);
+        assert_eq!(run(&b, &pr), Plan::default(), "ahead or behind, the forge's");
+        // With no PR bound the same branches are the train's.
+        let plain =
+            HashMap::from([(ulid::Ulid(1), flags(4, false)), (ulid::Ulid(2), flags(4, true))]);
+        assert_eq!(run(&b, &plain).merge, vec![ulid::Ulid(1)]);
     }
 
     /// Every ticket 1..=4 stands on the same base tip.

@@ -158,8 +158,10 @@ pub const CROWN_WAKES: &str = concat!(
      since_secs). The wait may be the work (a long suite, a build) or a loop that will not end, \
      and the board cannot tell which, so it merges, parks and ends nothing for it: ask_agent \
      reaches the worker while its tasks run, to ask whether it is done and what they wait on. \
-     A delivered worker's get_ticket says who merges its branch (merge: by train, crown or \
-     person, and why), and the delivered line carries the word. The train's is waited for: \
+     A delivered worker's get_ticket says who merges its branch (merge: by train, crown, \
+     person or forge, and why), and the delivered line carries the word. The forge's — a \
+     pull request bound to the ticket — is merged on the forge by a person, and \
+     merge_ticket refuses it. The train's is waited for: \
      the crown hears it once, at the merge. The crown's — the train off, the ticket out of it \
      by t, or a column the train stops short of, under autonomous mode — is merged with \
      merge_ticket while merge_state reads ahead; at needs_rebase the agent is asked to rebase \
@@ -3086,8 +3088,10 @@ mod tests {
         let get = registry.iter().find(|t| t["name"] == "get_ticket").unwrap();
         assert!(get["description"].as_str().unwrap().contains("who merges (merge)"));
         for words in [
-            "says who merges its branch (merge: by train, crown or person, and why)",
+            "says who merges its branch (merge: by train, crown, person or forge, and why)",
             "the delivered line carries the word",
+            "The forge's — a pull request bound to the ticket — is merged on the forge by a person",
+            "merge_ticket refuses it",
             "The train's is waited for",
             "the train off, the ticket out of it by t, or a column the train stops short of",
             "merged with merge_ticket while merge_state reads ahead",

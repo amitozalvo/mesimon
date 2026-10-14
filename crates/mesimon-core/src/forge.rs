@@ -658,6 +658,19 @@ pub fn open_refusal(pr: &Pr) -> String {
     format!("{} {} open — merge it on {}", pr.forge.noun(), pr.label(), pr.forge.name())
 }
 
+/// Why a ticket's branch is not landed here (T-778), or `None`: the open
+/// PR's sentence while one is open (`open_refusal`), else, with any PR
+/// bound, that the forge carries the merge. Its PRs merged at heads other
+/// than the branch's tip leave the branch reading ahead of a local base the
+/// forge never moved, and a fast-forward there lands the work twice.
+pub fn merge_refusal(set: &[Pr]) -> Option<String> {
+    if let Some(open) = holding(set) {
+        return Some(open_refusal(open));
+    }
+    let newest = set.first()?;
+    Some(format!("its pull requests carry the merge — merge on {}", newest.forge.name()))
+}
+
 /// The worst pipeline over the set's open PRs; the merged commit's once
 /// nothing is open and one is merged (the caller has read it onto the PR);
 /// `Unknown` with no PR.
@@ -1233,6 +1246,15 @@ mod tests {
         // Merged, the follow-up holds nothing.
         let mut merged = second;
         merged.state = PrState::Merged;
-        assert_eq!(holding(&ticket_set(vec![first, merged])), None);
+        let landed = ticket_set(vec![first, merged]);
+        assert_eq!(holding(&landed), None);
+
+        // T-778: nothing open, the merge is still the forge's.
+        assert_eq!(
+            merge_refusal(&landed).as_deref(),
+            Some("its pull requests carry the merge — merge on GitLab")
+        );
+        assert_eq!(merge_refusal(&set).as_deref(), Some("MR !3 open — merge it on GitLab"));
+        assert_eq!(merge_refusal(&[]), None, "no PR: the board's merge");
     }
 }
