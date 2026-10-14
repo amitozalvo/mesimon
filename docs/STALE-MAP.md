@@ -23656,6 +23656,20 @@ machine: both tail guesses hold, a hook's `Stop` and `TranscriptTurnEnded` do no
 `crown_e2e::a_worker_mid_turn_across_a_restart_delivers_at_its_real_end` (a commit, a restart
 between two tool calls; it fails at its first phase without the fix with the incident's line).
 
+**T-776 (2026-10-14): the same line by a third road, a hold read back from `crown.json`.**
+T-771's worker took the train's rebase ask with its delivery held for the train
+(`crown_wake_deferred`); the daemon restarted in that turn and 1.3 s later the crown heard
+`delivered (merge_state needs_rebase, …, after a restart)` with the record still `Unknown`, no
+state change between. Neither `turn_ended` nor `hear_restored` sent it: `hear_deferred` did,
+because `train_takes` read an `Unknown` worker as out of a turn (the train's `seat` calls it
+Busy, so no lane) and let the hold go as one the train would not take. Now `hear_deferred` waits
+for the restart's look (`crown_recheck`, as `hear_merges` does), which judges the hold at a
+committed end, and `train_takes` counts an agent at `Unknown` (`crownwake::rederiving`) as in a
+turn, as `restore_train` holds the train's ask for it — so past `RECHECK_MS` the hold still waits
+for the first state a hook or T-663's close commits. Tests: the unit test's `Unknown` arm and
+`crown_e2e::a_held_delivery_waits_for_a_worker_unknown_across_a_restart` (fails at its second
+phase without the fix).
+
 ## The crown watches tickets by default (T-732, 2026-10-12, "crown can watch tickets on by default")
 
 T-712 shipped Settings → Crown → **Watches tickets** off, T-590's shape. It is now **on by

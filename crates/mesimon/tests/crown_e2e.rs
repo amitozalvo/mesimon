@@ -2402,6 +2402,137 @@ fn a_worker_mid_turn_across_a_restart_delivers_at_its_real_end() {
     assert!(said[0].contains("after a restart"), "{said:?}");
 }
 
+/// A delivery held for the train is not heard while its worker is still
+/// `Unknown` after a restart (T-776): the crown started the worker in a
+/// worktree, its branch was behind, the train asked the rebase and held
+/// the delivery for it, and the daemon went down in that rebase turn. The
+/// new daemon read the worker `Unknown` (no hook, nothing in the
+/// transcript), let the hold go as one the train would not take, and told
+/// the crown `delivered (…, after a restart)` a second after it started,
+/// while the turn was on. The hold waits for the restart's look, at the
+/// turn's real `Stop`: one line, still `after a restart`.
+#[test]
+fn a_held_delivery_waits_for_a_worker_unknown_across_a_restart() {
+    // The flags (and the train) every second rather than every ten.
+    let Some(h) = Harness::boot_with_env(
+        "crown_unknown",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_unknown");
+    let got = h.dir.join("got.txt");
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    let feed_count = |needle: &str| -> usize {
+        std::fs::read_to_string(&feed_path).unwrap_or_default().matches(needle).count()
+    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+
+    let a = create(&mut c, "coordinate");
+    let title = "mesimon-probe-776 unknown across a restart";
+    let w = create(&mut c, title);
+    let kw = key_of(&mut c, w);
+    let sa = spawn(&mut c, a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    let path = std::path::PathBuf::from(wait_attached(&mut c, w).path.expect("a path"));
+    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    let branch = read(&mut c, sa, &kw).unwrap().branch.expect("a branch");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(matches!(
+        c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
+        Response::Ok
+    ));
+    let worker = format!("{kw} \"{title}\"");
+
+    // ---- 1. delivered behind main: the train asks the rebase and holds it --
+    std::fs::write(h.repo.join("base1.txt"), "base\n").unwrap();
+    git(&h.repo, &["add", "base1.txt"]);
+    git(&h.repo, &["commit", "-qm", "base1"]);
+    commit(&path, "one.txt");
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    let ask = format!("Rebase your current branch {branch} onto main");
+    wait_until(std::time::Duration::from_secs(15), "the train's rebase ask", || {
+        !lines_with(&ask).is_empty()
+    });
+    wait_until(std::time::Duration::from_secs(5), "the hold in the feed", || {
+        feed_count("\"crown_wake_deferred\"") == 1
+    });
+    assert!(lines_with(&worker).is_empty(), "a delivery the train takes is silent");
+
+    // ---- 2. the rebase turn runs across a restart: Unknown, no word -------
+    start(&mut c, ws);
+    drop(c);
+    h.restart_after(|| {});
+    let mut c = h.client("crown_unknown_2");
+    assert!(matches!(
+        c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
+        Response::Ok
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(3000));
+    assert!(
+        matches!(c.board().live_agent(w).unwrap().state, SessionState::Unknown { .. }),
+        "{:?}",
+        c.board().live_agent(w).unwrap().state
+    );
+    assert!(lines_with(&worker).is_empty(), "{}", std::fs::read_to_string(&got).unwrap());
+
+    // ---- 3. the turn ends still behind: that is the delivery, once ---------
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
+        lines_with(&worker).len() == 1
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let said = lines_with(&worker);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains(&format!("{worker} delivered")), "{said:?}");
+    assert!(said[0].contains("needs_rebase"), "{said:?}");
+    assert!(said[0].contains("after a restart"), "{said:?}");
+}
+
 /// The crown sends its own asks (T-550), where the person lets it: in
 /// supervised mode the words wait for `^y` as T-413 built them; autonomous
 /// (the default since T-610), an ask to an agent the crown STARTED goes by

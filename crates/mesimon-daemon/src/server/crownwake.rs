@@ -460,6 +460,15 @@ pub(super) fn guessed(s: &SessionRecord) -> bool {
     matches!(s.confidence, Confidence::Low | Confidence::Stale)
 }
 
+/// An agent not yet re-derived after a restart (T-776): `Unknown` until a
+/// hook or the transcript speaks, which says nothing of a turn's end. The
+/// train's ask is held open for it (`restore_train`), so a delivery held
+/// for the train stays held: released, it told the crown `delivered` a
+/// second after the restart for a worker whose rebase turn was still on.
+pub(super) fn rederiving(s: &SessionRecord) -> bool {
+    matches!(s.state, SessionState::Unknown { .. })
+}
+
 /// Whether this state change is a stop the crown is woken for, and why:
 /// a claude entering `RequiresAction{Question}` (T-569) or
 /// `RequiresAction{Plan}` (T-582) on a board whose crown mode lets it
@@ -1380,7 +1389,9 @@ impl Daemon {
             return false;
         };
         let Some(binding) = self.worktrees.get(&worker) else { return false };
-        if self.working(None).contains(&worker) {
+        if self.board.live_agent(worker).is_some_and(rederiving)
+            || self.working(None).contains(&worker)
+        {
             return true;
         }
         let flags = mesimon_core::train::WtFlags {
@@ -1439,14 +1450,17 @@ impl Daemon {
     /// held branch that reads merged here was missed by `hear_merges` and is
     /// said the same way. Judged on the train's own sample once that has
     /// reached the held tip — before then the sample predates the turn and
-    /// the turn's look is the truth — and not at all while a probe is out.
+    /// the turn's look is the truth — and not at all while a probe is out,
+    /// nor before the restart's look (T-776): a hold read back from
+    /// `crown.json` is the restart's look's to judge, at a turn's end that
+    /// is one, as `hear_merges` waits for it.
     /// A ticket gone from the board takes what was held with it.
     pub(super) fn hear_deferred(&mut self) -> bool {
         let Some(crown) = self.board.crown_holder().map(|t| t.id) else { return false };
         let held: Vec<(ulid::Ulid, Held)> = self
             .crown_heard
             .iter()
-            .filter(|(_, h)| h.looks == 0)
+            .filter(|(w, h)| h.looks == 0 && !self.crown_recheck.contains_key(w))
             .filter_map(|(w, h)| Some((*w, h.deferred.clone()?)))
             .collect();
         let mut woke = false;
@@ -1932,6 +1946,19 @@ mod tests {
         let mut m = restarted();
         m.apply(&stop, 1_000).unwrap();
         assert!(!guessed(&record(&m)), "a hook re-asserting after the restart");
+
+        // T-776: before the tail or a hook speaks the record is `Unknown`
+        // at High, which `guessed` does not catch; it is no end either, and
+        // holds a delivery held for the train until one commits.
+        let m = restarted();
+        assert!(!guessed(&record(&m)));
+        assert!(rederiving(&record(&m)), "Unknown holds the train's hold");
+        let mut m = restarted();
+        m.apply(&Signal::TranscriptTurnEnded, 1_000).unwrap();
+        assert!(!rederiving(&record(&m)), "a close dated in the gap");
+        let mut m = restarted();
+        m.apply(&stop, 1_000).unwrap();
+        assert!(!rederiving(&record(&m)), "the hook's Stop");
     }
 
     /// Once per delivery (T-469): a second idle at the same tip delivers
