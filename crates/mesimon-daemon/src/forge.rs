@@ -143,9 +143,6 @@ pub struct TicketQuery {
     pub branch: String,
     pub legs: Vec<LegQuery>,
     pub opened: Vec<String>,
-    /// Every PR, by repository and number, the ticket's reads held before
-    /// (`State::held`): an MR outside it is read whole on this pass (T-784).
-    pub held: Vec<(String, u64)>,
 }
 
 /// A host to probe on this pass: the candidate CLIs in the order to try.
@@ -609,30 +606,35 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
         };
         let bound: Vec<Pr> = prs.iter().filter(|p| forge::binds(p, &facts)).cloned().collect();
         let mut set = forge::ticket_set(bound);
-        // GitLab's list serves a head minutes old after a push (T-784): an
-        // open MR whose list head is not its leg's tip, or one newly bound,
-        // is read whole, and its head pipeline is the pipeline. One the
-        // list already has at the tip costs nothing more. The list says
-        // nothing of a pipeline: the rest are asked by sha, one call each.
-        let tips: Vec<(String, String)> = t
-            .legs
-            .iter()
-            .map(|l| (l.repo_path.clone(), crate::worktree::branch_tip(&l.dir, &t.branch)))
-            .collect();
+        // GitLab's list lags the MR by minutes: a head after a push (T-784),
+        // a state after a merge (T-787). Every MR it calls open is read by
+        // itself, a handful of calls on a board, and the read's state, head,
+        // conflict and merge commit win; its head pipeline is the pipeline.
+        // A failed read keeps the list's row, and the T-780 gate holds it.
+        // The rest are asked by sha, one call each.
+        let mut read = false;
         for pr in set.iter_mut().filter(|p| p.forge == Forge::GitLab && p.state.is_open()) {
             let Some(r) = q.repos.iter().find(|r| r.remote.path == pr.repo) else { continue };
-            let head = if mr_unsure(pr, &t.branch, &tips, &t.held) {
-                gitlab_mr(r, pr.number).and_then(|read| {
-                    pr.take_read(&read.pr);
-                    read.pipeline
-                })
-            } else {
-                None
-            };
+            let head = gitlab_mr(r, pr.number).and_then(|one| {
+                read = true;
+                pr.take_read(&one.pr);
+                one.pipeline
+            });
+            if !pr.state.is_open() {
+                // Merged or closed after all: `merged_reads` reads the
+                // merge commit's pipeline, never the head's.
+                pr.pipeline = Pipeline::Unknown;
+                continue;
+            }
             pr.pipeline = match head {
                 Some((pipeline, id)) => named_job(r, pipeline, id),
                 None => gitlab_pipeline(r, &pr.head_oid),
             };
+        }
+        if read {
+            // A read's state and time reorder the set, and a closed one
+            // leaves it, as the list's would.
+            set = forge::ticket_set(set);
         }
         merged_reads(
             &mut set,
@@ -788,20 +790,8 @@ fn list(r: &RepoQuery) -> Result<Vec<Pr>, String> {
     }
 }
 
-/// An open MR whose list row may be stale (T-784): its head is not the
-/// tip of the ticket's branch in the leg of its repository, or no tip says
-/// and the ticket's reads never held it. An MR from another branch is
-/// judged as one with no tip, as the pipeline gate does (`head_unread`).
-pub fn mr_unsure(pr: &Pr, branch: &str, tips: &[(String, String)], held: &[(String, u64)]) -> bool {
-    let ours = pr.head_ref.is_empty() || pr.head_ref == branch;
-    match tips.iter().find(|(repo, tip)| *repo == pr.repo && !tip.is_empty()) {
-        Some((_, tip)) if ours => *tip != pr.head_oid,
-        _ => !held.iter().any(|(r, n)| *r == pr.repo && *n == pr.number),
-    }
-}
-
-/// One open MR read whole (T-784). `None` when the call fails or says
-/// something else: the list's row stands, and the pipeline gate holds it.
+/// One open MR read by itself (T-784, T-787). `None` when the call fails or
+/// says something else: the list's row stands, and the pipeline gate holds it.
 fn gitlab_mr(r: &RepoQuery, iid: u64) -> Option<forge::MrRead> {
     let project = r.remote.path.replace('/', "%2F");
     let path = format!("projects/{project}/merge_requests/{iid}");
@@ -1525,23 +1515,6 @@ mod tests {
             updated_ms: number,
             deployed: Vec::new(),
         }
-    }
-
-    /// T-784: an open MR is read whole when its list head is not the leg's
-    /// tip, or no tip judges it and it is newly bound; one at the tip, or
-    /// held with nothing to judge it by, costs nothing more.
-    #[test]
-    fn an_mr_is_read_whole_only_where_the_list_may_be_stale() {
-        let mut mr = pr(9, PrState::Open, Pipeline::Unknown);
-        let held = vec![("o/r".to_string(), 9)];
-        let at = |tip: &str| vec![("o/r".to_string(), tip.to_string())];
-        assert!(!mr_unsure(&mr, "b", &at("h"), &held), "the list has the tip");
-        assert!(mr_unsure(&mr, "b", &at("pushed"), &held), "the list lags the push");
-        assert!(!mr_unsure(&mr, "b", &at(""), &held), "no tip, held");
-        assert!(mr_unsure(&mr, "b", &at(""), &[]), "no tip, newly bound");
-        assert!(mr_unsure(&mr, "b", &[], &[]), "no leg, newly bound");
-        mr.head_ref = "other".into();
-        assert!(!mr_unsure(&mr, "b", &at("pushed"), &held), "another branch's tip is no judge");
     }
 
     #[test]

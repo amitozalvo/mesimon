@@ -10022,23 +10022,20 @@ impl Daemon {
         }
         let b = &self.worktrees[&id];
         let branch = b.branch.clone();
+        let legs = self.wt_repos.get(&id).cloned().unwrap_or_default();
+        let mut asked: Vec<&worktree::RepoFlags> = legs.iter().collect();
         // On a workspace ticket (T-368) the base is per leg: the sentence
         // names the legs that moved, `main (api), main (web)`, or every
         // touched leg where the sample has not said which yet.
         if b.is_workspace() {
-            let legs = self.wt_repos.get(&id).cloned().unwrap_or_default();
-            let mut named: Vec<String> = legs
+            asked = legs.iter().filter(|l| l.needs_rebase && l.ahead > 0).collect();
+            if asked.is_empty() {
+                asked = legs.iter().filter(|l| l.touched()).collect();
+            }
+            let mut named: Vec<String> = asked
                 .iter()
-                .filter(|l| l.needs_rebase && l.ahead > 0)
                 .map(|l| format!("{} ({})", l.against(), worktree::leg_word(&l.name)))
                 .collect();
-            if named.is_empty() {
-                named = legs
-                    .iter()
-                    .filter(|l| l.touched())
-                    .map(|l| format!("{} ({})", l.against(), worktree::leg_word(&l.name)))
-                    .collect();
-            }
             if named.is_empty() {
                 named = b
                     .repos
@@ -10053,6 +10050,13 @@ impl Daemon {
         // base — are the only things substituted into it.
         let mut text =
             self.board.prompts.render(request.prompt(), &[("branch", &branch), ("base", &base)]);
+        // A rebase onto the upstream is onto what the last fetch saw: the
+        // ask begins with the fetch that makes it current (T-787).
+        if matches!(request, mesimon_core::command::MergeRequest::Rebase) {
+            if let Some(fetch) = worktree::fetch_words(b.is_workspace(), &asked) {
+                text = format!("{fetch} {text}");
+            }
+        }
         // A rebase of a branch with a PR open ends with the push (T-739):
         // the forge's PR updates from the branch, and a rebase it never
         // sees is a rebase it never had.
@@ -13758,7 +13762,6 @@ impl Daemon {
                 branch: branch.clone(),
                 legs: leg_queries,
                 opened,
-                held: self.forge.held.get(t).cloned().unwrap_or_default(),
             });
         }
         // Which CLI reads each host: probed on the worker where unknown or

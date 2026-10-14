@@ -24127,6 +24127,54 @@ names the fix with a passed head pipeline, and REVIEW's `pipeline passes` arriva
 ticket with the list never caught up. With the read switched off the same test times out held.
 `cargo nextest run --workspace`: 2414 passed.
 
+## Every open GitLab MR is read by itself, and a forge board's rebase ask names the upstream (T-787, 2026-10-15, follow-up to T-784 and T-779)
+
+**Measured in forge lab run 3, on gitlab.com.** !11 (`fix/a`) merged on GitLab at 00:59:27
+local. At 01:00:24 the board still read it `open, pipeline passed`, and REVIEW's `Arrives here
+when: pipeline passes` pulled lab ticket T-13 from PROD back to REVIEW; at 01:01:34 the list said
+`merged` and the ticket went to PROD again. The list's head was current, so T-784's `mr_unsure`
+never asked: **GitLab's list lags a merge's state as it lags a push's head.**
+
+**The read.** Every GitLab MR the list calls open (`opened`, draft) is read by itself on every
+pass (`gitlab_mr`), and `Pr::take_read` now takes the read's state, head, conflict, review word
+and merge commit (`merge_commit_sha`, else `squash_commit_sha`), and its `updated_at` where it is
+the later one. An MR the read finds merged or closed gets no head pipeline: `merged_reads` reads
+its merge commit's, as for a merge the list said. The set is re-sorted by `ticket_set` after any
+read, so a closed one leaves it and the newest-touched leads. `mr_unsure` and
+`TicketQuery::held` are gone; a board has few open MRs, so the price is one call per open MR per
+pass. A failed read keeps the list's row, and the T-780 gate holds a stale head as before.
+
+**GitHub, not measured.** The probe (open a PR on the private `forge-lab` repo, push, merge, and
+poll the daemon's own `gh pr list --author @me --state all --json …` once a second) was refused by
+the session's permission mode at the merge, which needs a person. `gh pr list` is unchanged; the
+lab's #3 showed no lag in run 3. If a person's probe sees one, the shape is T-784's note.
+
+**The rebase ask on a forge board.** D1's worker (lab T-17, MR !12) was asked to rebase `onto
+main (api)`: on a forge board the local base never moves (T-779), so that base was stale. T-786,
+landed first, already names the ref the flags counted against (`RepoFlags::against`,
+`origin/main` where the local base is strictly behind it), so this ticket's own ref choice (an
+ask-time ancestry check, equal tips included) was dropped at the rebase in favour of T-786's
+single source, which the train's base tip is keyed on too. What T-787 adds is the fetch: a rebase
+ask whose legs include one counted against the upstream begins `Run git fetch first.` (`Run git
+fetch in api first.` on a workspace, the asked legs by `leg_word`; `worktree::fetch_words`). A
+board with no forge remote, a local base equal to, ahead of or diverged from its upstream, and the
+merged notice read as before.
+
+**Tests.** Unit `a_single_mr_read_overrides_the_lists_stale_state` (core forge: list `opened`,
+read `merged` → merged with its merge commit, no longer `holding`), the T-784 unit test now
+asserting the read's later time; `a_forge_legs_rebase_ask_begins_with_the_fetch` (daemon
+worktree: a local leg's words unchanged, a counted leg's full sentence, a workspace's fetch naming
+only the legs onto an upstream).
+`forge_e2e::an_open_mrs_state_is_read_from_the_mr_itself`: !11 binds running, the stub's single
+read says merged while its list keeps `opened` and the head's pipeline passes; DONE's `merged`
+takes the ticket and REVIEW never does. With the single read switched off the same test times out
+in REVIEW. No rig test covers the rebase ask: the rig board runs on this repository's refs, whose
+`main` is ahead of `origin/main`, so the new words are unreachable there without moving the
+author's real refs; a rig of its own repository is what one needs. `ci/rig.py --only F1` passed on
+claude 2.1.300 (the forge pass end to end). `cargo nextest run --workspace`: 2416 of 2418, the two
+load flakes (`forge_e2e::an_open_pr_holds_done_and_a_ticket_there_reads_unmerged`, a GitHub stub,
+and `mod_plugin`, the real `claude`) green alone.
+
 ## The pipeline gate judges the branch's tip, and the forge names a merge git found first (T-780, 2026-10-14, follow-up to T-739)
 
 **Found in forge lab run 2.** T-9: MR !5's pipeline had passed; the worker pushed a `FAIL` commit

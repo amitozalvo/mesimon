@@ -346,16 +346,22 @@ pub fn parse_glab_mr(repo: &str, json: &str) -> Option<MrRead> {
 }
 
 impl Pr {
-    /// What a single read says of an open MR over its list row (T-784): the
-    /// head, the conflict and the merge status's review word. A read of
-    /// another MR changes nothing.
+    /// What a single read says of an open MR over its list row (T-784,
+    /// T-787): the state, the head, the conflict, the merge status's review
+    /// word and the commit a merge landed as. The list lags both a push and
+    /// a merge. Its time where it is the later one, so a set ordered by it
+    /// still puts the MR the forge touched last first. A read of another MR
+    /// changes nothing.
     pub fn take_read(&mut self, read: &Pr) {
         if read.repo != self.repo || read.number != self.number || read.head_oid.is_empty() {
             return;
         }
+        self.state = read.state;
         self.head_oid = read.head_oid.clone();
         self.conflict = read.conflict;
         self.review = read.review;
+        self.merge_oid = read.merge_oid.clone();
+        self.updated_ms = self.updated_ms.max(read.updated_ms);
     }
 }
 
@@ -1091,11 +1097,12 @@ mod tests {
         pr.take_read(&read.pr);
         assert_eq!(pr.head_oid, "ebf3084", "the single read's head");
         assert!(!pr.conflict, "and its conflict");
-        assert_eq!(
-            pr.updated_ms,
-            parse_glab("o/api", list)[0].updated_ms,
-            "the rest is the list's"
-        );
+        assert_eq!(pr.updated_ms, read.pr.updated_ms, "and its later time");
+        let mut stale = read.pr.clone();
+        stale.updated_ms = 0;
+        pr.take_read(&stale);
+        assert_eq!(pr.updated_ms, read.pr.updated_ms, "never an earlier one");
+        assert_eq!(pr.url, parse_glab("o/api", list)[0].url, "the rest is the list's");
 
         // A head pipeline of another commit, or none, leaves the pipeline to
         // the read by sha; a read of another MR changes nothing.
@@ -1115,6 +1122,33 @@ mod tests {
         eight.take_read(&read.pr);
         assert_eq!(eight.head_oid, "dc82695");
         assert_eq!(parse_glab_mr("o/api", "[]"), None);
+    }
+
+    /// T-787, lab run 3: !11 merged on GitLab at 00:59:27, and a minute
+    /// later the list still served it `opened` at a current head, so
+    /// REVIEW's `pipeline passes` took the ticket back from PROD. The single
+    /// read's state wins, and with it the commit the merge landed as.
+    #[test]
+    fn a_single_mr_read_overrides_the_lists_stale_state() {
+        let list = r#"[{"iid":11,"web_url":"https://gitlab.com/o/api/-/merge_requests/11","state":"opened",
+          "source_branch":"fix/a","sha":"a11","draft":false,"has_conflicts":false,
+          "detailed_merge_status":"mergeable","updated_at":"2026-10-14T21:58:00Z"}]"#;
+        let mut pr = parse_glab("o/api", list).remove(0);
+        assert_eq!(pr.state, PrState::Open);
+        let one = r#"{"iid":11,"web_url":"https://gitlab.com/o/api/-/merge_requests/11","state":"merged",
+          "source_branch":"fix/a","sha":"a11","draft":false,"has_conflicts":false,
+          "detailed_merge_status":"not_open","updated_at":"2026-10-14T21:59:27Z",
+          "merge_commit_sha":"m11","squash_commit_sha":null,
+          "head_pipeline":{"id":2201,"sha":"a11","status":"success"}}"#;
+        pr.take_read(&parse_glab_mr("o/api", one).unwrap().pr);
+        assert_eq!(pr.state, PrState::Merged, "the single read's state");
+        assert_eq!(pr.merge_oid, "m11", "and the commit it landed as");
+        assert_eq!(holding(&[pr.clone()]), None, "no open MR holds the ticket");
+        let draft = one
+            .replace(r#""state":"merged""#, r#""state":"opened""#)
+            .replace(r#""draft":false"#, r#""draft":true"#);
+        pr.take_read(&parse_glab_mr("o/api", &draft).unwrap().pr);
+        assert_eq!(pr.state, PrState::Draft, "a read says draft as the list does");
     }
 
     /// T-784, C2: staging deployed 5 s before production, and the wake said

@@ -592,6 +592,23 @@ pub fn cut_point(repo: &Path, base: &str, local: &str) -> Cut {
     Cut { oid: up_oid, from: Some((up, behind)) }
 }
 
+/// The sentence a rebase ask begins with where it names an upstream
+/// (`RepoFlags::against`, T-786): the fetch that makes `origin/main` current
+/// (T-787), in the legs that need one (`leg_word`) on a workspace ticket.
+/// `None` where every leg asked is counted against its local base.
+pub fn fetch_words(workspace: bool, legs: &[&RepoFlags]) -> Option<String> {
+    let up: Vec<&str> =
+        legs.iter().filter(|l| !l.counted.is_empty()).map(|l| leg_word(&l.name)).collect();
+    if up.is_empty() {
+        return None;
+    }
+    Some(if workspace {
+        format!("Run git fetch in {} first.", up.join(", "))
+    } else {
+        "Run git fetch first.".to_string()
+    })
+}
+
 /// Doctor's words for a base a fresh worktree is not cut from (T-779).
 pub fn cut_words(base: &str, cut: &Cut) -> Option<String> {
     let (up, behind) = cut.from.as_ref()?;
@@ -3199,6 +3216,47 @@ mod tests {
         r.commit("mine.txt", "mine\n", "unpushed");
         let (_, _, _, counted, base_tip) = count(true);
         assert_eq!((counted.as_str(), base_tip), ("", tip("main")), "diverged: the local base");
+    }
+
+    /// T-787, lab run 3: D1's worker was asked to rebase `onto main (api)`
+    /// on a board whose merges happen on GitLab. A leg counted against the
+    /// upstream (T-786) is asked onto it with the fetch first; a local one
+    /// keeps today's words.
+    #[test]
+    fn a_forge_legs_rebase_ask_begins_with_the_fetch() {
+        use mesimon_core::prompts::{AgentPrompt, PromptSet};
+        let leg = |name: &str, counted: &str| RepoFlags {
+            name: name.into(),
+            base: "main".into(),
+            counted: counted.into(),
+            ..Default::default()
+        };
+        let ask = |l: &RepoFlags| {
+            let text = PromptSet::default()
+                .render(AgentPrompt::Rebase, &[("branch", "msmn/T-17-d1"), ("base", l.against())]);
+            match fetch_words(false, &[l]) {
+                Some(fetch) => format!("{fetch} {text}"),
+                None => text,
+            }
+        };
+        assert_eq!(
+            ask(&leg("", "")),
+            "Rebase your current branch msmn/T-17-d1 onto main, resolve any conflicts, then run \
+             the tests and fix any failures before we merge."
+        );
+        assert_eq!(
+            ask(&leg("", "origin/main")),
+            "Run git fetch first. Rebase your current branch msmn/T-17-d1 onto origin/main, \
+             resolve any conflicts, then run the tests and fix any failures before we merge."
+        );
+        let (api, web, docs) =
+            (leg("api", "origin/main"), leg("web", ""), leg("docs", "origin/main"));
+        assert_eq!(
+            fetch_words(true, &[&api, &web, &docs]).as_deref(),
+            Some("Run git fetch in api, docs first."),
+            "only the legs onto an upstream"
+        );
+        assert_eq!(fetch_words(true, &[&web]), None);
     }
 
     /// The whole point of the upstream half: the PR is merged on the forge

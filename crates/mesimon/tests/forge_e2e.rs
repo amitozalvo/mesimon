@@ -2829,3 +2829,97 @@ fn an_open_mrs_head_and_pipeline_are_read_from_the_mr_itself() {
     assert_eq!(pr.pipeline, "passed", "{pr:?}");
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
+
+/// T-787, lab run 3: !11 merged on GitLab, and a minute later the list
+/// still served it `opened` with its pipeline passed, so REVIEW's `Arrives
+/// here when: pipeline passes` took the ticket back from PROD. Every MR the
+/// list calls open is read by itself: the read's `merged` wins on that very
+/// pass, DONE's `merged` takes the ticket, and REVIEW never does.
+#[test]
+fn an_open_mrs_state_is_read_from_the_mr_itself() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    let stub_dir = std::env::temp_dir().join(format!("msmn-forge-state-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&stub_dir);
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    let glab = stub_dir.join("glab");
+    std::fs::write(&glab, GLAB_STUB).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&glab, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mrs = stub_dir.join("mrs.json");
+    let pipelines = stub_dir.join("pipelines");
+    let one = stub_dir.join("mr");
+    write(&mrs, "[]");
+    let path_var = format!(
+        "{}:{}",
+        stub_dir.display(),
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+    );
+    let Some(h) = Harness::boot_with_env(
+        "forge-state",
+        Some(STUB),
+        &[
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GLAB_MRS", &mrs.display().to_string()),
+            ("MSMN_GLAB_PIPELINES", &pipelines.display().to_string()),
+            ("MSMN_GLAB_MR", &one.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    let repo = h.repo.clone();
+    init_repo(&repo, "a.txt", "hello\n");
+    git(&repo, &["remote", "add", "origin", "https://gitlab.example.com/lab/api.git"]);
+    let mut c = h.client("forge-state");
+    let mut review = c.board().column("REVIEW").unwrap().settings.clone();
+    review.arrives_on = Arrival::PipelinePasses;
+    assert!(matches!(
+        c.request(Command::SetColumnSettings { name: "REVIEW".into(), settings: review }),
+        Response::Ok
+    ));
+    let mut done = c.board().column("DONE").unwrap().settings.clone();
+    done.arrives_on = Arrival::Merged;
+    assert!(matches!(
+        c.request(Command::SetColumnSettings { name: "DONE".into(), settings: done }),
+        Response::Ok
+    ));
+    let (id, _sid, branch, path) = ready(&mut c, "alpha");
+    let tip = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
+    let at_tip = PathBuf::from(format!("{}.{tip}", pipelines.display()));
+    write(&at_tip, r#"[{"id":1,"status":"running"}]"#);
+    write(&mrs, &mr_json("api", 11, &branch, &tip, None));
+    wait_until(Duration::from_secs(20), "!11 to bind, running", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == id && p.pipeline == "running")
+    });
+    let from = c.board().ticket(id).unwrap().column.clone();
+    assert_ne!(from, "REVIEW");
+
+    // The merge: the MR's own read says merged; the list keeps `opened`,
+    // and its head's pipeline passes, which is what the list-only board
+    // read as a pass to arrive on.
+    let merge_oid = "7a8b9c0d1e2f30415263748596a7b8c9d0e1f203";
+    let read = mr_json("api", 11, &branch, &tip, Some(merge_oid));
+    write(
+        &PathBuf::from(format!("{}.11", one.display())),
+        read.trim().trim_start_matches('[').trim_end_matches(']'),
+    );
+    write(&at_tip, r#"[{"id":1,"status":"success"}]"#);
+    let mut seen: Vec<String> = Vec::new();
+    wait_until(Duration::from_secs(20), "DONE to take the ticket on the MR's own read", || {
+        let column = c.board().ticket(id).unwrap().column.clone();
+        if seen.last() != Some(&column) {
+            seen.push(column.clone());
+        }
+        column == "DONE"
+    });
+    assert!(!seen.iter().any(|c| c == "REVIEW"), "never pulled to REVIEW: {seen:?}");
+    assert!(std::fs::read_to_string(&mrs).unwrap().contains("opened"), "the list never caught up");
+    let pr = prs_of(&mut c).into_iter().find(|p| p.ticket == id).unwrap();
+    assert_eq!(pr.state, "merged", "{pr:?}");
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
