@@ -17496,10 +17496,10 @@ mod tests {
         // too — for a moment, and the card at rest says nothing of it.
         let one = ulid::Ulid(1);
         assert!(app.peek_showing(one) && !app.peek, "opened, the preference untouched");
-        assert_eq!(app.hover_tier_word(one).as_deref(), Some("claude"));
+        assert_eq!(app.card_tier_word(one).as_deref(), Some("claude"));
         app.tier_flash = Some((one, Instant::now() - TIER_FLASH));
         assert!(!app.peek_showing(one));
-        assert_eq!(app.hover_tier_word(one), None, "the default is quiet at rest");
+        assert_eq!(app.card_tier_word(one), None, "the default is quiet at rest");
         app.mode = Mode::Input {
             purpose: InputPurpose::Create {
                 workspace: None,

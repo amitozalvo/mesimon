@@ -313,6 +313,7 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
         width: inner.width,
         now_ms: now_ms(),
         spin: app.spin_frame(),
+        names_key: false,
     };
     let sessions: Vec<&SessionRecord> =
         app.board.sessions.iter().filter(|r| r.ticket == ticket.id && r.state.is_live()).collect();
@@ -348,6 +349,7 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
         } else {
             super::CrownMark::None
         },
+        app.card_tier_word(ticket.id).as_deref(),
         // The preview is a still of the card: its age, whatever `$` says.
         None,
         None,

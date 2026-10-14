@@ -3,13 +3,13 @@
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
 
     Decay treatments      >1y  ▉▉ ⠋ Fix OSC-11 detecti~ >1y  ▉▉ ✓ Grapheme truncation >1y     z Painted accent bar >1y
-     FTR                       ▉▉    BUG   STAGING           ▉▉    RE~   PR~   auth   p1         FTR
+     FTR                  T-1  ▉▉    BUG   STAGING      T-3  ▉▉    RE~   PRO~   auth  T-5        FTR               T-7
                                ▉▉   Rebased onto main,
     Keymap validator      >1y  ▉▉   tests green, ready to       x Flaky e2e on runner >1y
-                               ▉▉   merge.
+                          T-2  ▉▉   merge.                                            T-6
 
                                   ⠋ Adopt drawer import >1y
-
+                                                        T-4
 
 
 

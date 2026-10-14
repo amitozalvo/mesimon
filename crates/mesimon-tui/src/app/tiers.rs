@@ -195,13 +195,13 @@ impl App {
         !self.tiers().custom().is_empty()
     }
 
-    /// The cursor card's tier word, on the hover row (T-789): where its tier
+    /// The open card's tier word, beside its key: where the ticket's tier
     /// is not the default, which is what every card without one runs — and
     /// for a moment after `^n`, whatever it landed on, so a stop on the
     /// default is seen without a card at rest spelling it (T-562, user:
     /// "show default for a second after clicking ^n, so it won't be verbose
     /// when not needed").
-    pub(crate) fn hover_tier_word(&self, ticket: ulid::Ulid) -> Option<String> {
+    pub(crate) fn card_tier_word(&self, ticket: ulid::Ulid) -> Option<String> {
         let book = self.tiers();
         let want = book.of_ticket(ticket);
         (want.id != book.default_tier().id || self.tier_flashing(ticket)).then_some(want.name)

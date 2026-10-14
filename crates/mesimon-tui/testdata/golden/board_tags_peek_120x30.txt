@@ -3,7 +3,7 @@
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
 
     Decay treatments      >1y  ▉▉ ⠋ Fix OSC-11 detecti~ >1y  ▉▉ ✓ Grapheme truncation >1y     z Painted accent bar >1y
-                               ▉▉    BUG   STAGING
+                               ▉▉    BUG   STAGING      T-3
     Keymap validator      >1y  ▉▉   ✻ claude          ⠋ >1y     x Flaky e2e on runner >1y
                                ▉▉   $ bash            ◦ >1y
                                ▉▉   Rebased onto main,
