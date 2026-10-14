@@ -116,7 +116,9 @@ pub enum Pipeline {
     /// The forge ran nothing for this commit.
     None,
     Passed,
-    Running,
+    /// The word names the job the forge says is running, where it said
+    /// (T-794): a queued one where none has started yet.
+    Running(String),
     /// Stopped on a person: a manual job, an environment waiting for its
     /// reviewer. The word names the job where the forge said.
     Waiting(String),
@@ -130,7 +132,7 @@ impl Pipeline {
             Pipeline::Unknown => "unknown",
             Pipeline::None => "none",
             Pipeline::Passed => "passed",
-            Pipeline::Running => "running",
+            Pipeline::Running(_) => "running",
             Pipeline::Waiting(_) => "waiting",
             Pipeline::Failed(_) => "failed",
         }
@@ -139,7 +141,9 @@ impl Pipeline {
     /// The job the word is about, where there is one.
     pub fn job(&self) -> Option<&str> {
         match self {
-            Pipeline::Waiting(j) | Pipeline::Failed(j) if !j.is_empty() => Some(j),
+            Pipeline::Running(j) | Pipeline::Waiting(j) | Pipeline::Failed(j) if !j.is_empty() => {
+                Some(j)
+            }
             _ => None,
         }
     }
@@ -149,7 +153,7 @@ impl Pipeline {
         match word {
             "none" => Pipeline::None,
             "passed" => Pipeline::Passed,
-            "running" => Pipeline::Running,
+            "running" => Pipeline::Running(job),
             "waiting" => Pipeline::Waiting(job),
             "failed" => Pipeline::Failed(job),
             _ => Pipeline::Unknown,
@@ -161,7 +165,7 @@ impl Pipeline {
             Pipeline::Unknown => 0,
             Pipeline::None => 1,
             Pipeline::Passed => 2,
-            Pipeline::Running => 3,
+            Pipeline::Running(_) => 3,
             Pipeline::Waiting(_) => 4,
             Pipeline::Failed(_) => 5,
         }
@@ -285,10 +289,13 @@ pub fn parse_gh(repo: &str, json: &str) -> Vec<Pr> {
 }
 
 /// The one `pipeline` word for a PR's `statusCheckRollup`: the worst of its
-/// check runs and status contexts, a failing one named.
+/// check runs and status contexts, a failing one named, and a running one
+/// named by the first check in progress, else the first queued (T-794).
 pub fn gh_rollup(rollup: Option<&Value>) -> Pipeline {
     let Some(Value::Array(entries)) = rollup else { return Pipeline::None };
     let mut fold = Pipeline::None;
+    // Whether the running word's job is one in progress, not one queued.
+    let mut started = false;
     for e in entries {
         let name = job_word(
             e.get("name").or_else(|| e.get("context")).and_then(Value::as_str).unwrap_or_default(),
@@ -304,8 +311,17 @@ pub fn gh_rollup(rollup: Option<&Value>) -> Pipeline {
             | (_, _, "FAILURE" | "ERROR") => Pipeline::Failed(name),
             (_, "ACTION_REQUIRED", _) | ("WAITING", _, _) => Pipeline::Waiting(name),
             ("COMPLETED", _, _) | (_, _, "SUCCESS") => Pipeline::Passed,
-            // Queued, in progress, pending, requested, expected.
-            _ => Pipeline::Running,
+            ("IN_PROGRESS", _, _) if !started && matches!(fold, Pipeline::Running(_)) => {
+                started = true;
+                fold = Pipeline::Running(name);
+                continue;
+            }
+            ("IN_PROGRESS", _, _) => {
+                started = true;
+                Pipeline::Running(name)
+            }
+            // Queued, pending, requested, expected.
+            _ => Pipeline::Running(name),
         };
         fold = fold.worst(one);
     }
@@ -431,7 +447,8 @@ pub fn gitlab_pipeline_id(json: &str) -> Option<u64> {
 
 /// The job a GitLab pipeline stopped on, out of its `pipelines/:id/jobs`
 /// answer (T-772): the first job at `status` — `manual` for a waiting
-/// pipeline, `failed` for a failed one — a job allowed to fail only where
+/// pipeline, `failed` for a failed one, `running` for one in flight
+/// (T-794) — a job allowed to fail only where
 /// no other did. Empty where none is.
 pub fn parse_gitlab_job(json: &str, status: &str) -> String {
     let Ok(Value::Array(jobs)) = serde_json::from_str::<Value>(json) else { return String::new() };
@@ -447,11 +464,12 @@ pub fn parse_gitlab_job(json: &str, status: &str) -> String {
 }
 
 impl Pipeline {
-    /// The GitLab job status that names this word's job: `manual` for a
-    /// wait, `failed` for a failure, `None` for a word with no job or one
-    /// already named.
+    /// The GitLab job status that names this word's job: `running` for a
+    /// run (T-794), `manual` for a wait, `failed` for a failure, `None` for
+    /// a word with no job or one already named.
     pub fn gitlab_job_status(&self) -> Option<&'static str> {
         match self {
+            Pipeline::Running(j) if j.is_empty() => Some("running"),
             Pipeline::Waiting(j) if j.is_empty() => Some("manual"),
             Pipeline::Failed(j) if j.is_empty() => Some("failed"),
             _ => None,
@@ -461,6 +479,7 @@ impl Pipeline {
     /// The same word, about `job`.
     pub fn with_job(self, job: String) -> Pipeline {
         match self {
+            Pipeline::Running(_) => Pipeline::Running(job),
             Pipeline::Waiting(_) => Pipeline::Waiting(job),
             Pipeline::Failed(_) => Pipeline::Failed(job),
             other => other,
@@ -476,7 +495,7 @@ pub fn gitlab_status(status: &str) -> Pipeline {
         "manual" => Pipeline::Waiting(String::new()),
         "skipped" => Pipeline::None,
         "created" | "waiting_for_resource" | "preparing" | "pending" | "running" | "scheduled" => {
-            Pipeline::Running
+            Pipeline::Running(String::new())
         }
         _ => Pipeline::Unknown,
     }
@@ -779,7 +798,7 @@ pub fn entry_refusal(set: Option<&[Pr]>, opened_here: Option<bool>) -> Option<St
         Pipeline::Passed => None,
         Pipeline::Unknown => Some("pipeline not read".into()),
         Pipeline::None => Some("no pipeline ran".into()),
-        Pipeline::Running => Some("pipeline running".into()),
+        Pipeline::Running(_) => Some("pipeline running".into()),
         Pipeline::Waiting(job) if job.is_empty() => Some("pipeline waiting".into()),
         Pipeline::Waiting(job) => Some(format!("pipeline waiting: {job}")),
         Pipeline::Failed(job) if job.is_empty() => Some("pipeline failed".into()),
@@ -1010,7 +1029,15 @@ mod tests {
         let running = v(
             r#"[{"name":"a","status":"QUEUED"},{"name":"b","status":"COMPLETED","conclusion":"SUCCESS"}]"#,
         );
-        assert_eq!(gh_rollup(Some(&running)), Pipeline::Running);
+        assert_eq!(gh_rollup(Some(&running)), Pipeline::Running("a".into()));
+        let started = v(
+            r#"[{"name":"lint","status":"QUEUED"},{"name":"build","status":"IN_PROGRESS"},{"name":"test","status":"IN_PROGRESS"}]"#,
+        );
+        assert_eq!(
+            gh_rollup(Some(&started)),
+            Pipeline::Running("build".into()),
+            "the first check in progress names a running pipeline over a queued one"
+        );
         let waiting =
             v(r#"[{"name":"deploy-prod","status":"WAITING"},{"name":"b","status":"IN_PROGRESS"}]"#);
         assert_eq!(gh_rollup(Some(&waiting)), Pipeline::Waiting("deploy-prod".into()));
@@ -1073,7 +1100,7 @@ mod tests {
             Pipeline::Passed
         );
         assert_eq!(parse_gitlab_pipelines("[]"), Pipeline::None);
-        assert_eq!(gitlab_status("running"), Pipeline::Running);
+        assert_eq!(gitlab_status("running"), Pipeline::Running(String::new()));
         assert_eq!(gitlab_status("failed"), Pipeline::Failed(String::new()));
     }
 
@@ -1185,7 +1212,19 @@ mod tests {
         assert_eq!(waiting.gitlab_job_status(), Some("manual"));
         assert_eq!(Pipeline::Failed(String::new()).gitlab_job_status(), Some("failed"));
         assert_eq!(Pipeline::Failed("x".into()).gitlab_job_status(), None, "named already");
-        assert_eq!(Pipeline::Running.gitlab_job_status(), None);
+        assert_eq!(Pipeline::Running(String::new()).gitlab_job_status(), Some("running"));
+        assert_eq!(Pipeline::Running("build".into()).gitlab_job_status(), None);
+        assert_eq!(
+            Pipeline::Running(String::new()).with_job("build".into()),
+            Pipeline::Running("build".into())
+        );
+        assert_eq!(
+            parse_gitlab_job(
+                r#"[{"name":"lint","status":"success"},{"name":"test linux","status":"running"}]"#,
+                "running"
+            ),
+            "test linux"
+        );
         assert_eq!(waiting.with_job("deploy".into()), Pipeline::Waiting("deploy".into()));
     }
 
@@ -1253,7 +1292,7 @@ mod tests {
         assert_eq!(merged_at(&open, "o/r", "a").map(|p| p.number), Some(1));
         assert_eq!(merged_at(&open, "o/x", "a"), None);
         let mut running = pr("o/r", 4, PrState::Open, "d", 40);
-        running.pipeline = Pipeline::Running;
+        running.pipeline = Pipeline::Running(String::new());
         let mut failed = pr("o/r", 5, PrState::Draft, "e", 50);
         failed.pipeline = Pipeline::Failed("t".into());
         assert_eq!(pipeline_of(&[failed.clone(), running.clone()]), Pipeline::Failed("t".into()));
@@ -1399,7 +1438,7 @@ mod tests {
         );
         assert_eq!(entry_refusal(Some(&with(Pipeline::Passed)), Some(true)), None);
         assert_eq!(
-            entry_refusal(Some(&with(Pipeline::Running)), None).as_deref(),
+            entry_refusal(Some(&with(Pipeline::Running("build".into()))), None).as_deref(),
             Some("pipeline running")
         );
         // Bound and the forge unreachable: its reading is unknown, and a

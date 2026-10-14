@@ -149,7 +149,10 @@ pub(super) fn pr_clauses(p: &mesimon_core::command::PrItem) -> Vec<String> {
             words.push(format!("pipeline waiting: {}", scrub_cells(job, false)))
         }
         ("waiting", None) => words.push("pipeline waiting".into()),
-        ("running", _) => words.push("pipeline running".into()),
+        ("running", Some(job)) => {
+            words.push(format!("pipeline running: {}", scrub_cells(job, false)))
+        }
+        ("running", None) => words.push("pipeline running".into()),
         ("passed", _) => words.push("pipeline passed".into()),
         _ => {}
     }

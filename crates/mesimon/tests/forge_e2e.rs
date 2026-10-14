@@ -609,6 +609,17 @@ fn the_crown_hears_the_forges_edges() {
     wait_until(Duration::from_secs(20), "the PR to bind", || {
         prs_of(&mut c).iter().any(|p| p.ticket == w && p.number == 42)
     });
+    // The card names the check in progress (T-794); the agent's read keeps
+    // its job for a wait or a failure.
+    let row = prs_of(&mut c).into_iter().find(|p| p.ticket == w && p.number == 42).unwrap();
+    assert_eq!((row.pipeline.as_str(), row.job.as_deref()), ("running", Some("test")));
+    match c.send(Principal::Agent { session: ws }, Command::AgentGetTicket) {
+        Response::AgentTicket { ticket } => {
+            assert_eq!(ticket.prs[0].pipeline, "running", "{:?}", ticket.prs);
+            assert_eq!(ticket.prs[0].job, None, "{:?}", ticket.prs);
+        }
+        other => panic!("get_ticket: {other:?}"),
+    }
     let forge_wakes = || {
         std::fs::read_to_string(&feed_path)
             .unwrap_or_default()

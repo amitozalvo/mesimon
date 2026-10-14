@@ -238,6 +238,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         let fresh = if !(selected || held || left) { app.card_news(t.id) } else { None };
         // Its pull requests, for the line under the title (T-739).
         let brief = if left { Vec::new() } else { app.pr_brief(t.id) };
+        // And what the newest of them is at, beside its mark (T-794).
+        let pr_words = if brief.is_empty() { None } else { card::pr_words(&app.prs_of(t.id)) };
         // A held ask's keys ride the cursor card (T-551) — the subject the
         // frame's `Ctx` was built for, so the keys it names act on THIS card.
         let keys_ctx = app.frame_ctx();
@@ -293,15 +295,19 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 app.prefs.summary == crate::prefs::SummaryShow::Full,
                 fresh.as_ref().map(|(words, ago, crown)| (words.as_str(), *ago, *crown)),
                 &brief,
+                pr_words.as_ref().map(|(w, running)| (w.as_str(), *running)),
             )
         };
         let mut lines = render(open, peek.as_deref());
         let t_cells = usize::from(ctx.width).saturating_sub(crate::tags::BAR_WIDTH + 2);
         // Line 2, or an open card's last line (T-789).
         let spans = card::brief_spans(ctx.theme, &brief, t_cells);
+        // The words beside the marks (T-794) are the same click, where they
+        // hold the line: a resting card's new reply does otherwise.
+        let words = pr_words.as_ref().filter(|_| open || fresh.is_none()).map(|(w, _)| w.as_str());
         let prs_at = [1, lines.len().saturating_sub(1)]
             .into_iter()
-            .find_map(|row| brief_at(lines.get(row), &spans).map(|at| (row, at)));
+            .find_map(|row| brief_at(lines.get(row), &spans, words).map(|at| (row, at)));
         // The card is drawn WHOLE first — glyph, title, sessions, peek — and
         // the field is added under it. That order is the point: what you are
         // about to talk to stays legible while you type at it.
@@ -825,8 +831,14 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
 
 /// Where `brief` (`card::brief_spans`) stands on `line`, the card's second
 /// line, as its x offset and width — `None` where the line does not end in
-/// it and its one-cell margin (a trail, the delete flash, no PRs).
-fn brief_at(line: Option<&Line<'_>>, brief: &[Span<'_>]) -> Option<(u16, u16)> {
+/// it and its one-cell margin (a trail, the delete flash, no PRs). Where
+/// `words` (`card::pr_words`) stand before it, cut or whole, the span
+/// starts at them (T-794).
+fn brief_at(
+    line: Option<&Line<'_>>,
+    brief: &[Span<'_>],
+    words: Option<&str>,
+) -> Option<(u16, u16)> {
     let spans = &line?.spans;
     let n = brief.len();
     if n == 0 || spans.len() < n + 1 {
@@ -838,7 +850,21 @@ fn brief_at(line: Option<&Line<'_>>, brief: &[Span<'_>]) -> Option<(u16, u16)> {
     }
     let x = u16::try_from(super::spans_width(&spans[..at])).ok()?;
     let w = u16::try_from(super::spans_width(brief)).ok()?;
-    Some((x, w))
+    let Some(words) = words else { return Some((x, w)) };
+    // The words end where the padding before the marks begins.
+    let before: String = spans[..at.saturating_sub(1)].iter().map(|s| s.content.as_ref()).collect();
+    let start = before.char_indices().map(|(i, _)| i).find(|&i| {
+        let tail = &before[i..];
+        let cut = tail.strip_suffix('~').unwrap_or(tail);
+        before[..i].ends_with(' ')
+            && !cut.is_empty()
+            && !cut.starts_with(' ')
+            && words.starts_with(cut)
+    });
+    match start.and_then(|i| u16::try_from(before[..i].width()).ok()) {
+        Some(wx) if wx < x => Some((wx, x + w - wx)),
+        _ => Some((x, w)),
+    }
 }
 
 /// The column of the first `glyph` on `line`, in cells from its start.

@@ -7444,7 +7444,16 @@ impl Daemon {
                             url: p.url.clone(),
                             state: p.state.word().into(),
                             pipeline: p.pipeline.word().into(),
-                            job: p.pipeline.job().map(mesimon_core::text::scrub_text),
+                            // A running job is the card's word (T-794),
+                            // not the agent's: its job names a wait or a
+                            // failure.
+                            job: p
+                                .pipeline
+                                .job()
+                                .filter(|_| {
+                                    !matches!(p.pipeline, mesimon_core::forge::Pipeline::Running(_))
+                                })
+                                .map(mesimon_core::text::scrub_text),
                             conflict: p.conflict,
                             review: p.review.word().into(),
                             deployed: p.deployed.clone(),

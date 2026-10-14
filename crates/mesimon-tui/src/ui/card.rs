@@ -287,6 +287,39 @@ pub(super) fn brief_spans(
     spans
 }
 
+/// What the card's pull-request line says in the room left of its marks
+/// (T-794), about the newest open PR, else the newest — the leftmost mark:
+/// the page's clauses (`ticket::pr_clauses`) in fewer words, since the mark
+/// beside them says it is a pipeline, and `draft` last, the one state no
+/// mark spells. A running pipeline is its job's name alone, or `running`,
+/// and the flag says so: the line shimmers for it. `None` with nothing to
+/// say.
+pub(super) fn pr_words(prs: &[&mesimon_core::command::PrItem]) -> Option<(String, bool)> {
+    use mesimon_core::text::scrub_cells;
+    let p = prs.iter().find(|p| matches!(p.state.as_str(), "open" | "draft")).or(prs.first())?;
+    let mut words = Vec::new();
+    let job = p.job.as_deref().map(|j| scrub_cells(j, false)).filter(|j| !j.is_empty());
+    match (p.pipeline.as_str(), job) {
+        ("running", Some(job)) => words.push(job),
+        ("running", None) => words.push("running".into()),
+        (word @ ("failed" | "waiting"), Some(job)) => words.push(format!("{word}: {job}")),
+        (word @ ("failed" | "waiting" | "passed"), _) => words.push(word.into()),
+        _ => {}
+    }
+    words.extend(super::ticket::pr_clauses(p).into_iter().filter(|c| !c.starts_with("pipeline")));
+    if p.state == "draft" {
+        words.push(p.state.clone());
+    }
+    if words.is_empty() {
+        return None;
+    }
+    Some((crate::text::one_line(&words.join(" ∙ ")), p.pipeline == "running"))
+}
+
+/// The fewest cells the PR line's words are drawn in (T-794); in less, the
+/// marks stand alone.
+const PR_WORDS_MIN: usize = 6;
+
 /// Render one card. `selected` is the cursor card (accordion), `held` is the
 /// MOVE ghost — the held card carries `bar.cursor` in the target column
 /// (06 §10.13). `marquee_ms` is ms since the cursor landed on this card
@@ -441,6 +474,7 @@ pub(super) fn render(
     summary_underline: bool,
     fresh: Option<(&str, u64, bool)>,
     prs: &[(String, Register)],
+    pr_words: Option<(&str, bool)>,
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
     let t_cells = (ctx.width as usize).saturating_sub(BAR_WIDTH + 2);
@@ -847,8 +881,37 @@ pub(super) fn render(
     // the reply and the summary, which each give up a row for it: the card
     // reads title, then what the agent said, then where the work went.
     let brief_last = open && !held && brief_w > 0;
+    // Where no reply holds the line (T-794), the room left of the marks
+    // says what the newest PR is at — the running job, the failing one, a
+    // conflict, a review — in the marks' quiet ink, a running pipeline's
+    // words under a slow shimmer. Cut against the marks like a reply.
+    let words_row = |row: &mut Vec<Span<'static>>| {
+        let Some((words, running)) = pr_words else { return };
+        let room = t_cells.saturating_sub(glyph_cells + brief_room + 1);
+        if room < PR_WORDS_MIN {
+            return;
+        }
+        let words = truncate(words, room);
+        row.push(Span::raw(" ".repeat(1 + glyph_cells)));
+        let ramp = if cursorish { &theme.sel } else { &theme.rest };
+        if !running {
+            row.push(Span::styled(words, Style::default().fg(ramp.dim2)));
+            return;
+        }
+        use unicode_segmentation::UnicodeSegmentation;
+        let cells = words.width();
+        let mut at = 0;
+        for g in words.graphemes(true) {
+            row.push(Span::styled(
+                g.to_string(),
+                theme.pr_shimmer(ctx.now_ms, cells, at, ramp.dim2, ramp.dim1),
+            ));
+            at += g.width();
+        }
+    };
     let brief_row = |brief: Vec<Span<'static>>| {
         let mut row = bar_spans();
+        words_row(&mut row);
         let used = super::spans_width(&row);
         row.push(Span::raw(" ".repeat((ctx.width as usize).saturating_sub(used + brief_w + 1))));
         row.extend(brief);

@@ -25603,3 +25603,34 @@ the ticket's branch: `Attached`, `base_oid` the merge-base with the base branch,
 script runs again (it is idempotent: `[ -e target ] && exit 0`). A tree marked for another
 ticket, or none, is refused as before. A workspace provision (T-368) still refuses its
 container in that case. Test: `worktree::provision_merge_teardown_roundtrip`.
+
+## T-794 — the pull-request line says what the newest PR is at (2026-10-15)
+
+The author: "show more information on PR line — if pipeline running, show the current job
+that's running with a slow shimmer; make use of the free space there unless there's a message
+preview rendered right now and user is not peeking". The T-739 line held only marks and
+numbers, right-aligned, with the room left of them blank. Where no new reply holds that room
+(a resting card's T-720 row), it now carries `card::pr_words`: about the newest open PR, else
+the newest — the leftmost mark — its pipeline in fewer words than the page (`build-linux`
+alone while it runs, `failed: test-linux`, `waiting: deploy`, `passed`), then the page's
+conflict, review and deployed clauses, then `draft`, the one state no mark spells (a merged
+PR's `●` says merged). Cut against the marks like a reply; under `PR_WORDS_MIN` cells the marks
+stand alone. An open card's last-row line (T-789) carries the words too, since its reply is
+drawn whole above. The words are the line's click as well (`board::brief_at` widens the span
+leftward to them).
+
+**A running pipeline names its job.** `Pipeline::Running` carries a `String`, as the wait and
+the failure do. GitHub's rollup names the first check `IN_PROGRESS`, else the first queued one;
+GitLab's `named_job` reads the pipeline's jobs for a `running` one, one more call per read of a
+running pipeline (every 15 s, T-781). The name rides the snapshot's existing `job` and
+`forge.json`'s, so no wire or schema change; an older TUI ignores it. `get_ticket`'s
+`AgentPrView` drops it on purpose: an agent's `job` stays a wait's or a failure's, and the
+crown's edges never turn on a running job's name.
+
+**The shimmer** (`Theme::pr_shimmer`): a crest five cells wide eases across the words in
+2.4 s, then rests 1.6 s, lifting the row's `dim2` toward its `dim1` — grey on grey, so the
+one-saturated-colour law stands. Below TrueColor it steps; mono holds still. It rides the
+100 ms frame, never `animating()`'s 16 ms. Tests: `ui::a_cards_pr_line_says_what_the_newest_pr_is_at`,
+`theme::a_running_pipelines_shimmer_crosses_slowly_then_rests`, `forge::the_rollup_folds_to_the_loudest_word`,
+and `forge_e2e::the_crown_hears_the_forges_edges` (the snapshot names the check, `get_ticket`
+does not).

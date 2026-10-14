@@ -814,8 +814,8 @@ fn gitlab_pipeline(r: &RepoQuery, sha: &str) -> Pipeline {
     }
 }
 
-/// A GitLab pipeline's wait or failure named by one more read, of its jobs
-/// (T-772); a failed read, or any other word, leaves it as it is.
+/// A GitLab pipeline's run, wait or failure named by one more read, of its
+/// jobs (T-772, T-794); a failed read, or any other word, leaves it as it is.
 fn named_job(r: &RepoQuery, pipeline: Pipeline, id: u64) -> Pipeline {
     let Some(status) = pipeline.gitlab_job_status() else { return pipeline };
     let project = r.remote.path.replace('/', "%2F");
@@ -1158,7 +1158,7 @@ impl State {
             .filter(|(_, set)| {
                 set.iter().any(|p| {
                     p.state != PrState::Closed
-                        && matches!(p.pipeline, Pipeline::Running | Pipeline::Waiting(_))
+                        && matches!(p.pipeline, Pipeline::Running(_) | Pipeline::Waiting(_))
                 })
             })
             .map(|(t, _)| *t)
@@ -1519,12 +1519,14 @@ mod tests {
 
     #[test]
     fn the_delta_says_what_moved_and_nothing_on_the_first_read() {
-        let before =
-            [pr(1, PrState::Open, Pipeline::Running), pr(2, PrState::Open, Pipeline::None)];
+        let before = [
+            pr(1, PrState::Open, Pipeline::Running(String::new())),
+            pr(2, PrState::Open, Pipeline::None),
+        ];
         let after = [
             pr(1, PrState::Merged, Pipeline::Passed),
             pr(2, PrState::Open, Pipeline::Failed("test-linux".into())),
-            pr(3, PrState::Open, Pipeline::Running),
+            pr(3, PrState::Open, Pipeline::Running(String::new())),
         ];
         assert!(delta(None, &after).is_empty());
         assert_eq!(
@@ -1539,7 +1541,7 @@ mod tests {
     fn the_edge_between_two_reads_names_what_a_column_waits_for() {
         let mut m = pr(1, PrState::Merged, Pipeline::Passed);
         m.merge_oid = "m1".into();
-        let old = [pr(1, PrState::Open, Pipeline::Running)];
+        let old = [pr(1, PrState::Open, Pipeline::Running(String::new()))];
         let e = edge(&old, &[m.clone()]);
         assert!(e.merged && e.opened.is_empty() && e.deployed.is_empty());
         assert!(!e.passed, "the merge commit's pipeline is no pass (T-767)");
@@ -1579,7 +1581,7 @@ mod tests {
             now,
             |p| {
                 asked.push(p.merge_oid.clone());
-                Pipeline::Running
+                Pipeline::Running(String::new())
             },
             |p| {
                 deploys.push(p.merge_oid.clone());
@@ -1589,14 +1591,14 @@ mod tests {
         assert_eq!((asked, deploys), (vec!["m2".to_string()], vec!["m2".to_string()]));
         assert_eq!(
             (&set[0].pipeline, &set[0].deployed[..]),
-            (&Pipeline::Running, &["staging".to_string()][..])
+            (&Pipeline::Running(String::new()), &["staging".to_string()][..])
         );
         assert_eq!(set[1].pipeline, Pipeline::Passed, "the older PR keeps its own");
         assert_eq!(set[1].deployed, ["staging", "production"]);
 
         // An unsettled older PR is read while its merge is recent, and keeps
         // what was read once the day is past; a failed read is no reading.
-        q.commit_pipelines.insert(key("m1"), Pipeline::Running);
+        q.commit_pipelines.insert(key("m1"), Pipeline::Running(String::new()));
         q.deployed.insert(key("m1"), vec!["staging".into()]);
         let mut set = [merged(2, "m2", now - 1000), merged(1, "m1", now - 2000)];
         let mut asked = 0;
@@ -1611,7 +1613,11 @@ mod tests {
             |_| Vec::new(),
         );
         assert_eq!(asked, 2);
-        assert_eq!(set[1].pipeline, Pipeline::Running, "an unanswered call keeps the last read");
+        assert_eq!(
+            set[1].pipeline,
+            Pipeline::Running(String::new()),
+            "an unanswered call keeps the last read"
+        );
         let mut set = [merged(2, "m2", now - 1000), merged(1, "m1", now - SUPERSEDED_READ_MS)];
         let asked = std::cell::RefCell::new(Vec::<String>::new());
         merged_reads(
@@ -1628,7 +1634,7 @@ mod tests {
             },
         );
         assert_eq!(*asked.borrow(), ["m2", "m2"], "a superseded day-old merge is not read");
-        assert_eq!(set[1].pipeline, Pipeline::Running);
+        assert_eq!(set[1].pipeline, Pipeline::Running(String::new()));
         assert_eq!(set[1].deployed, ["staging"]);
 
         // The newer PR reaching an environment the older one stands in is
@@ -1659,7 +1665,7 @@ mod tests {
             p.deployed = deployed.iter().map(|d| d.to_string()).collect();
             p
         };
-        let running = [merged(Pipeline::Running, &["staging"])];
+        let running = [merged(Pipeline::Running(String::new()), &["staging"])];
         let after = [merged(Pipeline::Passed, &["staging", "production"])];
         let e = edge(&running, &after);
         assert!(!e.passed);
@@ -1681,8 +1687,9 @@ mod tests {
             p.forge = Forge::GitLab;
             p
         };
-        let before = [open(Pipeline::Running), merged(Pipeline::Running, &[])];
-        let now = [open(Pipeline::Passed), merged(Pipeline::Running, &[])];
+        let before =
+            [open(Pipeline::Running(String::new())), merged(Pipeline::Running(String::new()), &[])];
+        let now = [open(Pipeline::Passed), merged(Pipeline::Running(String::new()), &[])];
         let e = edge(&before, &now);
         assert!(e.passed);
         assert_eq!(e.news(&now), ["pipeline passed !2"]);
@@ -1698,7 +1705,7 @@ mod tests {
     fn an_opening_is_said_once() {
         let mut s = State::default();
         let t = ulid::Ulid::new();
-        let one = pr(1, PrState::Open, Pipeline::Running);
+        let one = pr(1, PrState::Open, Pipeline::Running(String::new()));
         assert!(s.opens(t, std::slice::from_ref(&one)), "the first read holds it");
         assert!(!s.opens(t, std::slice::from_ref(&one)));
         assert!(!s.opens(t, &[]));
@@ -1763,7 +1770,7 @@ mod tests {
         // A pass is every open PR's.
         let running = [gl("g/web", 1, PrState::Open, &[]), {
             let mut p = gl("g/api", 3, PrState::Open, &[]);
-            p.pipeline = Pipeline::Running;
+            p.pipeline = Pipeline::Running(String::new());
             p
         }];
         assert!(!edge(&running, &running).passed);
@@ -1782,7 +1789,7 @@ mod tests {
         let e = edge(&was, &pushed);
         assert!(e.passed);
         assert_eq!(e.news(&pushed), ["pipeline passed #5"]);
-        pushed[0].pipeline = Pipeline::Running;
+        pushed[0].pipeline = Pipeline::Running(String::new());
         assert!(!edge(&was, &pushed).passed);
     }
 
@@ -1820,7 +1827,7 @@ mod tests {
             p.forge = Forge::GitLab;
             p
         };
-        let running = gl(1, Pipeline::Running);
+        let running = gl(1, Pipeline::Running(String::new()));
         let words = |old: &[Pr], new: &[Pr]| edge(old, new).news(new);
         assert_eq!(
             words(std::slice::from_ref(&running), &[gl(1, Pipeline::Passed)]),
@@ -1847,7 +1854,7 @@ mod tests {
             words(std::slice::from_ref(&running), &[gl(1, Pipeline::Failed("test".into()))]),
             ["pipeline failed !1: test"]
         );
-        let mut conflicted = gl(1, Pipeline::Running);
+        let mut conflicted = gl(1, Pipeline::Running(String::new()));
         conflicted.conflict = true;
         assert_eq!(
             words(std::slice::from_ref(&running), std::slice::from_ref(&conflicted)),
@@ -1857,7 +1864,7 @@ mod tests {
             words(std::slice::from_ref(&conflicted), std::slice::from_ref(&running)),
             ["conflict cleared !1"]
         );
-        let mut approved = gl(1, Pipeline::Running);
+        let mut approved = gl(1, Pipeline::Running(String::new()));
         approved.review = Review::Approved;
         assert_eq!(
             words(std::slice::from_ref(&running), std::slice::from_ref(&approved)),
@@ -1878,13 +1885,13 @@ mod tests {
         assert!(!edge(std::slice::from_ref(&running), &[touched]).any());
         // A PR bound already conflicted and approved says both (T-769);
         // bound running and clean, its opening alone, which is not news.
-        let mut fresh = gl(2, Pipeline::Running);
+        let mut fresh = gl(2, Pipeline::Running(String::new()));
         fresh.conflict = true;
         fresh.review = Review::Approved;
         let e = edge(std::slice::from_ref(&running), &[fresh.clone(), running.clone()]);
         assert!(!e.opened.is_empty());
         assert_eq!(e.news(&[fresh, running.clone()]), ["conflict !2", "review approved !2"]);
-        let quiet = gl(2, Pipeline::Running);
+        let quiet = gl(2, Pipeline::Running(String::new()));
         let e = edge(std::slice::from_ref(&running), &[quiet.clone(), running.clone()]);
         assert!(!e.opened.is_empty());
         assert!(e.news(&[quiet, running.clone()]).is_empty());
@@ -1933,7 +1940,7 @@ mod tests {
         let now = [gl(2, PrState::Open, Pipeline::Waiting("deploy".into())), red.clone()];
         assert_eq!(edge(std::slice::from_ref(&red), &now).news(&now), ["waiting on deploy !2"]);
         // C1: !3 bound in conflict, with changes requested.
-        let mut three = gl(3, PrState::Open, Pipeline::Running);
+        let mut three = gl(3, PrState::Open, Pipeline::Running(String::new()));
         three.conflict = true;
         three.review = Review::ChangesRequested;
         let now = [three.clone()];
@@ -1954,7 +1961,7 @@ mod tests {
     fn a_conflict_cleared_follows_a_conflict_said() {
         let t = ulid::Ulid::new();
         let mut s = State::default();
-        let clean = pr(4, PrState::Open, Pipeline::Running);
+        let clean = pr(4, PrState::Open, Pipeline::Running(String::new()));
         let mut stuck = clean.clone();
         stuck.conflict = true;
         let said = |s: &mut State, old: &Pr, new: &Pr| {
@@ -2051,11 +2058,11 @@ mod tests {
         };
         let open = [
             gl("g/web", 2, PrState::Open, Pipeline::Passed),
-            gl("g/api", 8, PrState::Open, Pipeline::Running),
+            gl("g/api", 8, PrState::Open, Pipeline::Running(String::new())),
         ];
         let merged = [
-            gl("g/web", 2, PrState::Merged, Pipeline::Running),
-            gl("g/api", 8, PrState::Open, Pipeline::Running),
+            gl("g/web", 2, PrState::Merged, Pipeline::Running(String::new())),
+            gl("g/api", 8, PrState::Open, Pipeline::Running(String::new())),
         ];
         let e = edge(&open, &merged);
         assert_eq!(e.landed, ["!2"]);
@@ -2157,14 +2164,14 @@ mod tests {
         let mut s = State::default();
         let (open, merged, settled, closed) =
             (ulid::Ulid::new(), ulid::Ulid::new(), ulid::Ulid::new(), ulid::Ulid::new());
-        s.sets.insert(open, vec![pr(1, PrState::Open, Pipeline::Running)]);
+        s.sets.insert(open, vec![pr(1, PrState::Open, Pipeline::Running(String::new()))]);
         // Deployed to staging, waiting on the manual production job.
         s.sets.insert(
             merged,
             vec![pr(2, PrState::Merged, Pipeline::Waiting("deploy:production".into()))],
         );
         s.sets.insert(settled, vec![pr(3, PrState::Merged, Pipeline::Passed)]);
-        s.sets.insert(closed, vec![pr(4, PrState::Closed, Pipeline::Running)]);
+        s.sets.insert(closed, vec![pr(4, PrState::Closed, Pipeline::Running(String::new()))]);
         assert_eq!(s.busy(), HashSet::from([open, merged]));
         // The minute's pass is not due, the busy repository is at 15 s.
         s.last = Some(Instant::now());
@@ -2327,9 +2334,9 @@ mod tests {
     /// that answered says what it says now (T-752).
     #[test]
     fn a_failed_call_carries_its_repositorys_prs_over() {
-        let mut other = pr(9, PrState::Open, Pipeline::Running);
+        let mut other = pr(9, PrState::Open, Pipeline::Running(String::new()));
         other.repo = "o/other".into();
-        let old = vec![pr(1, PrState::Open, Pipeline::Running), other.clone()];
+        let old = vec![pr(1, PrState::Open, Pipeline::Running(String::new())), other.clone()];
         let new = vec![pr(1, PrState::Merged, Pipeline::Passed)];
         let set = carry(Some(&old), new.clone(), &["o/other"]);
         assert_eq!(set.len(), 2);

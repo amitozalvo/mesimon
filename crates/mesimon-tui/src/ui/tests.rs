@@ -8431,6 +8431,77 @@ fn pr_on(ticket: ulid::Ulid) -> mesimon_core::command::PrItem {
     }
 }
 
+/// T-794: where no reply holds it, the pull-request line says what the
+/// newest open PR is at in the room left of its marks — a running
+/// pipeline's job by name, a failure's, a conflict, a review — and the
+/// words are the dialog's click too. A new reply keeps the line; an open
+/// card, whose reply is drawn whole, gives it back.
+#[test]
+fn a_cards_pr_line_says_what_the_newest_pr_is_at() {
+    let under = |app: &App, title: &str| {
+        let lines = render(app, 120, 30);
+        let y = lines.iter().position(|l| l.contains(title)).expect(title);
+        lines[y + 1].clone()
+    };
+    let mut app = app_graphite(fixture(false));
+    let mut pr = pr_on(ulid_n(5));
+    pr.pipeline = "running".into();
+    pr.job = Some("build-linux".into());
+    let mut merged = pr_on(ulid_n(5));
+    (merged.number, merged.state, merged.pipeline) = (6, "merged".into(), "failed".into());
+    app.prs = vec![merged, pr.clone()];
+    let line = under(&app, "Grapheme truncation");
+    assert!(line.contains("build-linux     ✗!6 ◴!7"), "the open PR's running job: {line}");
+    // Each other word the PR can be at, cut against the marks.
+    let wide = |app: &App| {
+        let lines = render(app, 300, 30);
+        let y = lines.iter().position(|l| l.contains("Grapheme truncation")).expect("T-5");
+        lines[y + 1].clone()
+    };
+    assert!(wide(&app).contains("build-linux "), "{}", wide(&app));
+    app.prs[1].pipeline = "running".into();
+    app.prs[1].job = None;
+    assert!(wide(&app).contains("running "), "{}", wide(&app));
+    (app.prs[1].pipeline, app.prs[1].job) = ("failed".into(), Some("test-linux".into()));
+    app.prs[1].review = "changes_requested".into();
+    assert!(wide(&app).contains("failed: test-linux ∙ cha~  ✗!6 ✗!7"), "{}", wide(&app));
+    (app.prs[1].pipeline, app.prs[1].job, app.prs[1].conflict) = ("passed".into(), None, true);
+    (app.prs[1].state, app.prs[1].review) = ("draft".into(), "none".into());
+    assert!(wide(&app).contains("passed ∙ conflicts ∙ dra~"), "{}", wide(&app));
+    // No open PR: the newest, merged — its mark says so — says where it
+    // went.
+    app.prs.retain(|p| p.number == 6);
+    (app.prs[0].pipeline, app.prs[0].deployed) = ("passed".into(), vec!["staging".into()]);
+    assert!(wide(&app).contains("passed ∙ deployed: staging"), "{}", wide(&app));
+    // The words open the dialog, as the marks do.
+    app.prs = vec![pr];
+    let lines = render(&app, 120, 30);
+    let at = spot_of(&lines, "build-linux");
+    click(&mut app, at);
+    assert!(matches!(app.mode, Mode::PullRequests { ticket, .. } if ticket == ulid_n(5)));
+
+    // A new reply holds the line: the marks alone beside it.
+    let path = write_transcript("pr-words", &reply_record("Rebased onto main, tests green."));
+    let mut b = fixture(false);
+    attach_transcript(&mut b, &path);
+    let mut app = app_graphite(b);
+    app.scan_spoke();
+    app.spoke.get_mut(&ulid_n(3)).expect("T-3 spoke").since_ms = 0;
+    let mut pr = pr_on(ulid_n(3));
+    (pr.pipeline, pr.job) = ("running".into(), Some("build-linux".into()));
+    app.prs = vec![pr];
+    let line = under(&app, "Fix OSC-11");
+    assert!(line.contains("Rebased") && !line.contains("build"), "the reply's: {line}");
+    // Open, the reply is drawn whole and the line is the PR's again.
+    (app.cursor_col, app.cursor_row, app.peek) = (1, Some(0), true);
+    let lines = render(&app, 120, 30);
+    assert!(
+        lines.iter().any(|l| l.contains("build-li") && l.contains("!7")),
+        "the open card's last line: {lines:#?}"
+    );
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
 /// T-789: an open card draws its pull-request line last, under the reply
 /// and the summary, which each give up a row for it; and it still opens
 /// the dialog on a click there.
