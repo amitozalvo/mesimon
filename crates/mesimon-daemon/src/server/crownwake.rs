@@ -617,7 +617,8 @@ pub(super) fn merge_verdict(started: bool, heard: &Heard, now: &Told) -> Option<
 /// merged branch's `ahead` is not said: an ff merge reads 0 and a squash
 /// keeps its count, and neither is news beside the word. A branch of more
 /// than one leg says each leg that moved (`ahead api 1 → 2`), never a bare
-/// sum (T-772).
+/// sum (T-772), and its first `ahead` names the legs ahead (`merge_state
+/// ahead api 1, web 1`, T-782).
 pub(super) fn delta(before: Option<&Told>, now: &Told) -> Vec<String> {
     changes(before, now, true)
 }
@@ -628,6 +629,15 @@ fn changes(before: Option<&Told>, now: &Told, head: bool) -> Vec<String> {
     let mut out = Vec::new();
     match (before.and_then(|b| b.merge), now.merge) {
         (Some(was), Some(is)) if was != is => out.push(format!("merge_state {was} → {is}")),
+        (None, Some("ahead")) if !now.legs.is_empty() => {
+            let legs: Vec<String> = now
+                .legs
+                .iter()
+                .filter(|(_, a)| *a > 0)
+                .map(|(n, a)| format!("{} {a}", mesimon_core::text::scrub_text(n)))
+                .collect();
+            out.push(format!("merge_state ahead {}", legs.join(", ")));
+        }
         (None, Some(is)) => out.push(format!("merge_state {is}")),
         (Some(_), Some("merged")) if before.is_some_and(|b| b.tip != now.tip) => {
             out.push("merge_state merged".into());
@@ -1345,15 +1355,21 @@ impl Daemon {
     /// draining, so a forge wake the same read brings folds into it and
     /// the crown hears one line; the caller drains. `openings` are the
     /// reads' `opened !2`, per ticket: said on a held wake, kept for a
-    /// turn whose probe is still out, and otherwise said by no one. True
-    /// when one was let go.
+    /// turn whose probe is still out or that is still running (T-782: a
+    /// read mid-turn, the minute's, can bind the PR before the turn ends,
+    /// and the look after it then owes no read), and otherwise said by no
+    /// one. True when one was let go.
     pub(super) fn hear_forged(&mut self, openings: HashMap<ulid::Ulid, String>) -> bool {
         let Some(crown) = self.board.crown_holder().map(|t| t.id) else { return false };
         for (worker, words) in openings {
+            let running = self.turns_open.contains(&worker) && self.crown_hears_turn(worker);
+            if running {
+                self.crown_heard.entry(worker).or_default();
+            }
             let Some(h) = self.crown_heard.get_mut(&worker) else { continue };
             if let Some(f) = h.forging.as_mut() {
                 say_first(&mut f.wake.to, words);
-            } else if h.looks > 0 {
+            } else if h.looks > 0 || running {
                 h.opening = Some(match h.opening.take() {
                     Some(was) => format!("{was}, {words}"),
                     None => words,
@@ -2250,6 +2266,12 @@ mod tests {
             delta(Some(&before), &legs("c+d", 0, 2)),
             ["ahead root 1 → 0", "ahead api 1 → 2"]
         );
+        // The first word names the legs ahead (T-782, lab finding 2).
+        assert_eq!(
+            delta(None, &legs("a+b", 1, 1)),
+            ["merge_state ahead root 1, api 1", "column REVIEW"]
+        );
+        assert_eq!(delta(None, &legs("a+b", 0, 2)), ["merge_state ahead api 2", "column REVIEW"]);
         let unlegged = branch("a+b", "ahead", 2, "REVIEW");
         assert_eq!(delta(Some(&unlegged), &legs("a+c", 1, 5)), ["ahead 2 → 6 over 2 repos"]);
         assert!(delta(Some(&unlegged), &legs("a+c", 1, 1)).is_empty());

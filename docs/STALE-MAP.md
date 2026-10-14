@@ -25239,6 +25239,77 @@ at that moment listing #42, and no `forge` wake. With the hold off it fails on `
 `crown_e2e`, `merge_train_e2e`, `pr_merge_e2e` and all of `forge_e2e` pass. The rig: F1 on the
 real Sonnet (claude 2.1.296), 2026-10-14: PASS in 44 s, wakes `finished`, `forge`.
 
+## Forge wakes per PR on a multi-repo ticket (T-782, 2026-10-14, follow-up to T-757 and T-773)
+
+**Why.** Forge lab run 2, 2026-10-14. C1 (two repositories): web's !2 merged while api's !8 was
+open, and the crown heard neither `merged !2` nor `waiting on deploy:production !2`. Its
+`delivered` line said `merge_state ahead` with no repository. A pass said `waiting on
+deploy:production !7, deployed to staging !7`, the deployment after the wait it came before. A1:
+the first turn's `delivered` did not name `opened !5`, though `get_ticket` listed it.
+
+**The first merge of a multi-repo ticket.** T-757 left a merge to the flags wherever the PR's head
+is a leg's tip. On a ticket with another leg unmerged no flag flips: the ticket reads merged only
+once every judged leg does (`worktree::aggregate`), so that merge was said by no one.
+`absorb_forge` now asks `forge_lands_all`: the legs with this read folded in as
+`forge_fold_legs` will fold it. A tip PR's merge is said by the forge unless the flags carry it
+(a flip waiting for the tick, already said, or this read flips them), and under T-757's rule
+otherwise (said first where the same read reads its deployment). The second leg's merge is the
+flags' `merged` wake, and `merged !2` is not said again.
+
+**A merged PR's wait is its own.** `Edge::waiting` was `pipeline_of(set)`'s, which is the open
+PRs' worst while any is open: a merged PR's merge-commit wait beside an open PR was never seen.
+`waiting` is now the open PRs' alone, and `Edge::stopped` holds each merged PR whose pipeline newly
+stopped on a job (newly merged, or read merged before at another pipeline), said per PR like
+`reached`. `failed` keeps its set-wide reading; nothing in the lab asked for it per PR.
+
+**The order.** `Edge::news` says merged, the pipelines (failed, passed, a bound PR's), deployed,
+then waiting (the open set's, a bound PR's, each merged PR's). T-769 had waiting before deployed.
+Conflicts and reviews still come last.
+
+**`ahead` per repository.** T-772 made a moved `ahead` per leg; the first word, `merge_state
+ahead` with nothing heard before, still named none. On a branch of more than one leg it is now
+`merge_state ahead api 1, web 1`, the legs ahead by their word (`crownwake::changes`).
+
+**The opening mid-turn.** T-773 kept an opening for a turn whose probe was out, else dropped it.
+If the minute's read binds the PR while the turn that opened it is still running, the look after
+the turn finds the push it read (`State::unchanged`), so no read is owed, nothing is held, and the
+opening was already dropped. Two holes, both closed: `hear_forged` also keeps an opening for a
+worker the crown hears whose turn is open (`turns_open`), and a ticket's first read, a baseline
+for every other edge, still yields its openings (a PR the ticket's reads never held), for a first
+turn that opens one before any read of the ticket. An opening with no turn to ride still wakes
+no one. A forge first probed while a worker is mid-turn on an old PR would call it opened: rare,
+and accepted.
+
+**Who merges on the forge.** `CROWN_WAKES` said a forge's PR "is merged on the forge by a person".
+That is not the board's to say (T-744): a crown whose brief says merge merges there itself. It
+now says "is merged on the forge, and merge_ticket refuses it". `merge.why` (`its work goes through
+pull requests`) and `forge::merge_refusal` named no one already.
+
+**Tests.** Units `a_merged_prs_wait_is_its_own_beside_an_open_one`,
+`a_pass_says_merged_before_its_pipeline_and_its_deployment` (the new order),
+`a_merged_commits_pipeline_passing_is_no_pass` (a merged wait is `stopped`),
+`a_multi_leg_delta_names_each_leg_that_moved` (the first word), and the brief's test.
+`forge_e2e::a_two_repo_tickets_first_merge_and_its_wait_are_said`: a folder workspace, an MR on
+api and on web; the `delivered` line says `merge_state ahead api 1, web 1`; web's !2 merges and
+the crown hears `merged !2` and `waiting on deploy:production !2` with no `merged` wake; api's !8
+merges and the `merged` wake comes, `merged !2` said once, no `merged !8`. Without the change it
+times out on `merged !2`. `forge_e2e::an_opening_read_mid_turn_rides_the_turns_wake`: the read
+binds #42 between the turn's `UserPromptSubmit` and its `Stop`; the `finished` line says `opened
+#42`, once. Without the change the line says `nothing new to merge` alone. All of `forge_e2e`
+passes, and the whole workspace under nextest (2408).
+
+**A refused crown merge is fed again.** T-778 moved the forge's refusal into
+`crown_merge_refusal`, which answered before any feed line, so the rig's F3 counted
+`merge_ticket×0` while the crown had called it twice and been refused in the forge's words. Every
+`crown_merge_refusal` refusal now feeds `merge_ticket refused`, as the merge road's own refusal
+does; `crown_e2e::the_crown_merges_where_the_train_will_not` counts the supervised one.
+
+**The rig**, on the real Sonnet (claude 2.1.300), 2026-10-15: F1 PASS in 44 s (wakes `finished`,
+`forge`, the crown's `ask_agent`, the worker's `noted`). F3 failed `crown:merge_ticket` on the
+feed gap above, the crown's transcript showing both refused calls; with the feed line, PASS in
+49 s: woken `delivered` then `forge`, and the crown, its brief saying merge, called
+`merge_ticket`, refused on the open PR.
+
 ## A worktree that cannot be cut says why, and the crown hears it (T-777, 2026-10-14)
 
 **The words.** A repository with no commits read on the card as `precheck: git

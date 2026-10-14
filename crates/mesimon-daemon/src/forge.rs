@@ -214,9 +214,15 @@ pub struct Edge {
     /// The set's pipeline turned failed: the job's word, empty where the
     /// forge named none.
     pub failed: Option<String>,
-    /// The set's pipeline stopped on a person at a job it was not stopped
-    /// on before: the job's word, empty where the forge named none.
+    /// The open PRs' pipeline stopped on a person at a job it was not
+    /// stopped on before: the job's word, empty where the forge named none.
+    /// A merged PR's wait is its own (`stopped`).
     pub waiting: Option<String>,
+    /// Merged PRs, by label, whose merge commit's pipeline stopped on a
+    /// person at a job it was not stopped on before, with the job (T-782):
+    /// said per PR, whatever the ticket's other PRs are doing, as a
+    /// deployment is (`reached`).
+    pub stopped: Vec<(String, String)>,
     /// Open PRs whose conflict appeared or cleared, and newly held ones
     /// bound in conflict (T-769). The caller keeps a clear only where its
     /// conflict was said (`State::say_conflicts`).
@@ -248,6 +254,7 @@ impl Edge {
             || !self.reached.is_empty()
             || self.failed.is_some()
             || self.waiting.is_some()
+            || !self.stopped.is_empty()
             || !self.conflict.is_empty()
             || !self.review.is_empty()
     }
@@ -257,7 +264,9 @@ impl Edge {
     /// deploy:production !1`, `deployed to staging !1`, `conflict !1`,
     /// `conflict cleared !1`, `review approved !1`, `changes requested !1`,
     /// `pipeline failed !1: test-linux`, in the forge's order: merged, then
-    /// the pipelines, then deployed (T-769). Never an opening, which wakes
+    /// the pipelines, then deployed, then waiting (T-769, T-782) — a merge
+    /// commit's deployment ran before the job its pipeline now waits on.
+    /// Never an opening, which wakes
     /// no one by itself: the worker's turn end carries it (`opening`,
     /// T-773). A newly bound PR's settled state is said (T-769). A merge is said only where the caller left it in `landed`:
     /// the flags' merged wake says the one that lands the worktree's branch
@@ -285,13 +294,6 @@ impl Edge {
         if self.passed {
             out.push(format!("pipeline passed{}", tail(labels(&|p| p.state.is_open()))));
         }
-        if let Some(job) = &self.waiting {
-            let label = labels(&|p| matches!(p.pipeline, Pipeline::Waiting(_)));
-            match forge::job_word(job) {
-                j if j.is_empty() => out.push(format!("waiting on a manual job{}", tail(label))),
-                j => out.push(format!("waiting on {j}{}", tail(label))),
-            }
-        }
         // A newly bound PR's pipeline, where the set's own edge above did
         // not already name it.
         for (label, pipeline) in &self.bound {
@@ -301,15 +303,31 @@ impl Edge {
                     j if j.is_empty() => out.push(format!("pipeline failed {label}")),
                     j => out.push(format!("pipeline failed {label}: {j}")),
                 },
-                Pipeline::Waiting(job) if self.waiting.is_none() => match forge::job_word(job) {
-                    j if j.is_empty() => out.push(format!("waiting on a manual job {label}")),
-                    j => out.push(format!("waiting on {j} {label}")),
-                },
                 _ => {}
             }
         }
         for (label, env) in &self.reached {
             out.push(format!("deployed to {} {label}", forge::job_word(env)));
+        }
+        let wait = |job: &str, label: String| match forge::job_word(job) {
+            j if j.is_empty() => format!("waiting on a manual job{}", tail(label)),
+            j => format!("waiting on {j}{}", tail(label)),
+        };
+        if let Some(job) = &self.waiting {
+            out.push(wait(
+                job,
+                labels(&|p| p.state.is_open() && matches!(p.pipeline, Pipeline::Waiting(_))),
+            ));
+        }
+        for (label, pipeline) in &self.bound {
+            if let Pipeline::Waiting(job) = pipeline {
+                if self.waiting.is_none() {
+                    out.push(wait(job, label.clone()));
+                }
+            }
+        }
+        for (label, job) in &self.stopped {
+            out.push(wait(job, label.clone()));
         }
         for c in &self.conflict {
             out.push(if c.on {
@@ -360,6 +378,15 @@ pub fn edge(old: &[Pr], new: &[Pr], held: &[(String, u64)]) -> Edge {
     let all_merged = |s: &[Pr]| !s.is_empty() && s.iter().all(|p| p.state == PrState::Merged);
     let before = arrived_envs(old);
     let (then, now) = (forge::pipeline_of(old), forge::pipeline_of(new));
+    // The open PRs' own wait; a merged PR's is said per PR (T-782).
+    let open_of = |s: &[Pr]| {
+        if s.iter().any(|p| p.state.is_open()) {
+            forge::pipeline_of(s)
+        } else {
+            Pipeline::None
+        }
+    };
+    let (then_open, now_open) = (open_of(old), open_of(new));
     // The open set's own: a merged commit's pipeline passing is its deploy
     // run finishing, never a ticket's pipeline passing (T-767).
     let open_passed =
@@ -408,10 +435,24 @@ pub fn edge(old: &[Pr], new: &[Pr], held: &[(String, u64)]) -> Edge {
             Pipeline::Failed(job) if !matches!(then, Pipeline::Failed(_)) => Some(job.clone()),
             _ => None,
         },
-        waiting: match &now {
-            Pipeline::Waiting(job) if then != now => Some(job.clone()),
+        waiting: match &now_open {
+            Pipeline::Waiting(job) if then_open != now_open => Some(job.clone()),
             _ => None,
         },
+        stopped: new
+            .iter()
+            .filter(|p| p.state == PrState::Merged)
+            .filter_map(|p| match &p.pipeline {
+                Pipeline::Waiting(job)
+                    if !was(p).is_some_and(|o| {
+                        o.state == PrState::Merged && o.pipeline == p.pipeline
+                    }) =>
+                {
+                    Some((p.label(), job.clone()))
+                }
+                _ => None,
+            })
+            .collect(),
         conflict: kept
             .iter()
             .filter(|(o, p)| o.conflict != p.conflict)
@@ -1568,10 +1609,14 @@ mod tests {
         assert_eq!(e.news(&after), ["deployed to production !1"]);
         let waiting = [merged(Pipeline::Waiting("deploy:production".into()), &["staging"])];
         let e = edge(&waiting, &after);
-        assert!(!e.passed && e.waiting.is_none());
+        assert!(!e.passed && e.waiting.is_none() && e.stopped.is_empty());
         assert_eq!(e.news(&after), ["deployed to production !1"]);
-        // A merged commit's job stopping on a person is still heard.
-        assert_eq!(edge(&running, &waiting).waiting.as_deref(), Some("deploy:production"));
+        // A merged commit's job stopping on a person is still heard, as
+        // that PR's own (T-782).
+        let e = edge(&running, &waiting);
+        assert!(e.waiting.is_none());
+        assert_eq!(e.stopped, [("!1".to_string(), "deploy:production".to_string())]);
+        assert_eq!(e.news(&waiting), ["waiting on deploy:production !1"]);
         // One open PR passing beside a merged one: a pass, by its label.
         let open = |pipeline: Pipeline| {
             let mut p = pr(2, PrState::Open, pipeline);
@@ -1885,8 +1930,9 @@ mod tests {
         assert_eq!(said(&mut s, &stuck, &clean, false), ["conflict cleared #4"]);
     }
 
-    /// T-769, finding 3: one pass's words in the forge's order — merged,
-    /// the pipeline, deployed.
+    /// T-769, finding 3, and T-782: one pass's words in the forge's order
+    /// — merged, the pipeline, deployed, waiting: the deployment to staging
+    /// ran before the job the pipeline waits on.
     #[test]
     fn a_pass_says_merged_before_its_pipeline_and_its_deployment() {
         let open = pr(1, PrState::Open, Pipeline::Passed);
@@ -1896,7 +1942,63 @@ mod tests {
         let now = [merged];
         assert_eq!(
             edge(&[open], &now).news(&now),
-            ["merged #1", "waiting on deploy:production #1", "deployed to staging #1"]
+            ["merged #1", "deployed to staging #1", "waiting on deploy:production #1"]
+        );
+        // A bound PR's failure is a pipeline word, its wait comes last.
+        let red = pr(2, PrState::Open, Pipeline::Failed("lint".into()));
+        let mut held = pr(3, PrState::Open, Pipeline::Waiting("deploy".into()));
+        held.repo = "o/s".into();
+        let mut fresh_red = red.clone();
+        fresh_red.repo = "o/t".into();
+        let now = [held, fresh_red];
+        assert_eq!(
+            edge(&[], &now).news(&now),
+            ["pipeline failed #2: lint", "waiting on deploy #3"]
+        );
+    }
+
+    /// T-782, lab finding 1: on a ticket of two repositories, the merged
+    /// PR's own wait is said while the other PR is open — the set's
+    /// pipeline is the open one's — and said once; an open PR's wait names
+    /// that PR alone.
+    #[test]
+    fn a_merged_prs_wait_is_its_own_beside_an_open_one() {
+        let gl = |repo: &str, n: u64, state: PrState, pipeline: Pipeline| {
+            let mut p = pr(n, state, pipeline);
+            p.forge = Forge::GitLab;
+            p.repo = repo.into();
+            if state == PrState::Merged {
+                p.merge_oid = format!("m{n}");
+            }
+            p
+        };
+        let open = [
+            gl("g/web", 2, PrState::Open, Pipeline::Passed),
+            gl("g/api", 8, PrState::Open, Pipeline::Running),
+        ];
+        let merged = [
+            gl("g/web", 2, PrState::Merged, Pipeline::Running),
+            gl("g/api", 8, PrState::Open, Pipeline::Running),
+        ];
+        let e = edge(&open, &merged);
+        assert_eq!(e.landed, ["!2"]);
+        assert!(e.stopped.is_empty() && e.waiting.is_none());
+        let mut waits = merged.clone();
+        waits[0].pipeline = Pipeline::Waiting("deploy:production".into());
+        waits[0].deployed = vec!["staging".into()];
+        let e = edge(&merged, &waits);
+        assert!(e.waiting.is_none(), "api's !8 is running: {e:?}");
+        assert_eq!(e.news(&waits), ["deployed to staging !2", "waiting on deploy:production !2"]);
+        assert!(!edge(&waits, &waits).any(), "said once");
+        // api's !8 stops on its own job: its label alone.
+        let mut both = waits.clone();
+        both[1].pipeline = Pipeline::Waiting("approve".into());
+        assert_eq!(edge(&waits, &both).news(&both), ["waiting on approve !8"]);
+        // Merged and waiting on the same read it was open: both words.
+        let e = edge(&open, &waits);
+        assert_eq!(
+            e.news(&waits),
+            ["merged !2", "deployed to staging !2", "waiting on deploy:production !2"]
         );
     }
 

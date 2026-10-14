@@ -160,8 +160,8 @@ pub const CROWN_WAKES: &str = concat!(
      reaches the worker while its tasks run, to ask whether it is done and what they wait on. \
      A delivered worker's get_ticket says who merges its branch (merge: by train, crown, \
      person or forge, and why), and the delivered line carries the word. The forge's — a \
-     pull request bound to the ticket — is merged on the forge by a person, and \
-     merge_ticket refuses it. The train's is waited for: \
+     pull request bound to the ticket — is merged on the forge, and merge_ticket refuses \
+     it. The train's is waited for: \
      the crown hears it once, at the merge. The crown's — the train off, the ticket out of it \
      by t, or a column the train stops short of, under autonomous mode — is merged with \
      merge_ticket while merge_state reads ahead; at needs_rebase the agent is asked to rebase \
@@ -3090,7 +3090,7 @@ mod tests {
         for words in [
             "says who merges its branch (merge: by train, crown, person or forge, and why)",
             "the delivered line carries the word",
-            "The forge's — a pull request bound to the ticket — is merged on the forge by a person",
+            "The forge's — a pull request bound to the ticket — is merged on the forge, and",
             "merge_ticket refuses it",
             "The train's is waited for",
             "the train off, the ticket out of it by t, or a column the train stops short of",
@@ -3102,6 +3102,9 @@ mod tests {
         ] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES says {words:?}");
         }
+        // Who presses merge on the forge is not the board's to say (T-744,
+        // T-782): a crown whose brief says merge merges there itself.
+        assert!(!CROWN_WAKES.contains("forge by a person"));
         assert_eq!(lint_tool_text(CROWN_WAKES), Ok(()));
     }
 

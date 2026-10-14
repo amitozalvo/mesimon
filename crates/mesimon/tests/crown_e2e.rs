@@ -5150,6 +5150,8 @@ fn the_crown_merges_where_the_train_will_not() {
     let (by, why, seen) = who(&mut c, &kw);
     assert_eq!((by.as_str(), why.as_str()), ("person", "crown mode is supervised"));
     refused(merge(&mut c, &kw, seen), &["Crown mode is supervised", "m on the ticket's page"]);
+    // The refused attempt is in the feed, as the merge road's is (T-782).
+    assert_eq!(feed_count(&h, "merge_ticket", w), 1);
     assert!(matches!(
         c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
         Response::Ok

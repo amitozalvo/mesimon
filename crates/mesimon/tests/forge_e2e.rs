@@ -1109,6 +1109,226 @@ fn a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_co
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
 
+/// `GLAB_STUB` with `mr list` answered per repository: the file the test
+/// writes for the `--repo` URL's last segment (`<mrs file>.forge-lab-web`).
+const GLAB_REPO_STUB: &str = r#"#!/bin/sh
+case "$1 $2" in
+  "auth status") exit 0 ;;
+  "mr list") cat "$MSMN_GLAB_MRS.${4##*/}" 2>/dev/null || echo '[]' ;;
+  "api --hostname")
+    case "$4" in
+      user) echo '{"username":"me"}' ;;
+      *pipelines?sha=*)
+        sha="${4#*sha=}"; sha="${sha%%&*}"
+        if [ -f "$MSMN_GLAB_PIPELINES.$sha" ]; then cat "$MSMN_GLAB_PIPELINES.$sha"; else echo '[]'; fi ;;
+      */jobs*) cat "$MSMN_GLAB_PIPELINES.jobs" 2>/dev/null || echo '[]' ;;
+      *) echo '[]' ;;
+    esac ;;
+  *) echo "stub glab: $*" >&2; exit 1 ;;
+esac
+"#;
+
+/// One MR of `repo` as `glab mr list --output json` prints it: open, or
+/// merged at `merge_sha`.
+fn mr_json(repo: &str, iid: u64, branch: &str, tip: &str, merge_sha: Option<&str>) -> String {
+    let (state, merged, status) = match merge_sha {
+        Some(m) => ("merged", m, "not_open"),
+        None => ("opened", "", "mergeable"),
+    };
+    format!(
+        r#"[{{"iid":{iid},"web_url":"https://gitlab.example.com/lab/{repo}/-/merge_requests/{iid}","state":"{state}",
+          "source_branch":"{branch}","sha":"{tip}","merge_commit_sha":"{merged}","squash_commit_sha":"",
+          "draft":false,"has_conflicts":false,"detailed_merge_status":"{status}","updated_at":"2026-10-14T17:00:00Z"}}]"#
+    )
+}
+
+/// T-782, lab run 2: a ticket of two repositories, an MR on each. Its
+/// first delivery names each leg ahead. web's !2 merges while api's !8 is
+/// open: no leg flip reads the ticket merged, so the forge says `merged
+/// !2`, and its merge commit's wait (`waiting on deploy:production !2`)
+/// though the set's own pipeline is !8's. api's !8 then merges: the flags'
+/// `merged` wake, and no second `merged !2`.
+#[test]
+fn a_two_repo_tickets_first_merge_and_its_wait_are_said() {
+    let stub_dir = std::env::temp_dir().join(format!("msmn-forge-two-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&stub_dir);
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    let glab = stub_dir.join("glab");
+    std::fs::write(&glab, GLAB_REPO_STUB).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&glab, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mrs = stub_dir.join("mrs");
+    let pipelines = stub_dir.join("pipelines");
+    let path_var = format!(
+        "{}:{}",
+        stub_dir.display(),
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+    );
+    let Some(h) = Harness::boot_with_env(
+        "forge_two",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GLAB_MRS", &mrs.display().to_string()),
+            ("MSMN_GLAB_PIPELINES", &pipelines.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    let root = h.repo.clone();
+    for (dir, file, repo) in
+        [("api", "server.ts", "forge-lab-api"), ("web", "page.tsx", "forge-lab-web")]
+    {
+        init_repo(&root.join(dir), file, "one\n");
+        let url = format!("https://gitlab.example.com/lab/{repo}.git");
+        git(&root.join(dir), &["remote", "add", "origin", &url]);
+    }
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("forge_two");
+    let got = h.dir.join("got.txt");
+    let all = || std::fs::read_to_string(&got).unwrap_or_default();
+    let lines_with = |needle: &str| -> Vec<String> {
+        all().lines().filter(|l| l.contains(needle)).map(str::to_string).collect()
+    };
+    let turn = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let create = |c: &mut TestClient, title: &str| match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: title.into(),
+        workspace: None,
+        tier: None,
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("create: {other:?}"),
+    };
+
+    let a = create(&mut c, "coordinate");
+    let w = create(&mut c, "two repos");
+    let kw = c.board().ticket(w).unwrap().short_key.clone();
+    let sa = match c.request(Command::SpawnSession {
+        ticket: a,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn: {other:?}"),
+    };
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(Duration::from_millis(500));
+    turn(&mut c, sa);
+    let seen = match c
+        .send(Principal::Agent { session: sa }, Command::AgentReadTicket { key: kw.clone() })
+    {
+        Response::AgentTicket { ticket } => ticket.seen,
+        other => panic!("read: {other:?}"),
+    };
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    let wt = wait_attached(&mut c, w);
+    let container = PathBuf::from(wt.path.clone().expect("a path"));
+    wait_until(Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    std::thread::sleep(Duration::from_millis(500));
+
+    // ---- one commit in each leg, an MR open on each -------------------------
+    let mut tips = Vec::new();
+    for dir in ["api", "web"] {
+        let leg = container.join(dir);
+        std::fs::write(leg.join("work.txt"), "work\n").unwrap();
+        git(&leg, &["add", "."]);
+        git(&leg, &["commit", "-qm", "work"]);
+        tips.push(git(&leg, &["rev-parse", "HEAD"]).trim().to_string());
+    }
+    let (api_tip, web_tip) = (tips[0].clone(), tips[1].clone());
+    write(
+        &mrs.with_extension("forge-lab-api"),
+        &mr_json("forge-lab-api", 8, &wt.branch, &api_tip, None),
+    );
+    write(
+        &mrs.with_extension("forge-lab-web"),
+        &mr_json("forge-lab-web", 2, &wt.branch, &web_tip, None),
+    );
+    wait_until(Duration::from_secs(20), "both legs ahead and both MRs read open", || {
+        wt_of(&mut c, w).is_some_and(|w| w.repos.iter().all(|r| r.ahead == 1))
+            && prs_of(&mut c).iter().filter(|p| p.ticket == w && p.state == "open").count() == 2
+    });
+    let worker = format!("{kw} \"two repos\"");
+    turn(&mut c, ws);
+    wait_until(Duration::from_secs(15), "the delivery's wake", || {
+        lines_with(&format!("{worker} delivered")).len() == 1
+    });
+    let line = lines_with(&format!("{worker} delivered")).remove(0);
+    assert!(line.contains("merge_state ahead api 1, web 1"), "each leg ahead by name: {line}");
+    turn(&mut c, sa);
+
+    // ---- web's !2 merges while api's !8 is open -----------------------------
+    let web_merge = "2222222222222222222222222222222222222222";
+    write(&pipelines.with_extension(web_merge), r#"[{"id":45,"status":"manual"}]"#);
+    write(
+        &pipelines.with_extension("jobs"),
+        r#"[{"name":"build","status":"success"},{"name":"deploy:production","status":"manual"}]"#,
+    );
+    write(
+        &mrs.with_extension("forge-lab-web"),
+        &mr_json("forge-lab-web", 2, &wt.branch, &web_tip, Some(web_merge)),
+    );
+    wait_until(Duration::from_secs(20), "the crown to hear merged !2", || {
+        !lines_with("merged !2").is_empty()
+    });
+    wait_until(Duration::from_secs(20), "the crown to hear !2's waiting job", || {
+        !lines_with("waiting on deploy:production !2").is_empty()
+    });
+    let view = match c
+        .send(Principal::Agent { session: sa }, Command::AgentReadTicket { key: kw.clone() })
+    {
+        Response::AgentTicket { ticket } => ticket,
+        other => panic!("read: {other:?}"),
+    };
+    assert_ne!(view.merge_state.as_deref(), Some("merged"), "api's leg is not merged");
+    assert!(lines_with(&format!("{worker} merged (")).is_empty(), "no flags flip: {}", all());
+    turn(&mut c, sa);
+
+    // ---- api's !8 merges: the ticket's merged wake, !2 not said again -------
+    let api_merge = "8888888888888888888888888888888888888888";
+    write(
+        &mrs.with_extension("forge-lab-api"),
+        &mr_json("forge-lab-api", 8, &wt.branch, &api_tip, Some(api_merge)),
+    );
+    wait_until(Duration::from_secs(20), "the merged wake", || {
+        !lines_with(&format!("{worker} merged (")).is_empty()
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    let said = all();
+    assert_eq!(said.matches("merged !2").count(), 1, "{said}");
+    assert!(!said.contains("merged !8"), "the flags' wake carries !8: {said}");
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
 /// One train ticket's turn ends with the forge's minute far away (T-761):
 /// the train merges it on the turn's own look. `push` moves the branch's
 /// remote-tracking ref in the turn, as a `git push` does. The calls `gh pr
@@ -2228,6 +2448,59 @@ fn a_turn_end_wake_waits_for_the_turns_forge_read() {
     assert_eq!(wakes(&h, k.worker, "forge"), 0, "{all}");
     assert_eq!(all.matches("opened #42").count(), 1, "{all}");
     let _ = std::fs::remove_file(&slow);
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// T-782, lab finding 4: the minute's read binds #42 while the turn that
+/// pushed and opened it is still running, so the look after the turn owes
+/// no read and the wake goes at once. The opening rides that wake all the
+/// same, once.
+#[test]
+fn an_opening_read_mid_turn_rides_the_turns_wake() {
+    let (stub_dir, path_var) = gh_stub("forge-midturn");
+    let prs_file = stub_dir.join("prs.json");
+    write(&prs_file, "[]");
+    let Some(h) = Harness::boot_with_env(
+        "forge_midturn",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs_file.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("forge_midturn");
+    let k = crowned(&h, &mut c);
+    let got = h.dir.join("got.txt");
+    let finished = format!("{} finished its turn (", k.named);
+    let all = || std::fs::read_to_string(&got).unwrap_or_default();
+    std::thread::sleep(Duration::from_millis(1500));
+
+    // The turn pushes and opens #42; a read binds it before the turn ends.
+    hook_send(&hook_sock, &k.ws.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(k.ws, "running", |s| *s == SessionState::Running);
+    git(&k.path, &["update-ref", &format!("refs/remotes/origin/{}", k.branch), &k.tip]);
+    write(&prs_file, &open_pr_json(&k.branch, &k.tip, "[]", "MERGEABLE", "REVIEW_REQUIRED"));
+    wait_until(Duration::from_secs(15), "a read mid-turn to bind #42", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == k.worker && p.number == 42)
+    });
+    std::thread::sleep(Duration::from_millis(600));
+    hook_send(&hook_sock, &k.ws.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(k.ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    wait_until(Duration::from_secs(20), "the turn's wake", || all().contains(&finished));
+    let line = all().lines().find(|l| l.contains(&finished)).unwrap().to_string();
+    assert!(line.contains("opened #42"), "{line}");
+    turn(&mut c, &hook_sock, k.crown);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(all().matches("opened #42").count(), 1, "{}", all());
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
 

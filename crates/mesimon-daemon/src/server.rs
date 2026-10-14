@@ -6100,7 +6100,10 @@ impl Daemon {
                 {
                     return Response::Err { message: format!("denied: {reason}") };
                 }
+                // Fed as the merge road's own refusal is (T-782): T-778 moved
+                // the forge's refusal here, and the feed lost the attempt.
                 if let Some(message) = self.crown_merge_refusal(target, &key) {
+                    self.feed.board_outcome(by.actor(), "merge_ticket", Some(target), "refused");
                     return Response::Err { message };
                 }
                 match self.merge_ticket(target, &by) {
@@ -13867,6 +13870,16 @@ impl Daemon {
             self.forge.opens(t, &set);
             let unchanged = self.forge.sets.get(&t) == Some(&set);
             let edge = self.forge.sets.get(&t).map(|old| crate::forge::edge(old, &set, &held));
+            // A ticket's first read is a baseline, but a PR in it its reads
+            // never held is an opening all the same (T-782): a worker's
+            // first turn can open one before any read of its ticket, and
+            // the opening rides that turn's wake alone (`hear_forged`).
+            if edge.is_none() {
+                let first = crate::forge::edge(&[], &set, &held);
+                if !first.opened.is_empty() {
+                    openings.insert(t, first.opening().join(", "));
+                }
+            }
             if let Some(mut edge) = edge {
                 // A conflict is said once and its clear only after it
                 // (T-769); the first live read against `forge.json`'s set
@@ -13881,10 +13894,14 @@ impl Daemon {
                 // moves no flag, so the forge says it. And a merge read on the
                 // pass that reads its deployment, which the flags have not
                 // said, is said here, first (T-769): the forge's order, the
-                // flags' wake folding into this one (`hear_forge`).
+                // flags' wake folding into this one (`hear_forge`). A leg's
+                // PR merging while another leg is unmerged flips no flag at
+                // all (T-782): the ticket reads merged only once every leg
+                // is, so the forge says that merge.
                 let mut heard = edge.clone();
                 let flipping = self.crown_landed.contains(&t);
                 let flags_said = self.wt_agg.get(&t).is_some_and(|a| a.merged) && !flipping;
+                let carried = flipping || flags_said || self.forge_lands_all(t, &set);
                 let tips: Vec<&str> = self
                     .wt_repos
                     .get(&t)
@@ -13896,7 +13913,7 @@ impl Daemon {
                         p.label() == *label
                             && p.state == mesimon_core::forge::PrState::Merged
                             && if tips.contains(&p.head_oid.as_str()) {
-                                reached.contains(label) && !flags_said
+                                !carried || (reached.contains(label) && !flags_said)
                             } else {
                                 !flipping
                             }
@@ -14050,6 +14067,22 @@ impl Daemon {
     /// whose repository's newest PR is merged at the leg's tip reads
     /// merged, landed as that PR's merge commit — in the PR's words though
     /// the git road read it merged first (T-780). True when a leg changed.
+    /// Whether `t`'s legs read merged with `set` folded in as
+    /// `forge_fold_legs` will fold it (T-782): the flags' `merged` wake then
+    /// carries this pass's merge; on a ticket with a leg still unmerged it
+    /// carries none.
+    fn forge_lands_all(&self, t: ulid::Ulid, set: &[mesimon_core::forge::Pr]) -> bool {
+        let Some(mut legs) = self.wt_repos.get(&t).cloned() else { return false };
+        for leg in legs.iter_mut() {
+            let dir = self.leg_dir(&leg.name);
+            let Some(Some(remote)) = self.forge.remotes.get(&dir) else { continue };
+            if let Some(pr) = mesimon_core::forge::merged_at(set, &remote.path, &leg.tip) {
+                leg.fold_forge_merge(pr);
+            }
+        }
+        worktree::aggregate(&legs).merged
+    }
+
     fn forge_fold_legs(&self, t: ulid::Ulid, legs: &mut [worktree::RepoFlags]) -> bool {
         let mut changed = false;
         for leg in legs.iter_mut() {
