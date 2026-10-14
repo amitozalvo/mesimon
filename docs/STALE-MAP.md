@@ -25574,3 +25574,16 @@ the board's ground between a banded title row and banded accordion rows. Line 2 
 a reply sharing it — now takes the accordion's `acc_style` (the cursor band, or the delete row),
 hoisted above it; never the needs-you row's, which stays one row. Test:
 `ui::the_cursor_cards_pr_line_wears_the_cards_band`.
+
+## T-789 — an open card spends no row on its key or tier (2026-10-15)
+
+The author: "remove ticket id and tier line from ticket on board to reduce lines on peek … make
+sure tier is written there [the hover row] as well". The open card's meta row (T-410's key,
+T-443's tier word) is now the tag chips alone, drawn only when the ticket wears a tag; the hover
+row names the cursor card's tier as `∙ on coder` between the title and the created clause, by
+the old card rule (`App::hover_tier_word`: not the default, or for a moment after `^n`). Narrow,
+the created clause goes first, then the tier. `CardCtx::names_key` is gone. A resting card
+under `P` or the pointer opens on its tag row or its reply, else stays one line (before, the key
+row alone opened every card). The search preview loses the tier word with the card; its frame
+names the ticket. Tests: `ui::test_the_hover_row_names_the_ticket_and_the_card_does_not`,
+`ui::golden_the_ticket_and_the_card_wear_the_tier`.

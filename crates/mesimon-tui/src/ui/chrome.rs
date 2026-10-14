@@ -498,11 +498,13 @@ const HOVER_ROW_FLOOR: usize = 8 + HOVER_TITLE_FLOOR;
 /// What the hover row's title keeps before the created clause gives way.
 const HOVER_TITLE_FLOOR: usize = 16;
 
-/// The card under the cursor, named in full (T-471): `T-12 Title ∙ created
-/// 2d ago by T-9`. A card cuts its title to its column and shows
-/// its key only when opened (T-410); this row has the frame's width, so a
+/// The card under the cursor, named in full (T-471): `T-12 Title ∙ on coder
+/// ∙ created 2d ago by T-9`. A card cuts its title to its column and never
+/// names its key or its tier (T-789); this row has the frame's width, so a
 /// key a session quotes and a title the card cut both read without leaving
-/// the board. The clause is the ticket page's own (`ticket::created_clause`).
+/// the board. The tier is `App::hover_tier_word` (where
+/// it is not the default, or a moment after `^n`); the created clause is the
+/// ticket page's own (`ticket::created_clause`).
 ///
 /// The quietest thing the row says: a grace or a notice outranks it, since
 /// those report something that happened and this repeats what the cursor
@@ -516,13 +518,20 @@ pub(super) fn hover_line(app: &App, width: usize) -> Option<Line<'static>> {
     let ticket = app.selected_ticket()?;
     let theme = &app.theme;
     let key = format!(" {} ", ticket.short_key);
-    let mut stats = super::ticket::created_clause(ticket, app, mesimon_core::clock::now_ms())
+    let tier = app.hover_tier_word(ticket.id).map(|t| format!(" ∙ on {t}")).unwrap_or_default();
+    let created = super::ticket::created_clause(ticket, app, mesimon_core::clock::now_ms())
         .map(|c| format!(" ∙ {c}"))
         .unwrap_or_default();
     // One cell of page padding at the right edge. The title gives way
-    // first; at its floor the clause goes whole, and the name keeps the row.
+    // first; at its floor the created clause goes whole, then the tier, and
+    // the name keeps the row.
     let room = width.saturating_sub(key.width() + 1);
-    if room.saturating_sub(stats.width()) < HOVER_TITLE_FLOOR.min(ticket.title.width()) {
+    let floor = HOVER_TITLE_FLOOR.min(ticket.title.width());
+    let mut stats = format!("{tier}{created}");
+    if room.saturating_sub(stats.width()) < floor {
+        stats = tier;
+    }
+    if room.saturating_sub(stats.width()) < floor {
         stats.clear();
     }
     let title = truncate(&ticket.title, room.saturating_sub(stats.width()));

@@ -93,7 +93,6 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         width: area.width,
         now_ms: now_ms(),
         spin: app.spin_frame(),
-        names_key: true,
     };
 
     // Marquee clock: reset when the cursor lands on a different ticket.
@@ -284,7 +283,6 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 (!owed_keys.is_empty()).then_some((owed_keys.as_slice(), &*keys_ctx)),
                 app.remote_initials(t.id).as_deref(),
                 if left { crate::ui::CrownMark::None } else { app.crown_mark(t.id) },
-                app.card_tier_word(t.id).as_deref(),
                 app.card_corner(t.id),
                 summary.as_ref(),
                 (!summary_keys.is_empty()).then_some((summary_keys.as_slice(), &*keys_ctx)),

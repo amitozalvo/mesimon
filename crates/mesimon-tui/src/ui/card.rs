@@ -32,10 +32,6 @@ pub(super) struct CardCtx<'a> {
     pub now_ms: u64,
     /// Redraw-clock frame for the working spinner (`App::spin_frame`).
     pub spin: usize,
-    /// Does an open card's meta row close with the ticket's short key
-    /// (T-410)? True on the board, where nothing else names it; false where
-    /// the frame around the card already does (the search preview).
-    pub names_key: bool,
 }
 
 /// Render the in-place title editor as a card line (create + rename share it).
@@ -433,7 +429,6 @@ pub(super) fn render(
     owed_keys: Option<(&[&'static mesimon_core::keymap::Binding], &mesimon_core::keymap::Ctx)>,
     editor: Option<&str>,
     crown: CrownMark<'_>,
-    tier_word: Option<&str>,
     corner: Option<String>,
     summary: Option<&crate::app::TicketSummary>,
     summary_keys: Option<(&[&'static mesimon_core::keymap::Binding], &mesimon_core::keymap::Ctx)>,
@@ -884,19 +879,13 @@ pub(super) fn render(
 
     // ---- accordion (07 §4.3) ---------------------------------------------
     //
-    // The meta row is the TICKET's own metadata — its short key, and the
-    // tags it wears — so an open card earns it whether or not there is a
-    // transcript to peek: a backlog ticket has no session at all, and that
-    // is exactly the card a quick-tag digit lands on. Before this the row
-    // was gated on `peek.is_some()`, which is a claim about the AGENT, and
-    // the commonest tagged card could never show it. The key rides the same
-    // row (T-410): a session says "T-410" and a resting card never did, so
-    // the id was one focus away on every card; with `p` on, the cursor card
-    // names its own, and `P` names every card's.
-    // The ticket's agent tier (T-443) is one of its own facts, and rides
-    // the same row where it is not the default, or for a moment after `^n`
-    // (`App::card_tier_word`).
-    let meta_row = open && (ctx.names_key || !tags.is_empty() || tier_word.is_some());
+    // The meta row is the TICKET's own metadata — the tags it wears — so an
+    // open card earns it whether or not there is a transcript to peek: a
+    // backlog ticket has no session at all, and that is exactly the card a
+    // quick-tag digit lands on. The short key (T-410) and the agent tier
+    // (T-443) rode this row too until T-789: the hover row above the footer
+    // names both for the cursor card, so an open card spends no row on them.
+    let meta_row = open && !tags.is_empty();
     // The cursor card's accordion, or — under `P` (T-237) — a resting card
     // open on its own ground: the tag row and the reply, on the resting ramp,
     // no surface. The session list, the armed snooze and the owed row stay
@@ -925,7 +914,10 @@ pub(super) fn render(
             || raised_row.is_some()
             || answered_row.is_some()
             || rows_shown);
-    let opened = !selected && meta_row;
+    // A resting card open under `P` or the pointer shows its tag row and
+    // its reply; with neither it stays one line.
+    let peeked = peek.is_some_and(|p| p.text.is_some() || p.activity.is_some());
+    let opened = !selected && (meta_row || peeked);
     if accordion || opened {
         let ramp = if cursorish { &theme.sel } else { &theme.rest };
         // A trail is semi-transparent everything, its open rows included.
@@ -956,14 +948,7 @@ pub(super) fn render(
         // where a glyph precedes the title, flush where none does — a
         // session-less card has no glyph column, and indenting its chips
         // past a title that starts at the bar hung them in the air.
-        //
-        // The short key closes the row, right-aligned under the age slot
-        // (T-410). On the right rather than before the chips because the
-        // chips are indented by the glyph column and the key is not about
-        // the glyph: under `P` every card's key then lands in ONE column, the
-        // way the ages do, and a reader holding "T-410" from a session scans
-        // that column instead of every row. The key is never cut; the chips
-        // get what it leaves and drop from the tail as they always did.
+
         // The armed snooze names its preset first: it is what the next key
         // does to this card, before what the card is.
         if let Some(words) = snooze.filter(|_| selected) {
@@ -1017,34 +1002,15 @@ pub(super) fn render(
             }
         }
         if meta_row {
-            let inner = t_cells.saturating_sub(glyph_cells);
-            let key = if ctx.names_key { ticket.short_key.clone() } else { String::new() };
-            // The tier word before the key (T-443), the quiet ink the key
-            // wears: `coder ∙ T-443`.
-            let key = match tier_word {
-                Some(t) if key.is_empty() => t.to_string(),
-                Some(t) => format!("{t} ∙ {key}"),
-                None => key,
-            };
-            let key = truncate(&key, inner);
-            let key_cells = key.width();
             let mut row = vec![Span::raw(" ".repeat(glyph_cells))];
-            let mut chips = if tags.is_empty() {
-                Vec::new()
-            } else {
-                let gap = if key_cells > 0 { 1 } else { 0 };
-                crate::tags::chips(theme, tags, inner.saturating_sub(key_cells + gap))
-            };
+            let mut chips = crate::tags::chips(theme, tags, t_cells.saturating_sub(glyph_cells));
             if trail {
                 // The names stay; their tints go with the bar's.
                 for c in &mut chips {
                     c.style = faint;
                 }
             }
-            let used = super::spans_width(&chips);
             row.extend(chips);
-            row.push(Span::raw(" ".repeat(inner.saturating_sub(used + key_cells))));
-            row.push(Span::styled(key, dim));
             push(row);
         }
 

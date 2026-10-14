@@ -3565,7 +3565,7 @@ fn test_tag_count_keeps_the_title_editor_aligned() {
     {
         let theme = crate::theme::Theme::new(Flavor::Graphite, profile);
         for width in [12, 29, 48] {
-            let ctx = card::CardCtx { theme: &theme, width, now_ms: 0, spin: 0, names_key: true };
+            let ctx = card::CardCtx { theme: &theme, width, now_ms: 0, spin: 0 };
             let mut previous = None;
             for n in 0..=2 {
                 let worn: Vec<_> =
@@ -3662,55 +3662,38 @@ fn test_a_crowded_peek_row_names_them_all() {
     let lines = render(&app, 120, 30);
     let title = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card");
     let names = &lines[title + 1];
-    // Four tags on a 28-cell card, with the key holding the row's last
-    // cells (T-410): the long one gives up cells, the short ones keep
-    // theirs, and the one that will not go drops from the tail — the mark
-    // under the card still carries the count. The key is never cut.
+    // Four tags on a 28-cell card: the long one gives up cells, the short
+    // ones keep theirs, and the one that will not go drops from the tail —
+    // the mark under the card still carries the count.
     for tag in ["BUG", "ST", "auth"] {
         assert!(names.contains(tag), "{tag} went unnamed in {names:?}");
     }
-    assert!(names.trim_end().ends_with("T-3"), "the key closes the row: {names:?}");
+    assert!(!names.contains("T-3"), "the key is the hover row's (T-789): {names:?}");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
-/// The peek names the ticket too (T-410). A session says "T-3" and a resting
-/// card never did, so the id was one focus away on every card. With `p` on,
-/// the cursor card's meta row closes with its short key, right-aligned under
-/// the age slot — tags or no tags — and under `P` every card's key lands in
-/// that one column, the way the ages do, so a reader holding an id scans a
-/// column rather than every row.
+/// The key and the tier are the hover row's, never the card's (T-789): an
+/// open card used to spend a row on `coder ∙ T-3` under its title (T-410,
+/// T-443), and the row above the footer names both for the cursor card.
 #[test]
-fn test_the_peek_names_the_ticket() {
+fn test_the_hover_row_names_the_ticket_and_the_card_does_not() {
     let mut app = app_graphite(fixture_tagged());
     app.cursor_col = 1;
     app.cursor_row = Some(0);
-    // Off: no card names the key. The hover row does (T-471), under the
-    // columns, which is not the card's row.
-    let lines = render(&app, 120, 30);
-    let (columns, below) = lines.split_at(lines.len() - 2);
-    assert!(!columns.iter().any(|l| l.contains("T-3")), "no key before `p`");
-    assert!(below[0].contains("T-3"), "the hover row names it: {:?}", below[0]);
-    app.peek = true;
-    let lines = render(&app, 120, 30);
-    let title = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card");
-    let row = &lines[title + 1];
-    assert!(row.contains("BUG") && row.trim_end().ends_with("T-3"), "key after the chips: {row:?}");
-    // Cells, not bytes: the glyph before the title is one cell of three bytes.
-    let cells_to = |l: &str, end: usize| UnicodeWidthStr::width(&l[..end]);
-    let at = lines[title].find("Fix OSC-11").expect("title");
-    let age_end = cells_to(&lines[title], at + lines[title][at..].find(">1y").expect("age") + 3);
-    let key_end = cells_to(row, row.rfind("T-3").expect("key") + 3);
-    assert_eq!(key_end, age_end, "the key sits under the age slot");
-    // `P`: a card with no tags still names itself, and the keys line up.
-    app.peek_all = true;
+    for (peek, all) in [(false, false), (true, false), (true, true)] {
+        (app.peek, app.peek_all) = (peek, all);
+        let lines = render(&app, 120, 30);
+        let (columns, below) = lines.split_at(lines.len() - 2);
+        for key in ["T-1", "T-2", "T-3"] {
+            assert!(!columns.iter().any(|l| l.contains(key)), "{key} on a card: {columns:?}");
+        }
+        assert!(below[0].starts_with(" T-3 Fix OSC-11"), "the hover row names it: {:?}", below[0]);
+    }
+    // An untagged card has nothing left to open on under `P`: one line.
     let lines = render(&app, 120, 30);
     let t2 = lines.iter().position(|l| l.contains("Keymap validator")).expect("untagged card");
-    let row2 = &lines[t2 + 1];
-    assert!(row2.contains("T-2"), "an untagged card still names itself: {row2:?}");
-    let t1 = lines.iter().position(|l| l.contains("Decay treatments")).expect("card 1");
-    let k1 = lines[t1 + 1].find("T-1").expect("key 1");
-    let k2 = row2.find("T-2").expect("key 2");
-    assert_eq!(k1, k2, "keys in one column under P");
+    let under: String = lines[t2 + 1].chars().take(30).collect();
+    assert!(under.trim().is_empty(), "an untagged card opened on nothing: {under:?}");
 }
 
 /// The hover row (T-471): the cursor card, named in full on the row above
@@ -10518,12 +10501,17 @@ fn golden_the_ticket_and_the_card_wear_the_tier() {
     app.cursor_row = Some(0);
     let rows = render(&app, 120, 30);
     assert!(rows.iter().any(|r| r.contains("switches to coder")), "{rows:?}");
-    assert!(rows.iter().any(|r| r.contains("coder")), "{rows:?}");
+    // The tier is the hover row's, never a card row (T-789).
+    assert_eq!(rows[28].trim_end(), " T-3 Fix OSC-11 detection ∙ on coder ∙ created >1y ago");
     golden("board_tier_owed_120x30", &rows);
-    // A card on the default says nothing at rest, open or not; `^n` landing
-    // there opens it and names the tier for a moment (T-562, user: "show
-    // default for a second after clicking ^n, so it won't be verbose when not
-    // needed").
+    // Narrower, the created clause goes first and the tier after it.
+    let row = |w| super::chrome::hover_line(&app, w).map(|l| l.to_string()).unwrap_or_default();
+    assert_eq!(row(50), " T-3 Fix OSC-11 detection ∙ on coder");
+    assert_eq!(row(30), " T-3 Fix OSC-11 detection");
+    // A ticket on the default says nothing at rest, under `P` or not; `^n`
+    // landing there names the tier on the hover row for a moment (T-562,
+    // user: "show default for a second after clicking ^n, so it won't be
+    // verbose when not needed").
     app.cursor_col = 0;
     app.cursor_row = Some(1);
     let open = app.selected_ticket().map(|t| t.id).expect("a card in TODO");
@@ -10534,7 +10522,8 @@ fn golden_the_ticket_and_the_card_wear_the_tier() {
     app.peek_all = false;
     app.tier_flash = Some((open, std::time::Instant::now()));
     let rows = render(&app, 120, 30);
-    assert!(rows.iter().any(|r| r.contains("quick")), "named during the flash: {rows:?}");
+    assert!(rows[28].contains("∙ on quick ∙"), "named during the flash: {rows:?}");
+    assert_eq!(rows.iter().filter(|r| r.contains("quick")).count(), 1, "on the hover row alone");
     app.tier_flash = Some((open, std::time::Instant::now() - crate::app::TIER_FLASH));
     let rows = render(&app, 120, 30);
     assert!(!rows.iter().any(|r| r.contains("quick")), "and lets go: {rows:?}");

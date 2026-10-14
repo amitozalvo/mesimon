@@ -565,7 +565,6 @@ fn sample_card(
         width,
         now_ms: (app.now)(),
         spin: app.spin_frame(),
-        names_key: false,
     };
     super::card::render(
         &ctx,
@@ -589,7 +588,6 @@ fn sample_card(
         None,
         None,
         crown,
-        None,
         Some(corner.to_string()),
         shows.then_some(&summary),
         None,
