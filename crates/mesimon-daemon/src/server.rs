@@ -7211,15 +7211,13 @@ impl Daemon {
         self.worktrees.get(&id).is_some_and(|b| !b.branch.is_empty() && !self.ticket_merged(id))
     }
 
-    /// The ticket's merge state as a word — the same four the `m` flow derives
-    /// from git, and a word rather than an enum for the same reason
-    /// `WorktreeItem.status` is one.
     /// Who merges `id`'s branch when it is ready (T-613), and the one
     /// clause that decides it — `get_ticket`'s `merge` and the delivered
     /// wake's word. A person's: crown mode supervised, or a ticket whose
     /// words came from outside, which waits for the keyboard whoever asks
     /// (`authorize_execution`). The train's: it is armed, the ticket is on
-    /// it and its column reaches a merge, as `train::lane` reads them. The
+    /// it and the column it delivers in reaches a merge, as `train::lane`
+    /// reads them. The
     /// crown's otherwise, under autonomous mode: the train off, the ticket
     /// out of it by `t`, a column the train stops short of, a raised hand
     /// the train leaves alone.
@@ -7250,19 +7248,35 @@ impl Daemon {
         if t.manual_merge {
             return view("crown", "out of the train (t)");
         }
-        let reach = self.board.column(&t.column).map(|c| c.settings.train).unwrap_or_default();
+        // The column it delivers in (T-795): a working ticket's turn ends
+        // where its column's rules put the card, and the train merges it
+        // there, not in the column it is worked in.
+        let column = match self.board.live_agent(id) {
+            Some(s) => mesimon_core::automove::delivers_in(&self.board, &t.column, &s.state),
+            None => &t.column,
+        };
+        let reach = self.board.column(column).map(|c| c.settings.train).unwrap_or_default();
         if reach != mesimon_core::board::TrainReach::Merge {
             return AgentMergeView {
                 by: "crown".into(),
                 why: format!(
                     "the train's reach in {} is {}",
-                    mesimon_core::text::scrub_text(&t.column),
+                    mesimon_core::text::scrub_text(column),
                     reach.word()
                 ),
             };
         }
         if t.hand_raised() {
             return view("crown", "its hand is up, which the train leaves alone");
+        }
+        if column != t.column {
+            return AgentMergeView {
+                by: "train".into(),
+                why: format!(
+                    "the train is armed and reaches {}, where this turn's end puts it",
+                    mesimon_core::text::scrub_text(column)
+                ),
+            };
         }
         view("train", "the train is armed and reaches this column")
     }

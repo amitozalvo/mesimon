@@ -5149,6 +5149,18 @@ fn the_crown_merges_where_the_train_will_not() {
     ));
     let (by, why, _) = who(&mut c, &kw);
     assert_eq!(by, "train", "{why}");
+    // Working, the card sits in IN PROGRESS, where the train only asks for
+    // rebases; the turn's end puts it back in REVIEW, and that is where it
+    // delivers (T-795). The turn ends in 3, as the delivery.
+    start(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the turn to pull the card", || {
+        c.board().ticket(w).unwrap().column == "IN PROGRESS"
+    });
+    let (by, why, _) = who(&mut c, &kw);
+    assert_eq!(
+        (by.as_str(), why.as_str()),
+        ("train", "the train is armed and reaches REVIEW, where this turn's end puts it")
+    );
     assert!(matches!(c.request(Command::SetManualMerge { id: w, on: true }), Response::Ok));
     let (by, why, _) = who(&mut c, &kw);
     assert_eq!((by.as_str(), why.as_str()), ("crown", "out of the train (t)"));

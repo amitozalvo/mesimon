@@ -25634,3 +25634,18 @@ one-saturated-colour law stands. Below TrueColor it steps; mono holds still. It 
 `theme::a_running_pipelines_shimmer_crosses_slowly_then_rests`, `forge::the_rollup_folds_to_the_loudest_word`,
 and `forge_e2e::the_crown_hears_the_forges_edges` (the snapshot names the check, `get_ticket`
 does not).
+
+## T-795 — who merges a working ticket is read where its turn ends (2026-10-15)
+
+The author, watching two tickets land while the crown waited on them: "It might be a bug that
+the board told you you are responsible to merge it. Merge train was on the whole time".
+`merge_by` (T-613) read the train's reach off the column the card sat in, so a worker working in
+IN PROGRESS (reach: rebase asks) read `merge: crown` with the train armed; its turn's end moved
+the card to REVIEW and the train merged it. A working ticket is now read in the column it
+delivers in, `automove::delivers_in`: the column rules a turn in flight will apply at its end
+(`on_working` then `on_done` for one still spawning; `on_done` for a running turn, a mid-turn
+dialog or background tasks), the card's own column otherwise. The why names it ("the train is
+armed and reaches REVIEW, where this turn's end puts it"). The delivered wake's word is
+unchanged: at delivery the turn has ended and the card moved. Tests:
+`automove::a_turn_in_flight_delivers_where_its_end_lands`, `crown_e2e`'s
+`the_crown_merges_where_the_train_will_not` step 2.

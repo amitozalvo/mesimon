@@ -14,7 +14,7 @@
 //! moves a ticket — the observe tier may misread a transcript, and a wrong
 //! card position is a lie the user has to undo by hand.
 
-use crate::board::{ColumnSettings, Confidence, SessionState, StopReason};
+use crate::board::{Board, ColumnSettings, Confidence, SessionState, StopReason};
 
 /// The destination column a session-state transition drags the ticket to,
 /// read off the settings of the column it sits in now. `None` = stay put.
@@ -51,6 +51,27 @@ pub fn explain<'a>(
     MoveDecision {
         outcome: if destination.is_some() { "eligible" } else { "no_column_rule" },
         destination,
+    }
+}
+
+/// The column a ticket's agent delivers in (T-795): where the turn in
+/// flight leaves the card when it ends, by the rules above — `on_working`
+/// first for a turn not yet begun, then `on_done`. An agent with no turn in
+/// flight delivers where the card sits. Who merges a working ticket is
+/// read here, not off the column it is worked in: a worker in IN PROGRESS
+/// delivers in REVIEW, where the train merges.
+pub fn delivers_in<'a>(board: &'a Board, column: &'a str, state: &SessionState) -> &'a str {
+    let rule = |at: &'a str, pick: fn(&ColumnSettings) -> &Option<String>| {
+        board.column(at).and_then(|c| pick(&c.settings).as_deref()).unwrap_or(at)
+    };
+    match state {
+        SessionState::Spawning => rule(rule(column, |s| &s.on_working), |s| &s.on_done),
+        SessionState::Running
+        | SessionState::RequiresAction { .. }
+        | SessionState::Idle { stop_reason: StopReason::Background } => {
+            rule(column, |s| &s.on_done)
+        }
+        _ => column,
     }
 }
 
@@ -133,6 +154,28 @@ mod tests {
     fn requires_action_is_not_working() {
         let modal = SessionState::RequiresAction { reason: Reason::StartupModal };
         assert_eq!(automove(&col("TODO"), &modal, Confidence::High), None);
+    }
+
+    /// A turn in flight delivers where its end puts the card (T-795): the
+    /// template's worker in IN PROGRESS delivers in REVIEW, one starting in
+    /// TODO takes both hops, and a turn already ended stays put.
+    #[test]
+    fn a_turn_in_flight_delivers_where_its_end_lands() {
+        let board = Board::with_default_columns();
+        let at = |column, state: SessionState| delivers_in(&board, column, &state).to_string();
+        assert_eq!(at("IN PROGRESS", running()), "REVIEW");
+        assert_eq!(at("IN PROGRESS", SessionState::Spawning), "REVIEW");
+        assert_eq!(at("TODO", SessionState::Spawning), "REVIEW");
+        let question = SessionState::RequiresAction { reason: Reason::Question };
+        assert_eq!(at("IN PROGRESS", question), "REVIEW");
+        let tasks = SessionState::Idle { stop_reason: StopReason::Background };
+        assert_eq!(at("IN PROGRESS", tasks), "REVIEW");
+        // No turn in flight, or a column with no rule: where it sits.
+        assert_eq!(at("IN PROGRESS", done()), "IN PROGRESS");
+        assert_eq!(at("IN PROGRESS", SessionState::Sleeping), "IN PROGRESS");
+        assert_eq!(at("TODO", running()), "TODO");
+        assert_eq!(at("DONE", running()), "DONE");
+        assert_eq!(at("GONE", running()), "GONE");
     }
 
     #[test]
