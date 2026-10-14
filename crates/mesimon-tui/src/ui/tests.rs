@@ -8409,6 +8409,46 @@ fn a_resting_card_shows_its_agents_new_reply_under_its_title() {
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
+/// T-783: what went between the crown and an agent rides the receiving
+/// card's line under its title, as a new reply does: the crown's ask on the
+/// worker's card behind the crown's mark, the wake's news on the crown's.
+#[test]
+fn a_resting_card_shows_what_went_between_it_and_the_crown() {
+    use mesimon_core::command::CrownSaid;
+    let mut b = fixture(false);
+    b.crown = Some(ulid_n(3));
+    let mut app = app_graphite(b);
+    (app.cursor_col, app.cursor_row) = (3, Some(0));
+    let said = |ticket, words: &str| (ticket, CrownSaid { ticket, words: words.into(), at_ms: 1 });
+    app.crown_said = [
+        said(ulid_n(5), "Rebase onto main and rerun cargo ut."),
+        said(ulid_n(3), "T-5 finished its turn (merge_state clean, merge: crown)"),
+    ]
+    .into();
+    let under = |app: &App, title: &str| {
+        let lines = render(app, 120, 30);
+        let y = lines.iter().position(|l| l.contains(title)).expect(title);
+        lines[y + 1].clone()
+    };
+    golden("board_crown_said_120x30", &render(&app, 120, 30));
+    let mark = crate::glyphs::crown(app.theme.glyph_tier());
+    // T-3 and T-5 head neighbouring columns, so one screen row holds both.
+    let row = under(&app, "Grapheme truncation");
+    assert!(
+        row.contains(&format!("{mark} Rebase onto main")),
+        "the words, behind its mark: {row:?}"
+    );
+    assert!(row.contains("  T-5 finished its turn"), "the crown's news, bare: {row:?}");
+    assert!(!app.animating(), "a settled row asks for no frames");
+
+    // Seen: the cursor rested on the card.
+    app.crown_said_seen.insert(ulid_n(5), 1);
+    assert!(!under(&app, "Grapheme truncation").contains("Rebase"));
+    // The cursor card shows it open or not at all.
+    (app.cursor_col, app.cursor_row) = (1, Some(0));
+    assert!(!render(&app, 120, 30).iter().any(|l| l.contains("T-5 finished")));
+}
+
 /// T-720: the new reply fades in left to right as it arrives — nothing
 /// written on its first frame, its head before its tail midway — and the
 /// board asks for frames while it does.

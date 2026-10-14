@@ -718,6 +718,10 @@ pub struct Daemon {
     /// `CROWN_TOUCH_KEPT_MS` (T-623). In memory on purpose, like the move
     /// gate's: the feed is the record, this is what the next frame needs.
     crown_touches: HashMap<ulid::Ulid, CrownTouch>,
+    /// The last words that went between the crown and each ticket's agent
+    /// (T-783), by the receiving ticket, for the card's line under its
+    /// title. In memory, like the touches: the transcript is the record.
+    crown_said: HashMap<ulid::Ulid, mesimon_core::command::CrownSaid>,
     /// The crown's asks dropped before they were sent (T-568), by the
     /// ticket they were for: what the crown's `get_ticket` on it reads as
     /// `asked`. In memory, like the asks themselves (T-413); the crown's
@@ -1265,6 +1269,7 @@ pub fn run(paths: Paths) -> Result<()> {
         board_version: 0,
         agent_replay: HashMap::new(),
         crown_touches: HashMap::new(),
+        crown_said: HashMap::new(),
         crown_dropped: HashMap::new(),
         crown_wakes: Vec::new(),
         crown_heard: HashMap::new(),
@@ -6580,6 +6585,26 @@ impl Daemon {
         })
     }
 
+    /// Words went between the crown and `ticket`'s agent (T-783): the card
+    /// says them under its title until the person rests on it or the agent
+    /// answers. One line, capped; a ticket that left the board drops its own.
+    fn crown_said(&mut self, ticket: ulid::Ulid, words: &str) {
+        let line = words.split_whitespace().collect::<Vec<_>>().join(" ");
+        let words =
+            mesimon_core::text::cap_bytes(&line, mesimon_core::command::CROWN_SAID_BYTES).into();
+        let board = &self.board;
+        self.crown_said.retain(|t, _| board.ticket(*t).is_some());
+        let at_ms = mesimon_core::clock::now_ms();
+        self.crown_said.insert(ticket, mesimon_core::command::CrownSaid { ticket, words, at_ms });
+    }
+
+    /// Every card's last crown words, for the snapshot, oldest first.
+    fn crown_said_view(&self) -> Vec<mesimon_core::command::CrownSaid> {
+        let mut out: Vec<_> = self.crown_said.values().cloned().collect();
+        out.sort_by_key(|s| s.at_ms);
+        out
+    }
+
     /// The touches still worth drawing, for the snapshot.
     fn recent_crown_touches(&self) -> Vec<CrownTouch> {
         let now = mesimon_core::clock::now_ms();
@@ -6727,6 +6752,7 @@ impl Daemon {
             return true;
         }
         let text = self.crown_wake_text();
+        let news = self.crown_wake_news();
         let ack = Ack { by: "automation", word: "crown_wake_delivered" };
         match self.deliver(crown, seat, text, ack, false, false) {
             Response::Err { message } => {
@@ -6737,6 +6763,7 @@ impl Daemon {
             _ => {
                 self.crown_wakes.clear();
                 self.feed.board("automation", "crown_wake_sent", Some(crown));
+                self.crown_said(crown, &news);
             }
         }
         true
@@ -8060,6 +8087,7 @@ impl Daemon {
             claude_default_mode: user_default_mode(),
             status_top: self.backend.status_top(),
             crown_touches: self.recent_crown_touches(),
+            crown_said: self.crown_said_view(),
             machine_tiers: self.machine_tiers.tiers.clone(),
             usage: self.usage.view(),
             prs: self.forge_items(),
@@ -11398,6 +11426,7 @@ impl Daemon {
             let QueuedAsk { ticket, seat, text, plan, by, .. } = self.queued.remove(i);
             changed = true;
             let word = seat.word();
+            let words = by.map(|_| text.clone());
             if !self.seat_stands(ticket, &seat) {
                 self.feed.board("automation", "queued_ask_dropped_target_gone", Some(ticket));
                 if let Some(crown) = by {
@@ -11447,6 +11476,9 @@ impl Daemon {
                     self.feed.board("agent", "ask_agent_sent", Some(ticket));
                     self.tag_owed(ticket, TurnAsk::Crown(crown));
                     self.crown_touched(crown, ticket, "sent");
+                    if let Some(words) = &words {
+                        self.crown_said(ticket, words);
+                    }
                 }
                 None => {
                     self.feed.board("automation", &format!("queued_{word}_sent"), Some(ticket));
@@ -11815,12 +11847,16 @@ impl Daemon {
             return Response::Err { message: "queued session changed".into() };
         }
         let immediately = q.deliver == Deliver::Immediately;
+        let words = q.by.map(|_| q.text.clone());
         let response =
             self.deliver_queued_ask(ticket, q.seat, q.text, Ack::QUEUED, q.plan, immediately);
         // The crown's words, sent by a person: the turn that takes them is
         // the crown's answer (T-469).
         if let (Some(crown), false) = (q.by, matches!(response, Response::Err { .. })) {
             self.tag_owed(ticket, TurnAsk::Crown(crown));
+            if let Some(words) = words {
+                self.crown_said(ticket, &words);
+            }
         }
         self.broadcast();
         response

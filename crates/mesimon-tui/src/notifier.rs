@@ -633,6 +633,7 @@ mod tests {
                 worktrees: Vec::new(),
                 notices: Vec::new(),
                 crown_touches: Vec::new(),
+                crown_said: Vec::new(),
                 machine_tiers: Default::default(),
                 usage: Default::default(),
                 costs: Default::default(),

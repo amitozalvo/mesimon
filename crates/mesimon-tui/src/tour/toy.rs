@@ -247,6 +247,7 @@ impl World {
             mesophon: Default::default(),
             terminals: Vec::new(),
             crown_touches: Vec::new(),
+            crown_said: Vec::new(),
             machine_tiers: self.machine_tiers.clone(),
             usage: Default::default(),
             costs: Vec::new(),

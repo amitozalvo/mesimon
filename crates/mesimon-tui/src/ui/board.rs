@@ -232,8 +232,9 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         // ghost (both `cursorish`, and their ticket is the subject being
         // acked), so the frame between a cursor move and the ack agrees.
         let unseen = !(selected || held) && app.spoke_unseen(t.id);
-        // What that agent said, for a resting card's new-reply row (T-720).
-        let fresh = if unseen && !left { app.fresh_reply(t.id) } else { None };
+        // What that agent said, for a resting card's new-reply row (T-720),
+        // or what went between it and the crown since (T-783).
+        let fresh = if !(selected || held || left) { app.card_news(t.id) } else { None };
         // Its pull requests, for the line under the title (T-739).
         let brief = if left { Vec::new() } else { app.pr_brief(t.id) };
         // A held ask's keys ride the cursor card (T-551) — the subject the

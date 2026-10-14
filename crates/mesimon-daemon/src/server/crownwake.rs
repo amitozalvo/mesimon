@@ -1893,12 +1893,34 @@ impl Daemon {
     /// crown`), read as the sentence goes — the board's mode and train as
     /// they stand now, not as they stood when the wake was owed.
     pub(super) fn crown_wake_text(&self) -> String {
+        let (events, keys) = self.crown_wake_events(true);
+        self.board.prompts.render(
+            mesimon_core::prompts::AgentPrompt::CrownWake,
+            &[("events", &events.join("; ")), ("keys", &keys.join(", "))],
+        )
+    }
+
+    /// The same events for the crown's card (T-783), without the template
+    /// and without the titles: the board shows each worker's card already,
+    /// and one line under a title has no room to spell another.
+    pub(super) fn crown_wake_news(&self) -> String {
+        self.crown_wake_events(false).0.join("; ")
+    }
+
+    /// Every wake owed, in the order they happened, each with what changed
+    /// in brackets, and the keys they name. `titled` spells each worker's
+    /// title after its key, as the crown's sentence does.
+    fn crown_wake_events(&self, titled: bool) -> (Vec<String>, Vec<String>) {
         let mut events: Vec<String> = Vec::new();
         let mut keys: Vec<String> = Vec::new();
         for w in &self.crown_wakes {
             let Some(t) = self.board.ticket(w.worker) else { continue };
-            let title = mesimon_core::text::scrub_text(&t.title);
-            let mut event = format!("{} \"{title}\" {}", t.short_key, w.clause());
+            let mut event = if titled {
+                let title = mesimon_core::text::scrub_text(&t.title);
+                format!("{} \"{title}\" {}", t.short_key, w.clause())
+            } else {
+                format!("{} {}", t.short_key, w.clause())
+            };
             let mut changed = w.changed();
             let unmerged_branch =
                 w.to.as_ref().is_some_and(|to| to.merge.is_some_and(|m| m != "merged"));
@@ -1914,10 +1936,7 @@ impl Daemon {
             events.push(event);
             keys.push(t.short_key.clone());
         }
-        self.board.prompts.render(
-            mesimon_core::prompts::AgentPrompt::CrownWake,
-            &[("events", &events.join("; ")), ("keys", &keys.join(", "))],
-        )
+        (events, keys)
     }
 }
 

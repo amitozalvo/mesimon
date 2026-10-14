@@ -25349,3 +25349,33 @@ no agent started. The rig: U1 (new; `hold_branch` makes the ticket's branch befo
 the precheck refuses; an `until = { woke = … }` for a step with no worker) on the real Sonnet
 (claude 2.1.299), 2026-10-14: PASS in 30 s, wake `unstarted`, and the crown, told nothing of
 what to do, raised its hand naming the branch that already exists.
+
+## A card shows what went between it and the crown (T-783, 2026-10-15, "when messages received through crown communications show the message in the preview below title of ticket like normal agent message does")
+
+**What.** A card the crown spoke to said `♛ sent` (or `♛ answered`) for a beat and nothing of what
+was sent; the crown's card said `♛ woke` and nothing of why. The words now take the resting
+card's line under its title — the T-720 new-reply row, same fade, same quiet ink: on a worker's
+card `♛ <the crown's ask or answer>`, on the crown's card the wake's news bare (`T-5 delivered
+(commit 1a2b3c4)`). Agreed with the author before building: both directions, on the receiving
+card, gone as a new reply goes.
+
+**The record.** `Snapshot.crown_said` (serde default), one `CrownSaid { ticket, words, at_ms }`
+per receiving ticket, the latest, in memory like the touches; whitespace-flattened and capped at
+`CROWN_SAID_BYTES` (240) by `Daemon::crown_said`. Written where the words provably went, never at
+`asked`: `send_queued_ask` for a crown's ask (sent now, immediately, or by a person's `^y`),
+`drain_queue`'s crown arm for one sent at the agent's idle, `crown_answer_settled` for an answer
+whose keys went in, and `drain_crown_wakes` on a delivered wake, from `crown_wake_news` — the
+wake sentence's events without the template and without the titles, which the board already
+shows on each worker's card. `start_agent` carries no words of the crown's, so it records none.
+
+**The card.** `App::card_news` picks the line: the crown's words while unseen and newer than the
+agent's last reply (`Spoke::since_ms`), else the T-720 reply. The cursor resting on the card
+acks both (`ack_spoke`, `crown_said_seen`); `New replies` off turns both off. A board opened
+later than the words still shows them (the daemon keeps the latest per ticket until a newer one
+or a restart); a reply already on the transcript when the board opens reads as newer, as T-720's
+first sight does.
+
+**Tests.** `app::crown_words_ride_the_card_until_seen_or_answered`,
+`ui::a_resting_card_shows_what_went_between_it_and_the_crown` (golden
+`board_crown_said_120x30`), and `crown_e2e`'s sent, answered and delivered-wake steps assert
+`crown_said`.

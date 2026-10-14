@@ -68,6 +68,16 @@ fn read(c: &mut TestClient, session: uuid::Uuid, key: &str) -> Result<AgentTicke
     }
 }
 
+/// The words the board shows under `ticket`'s title from the crown (T-783).
+fn said_on(c: &mut TestClient, ticket: ulid::Ulid) -> Option<String> {
+    match c.request(Command::Snapshot) {
+        Response::Board { crown_said, .. } => {
+            crown_said.into_iter().find(|s| s.ticket == ticket).map(|s| s.words)
+        }
+        other => panic!("snapshot: {other:?}"),
+    }
+}
+
 fn touches(c: &mut TestClient) -> Vec<CrownTouch> {
     match c.request(Command::Snapshot) {
         Response::Board { crown_touches, .. } => crown_touches,
@@ -1071,6 +1081,8 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     let sentence = format!("{delivered1} (commit {h1}) ∙ get_ticket key={kw1} for state and notes");
     assert_eq!(lines_with(&sentence), 1, "{}", std::fs::read_to_string(&got).unwrap());
     assert!(wake_rows(&mut c, a).is_empty(), "delivered, so nothing is owed");
+    // The crown's card says the news, its titles left to the cards (T-783).
+    assert_eq!(said_on(&mut c, a), Some(format!("{kw1} delivered (commit {h1})")));
     // The feed names both tickets and the cause, never the sentence.
     wait_until(std::time::Duration::from_secs(5), "the crown_wake feed line", || {
         crown_wake_fed("delivered")
@@ -2710,6 +2722,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
         landed("mesimon-probe-94 then push")
     });
     assert_eq!(touch_on(&mut c, w).as_deref(), Some("sent"), "the card says it went");
+    assert_eq!(said_on(&mut c, w).as_deref(), Some("mesimon-probe-94 then push"), "and what");
     wait_until(std::time::Duration::from_secs(5), "the ask_agent_sent feed line", || {
         std::fs::read_to_string(&feed_path).is_ok_and(|feed| {
             feed.lines()
@@ -4066,6 +4079,7 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
         touches(&mut c).iter().any(|t| t.ticket == w && t.action == "answered"),
         "♛ answered on the card"
     );
+    assert_eq!(said_on(&mut c, w).as_deref(), Some("Okta"), "and the answer under its title");
     let feed = std::fs::read_to_string(&feed_path).unwrap();
     assert!(
         feed.lines().any(|l| l.contains("\"cmd\":\"answer_agent\"")

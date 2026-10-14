@@ -1651,6 +1651,12 @@ pub struct App {
     /// restart finds every reply unread, which is how the board always
     /// looked, and greys each as the cursor reaches it.
     pub spoke: std::collections::HashMap<ulid::Ulid, Spoke>,
+    /// The last words between the crown and each card's agent (T-783),
+    /// off the snapshot, and the stamp of the ones the cursor has rested
+    /// on: a card shows the words under its title until they are seen or
+    /// its agent answers, as it shows a new reply.
+    pub crown_said: std::collections::HashMap<ulid::Ulid, mesimon_core::command::CrownSaid>,
+    pub(crate) crown_said_seen: std::collections::HashMap<ulid::Ulid, u64>,
     /// The scan's clock.
     spoke_polled: Option<Instant>,
     /// The ticket acked last tick, so the tick the cursor leaves a card can
@@ -2028,6 +2034,8 @@ impl App {
             strikes: Vec::new(),
             spots: std::cell::RefCell::new(crate::strike::Spots::default()),
             spoke: std::collections::HashMap::new(),
+            crown_said: std::collections::HashMap::new(),
+            crown_said_seen: std::collections::HashMap::new(),
             spoke_polled: None,
             spoke_subject: None,
             pickup_page: None,
@@ -2563,6 +2571,7 @@ impl App {
             mesophon,
             terminals,
             crown_touches,
+            crown_said,
             machine_tiers,
             usage,
             costs,
@@ -2608,6 +2617,9 @@ impl App {
         self.costs = costs;
         self.prs = prs;
         self.forge = forge;
+        self.crown_said = crown_said.into_iter().map(|s| (s.ticket, s)).collect();
+        let said = &self.crown_said;
+        self.crown_said_seen.retain(|t, _| said.contains_key(t));
         self.absorb_crown_touches(crown_touches, crown_was, &placed);
         self.settle_drawer();
         self.seed_team_drafts();
@@ -3880,15 +3892,53 @@ impl App {
         (!words.is_empty()).then_some((words, ago))
     }
 
-    /// Is a new reply fading in on some resting card? What keeps the frames
-    /// coming while it does.
+    /// The words that went between the crown and this card's agent
+    /// (T-783) — the crown's ask or answer on a worker's card, behind the
+    /// crown's mark; on the crown's own card the news its wake carried —
+    /// and how long ago, while the cursor has not rested on the card since
+    /// and the agent has not answered since. Under the same switch as a new
+    /// reply, and drawn on the same row.
+    pub(crate) fn crown_words(&self, ticket: ulid::Ulid) -> Option<(String, u64)> {
+        if !self.prefs.new_replies {
+            return None;
+        }
+        let said = self.crown_said.get(&ticket)?;
+        if self.crown_said_seen.get(&ticket) == Some(&said.at_ms) {
+            return None;
+        }
+        // The agent spoke after: its reply is the newer news.
+        if self.spoke.get(&ticket).is_some_and(|e| e.key != 0 && e.since_ms > said.at_ms) {
+            return None;
+        }
+        let words = crate::text::one_line(&mesimon_core::text::scrub_cells(&said.words, false));
+        if words.is_empty() {
+            return None;
+        }
+        let words = if self.board.is_crowned(ticket) {
+            words
+        } else {
+            format!("{} {words}", crate::glyphs::crown(self.theme.glyph_tier()))
+        };
+        Some((words, mesimon_core::clock::now_ms().saturating_sub(said.at_ms)))
+    }
+
+    /// The resting card's line under its title: the crown's words when
+    /// they are the newest unseen news on it, else its agent's new reply.
+    pub(crate) fn card_news(&self, ticket: ulid::Ulid) -> Option<(String, u64)> {
+        self.crown_words(ticket).or_else(|| self.fresh_reply(ticket))
+    }
+
+    /// Is a new reply, or new crown words, fading in on some resting card?
+    /// What keeps the frames coming while it does.
     fn reply_revealing(&self) -> bool {
         let now = mesimon_core::clock::now_ms();
+        let fading = |at: u64| now.saturating_sub(at) < crate::theme::REPLY_REVEAL_MS;
         self.prefs.new_replies
             && matches!(self.screen, Screen::Board)
-            && self.spoke.values().any(|e| {
-                e.key != e.seen && now.saturating_sub(e.since_ms) < crate::theme::REPLY_REVEAL_MS
-            })
+            && (self.spoke.values().any(|e| e.key != e.seen && fading(e.since_ms))
+                || self.crown_said.values().any(|s| {
+                    self.crown_said_seen.get(&s.ticket) != Some(&s.at_ms) && fading(s.at_ms)
+                }))
     }
 
     /// One card's half of the spoke scan: read what its paned claude has
@@ -3988,12 +4038,16 @@ impl App {
     /// has said is seen. Returns whether that cleared a mark.
     fn ack_spoke(&mut self, ticket: ulid::Ulid) -> bool {
         let prs = self.ack_prs(ticket);
+        let crown = match self.crown_said.get(&ticket) {
+            Some(s) => self.crown_said_seen.insert(ticket, s.at_ms) != Some(s.at_ms),
+            None => false,
+        };
         match self.spoke.get_mut(&ticket) {
             Some(e) if e.key != e.seen => {
                 e.seen = e.key;
                 true
             }
-            _ => prs,
+            _ => prs || crown,
         }
     }
 
@@ -12995,6 +13049,8 @@ struct Snapshot {
     terminals: Vec<mesimon_core::command::TerminalItem>,
     /// The crown's recent edits (T-411): the cards to light.
     crown_touches: Vec<mesimon_core::command::CrownTouch>,
+    /// The crown's last words to each card, and its last wake's (T-783).
+    crown_said: Vec<mesimon_core::command::CrownSaid>,
     machine_tiers: mesimon_core::tier::MachineTiers,
     usage: mesimon_core::usage::Usage,
     costs: Vec<mesimon_core::cost::TicketCost>,
@@ -13025,6 +13081,7 @@ impl Snapshot {
                 mesophon,
                 terminals,
                 crown_touches,
+                crown_said,
                 machine_tiers,
                 usage,
                 costs,
@@ -13049,6 +13106,7 @@ impl Snapshot {
                 mesophon,
                 terminals,
                 crown_touches,
+                crown_said,
                 machine_tiers,
                 usage,
                 costs,
@@ -13584,6 +13642,7 @@ pub(crate) mod test_support {
                     mesophon: Default::default(),
                     terminals: self.terminals.clone(),
                     crown_touches: Vec::new(),
+                    crown_said: Vec::new(),
                     machine_tiers: self.machine_tiers.clone(),
                     usage: self.usage.clone(),
                     costs: Vec::new(),
@@ -17226,6 +17285,65 @@ mod tests {
         assert_eq!(app.crown_mark(target), CrownMark::Touched { action: "moved", land: None });
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(app.prefs.crown_lightning && app.motion());
+    }
+
+    /// T-783: the crown's words to a worker ride the worker's card behind
+    /// the crown's mark, the wake's news rides the crown's card bare, and
+    /// either leaves when the cursor rests on the card, when the agent
+    /// answers after them, or with the new-replies switch.
+    #[test]
+    fn crown_words_ride_the_card_until_seen_or_answered() {
+        use mesimon_core::command::CrownSaid;
+        let (mut app, _, _) = app_with_claude(SessionState::Running, false);
+        let ids: Vec<ulid::Ulid> = app.board.tickets.iter().map(|t| t.id).collect();
+        let (crown, worker) = (ids[0], ids[1]);
+        app.board_mut().crown = Some(crown);
+        let said = |ticket, words: &str, at_ms| CrownSaid { ticket, words: words.into(), at_ms };
+        app.crown_said = [
+            (worker, said(worker, "rebase onto main,\n  then rerun cargo ut", 1_000)),
+            (crown, said(crown, "T-2 finished its turn (merge_state clean)", 1_000)),
+        ]
+        .into();
+        let mark = crate::glyphs::crown(app.theme.glyph_tier());
+        let words = |app: &App, t| app.card_news(t).map(|(w, _)| w);
+        assert_eq!(
+            words(&app, worker).as_deref(),
+            Some(format!("{mark} rebase onto main, then rerun cargo ut").as_str()),
+            "one line, behind the crown's mark"
+        );
+        assert_eq!(
+            words(&app, crown).as_deref(),
+            Some("T-2 finished its turn (merge_state clean)"),
+            "the crown's own card says its news bare"
+        );
+
+        // Seen: the cursor rested on the card.
+        assert!(app.ack_spoke(worker), "the ack cleared a line");
+        assert_eq!(words(&app, worker), None);
+        assert!(!app.ack_spoke(worker), "and only once");
+        // New words come back.
+        app.crown_said.insert(worker, said(worker, "and push", 2_000));
+        assert!(words(&app, worker).is_some_and(|w| w.ends_with("and push")));
+
+        // The agent answered after: its reply is the news.
+        app.spoke.insert(
+            worker,
+            Spoke {
+                session: uuid::Uuid::nil(),
+                kind: SessionKind::Claude,
+                path: String::new(),
+                key: 7,
+                seen: 0,
+                since_ms: 3_000,
+            },
+        );
+        assert_eq!(words(&app, worker), None, "the reply after the words wins");
+        app.crown_said.insert(worker, said(worker, "one more thing", 4_000));
+        assert!(words(&app, worker).is_some_and(|w| w.ends_with("one more thing")));
+
+        // The switch is the new-replies one.
+        app.seed_pref(|p| p.new_replies = false);
+        assert_eq!(words(&app, crown), None, "off is off");
     }
 
     /// The Default tier row (T-443) took the Provider row's place: with no

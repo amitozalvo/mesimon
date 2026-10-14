@@ -1745,6 +1745,7 @@ impl Daemon {
             self.persist_sessions();
         }
         self.crown_touched(crown, ticket, "answered");
+        self.crown_said(ticket, answer);
         self.broadcast();
     }
 

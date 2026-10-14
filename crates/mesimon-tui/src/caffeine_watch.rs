@@ -282,6 +282,7 @@ mod tests {
         Response::Board {
             board,
             crown_touches: Vec::new(),
+            crown_said: Vec::new(),
             machine_tiers: Default::default(),
             usage: Default::default(),
             costs: Default::default(),

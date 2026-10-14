@@ -1743,6 +1743,11 @@ pub enum Response {
         /// daemon parses as none.
         #[serde(default)]
         crown_touches: Vec<CrownTouch>,
+        /// The last words the crown sent each ticket's agent, and the last
+        /// news the crown was woken with (T-783), for the receiving card's
+        /// line under its title. Absent from an older daemon parses as none.
+        #[serde(default)]
+        crown_said: Vec<CrownSaid>,
         /// The machine's agent tiers (T-443), `tiers.toml` as this daemon
         /// last read it — the layer under `board.tiers`. Absent from an older
         /// daemon parses as none, which resolves every ticket to `claude`.
@@ -2278,6 +2283,24 @@ pub struct CrownTouch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<ulid::Ulid>,
 }
+
+/// Words that went between the crown and an agent (T-783): the crown's
+/// ask or answer to a worker's agent, or the news a crown wake carried to
+/// the crown. One per receiving ticket, the latest, in memory only; the
+/// board draws it under the card's title as it draws a new reply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrownSaid {
+    /// The card the words went to: a worker's for the crown's words, the
+    /// crown's own for a wake's.
+    pub ticket: ulid::Ulid,
+    /// One line, capped at `CROWN_SAID_BYTES`.
+    pub words: String,
+    pub at_ms: u64,
+}
+
+/// How much of a crown message rides the snapshot (T-783): more than a
+/// card is wide, so the card cuts it, never the wire.
+pub const CROWN_SAID_BYTES: usize = 240;
 
 /// One tag as an agent sees it: the name, and the axis it lives on (the
 /// digit that reaches it in the picker; 1–9, 0 = 10). No colour — a tint is
