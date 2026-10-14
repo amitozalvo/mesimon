@@ -317,52 +317,91 @@ pub fn gh_rollup(rollup: Option<&Value>) -> Pipeline {
 /// here.
 pub fn parse_glab(repo: &str, json: &str) -> Vec<Pr> {
     let Ok(Value::Array(items)) = serde_json::from_str::<Value>(json) else { return Vec::new() };
-    items
+    items.iter().filter_map(|v| glab_mr(repo, v)).collect()
+}
+
+/// GitLab's read of one MR (`projects/:id/merge_requests/:iid`, T-784): the
+/// MR as the list spells it, and its head pipeline's word and id where it
+/// names one for that head. GitLab's list serves a head minutes old after a
+/// push; this read does not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MrRead {
+    pub pr: Pr,
+    pub pipeline: Option<(Pipeline, u64)>,
+}
+
+pub fn parse_glab_mr(repo: &str, json: &str) -> Option<MrRead> {
+    let v = serde_json::from_str::<Value>(json).ok()?;
+    let pr = glab_mr(repo, &v)?;
+    let pipeline = v.get("head_pipeline").filter(|h| h.is_object()).and_then(|h| {
+        // A pipeline of another commit says nothing of this head.
+        let sha = h.get("sha").and_then(Value::as_str).unwrap_or_default();
+        if !sha.is_empty() && sha != pr.head_oid {
+            return None;
+        }
+        let word = gitlab_status(h.get("status").and_then(Value::as_str).unwrap_or_default());
+        (word != Pipeline::Unknown).then_some((word, h.get("id")?.as_u64()?))
+    });
+    Some(MrRead { pr, pipeline })
+}
+
+impl Pr {
+    /// What a single read says of an open MR over its list row (T-784): the
+    /// head, the conflict and the merge status's review word. A read of
+    /// another MR changes nothing.
+    pub fn take_read(&mut self, read: &Pr) {
+        if read.repo != self.repo || read.number != self.number || read.head_oid.is_empty() {
+            return;
+        }
+        self.head_oid = read.head_oid.clone();
+        self.conflict = read.conflict;
+        self.review = read.review;
+    }
+}
+
+/// One MR object, as the list and the single read both spell it.
+fn glab_mr(repo: &str, v: &Value) -> Option<Pr> {
+    let number = v.get("iid")?.as_u64()?;
+    let state = match v.get("state").and_then(Value::as_str)? {
+        "merged" => PrState::Merged,
+        "closed" => PrState::Closed,
+        _ if v.get("draft").and_then(Value::as_bool) == Some(true) => PrState::Draft,
+        _ => PrState::Open,
+    };
+    // What is on the target branch (T-754). Under GitLab's default
+    // "merge commit" method a squash still lands as a merge commit
+    // whose second parent is the squash commit, and the MR carries
+    // both shas: the pipeline and the deployments are the merge
+    // commit's. A fast-forward or semi-linear squash has no merge
+    // commit, and the squash sha is then what landed.
+    let merge_oid = ["merge_commit_sha", "squash_commit_sha"]
         .iter()
-        .filter_map(|v| {
-            let number = v.get("iid")?.as_u64()?;
-            let state = match v.get("state").and_then(Value::as_str)? {
-                "merged" => PrState::Merged,
-                "closed" => PrState::Closed,
-                _ if v.get("draft").and_then(Value::as_bool) == Some(true) => PrState::Draft,
-                _ => PrState::Open,
-            };
-            // What is on the target branch (T-754). Under GitLab's default
-            // "merge commit" method a squash still lands as a merge commit
-            // whose second parent is the squash commit, and the MR carries
-            // both shas: the pipeline and the deployments are the merge
-            // commit's. A fast-forward or semi-linear squash has no merge
-            // commit, and the squash sha is then what landed.
-            let merge_oid = ["merge_commit_sha", "squash_commit_sha"]
-                .iter()
-                .filter_map(|k| v.get(k).and_then(Value::as_str))
-                .find(|s| !s.is_empty())
-                .unwrap_or_default()
-                .to_string();
-            let status = v.get("detailed_merge_status").and_then(Value::as_str).unwrap_or_default();
-            let conflict = v.get("has_conflicts").and_then(Value::as_bool) == Some(true)
-                || status == "conflict";
-            let review = match status {
-                "not_approved" => Review::Required,
-                _ => Review::None,
-            };
-            Some(Pr {
-                forge: Forge::GitLab,
-                repo: repo.to_string(),
-                number,
-                url: str_of(v, "web_url"),
-                state,
-                head_oid: str_of(v, "sha"),
-                head_ref: str_of(v, "source_branch"),
-                merge_oid,
-                conflict,
-                review,
-                pipeline: Pipeline::Unknown,
-                updated_ms: iso_ms(v.get("updated_at")),
-                deployed: Vec::new(),
-            })
-        })
-        .collect()
+        .filter_map(|k| v.get(k).and_then(Value::as_str))
+        .find(|s| !s.is_empty())
+        .unwrap_or_default()
+        .to_string();
+    let status = v.get("detailed_merge_status").and_then(Value::as_str).unwrap_or_default();
+    let conflict =
+        v.get("has_conflicts").and_then(Value::as_bool) == Some(true) || status == "conflict";
+    let review = match status {
+        "not_approved" => Review::Required,
+        _ => Review::None,
+    };
+    Some(Pr {
+        forge: Forge::GitLab,
+        repo: repo.to_string(),
+        number,
+        url: str_of(v, "web_url"),
+        state,
+        head_oid: str_of(v, "sha"),
+        head_ref: str_of(v, "source_branch"),
+        merge_oid,
+        conflict,
+        review,
+        pipeline: Pipeline::Unknown,
+        updated_ms: iso_ms(v.get("updated_at")),
+        deployed: Vec::new(),
+    })
 }
 
 /// The one `pipeline` word for GitLab's `pipelines?sha=` answer: the newest
@@ -482,26 +521,52 @@ pub fn parse_gh_deployments(json: &str) -> Vec<(u64, String)> {
         .collect()
 }
 
-/// GitHub's `deployments/{id}/statuses?per_page=1` answer: whether the
-/// newest status is a success.
-pub fn parse_gh_deployment_success(json: &str) -> bool {
-    let Ok(Value::Array(items)) = serde_json::from_str::<Value>(json) else { return false };
-    items.first().and_then(|s| s.get("state")).and_then(Value::as_str) == Some("success")
+/// GitHub's `deployments/{id}/statuses?per_page=1` answer: when the newest
+/// status turned success, unix ms (zero where it names no time), or `None`
+/// where it is not a success.
+pub fn parse_gh_deployment_success(json: &str) -> Option<u64> {
+    let Ok(Value::Array(items)) = serde_json::from_str::<Value>(json) else { return None };
+    let first = items.first()?;
+    (first.get("state").and_then(Value::as_str) == Some("success"))
+        .then(|| iso_ms(first.get("created_at")))
 }
 
-/// GitLab's `deployments?environment=&status=success` answer: whether one
-/// of them deployed this commit.
-pub fn parse_gitlab_deployed(json: &str, oid: &str) -> bool {
-    let Ok(Value::Array(items)) = serde_json::from_str::<Value>(json) else { return false };
-    !oid.is_empty()
-        && items.iter().any(|d| {
-            d.get("sha").and_then(Value::as_str) == Some(oid)
-                || d.get("deployable")
-                    .and_then(|x| x.get("commit"))
-                    .and_then(|c| c.get("id"))
-                    .and_then(Value::as_str)
-                    == Some(oid)
-        })
+/// GitLab's `deployments?environment=&status=success` answer: when one of
+/// them deployed this commit, unix ms (zero where it names no time), or
+/// `None` where none did.
+pub fn parse_gitlab_deployed(json: &str, oid: &str) -> Option<u64> {
+    let Ok(Value::Array(items)) = serde_json::from_str::<Value>(json) else { return None };
+    if oid.is_empty() {
+        return None;
+    }
+    let d = items.iter().find(|d| {
+        d.get("sha").and_then(Value::as_str) == Some(oid)
+            || d.get("deployable")
+                .and_then(|x| x.get("commit"))
+                .and_then(|c| c.get("id"))
+                .and_then(Value::as_str)
+                == Some(oid)
+    })?;
+    Some(
+        ["finished_at", "updated_at", "created_at"]
+            .iter()
+            .map(|k| iso_ms(d.get(*k)))
+            .find(|ms| *ms > 0)
+            .unwrap_or(0),
+    )
+}
+
+/// The environments one read found a commit deployed to, in the order they
+/// happened (T-784): by the deployment's time where the forge gave every
+/// one, else by `envs`, the board's column order — never by name.
+pub fn deploy_order(mut found: Vec<(String, u64)>, envs: &[String]) -> Vec<String> {
+    let rank = |e: &str| envs.iter().position(|x| x == e).unwrap_or(usize::MAX);
+    if found.iter().all(|(_, at)| *at > 0) {
+        found.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| rank(&a.0).cmp(&rank(&b.0))));
+    } else {
+        found.sort_by_key(|(e, _)| rank(e));
+    }
+    found.into_iter().map(|(e, _)| e).collect()
 }
 
 /// An ISO-8601 stamp (`2026-10-13T05:56:17Z`, or with an offset) as unix
@@ -1000,6 +1065,66 @@ mod tests {
         assert_eq!(gitlab_status("failed"), Pipeline::Failed(String::new()));
     }
 
+    /// T-784, lab run 3: five minutes after a push GitLab's list still
+    /// served !9 at the failed commit; the single read named the pushed
+    /// head and its passed pipeline. The read's head, conflict and pipeline
+    /// win over the list row.
+    #[test]
+    fn a_single_mr_read_overrides_the_lists_stale_head() {
+        let list = r#"[{"iid":9,"web_url":"https://gitlab.com/o/api/-/merge_requests/9","state":"opened",
+          "source_branch":"msmn/T-13-x","sha":"dc82695","draft":false,"has_conflicts":true,
+          "detailed_merge_status":"conflict","updated_at":"2026-10-14T21:31:22Z"}]"#;
+        let mut pr = parse_glab("o/api", list).remove(0);
+        assert_eq!(pr.head_oid, "dc82695");
+        let one = r#"{"iid":9,"web_url":"https://gitlab.com/o/api/-/merge_requests/9","state":"opened",
+          "source_branch":"msmn/T-13-x","sha":"ebf3084","draft":false,"has_conflicts":false,
+          "detailed_merge_status":"mergeable","updated_at":"2026-10-14T21:34:00Z",
+          "head_pipeline":{"id":2101,"sha":"ebf3084","status":"success"}}"#;
+        let read = parse_glab_mr("o/api", one).unwrap();
+        assert_eq!(read.pipeline, Some((Pipeline::Passed, 2101)));
+        pr.take_read(&read.pr);
+        assert_eq!(pr.head_oid, "ebf3084", "the single read's head");
+        assert!(!pr.conflict, "and its conflict");
+        assert_eq!(
+            pr.updated_ms,
+            parse_glab("o/api", list)[0].updated_ms,
+            "the rest is the list's"
+        );
+
+        // A head pipeline of another commit, or none, leaves the pipeline to
+        // the read by sha; a read of another MR changes nothing.
+        let other = one.replace(r#""sha":"ebf3084","status""#, r#""sha":"dc82695","status""#);
+        assert_eq!(parse_glab_mr("o/api", &other).unwrap().pipeline, None);
+        let bare = one.replace(
+            r#""head_pipeline":{"id":2101,"sha":"ebf3084","status":"success"}"#,
+            r#""head_pipeline":null"#,
+        );
+        assert_eq!(parse_glab_mr("o/api", &bare).unwrap().pipeline, None);
+        let failed = one.replace("success", "failed");
+        assert_eq!(
+            parse_glab_mr("o/api", &failed).unwrap().pipeline,
+            Some((Pipeline::Failed(String::new()), 2101))
+        );
+        let mut eight = parse_glab("o/api", &list.replace(r#""iid":9"#, r#""iid":8"#)).remove(0);
+        eight.take_read(&read.pr);
+        assert_eq!(eight.head_oid, "dc82695");
+        assert_eq!(parse_glab_mr("o/api", "[]"), None);
+    }
+
+    /// T-784, C2: staging deployed 5 s before production, and the wake said
+    /// production first. The forge's times order the words; with a time
+    /// missing the board's column order does, never the names.
+    #[test]
+    fn deployments_are_said_in_the_order_they_happened() {
+        let envs = vec!["staging".to_string(), "production".to_string()];
+        let found = vec![("production".to_string(), 2_000), ("staging".to_string(), 1_000)];
+        assert_eq!(deploy_order(found, &envs), ["staging", "production"]);
+        let late = vec![("staging".to_string(), 9_000), ("production".to_string(), 2_000)];
+        assert_eq!(deploy_order(late, &envs), ["production", "staging"], "time beats the columns");
+        let untimed = vec![("production".to_string(), 2_000), ("staging".to_string(), 0)];
+        assert_eq!(deploy_order(untimed, &envs), ["staging", "production"], "the columns' order");
+    }
+
     #[test]
     fn a_gitlab_pipeline_names_the_job_it_stopped_on() {
         assert_eq!(gitlab_pipeline_id(r#"[{"id":44,"status":"manual"},{"id":43}]"#), Some(44));
@@ -1161,13 +1286,29 @@ mod tests {
             r#"[{"id":7,"environment":"staging","sha":"m"},{"id":8,"environment":"production"}]"#,
         );
         assert_eq!(ds, [(7, "staging".to_string()), (8, "production".to_string())]);
-        assert!(parse_gh_deployment_success(r#"[{"state":"success"},{"state":"pending"}]"#));
-        assert!(!parse_gh_deployment_success(r#"[{"state":"in_progress"}]"#));
-        assert!(!parse_gh_deployment_success("[]"));
-        assert!(parse_gitlab_deployed(r#"[{"sha":"abc","status":"success"}]"#, "abc"));
-        assert!(parse_gitlab_deployed(r#"[{"deployable":{"commit":{"id":"abc"}}}]"#, "abc"));
-        assert!(!parse_gitlab_deployed(r#"[{"sha":"zzz"}]"#, "abc"));
-        assert!(!parse_gitlab_deployed(r#"[{"sha":""}]"#, ""));
+        assert_eq!(
+            parse_gh_deployment_success(r#"[{"state":"success"},{"state":"pending"}]"#),
+            Some(0)
+        );
+        assert_eq!(
+            parse_gh_deployment_success(
+                r#"[{"state":"success","created_at":"2026-10-15T00:00:05Z"}]"#
+            ),
+            Some(iso_ms(Some(&Value::from("2026-10-15T00:00:05Z"))))
+        );
+        assert_eq!(parse_gh_deployment_success(r#"[{"state":"in_progress"}]"#), None);
+        assert_eq!(parse_gh_deployment_success("[]"), None);
+        assert_eq!(parse_gitlab_deployed(r#"[{"sha":"abc","status":"success"}]"#, "abc"), Some(0));
+        assert!(parse_gitlab_deployed(
+            r#"[{"sha":"abc","finished_at":"2026-10-15T00:00:05Z"}]"#,
+            "abc"
+        )
+        .is_some_and(|ms| ms > 0));
+        assert!(
+            parse_gitlab_deployed(r#"[{"deployable":{"commit":{"id":"abc"}}}]"#, "abc").is_some()
+        );
+        assert_eq!(parse_gitlab_deployed(r#"[{"sha":"zzz"}]"#, "abc"), None);
+        assert_eq!(parse_gitlab_deployed(r#"[{"sha":""}]"#, ""), None);
         let long = "x".repeat(200);
         assert_eq!(job_word(&format!("  a\nb\t{long}")).len(), NAME_MAX_BYTES);
         assert_eq!(job_word("test\nlinux"), "test linux");

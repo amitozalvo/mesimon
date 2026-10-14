@@ -876,7 +876,8 @@ fn the_prs_survive_a_restart_and_the_first_pass_lists() {
 /// prints `<pipelines file>.X` where one exists, else no pipeline — so the
 /// merge commit's sha has a pipeline and the squash commit's has none,
 /// which is the lab's shape (T-754). A pipeline's jobs (T-772) are
-/// `<pipelines file>.jobs`.
+/// `<pipelines file>.jobs`. One MR's read (T-784) is `<MSMN_GLAB_MR>.<iid>`
+/// where the test wrote one, else an answer that reads as nothing.
 const GLAB_STUB: &str = r#"#!/bin/sh
 case "$1 $2" in
   "auth status") exit 0 ;;
@@ -888,6 +889,7 @@ case "$1 $2" in
         sha="${4#*sha=}"; sha="${sha%%&*}"
         if [ -f "$MSMN_GLAB_PIPELINES.$sha" ]; then cat "$MSMN_GLAB_PIPELINES.$sha"; else echo '[]'; fi ;;
       */jobs*) cat "$MSMN_GLAB_PIPELINES.jobs" 2>/dev/null || echo '[]' ;;
+      */merge_requests/*) cat "$MSMN_GLAB_MR.${4##*/}" 2>/dev/null || echo '{}' ;;
       *) echo '[]' ;;
     esac ;;
   *) echo "stub glab: $*" >&2; exit 1 ;;
@@ -2686,5 +2688,99 @@ fn the_pipeline_gate_judges_the_branchs_tip() {
     wait_until(Duration::from_secs(20), "the merge to read in the PR's words", || {
         worktrees_of(&mut c).iter().any(|w| w.ticket == id && w.merged_in == "main (PR #42)")
     });
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// T-784, lab run 3: MR !9's pipeline failed, the worker pushed a fix, and
+/// GitLab's list kept serving the failed head for minutes while the MR's
+/// own read named the new head, passed. The board reads the MR whole where
+/// the list's head is not the branch's tip, so REVIEW's `Arrives here
+/// when: pipeline passes` takes the ticket with the list still stale.
+#[test]
+fn an_open_mrs_head_and_pipeline_are_read_from_the_mr_itself() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    let stub_dir = std::env::temp_dir().join(format!("msmn-forge-mr-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&stub_dir);
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    let glab = stub_dir.join("glab");
+    std::fs::write(&glab, GLAB_STUB).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&glab, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mrs = stub_dir.join("mrs.json");
+    let pipelines = stub_dir.join("pipelines");
+    let one = stub_dir.join("mr");
+    write(&mrs, "[]");
+    let path_var = format!(
+        "{}:{}",
+        stub_dir.display(),
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+    );
+    let Some(h) = Harness::boot_with_env(
+        "forge-mr",
+        Some(STUB),
+        &[
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GLAB_MRS", &mrs.display().to_string()),
+            ("MSMN_GLAB_PIPELINES", &pipelines.display().to_string()),
+            ("MSMN_GLAB_MR", &one.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    let repo = h.repo.clone();
+    init_repo(&repo, "a.txt", "hello\n");
+    git(&repo, &["remote", "add", "origin", "https://gitlab.example.com/lab/api.git"]);
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("forge-mr");
+    let mut review = c.board().column("REVIEW").unwrap().settings.clone();
+    review.requires_pipeline = true;
+    review.arrives_on = Arrival::PipelinePasses;
+    assert!(matches!(
+        c.request(Command::SetColumnSettings { name: "REVIEW".into(), settings: review }),
+        Response::Ok
+    ));
+    let (id, sid, branch, path) = ready(&mut c, "alpha");
+    let failed = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
+    write(
+        &PathBuf::from(format!("{}.{failed}", pipelines.display())),
+        r#"[{"id":1,"status":"failed"}]"#,
+    );
+    write(&mrs, &mr_json("api", 9, &branch, &failed, None));
+    wait_until(Duration::from_secs(20), "!9 to bind, failed", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == id && p.pipeline.starts_with("failed"))
+    });
+    hook_send(&hook_sock, &sid.to_string(), "SessionStart", r#"{"session_id":"x"}"#);
+    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sid, "running", |s| *s == SessionState::Running);
+    wait_until(Duration::from_secs(10), "the turn to take the ticket to IN PROGRESS", || {
+        c.board().ticket(id).is_some_and(|t| t.column == "IN PROGRESS")
+    });
+
+    // The fix: the list keeps the failed head; the MR's own read has the
+    // new one, its head pipeline passed.
+    std::fs::write(path.join("fix"), "fix\n").unwrap();
+    git(&path, &["add", "."]);
+    git(&path, &["commit", "-qm", "fix"]);
+    let fixed = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
+    let read = mr_json("api", 9, &branch, &fixed, None);
+    let read = read.trim().trim_start_matches('[').trim_end_matches(']').trim_end_matches('}');
+    write(
+        &PathBuf::from(format!("{}.9", one.display())),
+        &format!(r#"{read},"head_pipeline":{{"id":2,"sha":"{fixed}","status":"success"}}}}"#),
+    );
+    hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    wait_until(Duration::from_secs(20), "REVIEW to take the ticket on the MR's own read", || {
+        c.board().ticket(id).is_some_and(|t| t.column == "REVIEW")
+    });
+    assert!(std::fs::read_to_string(&mrs).unwrap().contains(&failed), "the list never caught up");
+    let pr = prs_of(&mut c).into_iter().find(|p| p.ticket == id).unwrap();
+    assert_eq!(pr.pipeline, "passed", "{pr:?}");
     let _ = std::fs::remove_dir_all(&stub_dir);
 }

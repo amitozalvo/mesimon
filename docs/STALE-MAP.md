@@ -24045,6 +24045,51 @@ open PR, a conflict, a stale verdict), `prefs` (both new keys), the keymap laws,
 the board woke the crown `pipeline`, the crown's `ask_agent` reached the worker, which replied
 `noted`. `cargo nextest run --workspace`: 2319 passed.
 
+## An open MR's head and pipeline are read from the MR itself (T-784, 2026-10-15, follow-up to T-739 and T-780)
+
+**Measured in forge lab run 3, on gitlab.com.** The worker pushed a fix (`ebf3084`) to MR !9's
+branch at ~00:32 local; its pipeline passed at 00:34. At 00:37 both `glab mr list --output json`
+and the REST list `projects/:id/merge_requests?state=opened` still served `"sha": "dc82695…"` (the
+failed commit) and an `updated_at` from before the push: five minutes and counting. The single
+read `projects/:id/merge_requests/9` named `ebf3084` and `head_pipeline.status: success`.
+**GitLab's MR list lags a push by minutes; its single-MR read does not.** Since T-780 the gate
+holds a pipeline whose head is not the leg's tip, so the ticket sat `pipeline not read` for as
+long as the list lagged.
+
+**The read.** On the worker, after the list and the binding, an open GitLab MR is read whole
+(`glab api projects/<id>/merge_requests/<iid>`, `forge::parse_glab_mr`) when `mr_unsure`: its
+list head is not the tip of the ticket's branch in its repository's leg, or no tip judges it (a
+repository with no leg, an MR from another branch, as `head_unread` reads them) and the ticket's
+reads never held it (`TicketQuery::held`). `Pr::take_read` takes the head, the conflict and the
+merge status's review word; the read's `head_pipeline` is the pipeline, its job named by the
+same jobs read (`named_job`), and only where it is absent, of another sha, or of a status the
+board has no word for is the pipeline read by sha as before. A failed read keeps the list's row,
+and the T-780 gate then holds, as it should. An MR the list already has at the tip costs nothing
+more. The tips are read on the worker (`branch_tip` in each leg's worktree), not taken from
+`wt_repos`: the flags' tip is a slow bucket old at the turn's end that pushed, the window T-780
+read fresh for the same reason.
+
+**GitHub, unchanged.** `gh pr list` is GraphQL, and the lab's #3 showed no such lag in run 3,
+so no per-PR read was added. If one is ever
+seen, the same shape is `gh pr view <n> --json headRefOid,statusCheckRollup,mergeable` under
+`mr_unsure`.
+
+**Deploy words in event order.** Lab C2 (#3, GitHub) woke the crown with `deployed to production
+#3, deployed to staging #3`; staging had deployed 5 s first. `deployments` returned GitHub's list
+order, newest first. It now returns `forge::deploy_order`: by the deployment's time (GitHub's
+success status `created_at`, GitLab's `finished_at`, else `updated_at`, else `created_at`) when
+every one has a time, else by the order the board's columns ask for them, never by name. An
+environment a later pass finds is appended after those already known, which is its time order.
+
+**Tests.** Unit `a_single_mr_read_overrides_the_lists_stale_head` and
+`deployments_are_said_in_the_order_they_happened` (core forge),
+`an_mr_is_read_whole_only_where_the_list_may_be_stale` (daemon forge).
+`forge_e2e::an_open_mrs_head_and_pipeline_are_read_from_the_mr_itself`: !9 binds failed, the
+turn commits a fix, the stub's `mr list` keeps the failed head while its `api …/merge_requests/9`
+names the fix with a passed head pipeline, and REVIEW's `pipeline passes` arrival takes the
+ticket with the list never caught up. With the read switched off the same test times out held.
+`cargo nextest run --workspace`: 2414 passed.
+
 ## The pipeline gate judges the branch's tip, and the forge names a merge git found first (T-780, 2026-10-14, follow-up to T-739)
 
 **Found in forge lab run 2.** T-9: MR !5's pipeline had passed; the worker pushed a `FAIL` commit

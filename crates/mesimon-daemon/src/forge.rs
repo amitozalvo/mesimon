@@ -143,6 +143,9 @@ pub struct TicketQuery {
     pub branch: String,
     pub legs: Vec<LegQuery>,
     pub opened: Vec<String>,
+    /// Every PR, by repository and number, the ticket's reads held before
+    /// (`State::held`): an MR outside it is read whole on this pass (T-784).
+    pub held: Vec<(String, u64)>,
 }
 
 /// A host to probe on this pass: the candidate CLIs in the order to try.
@@ -609,12 +612,30 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
         };
         let bound: Vec<Pr> = prs.iter().filter(|p| forge::binds(p, &facts)).cloned().collect();
         let mut set = forge::ticket_set(bound);
-        // GitLab's list says nothing of a pipeline: ask by sha for the open
-        // ones that bound, one call each — the set is small.
+        // GitLab's list serves a head minutes old after a push (T-784): an
+        // open MR whose list head is not its leg's tip, or one newly bound,
+        // is read whole, and its head pipeline is the pipeline. One the
+        // list already has at the tip costs nothing more. The list says
+        // nothing of a pipeline: the rest are asked by sha, one call each.
+        let tips: Vec<(String, String)> = t
+            .legs
+            .iter()
+            .map(|l| (l.repo_path.clone(), crate::worktree::branch_tip(&l.dir, &t.branch)))
+            .collect();
         for pr in set.iter_mut().filter(|p| p.forge == Forge::GitLab && p.state.is_open()) {
-            if let Some(r) = q.repos.iter().find(|r| r.remote.path == pr.repo) {
-                pr.pipeline = gitlab_pipeline(r, &pr.head_oid);
-            }
+            let Some(r) = q.repos.iter().find(|r| r.remote.path == pr.repo) else { continue };
+            let head = if mr_unsure(pr, &t.branch, &tips, &t.held) {
+                gitlab_mr(r, pr.number).and_then(|read| {
+                    pr.take_read(&read.pr);
+                    read.pipeline
+                })
+            } else {
+                None
+            };
+            pr.pipeline = match head {
+                Some((pipeline, id)) => named_job(r, pipeline, id),
+                None => gitlab_pipeline(r, &pr.head_oid),
+            };
         }
         merged_reads(
             &mut set,
@@ -770,9 +791,29 @@ fn list(r: &RepoQuery) -> Result<Vec<Pr>, String> {
     }
 }
 
+/// An open MR whose list row may be stale (T-784): its head is not the
+/// tip of the ticket's branch in the leg of its repository, or no tip says
+/// and the ticket's reads never held it. An MR from another branch is
+/// judged as one with no tip, as the pipeline gate does (`head_unread`).
+pub fn mr_unsure(pr: &Pr, branch: &str, tips: &[(String, String)], held: &[(String, u64)]) -> bool {
+    let ours = pr.head_ref.is_empty() || pr.head_ref == branch;
+    match tips.iter().find(|(repo, tip)| *repo == pr.repo && !tip.is_empty()) {
+        Some((_, tip)) if ours => *tip != pr.head_oid,
+        _ => !held.iter().any(|(r, n)| *r == pr.repo && *n == pr.number),
+    }
+}
+
+/// One open MR read whole (T-784). `None` when the call fails or says
+/// something else: the list's row stands, and the pipeline gate holds it.
+fn gitlab_mr(r: &RepoQuery, iid: u64) -> Option<forge::MrRead> {
+    let project = r.remote.path.replace('/', "%2F");
+    let path = format!("projects/{project}/merge_requests/{iid}");
+    let out = run(&r.cli.bin, &["api", "--hostname", &r.remote.host, &path], Some(&r.dir)).ok()?;
+    forge::parse_glab_mr(&r.remote.path, &out).filter(|m| m.pr.number == iid)
+}
+
 /// A GitLab commit's newest pipeline, by sha. `Unknown` when the call
-/// fails: never read as green. A wait or a failure is named by one more
-/// read, of that pipeline's jobs (T-772); a failed read leaves it bare.
+/// fails: never read as green.
 fn gitlab_pipeline(r: &RepoQuery, sha: &str) -> Pipeline {
     let project = r.remote.path.replace('/', "%2F");
     let path = format!("projects/{project}/pipelines?sha={sha}&per_page=1");
@@ -780,11 +821,17 @@ fn gitlab_pipeline(r: &RepoQuery, sha: &str) -> Pipeline {
     else {
         return Pipeline::Unknown;
     };
-    let pipeline = forge::parse_gitlab_pipelines(&out);
-    let (Some(status), Some(id)) = (pipeline.gitlab_job_status(), forge::gitlab_pipeline_id(&out))
-    else {
-        return pipeline;
-    };
+    match forge::gitlab_pipeline_id(&out) {
+        Some(id) => named_job(r, forge::parse_gitlab_pipelines(&out), id),
+        None => forge::parse_gitlab_pipelines(&out),
+    }
+}
+
+/// A GitLab pipeline's wait or failure named by one more read, of its jobs
+/// (T-772); a failed read, or any other word, leaves it as it is.
+fn named_job(r: &RepoQuery, pipeline: Pipeline, id: u64) -> Pipeline {
+    let Some(status) = pipeline.gitlab_job_status() else { return pipeline };
+    let project = r.remote.path.replace('/', "%2F");
     let path = format!("projects/{project}/pipelines/{id}/jobs?per_page=100");
     match run(&r.cli.bin, &["api", "--hostname", &r.remote.host, &path], Some(&r.dir)) {
         Ok(jobs) => pipeline.with_job(forge::parse_gitlab_job(&jobs, status)),
@@ -809,27 +856,28 @@ fn commit_pipeline(r: &RepoQuery, oid: &str) -> Pipeline {
 
 /// The environments, of those wanted, a merge commit reached: GitHub's
 /// deployments by sha with a success status, GitLab's successful
-/// deployments of each wanted environment naming the sha.
+/// deployments of each wanted environment naming the sha. In the order they
+/// happened (`forge::deploy_order`, T-784).
 fn deployments(r: &RepoQuery, oid: &str, envs: &[String]) -> Vec<String> {
-    let mut out = Vec::new();
+    let mut out: Vec<(String, u64)> = Vec::new();
     match r.cli.forge {
         Forge::GitHub => {
             let path = format!("repos/{}/deployments?sha={oid}&per_page=30", r.remote.path);
             let Ok(list) =
                 run(&r.cli.bin, &["api", "--hostname", &r.remote.host, &path], Some(&r.dir))
             else {
-                return out;
+                return Vec::new();
             };
             for (id, env) in forge::parse_gh_deployments(&list) {
-                if !envs.contains(&env) || out.contains(&env) {
+                if !envs.contains(&env) || out.iter().any(|(e, _)| *e == env) {
                     continue;
                 }
                 let path = format!("repos/{}/deployments/{id}/statuses?per_page=1", r.remote.path);
                 if let Ok(status) =
                     run(&r.cli.bin, &["api", "--hostname", &r.remote.host, &path], Some(&r.dir))
                 {
-                    if forge::parse_gh_deployment_success(&status) {
-                        out.push(env);
+                    if let Some(at) = forge::parse_gh_deployment_success(&status) {
+                        out.push((env, at));
                     }
                 }
             }
@@ -844,14 +892,14 @@ fn deployments(r: &RepoQuery, oid: &str, envs: &[String]) -> Vec<String> {
                 if let Ok(list) =
                     run(&r.cli.bin, &["api", "--hostname", &r.remote.host, &path], Some(&r.dir))
                 {
-                    if forge::parse_gitlab_deployed(&list, oid) {
-                        out.push(env.clone());
+                    if let Some(at) = forge::parse_gitlab_deployed(&list, oid) {
+                        out.push((env.clone(), at));
                     }
                 }
             }
         }
     }
-    out
+    forge::deploy_order(out, envs)
 }
 
 /// Every commit a worktree's HEAD pointed at, newest first; empty where
@@ -1457,6 +1505,23 @@ mod tests {
             updated_ms: number,
             deployed: Vec::new(),
         }
+    }
+
+    /// T-784: an open MR is read whole when its list head is not the leg's
+    /// tip, or no tip judges it and it is newly bound; one at the tip, or
+    /// held with nothing to judge it by, costs nothing more.
+    #[test]
+    fn an_mr_is_read_whole_only_where_the_list_may_be_stale() {
+        let mut mr = pr(9, PrState::Open, Pipeline::Unknown);
+        let held = vec![("o/r".to_string(), 9)];
+        let at = |tip: &str| vec![("o/r".to_string(), tip.to_string())];
+        assert!(!mr_unsure(&mr, "b", &at("h"), &held), "the list has the tip");
+        assert!(mr_unsure(&mr, "b", &at("pushed"), &held), "the list lags the push");
+        assert!(!mr_unsure(&mr, "b", &at(""), &held), "no tip, held");
+        assert!(mr_unsure(&mr, "b", &at(""), &[]), "no tip, newly bound");
+        assert!(mr_unsure(&mr, "b", &[], &[]), "no leg, newly bound");
+        mr.head_ref = "other".into();
+        assert!(!mr_unsure(&mr, "b", &at("pushed"), &held), "another branch's tip is no judge");
     }
 
     #[test]

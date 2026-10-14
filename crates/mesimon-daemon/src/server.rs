@@ -13732,6 +13732,7 @@ impl Daemon {
                 branch: branch.clone(),
                 legs: leg_queries,
                 opened,
+                held: self.forge.held.get(t).cloned().unwrap_or_default(),
             });
         }
         // Which CLI reads each host: probed on the worker where unknown or
