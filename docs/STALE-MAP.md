@@ -25915,3 +25915,59 @@ turn printed #44, read closed, entering a `requires_pipeline` REVIEW, and a chec
 turn printed #45 entering it too; each fails with its fix taken out. Rig F9 (real Sonnet): a
 crown asked to land a branch whose PR is closed reads `merge`, lands nothing and says it was
 closed.
+
+## A ticket's PRs are the ones its worktree wrote (T-796, 2026-10-15, follow-up to T-795)
+
+**Why.** T-795's bug hunt left it open. `forge::binds`' "made here" matched any commit in a
+worktree leg's HEAD reflog, and that reflog starts with the commit the worktree was cut at; a
+rebase's start adds the upstream tip it rebased onto. Under GitLab's fast-forward merge method a
+merged MR's head is the base's new tip, and T-779 cuts a new worktree at the fetched upstream, so
+a ticket cut right after someone's ff merge bound that MR. Its card read ⎇✓ by the forge's fold,
+`ticket_merged` agreed, the crown was woken `merged` for a worker that had done nothing,
+`merge_by` said nobody, `get_ticket` listed the MR, and after the first commit `has_pr` kept the
+train off the ticket and `m` refused it as the forge's. T-744's rig run saw the same with a stub
+PR whose head was the base commit.
+
+**The rule.** A commit is the ticket's when its worktree wrote it: a reflog entry binds only where
+its move wrote the commit it moved to (`forge::wrote_commit` over `%gs`, `<action>[ (<step>)]:
+<words>`). A commit of any kind, a merge commit, a cherry-pick, a revert, an `am` and a rebase's
+pick, reword, squash, fixup or edit wrote one. The cut (`git worktree add` records no words, then
+`reset: moving to HEAD`), a checkout or switch, a reset, every fast-forward (a merge's and a
+pull's `Fast-forward`, a rebase's and a cherry-pick's `fast-forward`) and a rebase's start,
+finish, abort and reset moved to a commit that already was. An action the rule does not name reads
+as a commit, as every entry did before, so an unknown tool fails toward today's binding and never
+loses one. The `commit` family binds whatever its message says: a commit titled "fast-forward…"
+stays its author's. The unit test's table is the subjects git 2.54 wrote in a worktree for each of
+those moves.
+
+**Not the other road.** The ticket offered "the commits reachable from the base at the cut". It
+reads the cut out but not a later upstream tip a pull or a reset brought in, and it needs the cut,
+which is the `base_oid` T-740's `rebase_on_tip` moves. Any filter by ancestry from the base also
+unbinds a ticket's own PR once the base took it, since the PR's head is then on the base. Only the
+subject says how HEAD got to a commit: a ff-merged own head and a pulled foreign head both sit on
+the base afterwards.
+
+**The second guard.** `RepoFlags::fold_forge_merge` folds nothing into a leg whose tip is its
+`base_oid`, and `ticket_merged`'s forge clause asks the same: a branch with no work lands nothing,
+which is what the git road (`compute_flags`) already says of it. A PR from the ticket's own branch
+at its cut (GitLab opens an empty MR) still binds by the branch and never reads the ticket merged.
+T-799's `landed_reads` already skips a leg at its cut when it asks whether a merged head carries
+the tip; this guard covers the head that is the cut itself. The written commits fill T-800's
+per-leg facts beside the leg's fork paths, so a commit written in a fork's checkout still binds
+the upstream's PR.
+
+**Kept.** `pushed` (T-761's basis) still reads every reflog commit. A remote ref at the cut there
+only owes a read where none was needed, which is safe, and narrowing it would change when a
+turn's end reads the forge. A commit whose entry fell past the 2,000 newest still binds nothing,
+as before.
+
+**Tests.** Core `a_reflog_entry_wrote_its_commit_only_where_git_made_one` (the subjects table).
+Daemon `a_worktree_wrote_its_commits_and_never_its_cut_or_its_rebases_base` (a real worktree:
+cut, commit, a rebase onto a moved base, a reset, an ff merge) and an untouched leg in
+`the_forge_names_a_merge_the_git_road_found_first`.
+`forge_e2e::a_ticket_cut_at_a_fast_forward_merge_binds_nothing_of_it` on a glab stub: alpha's commit merged
+fast-forward as !1 from `fix/alpha` (so only its reflog binds it) with `origin/main` taken there;
+beta, cut at !1's head, binds nothing, reads unmerged, and `get_ticket` lists no PR and names no
+forge or "nobody" merger; alpha keeps !1, landed as `main (MR !1)`; after beta's first commit
+nothing binds and `m` fast-forwards main to it. It failed on the old code with beta holding !1.
+USING.md says a commit the worktree started from or pulled in binds nothing.
