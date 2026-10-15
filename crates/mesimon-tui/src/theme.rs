@@ -1356,6 +1356,10 @@ const CROWN_INK_K: f32 = 0.6;
 /// was done to it (T-411). With the lightning on (T-544) the beat counts
 /// from the bolt's landing; the residue stays until the cursor rests there.
 pub(crate) const CROWN_LIT_MS: u64 = 2_000;
+/// How long the board's workflow mark stays lit after its workflow acted
+/// (T-811): the train merged or asked, or a forge read found an edge. A
+/// step up the grey ramp, drawn on the board's 100 ms frames.
+pub(crate) const WORKFLOW_LIT_MS: u64 = 4_000;
 /// The summary's wave crosses a card row in this long (T-696), whatever
 /// the row's width; a finishing tick crosses twice.
 pub(crate) const SUMMARY_SWEEP_MS: u64 = 700;

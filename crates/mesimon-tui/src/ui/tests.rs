@@ -4586,9 +4586,11 @@ fn golden_train_120() {
     app.cursor_col = 2;
     app.cursor_row = Some(0);
     let lines = render(&app, 120, 30);
+    // An armed train on a main board is the header's workflow mark (T-811),
+    // which reversed the 2026-09-04 silence.
     assert!(
-        !lines[0].contains("train") && !lines[0].contains("merge"),
-        "an armed train adds no word to the header:\n{}",
+        lines[0].contains(" ∙ train") && !lines[0].contains("merge"),
+        "an armed train names itself on the header:\n{}",
         lines[0]
     );
     // The card is 22 cells: the count is what the row gives up first
@@ -9370,6 +9372,111 @@ fn remote_control_chip_focus_is_visible_and_never_attn() {
     }
 }
 
+/// The board's merge workflow (T-811): ` ∙ train` while the train is armed
+/// on a main board, nothing with it off, ` ∙ pull requests` on a board that
+/// merges through them and ` ∙ pull requests offline` while the forge is
+/// not read. On the board alone.
+#[test]
+fn golden_workflow_mark_120() {
+    use mesimon_core::board::MergeInto;
+    let mut app = app_graphite(fixture(false));
+    app.git = git_state("main", 2, 1, 3);
+    assert!(!render(&app, 120, 30)[0].contains(" ∙ train"), "main, train off: nothing");
+    app.automation.merge_train = true;
+    let train = render(&app, 120, 30);
+    assert!(train[0].contains("tickets ∙ train"), "{}", train[0]);
+    golden("board_workflow_train_120x30", &train);
+    app.board_mut().merge_into = MergeInto::PullRequests;
+    let prs = render(&app, 120, 30);
+    assert!(prs[0].contains("tickets ∙ pull requests") && !prs[0].contains("train"), "{}", prs[0]);
+    golden("board_workflow_pull_requests_120x30", &prs);
+    app.automation.merge_train = false;
+    assert_eq!(render(&app, 120, 30)[0], prs[0], "the train's arming is not the PR board's word");
+    app.forge.trouble = Some("github.com: gh is not signed in".into());
+    let offline = render(&app, 120, 30);
+    assert!(offline[0].contains("∙ pull requests offline"), "{}", offline[0]);
+    golden("board_workflow_offline_120x30", &offline);
+}
+
+/// A row too tight for the whole word says `PRs`, and the board's other
+/// facts stay on it.
+#[test]
+fn workflow_mark_shortens_on_a_tight_row() {
+    use mesimon_core::board::MergeInto;
+    let mut app = app_graphite(fixture(false));
+    app.board_mut().merge_into = MergeInto::PullRequests;
+    app.forge.trouble = Some("github.com: gh is not signed in".into());
+    let wide = render(&app, 120, 30);
+    assert!(wide[0].contains("∙ pull requests offline"), "{}", wide[0]);
+    let narrow = render(&app, 60, 20);
+    assert!(narrow[0].contains("tickets ∙ PRs offline"), "{}", narrow[0]);
+    assert!(!narrow[0].contains("pull requests"), "{}", narrow[0]);
+}
+
+/// The mark lights for a beat after its workflow acts, on the injected
+/// clock, then settles: `base` lit, `dim2` at rest, `dim3` offline, never
+/// `attn`, and the board asks no faster frames for it.
+#[test]
+fn workflow_mark_lights_after_an_act_and_settles() {
+    use mesimon_core::board::MergeInto;
+    fn x_of(app: &App, word: &str) -> u16 {
+        let line = &render(app, 120, 30)[0];
+        let at = line.find(word).unwrap();
+        line[..at].chars().count() as u16
+    }
+    for flavor in Flavor::ALL {
+        let mut app = App::for_test(fixture(false), Theme::new(flavor, Profile::TrueColor));
+        app.now = || 1_000_000;
+        app.automation.merge_train = true;
+        let x = x_of(&app, "∙ train") + 2;
+        let rest = app.theme.rest;
+        assert_eq!(cells(&app, 120, 30)[(x, 0)].fg, rest.dim2, "{flavor:?}: at rest");
+        // The train merged a second ago: lit.
+        app.automation.acted_at_ms = 999_000;
+        assert!(app.workflow_lit() && !app.animating(), "lit on the 100 ms frames");
+        let lit = cells(&app, 120, 30);
+        assert_eq!(lit[(x, 0)].fg, rest.base, "{flavor:?}: lit");
+        assert_ne!(lit[(x, 0)].fg, app.theme.attn);
+        assert_ne!(lit[(x, 0)].bg, app.theme.attn);
+        // And settled once the beat is over.
+        app.now = || 1_000_000 + crate::theme::WORKFLOW_LIT_MS;
+        assert!(!app.workflow_lit());
+        assert_eq!(cells(&app, 120, 30)[(x, 0)].fg, rest.dim2, "{flavor:?}: settled");
+        // A forge edge lights a pull-request board, never a main one.
+        app.now = || 2_000_000;
+        app.forge.acted_at_ms = 1_999_500;
+        assert!(!app.workflow_lit(), "main reads no forge");
+        app.board_mut().merge_into = MergeInto::PullRequests;
+        assert!(app.workflow_lit());
+        let x = x_of(&app, "∙ pull requests") + 2;
+        assert_eq!(cells(&app, 120, 30)[(x, 0)].fg, rest.base, "{flavor:?}: PR edge");
+        app.forge.acted_at_ms = 0;
+        app.forge.trouble = Some("github.com: gh is not signed in".into());
+        assert_eq!(cells(&app, 120, 30)[(x, 0)].fg, rest.dim3, "{flavor:?}: offline");
+    }
+}
+
+/// Under the header's cursor the workflow mark takes the chips' selection,
+/// the footer offers its door, and the separator stays out of the chip.
+#[test]
+fn golden_workflow_mark_focused_120() {
+    let mut app = app_graphite(fixture(false));
+    app.git = git_state("main", 2, 1, 3);
+    app.automation.merge_train = true;
+    let plain = cells(&app, 120, 30);
+    let line = &render(&app, 120, 30)[0];
+    let x = line[..line.find("∙ train").unwrap()].chars().count() as u16;
+    app.cursor_row = None;
+    app.header_focus = true;
+    app.header_chip = HeaderChip::Workflow;
+    let focused = cells(&app, 120, 30);
+    assert_ne!(plain[(x + 2, 0)].style(), focused[(x + 2, 0)].style(), "the word is the chip");
+    assert_eq!(plain[(x, 0)].style(), focused[(x, 0)].style(), "the separator is not");
+    let screen = render(&app, 120, 30);
+    assert!(screen.last().unwrap().contains("enter merge into settings"), "{screen:?}");
+    golden("board_workflow_focused_120x30", &screen);
+}
+
 /// PTY headroom stays hidden until 80% of the OS cap, then warns.
 #[test]
 fn test_pty_warning_threshold() {
@@ -11318,6 +11425,26 @@ fn a_click_selects_a_card_and_a_second_opens_its_page() {
     render(&app, 120, 30);
     click(&mut app, at);
     assert!(matches!(app.screen, Screen::Ticket { ticket, .. } if ticket == ulid_n(5)));
+}
+
+/// The workflow mark is a chip the mouse picks (T-811): one click steps
+/// onto it, a second is its Enter, which opens Settings at Merge into.
+#[test]
+fn a_click_on_the_workflow_mark_opens_merge_into() {
+    let mut app = app_graphite(fixture(false));
+    app.automation.merge_train = true;
+    let at = spot_of(&render(&app, 120, 30), "∙ train");
+    let at = (at.0 + 2, at.1);
+    click(&mut app, at);
+    assert_eq!((app.header_focus, app.header_chip), (true, HeaderChip::Workflow));
+    render(&app, 120, 30);
+    click(&mut app, at);
+    let idx = app.settings_row(mesimon_core::keymap::Verb::MergeInto);
+    assert!(matches!(app.mode, Mode::Settings { idx: i } if i == idx), "{:?}", app.mode);
+    assert_eq!(app.settings_section, mesimon_core::keymap::SettingsSection::Behaviour);
+    // The train disarmed: no chip, so Enter on it is inert.
+    app.automation.merge_train = false;
+    assert!(!app.ctx().workflow_mark);
 }
 
 /// A key hint that is drawn is a key that clicks: `? keys` in the footer

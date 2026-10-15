@@ -776,11 +776,20 @@ fn the_crown_hears_the_forges_edges() {
     let news = format!("{worker} has news from the forge (");
     let heard = |lines: &[String], words: &str| lines.iter().any(|l| l.contains(words));
 
+    // An opening is an edge the board's workflow mark lights for (T-811).
+    let acted = |c: &mut TestClient| match c.request(Command::Snapshot) {
+        Response::Board { forge, .. } => forge.acted_at_ms,
+        other => panic!("not a board: {other:?}"),
+    };
+    let opened = acted(&mut c);
+    assert!(opened > 0, "the opening lit the mark");
+
     // ---- the pipeline passes ----------------------------------------------
     write(&prs_file, &open_pr_json(&wt.branch, &tip, passed, "MERGEABLE", "REVIEW_REQUIRED"));
     wait_until(Duration::from_secs(20), "the passed wake", || {
         heard(&lines_with(&news), "pipeline passed #42)")
     });
+    assert!(acted(&mut c) > opened, "and so did the pipeline's pass");
     wait_until(Duration::from_secs(5), "the forge wake's feed line", || forge_wakes() == 1);
     turn(&mut c, sa);
 

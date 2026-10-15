@@ -1158,6 +1158,17 @@ const TRAIN_PUSH_BACKOFF: Duration = Duration::from_secs(30);
 /// preference pushed again, not on every snapshot.
 const STATUS_PUSH_BACKOFF: Duration = TRAIN_PUSH_BACKOFF;
 
+/// What the board's top row says of its merge workflow (T-811,
+/// `App::workflow_mark`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkflowMark {
+    /// Main, with the merge train armed.
+    Train,
+    PullRequests,
+    /// Pull requests, and the forge is not read (`ForgeStatus::trouble`).
+    Offline,
+}
+
 /// The m key's staged progression (author 2026-08-30): the first press
 /// opens the dialog that names what the next press does (T-431), and the
 /// second performs it. Stage is derived from git state, never stored.
@@ -2242,6 +2253,33 @@ impl App {
     /// title row) fade in and out while it is (T-545).
     pub fn archiving(&self, ticket: ulid::Ulid) -> bool {
         self.archive_armed == Some(ticket)
+    }
+
+    /// The board's merge workflow as its top row names it (T-811): pull
+    /// requests, offline while the forge is not read, or main while the
+    /// merge train is armed. A main board with the train off says nothing.
+    pub(crate) fn workflow_mark(&self) -> Option<WorkflowMark> {
+        if self.board.merge_into.pull_requests() {
+            Some(if self.forge.trouble.is_some() {
+                WorkflowMark::Offline
+            } else {
+                WorkflowMark::PullRequests
+            })
+        } else {
+            self.automation.merge_train.then_some(WorkflowMark::Train)
+        }
+    }
+
+    /// Whether the workflow acted a moment ago (T-811), on the injected
+    /// clock: the train on either board (under pull requests it asks a
+    /// conflict's rebase), and a forge read's edge under pull requests.
+    /// The board's 100 ms frames carry the light; it asks no faster ones.
+    pub(crate) fn workflow_lit(&self) -> bool {
+        let mut at = self.automation.acted_at_ms;
+        if self.board.merge_into.pull_requests() {
+            at = at.max(self.forge.acted_at_ms);
+        }
+        at > 0 && (self.now)().saturating_sub(at) < crate::theme::WORKFLOW_LIT_MS
     }
 
     /// Whether something on screen is mid-motion and wants the next frame
@@ -6135,6 +6173,7 @@ impl App {
             keep_awake: self.prefs.keep_awake,
             header_chip: if self.header_focus { self.header_chip } else { HeaderChip::Git },
             remote_mark: self.control.enabled,
+            workflow_mark: self.workflow_mark().is_some(),
             // False where no keeper was ever built (every test app), which
             // is what keeps a golden on the row's plain words.
             keep_awake_barred: self.caffeine.as_ref().is_some_and(|k| !k.possible()),
@@ -8376,6 +8415,10 @@ impl App {
                 HeaderChip::Remote if self.control.enabled => {
                     self.open_sharing(true);
                     self.remote_from_header = true;
+                    Ok(())
+                }
+                HeaderChip::Workflow if self.workflow_mark().is_some() => {
+                    self.return_to_settings(Verb::MergeInto);
                     Ok(())
                 }
                 _ => self.open_checkout_diff(),
@@ -21749,6 +21792,31 @@ mod tests {
         app.control.enabled = false;
         app.settle_header();
         assert!(!app.header_focus, "no chip left: the board has the cursor");
+    }
+
+    /// T-811: the workflow mark is the top row's last chip; Enter on it
+    /// opens Settings at Merge into, and it hands the cursor back when the
+    /// train disarms on a main board.
+    #[test]
+    fn workflow_chip_opens_merge_into_and_leaves_with_the_train() {
+        let mut app = app_three_columns();
+        app.control.enabled = true;
+        app.automation.merge_train = true;
+        press(&mut app, 'k');
+        press(&mut app, 'k');
+        assert_eq!(app.header_chip, HeaderChip::Remote);
+        press(&mut app, 'l');
+        assert_eq!(app.header_chip, HeaderChip::Workflow);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(
+            matches!(app.mode, Mode::Settings { idx } if idx == app.settings_row(Verb::MergeInto)),
+            "{:?}",
+            app.mode
+        );
+        app.mode = Mode::Normal;
+        app.automation.merge_train = false;
+        app.settle_header();
+        assert_eq!(app.header_chip, HeaderChip::Remote);
     }
 
     #[test]

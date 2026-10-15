@@ -867,6 +867,11 @@ pub struct Daemon {
     git_fetch_nested_wanted: bool,
     /// The backfill of old transcripts' `pr create` URLs is out (T-810).
     backfill_inflight: bool,
+    /// When the train last acted and when a forge read last found an edge
+    /// (T-811), unix ms: the board's workflow mark lights for a beat after
+    /// either. Memory only; a restart's board has nothing lit.
+    train_acted_ms: u64,
+    forge_acted_ms: u64,
     /// The nested repos the in-flight pass is fetching, by census name.
     git_fetching_repos: std::collections::HashSet<String>,
     /// Each nested repo's fetches by mesimon, stamped into its `RepoSync`
@@ -1319,6 +1324,8 @@ pub fn run(paths: Paths) -> Result<()> {
         git_fetch_error: None,
         git_fetch_nested_wanted: false,
         backfill_inflight: false,
+        train_acted_ms: 0,
+        forge_acted_ms: 0,
         git_fetching_repos: std::collections::HashSet::new(),
         git_nested_fetch: HashMap::new(),
     };
@@ -8435,6 +8442,7 @@ impl Daemon {
             train_suspended,
             holding: self.train_holding(),
             held: self.held_items(),
+            acted_at_ms: self.train_acted_ms,
         }
     }
 
@@ -10483,6 +10491,7 @@ impl Daemon {
             }
             match self.merge_ticket(t, &by) {
                 Response::Merge { outcome: MergeOutcome::Merged, .. } => {
+                    self.train_acted_ms = mesimon_core::clock::now_ms();
                     self.feed.board("automation", "merge_train_merged", Some(t));
                     if self.train.notice() {
                         if self.board.pane_target(t).is_some() {
@@ -10507,6 +10516,7 @@ impl Daemon {
                 Response::Merge { outcome: MergeOutcome::Refused, detail, .. } => {
                     let base_tip = self.base_tip_of(t).to_string();
                     self.train.refuse(t, tip, base_tip, detail);
+                    self.train_acted_ms = mesimon_core::clock::now_ms();
                     self.feed.board("automation", "merge_train_refused:merge", Some(t));
                     refused = true;
                 }
@@ -10526,6 +10536,7 @@ impl Daemon {
         let ack = Ack { by: "automation", word: "merge_train_rebase_landed" };
         match self.merge_to_agent(t, mesimon_core::command::MergeRequest::Rebase, &by, ack) {
             Response::Ok => {
+                self.train_acted_ms = mesimon_core::clock::now_ms();
                 self.feed.board("automation", "merge_train_rebase_asked", Some(t));
                 if !was_fused && self.train.is_fused(t) {
                     self.feed.board("automation", "merge_train_suspended", Some(t));
@@ -14246,6 +14257,9 @@ impl Daemon {
         let mut news: Vec<(ulid::Ulid, String)> = Vec::new();
         let mut openings: HashMap<ulid::Ulid, String> = HashMap::new();
         let mut arrivals: Vec<(ulid::Ulid, crate::forge::Edge)> = Vec::new();
+        // The read found an edge on some ticket (T-811): the board's
+        // workflow mark lights for it.
+        let mut edged = false;
         let mut basis = sample.basis;
         let mut landed = sample.landed;
         for (t, set) in sample.sets {
@@ -14289,6 +14303,7 @@ impl Daemon {
                 let first = crate::forge::edge(&[], &set, &held);
                 if !first.opened.is_empty() {
                     openings.insert(t, first.opening().join(", "));
+                    edged = true;
                 }
             }
             if let Some(mut edge) = edge {
@@ -14340,6 +14355,7 @@ impl Daemon {
                     openings.insert(t, edge.opening().join(", "));
                 }
                 if edge.any() {
+                    edged = true;
                     arrivals.push((t, edge));
                 }
             }
@@ -14360,6 +14376,10 @@ impl Daemon {
             }
         }
         changed |= self.forge_arrivals(arrivals);
+        if edged {
+            self.forge_acted_ms = mesimon_core::clock::now_ms();
+            changed = true;
+        }
         let live: std::collections::HashSet<ulid::Ulid> =
             self.board.tickets.iter().map(|t| t.id).collect();
         self.forge.keep_tickets(&live);
@@ -14560,6 +14580,7 @@ impl Daemon {
             present: self.forge.present(),
             trouble: self.forge.trouble(),
             sampled_at_ms: self.forge.last_ms,
+            acted_at_ms: self.forge_acted_ms,
         }
     }
 

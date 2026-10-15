@@ -277,6 +277,8 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
         Response::Ok
     ));
     assert!(automation_of(&mut c).merge_train);
+    let armed_at = mesimon_core::clock::now_ms();
+    assert_eq!(automation_of(&mut c).acted_at_ms, 0, "a train that has done nothing");
     // A merges first, and its agent is told.
     wait_until(Duration::from_secs(15), "A to be merged", || {
         git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"])
@@ -285,6 +287,8 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     wait_until(Duration::from_secs(5), "the feed to say so", || {
         feed().contains("merge_train_merged")
     });
+    // The merge stamps the train's act, which lights the board's mark (T-811).
+    assert!(automation_of(&mut c).acted_at_ms >= armed_at);
     wait_until(Duration::from_secs(10), "A's agent to hear it", || {
         text().contains(&format!("Your branch {branch_a} has been merged into main"))
     });

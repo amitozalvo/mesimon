@@ -139,6 +139,14 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
         let awake_at = super::spans_width(&spans);
         let marks_w = super::spans_width(&awake);
         spans.append(&mut awake);
+        // The board's merge workflow (T-811), the board's own fact, after
+        // the marks every screen carries. Shortened below, whole, on a row
+        // that cannot hold it.
+        let flow_at = spans.len();
+        let flow = workflow_mark(app, false);
+        let mut flow_w = super::spans_width(&flow);
+        let flow_n = flow.len();
+        spans.extend(flow);
         // Asleep count cut from the header (author 2026-08-30): sleeping is
         // the quiet, correct condition — the card's own state word carries
         // it; the header only speaks when something is spendable (the offer)
@@ -159,7 +167,14 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
             spans.push(Span::styled(format!(" ∙ {gib:.1}GiB"), theme.dim2()));
         }
         // What the board is, on the left. What it offers, on the right.
-        let used: usize = super::spans_width(&spans);
+        let mut used: usize = super::spans_width(&spans);
+        if flow_n > 0 && used + 1 > area.width as usize {
+            let short = workflow_mark(app, true);
+            let short_w = super::spans_width(&short);
+            used = used - flow_w + short_w;
+            flow_w = short_w;
+            spans.splice(flow_at..flow_at + flow_n, short);
+        }
         // One cell of page padding at the right edge (06 §5.5), and never
         // less than a three-cell gap — a chip touching the state text reads
         // as part of it. Whatever is left is the chip's budget.
@@ -169,13 +184,11 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
         // The offer's cells and its gap are spoken for; the git clause takes
         // the rest, and gives its own parts up in order when that is tight.
         let reserved = if offer_w > 0 { offer_w + 4 } else { 1 };
-        // The merge train has NO word here (author 2026-09-04, after one day
-        // of ` ∙ train` and an hour of ` ∙ auto-merge`): the header speaks for
-        // the whole board, and the train only ever touches ATTACHED worktree
-        // tickets — a board-wide clause beside the checkout's own branch
-        // claims it will merge everything. Where it is armed is a preference
-        // (the Settings row) and what it will actually do is per ticket (the
-        // card's `merge ∙ after T-3` row), so both halves already have a home.
+        // The merge train had NO word here from 2026-09-04 (after one day of
+        // ` ∙ train` and an hour of ` ∙ auto-merge`) until T-811: once a board
+        // merged into main or through pull requests and never both (T-810),
+        // the workflow became the board's, and the author asked to see which
+        // one holds and when it acts. It is the marks' `workflow_mark`.
         let room = (area.width as usize).saturating_sub(used + reserved);
         let git = git_clause(app, room, header_on(app, HeaderChip::Git));
         let git_w: usize = super::spans_width(&git);
@@ -190,6 +203,8 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
             (HeaderChip::Git, git_x, git_w),
             (HeaderChip::Awake, marks_at + 1, awake_w.saturating_sub(1)),
             (HeaderChip::Remote, marks_at + awake_w, marks_w - awake_w),
+            // The mark's ` ∙ ` is the gap, not the chip.
+            (HeaderChip::Workflow, marks_at + marks_w + 3, flow_w.saturating_sub(3)),
         ];
         app.spots.borrow_mut().chips.extend(
             cells
@@ -253,6 +268,43 @@ fn remote_mark(app: &App) -> Vec<Span<'static>> {
     // A chip the header's cursor stands on (T-666), as the awake mark is.
     if header_on(app, HeaderChip::Remote) {
         style = selected_chip(theme, style, app.control.connected);
+    }
+    vec![Span::styled(" ∙ ".to_string(), theme.dim3()), Span::styled(word.to_string(), style)]
+}
+
+/// The board's merge workflow (T-811): ` ∙ train` while the merge train is
+/// armed on a board that merges into main, ` ∙ pull requests` on one that
+/// merges through them, and ` ∙ pull requests offline` while its forge is
+/// not read — the advisory row keeps the sentence and the fix. A main board
+/// with the train off says nothing, as Remote Control off says nothing.
+/// `short` is the tight row's `PRs`.
+///
+/// For a beat after the workflow acts (`App::workflow_lit`) the word steps
+/// up the grey ramp to `base`, then settles to `dim2`, or `dim3` offline:
+/// `attn` stays needs-you's.
+fn workflow_mark(app: &App, short: bool) -> Vec<Span<'static>> {
+    use crate::app::WorkflowMark;
+    let Some(mark) = app.workflow_mark() else {
+        return Vec::new();
+    };
+    let theme = &app.theme;
+    let word = match (mark, short) {
+        (WorkflowMark::Train, _) => "train",
+        (WorkflowMark::PullRequests, false) => "pull requests",
+        (WorkflowMark::PullRequests, true) => "PRs",
+        (WorkflowMark::Offline, false) => "pull requests offline",
+        (WorkflowMark::Offline, true) => "PRs offline",
+    };
+    let lit = app.workflow_lit();
+    let mut style = if lit {
+        theme.base()
+    } else if mark == WorkflowMark::Offline {
+        theme.dim3()
+    } else {
+        theme.dim2()
+    };
+    if header_on(app, HeaderChip::Workflow) {
+        style = selected_chip(theme, style, lit);
     }
     vec![Span::styled(" ∙ ".to_string(), theme.dim3()), Span::styled(word.to_string(), style)]
 }

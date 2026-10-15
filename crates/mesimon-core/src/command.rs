@@ -2734,6 +2734,11 @@ pub struct AutomationStatus {
     /// each, while it stands. Absent from an older daemon parses as none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub held: Vec<HeldMove>,
+    /// Unix ms the train last acted (T-811): a merge, a rebase ask, a
+    /// refusal it now holds. The board's workflow mark lights for a beat
+    /// after it. Zero before the first; absent from an older daemon too.
+    #[serde(default)]
+    pub acted_at_ms: u64,
 }
 
 /// The last automatic move a ticket was refused (T-749), in the refusal's
@@ -2889,6 +2894,12 @@ pub struct ForgeStatus {
     /// Unix ms of the last pass that answered; zero before the first.
     #[serde(default)]
     pub sampled_at_ms: u64,
+    /// Unix ms of the last read that found an edge (T-811): a PR opened or
+    /// bound, a pipeline, a conflict, a review, a merge, a deployment. The
+    /// board's workflow mark lights for a beat after it. Zero before the
+    /// first; absent from an older daemon too.
+    #[serde(default)]
+    pub acted_at_ms: u64,
 }
 
 /// One leg of a workspace binding (T-368): the ticket's branch in one

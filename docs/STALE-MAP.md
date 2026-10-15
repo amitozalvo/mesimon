@@ -26402,3 +26402,40 @@ Tests: `forge::a_host_nothing_reads_is_trouble_never_no_forge` (replaces T-798's
 `a_failed_sign_in_is_lost_where_the_host_had_a_cli_or_holds_prs`) and
 `forge_e2e::a_cli_never_signed_in_is_trouble_with_its_fix` (`auth status` failing from the start:
 silent under main, then the advisory row and `forge.trouble` name the host and the fix).
+
+## The board's top row names its workflow and lights when it acts (T-811, 2026-10-15, the author: "we also need some indication on top of the board of the workflow currently in power (pr workflow / merge train), and have that light up when anything related to it happens. Like remote control")
+
+**Reverses the 2026-09-04 silence.** The board header had no train word since a day of ` ∙ train`
+and an hour of ` ∙ auto-merge` (the train touched only attached worktree tickets, so a board-wide
+clause claimed too much). T-810 made the workflow the board's — main or pull requests, never both
+— and the author asked for it named. `chrome.rs::workflow_mark`, after the awake and Remote
+Control marks, **on the board alone** (Remote Control's mark rides every screen; the workflow is
+the board's own fact, and its light on a ticket page would be noise): ` ∙ train` on a main board
+while the train is armed (`AutomationStatus.merge_train`), nothing with it off; ` ∙ pull requests`
+on a pull-request board whatever the train; ` ∙ pull requests offline` while `ForgeStatus.trouble`
+holds (T-810's addendum 2), the advisory row keeping the sentence and the fix. A row too tight for
+the whole word (the 60-cell minimum with a long repo name) says `PRs` / `PRs offline`, swapped
+whole once everything but the offer and the git clause is placed: those two give way first.
+
+**A chip** (`HeaderChip::Workflow`, last in `ALL`): `h`/`l` reach it from Remote Control's, Enter
+and a second click open Settings at the Merge into row (`return_to_settings(Verb::MergeInto)`),
+and `settle_header` hands the cursor back when it goes. The mouse target and the T-681 step-down
+spot ride the header's `cells` like the others; the ` ∙ ` is the gap, not the chip.
+
+**The light.** Two stamps on the snapshot, memory only in the daemon (a restart lights nothing):
+`AutomationStatus.acted_at_ms`, set in `train_pass` on a merge, a new refusal it holds and a rebase
+ask delivered (a fuse trips on that ask, so it is covered); and `ForgeStatus.acted_at_ms`, set in
+`absorb_forge` when a read finds an `Edge` on any ticket or a first read's opening, which also
+broadcasts. The TUI lights the word for `theme::WORKFLOW_LIT_MS` (4 s) on its injected clock
+(`App::workflow_lit`): the train's stamp on either board (under pull requests it asks a conflict's
+rebase), the forge's on a pull-request board only. Grey ramp: `dim2` at rest, `dim3` offline,
+`base` lit; `attn` stays needs-you's. It is not `animating()`: the board's 100 ms frames carry it.
+
+Tests: `keymap::header_workflow_chip_is_the_last_and_opens_merge_into`,
+`app::workflow_chip_opens_merge_into_and_leaves_with_the_train`, `ui::golden_workflow_mark_120`
+(train, pull requests, offline goldens), `ui::golden_workflow_mark_focused_120`,
+`ui::workflow_mark_shortens_on_a_tight_row`, `ui::workflow_mark_lights_after_an_act_and_settles`
+(every flavour), `ui::a_click_on_the_workflow_mark_opens_merge_into`; the three `train_*` goldens
+now carry ` ∙ train`. `merge_train_e2e::the_train_merges_asks_to_rebase_once_and_stops_with_its_board`
+reads the stamp after the merge, `forge_e2e::the_crown_hears_the_forges_edges` after the opening and
+the pipeline's pass.

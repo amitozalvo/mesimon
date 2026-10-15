@@ -487,6 +487,14 @@ A new worktree starts at your fetched `origin/main` when your local main is behi
 its commits against it. Tickets on the shared checkout are the same under either setting: their
 commits are on main as they are made.
 
+The board's top row names the workflow: `∙ train` while the merge train is on (a main board with
+the train off says nothing), `∙ pull requests` (`∙ PRs` on a narrow terminal), or `∙ pull requests
+offline` while the forge cannot be read, with the reason and the fix on the advisory row. It
+brightens for a few seconds whenever its workflow acts: the train merges, asks for a rebase or
+holds a merge it was refused, or a read of the forge finds something new on a pull request. `k`
+off a column header reaches the top row, `l` steps to the mark (or click it), and Enter opens this
+setting.
+
 With the CLI on your PATH and signed in, each ticket's pull requests show on its page under the
 branch row and on its card's second line, one glyph and the forge's own number per PR, newest
 first. `◯` is open with no pipeline, `◴` (turning once a second) open with its pipeline running,
