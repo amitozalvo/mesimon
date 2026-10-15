@@ -5,7 +5,7 @@
  ⎇ msmn/T-5-grapheme-truncation ∙ 2 to merge ∙ m merge
    ✗ PR #43 open ∙ pipeline failed: test-linux ∙ changes requested
    ◴ PR #42 open ∙ pipeline running
-   ◆ MR !7 merged ∙ g/api ∙ pipeline passed ∙ deployed: staging
+   ◆ MR !7 merged ∙ g/api ∙ pipeline passed ∙ in staging
     ∙ +1 more
 
 

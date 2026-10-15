@@ -134,8 +134,8 @@ const PR_ROWS: usize = 3;
 
 /// One pull request's words after its number and state (T-739): the
 /// pipeline and the job it is about, conflicts, the review, and every
-/// environment the merge reached — what the page's rows and the pull
-/// requests dialog (T-759) both say. The forge's words — a job's name, an
+/// environment the merge reached, `in staging, production` (T-803) — what
+/// the page's rows and the pull requests dialog (T-759) both say. The forge's words — a job's name, an
 /// environment's — are untrusted text and cross `scrub_cells` here.
 pub(super) fn pr_clauses(p: &mesimon_core::command::PrItem) -> Vec<String> {
     use mesimon_core::text::scrub_cells;
@@ -146,12 +146,13 @@ pub(super) fn pr_clauses(p: &mesimon_core::command::PrItem) -> Vec<String> {
         (w @ ("failed" | "waiting" | "running" | "passed"), _) => Some(format!("pipeline {w}")),
         _ => None,
     };
-    pipeline.into_iter().chain(pr_state_clauses(p)).collect()
+    pipeline.into_iter().chain(pr_state_clauses(p, false)).collect()
 }
 
 /// `pr_clauses` past the pipeline's: conflicts, the review, and the
-/// environments the merge reached.
-pub(super) fn pr_state_clauses(p: &mesimon_core::command::PrItem) -> Vec<String> {
+/// environments the merge reached — every one, or with `last` the one it
+/// reached last (`deployed` is in the order it happened), as the card says.
+pub(super) fn pr_state_clauses(p: &mesimon_core::command::PrItem, last: bool) -> Vec<String> {
     use mesimon_core::text::scrub_cells;
     let mut words = Vec::new();
     if p.conflict {
@@ -162,9 +163,11 @@ pub(super) fn pr_state_clauses(p: &mesimon_core::command::PrItem) -> Vec<String>
         "changes_requested" => words.push("changes requested".into()),
         _ => {}
     }
-    if !p.deployed.is_empty() {
-        let names: Vec<String> = p.deployed.iter().map(|d| scrub_cells(d, false)).collect();
-        words.push(format!("deployed: {}", names.join(", ")));
+    let reached =
+        if last { p.deployed.last().map(std::slice::from_ref) } else { Some(&p.deployed[..]) };
+    if let Some(envs) = reached.filter(|e| !e.is_empty()) {
+        let names: Vec<String> = envs.iter().map(|d| scrub_cells(d, false)).collect();
+        words.push(format!("in {}", names.join(", ")));
     }
     words
 }

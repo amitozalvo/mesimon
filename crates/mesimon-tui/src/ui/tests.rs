@@ -4674,10 +4674,7 @@ fn golden_ticket_prs_120() {
         "{text}"
     );
     assert!(text.contains("◴ PR #42 open ∙ pipeline running"), "{text}");
-    assert!(
-        text.contains("◆ MR !7 merged ∙ g/api ∙ pipeline passed ∙ deployed: staging"),
-        "{text}"
-    );
+    assert!(text.contains("◆ MR !7 merged ∙ g/api ∙ pipeline passed ∙ in staging"), "{text}");
     assert!(text.contains("∙ +1 more"), "the fourth folds into a count:\n{text}");
     golden("ticket_prs_120x30", &lines);
     let links = app.ticket_links(ulid_n(5));
@@ -4735,7 +4732,7 @@ fn golden_ticket_prs_dialog_120() {
         // The row the dialog cuts reads whole above the footer.
         " #43  o/r    open ∙ pipeline failed: test-linux ∙ changes requested",
         "◴ #42  o/r    open ∙ pipeline running",
-        "◆ !7   g/api  merged ∙ pipeline passed ∙ deployed: staging",
+        "◆ !7   g/api  merged ∙ pipeline passed ∙ in staging",
         "● #40  o/r    merged",
     ] {
         assert!(text.contains(row), "{row:?} is listed:\n{text}");
@@ -8467,12 +8464,12 @@ fn a_cards_pr_line_says_what_the_newest_pr_is_at() {
     assert!(wide(&app).contains("failed: test-linux ∙ cha~  ✗!6 ✗!7"), "{}", wide(&app));
     (app.prs[1].pipeline, app.prs[1].job, app.prs[1].conflict) = ("passed".into(), None, true);
     (app.prs[1].state, app.prs[1].review) = ("draft".into(), "none".into());
-    assert!(wide(&app).contains("passed ∙ conflicts ∙ dra~"), "{}", wide(&app));
+    assert!(wide(&app).contains("conflicts ∙ draft  "), "{}", wide(&app));
     // No open PR: the newest, merged — its mark says so — says where it
     // went.
     app.prs.retain(|p| p.number == 6);
     (app.prs[0].pipeline, app.prs[0].deployed) = ("passed".into(), vec!["staging".into()]);
-    assert!(wide(&app).contains("passed ∙ deployed: staging"), "{}", wide(&app));
+    assert!(wide(&app).contains("in staging  "), "{}", wide(&app));
     // The words open the dialog, as the marks do.
     app.prs = vec![pr];
     let lines = render(&app, 120, 30);
@@ -8500,6 +8497,76 @@ fn a_cards_pr_line_says_what_the_newest_pr_is_at() {
         "the open card's last line: {lines:#?}"
     );
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// T-803: a passed pipeline is news for a few seconds after the board saw
+/// it turn, then only its mark says it; one already passed when the board
+/// first saw it never says it; a failure stays. The card names the last
+/// environment the merge reached, the page every one.
+#[test]
+fn a_cards_passed_is_news_for_a_beat_and_deployed_reads_in_env() {
+    let under = |app: &App| {
+        let lines = render(app, 300, 30);
+        let y = lines.iter().position(|l| l.contains("Grapheme truncation")).expect("T-5");
+        lines[y + 1].clone()
+    };
+    let mut app = app_graphite(fixture(false));
+    app.now = || 1_000_000;
+    // First sight, already passed: nothing changed in front of the person.
+    app.take_prs(vec![pr_on(ulid_n(5))]);
+    assert!(under(&app).contains("◉!7") && !under(&app).contains("passed"), "{}", under(&app));
+    // It runs, then passes: `passed` for a beat.
+    let mut running = pr_on(ulid_n(5));
+    running.pipeline = "running".into();
+    app.take_prs(vec![running.clone()]);
+    app.take_prs(vec![pr_on(ulid_n(5))]);
+    assert!(
+        {
+            let l = under(&app);
+            l.contains("passed") && l.contains("◉!7")
+        },
+        "{}",
+        under(&app)
+    );
+    app.now = || 1_004_900;
+    assert!(
+        {
+            let l = under(&app);
+            l.contains("passed") && l.contains("◉!7")
+        },
+        "still news: {}",
+        under(&app)
+    );
+    app.now = || 1_005_000;
+    assert!(!under(&app).contains("passed"), "gone: {}", under(&app));
+    assert!(under(&app).contains("◉!7"), "the mark stays: {}", under(&app));
+    // A later snapshot drops the spent entry.
+    app.take_prs(vec![pr_on(ulid_n(5))]);
+    assert!(app.pr_passed.is_empty());
+    // A failure stays for as long as it holds.
+    let mut failed = pr_on(ulid_n(5));
+    failed.pipeline = "failed".into();
+    app.take_prs(vec![failed.clone()]);
+    app.now = || 9_000_000;
+    app.take_prs(vec![failed]);
+    assert!(
+        {
+            let l = under(&app);
+            l.contains("failed") && l.contains("✗!7")
+        },
+        "{}",
+        under(&app)
+    );
+    // Merged into two environments: the card says the last, the page both.
+    let mut merged = pr_on(ulid_n(5));
+    merged.state = "merged".into();
+    merged.deployed = vec!["staging".into(), "production".into()];
+    app.take_prs(vec![merged]);
+    assert!(under(&app).contains("in production  "), "{}", under(&app));
+    assert!(!under(&app).contains("staging"), "{}", under(&app));
+    app.screen = Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
+    let page = render(&app, 160, 40).join("\n");
+    assert!(page.contains("pipeline passed ∙ in staging, production"), "{page}");
 }
 
 /// T-789: an open card draws its pull-request line last, under the reply

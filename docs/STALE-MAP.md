@@ -25731,3 +25731,20 @@ and the probe asks again without it. glab has no such flag.
 **Not done:** a first probe that fails on a board that has never held a PR on the host (no
 memory of a CLI across a restart, nothing on the cards) is still believed for 6 h: nothing
 local separates "offline" from "never signed in" without parsing the CLI's prose.
+
+## The card's `passed` is news for a beat; a deploy reads `in <env>` (T-803, 2026-10-15)
+
+The card's PR line (T-794) said `passed` for as long as a pipeline stayed passed, and
+`deployed: staging, production`, both of which pushed the words into the `~` cut. Now the card
+says `passed` only for `PR_PASSED_MS` (5 s) after the board saw that PR's pipeline turn passed
+(`App::pr_passed`, by ticket, repository and number, recorded in `App::take_prs` from `absorb`,
+timed on the injected `App::now`), and its mark says it alone after that. A PR first seen
+passed — the board opening, a PR that arrives already passed — is not news: only a PR the last
+snapshot held at another pipeline word counts. `failed`, `waiting` and a running job are
+unchanged. Every tick already renders, so the word leaves on the 100 ms tick with no
+`animating()` frame.
+
+The merge's environments read `in production` on the card, the last one `PrItem.deployed`
+names (it is in the order it happened, `forge::deploy_order`), and `in staging, production` on
+the ticket page's rows and in the `^h` dialog, which still say `pipeline passed`. The crown's
+wake words and `get_ticket`'s `deployed` field are unchanged.

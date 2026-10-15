@@ -729,6 +729,10 @@ const HOVER_PEEK: Duration = Duration::from_millis(400);
 /// small gesture, and one row a notch reads as stuck.
 const WHEEL_ROWS: isize = 3;
 
+/// How long a card says `passed` after its pipeline turned (T-803): news
+/// for a beat, then the mark beside the number says it alone.
+const PR_PASSED_MS: u64 = 5_000;
+
 fn step(idx: usize, n: usize, down: bool) -> usize {
     if down {
         (idx + 1).min(n.saturating_sub(1))
@@ -1436,6 +1440,10 @@ pub struct App {
     /// What each card's pull requests looked like when the cursor last
     /// rested on it (T-739): the `news` showing's memory, the spoke's rule.
     pub(crate) pr_seen: std::collections::HashMap<ulid::Ulid, String>,
+    /// When this board saw each pull request's pipeline turn `passed`
+    /// (T-803), by ticket, repository and number: the card says `passed`
+    /// for `PR_PASSED_MS` after, and its mark alone after that.
+    pub(crate) pr_passed: std::collections::HashMap<(ulid::Ulid, String, u64), u64>,
     /// The `!` terminals alive on the daemon's tmux, by ticket (T-366): the
     /// ticket page's ghost row and the card's busy spinner read them.
     pub terminals: Vec<mesimon_core::command::TerminalItem>,
@@ -1975,6 +1983,7 @@ impl App {
             prs: snap.prs,
             forge: snap.forge,
             pr_seen: std::collections::HashMap::new(),
+            pr_passed: std::collections::HashMap::new(),
             notices: snap.notices,
             shell_env: snap.shell_env,
             git: snap.git,
@@ -2634,7 +2643,7 @@ impl App {
         self.machine_tiers = machine_tiers;
         self.usage = usage;
         self.costs = costs;
-        self.prs = prs;
+        self.take_prs(prs);
         self.forge = forge;
         self.crown_said = crown_said.into_iter().map(|s| (s.ticket, s)).collect();
         let said = &self.crown_said;
@@ -4083,6 +4092,40 @@ impl App {
         }
         self.pr_seen.insert(ticket, now);
         self.prefs.card_prs == crate::prefs::CardPrs::News
+    }
+
+    /// The snapshot's pull requests (T-803): one whose pipeline turned
+    /// `passed` since the last snapshot is news for `PR_PASSED_MS`. A PR
+    /// first seen passed is not: nothing changed in front of the person.
+    pub(crate) fn take_prs(&mut self, prs: Vec<mesimon_core::command::PrItem>) {
+        let now = (self.now)();
+        let same = |a: &mesimon_core::command::PrItem, b: &mesimon_core::command::PrItem| {
+            (a.ticket, a.number) == (b.ticket, b.number) && a.repo == b.repo
+        };
+        for p in prs.iter().filter(|p| p.pipeline == "passed") {
+            if self.prs.iter().any(|o| same(o, p) && o.pipeline != "passed") {
+                self.pr_passed.insert((p.ticket, p.repo.clone(), p.number), now);
+            }
+        }
+        self.prs = prs;
+        let prs = &self.prs;
+        self.pr_passed.retain(|(t, r, n), at| {
+            now.saturating_sub(*at) < PR_PASSED_MS
+                && prs.iter().any(|p| {
+                    (p.ticket, p.number) == (*t, *n) && p.repo == *r && p.pipeline == "passed"
+                })
+        });
+    }
+
+    /// Is `p`'s pipeline a `passed` the card still says (T-803)? Only for
+    /// `PR_PASSED_MS` after this board saw it turn; the 100 ms tick redraws,
+    /// so the word leaves on time.
+    pub(crate) fn pr_passed_news(&self, p: &mesimon_core::command::PrItem) -> bool {
+        p.pipeline == "passed"
+            && self
+                .pr_passed
+                .get(&(p.ticket, p.repo.clone(), p.number))
+                .is_some_and(|at| (self.now)().saturating_sub(*at) < PR_PASSED_MS)
     }
 
     /// The ticket's pull requests in one line: what `news` compares.

@@ -292,9 +292,14 @@ pub(super) fn brief_spans(
 /// the page's clauses (`ticket::pr_clauses`) in fewer words, since the mark
 /// beside them says it is a pipeline, and `draft` last, the one state no
 /// mark spells. A running pipeline is its job's name alone, or `running`,
-/// and the flag says so: the line shimmers for it. `None` with nothing to
-/// say.
-pub(super) fn pr_words(prs: &[&mesimon_core::command::PrItem]) -> Option<(String, bool)> {
+/// and the flag says so: the line shimmers for it. `passed` is said only
+/// while `passed_news` holds (T-803): a few seconds after it turned, then
+/// the mark says it alone. The merge's environments are the last it
+/// reached, `in production`. `None` with nothing to say.
+pub(super) fn pr_words(
+    prs: &[&mesimon_core::command::PrItem],
+    passed_news: impl Fn(&mesimon_core::command::PrItem) -> bool,
+) -> Option<(String, bool)> {
     use mesimon_core::text::scrub_cells;
     let p = prs.iter().find(|p| matches!(p.state.as_str(), "open" | "draft")).or(prs.first())?;
     let mut words = Vec::new();
@@ -303,10 +308,11 @@ pub(super) fn pr_words(prs: &[&mesimon_core::command::PrItem]) -> Option<(String
         ("running", Some(job)) => words.push(job),
         ("running", None) => words.push("running".into()),
         (word @ ("failed" | "waiting"), Some(job)) => words.push(format!("{word}: {job}")),
-        (word @ ("failed" | "waiting" | "passed"), _) => words.push(word.into()),
+        (word @ ("failed" | "waiting"), _) => words.push(word.into()),
+        ("passed", _) if passed_news(p) => words.push("passed".into()),
         _ => {}
     }
-    words.extend(super::ticket::pr_state_clauses(p));
+    words.extend(super::ticket::pr_state_clauses(p, true));
     if p.state == "draft" {
         words.push(p.state.clone());
     }

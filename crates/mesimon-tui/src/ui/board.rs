@@ -239,7 +239,11 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         // Its pull requests, for the line under the title (T-739).
         let brief = if left { Vec::new() } else { app.pr_brief(t.id) };
         // And what the newest of them is at, beside its mark (T-794).
-        let pr_words = if brief.is_empty() { None } else { card::pr_words(&app.prs_of(t.id)) };
+        let pr_words = if brief.is_empty() {
+            None
+        } else {
+            card::pr_words(&app.prs_of(t.id), |p| app.pr_passed_news(p))
+        };
         // A held ask's keys ride the cursor card (T-551) — the subject the
         // frame's `Ctx` was built for, so the keys it names act on THIS card.
         let keys_ctx = app.frame_ctx();

@@ -5,7 +5,7 @@
  ⎇ msmn/T-5-grapheme-truncation ∙ 2 to merge ∙ m merge
    ✗ PR #43 open ∙ pipeline failed: test-linux ∙ changes requested
    ◴ PR #42 open ∙ pipeline running
-   ◆ MR !7 merged ∙ g/api ∙ pipeline passed ∙ deployed: staging
+   ◆ MR !7 merged ∙ g/api ∙ pipeline passed ∙ in staging
     ∙ +1 more
 
 
@@ -13,7 +13,7 @@
     ▄▄▄         ▄▄▄        ╭─ PULL REQUESTS ∙ T-5 ∙ 4 ──────────────────────────────────────╮
     ▀▀█▀ ▄▀▀▀   ▀▀█▀       │ ✗ #43  o/r    open ∙ pipeline failed: test-linux ∙ changes req~│ claude               >1y
       ██▀█▀▀     ███   ✦   │ ◴ #42  o/r    open ∙ pipeline running                          │sleep
-    ▄▀█████▀▀▀▀▀▀███▀▄     │ ◆ !7   g/api  merged ∙ pipeline passed ∙ deployed: staging     │
+    ▄▀█████▀▀▀▀▀▀███▀▄     │ ◆ !7   g/api  merged ∙ pipeline passed ∙ in staging            │
   ✦█████▀████████▀████▀    │ ● #40  o/r    merged                                           │
    ████▀█▀██████▀█▀████    ╰────────────────── jk select ∙ enter open ∙ c copy ∙ esc close ─╯
    █▀▀█████▀▀▀▀█████▀▀█
