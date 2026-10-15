@@ -115,16 +115,20 @@ pub struct HostProbe {
     /// The signed-in account's username, where the CLI needs it on the
     /// command line (glab's `--author`).
     pub viewer: Option<String>,
-    /// Why a CLI that is there did not confirm its sign-in (T-798): no
-    /// network yet, a timeout, an account's stale token. The worker fills
-    /// it on every such failure; the writer keeps it only for a host the
-    /// board reads (`State::take_probe`), which is then asked again on the
-    /// backoff, said on the advisory row, and never a host nothing reads.
+    /// Why nothing reads the host, in the advisory row's words with the
+    /// fix (`forge::sign_in_trouble`, `forge::missing_trouble`): a CLI that
+    /// did not confirm its sign-in (T-798: no network yet, a timeout, a
+    /// stale token, never signed in), or no CLI on PATH at all. On a board
+    /// that merges through pull requests, the only one that reads a forge,
+    /// every such host is trouble (T-810): asked again on the backoff, said
+    /// on the advisory row and in `ForgeStatus.trouble`, never "no forge".
     pub lost: Option<String>,
 }
 
 impl HostProbe {
     /// No CLI was found for the host, and none was lost: nothing reads it.
+    /// Since T-810 the probe always says why, so this is a probe from
+    /// before one was made.
     pub fn reads_nothing(&self) -> bool {
         self.cli.is_none() && self.lost.is_none()
     }
@@ -926,7 +930,7 @@ fn probe_host(host: &str, candidates: &[Cli]) -> HostProbe {
     let mut lost = None;
     for c in candidates {
         if let Err(e) = auth_status(c, host, CALL_TIMEOUT) {
-            lost.get_or_insert(e);
+            lost.get_or_insert_with(|| forge::sign_in_trouble(c.forge, host, &e));
             continue;
         }
         let viewer = match c.forge {
@@ -1413,6 +1417,11 @@ pub struct State {
     /// conflict was. In `forge.json` beside the sets (T-785), so a conflict
     /// said before a restart says its clear after it.
     pub conflicted: HashMap<ulid::Ulid, Vec<(String, u64)>>,
+    /// URLs the backfill found in a ticket's old transcripts (T-810), each
+    /// bound as a baseline by the read that first finds its PR
+    /// (`baseline`): the work is old, so its binding is no news. Memory
+    /// only; a restart's backfill has nothing left to find.
+    pub quiet: HashMap<ulid::Ulid, Vec<String>>,
     /// The repositories whose last call failed, with the CLI's words.
     pub errors: Vec<(String, String)>,
     /// Merge commits' pipelines as last read, by repository path and oid
@@ -1493,21 +1502,13 @@ impl State {
         self.probes.values().any(|p| p.cli.is_some())
     }
 
-    /// Takes a pass's probe of `host`. A failed sign-in is kept as lost
-    /// (T-798) only where the host had a CLI or was lost before, or holds a
-    /// ticket's PRs: there it is a forge that did not answer. Anywhere else
-    /// the host reads as one with no CLI at all, as a board with no `gh`
-    /// or `glab` does.
-    pub fn take_probe(&mut self, host: String, mut probe: HostProbe) {
-        if probe.cli.is_none() && probe.lost.is_some() {
-            let had = self.probes.get(&host).is_some_and(|p| !p.reads_nothing());
-            let holds = self.sets.values().flatten().any(|p| {
-                forge::repo_of_url(&p.url).is_some_and(|r| r.host.eq_ignore_ascii_case(&host))
-            });
-            if !had && !holds {
-                probe.lost = None;
-            }
-        }
+    /// Takes a pass's probe of `host`, a failed sign-in kept as it came.
+    /// T-798 kept one only where the host had a CLI or held PRs, and read
+    /// any other as a board of no forge; on a board that merges through
+    /// pull requests, the only one that probes, every worktree's host is
+    /// one the person means read (T-810), so a CLI never signed in is
+    /// trouble as a lost one is.
+    pub fn take_probe(&mut self, host: String, probe: HostProbe) {
         self.probes.insert(host, probe);
     }
 
@@ -1639,6 +1640,32 @@ impl State {
         self.local.retain(|t, _| live.contains(t));
         self.owed.retain(|t, _| live.contains(t));
         self.landed.retain(|t, _| live.contains(t));
+        self.quiet.retain(|t, _| live.contains(t));
+    }
+
+    /// The PRs of `set` the backfill's URLs name for `t` (T-810), taken as
+    /// already held: the caller reads them as its last read's too, so
+    /// binding one is no opening, no feed line, no edge and no arrival.
+    /// Each URL is spent on the read that finds its PR.
+    pub fn baseline(&mut self, t: ulid::Ulid, set: &[Pr]) -> Vec<Pr> {
+        let Some(urls) = self.quiet.get_mut(&t) else { return Vec::new() };
+        let found: Vec<Pr> = set
+            .iter()
+            .filter(|p| urls.iter().any(|u| forge::same_url(u, &p.url)))
+            .cloned()
+            .collect();
+        urls.retain(|u| !found.iter().any(|p| forge::same_url(u, &p.url)));
+        if urls.is_empty() {
+            self.quiet.remove(&t);
+        }
+        let held = self.held.entry(t).or_default();
+        for p in &found {
+            let id = (p.repo.clone(), p.number);
+            if !held.contains(&id) {
+                held.push(id);
+            }
+        }
+        found
     }
 
     /// Whether an open PR of the ticket's set has the forge's conflict.
@@ -1669,16 +1696,18 @@ impl State {
         self.sets.get(&ticket).and_then(|s| forge::merged_at(s, &paths, tip))
     }
 
-    /// The one line the advisory row and `doctor` say while a host's
-    /// sign-in is lost (T-798) or a repository cannot be read.
+    /// The one line the advisory row says while a host is read by no CLI
+    /// (T-798, T-810: its sign-in failed or no CLI is on PATH, with the fix)
+    /// or a repository cannot be read; `ForgeStatus.trouble` carries it to
+    /// every client.
     pub fn trouble(&self) -> Option<String> {
         let lost = self
             .probes
             .iter()
             .filter_map(|(host, p)| Some((host, p.lost.as_ref()?)))
             .min_by(|a, b| a.0.cmp(b.0));
-        if let Some((host, why)) = lost {
-            return Some(format!("{host} sign-in: {why}"));
+        if let Some((_, why)) = lost {
+            return Some(why.clone());
         }
         let (key, why) = self.errors.first()?;
         // A key can come from a URL a session printed (T-795).
@@ -2885,59 +2914,72 @@ mod tests {
         assert!(!s.fresh(t, 5_000, &[]));
     }
 
-    /// A failed sign-in is a lost host only where the board reads one
-    /// (T-798): it had a CLI or holds PRs. Lost, it is asked again on the
-    /// backoff, named on the advisory row, and no board of no forge.
+    /// T-810: a PR a backfilled URL names is taken as held the read it
+    /// first binds, so the caller reads it as no news; the URL is spent,
+    /// and a PR no URL names is left to the read's own edges.
     #[test]
-    fn a_failed_sign_in_is_lost_where_the_host_had_a_cli_or_holds_prs() {
+    fn a_backfilled_url_binds_its_pr_as_a_baseline_once() {
+        let t = ulid::Ulid::new();
+        let mut s = State::default();
+        let old = pr(7, PrState::Open, Pipeline::Passed);
+        let new = pr(8, PrState::Merged, Pipeline::Passed);
+        s.quiet.insert(t, vec![old.url.clone(), "https://github.com/o/r/pull/500".into()]);
+        let set = vec![old.clone(), new];
+        let quiet = s.baseline(t, &set);
+        assert_eq!(quiet.iter().map(|p| p.number).collect::<Vec<_>>(), [7]);
+        assert!(s.held[&t].contains(&(old.repo.clone(), 7)), "held, so no opening");
+        assert!(!s.held[&t].iter().any(|(_, n)| *n == 8), "the read's own PR is its own");
+        assert_eq!(s.quiet[&t], ["https://github.com/o/r/pull/500"], "spent on its read");
+        assert!(s.baseline(t, &set).is_empty(), "once");
+        assert!(s.baseline(ulid::Ulid::new(), &set).is_empty());
+    }
+
+    /// A host nothing reads is trouble, never a board of no forge (T-798,
+    /// T-810): a CLI that did not confirm its sign-in, held PRs or not, and
+    /// no CLI on PATH at all. Each is asked again on the backoff, named on
+    /// the advisory row with its fix, and the trouble clears once a CLI
+    /// reads the host.
+    #[test]
+    fn a_host_nothing_reads_is_trouble_never_no_forge() {
         let t = ulid::Ulid::new();
         let cli = Cli { forge: Forge::GitHub, bin: PathBuf::from("/bin/gh") };
-        let failed = || HostProbe {
+        let lost = |why: String| HostProbe {
             cli: None,
             at: Instant::now(),
             viewer: None,
-            lost: Some("error connecting to api.github.com".into()),
+            lost: Some(why),
         };
+        let failed = || lost(forge::sign_in_trouble(Forge::GitHub, "github.com", "not logged in"));
         let board = || {
             let mut s = State::default();
             let remote = Remote { host: "github.com".into(), path: "o/r".into() };
             s.remotes.insert(PathBuf::from("/r"), Some(remote));
             s
         };
-        // Never read, no PR: a CLI that is not signed in reads nothing, as
-        // no CLI at all does, and is believed as long.
+        // Never read, no PR: a CLI never signed in is trouble all the same.
         let mut s = board();
-        s.take_probe("github.com".into(), failed());
-        assert!(s.probes["github.com"].reads_nothing());
-        assert!(s.fresh(t, 5_000, &[]), "no forge reads this board");
-        assert_eq!(s.trouble(), None);
-        // Holding a PR on the host: lost, said, and no board of no forge.
-        let mut s = board();
-        s.sets.insert(t, vec![pr(7, PrState::Open, Pipeline::Passed)]);
         s.take_probe("github.com".into(), failed());
         assert!(!s.probes["github.com"].reads_nothing());
-        assert!(!s.fresh(t, 5_000, &[]), "the train waits for the host");
+        assert!(!s.fresh(t, 5_000, &[]), "a forge that did not answer is no board of no forge");
         assert_eq!(
             s.trouble().as_deref(),
-            Some("github.com sign-in: error connecting to api.github.com")
+            Some("github.com sign-in: not logged in (gh auth login --hostname github.com)")
         );
-        // A host that had a CLI, and one lost before: lost again.
-        for before in [
-            HostProbe { cli: Some(cli.clone()), at: Instant::now(), viewer: None, lost: None },
-            failed(),
-        ] {
-            let mut s = board();
-            s.probes.insert("github.com".into(), before);
-            s.take_probe("github.com".into(), failed());
-            assert!(s.probes["github.com"].lost.is_some());
-        }
-        // Asked again on the backoff, never after six hours.
-        let mut lost = failed();
-        lost.at = Instant::now() - BACKOFF;
-        assert!(lost.stale());
-        let mut no_cli = lost.clone();
-        no_cli.lost = None;
-        assert!(!no_cli.stale(), "a host nothing reads is believed six hours");
+        // No CLI on PATH: the same, with its fix.
+        let mut s = board();
+        let missing = forge::missing_trouble("gitlab.com", &[Forge::GitLab, Forge::GitHub]);
+        s.take_probe("gitlab.com".into(), lost(missing));
+        assert_eq!(
+            s.trouble().as_deref(),
+            Some(
+                "gitlab.com: no glab or gh on PATH (install glab, then glab auth login --hostname \
+                 gitlab.com)"
+            )
+        );
+        // Asked again on the backoff.
+        let mut old = failed();
+        old.at = Instant::now() - BACKOFF;
+        assert!(old.stale());
         // Signed in again: the trouble clears.
         let mut s = board();
         s.sets.insert(t, vec![pr(7, PrState::Open, Pipeline::Passed)]);

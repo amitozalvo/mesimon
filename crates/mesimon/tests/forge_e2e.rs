@@ -3654,3 +3654,172 @@ fn a_ticket_cut_at_a_fast_forward_merge_binds_nothing_of_it() {
     assert_eq!(git(&repo, &["rev-parse", "main"]).trim(), main_before, "nothing lands here");
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
+
+/// T-810's backfill: a worker's session ran `gh pr create` from another
+/// branch in a transcript the cost ledger passed before it looked for one,
+/// so its URL is in no `pr_urls` and PR #42, listed from the restart on,
+/// binds to nothing by itself. The board already read the worker's set
+/// empty. At the restart, a board that merges
+/// through pull requests reads that transcript once, off the writer, and
+/// the PR binds as a baseline: no feed line, no crown wake, and TODO's
+/// `Moves in when: PR opened` takes nothing.
+#[test]
+fn a_pr_opened_before_the_ledger_looked_binds_quietly_after_the_backfill() {
+    let (stub_dir, path_var) = gh_stub("forge-backfill");
+    let prs_file = stub_dir.join("prs.json");
+    let passed =
+        r#"[{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS"}]"#;
+    write(&prs_file, "[]");
+    let Some(h) = Harness::boot_with_env(
+        "forge_backfill",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs_file.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("forge_backfill");
+    through_prs(&mut c);
+    let mut todo = c.board().column("TODO").unwrap().settings.clone();
+    todo.arrives_on = Arrival::PrOpened;
+    assert!(matches!(
+        c.request(Command::SetColumnSettings { name: "TODO".into(), settings: todo }),
+        Response::Ok
+    ));
+    let k = crowned(&h, &mut c);
+
+    // The worker's turn printed the PR's URL.
+    let transcript = h.dir.join("old.jsonl");
+    std::fs::write(
+        &transcript,
+        concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"gh pr create --fill --head fix/old"}}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"https://github.com/example/forge/pull/42\n"}]}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    hook_send(
+        &hook_sock,
+        &k.ws.to_string(),
+        "SessionStart",
+        &format!(r#"{{"session_id":"x","transcript_path":"{}"}}"#, transcript.display()),
+    );
+    // A turn's end is what has the ledger read; the crown takes its wake.
+    turn(&mut c, &hook_sock, k.ws);
+    std::thread::sleep(Duration::from_millis(1500));
+    turn(&mut c, &hook_sock, k.crown);
+    let costs = h.paths.costs_file();
+    wait_until(Duration::from_secs(20), "the ledger to read the transcript", || {
+        std::fs::read_to_string(&costs).is_ok_and(|t| t.contains("pull/42"))
+    });
+    // The set is read with the PR unbound, and kept in forge.json.
+    wait_until(Duration::from_secs(20), "the worker's set read without it", || {
+        std::fs::read_to_string(h.paths.forge_file())
+            .is_ok_and(|t| t.contains(&k.worker.to_string()))
+    });
+    assert!(!prs_of(&mut c).iter().any(|p| p.ticket == k.worker));
+    let column = c.board().ticket(k.worker).unwrap().column.clone();
+    let woke = wakes(&h, k.worker, "forge");
+
+    // As a build before T-739 left it: the cursor past the line, unlooked.
+    // The PR is on the forge from `fix/old`, at a head the worktree never
+    // wrote: only its URL binds it.
+    drop(c);
+    h.restart_after(|| {
+        write(
+            &prs_file,
+            &open_pr_json("fix/old", &"c0ffee42".repeat(5), passed, "MERGEABLE", "REVIEW_REQUIRED"),
+        );
+        let mut v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&costs).unwrap()).unwrap();
+        let t = &mut v["tickets"][k.worker.to_string()];
+        t.as_object_mut().unwrap().remove("pr_urls");
+        for (_, cursor) in t["conversations"].as_object_mut().unwrap() {
+            cursor.as_object_mut().unwrap().remove("backfilled");
+        }
+        std::fs::write(&costs, v.to_string()).unwrap();
+    });
+    let mut c = h.client("forge_backfill-2");
+    wait_until(Duration::from_secs(20), "the backfilled PR to bind", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == k.worker && p.number == 42)
+    });
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(wakes(&h, k.worker, "forge"), woke, "no crown wake");
+    assert_eq!(c.board().ticket(k.worker).unwrap().column, column, "no card move");
+    let feed = std::fs::read_to_string(h.paths.state_dir.join("activity.jsonl")).unwrap();
+    assert!(
+        !feed.lines().any(|l| l.contains("\"cmd\":\"pr\"") && l.contains("#42")),
+        "no feed line: {feed}"
+    );
+    let ledger = std::fs::read_to_string(&costs).unwrap();
+    assert!(ledger.contains("pull/42") && ledger.contains("\"backfilled\":true"), "{ledger}");
+    let _ = c.request(Command::Shutdown);
+    let _ = (&k.path, &k.branch, &k.tip, &k.named);
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// T-810, addendum 2: on a board that merges through pull requests a host
+/// whose CLI never signed in is trouble from the first probe, never a board
+/// of no forge: the advisory row names the host and the fix, and the
+/// snapshot's `forge.trouble` carries the same line.
+#[test]
+fn a_cli_never_signed_in_is_trouble_with_its_fix() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    let name = "forge_unsigned";
+    let (stub_dir, path_var) = gh_stub(name);
+    std::fs::write(
+        stub_dir.join("gh"),
+        GH_STUB.replacen(
+            "\"auth status\") exit 0 ;;",
+            "\"auth status\") echo 'You are not logged into any GitHub hosts.' >&2; exit 1 ;;",
+            1,
+        ),
+    )
+    .unwrap();
+    let Some(h) = Harness::boot_with_env(
+        name,
+        Some(STUB),
+        &[
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let mut c = h.client(name);
+    let row = |c: &mut TestClient| match c.request(Command::Snapshot) {
+        Response::Board { notices, forge, .. } => (
+            notices.into_iter().find(|n| n.kind == "forge_unreachable").map(|n| n.text),
+            forge.trouble,
+        ),
+        other => panic!("not a board: {other:?}"),
+    };
+    let _ = ready(&mut c, "alpha");
+    // Into main: nothing is read, and nothing is said.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(row(&mut c), (None, None), "main is silent");
+    through_prs(&mut c);
+    let fix = "github.com sign-in: You are not logged into any GitHub hosts. (gh auth login \
+               --hostname github.com)";
+    wait_until(Duration::from_secs(20), "the advisory row to name the host and fix", || {
+        row(&mut c).0.is_some_and(|t| t == format!("pull requests not read — {fix}"))
+    });
+    assert_eq!(row(&mut c).1.as_deref(), Some(fix), "the snapshot carries it");
+    let _ = c.request(Command::Shutdown);
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}

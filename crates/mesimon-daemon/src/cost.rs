@@ -26,7 +26,7 @@
 //! untouched with writes barred, an unparseable file quarantined.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -68,6 +68,13 @@ pub struct Cursor {
     /// the next line or the next pass.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_create: Vec<String>,
+    /// Every `pr create` the transcript holds is in its ticket's `pr_urls`
+    /// (T-810): read from its start by a build that looks for them, by the
+    /// pass that learned it or by the backfill. A transcript the cursor had
+    /// passed before T-739 looked is not, and the switch to pull requests
+    /// reads it once (`backfill`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub backfilled: bool,
 }
 
 /// The two counts of a ticket's mod-reported turns (T-581), in tokens: the
@@ -182,7 +189,9 @@ impl Ledger {
             }
             return false;
         }
-        t.conversations.insert(path.to_string(), Cursor { codex, ..Cursor::default() });
+        // Read from its start, so every `pr create` in it is seen (T-810).
+        let cursor = Cursor { codex, backfilled: true, ..Cursor::default() };
+        t.conversations.insert(path.to_string(), cursor);
         true
     }
 
@@ -246,6 +255,43 @@ impl Ledger {
         self.tickets.values().filter(|t| t.check.by_mod > 0).count()
     }
 
+    /// The transcripts of `tickets` never read whole for `pr create` (T-810,
+    /// `Cursor::backfilled`), for the backfill's worker.
+    pub fn backfill_jobs(&self, tickets: &HashSet<ulid::Ulid>) -> Vec<(ulid::Ulid, String)> {
+        self.tickets
+            .iter()
+            .filter(|(id, _)| tickets.contains(id))
+            .flat_map(|(id, t)| {
+                t.conversations.iter().filter(|(_, c)| !c.backfilled).map(|(p, _)| (*id, p.clone()))
+            })
+            .collect()
+    }
+
+    /// The backfill's answers folded in (T-810): each transcript read is
+    /// marked, and each URL its ticket lacked is kept as the oldest of its
+    /// `pr_urls` while there is room under the cap, never pushing a newer one
+    /// out. No cursor moves and no count changes. The URLs it added, per
+    /// ticket.
+    pub fn apply_backfill(&mut self, found: Vec<Backfilled>) -> Vec<(ulid::Ulid, String)> {
+        let mut added = Vec::new();
+        for b in found {
+            let Some(t) = self.tickets.get_mut(&b.ticket) else { continue };
+            if let Some(c) = t.conversations.get_mut(&b.path) {
+                c.backfilled = true;
+            }
+            for url in b.urls {
+                if t.pr_urls.len() >= PR_URLS_CAP
+                    || t.pr_urls.iter().any(|u| mesimon_core::forge::same_url(u, &url))
+                {
+                    continue;
+                }
+                t.pr_urls.insert(0, url.clone());
+                added.push((b.ticket, url));
+            }
+        }
+        added
+    }
+
     /// Every known transcript, for the worker to read what grew.
     pub fn jobs(&self) -> Vec<Job> {
         self.tickets
@@ -269,6 +315,8 @@ impl Ledger {
             let t = self.tickets.entry(d.ticket).or_default();
             let mut cursor = d.cursor;
             cursor.by_mod_since = t.conversations.get(&d.path).and_then(|c| c.by_mod_since);
+            // A backfill that landed while this pass was out stands (T-810).
+            cursor.backfilled |= t.conversations.get(&d.path).is_some_and(|c| c.backfilled);
             let fence = t.fence(&d.path);
             if t.conversations.get(&d.path) != Some(&cursor) {
                 t.conversations.insert(d.path, cursor.clone());
@@ -414,7 +462,7 @@ pub fn scan(jobs: Vec<Job>, now_ms: u64) -> Vec<Done> {
             subagents(&j.path).into_iter().map(|path| Job {
                 ticket: j.ticket,
                 path,
-                cursor: Cursor::default(),
+                cursor: Cursor { backfilled: true, ..Cursor::default() },
             })
         })
         .filter(|j| !known.contains(&j.path))
@@ -434,7 +482,7 @@ fn read(job: Job, now_ms: u64) -> Option<Done> {
         return None;
     }
     if len < cursor.offset {
-        cursor = Cursor { codex: cursor.codex, ..Cursor::default() };
+        cursor = Cursor { codex: cursor.codex, backfilled: true, ..Cursor::default() };
     }
     let mut file = std::fs::File::open(&job.path).ok()?;
     file.seek(SeekFrom::Start(cursor.offset)).ok()?;
@@ -492,6 +540,44 @@ fn opened_on(line: &str, pending: &mut Vec<String>) -> Vec<String> {
         return mesimon_core::forge::pr_create_line(line, pending);
     }
     Vec::new()
+}
+
+/// One transcript the backfill read (T-810): the PR URLs its `pr create`
+/// results printed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Backfilled {
+    pub ticket: ulid::Ulid,
+    pub path: String,
+    pub urls: Vec<String>,
+}
+
+/// The backfill (T-810), on a worker: each transcript from its start, line
+/// by line and one at a time, for the `pr create` URLs a cursor that passed
+/// it before T-739 never looked for. Nothing is held whole, so a transcript
+/// of any size is only a longer read. One that cannot be opened has none
+/// to give, and is marked read all the same.
+pub fn backfill(jobs: Vec<(ulid::Ulid, String)>) -> Vec<Backfilled> {
+    jobs.into_iter()
+        .map(|(ticket, path)| {
+            let mut urls = Vec::new();
+            if let Ok(file) = std::fs::File::open(&path) {
+                let mut reader = std::io::BufReader::new(file);
+                let mut pending = Vec::new();
+                let mut buf = Vec::new();
+                loop {
+                    buf.clear();
+                    match reader.read_until(b'\n', &mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {
+                            let line = String::from_utf8_lossy(&buf);
+                            urls.extend(opened_on(line.trim_end(), &mut pending));
+                        }
+                    }
+                }
+            }
+            Backfilled { ticket, path, urls }
+        })
+        .collect()
 }
 
 /// Whether a tail past the ledger's cursor holds a `pr create`'s result,
@@ -765,6 +851,79 @@ mod tests {
         assert_eq!(ledger.opened_urls(t).len(), 1);
         let text = serde_json::to_string(&ledger).unwrap();
         assert!(text.contains("pr_urls"), "the fact survives a restart: {text}");
+    }
+
+    /// T-810: the backfill reads a transcript the cursor passed before
+    /// anything looked for `pr create`, from its start and line by line:
+    /// Claude's result as a JSON-escaped string and as text blocks, and
+    /// Codex's `function_call_output`. Its URLs join the ticket's as the
+    /// oldest, no cursor moves, every transcript read is marked, and a
+    /// transcript learned now is born read.
+    #[test]
+    fn the_backfill_finds_the_pr_creates_a_passed_cursor_never_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path().join("c.jsonl");
+        let codex = dir.path().join("x.jsonl");
+        let lines = [
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"gh pr create --fill --head fix/x"}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"opening it"}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"Creating pull request for fix/x into main\n\nhttps://github.com/o/r/pull/7\n"}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"gh pr create -t again"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_2","content":[{"type":"text","text":"https://github.com/o/r/pull/8\n"}]}]}}"#,
+        ];
+        std::fs::write(&claude, lines.join("\n") + "\n").unwrap();
+        let fc = r#"{"type":"response_item","payload":{"type":"function_call","name":"shell","call_id":"c1","arguments":"{\"command\":[\"bash\",\"-lc\",\"glab mr create --fill --yes\"]}"}}"#;
+        let fo = r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"https://gitlab.example.com/g/p/-/merge_requests/9\n"}}"#;
+        std::fs::write(&codex, format!("{fc}\n{fo}")).unwrap();
+        let t = ulid::Ulid::new();
+        let (c, x) = (claude.display().to_string(), codex.display().to_string());
+        let mut ledger = Ledger::default();
+        // Passed by a cursor from before T-739: at the end, never looked.
+        let passed = |codex: bool| Cursor { codex, offset: 1 << 20, ..Cursor::default() };
+        let mine = ledger.tickets.entry(t).or_default();
+        mine.conversations.insert(c.clone(), passed(false));
+        mine.conversations.insert(x.clone(), passed(true));
+        mine.pr_urls.push("https://github.com/o/r/pull/99".into());
+        let other = ulid::Ulid::new();
+        ledger.learn(other, &dir.path().join("new.jsonl").display().to_string(), false, false);
+        let jobs = ledger.backfill_jobs(&HashSet::from([t, other]));
+        assert_eq!(jobs.len(), 2, "a transcript learned now is born read: {jobs:?}");
+        let found = backfill(jobs);
+        let urls: Vec<&str> =
+            found.iter().flat_map(|b| b.urls.iter().map(String::as_str)).collect();
+        assert_eq!(
+            urls,
+            [
+                "https://github.com/o/r/pull/7",
+                "https://github.com/o/r/pull/8",
+                "https://gitlab.example.com/g/p/-/merge_requests/9"
+            ]
+        );
+        let before = ledger.tickets[&t].conversations.clone();
+        let added = ledger.apply_backfill(found);
+        assert_eq!(added.len(), 3);
+        assert_eq!(
+            ledger.opened_urls(t).last().map(String::as_str),
+            Some("https://github.com/o/r/pull/99"),
+            "the newest stays newest"
+        );
+        assert_eq!(ledger.opened_urls(t).len(), 4);
+        for (path, c) in &ledger.tickets[&t].conversations {
+            assert!(c.backfilled, "{path} marked");
+            assert_eq!(c.offset, before[path].offset, "no cursor moves");
+        }
+        assert!(ledger.backfill_jobs(&HashSet::from([t])).is_empty(), "once");
+        assert!(ledger.apply_backfill(backfill(vec![(t, c.clone())])).is_empty(), "kept once");
+        // A pass that ran beside it keeps the mark.
+        let stale = Done {
+            ticket: t,
+            path: c.clone(),
+            cursor: passed(false),
+            added: Vec::new(),
+            pr_urls: Vec::new(),
+        };
+        ledger.apply(vec![stale]);
+        assert!(ledger.tickets[&t].conversations[&c].backfilled);
     }
 
     /// The gate's read (T-750): a `pr create` in the tail the pass has not

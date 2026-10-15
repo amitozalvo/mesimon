@@ -26359,3 +26359,46 @@ of it.
 
 **Kept.** The cost ledger still notes a `pr create` URL in a transcript under either mode (local
 reading, no forge call); Mesophon reads the snapshot's empty `prs` under main.
+
+**Addendum: the backfill** (the author: "Add to backfill but it should be in background and not
+cause hiccups"). The cost ledger's cursor never goes back, so a `pr create` a session ran before
+T-739 looked for one is in no `pr_urls`, and a PR it opened from another branch binds to nothing.
+`cost::Cursor::backfilled` marks a transcript every `pr create` of which is in its ticket's URLs: a
+transcript learned from now on is born marked (the pass reads it from its start, a subagent's and a
+rewritten one's too), and a pass that ran beside a backfill keeps the mark (`apply`). On a board
+that merges through pull requests, at the switch and at start, `Daemon::queue_backfill` sends the
+worktree tickets' unmarked transcripts to a worker (`cost::backfill`: one at a time, `read_until`
+line by line, `forge::pr_create_line` only on a line that can hold one), which lands as one
+`Msg::Backfilled`; `Ledger::apply_backfill` marks each and keeps each new URL as the oldest of its
+ticket's, never past `PR_URLS_CAP` and never pushing a newer one out, with no cursor or count
+moved. Once marked, a board switched back and forth reads nothing again. **No noise:** each URL
+the backfill added waits in `forge::State::quiet`, and the read that first finds its PR takes it as
+held and as the last read's too (`State::baseline`): no `delta` line, no opening, no edge, so no
+crown wake and no arrival. **Left open:** a backfilled PR merged at the leg's tip can still flip the
+flags' `merged`, whose own wake is the flags' road, not the forge's. Tests:
+`cost::the_backfill_finds_the_pr_creates_a_passed_cursor_never_read` (Claude's escaped and block
+results, Codex's output, a last line with no newline, the oldest-first keep, once, a pass beside
+it), `forge::a_backfilled_url_binds_its_pr_as_a_baseline_once`,
+`forge_e2e::a_pr_opened_before_the_ledger_looked_binds_quietly_after_the_backfill` (a crowned
+worker's set read empty and kept, `costs.json` set back to a pre-T-739 cursor across a restart,
+the PR listed from then on: it binds with no feed line, no `forge` wake and TODO's `Moves in when:
+PR opened` taking nothing; with `baseline` turned off the crown is woken).
+
+**Addendum 2: a forge nobody can read is trouble, never silence** (the author: "if pr workflow
+fails for some reason (glab needs login or something else), will the board let the user know?").
+T-798 kept a failed sign-in only for a host that had a CLI or held PRs, and a host with no CLI on
+PATH read as no forge, said by nothing. On a board that merges through pull requests, the only
+one that probes, every worktree's host is one the person means read: `take_probe` keeps every
+failed sign-in, and the writer records a host with no candidate CLI as lost too, both in words
+with their fix (`forge::sign_in_trouble`: `github.com sign-in: <the CLI's words> (gh auth login
+--hostname github.com)`; `forge::missing_trouble`: `gitlab.com: no glab or gh on PATH (install
+glab, then glab auth login --hostname gitlab.com)`), asked again on the backoff. The advisory row
+says `pull requests not read — <that line>` (`forge_unreachable`, only under pull requests; the
+"merge train holds its tickets" clause went, since that train merges nothing), `doctor`'s forge
+line warns in the same words, and `ForgeStatus.trouble` on the snapshot carries the line for the
+header mark a later ticket adds. The words cannot tell a host never signed in from one offline,
+so the fix is offered either way. A repository with no forge remote at all is still no forge.
+Tests: `forge::a_host_nothing_reads_is_trouble_never_no_forge` (replaces T-798's
+`a_failed_sign_in_is_lost_where_the_host_had_a_cli_or_holds_prs`) and
+`forge_e2e::a_cli_never_signed_in_is_trouble_with_its_fix` (`auth status` failing from the start:
+silent under main, then the advisory row and `forge.trouble` name the host and the fix).

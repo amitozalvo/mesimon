@@ -54,6 +54,14 @@ impl Forge {
         }
     }
 
+    /// The CLI that reads it: `gh` or `glab`.
+    pub fn cli(self) -> &'static str {
+        match self {
+            Forge::GitHub => "gh",
+            Forge::GitLab => "glab",
+        }
+    }
+
     /// What the forge calls one: `PR` or `MR`.
     pub fn noun(self) -> &'static str {
         match self {
@@ -1132,6 +1140,28 @@ pub fn open_one_refusal(forge: Option<Forge>) -> String {
                  on GitHub or GitLab"
             .into(),
     }
+}
+
+/// The advisory row's and `doctor`'s line for a host whose CLI did not
+/// confirm a sign-in (T-798, T-810): the CLI's own words, then its fix. The
+/// words cannot tell a host never signed in from one offline, so the fix
+/// is offered either way.
+pub fn sign_in_trouble(forge: Forge, host: &str, why: &str) -> String {
+    let cli = forge.cli();
+    let why = crate::text::scrub_text(why);
+    format!("{host} sign-in: {} ({cli} auth login --hostname {host})", why.trim())
+}
+
+/// The line for a host no CLI on PATH can read (T-810): on a board that
+/// merges through pull requests that is trouble, never "no forge".
+/// `candidates` in the order the probe asks them (`Remote::candidates`).
+pub fn missing_trouble(host: &str, candidates: &[Forge]) -> String {
+    let names: Vec<&str> = candidates.iter().map(|f| f.cli()).collect();
+    let first = candidates.first().map_or("gh", |f| f.cli());
+    format!(
+        "{host}: no {} on PATH (install {first}, then {first} auth login --hostname {host})",
+        names.join(" or ")
+    )
 }
 
 /// Why the forge is who merges a ticket with a PR bound (T-778), in

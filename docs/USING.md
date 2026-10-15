@@ -507,7 +507,9 @@ A ticket's pull requests are the ones its work made: a PR whose commits were mad
 worktree, whose branch is the ticket's own, or that a `gh pr create` run by the ticket's agent
 opened. A PR an agent only mentions is not the ticket's, and neither is one whose head is a commit
 the worktree started from or pulled in, such as another ticket's PR merged fast-forward just before
-this ticket's worktree was cut. Several PRs on one ticket is normal: a
+this ticket's worktree was cut. When a board switches to pull requests, the conversations its
+tickets held before are read once in the background for PRs their agents opened, and those PRs
+appear without news, wakes or moves. Several PRs on one ticket is normal: a
 follow-up fix after a merge reads as a new open PR until it lands.
 
 A PR merged on the forge reads merged here without a pull, squashed, rebased or not, and the
@@ -541,8 +543,9 @@ brief.
 mesimon reads the forge and never writes to it: no PR is opened, merged or commented on from the
 board, and no token is stored; the CLI's own sign-in is the only credential. The activity feed
 says when a PR binds, merges or its pipeline fails; `mesimon doctor` names the CLI that reads the
-repository and the board's Merge into setting; a repository the CLI cannot read shows on the
-board's advisory row.
+repository and the board's Merge into setting. A repository the CLI cannot read shows on the
+board's advisory row, and so does a host with no `gh` or `glab` on your PATH or none signed in,
+with the command that fixes it (`gh auth login --hostname github.com`).
 
 ## Sleeping idle agents
 

@@ -396,6 +396,8 @@ enum Msg {
     ForgeSampled(u64, crate::forge::Sample),
     /// A turn's end's read of its tickets' repositories landed (T-761).
     ForgeBurst(crate::forge::Sample),
+    /// The backfill's read of old transcripts landed (T-810).
+    Backfilled(Vec<crate::cost::Backfilled>),
     /// One ticket's own flags sample (T-678): a turn's end on a branch the
     /// train may take, and the number it started under; with the look at
     /// what its legs pushed (T-761) where a forge may read them.
@@ -863,6 +865,8 @@ pub struct Daemon {
     /// person's press on the push / pull lists (T-455). The periodic fetch
     /// never sets it: it stays the board's own branch.
     git_fetch_nested_wanted: bool,
+    /// The backfill of old transcripts' `pr create` URLs is out (T-810).
+    backfill_inflight: bool,
     /// The nested repos the in-flight pass is fetching, by census name.
     git_fetching_repos: std::collections::HashSet<String>,
     /// Each nested repo's fetches by mesimon, stamped into its `RepoSync`
@@ -1314,6 +1318,7 @@ pub fn run(paths: Paths) -> Result<()> {
         git_fetched_at_ms: 0,
         git_fetch_error: None,
         git_fetch_nested_wanted: false,
+        backfill_inflight: false,
         git_fetching_repos: std::collections::HashSet::new(),
         git_nested_fetch: HashMap::new(),
     };
@@ -1324,6 +1329,9 @@ pub fn run(paths: Paths) -> Result<()> {
     // The board's pull requests as the last pass read them (T-752): on the
     // first snapshot, and the baseline the first live pass diffs against.
     d.restore_forge(forge_file);
+    // A board that merges through pull requests reads its old transcripts
+    // once for the PRs they opened (T-810), off the writer.
+    d.queue_backfill();
     // The restored entries (T-418), judged once as any entry is (a gone
     // ticket, a seat someone took) and written back so the file is the list
     // again; each survivor is announced, so the feed says where the marks
@@ -1426,6 +1434,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::WorktreeFlags(..) => "worktree flags".into(),
             Msg::ForgeSampled(..) => "forge sampled".into(),
             Msg::ForgeBurst(..) => "forge burst".into(),
+            Msg::Backfilled(..) => "backfill".into(),
             Msg::TicketFlags(..) => "ticket flags".into(),
             Msg::TornDown { .. } => "torn down".into(),
             Msg::TurnProbed(..) => "turn probed".into(),
@@ -1472,6 +1481,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::WorktreeFlags(gen, flags) => d.on_worktree_flags(gen, flags),
             Msg::ForgeSampled(gen, sample) => d.on_forge_sampled(gen, sample),
             Msg::ForgeBurst(sample) => d.on_forge_burst(sample),
+            Msg::Backfilled(found) => d.on_backfilled(found),
             Msg::TicketFlags(ticket, seq, flags, local) => {
                 d.on_ticket_flags(ticket, seq, flags, local)
             }
@@ -8164,14 +8174,14 @@ impl Daemon {
         // The machine's tiers file, quarantined or from a newer build
         // (T-443): a standing advisory like any state file's.
         notices.extend(self.machine_tiers.notice.clone());
-        // A repository the forge CLI cannot read (T-739): the pull requests
-        // on the cards are as old as the last pass that answered.
-        if let Some(trouble) = self.forge.trouble() {
-            let hold =
-                if self.train.is_armed() { " ∙ the merge train holds its tickets" } else { "" };
+        // A host or repository no forge CLI reads (T-739, T-810): the pull
+        // requests on the cards are as old as the last pass that answered.
+        // Only a board that merges through them reads a forge; the train
+        // merges nothing there, so it holds nothing for it.
+        if let Some(trouble) = self.forge.trouble().filter(|_| self.through_prs()) {
             notices.push(Notice::new(
                 "forge_unreachable",
-                format!("pull requests not read — {trouble}{hold}"),
+                format!("pull requests not read — {trouble}"),
             ));
         }
         // A parked record of an archived ticket stays home (T-804); the
@@ -12520,6 +12530,7 @@ impl Daemon {
                 self.notices.extend(notices);
                 self.forge_barred = barred;
                 self.restore_forge(file);
+                self.queue_backfill();
             } else {
                 let gen = self.forge.gen.wrapping_add(1);
                 self.forge = crate::forge::State::default();
@@ -12529,6 +12540,49 @@ impl Daemon {
             self.persist_and_notify();
         }
         Response::Ok
+    }
+
+    /// The backfill (T-810): on a board that merges through pull requests,
+    /// the worktree tickets' transcripts the cost ledger passed before it
+    /// looked for `pr create` (`Cursor::backfilled`) are read once from
+    /// their start on a worker, streaming, and land as one
+    /// `Msg::Backfilled`. Nothing waits on it: a snapshot, a key and the
+    /// forge's pass go on, and a PR it binds is a baseline (`forge::State::
+    /// baseline`).
+    fn queue_backfill(&mut self) {
+        if !self.through_prs() || self.backfill_inflight || self.costs_barred {
+            return;
+        }
+        let tickets: std::collections::HashSet<ulid::Ulid> =
+            self.worktrees.keys().copied().collect();
+        let jobs = self.costs.backfill_jobs(&tickets);
+        if jobs.is_empty() {
+            return;
+        }
+        self.backfill_inflight = true;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::Backfilled(crate::cost::backfill(jobs)));
+        });
+    }
+
+    /// The backfill landed (T-810): its URLs join their tickets' `pr_urls`,
+    /// and, on a board still merging through pull requests, wait quiet for
+    /// the read that binds their PRs. O(urls) on the writer.
+    fn on_backfilled(&mut self, found: Vec<crate::cost::Backfilled>) {
+        self.backfill_inflight = false;
+        let read = found.len();
+        let added = self.costs.apply_backfill(found);
+        self.journal.line(&format!(
+            "backfill: {read} transcripts read, {} pull request urls found",
+            added.len()
+        ));
+        if self.through_prs() {
+            for (t, url) in added {
+                self.forge.quiet.entry(t).or_default().push(url);
+            }
+        }
+        self.persist_costs();
     }
 
     /// The board's worktree branches land through pull requests (T-810):
@@ -14017,14 +14071,18 @@ impl Daemon {
                 .iter()
                 .filter_map(|f| crate::forge::find_cli(*f, path.as_deref()))
                 .collect();
+            // No CLI on PATH reads it: trouble with its fix, asked again on
+            // the backoff in case one was installed (T-810).
             if candidates.is_empty() {
+                let missing =
+                    mesimon_core::forge::missing_trouble(&remote.host, remote.candidates());
                 self.forge.probes.insert(
                     remote.host.clone(),
                     crate::forge::HostProbe {
                         cli: None,
                         at: Instant::now(),
                         viewer: None,
-                        lost: None,
+                        lost: Some(missing),
                     },
                 );
                 continue;
@@ -14198,9 +14256,20 @@ impl Daemon {
             {
                 continue;
             }
-            let old = self.forge.sets.get(&t);
-            let set = crate::forge::carry(old.map(Vec::as_slice), set, &answered);
-            for line in crate::forge::delta(old.map(Vec::as_slice), &set) {
+            let old = self.forge.sets.get(&t).cloned();
+            let set = crate::forge::carry(old.as_deref(), set, &answered);
+            // A PR the backfill's URLs name binds as a baseline (T-810): read
+            // as the last read's too, so it is no opening, line or edge.
+            let quiet = self.forge.baseline(t, &set);
+            let old = old.map(|mut old| {
+                for p in quiet {
+                    if !old.iter().any(|o| mesimon_core::forge::same_url(&o.url, &p.url)) {
+                        old.push(p);
+                    }
+                }
+                old
+            });
+            for line in crate::forge::delta(old.as_deref(), &set) {
                 self.feed.board_outcome("forge", "pr", Some(t), &line);
             }
             // The edge since the last read: what a column arrives on, and
@@ -14211,7 +14280,7 @@ impl Daemon {
             let held = self.forge.held.get(&t).cloned().unwrap_or_default();
             self.forge.opens(t, &set);
             let unchanged = self.forge.sets.get(&t) == Some(&set);
-            let edge = self.forge.sets.get(&t).map(|old| crate::forge::edge(old, &set, &held));
+            let edge = old.as_ref().map(|old| crate::forge::edge(old, &set, &held));
             // A ticket's first read is a baseline, but a PR in it its reads
             // never held is an opening all the same (T-782): a worker's
             // first turn can open one before any read of its ticket, and

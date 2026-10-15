@@ -1078,43 +1078,35 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
                         false
                     }
                 });
+            // The advisory row's own words (T-810): on a board that merges
+            // through pull requests a host nothing reads is trouble.
             if found.is_empty() {
-                let want = match remote.known_forge() {
-                    Some(Forge::GitHub) => "gh",
-                    _ => "glab (GitLab) or gh (GitHub)",
-                };
-                records.push(
-                    rec(Level::Note, "forge", format!("{}: no {want} on PATH", remote.host))
-                        .advice(
-                            "With the forge's CLI installed and signed in, the board reads each \
-                         ticket's pull requests, their pipelines and where they were deployed, \
-                         through that CLI and reads only. Nothing is written to the forge.",
-                        ),
-                );
+                let words = mesimon_core::forge::missing_trouble(&remote.host, remote.candidates());
+                records.push(rec(Level::Warn, "forge", words).advice(
+                    "This board merges through pull requests, and reads them only through the \
+                     forge's CLI, signed in: it reads none for this repository until one is.",
+                ));
             } else if !signed {
+                // ASCII, as every doctor line is: gh marks its refusal with
+                // a glyph.
+                let why: String = refusals
+                    .join("; ")
+                    .chars()
+                    .filter(char::is_ascii)
+                    .collect::<String>()
+                    .trim()
+                    .to_string();
+                let forge = clis.first().map_or(Forge::GitHub, |c| c.forge);
                 records.push(
                     rec(
                         Level::Warn,
                         "forge",
-                        format!(
-                            "{}: no signed-in account ({})",
-                            remote.host,
-                            // ASCII, as every doctor line is: gh marks its
-                            // refusal with a glyph.
-                            mesimon_core::text::scrub_text(&refusals.join("; "))
-                                .chars()
-                                .filter(char::is_ascii)
-                                .collect::<String>()
-                                .trim()
-                        ),
+                        mesimon_core::forge::sign_in_trouble(forge, &remote.host, &why),
                     )
-                    .advice(format!(
-                        "The board reads pull requests only through a CLI signed in to {host}, \
-                         so it reads none for this repository. `{cli} auth login --hostname \
-                         {host}` signs one in.",
-                        host = remote.host,
-                        cli = found.first().map(String::as_str).unwrap_or("gh"),
-                    )),
+                    .advice(
+                        "The board reads pull requests only through a CLI signed in to the host, \
+                         so it reads none for this repository until one is.",
+                    ),
                 );
             } else {
                 records.push(
