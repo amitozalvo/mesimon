@@ -87,6 +87,11 @@ pub fn busy_every() -> Duration {
     seam_ms("MESIMON_FORGE_BUSY_MS", BUSY_EVERY)
 }
 
+/// `MESIMON_FORGE_BACKOFF_MS`: the backoff, a test seam.
+pub fn backoff() -> Duration {
+    seam_ms("MESIMON_FORGE_BACKOFF_MS", BACKOFF)
+}
+
 /// `gh` or `glab` on the captured shell `PATH`, else the daemon's own.
 pub fn find_cli(forge: Forge, captured_path: Option<&str>) -> Option<Cli> {
     let name = Cli::name(forge);
@@ -105,11 +110,22 @@ pub struct HostProbe {
     /// The signed-in account's username, where the CLI needs it on the
     /// command line (glab's `--author`).
     pub viewer: Option<String>,
+    /// Why a CLI that is there did not confirm its sign-in (T-798): no
+    /// network yet, a timeout, an account's stale token. The worker fills
+    /// it on every such failure; the writer keeps it only for a host the
+    /// board reads (`State::take_probe`), which is then asked again on the
+    /// backoff, said on the advisory row, and never a host nothing reads.
+    pub lost: Option<String>,
 }
 
 impl HostProbe {
+    /// No CLI was found for the host, and none was lost: nothing reads it.
+    pub fn reads_nothing(&self) -> bool {
+        self.cli.is_none() && self.lost.is_none()
+    }
+
     pub fn stale(&self) -> bool {
-        self.at.elapsed() >= PROBE_FOR
+        self.at.elapsed() >= if self.lost.is_some() { backoff() } else { PROBE_FOR }
     }
 }
 
@@ -711,10 +727,13 @@ pub fn list_probed(q: &mut Query, answered: &[(String, HostProbe)]) {
 }
 
 /// Which candidate is signed in to the host, in order; the viewer's
-/// username beside it where the CLI needs one.
+/// username beside it where the CLI needs one. Where none is, the first
+/// one's words.
 fn probe_host(host: &str, candidates: &[Cli]) -> HostProbe {
+    let mut lost = None;
     for c in candidates {
-        if run(&c.bin, &["auth", "status", "--hostname", host], None).is_err() {
+        if let Err(e) = signed_in(c, host) {
+            lost.get_or_insert(e);
             continue;
         }
         let viewer = match c.forge {
@@ -724,9 +743,23 @@ fn probe_host(host: &str, candidates: &[Cli]) -> HostProbe {
                 .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
                 .and_then(|v| v.get("username")?.as_str().map(str::to_string)),
         };
-        return HostProbe { cli: Some(c.clone()), at: Instant::now(), viewer };
+        return HostProbe { cli: Some(c.clone()), at: Instant::now(), viewer, lost: None };
     }
-    HostProbe { cli: None, at: Instant::now(), viewer: None }
+    HostProbe { cli: None, at: Instant::now(), viewer: None, lost }
+}
+
+/// `auth status` for the host. gh checks only the active account where it
+/// can (T-798): a second account's stale token fails the plain call, and a
+/// gh older than `--active` is asked without it.
+fn signed_in(c: &Cli, host: &str) -> Result<String, String> {
+    let status = ["auth", "status", "--hostname", host];
+    if c.forge == Forge::GitHub {
+        match run(&c.bin, &[&status[..], &["--active"]].concat(), None) {
+            Err(e) if e.contains("unknown flag") => {}
+            other => return other,
+        }
+    }
+    run(&c.bin, &status, None)
 }
 
 /// The signed-in account's PRs in one repository, every state.
@@ -1109,13 +1142,31 @@ impl State {
         self.probes.values().any(|p| p.cli.is_some())
     }
 
+    /// Takes a pass's probe of `host`. A failed sign-in is kept as lost
+    /// (T-798) only where the host had a CLI or was lost before, or holds a
+    /// ticket's PRs: there it is a forge that did not answer. Anywhere else
+    /// the host reads as one with no CLI at all, as a board with no `gh`
+    /// or `glab` does.
+    pub fn take_probe(&mut self, host: String, mut probe: HostProbe) {
+        if probe.cli.is_none() && probe.lost.is_some() {
+            let had = self.probes.get(&host).is_some_and(|p| !p.reads_nothing());
+            let holds = self.sets.values().flatten().any(|p| {
+                forge::repo_of_url(&p.url).is_some_and(|r| r.host.eq_ignore_ascii_case(&host))
+            });
+            if !had && !holds {
+                probe.lost = None;
+            }
+        }
+        self.probes.insert(host, probe);
+    }
+
     /// Whether a pass is due: not in flight, and the cadence (or the
     /// backoff after an error) passed.
     pub fn due(&self) -> bool {
         if self.inflight {
             return false;
         }
-        let wait = if self.errors.is_empty() { every() } else { every().max(BACKOFF) };
+        let wait = if self.errors.is_empty() { every() } else { every().max(backoff()) };
         self.last.is_none_or(|t| t.elapsed() >= wait)
     }
 
@@ -1158,11 +1209,12 @@ impl State {
     }
 
     /// No forge reads this board: every remote parsed to none, or every
-    /// host probed to no CLI.
+    /// host probed to no CLI. A host whose sign-in was lost is not one
+    /// (T-798): its tickets wait for it as for a repository that failed.
     fn none(&self) -> bool {
         !self.remotes.is_empty()
             && (self.remotes.values().all(Option::is_none)
-                || (!self.probes.is_empty() && self.probes.values().all(|p| p.cli.is_none())))
+                || (!self.probes.is_empty() && self.probes.values().all(HostProbe::reads_nothing)))
     }
 
     /// A read the ticket's turn's end waits for (T-773): its look is out
@@ -1231,9 +1283,17 @@ impl State {
         self.sets.get(&ticket).and_then(|s| forge::merged_at(s, repo_path, tip))
     }
 
-    /// The one line the advisory row and `doctor` say while a repository
-    /// cannot be read.
+    /// The one line the advisory row and `doctor` say while a host's
+    /// sign-in is lost (T-798) or a repository cannot be read.
     pub fn trouble(&self) -> Option<String> {
+        let lost = self
+            .probes
+            .iter()
+            .filter_map(|(host, p)| Some((host, p.lost.as_ref()?)))
+            .min_by(|a, b| a.0.cmp(b.0));
+        if let Some((host, why)) = lost {
+            return Some(format!("{host} sign-in: {why}"));
+        }
         let (key, why) = self.errors.first()?;
         // A key can come from a URL a session printed (T-795).
         Some(format!("{}: {why}", mesimon_core::text::scrub_text(key)))
@@ -2142,7 +2202,7 @@ mod tests {
         s.remotes.insert(PathBuf::from("/r"), Some(remote));
         s.probes.insert(
             "github.com".into(),
-            HostProbe { cli: Some(cli), at: Instant::now(), viewer: None },
+            HostProbe { cli: Some(cli), at: Instant::now(), viewer: None, lost: None },
         );
         assert!(!s.fresh(t, 5_000, &[]), "never read");
         // Read before the turn ended, on a basis that had pushed one ref.
@@ -2185,6 +2245,70 @@ mod tests {
         s.basis.insert(t, Basis { pushed: None, opened: Vec::new() });
         s.local.insert(t, Local { at_ms: 5_100, pushed: None, tail_opened: Some(false) });
         assert!(!s.fresh(t, 5_000, &[]));
+    }
+
+    /// A failed sign-in is a lost host only where the board reads one
+    /// (T-798): it had a CLI or holds PRs. Lost, it is asked again on the
+    /// backoff, named on the advisory row, and no board of no forge.
+    #[test]
+    fn a_failed_sign_in_is_lost_where_the_host_had_a_cli_or_holds_prs() {
+        let t = ulid::Ulid::new();
+        let cli = Cli { forge: Forge::GitHub, bin: PathBuf::from("/bin/gh") };
+        let failed = || HostProbe {
+            cli: None,
+            at: Instant::now(),
+            viewer: None,
+            lost: Some("error connecting to api.github.com".into()),
+        };
+        let board = || {
+            let mut s = State::default();
+            let remote = Remote { host: "github.com".into(), path: "o/r".into() };
+            s.remotes.insert(PathBuf::from("/r"), Some(remote));
+            s
+        };
+        // Never read, no PR: a CLI that is not signed in reads nothing, as
+        // no CLI at all does, and is believed as long.
+        let mut s = board();
+        s.take_probe("github.com".into(), failed());
+        assert!(s.probes["github.com"].reads_nothing());
+        assert!(s.fresh(t, 5_000, &[]), "no forge reads this board");
+        assert_eq!(s.trouble(), None);
+        // Holding a PR on the host: lost, said, and no board of no forge.
+        let mut s = board();
+        s.sets.insert(t, vec![pr(7, PrState::Open, Pipeline::Passed)]);
+        s.take_probe("github.com".into(), failed());
+        assert!(!s.probes["github.com"].reads_nothing());
+        assert!(!s.fresh(t, 5_000, &[]), "the train waits for the host");
+        assert_eq!(
+            s.trouble().as_deref(),
+            Some("github.com sign-in: error connecting to api.github.com")
+        );
+        // A host that had a CLI, and one lost before: lost again.
+        for before in [
+            HostProbe { cli: Some(cli.clone()), at: Instant::now(), viewer: None, lost: None },
+            failed(),
+        ] {
+            let mut s = board();
+            s.probes.insert("github.com".into(), before);
+            s.take_probe("github.com".into(), failed());
+            assert!(s.probes["github.com"].lost.is_some());
+        }
+        // Asked again on the backoff, never after six hours.
+        let mut lost = failed();
+        lost.at = Instant::now() - BACKOFF;
+        assert!(lost.stale());
+        let mut no_cli = lost.clone();
+        no_cli.lost = None;
+        assert!(!no_cli.stale(), "a host nothing reads is believed six hours");
+        // Signed in again: the trouble clears.
+        let mut s = board();
+        s.sets.insert(t, vec![pr(7, PrState::Open, Pipeline::Passed)]);
+        s.take_probe("github.com".into(), failed());
+        s.take_probe(
+            "github.com".into(),
+            HostProbe { cli: Some(cli), at: Instant::now(), viewer: None, lost: None },
+        );
+        assert_eq!(s.trouble(), None);
     }
 
     #[test]
@@ -2360,9 +2484,13 @@ mod tests {
                     cli: Some(glab.clone()),
                     at: Instant::now(),
                     viewer: Some("me".into()),
+                    lost: None,
                 },
             ),
-            ("github.com".to_string(), HostProbe { cli: None, at: Instant::now(), viewer: None }),
+            (
+                "github.com".to_string(),
+                HostProbe { cli: None, at: Instant::now(), viewer: None, lost: None },
+            ),
         ];
         list_probed(&mut q, &answered);
         let keys: Vec<String> = q.repos.iter().map(RepoQuery::key).collect();

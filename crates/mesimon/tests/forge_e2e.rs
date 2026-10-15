@@ -48,6 +48,10 @@
 //! whose merge commit's pipeline runs is read again within
 //! `MESIMON_FORGE_BUSY_MS`, and once it passes the minute's cadence is back.
 //!
+//! A lost sign-in is asked again on the backoff (T-798): a restart with
+//! `auth status` failing names the host on the advisory row, and once it
+//! answers a ticket opened meanwhile binds.
+//!
 //! The stub is the forge: `auth status` passes, `pr list` prints the file
 //! the test writes, `api …/check-runs` the merge commit's pipeline and
 //! `api …/deployments` its deployments, by sha where the test wrote one. No
@@ -880,6 +884,114 @@ fn the_prs_survive_a_restart_and_the_first_pass_lists() {
     });
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(feed_count(&h, "pr", id), 1, "the merge, and no PR said over");
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// A failed sign-in is a lost host (T-798): a daemon that starts before the
+/// network finds `gh auth status` failing on a host whose PRs it holds. The
+/// advisory row names the host, the cards keep their PRs, and the probe is
+/// asked again on the backoff, not six hours on: once the sign-in answers,
+/// a ticket opened meanwhile binds and the row clears.
+#[test]
+fn a_lost_sign_in_is_said_and_asked_again_on_the_backoff() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    let name = "forge_lost";
+    let (stub_dir, path_var) = gh_stub(name);
+    let gh = stub_dir.join("gh");
+    let offline = stub_dir.join("offline");
+    std::fs::write(
+        &gh,
+        GH_STUB.replacen(
+            "\"auth status\") exit 0 ;;",
+            "\"auth status\") [ -f \"$(dirname \"$0\")/offline\" ] && \
+             { echo 'error connecting to api.github.com' >&2; exit 1; }; exit 0 ;;",
+            1,
+        ),
+    )
+    .unwrap();
+    let prs_file = stub_dir.join("prs.json");
+    let log = stub_dir.join("calls.log");
+    write(&prs_file, "[]");
+    let Some(h) = Harness::boot_with_env(
+        name,
+        Some(STUB),
+        &[
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_FORGE_BACKOFF_MS", "3000"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs_file.display().to_string()),
+            ("MSMN_GH_LOG", &log.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    let auths = || {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.starts_with("auth status"))
+            .count()
+    };
+    let notice = |c: &mut TestClient| match c.request(Command::Snapshot) {
+        Response::Board { notices, .. } => {
+            notices.into_iter().find(|n| n.kind == "forge_unreachable").map(|n| n.text)
+        }
+        other => panic!("not a board: {other:?}"),
+    };
+    let repo = h.repo.clone();
+    init_repo(&repo, "a.txt", "hello\n");
+    git(&repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let mut c = h.client(name);
+    let (keep, _, keep_branch, _) = ready(&mut c, "keep");
+    write(&prs_file, &format!("[{}]", numbered_pr(42, &keep_branch, "0000", false)));
+    wait_until(Duration::from_secs(20), "the PR to bind", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == keep && p.number == 42)
+    });
+    let kept = h.paths.state_dir.join("forge.json");
+    wait_until(Duration::from_secs(10), "forge.json to hold the PR", || {
+        std::fs::read_to_string(&kept).is_ok_and(|t| t.contains("pull/42"))
+    });
+
+    // The daemon comes back before the network: the sign-in check fails.
+    drop(c);
+    h.restart_after(|| std::fs::write(&offline, "").unwrap());
+    let before = auths();
+    let mut c = h.client("forge_lost-2");
+    wait_until(Duration::from_secs(20), "the advisory row to name the host", || {
+        notice(&mut c).is_some_and(|t| t.contains("github.com sign-in: error connecting"))
+    });
+    assert!(auths() > before, "the probe was asked");
+    assert!(
+        prs_of(&mut c).iter().any(|p| p.ticket == keep && p.number == 42),
+        "the card keeps its PR"
+    );
+
+    // A ticket opened meanwhile, its PR on the forge: unseen while offline.
+    let (fresh, _, fresh_branch, path) = ready(&mut c, "fresh");
+    let tip = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
+    write(
+        &prs_file,
+        &format!(
+            "[{},{}]",
+            numbered_pr(42, &keep_branch, "0000", false),
+            numbered_pr(43, &fresh_branch, &tip, false)
+        ),
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(
+        !prs_of(&mut c).iter().any(|p| p.ticket == fresh),
+        "no host's list while its sign-in is lost"
+    );
+
+    // The network is back: the next probe, on the backoff, finds the CLI.
+    let _ = std::fs::remove_file(&offline);
+    wait_until(Duration::from_secs(20), "the ticket opened meanwhile to bind", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == fresh && p.number == 43)
+    });
+    assert_eq!(notice(&mut c), None, "the advisory row clears");
+    let _ = c.request(Command::Shutdown);
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
 

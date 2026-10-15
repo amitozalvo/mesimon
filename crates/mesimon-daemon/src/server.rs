@@ -13820,7 +13820,12 @@ impl Daemon {
             if candidates.is_empty() {
                 self.forge.probes.insert(
                     remote.host.clone(),
-                    crate::forge::HostProbe { cli: None, at: Instant::now(), viewer: None },
+                    crate::forge::HostProbe {
+                        cli: None,
+                        at: Instant::now(),
+                        viewer: None,
+                        lost: None,
+                    },
                 );
                 continue;
             }
@@ -13916,12 +13921,13 @@ impl Daemon {
     fn absorb_forge(&mut self, sample: crate::forge::Sample) {
         self.forge.last_ms = self.forge.last_ms.max(sample.at_ms);
         for (host, probe) in sample.probes {
-            self.forge.probes.insert(host, probe);
+            self.forge.take_probe(host, probe);
         }
         // A ticket the pass heard every repository of was read (T-795); one
         // with a repository that failed or was not listed was not, and
         // keeps its old PRs there, its last read's time and its basis. A
-        // host whose probe found no CLI is one nothing reads.
+        // host whose probe found no CLI is one nothing reads; one whose
+        // sign-in was lost is not (T-798).
         let answered: std::collections::HashSet<&str> =
             sample.repos.iter().filter(|r| r.error.is_none()).map(|r| r.path.as_str()).collect();
         let read: std::collections::HashSet<ulid::Ulid> = sample
@@ -13929,7 +13935,7 @@ impl Daemon {
             .keys()
             .filter(|t| {
                 crate::forge::read_whole(sample.repos_of.get(t), &sample.repos, |host| {
-                    self.forge.probes.get(host).is_some_and(|p| p.cli.is_none())
+                    self.forge.probes.get(host).is_some_and(crate::forge::HostProbe::reads_nothing)
                 })
             })
             .copied()

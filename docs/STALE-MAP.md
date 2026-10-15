@@ -25709,3 +25709,25 @@ repository; a cancelled merge-commit pipeline settles as failed; "newest merged 
 `updated_at`, not merge time; a `STALE` GitHub check reads passed and a merge commit's commit
 statuses are never read; one failing repository backs off the whole board's minute; a list
 capped at 100 drops an older bound PR; an SSH host alias is never a forge.
+
+## A lost forge sign-in is asked again on the backoff (T-798, 2026-10-15)
+
+Closes T-795's "a probe that fails (offline at start) is believed for 6 h". `probe_host` now
+keeps the CLI's words when a binary is there and `auth status` fails (`HostProbe::lost`), and
+the writer keeps them (`State::take_probe`) only for a host the board reads: one whose probe
+had a CLI or was lost before, or whose host a live ticket's PRs are on. Such a host is
+`stale()` after `backoff()` (5 min, `MESIMON_FORGE_BACKOFF_MS`) rather than `PROBE_FOR`, is
+the advisory row's first line (`trouble()`: `<host> sign-in: <the CLI's words>`), and is not
+"no forge" (`reads_nothing`, read by `none()` and `read_whole`'s closure), so its tickets wait
+for it as for a repository that failed, while `carry` keeps their known PRs on the cards.
+
+**Kept as it was:** a host with no `gh`/`glab`, or one whose CLI was never signed in and holds
+no PR, still reads as no forge and flows through the train.
+
+**`--active`:** gh's `auth status` fails when *any* account on the host has a stale token;
+`--active` checks the one gh uses. gh older than it (2.52 here) says `unknown flag: --active`,
+and the probe asks again without it. glab has no such flag.
+
+**Not done:** a first probe that fails on a board that has never held a PR on the host (no
+memory of a CLI across a restart, nothing on the cards) is still believed for 6 h: nothing
+local separates "offline" from "never signed in" without parsing the CLI's prose.
