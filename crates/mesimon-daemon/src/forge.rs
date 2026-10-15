@@ -5,8 +5,8 @@
 //! on a GitLab host, found on the captured shell `PATH` — for the pull
 //! requests the signed-in account authored in each repository the board's
 //! tickets touch: one list call per repository, never one per ticket. The
-//! worker then binds each PR to a ticket by a fact (the head commit in a
-//! worktree leg's reflog, the ticket's own branch, a URL a `pr create` of
+//! worker then binds each PR to a ticket by a fact (the head a commit a
+//! worktree leg wrote, the ticket's own branch, a URL a `pr create` of
 //! the ticket's own session printed) and hands the writer thread each
 //! ticket's set. Reads only: no `create`, no merge, no comment, no push,
 //! and the CLI's own update notifier and prompts are off, so nothing is
@@ -568,7 +568,7 @@ pub struct Local {
 /// sorted, `logs[i]` being `legs[i]`'s reflog. A push from the worktree
 /// moves one of them; a commit nobody pushed moves none. `None` when git
 /// could not list a leg's refs.
-pub fn pushed(legs: &[LegQuery], logs: &[Vec<String>]) -> Option<Vec<String>> {
+pub fn pushed(legs: &[LegQuery], logs: &[Vec<Moved>]) -> Option<Vec<String>> {
     let mut out = Vec::new();
     for (leg, log) in legs.iter().zip(logs) {
         if log.is_empty() {
@@ -586,7 +586,7 @@ pub fn pushed(legs: &[LegQuery], logs: &[Vec<String>]) -> Option<Vec<String>> {
             .output()
             .ok()
             .filter(|o| o.status.success())?;
-        let log: std::collections::HashSet<&str> = log.iter().map(String::as_str).collect();
+        let log: std::collections::HashSet<&str> = log.iter().map(|m| m.oid.as_str()).collect();
         for line in String::from_utf8_lossy(&o.stdout).lines() {
             let Some((oid, name)) = line.trim().split_once(' ') else { continue };
             if log.contains(oid) {
@@ -601,7 +601,7 @@ pub fn pushed(legs: &[LegQuery], logs: &[Vec<String>]) -> Option<Vec<String>> {
 
 /// The look's half (T-761), on a worker: the legs' pushes and the tails.
 pub fn look(legs: &[LegQuery], tails: &[(String, crate::cost::Cursor)], at_ms: u64) -> Local {
-    let logs: Vec<Vec<String>> = legs.iter().map(|l| reflog(&l.dir)).collect();
+    let logs: Vec<Vec<Moved>> = legs.iter().map(|l| reflog(&l.dir)).collect();
     Local { at_ms, pushed: pushed(legs, &logs), tail_opened: crate::cost::opened_in_tails(tails) }
 }
 
@@ -614,10 +614,10 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
     list_probed(&mut q, &out.probes);
     // What each ticket had pushed, read before any list (T-761): a push
     // after this read is one the lists may miss, so it must move the basis.
-    let mut logs: Vec<Vec<Vec<String>>> = Vec::new();
+    let mut logs: Vec<Vec<Vec<Moved>>> = Vec::new();
     for t in &q.tickets {
         out.repos_of.insert(t.ticket, t.repos.clone());
-        let legs: Vec<Vec<String>> = t.legs.iter().map(|l| reflog(&l.dir)).collect();
+        let legs: Vec<Vec<Moved>> = t.legs.iter().map(|l| reflog(&l.dir)).collect();
         out.basis
             .insert(t.ticket, Basis { pushed: pushed(&t.legs, &legs), opened: t.opened.clone() });
         logs.push(legs);
@@ -638,9 +638,20 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
         out.repos.push(RepoReport { key: r.key(), path: r.remote.path.clone(), error });
     }
     for (t, logs) in q.tickets.iter().zip(logs) {
+        // Only the commits a leg wrote (T-796): the one it was cut at and
+        // the ones a rebase, a pull or a reset brought in are the base's,
+        // and under a fast-forward merge one of those is a merged PR's head.
         let facts = Facts {
             branch: t.branch.clone(),
-            reflog: t.legs.iter().zip(logs).map(|(l, log)| (l.repo_paths.clone(), log)).collect(),
+            made: t
+                .legs
+                .iter()
+                .zip(logs)
+                .map(|(l, log)| {
+                    let wrote = log.into_iter().filter(|m| m.wrote).map(|m| m.oid).collect();
+                    (l.repo_paths.clone(), wrote)
+                })
+                .collect(),
             opened: t.opened.clone(),
         };
         let mut bound: Vec<Pr> = prs.iter().filter(|p| forge::binds(p, &facts)).cloned().collect();
@@ -1090,23 +1101,44 @@ fn deployments(r: &RepoQuery, oid: &str, envs: &[String]) -> Vec<String> {
     forge::deploy_order(out, envs)
 }
 
+/// One move of a worktree's HEAD, as its reflog records it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Moved {
+    /// The commit HEAD moved to.
+    pub oid: String,
+    /// The move wrote that commit (`forge::wrote_commit`): the worktree's
+    /// own work, not the commit it was cut at or one a pull brought in.
+    pub wrote: bool,
+}
+
 /// Every commit a worktree's HEAD pointed at, newest first; empty where
 /// there is no reflog (a reclaimed worktree, a directory that is gone).
-pub fn reflog(dir: &Path) -> Vec<String> {
+pub fn reflog(dir: &Path) -> Vec<Moved> {
     if !dir.is_dir() {
         return Vec::new();
     }
     let out = crate::git::git(dir)
-        .args(["--no-optional-locks", "reflog", "show", "--format=%H", "-n", REFLOG_CAP, "HEAD"])
+        .args([
+            "--no-optional-locks",
+            "reflog",
+            "show",
+            "--format=%H %gs",
+            "-n",
+            REFLOG_CAP,
+            "HEAD",
+        ])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output();
     match out {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
             .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(String::from)
+            .filter_map(|l| {
+                let (oid, subject) = l.split_once(' ').unwrap_or((l, ""));
+                let oid = oid.trim();
+                (!oid.is_empty())
+                    .then(|| Moved { oid: oid.to_string(), wrote: forge::wrote_commit(subject) })
+            })
             .collect(),
         _ => Vec::new(),
     }
@@ -2817,7 +2849,7 @@ mod tests {
             base_oid: String::new(),
         }];
         let now = |legs: &[LegQuery]| {
-            let logs: Vec<Vec<String>> = legs.iter().map(|l| reflog(&l.dir)).collect();
+            let logs: Vec<Vec<Moved>> = legs.iter().map(|l| reflog(&l.dir)).collect();
             pushed(legs, &logs)
         };
         assert_eq!(now(&legs), Some(Vec::new()), "nothing pushed");
@@ -3089,9 +3121,67 @@ mod tests {
         git(&["commit", "-qam", "two"]);
         let log = reflog(&dir);
         assert_eq!(log.len(), 2, "{log:?}");
-        assert!(log.iter().all(|o| o.len() == 40));
+        assert!(log.iter().all(|m| m.oid.len() == 40 && m.wrote));
         assert!(reflog(&dir.join("nope")).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-796: a worktree cut at the base's tip, which a fast-forward merged
+    /// MR named as its head, wrote none of the commits it was cut at or
+    /// rebased onto; the ones it committed and the rebase's picks it did.
+    #[test]
+    fn a_worktree_wrote_its_commits_and_never_its_cut_or_its_rebases_base() {
+        let root = std::env::temp_dir().join(format!("msmn-forge-wrote-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let git = |dir: &Path, args: &[&str]| -> String {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .stderr(Stdio::null())
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let repo = root.join("repo");
+        let wt = root.join("wt");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "their merged MR"]);
+        let cut = git(&repo, &["rev-parse", "HEAD"]);
+        git(&repo, &["worktree", "add", "-q", "-b", "msmn/T-1-x", wt.to_str().unwrap(), &cut]);
+        let written = |dir: &Path| -> Vec<String> {
+            reflog(dir).into_iter().filter(|m| m.wrote).map(|m| m.oid).collect()
+        };
+        assert!(!reflog(&wt).is_empty(), "the cut is in the reflog");
+        assert_eq!(written(&wt), Vec::<String>::new(), "a fresh worktree wrote nothing");
+        git(&wt, &["commit", "-q", "--allow-empty", "-m", "mine"]);
+        let mine = git(&wt, &["rev-parse", "HEAD"]);
+        assert_eq!(written(&wt), std::slice::from_ref(&mine));
+        // Another merge lands on the base and the worktree rebases onto it:
+        // the base's tip is the rebase's start, and its pick is new work.
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "their next MR"]);
+        let next = git(&repo, &["rev-parse", "main"]);
+        git(&wt, &["rebase", "-q", "--keep-empty", "main"]);
+        let picked = git(&wt, &["rev-parse", "HEAD"]);
+        let got = written(&wt);
+        assert!(got.contains(&mine) && got.contains(&picked), "{got:?}");
+        assert!(!got.contains(&cut) && !got.contains(&next), "{got:?}");
+        // A reset to the base and a fast-forward pull of it write nothing.
+        git(&wt, &["reset", "-q", "--hard", "main"]);
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "their third MR"]);
+        let third = git(&repo, &["rev-parse", "main"]);
+        git(&wt, &["merge", "-q", "--ff-only", "main"]);
+        assert_eq!(git(&wt, &["rev-parse", "HEAD"]), third);
+        assert!(!written(&wt).contains(&third));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

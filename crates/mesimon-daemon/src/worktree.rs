@@ -2117,7 +2117,14 @@ impl RepoFlags {
     /// forge's words and at its merge commit, whichever road read the merge
     /// first (T-780) — a patch-id against `origin/main` is the same landing
     /// the PR names. True when the leg changed.
+    ///
+    /// A leg with no work of its own lands nothing (T-796): its tip is the
+    /// commit it was cut at, which a fast-forward merged PR may name as its
+    /// head, and the git road reads such a branch unmerged too.
     pub fn fold_forge_merge(&mut self, pr: &mesimon_core::forge::Pr) -> bool {
+        if !self.touched() {
+            return false;
+        }
         let merged_in = format!("{} ({} {})", self.base, pr.forge.noun(), pr.label());
         let merged_oid =
             if pr.merge_oid.is_empty() { pr.head_oid.clone() } else { pr.merge_oid.clone() };
@@ -3946,6 +3953,11 @@ mod tests {
         assert_eq!((leg.merged_in.as_str(), leg.merged_oid.as_str()), ("main (MR !8)", "m8"));
         assert!(leg.merged);
         assert!(!leg.fold_forge_merge(&pr));
+        // T-796: a leg still at its cut lands nothing, though a PR merged
+        // fast-forward names that commit as its head.
+        let mut fresh = leg_flags("", "t1", "t1", 0, false, false);
+        assert!(!fresh.fold_forge_merge(&pr));
+        assert!(!fresh.merged && fresh.merged_in.is_empty());
     }
 
     /// T-786: !9 from the ticket's branch merged and named the leg; then !11

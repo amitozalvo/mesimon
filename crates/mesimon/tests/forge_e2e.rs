@@ -56,6 +56,10 @@
 //! merged one does, and a PR opened here and closed, or a `pr create` on a
 //! checkout ticket no forge read covers, holds no pipeline column.
 //!
+//! A ticket's PRs are the ones its worktree wrote (T-796): a ticket cut at
+//! a fast-forward merged MR's head binds nothing of it, and the MR's own
+//! ticket keeps it after the base took the merge.
+//!
 //! The stub is the forge: `auth status` passes, `pr list` prints the file
 //! the test writes, `api …/check-runs` and `api …/status` the merge
 //! commit's pipeline and `api …/deployments` its deployments, by sha where
@@ -109,6 +113,15 @@ esac
 
 /// A worktree ticket with a spawned agent and one commit on its branch.
 fn ready(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, PathBuf) {
+    let (id, sid, branch, path) = cut(c, title);
+    std::fs::write(path.join(format!("{title}.txt")), format!("{title}\n")).unwrap();
+    git(&path, &["add", "."]);
+    git(&path, &["commit", "-qm", title]);
+    (id, sid, branch, path)
+}
+
+/// A worktree ticket with a spawned agent, its branch as it was cut.
+fn cut(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, PathBuf) {
     let _ = c.request(Command::CreateTicket {
         column: "TODO".into(),
         title: title.into(),
@@ -135,9 +148,6 @@ fn ready(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, Pa
         c.board().sessions.iter().any(|s| s.ticket == id)
     });
     let sid = c.board().sessions.iter().find(|s| s.ticket == id).unwrap().id;
-    std::fs::write(path.join(format!("{title}.txt")), format!("{title}\n")).unwrap();
-    git(&path, &["add", "."]);
-    git(&path, &["commit", "-qm", title]);
     (id, sid, wt.branch, path)
 }
 
@@ -1112,6 +1122,7 @@ fn a_lost_sign_in_is_said_and_asked_again_on_the_backoff() {
 /// `<pipelines file>.jobs`. One MR's read (T-784) is `<MSMN_GLAB_MR>.<iid>`
 /// where the test wrote one, else an answer that reads as nothing.
 const GLAB_STUB: &str = r#"#!/bin/sh
+[ -n "$MSMN_GLAB_LOG" ] && echo "$*" >> "$MSMN_GLAB_LOG"
 case "$1 $2" in
   "auth status") exit 0 ;;
   "mr list") cat "$MSMN_GLAB_MRS" 2>/dev/null || echo '[]' ;;
@@ -3384,5 +3395,136 @@ fn a_merged_pr_whose_head_carries_the_tip_lands_and_one_that_does_not_holds_done
         other => panic!("DONE with the tip not landed: {other:?}"),
     }
     let _ = c.request(Command::KillSession { id: b_sid });
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// One MR merged by GitLab's fast-forward method, as `glab mr list` prints
+/// it: no merge commit and no squash, so its head is what landed.
+fn ff_merged_mr_json(iid: u64, branch: &str, head: &str) -> String {
+    format!(
+        r#"[{{"iid":{iid},"web_url":"https://gitlab.example.com/lab/api/-/merge_requests/{iid}","state":"merged",
+          "source_branch":"{branch}","sha":"{head}","merge_commit_sha":null,"squash_commit_sha":null,
+          "draft":false,"has_conflicts":false,"detailed_merge_status":"not_open","updated_at":"2026-10-15T08:00:00Z"}}]"#
+    )
+}
+
+/// How many `mr list` calls the stub has logged: one per pass here.
+fn lists(log: &Path) -> usize {
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.starts_with("mr list"))
+        .count()
+}
+
+/// T-796: under GitLab's fast-forward merge method a merged MR's head is
+/// the base's new tip, and a ticket cut after the merge starts there
+/// (T-779). Its worktree's HEAD reflog holds that head as the commit it was
+/// cut at, which is no work of its own: the MR binds the ticket whose
+/// worktree wrote the commit, not the one cut at it. The new ticket reads
+/// unmerged with no PR, and once it has a commit of its own `m` merges it.
+/// The MR's own ticket, bound by its reflog alone (the MR is from
+/// `fix/alpha`), keeps it after the base took the merge.
+#[test]
+fn a_ticket_cut_at_a_fast_forward_merge_binds_nothing_of_it() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    let stub_dir = std::env::temp_dir().join(format!("msmn-forge-cut-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&stub_dir);
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    let glab = stub_dir.join("glab");
+    std::fs::write(&glab, GLAB_STUB).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&glab, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mrs = stub_dir.join("mrs.json");
+    let log = stub_dir.join("glab.log");
+    write(&mrs, "[]");
+    let path_var = format!(
+        "{}:{}",
+        stub_dir.display(),
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+    );
+    let Some(h) = Harness::boot_with_env(
+        "forge-cut",
+        Some(STUB),
+        &[
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GLAB_MRS", &mrs.display().to_string()),
+            ("MSMN_GLAB_LOG", &log.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    let repo = h.repo.clone();
+    init_repo(&repo, "a.txt", "hello\n");
+    git(&repo, &["remote", "add", "origin", "https://gitlab.example.com/lab/api.git"]);
+    let mut c = h.client("forge-cut");
+
+    // alpha's commit went up as `fix/alpha` and !1 merged it fast-forward;
+    // a fetch took `origin/main` there and local main stayed behind.
+    let (alpha, _, _, alpha_path) = ready(&mut c, "alpha");
+    let head = git(&alpha_path, &["rev-parse", "HEAD"]).trim().to_string();
+    git(&repo, &["update-ref", "refs/remotes/origin/main", &head]);
+    write(&mrs, &ff_merged_mr_json(1, "fix/alpha", &head));
+    wait_until(Duration::from_secs(20), "!1 to bind alpha by its reflog", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == alpha && p.number == 1)
+    });
+
+    // beta is cut after the merge, at the fetched upstream: !1's head.
+    let (beta, beta_sid, _, beta_path) = cut(&mut c, "beta");
+    assert_eq!(git(&beta_path, &["rev-parse", "HEAD"]).trim(), head, "cut at the merge");
+    let since = lists(&log);
+    wait_until(Duration::from_secs(20), "two passes after beta's cut", || lists(&log) >= since + 2);
+    let beta_prs: Vec<PrItem> = prs_of(&mut c).into_iter().filter(|p| p.ticket == beta).collect();
+    assert!(beta_prs.is_empty(), "the cut is no work of beta's: {beta_prs:?}");
+    let row = wt_of(&mut c, beta).unwrap();
+    assert!(!row.merged, "beta reads unmerged: {row:?}");
+    match c.send(Principal::Agent { session: beta_sid }, Command::AgentGetTicket) {
+        Response::AgentTicket { ticket } => {
+            assert!(ticket.prs.is_empty(), "{:?}", ticket.prs);
+            assert_ne!(ticket.merge_state.as_deref(), Some("merged"));
+            let merge = ticket.merge.expect("a branch says who merges it");
+            assert_ne!(merge.by, "nobody", "{merge:?}");
+            assert_ne!(merge.by, "forge", "{merge:?}");
+        }
+        other => panic!("get_ticket: {other:?}"),
+    }
+    // alpha keeps its own MR with the base past it, landed in its words.
+    assert!(prs_of(&mut c).iter().any(|p| p.ticket == alpha && p.number == 1));
+    let row = wt_of(&mut c, alpha).unwrap();
+    assert!(row.merged && row.merged_in.contains("MR !1"), "alpha landed as !1: {row:?}");
+
+    // beta's first commit: no PR carries its merge, and `m` lands it.
+    std::fs::write(beta_path.join("beta.txt"), "beta\n").unwrap();
+    git(&beta_path, &["add", "."]);
+    git(&beta_path, &["commit", "-qm", "beta"]);
+    let since = lists(&log);
+    wait_until(Duration::from_secs(20), "two passes after beta's commit", || {
+        lists(&log) >= since + 2
+    });
+    assert!(!prs_of(&mut c).iter().any(|p| p.ticket == beta), "beta's commit binds nothing");
+    let _ = c.request(Command::KillSession { id: beta_sid });
+    wait_until(Duration::from_secs(15), "beta to go quiet", || {
+        c.board().sessions.iter().filter(|s| s.ticket == beta).all(|s| !s.state.has_pane())
+    });
+    let mut last = String::new();
+    wait_until(Duration::from_secs(20), "`m` to merge beta", || {
+        match c.request(Command::MergeTicket { id: beta }) {
+            Response::Merge { outcome: MergeOutcome::Merged, .. } => true,
+            Response::Merge { outcome: MergeOutcome::Refused, detail, .. } => {
+                assert!(!detail.contains("pull request"), "{detail}");
+                last = detail;
+                false
+            }
+            other => panic!("merge: {other:?} (last refusal: {last})"),
+        }
+    });
+    let tip = git(&beta_path, &["rev-parse", "HEAD"]).trim().to_string();
+    assert_eq!(git(&repo, &["rev-parse", "main"]).trim(), tip);
     let _ = std::fs::remove_dir_all(&stub_dir);
 }

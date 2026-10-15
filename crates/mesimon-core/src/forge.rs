@@ -13,11 +13,12 @@
 //! commands and feeds the answers in.
 //!
 //! **A ticket's PRs are the PRs its work made**, never the ones its agent
-//! mentioned: a PR binds by a fact — its head commit in the worktree's
-//! reflog, the ticket's own `msmn/` branch as its head, or its URL in the
-//! result of a `pr create` a session of the ticket ran — and only among the
-//! PRs the signed-in account authored, so a URL a script prints or a
-//! commit an agent fetched from a stranger's PR binds nothing.
+//! mentioned: a PR binds by a fact — its head a commit the worktree wrote
+//! (`wrote_commit` over its HEAD reflog), the ticket's own `msmn/` branch
+//! as its head, or its URL in the result of a `pr create` a session of the
+//! ticket ran — and only among the PRs the signed-in account authored, so a
+//! URL a script prints or a commit an agent fetched from a stranger's PR
+//! binds nothing.
 
 use serde_json::Value;
 
@@ -235,7 +236,8 @@ pub struct Pr {
     pub number: u64,
     pub url: String,
     pub state: PrState,
-    /// The head commit, what `made here` matches against the reflog.
+    /// The head commit, what `made here` matches against the commits the
+    /// worktree wrote.
     pub head_oid: String,
     pub head_ref: String,
     /// The commit the merge landed as, once merged: a squash's, a merge
@@ -836,16 +838,17 @@ pub fn ssh_config_hostname(out: &str) -> Option<String> {
 pub struct Facts {
     /// The ticket's own `msmn/` branch.
     pub branch: String,
-    /// Every commit a worktree leg's HEAD ever pointed at (its reflog),
-    /// beside every path a PR of the leg's repository may name, as the
-    /// remotes spell them: a fork's own and its upstream's (T-800).
-    pub reflog: Vec<(Vec<String>, Vec<String>)>,
+    /// Every commit a worktree leg wrote (the entries of its HEAD reflog
+    /// `wrote_commit` admits, T-796), beside every path a PR of the leg's
+    /// repository may name, as the remotes spell them: a fork's own and its
+    /// upstream's (T-800).
+    pub made: Vec<(Vec<String>, Vec<String>)>,
     /// URLs a `pr create` the ticket's sessions ran printed.
     pub opened: Vec<String>,
 }
 
 /// Does this PR belong to the ticket? A fact, never a mention: its head is
-/// a commit made in the ticket's worktree for that repository, its head is
+/// a commit the ticket's worktree wrote for that repository, its head is
 /// the ticket's own branch, or a session of the ticket opened it and the
 /// forge printed this URL back.
 pub fn binds(pr: &Pr, facts: &Facts) -> bool {
@@ -857,9 +860,43 @@ pub fn binds(pr: &Pr, facts: &Facts) -> bool {
     }
     !pr.head_oid.is_empty()
         && facts
-            .reflog
+            .made
             .iter()
             .any(|(repos, oids)| repos.contains(&pr.repo) && oids.contains(&pr.head_oid))
+}
+
+/// Did the HEAD move a reflog entry records write the commit it moved to
+/// (T-796)? `subject` is the entry's `%gs`, `<action>[ (<step>)]: <words>`.
+///
+/// A commit of any kind did (`commit`, `commit (amend)`, `commit (merge)`),
+/// and so did a merge commit, a cherry-pick, a revert, an `am` and a
+/// rebase's pick, reword, squash, fixup or edit. A move to a commit that
+/// already was did not: the cut (`git worktree add` records no words, then
+/// `reset: moving to HEAD`), a checkout or switch, a reset, a fast-forward
+/// (a merge's or a pull's `Fast-forward`, a rebase's or a cherry-pick's
+/// `fast-forward`), and a rebase's start, finish, abort and reset. Those
+/// commits are the base's, or the branch's already: under GitLab's
+/// fast-forward merge method a merged MR's head is the base's new tip, and
+/// a ticket cut there, or rebased onto it, wrote none of it. An action not
+/// named here reads as a commit, as every entry did before.
+pub fn wrote_commit(subject: &str) -> bool {
+    let (action, words) = match subject.split_once(": ") {
+        Some(pair) => pair,
+        None => (subject.trim_end().trim_end_matches(':'), ""),
+    };
+    let action = action.trim();
+    let verb = action.split_whitespace().next().unwrap_or_default();
+    if verb == "commit" {
+        return true;
+    }
+    if matches!(verb, "" | "checkout" | "reset") {
+        return false;
+    }
+    if let Some((_, step)) = action.strip_suffix(')').and_then(|a| a.rsplit_once(" (")) {
+        return !matches!(step, "start" | "finish" | "abort" | "reset");
+    }
+    let words = words.trim();
+    !(words.eq_ignore_ascii_case("fast-forward") || words.starts_with("Fast-forward ("))
 }
 
 /// Two URLs naming the same PR, a trailing slash or `.diff` aside.
@@ -1648,7 +1685,7 @@ mod tests {
     fn a_pr_binds_by_a_fact_and_never_by_a_mention() {
         let facts = Facts {
             branch: "msmn/T-12-x".into(),
-            reflog: vec![(vec!["o/r".into()], vec!["aaa".into(), "bbb".into()])],
+            made: vec![(vec!["o/r".into()], vec!["aaa".into(), "bbb".into()])],
             opened: vec!["https://gitlab.com/g/p/-/merge_requests/7/".into()],
         };
         assert!(binds(&pr("o/r", 1, PrState::Open, "bbb", 1), &facts), "made here");
@@ -1663,6 +1700,58 @@ mod tests {
         opened.url = "https://gitlab.com/g/p/-/merge_requests/7".into();
         assert!(binds(&opened, &facts), "opened here, a trailing slash aside");
         assert!(!binds(&pr("o/r", 9, PrState::Open, "nope", 1), &facts), "a mention binds nothing");
+    }
+
+    /// The subjects git 2.54 wrote to a worktree's HEAD reflog, each move a
+    /// worker makes there (T-796).
+    #[test]
+    fn a_reflog_entry_wrote_its_commit_only_where_git_made_one() {
+        let wrote = [
+            "commit (initial): root",
+            "commit: mine 1",
+            "commit: ",
+            "commit: fast-forward the cache",
+            "commit (amend): mine 1 amended",
+            "commit (merge): Merge branch 'main' into side",
+            "commit (cherry-pick): x",
+            "cherry-pick: cp me",
+            "revert: Revert \"cp me\"",
+            "am: z",
+            "merge origin/main: Merge made by the 'ort' strategy.",
+            "pull origin main: Merge made by the 'ort' strategy.",
+            "rebase (pick): mine 1 amended",
+            "rebase (pick): Fast-forward the cache",
+            "rebase (continue): side",
+            "rebase (reword): mine 2",
+            "rebase (squash): # This is a combination of 2 commits.",
+            "rebase (fixup): fx1",
+            "pull -q --rebase origin main (pick): mine 2",
+            "rebase: mine 3",
+        ];
+        for s in wrote {
+            assert!(wrote_commit(s), "{s}");
+        }
+        let moved = [
+            "",
+            "reset: moving to HEAD",
+            "reset: moving to origin/main",
+            "checkout: moving from msmn/T-1 to scratch",
+            "rebase (start): checkout origin/main",
+            "rebase -i (start): checkout HEAD~2",
+            "pull -q --rebase origin main (start): checkout adefc44118aa70fb6967173efde083f09160a3b4",
+            "rebase (finish): returning to refs/heads/msmn/T-1",
+            "rebase (abort): returning to refs/heads/msmn/T-1",
+            "rebase (reset): 'onto'",
+            "rebase: fast-forward",
+            "cherry-pick: fast-forward",
+            "merge origin/main: Fast-forward",
+            "merge origin/main: Fast-forward (no commit created; -m option ignored)",
+            "pull -q --ff-only origin main: Fast-forward",
+            "pull: Fast-forward",
+        ];
+        for s in moved {
+            assert!(!wrote_commit(s), "{s}");
+        }
     }
 
     #[test]
@@ -1713,10 +1802,10 @@ mod tests {
         // the upstream o/r, and either path names the repository.
         let fork: Vec<String> = vec!["me/r".into(), "o/r".into()];
         assert_eq!(merged_at(&landed, &fork, "a").map(|p| p.number), Some(1));
-        let facts = Facts { reflog: vec![(fork.clone(), vec!["a".into()])], ..Default::default() };
+        let facts = Facts { made: vec![(fork.clone(), vec!["a".into()])], ..Default::default() };
         assert!(binds(&landed[0], &facts), "a commit made in the fork binds the upstream's PR");
         let mine =
-            Facts { reflog: vec![(vec!["me/r".into()], vec!["a".into()])], ..Default::default() };
+            Facts { made: vec![(vec!["me/r".into()], vec!["a".into()])], ..Default::default() };
         assert!(!binds(&landed[0], &mine), "and only a path the leg's remotes name");
         let mut running = pr("o/r", 4, PrState::Open, "d", 40);
         running.pipeline = Pipeline::Running(String::new());

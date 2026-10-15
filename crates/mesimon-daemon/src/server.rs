@@ -9579,10 +9579,12 @@ impl Daemon {
                 return true;
             }
             // The forge's word (T-739), at the branch's tip as it stands: a
-            // merged head that is the tip, or carries it (T-799).
+            // merged head that is the tip, or carries it (T-799), where the
+            // branch has work of its own: a tip still at its cut lands
+            // nothing, whatever PR names it (T-796).
             if let Some(Some(_)) = self.forge.remotes.get(&leg.repo) {
                 let tip = worktree::branch_tip(&leg.repo, &b.branch);
-                if self.forge.merged_at(id, &leg.repo, &tip).is_some() {
+                if tip != leg.base_oid && self.forge.merged_at(id, &leg.repo, &tip).is_some() {
                     return true;
                 }
             }
@@ -14263,10 +14265,11 @@ impl Daemon {
     }
 
     /// The merged clause the forge adds to a ticket's legs (T-739): a leg
-    /// whose repository's newest PR in `set` is merged at the leg's tip, or
-    /// with a head that carries it (T-799), reads merged, landed as that
-    /// PR's merge commit — in the PR's words though the git road read it
-    /// merged first (T-780). True when a leg changed.
+    /// with work of its own (T-796) whose repository's newest PR in `set` is
+    /// merged at the leg's tip, or with a head that carries it (T-799),
+    /// reads merged, landed as that PR's merge commit — in the PR's words
+    /// though the git road read it merged first (T-780). True when a leg
+    /// changed.
     fn fold_set(&self, set: &[mesimon_core::forge::Pr], legs: &mut [worktree::RepoFlags]) -> bool {
         let mut changed = false;
         for leg in legs.iter_mut() {

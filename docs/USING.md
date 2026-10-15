@@ -498,7 +498,9 @@ where the page stops at three; Enter opens the one under the cursor. A terminal 
 
 A ticket's pull requests are the ones its work made: a PR whose commits were made in the ticket's
 worktree, whose branch is the ticket's own, or that a `gh pr create` run by the ticket's agent
-opened. A PR an agent only mentions is not the ticket's. Several PRs on one ticket is normal: a
+opened. A PR an agent only mentions is not the ticket's, and neither is one whose head is a commit
+the worktree started from or pulled in, such as another ticket's PR merged fast-forward just before
+this ticket's worktree was cut. Several PRs on one ticket is normal: a
 follow-up fix after a merge reads as a new open PR until it lands.
 
 A PR merged on the forge reads merged here without a pull, squashed, rebased or not, and the
