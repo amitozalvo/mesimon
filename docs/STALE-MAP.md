@@ -25649,3 +25649,63 @@ armed and reaches REVIEW, where this turn's end puts it"). The delivered wake's 
 unchanged: at delivery the turn has ended and the card moved. Tests:
 `automove::a_turn_in_flight_delivers_where_its_end_lands`, `crown_e2e`'s
 `the_crown_merges_where_the_train_will_not` step 2.
+
+## The fourth simplify pass, and the forge's bug hunt (T-795, 2026-10-15, "simplify")
+
+The author: "run simplify since last simplify run and also try to hunt for bugs or issues
+introduced especially with the github PR and gitlab MR integrations". Range `870c00ae..71b64b01`
+(everything since T-688, 142 commits). Four review angles (reuse, simplification, efficiency,
+altitude) and two bug hunts (the forge's daemon side; its core, wire and TUI side), each finding
+checked against the code before it was applied.
+
+**Applied, simplify.** The forge's `gh`/`glab` api calls through `RepoQuery::api`/`project`; one
+`failed_words`; `Edge::any` as `!= Default`; one parse of GitLab's pipelines answer;
+`State::pr_conflict` for `open_of`; `fold_set` under `forge_fold_legs` and `forge_lands_all`;
+`set_ticket_agg` for both writers of `wt_agg`; `launch_forge_burst`; `agent_allowed_columns`
+through `column_gate`; `Heard::land`; `PrItem::forge_kind`/`label` (the TUI spelled `!`/`MR` by
+hand four times); `Remote::candidates`, `Remote::key`; `Count::of_marks`;
+`Board::filing_refusal`; `State::remote`, `State::keep_tickets` (the forget missed
+`conflicted`); `Daemon::live_transcripts`; `forge::iso_ms` through `usage::rfc3339_ms`;
+`App::pr_mark`, `flash_running`/`flash_lit`, `pr_state_clauses`; the tour's toy applies the
+`Board`'s column methods and stamps `state_changed_at` in ms (it stamped seconds: practice
+agents read decades old). Dead: `State::cli_for`, `Row::is_task`, `typing_now`. Efficiency: the
+snapshot's held lines read the merge clause off the cached flags (`gate_with`), the burst checks
+its floor before building a query, an arrival reads its tip once.
+
+**Applied, bugs.** A forge read that did not hear every repository of a ticket reads nothing of
+it (`forge::read_whole`): before, a failed `pr list` stamped the ticket current with the PR its
+turn had just opened unbound, and the train fast-forwarded the branch
+(`forge_e2e::a_failed_read_after_a_push_holds_the_train` failed on the old code). `carry` keeps
+the old PRs of every repository that did not answer (failed, unlisted, a host no CLI reads),
+not only a failed one's, and an open PR whose pipeline read failed keeps the last one at the
+same head; `pipeline_of` reads an unread open PR `Unknown` where the fold would be green or
+none. Smaller: a PR's page is kept only as an `http(s)` address; a GitLab fast-forward merge
+without squash lands its head; `canceling` reads failed, `requested_changes` changes requested;
+GitLab environment names and project paths are percent-encoded; `pipeline failed` names the
+open PRs failing; `pr_urls` cuts a JSON-escaped newline; the forge advisory scrubs its key; the
+`news` fingerprint covers the job, conflicts, the review and deployments.
+
+**Skipped, and why.** Dropping `ForgeStatus.present`/`trouble` (unread, but a public wire
+struct the relay builds against). One `text_field` list (the three differ by mutability and by
+what a field is). `sanitize_environment` through `job_word` (they would agree, but the column's
+name is drawn, and `job_word` keeps box glyphs). The larger redesigns, each a ticket of its own:
+one `train::lane` → `Result<Lane, Skip>` behind `merge_by`, `train_takes` and
+`train_could_take`; one speaker per merge (the flags' `merged` or the forge's `merged !N`, never
+both, which removes T-757/T-769/T-782's dedupe clauses); one flags sample per turn end
+(`probe_turn` and `look_after_turn` each sample); a `MergeState` enum for the stringly
+`merge_word`; `forge::State`'s seven per-ticket maps as one struct; the pref arms stepping the
+layer they write (T-751's swap of `App::prefs`); one `Seen<K>` for the three unseen stores; one
+fenced child-process runner (`forge::run`, `gitstatus::fetch`, `modroad::run_bounded`); one
+remote ladder; `Pr::item` for the three projections of a PR; `get_ticket` reading each note once.
+
+**Found and left open** (the forge's, each needing a decision): a new worktree's HEAD reflog
+holds its cut commit, so under GitLab fast-forward merges a ticket cut right after a merge binds
+that MR and reads merged by the forge; `ticket_set` drops closed PRs, so `has_pr` (T-778's "open,
+merged or closed") never sees one, and an opened-here URL whose PR closed holds a
+`requires_pipeline` column at `pipeline not read`; a probe that fails (offline at start) is
+believed for 6 h and reads the host as having no CLI; a PR merged with a head past the local tip
+(a review-suggestion commit) never lands the leg; a fork-as-origin PR is keyed on the wrong
+repository; a cancelled merge-commit pipeline settles as failed; "newest merged PR" orders by
+`updated_at`, not merge time; a `STALE` GitHub check reads passed and a merge commit's commit
+statuses are never read; one failing repository backs off the whole board's minute; a list
+capped at 100 drops an older bound PR; an SSH host alias is never a forge.
