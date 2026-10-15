@@ -609,7 +609,7 @@ pub(super) fn render(
         }
     };
 
-    // ---- line 1: [glyph sp?][crown sp?][title][fill][wt][crown word | age]
+    // ---- line 1: [glyph sp?][crown sp?][title][fill][residue][wt][crown word | age]
     let wt_mark = worktree_mark(ticket, wt, tier == crate::glyphs::Tier::Ascii);
     let glyph_cells = if glyph.is_some() { 2 } else { 0 };
     // The crown (T-411). Its holder wears the mark before the title — the
@@ -820,6 +820,11 @@ pub(super) fn render(
         (None, None) => spans.push(Span::styled(title, title_style)),
     }
     spans.push(Span::raw(" ".repeat(fill)));
+    // The residue sits before the worktree mark (T-807), so the marks and
+    // the age keep the columns every other card's do.
+    if matches!(crown, CrownMark::Residue) {
+        spans.push(Span::styled(format!(" {crown_glyph}"), quiet_style));
+    }
     if let Some((m, tone)) = &wt_mark {
         // Trail/attn contexts demote the mark to the quiet tone with the row.
         let style = match tone {
@@ -847,13 +852,8 @@ pub(super) fn render(
         // stands where the age does, in the crown's tint.
         let ws = if trail || attn_card { quiet_style } else { theme.crown_text() };
         spans.push(Span::styled(format!(" {w}"), ws));
-    } else {
-        if matches!(crown, CrownMark::Residue) {
-            spans.push(Span::styled(format!(" {crown_glyph}"), quiet_style));
-        }
-        if let Some(a) = &age {
-            spans.push(Span::styled(format!(" {a:>3}"), quiet_style));
-        }
+    } else if let Some(a) = &age {
+        spans.push(Span::styled(format!(" {a:>3}"), quiet_style));
     }
     if let Some(count) = under {
         let from = BAR_WIDTH + 1;

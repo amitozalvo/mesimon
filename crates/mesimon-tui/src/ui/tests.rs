@@ -3301,6 +3301,15 @@ fn the_worktree_glyph_holds_one_column() {
     let cols: Vec<usize> = render(&app, 120, 30).iter().filter_map(|l| col(l)).collect();
     assert_eq!(cols.len(), 2);
     assert_eq!(cols[0], cols[1], "the merged and the clean mark sit in different columns");
+    // The crown's residue on one card (T-807) sits before the mark, never
+    // between it and the age, so the mark keeps its neighbour's column.
+    app.crown_residue.insert(ulid_n(3));
+    let rows = render(&app, 120, 30);
+    let crown = crate::glyphs::crown(crate::glyphs::Tier::Unicode);
+    assert!(rows.iter().any(|l| l.contains(crown)), "the residue is drawn");
+    let cols: Vec<usize> = rows.iter().filter_map(|l| col(l)).collect();
+    assert_eq!(cols.len(), 2);
+    assert_eq!(cols[0], cols[1], "the residue pushed its card's mark out of column");
 }
 
 /// Shift+Enter on a worktree ticket parks the spawn while the worktree is

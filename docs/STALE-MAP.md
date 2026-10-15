@@ -26189,3 +26189,11 @@ seen, held, rollback, order); the daemon's `a_batched_deploy_brings_every_merged
 production runs a commit carrying !13 alone, then !14's, then a rollback). No rig test: the
 crown hears the same words as before (`deployed to production !13`) on new occasions, and the
 rig has no forge.
+
+## The crown's residue sits before the worktree mark (T-807, 2026-10-15)
+
+A card the crown touched keeps a quiet crown mark until the cursor has rested on it (T-411's
+`CrownMark::Residue`). The mark was drawn between the worktree mark and the age, so that card's
+worktree glyph sat two cells left of every other card's. It is now drawn before the worktree
+mark (`[fill][residue][wt][editor][age]`), and the title gives up the cells as it did before.
+Test: `the_worktree_glyph_holds_one_column` gains the residue case.
