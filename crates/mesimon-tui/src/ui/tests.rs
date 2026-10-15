@@ -1731,7 +1731,10 @@ fn golden_column_agent_behaviour_120() {
     )
     .unwrap();
     let lines = render(&app, 120, 30);
-    assert!(lines.iter().any(|l| l.contains(" Mode ") && l.contains("inherit (auto)")), "{lines:?}");
+    assert!(
+        lines.iter().any(|l| l.contains(" Mode ") && l.contains("inherit (auto)")),
+        "{lines:?}"
+    );
     golden("column_agent_behaviour_120x30", &lines);
 }
 
@@ -1765,9 +1768,8 @@ fn golden_codex_column_agent_behaviour() {
         [(120, 30, "column_codex_agent_120x30"), (60, 20, "column_codex_agent_60x20")]
     {
         let lines = render(&app, width, height);
-        let row = |name: &str, value: &str| {
-            lines.iter().any(|l| l.contains(name) && l.contains(value))
-        };
+        let row =
+            |name: &str, value: &str| lines.iter().any(|l| l.contains(name) && l.contains(value));
         assert!(row("Codex sandbox", "workspace write"), "{lines:?}");
         assert!(row("Codex approvals", "on request"), "{lines:?}");
         assert!(!row(" Mode ", "inherit"), "{lines:?}");

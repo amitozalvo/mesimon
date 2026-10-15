@@ -13978,6 +13978,7 @@ impl Daemon {
             commit_pipelines: self.forge.commit_pipelines.clone(),
             deployed: self.forge.deployed.clone(),
             landed: self.forge.landed.clone(),
+            carried: self.forge.carried.clone(),
         })
     }
 
@@ -13985,13 +13986,15 @@ impl Daemon {
     /// feed says what moved in each set, the merged clause is folded into
     /// the flags, and the train and the reclaim get the same look the git
     /// sample gives them.
-    fn on_forge_sampled(&mut self, gen: u64, sample: crate::forge::Sample) {
+    fn on_forge_sampled(&mut self, gen: u64, mut sample: crate::forge::Sample) {
         self.forge.inflight = false;
         if gen != self.forge.gen {
             return;
         }
         self.forge.last = Some(Instant::now());
         self.forge_errors(&sample);
+        // The whole board's answers: what a deploy no longer runs goes.
+        self.forge.carried = std::mem::take(&mut sample.carried);
         self.absorb_forge(sample);
     }
 
@@ -14008,9 +14011,10 @@ impl Daemon {
 
     /// A turn's end's read landed (T-761): taken as a pass is, its
     /// repositories' errors alone replaced; the minute is not reset.
-    fn on_forge_burst(&mut self, sample: crate::forge::Sample) {
+    fn on_forge_burst(&mut self, mut sample: crate::forge::Sample) {
         self.forge.burst_inflight = false;
         self.forge_errors(&sample);
+        self.forge.carried.extend(std::mem::take(&mut sample.carried));
         self.absorb_forge(sample);
         // Owed while this one was out: asked now, or on the tick.
         self.queue_forge_burst();
@@ -14041,9 +14045,14 @@ impl Daemon {
         // A read begun since a turn's end answers it.
         self.forge.answer(read.iter(), sample.at_ms);
         // What the merged commits' reads taught, per PR (T-771): pipelines
-        // and the environments reached are kept, so a settled one costs no
-        // call on the next pass and an older PR keeps its own.
-        for pr in sample.sets.values().flatten() {
+        // are kept, so a settled one costs no call on the next pass and an
+        // older PR keeps its own; where each is deployed is this read's word
+        // (T-801), a rollback's included. A ticket a later read already
+        // answered keeps that one's, as its set does below.
+        let later = |t: &ulid::Ulid| self.forge.at_ms.get(t).is_some_and(|at| *at > sample.at_ms);
+        let taken: Vec<&mesimon_core::forge::Pr> =
+            sample.sets.iter().filter(|(t, _)| !later(t)).flat_map(|(_, set)| set).collect();
+        for pr in taken {
             if pr.state != mesimon_core::forge::PrState::Merged || pr.merge_oid.is_empty() {
                 continue;
             }
@@ -14051,11 +14060,10 @@ impl Daemon {
             if pr.pipeline != mesimon_core::forge::Pipeline::Unknown {
                 self.forge.commit_pipelines.insert(key.clone(), pr.pipeline.clone());
             }
-            let known = self.forge.deployed.entry(key).or_default();
-            for env in &pr.deployed {
-                if !known.contains(env) {
-                    known.push(env.clone());
-                }
+            if pr.deployed.is_empty() {
+                self.forge.deployed.remove(&key);
+            } else {
+                self.forge.deployed.insert(key, pr.deployed.clone());
             }
         }
         let mut changed = false;

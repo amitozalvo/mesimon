@@ -141,11 +141,8 @@ fn draw_table(
         return;
     }
     let at = slots.iter().position(|s| matches!(s, Slot::Row(i) if *i == idx)).unwrap_or(0);
-    let first = if slots.len() > room {
-        at.saturating_sub(room / 2).min(slots.len() - room)
-    } else {
-        0
-    };
+    let first =
+        if slots.len() > room { at.saturating_sub(room / 2).min(slots.len() - room) } else { 0 };
     let name_w = items.iter().map(|m| (m.label)(ctx).width()).max().unwrap_or(0);
     // Options line up within a section, as a table's columns do; across
     // sections they would push the widest choices past the frame.

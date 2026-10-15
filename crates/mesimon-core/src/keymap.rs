@@ -5044,12 +5044,16 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // The periodic fetch (T-739): off by default, since it writes
     // remote-tracking refs and promise 1 names it as the write a person
     // turns on. It is what lets a pull request merged on a forge read
-    // merged on the card (T-267) without a pull by hand.
+    // merged on the card (T-267) without a pull by hand, and a deploy of a
+    // later commit read as deploying every PR it carries (T-801), which git
+    // answers only for history a fetch brought.
     MenuItem {
         verb: Verb::FetchEvery,
         label: |_| "Fetch from the remote".into(),
         detail: |c| match c.fetch_every_word {
-            "off" => "only f in the push / pull view fetches".into(),
+            "off" => "only f in the push / pull view fetches ∙ a PR reads deployed only where \
+                      its own commit was"
+                .into(),
             _ => "remote-tracking refs only, never your branches ∙ a merged PR shows as merged"
                 .into(),
         },

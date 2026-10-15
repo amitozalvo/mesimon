@@ -224,13 +224,21 @@ pub struct Query {
     /// Merge commits' pipelines as earlier passes read them, by repository
     /// path and oid: a passed or failed one is not asked again.
     pub commit_pipelines: HashMap<(String, String), Pipeline>,
-    /// The environments each merge commit was seen reaching: a deployment
-    /// is permanent, so one is read until every wanted environment is in.
+    /// The environments each merge commit was deployed to as the last pass
+    /// read it (T-801): what stands where this pass cannot say otherwise.
     pub deployed: HashMap<(String, String), Vec<String>>,
     /// Each ticket's answers to "does this merged head carry this tip"
     /// (T-799), so a pass asks git or the forge only what moved.
     pub landed: HashMap<ulid::Ulid, HashMap<LandedKey, bool>>,
+    /// Git's answers to "does this deployed commit carry this merge commit"
+    /// (T-801), so a pass asks only what moved.
+    pub carried: HashMap<CarriedKey, bool>,
 }
+
+/// A repository path, a merge commit and a deployed commit: the key a "does
+/// the deployed commit carry the merge" answer is kept under (T-801). Both
+/// are commits, so the answer never changes.
+pub type CarriedKey = (String, String, String);
 
 /// What a pass saw change in a ticket's set (T-739): the edges a column's
 /// `Arrives here when` fires on, and the ones the crown hears (T-744). Read
@@ -256,9 +264,9 @@ pub struct Edge {
     /// the crown hears of a merge the worktree flags cannot say, the caller
     /// keeping them only then.
     pub landed: Vec<String>,
-    /// Environments the ticket reached since, as a whole (T-768): no PR
-    /// open, and every repository's newest merged PR's merge commit there.
-    /// One repository's progress is not the ticket's.
+    /// Environments the ticket reached since, as a whole (T-801): no PR
+    /// open, and every merged PR's merge commit deployed there. One PR's
+    /// progress is not the ticket's.
     pub deployed: Vec<String>,
     /// PRs, by label, whose merge commit reached an environment since, with
     /// the environment: what the crown hears, per PR, before the ticket
@@ -388,17 +396,19 @@ impl Edge {
     }
 }
 
-/// The environments a ticket's set has reached as a whole (T-768): none
-/// while a PR is open, else those every repository's newest merged PR's
-/// merge commit reached, an older merge there being in its history; an
-/// older PR's own deployments are its row's and the crown's (T-771).
+/// The environments a ticket's set has reached as a whole (T-801): none
+/// while a PR is open, else those every merged PR's merge commit is
+/// deployed to. A deploy of a later commit carries an earlier merge
+/// (`forge::deployed_after`), so a batched deploy brings every PR it holds;
+/// a closed PR waits for nothing (T-797). This replaced T-768's "each
+/// repository's newest merged PR", which took an older merge being in the
+/// newer one's history on trust.
 fn arrived_envs(set: &[Pr]) -> Vec<String> {
     if set.iter().any(|p| p.state.is_open()) {
         return Vec::new();
     }
-    // Newest by when it merged (T-800), never by the last comment.
-    let newest = forge::newest_merged(set);
-    let Some((first, rest)) = newest.split_first() else { return Vec::new() };
+    let merged: Vec<&Pr> = set.iter().filter(|p| p.state == PrState::Merged).collect();
+    let Some((first, rest)) = merged.split_first() else { return Vec::new() };
     first.deployed.iter().filter(|e| rest.iter().all(|p| p.deployed.contains(e))).cloned().collect()
 }
 
@@ -541,6 +551,9 @@ pub struct Sample {
     /// Each queried ticket's "does this merged head carry this tip" answers
     /// this pass stood on (T-799), kept or new: what the next pass is told.
     pub landed: HashMap<ulid::Ulid, HashMap<LandedKey, bool>>,
+    /// The "does this deployed commit carry this merge" answers this pass
+    /// stood on (T-801), kept or new.
+    pub carried: HashMap<CarriedKey, bool>,
 }
 
 /// The local facts a ticket's set was read on (T-761): what its legs had
@@ -637,6 +650,11 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
         };
         out.repos.push(RepoReport { key: r.key(), path: r.remote.path.clone(), error });
     }
+    // What each repository's wanted environments run, read once a pass and
+    // only where a set holds a merged PR there (T-801), and git's answers
+    // on what a deployed commit carries.
+    let mut env_reads: HashMap<String, Vec<forge::EnvRead>> = HashMap::new();
+    let mut carried: HashMap<CarriedKey, bool> = HashMap::new();
     for (t, logs) in q.tickets.iter().zip(logs) {
         // Only the commits a leg wrote (T-796): the one it was cut at and
         // the ones a rebase, a pull or a reset brought in are the base's,
@@ -705,9 +723,23 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
                 Some(r) => commit_pipeline(r, &pr.merge_oid),
                 None => Pipeline::Unknown,
             },
-            |pr| match q.repos.iter().find(|r| r.remote.path == pr.repo) {
-                Some(r) => deployments(r, &pr.merge_oid, &q.envs),
-                None => Vec::new(),
+            |pr| {
+                env_reads
+                    .entry(pr.repo.clone())
+                    .or_insert_with(|| match q.repos.iter().find(|r| r.remote.path == pr.repo) {
+                        Some(r) => environments(r, &q.envs),
+                        None => Vec::new(),
+                    })
+                    .clone()
+            },
+            |pr, latest| {
+                let key = (pr.repo.clone(), pr.merge_oid.clone(), latest.to_string());
+                let answer = q.carried.get(&key).copied().or_else(|| {
+                    let r = q.repos.iter().find(|r| r.remote.path == pr.repo)?;
+                    carries_here(&r.dir, latest, &pr.merge_oid)
+                })?;
+                carried.insert(key, answer);
+                Some(answer)
             },
         );
         let landed = landed_reads(&mut set, t, q.landed.get(&t.ticket), |pr, tip| {
@@ -716,25 +748,32 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
         out.landed.insert(t.ticket, landed);
         out.sets.insert(t.ticket, set);
     }
+    out.carried = carried;
     out
 }
 
 /// Each merged PR of a set, per PR (T-771): its merge commit's pipeline
-/// (the build-and-deploy run on main) and the environments it reached, what
-/// earlier passes learned kept and read again only while unsettled. A
-/// pipeline is read until it passes, or until it has failed or been
+/// (the build-and-deploy run on main) and the environments it is deployed
+/// to. A pipeline is read until it passes, or until it has failed or been
 /// cancelled for `SUPERSEDED_READ_MS` after its merge (T-800): a run is
-/// retried, and a retried green one must not stay failed. Deployments are
-/// read until every wanted environment is in. A merge commit a newer one
-/// of the same repository superseded — newer by when it merged — is read
-/// only for `SUPERSEDED_READ_MS` after its merge, so a ticket's old PRs
-/// cost nothing once the forge has moved on.
+/// retried, and a retried green one must not stay failed. A merge commit a
+/// newer one of the same repository superseded — newer by when it merged —
+/// has its pipeline read only for `SUPERSEDED_READ_MS` after its merge, so
+/// a ticket's old PRs cost nothing once the forge has moved on.
+///
+/// Deployments are every merged PR's, on every pass a column asks for one
+/// (T-801): `environments` names what each wanted environment of the PR's
+/// repository runs, read once a pass for the repository, and `carries`
+/// whether a deployed commit carries the PR's merge commit, asked of git
+/// here (`forge::deployed_after`). A batched deploy can come days after an
+/// old PR merged, and a rollback can take one back, so no PR settles.
 pub fn merged_reads(
     set: &mut [Pr],
     q: &Query,
     now_ms: u64,
     mut pipeline: impl FnMut(&Pr) -> Pipeline,
-    mut deployments: impl FnMut(&Pr) -> Vec<String>,
+    mut environments: impl FnMut(&Pr) -> Vec<forge::EnvRead>,
+    mut carries: impl FnMut(&Pr, &str) -> Option<bool>,
 ) {
     let newest: Vec<(String, u64)> =
         forge::newest_merged(set).iter().map(|p| (p.repo.clone(), p.number)).collect();
@@ -754,15 +793,14 @@ pub fn merged_reads(
             Some(p) => p.clone(),
             None => pr.pipeline.clone(),
         };
-        let mut known = q.deployed.get(&key).cloned().unwrap_or_default();
-        if live && q.envs.iter().any(|e| !known.contains(e)) {
-            for env in deployments(pr) {
-                if !known.contains(&env) {
-                    known.push(env);
-                }
-            }
+        let was = q.deployed.get(&key).cloned().unwrap_or_default();
+        if q.envs.is_empty() {
+            pr.deployed = was;
+            continue;
         }
-        pr.deployed = known;
+        let reads = environments(pr);
+        let now = forge::deployed_after(&pr.merge_oid, &was, &reads, |latest| carries(pr, latest));
+        pr.deployed = now;
     }
 }
 
@@ -1053,52 +1091,64 @@ fn commit_pipeline(r: &RepoQuery, oid: &str) -> Pipeline {
     }
 }
 
-/// The environments, of those wanted, a merge commit reached: GitHub's
-/// deployments by sha with a success status, GitLab's successful
-/// deployments of each wanted environment naming the sha. In the order they
-/// happened (`forge::deploy_order`, T-784).
-fn deployments(r: &RepoQuery, oid: &str, envs: &[String]) -> Vec<String> {
-    let mut out: Vec<(String, u64)> = Vec::new();
-    match r.cli.forge {
-        Forge::GitHub => {
-            let Ok(list) =
-                r.api(&format!("repos/{}/deployments?sha={oid}&per_page=30", r.remote.path))
-            else {
-                return Vec::new();
-            };
-            for (id, env) in forge::parse_gh_deployments(&list) {
-                if !envs.contains(&env) || out.iter().any(|(e, _)| *e == env) {
-                    continue;
-                }
-                // Every status, not the newest alone: a success a newer
-                // deployment made `inactive` is still one (T-800).
-                let path =
-                    format!("repos/{}/deployments/{id}/statuses?per_page=100", r.remote.path);
-                if let Ok(status) = r.api(&path) {
-                    if let Some(at) = forge::parse_gh_deployment_success(&status) {
-                        out.push((env, at));
-                    }
-                }
-            }
-        }
-        Forge::GitLab => {
-            let project = r.project();
-            for env in envs {
+/// How many of an environment's deployments one read lists: GitLab's
+/// successes, among which the one that finished last runs there.
+const GITLAB_DEPLOYS_PAGE: usize = 20;
+/// How many of an environment's newest GitHub deployments are walked for
+/// the first that succeeded, one status read each.
+const GH_DEPLOYS_WALK: usize = 10;
+
+/// What each wanted environment of a repository runs (T-801), one read per
+/// environment for the whole pass rather than one per merge commit. An
+/// environment whose read failed is left out: this pass knows nothing of
+/// it, and what its PRs held stands.
+fn environments(r: &RepoQuery, envs: &[String]) -> Vec<forge::EnvRead> {
+    envs.iter()
+        .filter_map(|env| match r.cli.forge {
+            Forge::GitHub => gh_environment(r, env),
+            Forge::GitLab => {
                 // A name may hold a space, a `+` or a `#` (T-795).
                 let path = format!(
-                    "projects/{project}/deployments?environment={}&status=success\
-                     &order_by=created_at&sort=desc&per_page=20",
+                    "projects/{}/deployments?environment={}&status=success\
+                     &order_by=created_at&sort=desc&per_page={GITLAB_DEPLOYS_PAGE}",
+                    r.project(),
                     query_word(env)
                 );
-                if let Ok(list) = r.api(&path) {
-                    if let Some(at) = forge::parse_gitlab_deployed(&list, oid) {
-                        out.push((env.clone(), at));
-                    }
-                }
+                forge::parse_gitlab_env(env, &r.api(&path).ok()?)
             }
+        })
+        .collect()
+}
+
+/// A GitHub environment's latest successful deployment: its deployments
+/// newest first, and the first whose statuses hold a success. Any success
+/// counts, not the newest status alone (T-800): GitHub marks a deployment
+/// `inactive` once a newer one succeeds. A status read that fails leaves
+/// the environment unread, never an older deployment read as the latest,
+/// which would read a merge it lacks as a rollback.
+fn gh_environment(r: &RepoQuery, env: &str) -> Option<forge::EnvRead> {
+    let path = format!(
+        "repos/{}/deployments?environment={}&per_page={GH_DEPLOYS_WALK}",
+        r.remote.path,
+        query_word(env)
+    );
+    let list = r.api(&path).ok()?;
+    let mut read = forge::EnvRead { env: env.to_string(), ..forge::EnvRead::default() };
+    for (id, named, sha) in forge::parse_gh_deployments(&list) {
+        if named != env || sha.is_empty() {
+            continue;
+        }
+        let status = r
+            .api(&format!("repos/{}/deployments/{id}/statuses?per_page=100", r.remote.path))
+            .ok()?;
+        if let Some(at) = forge::parse_gh_deployment_success(&status) {
+            read.latest = sha.clone();
+            read.at_ms = at;
+            read.seen.push(sha);
+            break;
         }
     }
-    forge::deploy_order(out, envs)
+    Some(read)
 }
 
 /// One move of a worktree's HEAD, as its reflog records it.
@@ -1368,12 +1418,18 @@ pub struct State {
     /// Merge commits' pipelines as last read, by repository path and oid
     /// (T-771): settled once passed or failed.
     pub commit_pipelines: HashMap<(String, String), Pipeline>,
-    /// The environments each merge commit was seen reaching.
+    /// The environments each merge commit was deployed to as last read
+    /// (T-801): a rollback takes one away, so it is the last read's word,
+    /// never a sum of every read's.
     pub deployed: HashMap<(String, String), Vec<String>>,
     /// Each ticket's answers to "does this merged head carry this tip"
     /// (T-799), as its last read stood on them; a carried tip is also on
     /// its PR in `forge.json`, which seeds this after a restart.
     pub landed: HashMap<ulid::Ulid, HashMap<LandedKey, bool>>,
+    /// Git's answers to "does this deployed commit carry this merge commit"
+    /// (T-801): the minute's pass's replace them, a burst's add to them.
+    /// Memory only: a restart asks git again, which is cheap.
+    pub carried: HashMap<CarriedKey, bool>,
     pub last: Option<Instant>,
     /// Unix ms of the last pass that answered, for the snapshot.
     pub last_ms: u64,
@@ -2054,9 +2110,20 @@ mod tests {
         assert!(!edge(&[], &[]).any());
     }
 
+    /// An environment read: `env` runs `latest`, seen deployed alone.
+    fn runs(env: &str, latest: &str) -> forge::EnvRead {
+        forge::EnvRead {
+            env: env.into(),
+            latest: latest.into(),
+            at_ms: 0,
+            seen: vec![latest.to_string()],
+        }
+    }
+
     /// T-771: two merged PRs on one ticket keep each its own merge commit's
     /// pipeline and deployments; the newer one's reads do not clear the
-    /// older one's, and a settled, covered PR is never read again.
+    /// older one's, and a settled PR's pipeline is never read again. Every
+    /// merged PR's deployments are judged on every pass (T-801).
     #[test]
     fn each_merged_pr_keeps_its_own_pipeline_and_deployments() {
         let merged = |number: u64, oid: &str, updated_ms: u64| {
@@ -2085,16 +2152,20 @@ mod tests {
             },
             |p| {
                 deploys.push(p.merge_oid.clone());
-                vec!["staging".into()]
+                // Staging runs m2; production's read failed.
+                vec![runs("staging", "m2")]
             },
+            // Neither commit is here: git cannot say.
+            |_, _| None,
         );
-        assert_eq!((asked, deploys), (vec!["m2".to_string()], vec!["m2".to_string()]));
+        assert_eq!(asked, ["m2"], "a passed pipeline is settled");
+        assert_eq!(deploys, ["m2", "m1"], "every merged PR's deployments are judged");
         assert_eq!(
             (&set[0].pipeline, &set[0].deployed[..]),
             (&Pipeline::Running(String::new()), &["staging".to_string()][..])
         );
         assert_eq!(set[1].pipeline, Pipeline::Passed, "the older PR keeps its own");
-        assert_eq!(set[1].deployed, ["staging", "production"]);
+        assert_eq!(set[1].deployed, ["staging", "production"], "what git cannot undo stands");
 
         // An unsettled older PR is read while its merge is recent, and keeps
         // what was read once the day is past; a failed read is no reading.
@@ -2111,6 +2182,7 @@ mod tests {
                 Pipeline::Unknown
             },
             |_| Vec::new(),
+            |_, _| None,
         );
         assert_eq!(asked, 2);
         assert_eq!(
@@ -2118,6 +2190,7 @@ mod tests {
             Pipeline::Running(String::new()),
             "an unanswered call keeps the last read"
         );
+        assert_eq!(set[1].deployed, ["staging"], "no environment read: what was stands");
         let mut set = [merged(2, "m2", now - 1000), merged(1, "m1", now - SUPERSEDED_READ_MS)];
         let asked = std::cell::RefCell::new(Vec::<String>::new());
         merged_reads(
@@ -2128,14 +2201,17 @@ mod tests {
                 asked.borrow_mut().push(p.merge_oid.clone());
                 Pipeline::Passed
             },
-            |p| {
-                asked.borrow_mut().push(p.merge_oid.clone());
-                Vec::new()
-            },
+            |_| Vec::new(),
+            |_, _| None,
         );
-        assert_eq!(*asked.borrow(), ["m2", "m2"], "a superseded day-old merge is not read");
+        assert_eq!(*asked.borrow(), ["m2"], "a superseded day-old merge's pipeline is not read");
         assert_eq!(set[1].pipeline, Pipeline::Running(String::new()));
         assert_eq!(set[1].deployed, ["staging"]);
+        // No column waits for a deployment: nothing is read, nothing drops.
+        let quiet = Query { envs: Vec::new(), ..q.clone() };
+        let mut set = [merged(1, "m1", now - 2000)];
+        merged_reads(&mut set, &quiet, now, |_| Pipeline::Passed, |_| panic!("read"), |_, _| None);
+        assert_eq!(set[0].deployed, ["staging"]);
 
         // The newer PR reaching an environment the older one stands in is
         // news; the older one's standing deployment is not said again.
@@ -2151,6 +2227,80 @@ mod tests {
         assert_eq!(e.deployed, ["staging"]);
         assert_eq!(e.news(&new), ["deployed to staging !2"]);
         assert!(edge(&new, &new).deployed.is_empty());
+    }
+
+    /// T-801, forge lab run 4: !13 and !15 merged and were never deployed
+    /// by their own pipelines; production then ran !14's merge commit, which
+    /// carries both. Each PR reads deployed, the crown hears each, and the
+    /// ticket arrives. Where the history is not here only the exact commit
+    /// counts; a rollback takes production back off both, and nothing moves
+    /// the ticket out.
+    #[test]
+    fn a_batched_deploy_brings_every_merged_pr_it_carries() {
+        let merged = |number: u64, oid: &str| {
+            let mut p = pr(number, PrState::Merged, Pipeline::Waiting("deploy:production".into()));
+            p.forge = Forge::GitLab;
+            p.merge_oid = oid.into();
+            p.merged_ms = number;
+            p.deployed = vec!["staging".into()];
+            p
+        };
+        let key = |oid: &str| ("o/r".to_string(), oid.to_string());
+        let mut q =
+            Query { envs: vec!["staging".into(), "production".into()], ..Default::default() };
+        q.deployed.insert(key("e1b"), vec!["staging".into()]);
+        q.deployed.insert(key("4e1"), vec!["staging".into()]);
+        let old = [merged(15, "4e1"), merged(13, "e1b")];
+        // ddc carries both merges; staging still runs !15's.
+        let history = |merge: &str, latest: &str| match (merge, latest) {
+            ("e1b" | "4e1", "ddc") | ("e1b", "4e1") => Some(true),
+            (_, "old") => Some(false),
+            _ => None,
+        };
+        let read = |q: &Query, prod: &str, git: &dyn Fn(&str, &str) -> Option<bool>| {
+            let mut set = old.clone();
+            merged_reads(
+                &mut set,
+                q,
+                0,
+                |p| p.pipeline.clone(),
+                |_| vec![runs("staging", "4e1"), runs("production", prod)],
+                |p, latest| git(&p.merge_oid, latest),
+            );
+            set
+        };
+        let new = read(&q, "ddc", &history);
+        assert_eq!(new[0].deployed, ["staging", "production"]);
+        assert_eq!(new[1].deployed, ["staging", "production"], "!13 by ancestry");
+        assert_eq!(new[1].pipeline, old[1].pipeline, "a waiting job is never read as passed");
+        let e = edge(&old, &new);
+        assert_eq!(e.deployed, ["production"], "every merged PR is there");
+        assert_eq!(e.news(&new), ["deployed to production !15", "deployed to production !13"]);
+
+        // The history not fetched: only the exact commit counts.
+        let none = |_: &str, _: &str| -> Option<bool> { None };
+        let unfetched = read(&q, "ddc", &none);
+        assert!(unfetched.iter().all(|p| p.deployed == ["staging"]), "{unfetched:?}");
+        assert!(edge(&old, &unfetched).deployed.is_empty());
+        // One PR there and one not: no arrival, the one is heard.
+        let only = |m: &str, l: &str| (m == "e1b" && l == "ddc").then_some(true);
+        let half = read(&q, "ddc", &only);
+        let e = edge(&old, &half);
+        assert!(e.deployed.is_empty(), "!15 is not on production");
+        assert_eq!(e.news(&half), ["deployed to production !13"]);
+
+        // A rollback: production runs a commit carrying neither.
+        for p in &new {
+            q.deployed.insert(key(&p.merge_oid), p.deployed.clone());
+        }
+        let back = read(&q, "old", &history);
+        assert!(back.iter().all(|p| p.deployed == ["staging"]), "{back:?}");
+        let e = edge(&new, &back);
+        assert!(e.deployed.is_empty() && e.reached.is_empty(), "a lost deploy is no edge: {e:?}");
+        assert!(!e.any(), "nothing moves the card back");
+        // Production deploys it again: heard again, the ticket arrives again.
+        let again = edge(&back, &new);
+        assert_eq!(again.deployed, ["production"]);
     }
 
     /// T-800: a merge commit's failure or cancel is read again while its
@@ -2172,10 +2322,10 @@ mod tests {
         for last in [Pipeline::Failed("deploy".into()), Pipeline::Cancelled(String::new())] {
             q.commit_pipelines.insert(key("m1"), last.clone());
             let mut set = [merged(1, "m1", now - 60_000, now - 60_000)];
-            merged_reads(&mut set, &q, now, |_| Pipeline::Passed, |_| Vec::new());
+            merged_reads(&mut set, &q, now, |_| Pipeline::Passed, |_| Vec::new(), |_, _| None);
             assert_eq!(set[0].pipeline, Pipeline::Passed, "{last:?} retried green reads green");
             let mut set = [merged(1, "m1", now - 60_000, now - 60_000)];
-            merged_reads(&mut set, &q, now, |_| Pipeline::Unknown, |_| Vec::new());
+            merged_reads(&mut set, &q, now, |_| Pipeline::Unknown, |_| Vec::new(), |_, _| None);
             assert_eq!(set[0].pipeline, last, "an unanswered read keeps the last");
             let mut set = [merged(1, "m1", now - SUPERSEDED_READ_MS, now)];
             let mut asked = 0;
@@ -2188,12 +2338,20 @@ mod tests {
                     Pipeline::Passed
                 },
                 |_| Vec::new(),
+                |_, _| None,
             );
             assert_eq!((asked, &set[0].pipeline), (0, &last), "settled a day after its merge");
         }
         q.commit_pipelines.insert(key("m1"), Pipeline::Passed);
         let mut set = [merged(1, "m1", now - 60_000, now - 60_000)];
-        merged_reads(&mut set, &q, now, |_| Pipeline::Failed(String::new()), |_| Vec::new());
+        merged_reads(
+            &mut set,
+            &q,
+            now,
+            |_| Pipeline::Failed(String::new()),
+            |_| Vec::new(),
+            |_, _| None,
+        );
         assert_eq!(set[0].pipeline, Pipeline::Passed, "a pass is settled at once");
 
         // #1 merged two days ago and was commented on just now: #2, merged
@@ -2213,17 +2371,19 @@ mod tests {
                 Pipeline::Passed
             },
             |_| Vec::new(),
+            |_, _| None,
         );
         assert_eq!(asked, ["m2"], "the PR that merged last is read, the commented one is not");
         let mut one = set[0].clone();
         one.deployed = vec!["staging".into()];
         let mut two = set[1].clone();
         two.deployed = vec!["production".into()];
-        assert_eq!(
-            arrived_envs(&[one, two]),
-            ["production"],
-            "the ticket stands where the PR that merged last stands"
+        assert!(
+            arrived_envs(&[one.clone(), two.clone()]).is_empty(),
+            "every merged PR stands somewhere else (T-801)"
         );
+        one.deployed.push("production".into());
+        assert_eq!(arrived_envs(&[one, two]), ["production"]);
     }
 
     /// T-767: with every PR merged, the merge commit's pipeline passing is
@@ -2336,10 +2496,17 @@ mod tests {
             gl("g/api", 3, PrState::Merged, &["staging", "production"]),
         ];
         assert_eq!(edge(&prod, &all).deployed, ["production"]);
-        // An older merged PR on a repository is in its newer one's history:
-        // only the newest is asked, and the newest decides.
+        // An older merged PR on a repository must be there too (T-801): the
+        // newest one's deploy stands for it only where git said it carries
+        // it, which put the environment on the older PR's own row.
         let older = [all[0].clone(), all[1].clone(), gl("g/api", 2, PrState::Merged, &[])];
-        assert_eq!(edge(&both, &older).deployed, ["staging", "production"]);
+        assert!(edge(&both, &older).deployed.is_empty());
+        let carried = [
+            all[0].clone(),
+            all[1].clone(),
+            gl("g/api", 2, PrState::Merged, &["staging", "production"]),
+        ];
+        assert_eq!(edge(&both, &carried).deployed, ["staging", "production"]);
         // A pass is every open PR's.
         let running = [gl("g/web", 1, PrState::Open, &[]), {
             let mut p = gl("g/api", 3, PrState::Open, &[]);

@@ -60,11 +60,16 @@
 //! a fast-forward merged MR's head binds nothing of it, and the MR's own
 //! ticket keeps it after the base took the merge.
 //!
+//! A deploy of a later commit deploys every merge it carries (T-801): with
+//! the history here, a ticket's two merged MRs read deployed by ancestry,
+//! the crown hears each, the ticket arrives once both are there, and a
+//! rollback takes the environment off their rows and leaves the card.
+//!
 //! The stub is the forge: `auth status` passes, `pr list` prints the file
 //! the test writes, `api …/check-runs` and `api …/status` the merge
-//! commit's pipeline and `api …/deployments` its deployments, by sha where
-//! the test wrote one. No
-//! network, no token, nothing of the real CLI.
+//! commit's pipeline, by sha where the test wrote one, and `api
+//! …/deployments` what an environment ran (T-801). No network, no token,
+//! nothing of the real CLI.
 
 // Integration-test crate: `allow-unwrap-in-tests` only reaches items marked
 // #[test], not the helpers beside them, so the D26 exemption is stated here.
@@ -101,10 +106,7 @@ case "$1 $2" in
         n=$(echo "$4" | sed -n 's|.*/pulls/\([0-9]*\)/commits.*|\1|p')
         cat "$MSMN_GH_COMMITS.$n" 2>/dev/null || echo '[]' ;;
       *deployments/*/statuses*) echo '[{"state":"success"}]' ;;
-      *deployments*)
-        sha=$(echo "$4" | sed -n 's|.*sha=\([^&]*\).*|\1|p')
-        if [ -f "$MSMN_GH_DEPLOYS.$sha" ]; then cat "$MSMN_GH_DEPLOYS.$sha"
-        else cat "$MSMN_GH_DEPLOYS" 2>/dev/null || echo '[]'; fi ;;
+      *deployments*) cat "$MSMN_GH_DEPLOYS" 2>/dev/null || echo '[]' ;;
       *) echo '{}' ;;
     esac ;;
   *) echo "stub gh: $*" >&2; exit 1 ;;
@@ -1120,7 +1122,9 @@ fn a_lost_sign_in_is_said_and_asked_again_on_the_backoff() {
 /// merge commit's sha has a pipeline and the squash commit's has none,
 /// which is the lab's shape (T-754). A pipeline's jobs (T-772) are
 /// `<pipelines file>.jobs`. One MR's read (T-784) is `<MSMN_GLAB_MR>.<iid>`
-/// where the test wrote one, else an answer that reads as nothing.
+/// where the test wrote one, else an answer that reads as nothing. An
+/// environment's deployments (T-801) are `<MSMN_GLAB_DEPLOYS>.<environment>`,
+/// else none.
 const GLAB_STUB: &str = r#"#!/bin/sh
 [ -n "$MSMN_GLAB_LOG" ] && echo "$*" >> "$MSMN_GLAB_LOG"
 case "$1 $2" in
@@ -1129,6 +1133,9 @@ case "$1 $2" in
   "api --hostname")
     case "$4" in
       user) echo '{"username":"me"}' ;;
+      *deployments?environment=*)
+        env="${4#*environment=}"; env="${env%%&*}"
+        cat "$MSMN_GLAB_DEPLOYS.$env" 2>/dev/null || echo '[]' ;;
       *pipelines?sha=*)
         sha="${4#*sha=}"; sha="${sha%%&*}"
         if [ -f "$MSMN_GLAB_PIPELINES.$sha" ]; then cat "$MSMN_GLAB_PIPELINES.$sha"; else echo '[]'; fi ;;
@@ -2033,7 +2040,9 @@ fn a_deployed_arrival_waits_for_every_repositorys_pr() {
 /// its merge commit passes and reaches staging; then #43 of the same ticket
 /// merges and reaches staging too, and #42's row still reads passed and
 /// deployed. The list's own rollup for #42 says running, so a row that read
-/// only the list would show it.
+/// only the list would show it. Neither merge commit is in this checkout,
+/// so git cannot say staging's newer commit lacks #42's, and its own
+/// deployment stands (T-801).
 #[test]
 fn an_older_pr_keeps_its_pipeline_and_deployments_after_a_newer_one_merges() {
     const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
@@ -2107,9 +2116,17 @@ fn an_older_pr_keeps_its_pipeline_and_deployments_after_a_newer_one_merges() {
         ("1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222");
     let passed =
         r#"{"check_runs":[{"name":"release","status":"completed","conclusion":"success"}]}"#;
-    let staging = r#"[{"id":7,"environment":"staging"}]"#;
+    // What staging ran, newest first.
+    let staging = |shas: &[&str]| {
+        let each: Vec<String> = shas
+            .iter()
+            .enumerate()
+            .map(|(i, sha)| format!(r#"{{"id":{},"sha":"{sha}","environment":"staging"}}"#, 9 - i))
+            .collect();
+        format!("[{}]", each.join(","))
+    };
     write(&stub_dir.join(format!("checks.json.{m1}")), passed);
-    write(&stub_dir.join(format!("deploys.json.{m1}")), staging);
+    write(&deploys_file, &staging(&[m1]));
     let first = gh_pr(42, &branch, &tip, m1, "2026-10-13T06:00:00Z");
     write(&prs_file, &format!("[{first}]"));
     let row = |c: &mut TestClient, number: u64| {
@@ -2125,7 +2142,7 @@ fn an_older_pr_keeps_its_pipeline_and_deployments_after_a_newer_one_merges() {
     wait_until(Duration::from_secs(20), "#43 to bind", || {
         row(&mut c, 43).is_some_and(|p| p.pipeline == "running")
     });
-    write(&stub_dir.join(format!("deploys.json.{m2}")), staging);
+    write(&deploys_file, &staging(&[m2, m1]));
     wait_until(Duration::from_secs(20), "#43 to reach staging", || {
         row(&mut c, 43).is_some_and(|p| p.deployed == ["staging"])
     });
@@ -2407,6 +2424,155 @@ fn a_freshly_bound_prs_state_is_news_and_its_merge_comes_before_its_deployment()
     assert_eq!(wakes(&h, k.worker, "merged"), 1, "{all}");
     assert_eq!(all.matches(" merged (").count(), 1, "{all}");
     let _ = (k.ws, &k.path);
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// T-801, forge lab run 4: production's manual deploy job ran on a commit
+/// later than either of a ticket's two merge commits, as batched deploys
+/// do, with main's history here as a fetch brings it. Production first
+/// runs a commit that carries !13 alone: !13 reads deployed and the crown
+/// hears it, and the ticket stays, !15 not being there. Then it runs !14's
+/// merge commit, which carries both: !15 is heard and the ticket moves
+/// into PROD. A rollback takes production off both rows and leaves the
+/// card in PROD.
+#[test]
+fn a_later_deploy_carrying_every_merged_mr_moves_the_ticket_to_prod() {
+    let stub_dir = std::env::temp_dir().join(format!("msmn-forge-batch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&stub_dir);
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    let glab = stub_dir.join("glab");
+    std::fs::write(&glab, GLAB_STUB).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&glab, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mrs = stub_dir.join("mrs.json");
+    let pipelines = stub_dir.join("pipelines");
+    let deploys = stub_dir.join("deploys");
+    write(&mrs, "[]");
+    let path_var = format!(
+        "{}:{}",
+        stub_dir.display(),
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+    );
+    let Some(h) = Harness::boot_with_env(
+        "forge_batch",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GLAB_MRS", &mrs.display().to_string()),
+            ("MSMN_GLAB_PIPELINES", &pipelines.display().to_string()),
+            ("MSMN_GLAB_DEPLOYS", &deploys.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    git(&h.repo, &["remote", "add", "origin", "https://gitlab.example.com/lab/forge-lab-api.git"]);
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("forge_batch");
+    // A PROD column a ticket arrives in once production runs its merges.
+    assert!(matches!(
+        c.request(Command::AddColumn { name: "PROD".into(), after: Some("REVIEW".into()) }),
+        Response::Ok
+    ));
+    let mut prod = c.board().column("PROD").unwrap().settings.clone();
+    prod.arrives_on = Arrival::Deployed;
+    prod.arrives_env = Some("production".into());
+    assert!(matches!(
+        c.request(Command::SetColumnSettings { name: "PROD".into(), settings: prod }),
+        Response::Ok
+    ));
+    let k = crowned(&h, &mut c);
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    let column = |c: &mut TestClient| c.board().ticket(k.worker).unwrap().column.clone();
+    let deployed = |c: &mut TestClient, number: u64| {
+        prs_of(c)
+            .into_iter()
+            .find(|p| p.ticket == k.worker && p.number == number)
+            .map(|p| p.deployed)
+            .unwrap_or_default()
+    };
+
+    // ---- main's history, as a fetch brings it: the lab's order ------------
+    let base = git(&h.repo, &["rev-parse", "HEAD"]).trim().to_string();
+    let tree = git(&h.repo, &["rev-parse", "HEAD^{tree}"]).trim().to_string();
+    let mut chain: Vec<String> = Vec::new();
+    for msg in ["Merge !13", "conflict push", "Merge !15", "Merge !14"] {
+        let parent = chain.last().cloned().unwrap_or_else(|| base.clone());
+        chain.push(git(&h.repo, &["commit-tree", &tree, "-p", &parent, "-m", msg]).trim().into());
+    }
+    let (m13, push, m15, m14) = (&chain[0], &chain[1], &chain[2], &chain[3]);
+    git(&h.repo, &["update-ref", "refs/remotes/origin/main", m14]);
+
+    // ---- both MRs merged off the ticket's branch, neither deployed ---------
+    let row = |iid: u64, merge: &str| {
+        let one = mr_json("forge-lab-api", iid, &k.branch, &k.tip, Some(merge));
+        one.trim().trim_start_matches('[').trim_end_matches(']').to_string()
+    };
+    write(&mrs, &format!("[{},{}]", row(15, m15), row(13, m13)));
+    wait_until(Duration::from_secs(20), "both MRs to read merged", || {
+        prs_of(&mut c).iter().filter(|p| p.ticket == k.worker && p.state == "merged").count() == 2
+    });
+    wait_until(Duration::from_secs(20), "the merged wake", || {
+        !lines_with(&format!("{} merged (", k.named)).is_empty()
+    });
+    turn(&mut c, &hook_sock, k.crown);
+    let runs = |sha: &str, at: &str| {
+        write(
+            &deploys.with_extension("production"),
+            &format!(r#"[{{"id":1,"sha":"{sha}","status":"success","finished_at":"{at}"}}]"#),
+        );
+    };
+
+    // ---- production runs a commit that carries !13 alone -------------------
+    runs(push, "2026-10-15T09:40:00Z");
+    wait_until(Duration::from_secs(20), "!13 on production by ancestry", || {
+        deployed(&mut c, 13) == ["production"]
+    });
+    wait_until(Duration::from_secs(20), "the crown to hear !13's deploy", || {
+        !lines_with("deployed to production !13").is_empty()
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(deployed(&mut c, 15).is_empty(), "the deployed commit is older than !15's merge");
+    assert!(lines_with("deployed to production !15").is_empty());
+    assert_ne!(column(&mut c), "PROD", "!15 is not on production");
+    turn(&mut c, &hook_sock, k.crown);
+
+    // ---- production runs !14's merge commit, which carries both ------------
+    runs(m14, "2026-10-15T10:02:16Z");
+    wait_until(Duration::from_secs(20), "the ticket to arrive in PROD", || {
+        column(&mut c) == "PROD"
+    });
+    assert_eq!(deployed(&mut c, 15), ["production"]);
+    assert_eq!(deployed(&mut c, 13), ["production"]);
+    wait_until(Duration::from_secs(20), "the crown to hear !15's deploy", || {
+        !lines_with("deployed to production !15").is_empty()
+    });
+    assert_eq!(lines_with("deployed to production !13").len(), 1, "!13 is said once");
+    turn(&mut c, &hook_sock, k.crown);
+
+    // ---- a rollback: off both rows, and the card stays ----------------------
+    runs(&base, "2026-10-15T11:00:00Z");
+    wait_until(Duration::from_secs(20), "production off both rows", || {
+        deployed(&mut c, 13).is_empty() && deployed(&mut c, 15).is_empty()
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(column(&mut c), "PROD", "nothing moves a card back");
+    let _ = c.request(Command::Shutdown);
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
 

@@ -255,8 +255,10 @@ pub struct Pr {
     /// (T-800): what "the newest merged" means, since `updated_ms` moves on
     /// any comment or bot post.
     pub merged_ms: u64,
-    /// The environments the merge commit reached, as the forge names them;
-    /// read only where a column asks for one, and only once merged.
+    /// The environments the merge commit is deployed to, as the forge names
+    /// them (T-801): where the latest successful deployment is that commit
+    /// or carries it (`deployed_after`). Read only where a column asks for
+    /// one, and only once merged.
     pub deployed: Vec<String>,
     /// The ticket's branch tips this merged PR's head carries though it is
     /// not one of them (T-799): a reviewer's commit on the forge put the
@@ -657,15 +659,16 @@ pub fn job_word(raw: &str) -> String {
     crate::text::cap_bytes(&flat, NAME_MAX_BYTES).to_string()
 }
 
-/// GitHub's `deployments?sha=` answer: each deployment's id and environment.
-pub fn parse_gh_deployments(json: &str) -> Vec<(u64, String)> {
+/// GitHub's `deployments?environment=` answer, newest first: each
+/// deployment's id, environment and commit (T-801).
+pub fn parse_gh_deployments(json: &str) -> Vec<(u64, String, String)> {
     let Ok(Value::Array(items)) = serde_json::from_str::<Value>(json) else { return Vec::new() };
     items
         .iter()
         .filter_map(|d| {
             let id = d.get("id")?.as_u64()?;
             let env = d.get("environment").and_then(Value::as_str)?;
-            Some((id, job_word(env)))
+            Some((id, job_word(env), str_of(d, "sha")))
         })
         .collect()
 }
@@ -682,29 +685,101 @@ pub fn parse_gh_deployment_success(json: &str) -> Option<u64> {
     Some(iso_ms(success.get("created_at")))
 }
 
-/// GitLab's `deployments?environment=&status=success` answer: when one of
-/// them deployed this commit, unix ms (zero where it names no time), or
-/// `None` where none did.
-pub fn parse_gitlab_deployed(json: &str, oid: &str) -> Option<u64> {
+/// One environment as one read found it (T-801): the commit its latest
+/// successful deployment deployed, which is what runs there, and when (unix
+/// ms, zero where the forge named no time); and every commit the read saw
+/// deployed there with success, the latest among them. `latest` is empty
+/// where the read found no successful deployment.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EnvRead {
+    pub env: String,
+    pub latest: String,
+    pub at_ms: u64,
+    pub seen: Vec<String>,
+}
+
+/// GitLab's `deployments?environment=&status=success` answer for `env`
+/// (T-801): its latest successful deployment is the one that finished last,
+/// never the newest created, since a manual job created with an older
+/// pipeline can run after a newer one's. Where no time is named, the first
+/// listed, which the read asks newest first. `None` for an answer that is
+/// not a list, so an error page is never read as "nothing runs there".
+pub fn parse_gitlab_env(env: &str, json: &str) -> Option<EnvRead> {
     let Ok(Value::Array(items)) = serde_json::from_str::<Value>(json) else { return None };
-    if oid.is_empty() {
-        return None;
-    }
-    let d = items.iter().find(|d| {
-        d.get("sha").and_then(Value::as_str) == Some(oid)
-            || d.get("deployable")
-                .and_then(|x| x.get("commit"))
-                .and_then(|c| c.get("id"))
-                .and_then(Value::as_str)
-                == Some(oid)
-    })?;
-    Some(
-        ["finished_at", "updated_at", "created_at"]
+    let mut read = EnvRead { env: env.to_string(), ..EnvRead::default() };
+    let mut best: Option<(u64, usize)> = None;
+    for (i, d) in items.iter().enumerate() {
+        if d.get("status").and_then(Value::as_str).is_some_and(|s| s != "success") {
+            continue;
+        }
+        let sha = d
+            .get("sha")
+            .and_then(Value::as_str)
+            .or_else(|| d.get("deployable")?.get("commit")?.get("id")?.as_str())
+            .unwrap_or_default();
+        if sha.is_empty() {
+            continue;
+        }
+        let at = ["finished_at", "updated_at", "created_at"]
             .iter()
             .map(|k| iso_ms(d.get(*k)))
             .find(|ms| *ms > 0)
-            .unwrap_or(0),
-    )
+            .unwrap_or(0);
+        if best.is_none_or(|(t, _)| at > t) {
+            best = Some((at, i));
+            read.latest = sha.to_string();
+            read.at_ms = at;
+        }
+        if !read.seen.iter().any(|s| s == sha) {
+            read.seen.push(sha.to_string());
+        }
+    }
+    Some(read)
+}
+
+/// Where a merge commit is deployed after a pass (T-801). An environment
+/// holds it where its latest successful deployment is the commit itself, or
+/// one whose history holds it: `carries(latest)`, asked of git here, `None`
+/// where either commit is not here. Where git cannot say, a commit the read
+/// saw deployed there, or one held there before, stays: a board that
+/// fetches nothing keeps a PR's own deployment, as before. Where git says
+/// no, the environment runs code without it — a rollback, or a deploy of
+/// another branch — and it is dropped. `was` is what the PR held, in the
+/// order it reached each: an environment `reads` does not name (its read
+/// failed, or no column asks for it now) keeps its place, and one newly
+/// reached follows in the order its deployment happened (`deploy_order`,
+/// `reads` being in the board's column order).
+pub fn deployed_after(
+    merge: &str,
+    was: &[String],
+    reads: &[EnvRead],
+    mut carries: impl FnMut(&str) -> Option<bool>,
+) -> Vec<String> {
+    let mut holds = |r: &EnvRead| {
+        if merge.is_empty() {
+            return false;
+        }
+        if r.latest == merge {
+            return true;
+        }
+        let known = if r.latest.is_empty() { None } else { carries(&r.latest) };
+        known.unwrap_or_else(|| r.seen.iter().any(|s| s == merge) || was.contains(&r.env))
+    };
+    let mut out: Vec<String> = Vec::new();
+    for e in was {
+        match reads.iter().find(|r| r.env == *e) {
+            Some(r) if !holds(r) => {}
+            _ => out.push(e.clone()),
+        }
+    }
+    let fresh: Vec<(String, u64)> = reads
+        .iter()
+        .filter(|r| !was.contains(&r.env) && holds(r))
+        .map(|r| (r.env.clone(), r.at_ms))
+        .collect();
+    let order: Vec<String> = reads.iter().map(|r| r.env.clone()).collect();
+    out.extend(deploy_order(fresh, &order));
+    out
 }
 
 /// The environments one read found a commit deployed to, in the order they
@@ -1951,7 +2026,13 @@ mod tests {
         let ds = parse_gh_deployments(
             r#"[{"id":7,"environment":"staging","sha":"m"},{"id":8,"environment":"production"}]"#,
         );
-        assert_eq!(ds, [(7, "staging".to_string()), (8, "production".to_string())]);
+        assert_eq!(
+            ds,
+            [
+                (7, "staging".to_string(), "m".to_string()),
+                (8, "production".to_string(), String::new())
+            ]
+        );
         assert_eq!(
             parse_gh_deployment_success(r#"[{"state":"success"},{"state":"pending"}]"#),
             Some(0)
@@ -1977,20 +2058,82 @@ mod tests {
             "inactive alone is no deployment"
         );
         assert_eq!(parse_gh_deployment_success("[]"), None);
-        assert_eq!(parse_gitlab_deployed(r#"[{"sha":"abc","status":"success"}]"#, "abc"), Some(0));
-        assert!(parse_gitlab_deployed(
-            r#"[{"sha":"abc","finished_at":"2026-10-15T00:00:05Z"}]"#,
-            "abc"
-        )
-        .is_some_and(|ms| ms > 0));
-        assert!(
-            parse_gitlab_deployed(r#"[{"deployable":{"commit":{"id":"abc"}}}]"#, "abc").is_some()
-        );
-        assert_eq!(parse_gitlab_deployed(r#"[{"sha":"zzz"}]"#, "abc"), None);
-        assert_eq!(parse_gitlab_deployed(r#"[{"sha":""}]"#, ""), None);
         let long = "x".repeat(200);
         assert_eq!(job_word(&format!("  a\nb\t{long}")).len(), NAME_MAX_BYTES);
         assert_eq!(job_word("test\nlinux"), "test linux");
+    }
+
+    /// T-801, forge lab run 4: GitLab's environment read names what runs
+    /// there by the deployment that finished last, a manual job created with
+    /// an older pipeline included; every success it lists is seen; an error
+    /// page is no read.
+    #[test]
+    fn an_environment_runs_the_deployment_that_finished_last() {
+        let read = parse_gitlab_env(
+            "production",
+            r#"[{"sha":"ddc","status":"success","created_at":"2026-10-15T09:30:00Z",
+                 "finished_at":"2026-10-15T09:31:00Z"},
+                {"sha":"e1b","status":"success","created_at":"2026-10-15T09:00:00Z",
+                 "finished_at":"2026-10-15T10:02:16Z"},
+                {"sha":"4e1","status":"failed","finished_at":"2026-10-15T11:00:00Z"},
+                {"deployable":{"commit":{"id":"8f5"}},"status":"success"}]"#,
+        )
+        .expect("a list");
+        assert_eq!(read.env, "production");
+        assert_eq!(read.latest, "e1b", "the manual job that ran last");
+        assert_eq!(read.at_ms, iso_ms(Some(&Value::from("2026-10-15T10:02:16Z"))));
+        assert_eq!(read.seen, ["ddc", "e1b", "8f5"], "a failed one is no deployment");
+        let bare = parse_gitlab_env("staging", r#"[{"sha":"a"},{"sha":"b"}]"#).unwrap();
+        assert_eq!((bare.latest.as_str(), bare.at_ms), ("a", 0), "no times: the first listed");
+        assert_eq!(parse_gitlab_env("staging", "[]").unwrap().latest, "");
+        assert_eq!(parse_gitlab_env("staging", r#"{"message":"404"}"#), None);
+    }
+
+    /// T-801: a merge commit is deployed where the environment's latest
+    /// deployment is it or carries it; git's no drops it (a rollback), and
+    /// where git cannot say, the PR's own deployment, seen now or held
+    /// before, stands.
+    #[test]
+    fn a_merge_is_deployed_where_the_latest_deploy_is_it_or_carries_it() {
+        let read = |env: &str, latest: &str, at: u64, seen: &[&str]| EnvRead {
+            env: env.into(),
+            latest: latest.into(),
+            at_ms: at,
+            seen: seen.iter().map(|s| s.to_string()).collect(),
+        };
+        let none = |_: &str| -> Option<bool> { None };
+        let yes = |_: &str| Some(true);
+        let no = |_: &str| Some(false);
+        let s = |v: &[&str]| v.iter().map(|e| e.to_string()).collect::<Vec<String>>();
+        // Exact: the latest deployment is the merge commit, git or no git.
+        let prod = [read("production", "m13", 5, &["m13"])];
+        assert_eq!(deployed_after("m13", &[], &prod, none), ["production"]);
+        // Ancestry: a later commit that carries it.
+        let later = [read("production", "ddc", 5, &["ddc"])];
+        assert_eq!(deployed_after("m13", &[], &later, yes), ["production"]);
+        assert!(deployed_after("m13", &[], &later, no).is_empty(), "a deploy without it");
+        // Not here: no ancestry, so only the exact match counts.
+        assert!(deployed_after("m13", &[], &later, none).is_empty());
+        let paged = [read("production", "ddc", 5, &["ddc", "m13"])];
+        assert_eq!(deployed_after("m13", &[], &paged, none), ["production"], "seen deployed");
+        assert_eq!(
+            deployed_after("m13", &s(&["production"]), &later, none),
+            ["production"],
+            "held before, and git cannot say otherwise"
+        );
+        // Rollback: git says the latest no longer carries it.
+        assert!(deployed_after("m13", &s(&["production"]), &later, no).is_empty());
+        assert!(deployed_after("m13", &s(&["production"]), &paged, no).is_empty());
+        // An environment with nothing deployed, or not read, keeps what was.
+        let empty = [read("production", "", 0, &[])];
+        assert_eq!(deployed_after("m13", &s(&["production"]), &empty, no), ["production"]);
+        assert_eq!(deployed_after("m13", &s(&["staging"]), &later, yes), ["staging", "production"]);
+        // Newly reached in the order the deployments happened; held ones
+        // keep their place.
+        let both = [read("staging", "a", 9, &["a"]), read("production", "b", 4, &["b"])];
+        assert_eq!(deployed_after("m", &[], &both, yes), ["production", "staging"]);
+        assert_eq!(deployed_after("m", &s(&["staging"]), &both, yes), ["staging", "production"]);
+        assert!(deployed_after("", &[], &both, yes).is_empty(), "no merge commit, no deploy");
     }
 
     #[test]

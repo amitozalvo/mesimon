@@ -26131,3 +26131,61 @@ asks the crown to carry the limited worker on with rig-alt, without naming a too
 Sonnet (claude 2.1.300), 2026-10-15: L2 PASS in 45 s (the crown called `sleep_agent` and then
 `start_agent` on rig-alt, and the worker resumed). L1 PASS beside it: told nothing, the crown still
 sent the worker no words and did not park it, and the card stayed QUOTA.
+
+## A deploy of a later commit deploys every merge it carries (T-801, 2026-10-15, forge lab run 4)
+
+**What was wrong.** A PR read deployed to an environment only where a deployment's commit was
+exactly its own merge commit (GitLab: one of the environment's last 20 successful deployments
+naming the sha; GitHub: `deployments?sha=`), and the ticket arrived where each repository's
+newest merged PR was (T-768). Batched deploys broke both: in lab run 4, !13 and !15 (forge-lab
+T-19) merged with `deploy:production` manual and never run, production then ran !14's merge
+commit `ddc16d7f`, which carries both, and T-19 stayed in STAGING for good.
+
+**The rule** (`forge::deployed_after`). An environment holds a merge commit where its latest
+successful deployment is that commit, or carries it: `merge-base --is-ancestor` on the forge
+worker, in the repository's checkout, `--no-optional-locks` and `GIT_NO_LAZY_FETCH`
+(`carries_here`, T-799's), writing nothing. Git's yes is deployed; git's no is not, a rollback or
+a deploy of another branch; where git cannot say (either commit not here), the PR's own
+deployment, seen in this read or held before, stands. A board that fetches nothing therefore
+keeps a PR's own deployment as before, and the Settings row for fetch says so while it is off.
+Git's answers are kept in memory by repository, merge and deployed commit (`State::carried`:
+the minute's pass replaces them, a burst adds), never in `forge.json`; a restart asks git again.
+
+**The read.** Per environment, once per repository per pass, not per merge commit
+(`forge::environments`): GitLab's `deployments?environment=&status=success` page, the latest
+being the one that *finished* last (`parse_gitlab_env`), since a manual job created with an older
+pipeline runs after a newer one's; GitHub's `deployments?environment=` newest first, the first
+whose statuses hold any success (T-800's `inactive` rule), at most 10 walked. A status read that
+fails leaves the environment unread rather than an older deployment read as the latest, which
+would read a merge it lacks as a rollback. Only environments a column names are read, as before.
+GitHub's read sees only the latest commit, so a PR's own deploy superseded between two passes is
+caught by ancestry alone.
+
+**The ticket.** `arrived_envs` is every merged PR deployed there, none open (a closed one waits
+for nothing). This replaces T-768's "each repository's newest merged PR", which took an older
+merge being in the newer one's history on trust. On a board without fetch, a ticket with two
+merged PRs now arrives only where each PR's own commit was deployed: the brief's choice, an
+unknown history not being deployed by ancestry.
+
+**Rollback.** A PR's `deployed` is the last read's word, not a sum: `State::deployed` and
+`forge.json`'s `commits[].deployed` are replaced for every ticket a pass answered, an older
+read never overwriting a newer one's. The card does not move back: `forge_arrivals` moves a
+ticket forward on an edge, a lost environment is no edge, and a person moves the card. A
+redeploy after a rollback is an edge again, said and arrived on again.
+
+**What did not change.** A merge commit's pipeline reads as before: a waiting manual job is
+`waiting on deploy:production !15`, and ancestry never invents a passed job. `SUPERSEDED_READ_MS`
+now gates pipelines alone; every merged PR's deployments are judged on every pass a column asks
+for one, since a batched deploy can come days after an old merge. No schema bump: `deployed`
+keeps its shape. Refuted: inferring ancestry from merge order (T-768's trust), and fetching to
+answer it (fetch stays the person's opt-in, promise 1).
+
+Tests: `forge::an_environment_runs_the_deployment_that_finished_last`,
+`a_merge_is_deployed_where_the_latest_deploy_is_it_or_carries_it` (exact, ancestor, not here,
+seen, held, rollback, order); the daemon's `a_batched_deploy_brings_every_merged_pr_it_carries`
+(the lab's !13 and !15, unfetched, half there, rollback and redeploy),
+`each_merged_pr_keeps_its_own_pipeline_and_deployments`, `a_ticket_arrives_as_its_least_advanced_pr`;
+`forge_e2e`'s `a_later_deploy_carrying_every_merged_mr_moves_the_ticket_to_prod` (glab stub:
+production runs a commit carrying !13 alone, then !14's, then a rollback). No rig test: the
+crown hears the same words as before (`deployed to production !13`) on new occasions, and the
+rig has no forge.

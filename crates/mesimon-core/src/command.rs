@@ -2356,7 +2356,8 @@ pub struct AgentPrView {
     pub conflict: bool,
     #[serde(default)]
     pub review: String,
-    /// The environments the merge commit reached, once merged.
+    /// The environments the merge commit is deployed to, once merged: where
+    /// the latest successful deployment is it or carries it (T-801).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deployed: Vec<String>,
 }
@@ -2831,7 +2832,8 @@ pub struct PrItem {
     /// The commit the merge landed as, once merged.
     #[serde(default)]
     pub merged_oid: String,
-    /// The environments the merge commit reached, as the forge names them.
+    /// The environments the merge commit is deployed to, as the forge names
+    /// them: where the latest successful deployment is it or carries it (T-801).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deployed: Vec<String>,
     /// Unix ms the forge last touched it (T-805); zero when unknown.
