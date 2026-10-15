@@ -26197,3 +26197,45 @@ A card the crown touched keeps a quiet crown mark until the cursor has rested on
 worktree glyph sat two cells left of every other card's. It is now drawn before the worktree
 mark (`[fill][residue][wt][editor][age]`), and the title gives up the cells as it did before.
 Test: `the_worktree_glyph_holds_one_column` gains the residue case.
+
+## A relaunched agent at its composer is a free seat for the train (T-809, 2026-10-15)
+
+Seen on T-801: its agent ended its turn in REVIEW, and 25 ms later a tier switch the person had
+asked for with `^n` relaunched it on its conversation. The relaunch's `SessionStart` put it at
+`Idle{Unknown}` High, and `train::seat` read every state but `Idle{EndTurn}` at High|Medium (the
+2026-09-04 rule) as busy, so the train never planned the merge and the crown merged it by hand.
+Every road that brings a live agent up on its conversation lands there: a tier switch, a wake
+(`c`, `start_agent`), the mod road's relaunch on the hook set.
+
+**The rule.** `train::seat` reads an agent at its composer as `Seat::Idle`
+(`train::at_composer`): `Idle{EndTurn}` at High|Medium as before, or `Idle{Unknown}` at High
+with no `unsent` launch words. The owed Enter (`pending_submit`) was already busy through
+`quiet::is_working`. New: `seat` takes `words_owed`, from the daemon's `owed` ledger
+(`Daemon::train_seat`, `Input::owed`). A ticket the daemon is pasting words to is busy at
+any state, since a turn is about to start on them. That is what holds a brand-new spawn whose
+brief is still waiting for its composer: it sits at `Idle{Unknown}` High from its own
+`SessionStart` until the paste is acknowledged. It also holds an `Idle{EndTurn}` seat while a
+queued ask is in flight to it, which the old rule let the train merge under. A restart's
+re-derived `Idle{Unknown}` is Low and still holds (T-663).
+
+**Refuted: carrying the ended turn's state across the relaunch.** Landing a tier switch's or a
+wake's `SessionStart` at `Idle{EndTurn}` would reach far past the train. `on_done` and the
+crown's delivered wake fire on the edge into `Idle{EndTurn}`, so every relaunch would deliver
+again. And a wake from `Sleeping` has no ended-turn state left to carry.
+
+**One answer.** `Seat::lets_merge` (`Empty | Idle`) is what `train::lane` merges past, and
+`Daemon::merge_by` reads the same `train_seat`. A parked agent reads `by: crown`, "its agent is
+parked, which the train leaves alone", since the train never merges past a parked seat. A busy
+seat in the column it delivers in reads `by: train`, "the train is armed and reaches this column;
+it waits for its agent's turn to end". A seat still working in another column keeps T-795's
+words. T-795's `lane → Result<Lane, Skip>` was not taken: `merge_by` reads no worktree flags, so
+the seat is the only clause the two had to share.
+
+Tests: `train::a_relaunched_agent_at_its_composer_is_a_free_seat` (Unknown at High, Medium and
+Low, with `unsent`, with `pending_submit`, with words owed, an end of turn with words owed);
+`merge_train_e2e::a_relaunched_agent_at_its_composer_does_not_hold_the_train` (a delivered
+REVIEW ticket relaunched by a tier switch: armed while it is still starting, nothing merges and
+`get_ticket` says the train waits; its `SessionStart{resume}` lands it at `Idle{Unknown}` and the
+train merges it. It fails with the `Idle{Unknown}` arm removed). No rig test: no rig step holds a
+worker busy in REVIEW or parks one before the train lands it, and the crown's tool text is
+unchanged.

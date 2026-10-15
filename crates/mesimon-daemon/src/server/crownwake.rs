@@ -1486,7 +1486,7 @@ impl Daemon {
         let reading = mesimon_core::train::Reading {
             reach: self.board.column(&t.column).map(|c| c.settings.train).unwrap_or_default(),
             flags: &flags,
-            seat: mesimon_core::train::seat(&self.board, worker),
+            seat: self.train_seat(worker),
             base_tip: &look.base_tip,
             asked: asked.get(&worker).map(String::as_str),
             conflict_asked: self.train.conflict_asked().contains(&worker),

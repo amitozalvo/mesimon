@@ -776,3 +776,112 @@ fn a_merge_the_checkout_refuses_says_why_and_retries_once_it_is_clean() {
     assert_eq!(actions, ["merge_train_merged", "merge_train_rebase_asked", "merge_train_merged"]);
     let _ = c.request(Command::Shutdown);
 }
+
+/// T-809: a delivered ticket whose agent a tier switch relaunched. The
+/// relaunch's `SessionStart` lands the agent at `Idle{Unknown}`, at its
+/// composer with no turn in flight and nothing owed: a free seat, which the
+/// train merges past as it does an end of turn. Until that edge the seat is
+/// still starting, and `get_ticket`'s merge says the train waits for it.
+#[test]
+fn a_relaunched_agent_at_its_composer_does_not_hold_the_train() {
+    use mesimon_core::board::{AgentProvider, StopReason};
+    use mesimon_core::tier::{Effort, Tier, TierScope};
+    use mesimon_core::Principal;
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    let Some(h) = Harness::boot_with_env(
+        "train-relaunch",
+        Some(STUB),
+        &[("MESIMON_WT_REFRESH_TICKS", "4"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    let feed = || std::fs::read_to_string(h.paths.activity_log()).unwrap_or_default();
+    let repo = h.repo.clone();
+    init_repo(&repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("train-relaunch");
+    let (a, sa, branch_a, _) = ready(&mut c, "alpha");
+    // A conversation on disk, so the switch resumes it rather than waiting
+    // for a person's wake.
+    let conversation = uuid::Uuid::new_v4();
+    let transcript = h.dir.join(format!("{conversation}.jsonl"));
+    std::fs::write(&transcript, "{\"type\":\"user\"}\n{\"type\":\"assistant\"}\n").unwrap();
+    let session_start = |source: &str| {
+        let body = serde_json::json!({"session_id": conversation, "source": source,
+            "transcript_path": transcript});
+        hook_send(&hook_sock, &sa.to_string(), "SessionStart", &body.to_string());
+    };
+    session_start("startup");
+    c.await_state(sa, "started", |s| matches!(s, SessionState::Idle { .. }));
+    hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sa, "running", |s| *s == SessionState::Running);
+    hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sa, "delivered", |s| {
+        *s == SessionState::Idle { stop_reason: StopReason::EndTurn }
+    });
+    wait_until(Duration::from_secs(5), "A in REVIEW", || {
+        c.board().ticket(a).unwrap().column == "REVIEW"
+    });
+
+    // A tier picked for the seat: switched at this idle, conversation kept.
+    let quick = Tier {
+        id: "01QUICK".into(),
+        name: "quick".into(),
+        provider: AgentProvider::ClaudeCode,
+        model: "sonnet".into(),
+        effort: Effort::High,
+        description: String::new(),
+    };
+    assert!(matches!(
+        c.request(Command::SaveTier { scope: TierScope::Machine, tier: quick }),
+        Response::Ok
+    ));
+    let record = |c: &mut TestClient| c.board().sessions.into_iter().find(|s| s.id == sa).unwrap();
+    let pane = record(&mut c).pane_key;
+    assert!(matches!(
+        c.request(Command::SetTicketTier { id: a, tier: Some("01QUICK".into()) }),
+        Response::Ok
+    ));
+    wait_until(Duration::from_secs(15), "the tier relaunch", || {
+        let rec = record(&mut c);
+        rec.pane_key != pane && rec.tier == "01QUICK" && !rec.tier_owed
+    });
+
+    // Armed while the relaunch is still starting: the seat holds the train,
+    // and the ticket's merge says so.
+    assert!(matches!(
+        c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
+        Response::Ok
+    ));
+    let merge = match c
+        .send(Principal::Agent { session: sa }, Command::AgentReadTicket { key: "T-1".into() })
+    {
+        Response::AgentTicket { ticket } => ticket.merge.expect("a branch has a merger"),
+        other => panic!("get_ticket: {other:?}"),
+    };
+    assert_eq!(
+        (merge.by.as_str(), merge.why.as_str()),
+        (
+            "train",
+            "the train is armed and reaches this column; it waits for its agent's turn to end"
+        )
+    );
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(
+        !git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"]),
+        "merged under a seat still starting"
+    );
+
+    // The relaunch comes up at its composer: the train merges.
+    session_start("resume");
+    c.await_state(sa, "at its composer", |s| {
+        *s == SessionState::Idle { stop_reason: StopReason::Unknown }
+    });
+    wait_until(Duration::from_secs(15), "A to be merged past its relaunch", || {
+        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"])
+    });
+    wait_until(Duration::from_secs(5), "the train's merge in the feed", || {
+        feed().contains("merge_train_merged")
+    });
+    let _ = c.request(Command::Shutdown);
+}

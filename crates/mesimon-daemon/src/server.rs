@@ -7275,10 +7275,10 @@ impl Daemon {
     /// words came from outside, which waits for the keyboard whoever asks
     /// (`authorize_execution`). The train's: it is armed, the ticket is on
     /// it and the column it delivers in reaches a merge, as `train::lane`
-    /// reads them. The
-    /// crown's otherwise, under autonomous mode: the train off, the ticket
-    /// out of it by `t`, a column the train stops short of, a raised hand
-    /// the train leaves alone.
+    /// reads them, the seat included (T-809): a seat that holds the train
+    /// says it waits. The crown's otherwise, under autonomous mode: the
+    /// train off, the ticket out of it by `t`, a column the train stops
+    /// short of, a raised hand or a parked agent the train leaves alone.
     fn merge_by(&self, id: ulid::Ulid) -> AgentMergeView {
         let view = |by: &str, why: &str| AgentMergeView { by: by.into(), why: why.into() };
         // A merged branch has no merger (T-772): the train's clause on a
@@ -7329,6 +7329,13 @@ impl Daemon {
         if t.hand_raised() {
             return view("crown", "its hand is up, which the train leaves alone");
         }
+        // The seat, as `train::lane` reads it (T-809): a parked agent is off
+        // the train, and one mid-turn or owed words holds it until the turn
+        // ends.
+        let seat = self.train_seat(id);
+        if seat == mesimon_core::train::Seat::Parked {
+            return view("crown", "its agent is parked, which the train leaves alone");
+        }
         if column != t.column {
             return AgentMergeView {
                 by: "train".into(),
@@ -7337,6 +7344,12 @@ impl Daemon {
                     mesimon_core::text::scrub_text(column)
                 ),
             };
+        }
+        if !seat.lets_merge() {
+            return view(
+                "train",
+                "the train is armed and reaches this column; it waits for its agent's turn to end",
+            );
         }
         view("train", "the train is armed and reaches this column")
     }
@@ -10377,6 +10390,14 @@ impl Daemon {
         self.forge.fresh(ticket, turn_end, &self.costs.opened_urls(ticket))
     }
 
+    /// The ticket's seat as the train reads it, words owed included: the
+    /// one reading the pass, the crown's hold and `get_ticket`'s merge share
+    /// (T-809).
+    pub(super) fn train_seat(&self, ticket: ulid::Ulid) -> mesimon_core::train::Seat {
+        let owed = self.owed.values().any(|o| o.ticket == ticket);
+        mesimon_core::train::seat(&self.board, ticket, owed)
+    }
+
     /// What the train would do, over the cached flags — no git on this road.
     fn train_plan(&self) -> mesimon_core::train::Plan {
         let flags = self.train_flags();
@@ -10386,6 +10407,8 @@ impl Daemon {
         let conflict_asked = self.train.conflict_asked();
         let fused: std::collections::HashSet<ulid::Ulid> =
             self.train.fused_tickets().copied().collect();
+        let owed: std::collections::HashSet<ulid::Ulid> =
+            self.owed.values().map(|o| o.ticket).collect();
         mesimon_core::train::plan(&mesimon_core::train::Input {
             board: &self.board,
             flags: &flags,
@@ -10393,6 +10416,7 @@ impl Daemon {
             asked: &asked,
             conflict_asked: &conflict_asked,
             fused: &fused,
+            owed: &owed,
         })
     }
 

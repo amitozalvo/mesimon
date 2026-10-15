@@ -75,6 +75,8 @@ pub struct Input<'a> {
     /// about (T-770): one ask per conflict, whatever the local base did.
     pub conflict_asked: &'a HashSet<ulid::Ulid>,
     pub fused: &'a HashSet<ulid::Ulid>,
+    /// Tickets the daemon owes words to (`seat`'s `words_owed`).
+    pub owed: &'a HashSet<ulid::Ulid>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -88,33 +90,63 @@ pub struct Plan {
 pub enum Seat {
     /// No live claude: nobody to wait for, nobody to ask.
     Empty,
-    /// Idle after an end of turn, at a confidence worth acting on.
+    /// At its composer with no turn in flight and nothing owed to it, at a
+    /// confidence worth acting on (`at_composer`).
     Idle,
-    /// Mid-turn, waiting on the user, interrupted, lost, or failed.
+    /// Mid-turn, waiting on the user, interrupted, lost, failed, or owed
+    /// words a turn is about to start on.
     Busy,
     /// Sleeping — parked by the user.
     Parked,
 }
 
-pub fn seat(board: &Board, ticket: ulid::Ulid) -> Seat {
-    if board
-        .sessions
-        .iter()
-        .any(|session| session.ticket == ticket && crate::quiet::is_working(session))
+impl Seat {
+    /// The seat lets the train merge past it: nobody there, or an agent at
+    /// its composer. The one reading `lane` and `get_ticket`'s merge share
+    /// (T-809).
+    pub fn lets_merge(self) -> bool {
+        matches!(self, Seat::Empty | Seat::Idle)
+    }
+}
+
+/// `words_owed`: the daemon owes one of the ticket's sessions an ack for
+/// words it is pasting (its `owed` ledger) — a launch's brief waiting for
+/// the composer, a queued ask in flight. A turn is about to start on them,
+/// so the seat is busy whatever the record says (T-809).
+pub fn seat(board: &Board, ticket: ulid::Ulid, words_owed: bool) -> Seat {
+    if words_owed
+        || board
+            .sessions
+            .iter()
+            .any(|session| session.ticket == ticket && crate::quiet::is_working(session))
     {
         return Seat::Busy;
     }
     match board.live_agent(ticket) {
         None => Seat::Empty,
-        Some(s) => match &s.state {
-            SessionState::Sleeping => Seat::Parked,
-            SessionState::Idle { stop_reason: StopReason::EndTurn }
-                if matches!(s.confidence, Confidence::High | Confidence::Medium) =>
-            {
-                Seat::Idle
-            }
-            _ => Seat::Busy,
-        },
+        Some(s) if s.state == SessionState::Sleeping => Seat::Parked,
+        Some(s) if at_composer(s) => Seat::Idle,
+        Some(_) => Seat::Busy,
+    }
+}
+
+/// An agent sitting at its composer with no turn in flight (T-809): after
+/// an end of turn at High or Medium, or at `Idle{Unknown}` at High — the
+/// state a `SessionStart` lands, which is where every relaunch that keeps
+/// the conversation comes up (a tier switch, a wake, the mod road's
+/// relaunch on the hook set) — with no launch words left undelivered. The
+/// owed Enter (`pending_submit`) is `is_working`'s, and words still being
+/// pasted are the caller's `words_owed`. A restart's re-derived
+/// `Idle{Unknown}` is Low and holds (T-663).
+fn at_composer(s: &crate::board::SessionRecord) -> bool {
+    match s.state {
+        SessionState::Idle { stop_reason: StopReason::EndTurn } => {
+            matches!(s.confidence, Confidence::High | Confidence::Medium)
+        }
+        SessionState::Idle { stop_reason: StopReason::Unknown } => {
+            s.confidence == Confidence::High && s.unsent.is_none()
+        }
+        _ => false,
     }
 }
 
@@ -165,7 +197,7 @@ pub fn lane(t: &Ticket, r: &Reading) -> Option<Lane> {
         && f.ahead > 0
         && !f.needs_rebase
         && !f.has_pr
-        && matches!(r.seat, Seat::Empty | Seat::Idle)
+        && r.seat.lets_merge()
     {
         return Some(Lane::Merge);
     }
@@ -200,7 +232,7 @@ pub fn plan(input: &Input) -> Plan {
             let reading = Reading {
                 reach: col.settings.train,
                 flags,
-                seat: seat(input.board, t.id),
+                seat: seat(input.board, t.id, input.owed.contains(&t.id)),
                 base_tip: input.base_tip.get(&t.id).map(String::as_str).unwrap_or(""),
                 asked: input.asked.get(&t.id).map(String::as_str),
                 conflict_asked: input.conflict_asked.contains(&t.id),
@@ -295,7 +327,7 @@ mod tests {
                 &Reading {
                     reach: TrainReach::Merge,
                     flags: f,
-                    seat: seat(&b2, t.id),
+                    seat: seat(&b2, t.id, false),
                     base_tip: "tip",
                     asked: None,
                     conflict_asked: false,
@@ -336,7 +368,7 @@ mod tests {
                 &Reading {
                     reach: TrainReach::Merge,
                     flags: f,
-                    seat: seat(&b, t.id),
+                    seat: seat(&b, t.id, false),
                     base_tip: "tip1",
                     asked,
                     conflict_asked,
@@ -369,6 +401,7 @@ mod tests {
                 asked: &HashMap::from([(t.id, "tip1".to_string())]),
                 conflict_asked,
                 fused: &HashSet::new(),
+                owed: &HashSet::new(),
             })
         };
         assert_eq!(p(&HashSet::new()).rebase, vec![t.id]);
@@ -409,6 +442,7 @@ mod tests {
             asked: &HashMap::new(),
             conflict_asked: &HashSet::new(),
             fused: &HashSet::new(),
+            owed: &HashSet::new(),
         })
     }
 
@@ -495,7 +529,7 @@ mod tests {
             if let Some((state, conf)) = session {
                 b.sessions.push(claude(1, state, conf));
             }
-            assert_eq!(seat(&b, ulid::Ulid(1)), want_seat);
+            assert_eq!(seat(&b, ulid::Ulid(1), false), want_seat);
             let ahead: HashMap<_, _> = [(ulid::Ulid(1), flags(2, false))].into_iter().collect();
             assert_eq!(run(&b, &ahead).merge.is_empty(), !merges, "{want_seat:?}");
             // A rebase needs a claude to ask: an empty seat never rebases.
@@ -505,6 +539,52 @@ mod tests {
                 want_seat != Seat::Idle,
                 "{want_seat:?}"
             );
+        }
+    }
+
+    /// T-809: an agent relaunched on its conversation (a tier switch, a
+    /// wake) comes up at `Idle{Unknown}` from its `SessionStart`, at its
+    /// composer with nothing in flight: a free seat, as an end of turn is.
+    /// A start whose launch words have not landed is not, nor one whose
+    /// words never went, nor a restart's re-derived Low reading (T-663).
+    #[test]
+    fn a_relaunched_agent_at_its_composer_is_a_free_seat() {
+        let unknown = SessionState::Idle { stop_reason: StopReason::Unknown };
+        // (state, confidence, unsent, pending_submit, words owed, seat)
+        let cases = [
+            (unknown.clone(), Confidence::High, false, false, false, Seat::Idle),
+            (unknown.clone(), Confidence::Medium, false, false, false, Seat::Busy),
+            (unknown.clone(), Confidence::Low, false, false, false, Seat::Busy),
+            (unknown.clone(), Confidence::High, true, false, false, Seat::Busy),
+            (unknown.clone(), Confidence::High, false, true, false, Seat::Busy),
+            (unknown.clone(), Confidence::High, false, false, true, Seat::Busy),
+            (idle(), Confidence::High, false, false, true, Seat::Busy),
+            (idle(), Confidence::High, true, false, false, Seat::Idle),
+        ];
+        for (state, conf, unsent, submit, owed, want) in cases {
+            let mut b = board();
+            b.tickets.push(ticket(1, REVIEW, "a"));
+            let mut s = claude(1, state.clone(), conf);
+            s.unsent = unsent.then(Default::default);
+            s.pending_submit = submit;
+            b.sessions.push(s);
+            let case = format!("{state:?} {conf:?} unsent={unsent} submit={submit} owed={owed}");
+            assert_eq!(seat(&b, ulid::Ulid(1), owed), want, "{case}");
+            let owed_set: HashSet<_> = owed.then_some(ulid::Ulid(1)).into_iter().collect();
+            let read = |needs_rebase| {
+                plan(&Input {
+                    board: &b,
+                    flags: &HashMap::from([(ulid::Ulid(1), flags(2, needs_rebase))]),
+                    base_tip: &tips("tip1"),
+                    asked: &HashMap::new(),
+                    conflict_asked: &HashSet::new(),
+                    fused: &HashSet::new(),
+                    owed: &owed_set,
+                })
+            };
+            let free = want == Seat::Idle;
+            assert_eq!(read(false).merge.is_empty(), !free, "merges: {case}");
+            assert_eq!(read(true).rebase.is_empty(), !free, "rebase asked: {case}");
         }
     }
 
@@ -549,6 +629,7 @@ mod tests {
             asked: &asked,
             conflict_asked: &HashSet::new(),
             fused: &HashSet::new(),
+            owed: &HashSet::new(),
         });
         assert_eq!(p.rebase, vec![ulid::Ulid(3)]);
         // The tip is the TICKET's (T-368): ticket 3's own base moved to
@@ -567,6 +648,7 @@ mod tests {
             asked: &asked,
             conflict_asked: &HashSet::new(),
             fused: &HashSet::new(),
+            owed: &HashSet::new(),
         });
         assert_eq!(p.rebase, vec![ulid::Ulid(3)]);
         // Fused: excluded from rebase asks only.
@@ -578,6 +660,7 @@ mod tests {
             asked: &HashMap::new(),
             conflict_asked: &HashSet::new(),
             fused: &fused,
+            owed: &HashSet::new(),
         });
         assert_eq!(p.rebase, vec![ulid::Ulid(2)]);
     }
@@ -732,6 +815,7 @@ mod tests {
             asked: &asked,
             conflict_asked: &HashSet::new(),
             fused: &HashSet::new(),
+            owed: &HashSet::new(),
         });
         assert_eq!(p, Plan::default());
     }

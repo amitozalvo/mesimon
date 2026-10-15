@@ -4989,7 +4989,7 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
     assert_eq!(rec.state, backgrounded, "nothing parked, killed or moved by time");
     let board = c.board();
     assert_eq!(
-        mesimon_core::train::seat(&board, w),
+        mesimon_core::train::seat(&board, w, false),
         mesimon_core::train::Seat::Busy,
         "never merged under a worker that may be mid-work"
     );
