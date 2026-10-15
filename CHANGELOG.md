@@ -6,6 +6,73 @@ notes, and the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-beta.6 — 2026-10-15
+
+### Compatibility
+
+- **`columns.toml` moves to schema 8.** An older build leaves the file
+  untouched and does not write to it until the newer build is back.
+
+### Added
+
+- **A board can merge through pull requests.** Set **Settings › Behaviour ›
+  Merge into** to `pull requests` and the board reads GitHub or GitLab
+  through the `gh` or `glab` you are signed in to; it never opens, merges or
+  comments on a pull request. The default stays `main`, where nothing changes.
+- **Cards and ticket pages show each pull request and its pipeline.** One
+  glyph per pull request says open, running, waiting on a manual job, passed,
+  failed, merged, deployed or closed. `Ctrl+H` lists them with reviews and
+  deployments, `Ctrl+K` opens one, and **Settings › Appearance › Pull
+  requests on cards** sets when the card line shows.
+- **Columns can follow the forge.** In a column's settings, **Moves in when**
+  moves a ticket in when its pull request opens, passes, merges or is
+  deployed to an environment you name, and **Needs passed pipeline** holds
+  out a ticket whose pipeline failed or still runs.
+- **The top row names the board's workflow** (`∙ train`, `∙ pull requests`
+  or `∙ pull requests offline`) and brightens when it acts. Select it and
+  press Enter to change **Merge into**.
+- **A guided tour.** **Guided tour** in the Esc menu plays each move on a
+  practice board, where you can try the keys yourself.
+- **A column can refuse new tickets.** **Filed here** in a column's
+  settings turns it off; `o` there opens the composer in the nearest column
+  that takes them. IN PROGRESS and REVIEW start this way on new boards.
+- **Fetch from the remote** in **Settings › Behaviour** fetches every 1, 5
+  or 15 minutes, per board or for the machine.
+- **When the board does not move a card, the ticket page says why** in grey
+  under the branch, for example `held: pipeline running — before REVIEW`.
+- **Remote Control can archive a ticket** from the card sheet, with Restore
+  on the toast that follows.
+
+### Changed
+
+- **A usage limit now needs you.** An agent stopped on its plan's limit turns
+  the card to needs-you and notifies you, and it no longer holds its seat:
+  you can sleep it, and the merge train passes it.
+- **What the crown and an agent said to each other shows under the card's
+  title**, in the crown's colour, until you rest on the card.
+- **The column settings dialog is laid out like the Settings page**, with
+  rows under NEW TICKETS, COMING IN and GOING OUT. `Entry needs every summary
+  box ticked` is now **Needs boxes ticked**, and `Sleep idle agents` is
+  **Sleep after**.
+- **Settings shows this board's values in either scope**, and `b` on the
+  Theme page switches between the machine's theme and this board's.
+- **Remote Control opens on the Now list**, and Back on a ticket returns to
+  the list instead of closing the app.
+
+### Fixed
+
+- **A branch rebased before its first commit no longer reads as merged.**
+- **A worktree that cannot be made says why** on the card, for example `no
+  commits on main yet`, and a crown that asked for it is told.
+- **A board stopped while making a worktree** no longer refuses every later
+  start on that ticket.
+- **A card's preview keeps the agent's last words** through a long tool run,
+  instead of falling back to the prompt.
+- **On macOS, the input-source indicator no longer follows the board's
+  spinner.**
+- **A long row in a list dialog reads in full** above the footer while the
+  cursor is on it.
+
 ## v0.1.0-beta.5 — 2026-10-12
 
 ### Compatibility
