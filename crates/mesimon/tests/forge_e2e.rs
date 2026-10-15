@@ -52,6 +52,10 @@
 //! `auth status` failing names the host on the advisory row, and once it
 //! answers a ticket opened meanwhile binds.
 //!
+//! A closed PR stays the ticket's (T-797): it holds the train and `m` as a
+//! merged one does, and a PR opened here and closed, or a `pr create` on a
+//! checkout ticket no forge read covers, holds no pipeline column.
+//!
 //! The stub is the forge: `auth status` passes, `pr list` prints the file
 //! the test writes, `api …/check-runs` and `api …/status` the merge
 //! commit's pipeline and `api …/deployments` its deployments, by sha where
@@ -501,6 +505,72 @@ fn a_ticket_with_no_pull_request_enters_and_one_opened_here_waits() {
         c.request(Command::MoveTicket { id: pr_id, column: "REVIEW".into(), before: None }),
         Response::Ok
     ));
+
+    // T-797: a PR this ticket's turn opened, read closed unmerged, has no
+    // pipeline to pass: its URL is one the forge read, and the turn's end
+    // enters REVIEW.
+    let (gone, gone_sid, gone_branch, gone_path) = ready(&mut c, "dropped");
+    let gone_tip = git(&gone_path, &["rev-parse", "HEAD"]).trim().to_string();
+    write(
+        &prs_file,
+        &format!(
+            "[{},{}]",
+            numbered_pr(42, &branch, &tip, false),
+            closed_pr(44, &gone_branch, &gone_tip)
+        ),
+    );
+    wait_until(Duration::from_secs(20), "the closed PR to bind", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == gone && p.number == 44 && p.state == "closed")
+    });
+    let dropped = h.dir.join("dropped.jsonl");
+    std::fs::write(
+        &dropped,
+        concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_4","name":"Bash","input":{"command":"gh pr create --fill"}}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_4","content":"https://github.com/example/forge/pull/44\n"}]}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    turn(&mut c, gone_sid, &dropped);
+    wait_until(Duration::from_secs(10), "the closed PR's ticket to enter REVIEW", || {
+        c.board().ticket(gone).is_some_and(|t| t.column == "REVIEW")
+    });
+
+    // And a checkout ticket whose turn ran `pr create`: no forge read asks
+    // about a ticket with no branch, so it waits for no read (T-750's pass).
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "aside".into(),
+        workspace: None,
+        tier: None,
+    });
+    let aside = c.board().tickets.iter().find(|t| t.title == "aside").unwrap().id;
+    let aside_sid = match c.request(Command::SpawnSession {
+        ticket: aside,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn: {other:?}"),
+    };
+    let created = h.dir.join("aside.jsonl");
+    std::fs::write(
+        &created,
+        concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_5","name":"Bash","input":{"command":"gh pr create --fill"}}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_5","content":"https://github.com/example/forge/pull/45\n"}]}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    turn(&mut c, aside_sid, &created);
+    wait_until(Duration::from_secs(10), "the checkout ticket to enter REVIEW", || {
+        c.board().ticket(aside).is_some_and(|t| t.column == "REVIEW")
+    });
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
 
@@ -2556,6 +2626,11 @@ fn numbered_pr(n: u64, branch: &str, tip: &str, merged: bool) -> String {
     )
 }
 
+/// PR `n` closed unmerged on the forge, from `branch` at `tip` (T-797).
+fn closed_pr(n: u64, branch: &str, tip: &str) -> String {
+    numbered_pr(n, branch, tip, false).replace(r#""state":"OPEN""#, r#""state":"CLOSED""#)
+}
+
 /// A follow-up commit on a side branch in a ticket's worktree, its HEAD's
 /// reflog the fact that binds its PR to the ticket; the ticket's own branch
 /// stays where it merged.
@@ -2820,30 +2895,51 @@ fn a_ticket_whose_work_went_through_a_pr_is_never_the_trains() {
     ));
     let main_before = git(&repo, &["rev-parse", "main"]).trim().to_string();
     let (id, sid, branch, _path) = ready(&mut c, "alpha");
+    // T-797: beside it, a ticket whose PR the team closed unmerged, at the
+    // branch's tip.
+    let (gamma, gsid, g_branch, g_path) = ready(&mut c, "gamma");
+    let g_tip = git(&g_path, &["rev-parse", "HEAD"]).trim().to_string();
     // The PR merged at a head the branch moved past, as merge commits on the
     // forge: nothing folds it merged here.
     let off_tip = "c0ffee42".repeat(5);
-    write(&prs_file, &format!("[{}]", numbered_pr(42, &branch, &off_tip, true).trim()));
-    wait_until(Duration::from_secs(20), "the merged PR to bind", || {
-        prs_of(&mut c).iter().any(|p| p.ticket == id && p.number == 42 && p.state == "merged")
+    write(
+        &prs_file,
+        &format!(
+            "[{},{}]",
+            numbered_pr(42, &branch, &off_tip, true).trim(),
+            closed_pr(43, &g_branch, &g_tip).trim()
+        ),
+    );
+    wait_until(Duration::from_secs(20), "the merged and the closed PR to bind", || {
+        let prs = prs_of(&mut c);
+        prs.iter().any(|p| p.ticket == id && p.number == 42 && p.state == "merged")
+            && prs.iter().any(|p| p.ticket == gamma && p.number == 43 && p.state == "closed")
     });
     turn(&mut c, &hook_sock, sid);
-    wait_until(Duration::from_secs(10), "the turn's end to land it in REVIEW", || {
-        c.board().ticket(id).is_some_and(|t| t.column == "REVIEW")
+    turn(&mut c, &hook_sock, gsid);
+    wait_until(Duration::from_secs(10), "the turns' ends to land both in REVIEW", || {
+        let b = c.board();
+        [id, gamma].iter().all(|t| b.ticket(*t).is_some_and(|t| t.column == "REVIEW"))
     });
     // Several forge and train passes.
     std::thread::sleep(Duration::from_secs(4));
-    let w = worktrees_of(&mut c).into_iter().find(|w| w.ticket == id).unwrap();
-    assert!(!w.merged && w.ahead > 0, "the branch reads ahead of the base: {w:?}");
-    assert_eq!(feed_count(&h, "merge_train_merged", id), 0, "the forge's merge, not the train's");
-    assert_eq!(feed_count(&h, "merge_train_rebase_asked", id), 0);
+    for t in [id, gamma] {
+        let w = worktrees_of(&mut c).into_iter().find(|w| w.ticket == t).unwrap();
+        assert!(!w.merged && w.ahead > 0, "the branch reads ahead of the base: {w:?}");
+        assert_eq!(
+            feed_count(&h, "merge_train_merged", t),
+            0,
+            "the forge's merge, not the train's"
+        );
+        assert_eq!(feed_count(&h, "merge_train_rebase_asked", t), 0);
+    }
     assert_eq!(git(&repo, &["rev-parse", "main"]).trim(), main_before, "local main untouched");
     // Off the train's list, not a merge it tries and is refused.
     let pending = match c.request(Command::Snapshot) {
         Response::Board { pending, .. } => pending,
         other => panic!("not a board: {other:?}"),
     };
-    assert!(!pending.iter().any(|p| p.ticket == id), "{pending:?}");
+    assert!(!pending.iter().any(|p| p.ticket == id || p.ticket == gamma), "{pending:?}");
 
     // The agent reads who merges it, and `m` is refused in the forge's words.
     let view = match c.send(Principal::Agent { session: sid }, Command::AgentGetTicket) {
@@ -2862,6 +2958,24 @@ fn a_ticket_whose_work_went_through_a_pr_is_never_the_trains() {
         other => panic!("m on a ticket its PRs carried: {other:?}"),
     }
     assert_eq!(git(&repo, &["rev-parse", "main"]).trim(), main_before);
+    // The closed one (T-797): the forge's too, and its reopening the road
+    // back.
+    let view = match c.send(Principal::Agent { session: gsid }, Command::AgentGetTicket) {
+        Response::AgentTicket { ticket } => ticket,
+        other => panic!("get_ticket: {other:?}"),
+    };
+    let merge = view.merge.expect("a branch says who merges it");
+    assert_eq!(
+        (merge.by.as_str(), merge.why.as_str()),
+        ("forge", "its pull requests were closed unmerged on the forge")
+    );
+    match c.request(Command::MergeTicket { id: gamma }) {
+        Response::Merge { outcome: MergeOutcome::Refused, detail, .. } => {
+            assert_eq!(detail, "PR #43 closed unmerged — reopen it on GitHub");
+        }
+        other => panic!("m on a ticket whose PR was closed: {other:?}"),
+    }
+    assert_eq!(git(&repo, &["rev-parse", "main"]).trim(), main_before);
 
     // The same train merges a ticket with no PR.
     let (beta, bsid, _, _) = ready(&mut c, "beta");
@@ -2870,6 +2984,7 @@ fn a_ticket_whose_work_went_through_a_pr_is_never_the_trains() {
         feed_count(&h, "merge_train_merged", beta) >= 1
     });
     assert_eq!(feed_count(&h, "merge_train_merged", id), 0);
+    assert_eq!(feed_count(&h, "merge_train_merged", gamma), 0);
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
 

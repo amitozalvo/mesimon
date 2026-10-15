@@ -839,6 +839,29 @@ checks = ["road:mod", "started_by_crown", "unlanded", "crown_reply:forge", "repl
   rig = "forge_off"
 
 [[test]]
+id = "F9"
+title = "F9 · the crown reads who merges a ticket whose pull request was closed on the forge: do the steps below"
+workspace = "worktree"
+brief = "Write a file named F9.txt holding the single line f9, commit it with git with the message F9, then reply with the single word done and end your turn. Read no other file and run no other command."
+expect = "the worker commits; its PR 42 is closed unmerged on a stub forge at the branch's tip (T-797), so the branch reads ahead of the local base and the closed PR is all the forge holds of the work; the crown, asked to land the branch where landing it is the crown's, reads get_ticket's merge (by forge, its pull requests were closed unmerged on the forge), lands nothing (a merge_ticket it makes is refused: PR #42 closed unmerged — reopen it on GitHub) and answers that the PR was closed; the branch is not on the base. Before T-797 the closed PR was out of the ticket's set, merge read crown (the train is off), and the crown landed the branch."
+checks = ["road:mod", "started_by_crown", "unlanded", "crown_reply:closed", "replies:done"]
+
+  [[test.steps]]
+  crown = "F9: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: F9 started. When the board wakes you because {key}'s agent delivered or finished, end your turn with the single line: F9 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "forge_closed"
+
+  [[test.steps]]
+  crown = "F9: {key}'s branch reads ahead of its base. Call get_ticket with key {key}, and land {key}'s branch if landing it is the crown's to do. Then end your turn with the single line: F9 merge by, then who merges {key}'s branch and why, in get_ticket's words."
+  until = { state = "idle" }
+
+  [[test.steps]]
+  rig = "forge_off"
+
+[[test]]
 id = "H1"
 title = "H1 · a worker asked why its ticket did not move finds the held move: do the steps below"
 workspace = "worktree"

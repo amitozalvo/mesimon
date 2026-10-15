@@ -317,20 +317,26 @@ impl Ledger {
         self.tickets.get(&ticket).map(|t| t.pr_urls.clone()).unwrap_or_default()
     }
 
-    /// Whether a ticket's sessions opened a PR (T-750): a URL the ledger
-    /// keeps, or one in a transcript's tail the pass has not reached, `live`
-    /// naming the transcripts its sessions point at now (a new one the
-    /// ledger has not learned is read whole). `None` when a tail could not
-    /// be read: the gate reads that as unknown, never as none opened.
-    pub fn opened_any(&self, ticket: ulid::Ulid, live: &[String]) -> Option<bool> {
-        if self.tickets.get(&ticket).is_some_and(|t| !t.pr_urls.is_empty()) {
+    /// Whether a ticket's sessions opened a PR a forge read still owes
+    /// (T-750, T-797): a URL the ledger keeps, or one in a transcript's tail
+    /// the pass has not reached, that `owed` says no read has held yet,
+    /// `live` naming the transcripts its sessions point at now (a new one
+    /// the ledger has not learned is read whole). `None` when a tail could
+    /// not be read: the gate reads that as unknown, never as none opened.
+    pub fn opened_unread(
+        &self,
+        ticket: ulid::Ulid,
+        live: &[String],
+        owed: impl Fn(&str) -> bool,
+    ) -> Option<bool> {
+        if self.tickets.get(&ticket).is_some_and(|t| t.pr_urls.iter().any(|u| owed(u))) {
             return Some(true);
         }
-        opened_in_tails(&self.tails(ticket, live))
+        urls_in_tails(&self.tails(ticket, live)).map(|urls| urls.iter().any(|u| owed(u)))
     }
 
     /// A ticket's transcripts with how far the pass read each, `live` as
-    /// `opened_any` takes it: what a worker looks past for a `pr create`
+    /// `opened_unread` takes it: what a worker looks past for a `pr create`
     /// the ledger has not reached yet (T-761).
     pub fn tails(&self, ticket: ulid::Ulid, live: &[String]) -> Vec<(String, Cursor)> {
         let mut out: Vec<(String, Cursor)> = self
@@ -492,6 +498,13 @@ fn opened_on(line: &str, pending: &mut Vec<String>) -> Vec<String> {
 /// its subagents' transcripts included (read whole where the ledger has
 /// none). `None` when a tail could not be read: unknown, never none.
 pub fn opened_in_tails(tails: &[(String, Cursor)]) -> Option<bool> {
+    urls_in_tails(tails).map(|urls| !urls.is_empty())
+}
+
+/// The PR URLs `pr create` results printed in the tails past the ledger's
+/// cursors (`opened_in_tails`), every tail read. `None` when one could not
+/// be read.
+fn urls_in_tails(tails: &[(String, Cursor)]) -> Option<Vec<String>> {
     let mut all: Vec<(String, Cursor)> = tails.to_vec();
     for (path, _) in tails {
         for sub in subagents(path) {
@@ -501,24 +514,25 @@ pub fn opened_in_tails(tails: &[(String, Cursor)]) -> Option<bool> {
         }
     }
     let mut unread = false;
+    let mut urls = Vec::new();
     for (path, cursor) in &all {
         match opened_in_tail(path, cursor) {
-            Ok(true) => return Some(true),
-            Ok(false) => {}
+            Ok(mut found) => urls.append(&mut found),
             Err(()) => unread = true,
         }
     }
-    (!unread).then_some(false)
+    (!unread).then_some(urls)
 }
 
-/// Whether one transcript's tail past `cursor` holds a PR URL its session
-/// opened (T-750), read on the caller's thread and moving no cursor: the
-/// pass still folds the same lines in. `Err` when it cannot be read, or
-/// grew past what one pass reads; a file that is gone has nothing new.
-fn opened_in_tail(path: &str, cursor: &Cursor) -> std::result::Result<bool, ()> {
+/// The PR URLs one transcript's tail past `cursor` printed as its session
+/// opened them (T-750, T-797), read on the caller's thread and moving no
+/// cursor: the pass still folds the same lines in. `Err` when it cannot be
+/// read, or grew past what one pass reads; a file that is gone has nothing
+/// new.
+fn opened_in_tail(path: &str, cursor: &Cursor) -> std::result::Result<Vec<String>, ()> {
     let len = match std::fs::metadata(path) {
         Ok(m) => m.len(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(_) => return Err(()),
     };
     // Shorter than the cursor: rewritten, so read from the start.
@@ -528,7 +542,7 @@ fn opened_in_tail(path: &str, cursor: &Cursor) -> std::result::Result<bool, ()> 
         (cursor.offset, cursor.pending_create.clone())
     };
     if len == offset {
-        return Ok(false);
+        return Ok(Vec::new());
     }
     if len - offset > READ_CAP {
         return Err(());
@@ -537,10 +551,11 @@ fn opened_in_tail(path: &str, cursor: &Cursor) -> std::result::Result<bool, ()> 
     file.seek(SeekFrom::Start(offset)).map_err(|_| ())?;
     let mut buf = Vec::new();
     file.take(len - offset).read_to_end(&mut buf).map_err(|_| ())?;
-    let Some(end) = buf.iter().rposition(|b| *b == b'\n') else { return Ok(false) };
+    let Some(end) = buf.iter().rposition(|b| *b == b'\n') else { return Ok(Vec::new()) };
     Ok(String::from_utf8_lossy(&buf[..end])
         .lines()
-        .any(|line| !opened_on(line, &mut pending).is_empty()))
+        .flat_map(|line| opened_on(line, &mut pending))
+        .collect())
 }
 
 /// A line's moment: its own stamp, or the pass's when it carries none.
@@ -762,10 +777,15 @@ mod tests {
         let p = path.display().to_string();
         let t = ulid::Ulid::new();
         let mut ledger = Ledger::default();
-        assert_eq!(ledger.opened_any(t, &[]), Some(false), "no transcript, nothing opened");
+        let owed = |_: &str| true;
+        assert_eq!(
+            ledger.opened_unread(t, &[], owed),
+            Some(false),
+            "no transcript, nothing opened"
+        );
         std::fs::write(&path, format!("{}\n", line("m1", 10))).unwrap();
         assert_eq!(
-            ledger.opened_any(t, std::slice::from_ref(&p)),
+            ledger.opened_unread(t, std::slice::from_ref(&p), owed),
             Some(false),
             "a live one read whole"
         );
@@ -774,20 +794,25 @@ mod tests {
         let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
         use std::io::Write;
         writeln!(f, r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"toolu_7","name":"Bash","input":{{"command":"glab mr create --fill"}}}}]}}}}"#).unwrap();
-        assert_eq!(ledger.opened_any(t, &[]), Some(false), "the result has not come");
+        assert_eq!(ledger.opened_unread(t, &[], owed), Some(false), "the result has not come");
         writeln!(f, r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"toolu_7","content":"https://gitlab.com/g/p/-/merge_requests/3\n"}}]}}}}"#).unwrap();
         let before = ledger.clone();
-        assert_eq!(ledger.opened_any(t, &[]), Some(true));
+        assert_eq!(ledger.opened_unread(t, &[], owed), Some(true));
+        // A URL a read already holds is owed nothing (T-797), in the tail
+        // and in the ledger alike.
+        let read = |u: &str| !u.ends_with("merge_requests/3");
+        assert_eq!(ledger.opened_unread(t, &[], read), Some(false));
         assert_eq!(ledger, before, "the gate's read moves no cursor");
         // The pass folds the same lines in; the ledger answers from then on.
         ledger.apply(scan(ledger.jobs(), NOW));
         assert_eq!(ledger.opened_urls(t).len(), 1);
+        assert_eq!(ledger.opened_unread(t, &[], read), Some(false));
         std::fs::remove_file(&path).unwrap();
-        assert_eq!(ledger.opened_any(t, &[]), Some(true));
+        assert_eq!(ledger.opened_unread(t, &[], owed), Some(true));
         // A transcript that is gone has nothing new.
         let u = ulid::Ulid::new();
         ledger.learn(u, &p, false, false);
-        assert_eq!(ledger.opened_any(u, &[]), Some(false));
+        assert_eq!(ledger.opened_unread(u, &[], owed), Some(false));
     }
 
     #[test]

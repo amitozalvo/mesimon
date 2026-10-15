@@ -7133,27 +7133,81 @@ impl Daemon {
     /// URLs and the tail its pass has not reached, read now, so a turn's end
     /// judges the `pr create` of that same turn (T-750).
     fn pipeline_refusal(&self, id: ulid::Ulid) -> Option<String> {
+        use mesimon_core::forge::pipelined;
         // A live read only (T-752): a set `forge.json` brought back may be
         // a day old, and a pipeline, unlike a merge, can turn back. A loaded
-        // set with PRs waits for the first live pass; an empty one reads as
-        // no read at all, as before a restart kept anything.
+        // set with a PR to judge waits for the first live pass; one with
+        // none (empty, or closed PRs alone, T-797) reads as no read at all,
+        // as before a restart kept anything.
         let live = self.forge.at_ms.contains_key(&id);
         let set = self.forge.sets.get(&id).map(Vec::as_slice);
-        if !live && set.is_some_and(|s| !s.is_empty()) {
+        if !live && set.is_some_and(pipelined) {
             return Some("pipeline not read".into());
         }
         let set = set.filter(|_| live);
         // The reading is of a commit the branch has left, or of one never
         // pushed (T-780): the push's pipeline is the next read's.
-        if set.is_some_and(|s| !s.is_empty()) && self.pipeline_head_unread(id) {
+        if set.is_some_and(pipelined) && self.pipeline_head_unread(id) {
             return Some("pipeline not read".into());
         }
-        let opened_here = if set.is_some_and(|s| !s.is_empty()) {
-            None
-        } else {
-            self.costs.opened_any(id, &self.live_transcripts(id))
-        };
-        mesimon_core::forge::entry_refusal(set, opened_here)
+        let unread = if set.is_some_and(pipelined) { None } else { self.opened_unread(id, live) };
+        mesimon_core::forge::entry_refusal(set, unread)
+    }
+
+    /// Whether a session of the ticket opened a PR a forge read still owes
+    /// (T-750, T-797): a URL its transcripts printed that a read reaches
+    /// (`forge_reaches`) and, once read live, that the ticket's reads never
+    /// held, in any state: a closed PR is read. A ticket no read asks about
+    /// (a checkout ticket, a binding with no branch yet) is owed nothing,
+    /// and its transcripts are not read: T-750's no-PR pass, rather than a
+    /// wait no read will ever end.
+    fn opened_unread(&self, id: ulid::Ulid, live: bool) -> Option<bool> {
+        let asked = self.worktrees.get(&id).is_some_and(|b| !b.branch.is_empty())
+            && !self.tearing_down.contains(&id);
+        if !asked {
+            return Some(false);
+        }
+        let hosts = self.forge_hosts();
+        let owed =
+            |url: &str| self.forge_reaches(url, &hosts) && !(live && self.forge.held_url(id, url));
+        self.costs.opened_unread(id, &self.live_transcripts(id), owed)
+    }
+
+    /// The hosts a forge read reaches (T-797): those of the remotes of the
+    /// legs of every worktree a read asks about (`forge_query`'s), the only
+    /// hosts a CLI is pointed at, and whether every such leg's remote is
+    /// parsed yet; one that is not leaves the answer partial.
+    fn forge_hosts(&self) -> (std::collections::HashSet<String>, bool) {
+        let base = self.base_branch.clone().unwrap_or_default();
+        let mut hosts = std::collections::HashSet::new();
+        let mut whole = true;
+        for (t, b) in &self.worktrees {
+            if b.branch.is_empty() || self.tearing_down.contains(t) {
+                continue;
+            }
+            for leg in b.legs(&self.paths.repo_root, &base) {
+                match self.forge.remotes.get(&leg.repo) {
+                    Some(Some(remote)) => {
+                        hosts.insert(remote.host.clone());
+                    }
+                    Some(None) => {}
+                    None => whole = false,
+                }
+            }
+        }
+        (hosts, whole)
+    }
+
+    /// Whether a forge read reaches the PR a printed URL names (T-797): its
+    /// host is one the board's legs reach (`forge_hosts`), or may be while
+    /// a leg's remote is unparsed, and that host's probe did not find no
+    /// CLI. A URL on a host nothing reads waits for nothing.
+    fn forge_reaches(&self, url: &str, hosts: &(std::collections::HashSet<String>, bool)) -> bool {
+        let Some(remote) = mesimon_core::forge::repo_of_url(url) else { return false };
+        if self.forge.probes.get(&remote.host).is_some_and(|p| p.cli.is_none()) {
+            return false;
+        }
+        hosts.0.contains(&remote.host) || !hosts.1
     }
 
     /// An open PR of the ticket's whose head is not its leg's tip
@@ -7226,10 +7280,12 @@ impl Daemon {
         if self.merge_state_word(id).as_deref() == Some("merged") {
             return view("nobody", "already merged");
         }
-        // A PR bound, open, merged or closed (T-778): the forge merges it,
-        // whatever the mode and the train, and `merge_ticket` refuses it.
-        if self.forge.has_pr(id) {
-            return view("forge", "its work goes through pull requests");
+        // A PR bound, open, merged or closed (T-778, T-797): the forge
+        // merges it, whatever the mode and the train, and `merge_ticket`
+        // refuses it. Closed unmerged, every one, the why says so.
+        if let Some(why) = self.forge.sets.get(&id).and_then(|s| mesimon_core::forge::merge_why(s))
+        {
+            return view("forge", why);
         }
         if !self.board.crown_mode.merges() {
             return view("person", "crown mode is supervised");
@@ -13773,9 +13829,14 @@ impl Daemon {
                 repos.push((remote, dir));
             }
         }
+        // Every leg's remote parsed first (`forge_legs`), so a URL below is
+        // judged against the board's hosts whatever order the tickets come
+        // in (T-797): the pipeline gate waits on exactly these.
+        let leg_queries: Vec<Vec<crate::forge::LegQuery>> =
+            tickets.iter().map(|(_, _, legs)| self.forge_legs(legs)).collect();
+        let (hosts, _) = self.forge_hosts();
         let mut queries = Vec::new();
-        for (t, branch, legs) in &tickets {
-            let leg_queries = self.forge_legs(legs);
+        for ((t, branch, legs), leg_queries) in tickets.iter().zip(leg_queries) {
             // The repositories this ticket's set comes from: a pass that
             // did not hear from every one did not read it (T-795).
             let mut mine: Vec<mesimon_core::forge::Remote> = Vec::new();
@@ -13792,7 +13853,7 @@ impl Daemon {
             let opened = self.costs.opened_urls(*t);
             for url in &opened {
                 if let Some(remote) = mesimon_core::forge::repo_of_url(url) {
-                    if repos.iter().any(|(r, _)| r.host == remote.host) {
+                    if hosts.contains(&remote.host) {
                         mine.push(remote.clone());
                         add_repo(&mut repos, remote, self.paths.repo_root.clone());
                     }

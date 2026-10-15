@@ -295,13 +295,17 @@ pub(super) fn brief_spans(
 /// and the flag says so: the line shimmers for it. `passed` is said only
 /// while `passed_news` holds (T-803): a few seconds after it turned, then
 /// the mark says it alone. The merge's environments are the last it
-/// reached, `in production`. `None` with nothing to say.
+/// reached, `in production`. A card whose PRs are all closed
+/// (`App::card_prs`, T-797) says `closed`. `None` with nothing to say.
 pub(super) fn pr_words(
     prs: &[&mesimon_core::command::PrItem],
     passed_news: impl Fn(&mesimon_core::command::PrItem) -> bool,
 ) -> Option<(String, bool)> {
     use mesimon_core::text::scrub_cells;
     let p = prs.iter().find(|p| matches!(p.state.as_str(), "open" | "draft")).or(prs.first())?;
+    if p.state == "closed" {
+        return Some(("closed".into(), false));
+    }
     let mut words = Vec::new();
     let job = p.job.as_deref().map(|j| scrub_cells(j, false)).filter(|j| !j.is_empty());
     match (p.pipeline.as_str(), job) {

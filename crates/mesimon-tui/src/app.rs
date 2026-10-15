@@ -4133,7 +4133,7 @@ impl App {
         // Everything the line says (T-794's words and the deployed mark),
         // by repository and number, so a reorder alone is no news (T-795).
         let mut each: Vec<String> = self
-            .prs_of(ticket)
+            .card_prs(ticket)
             .iter()
             .map(|p| {
                 format!(
@@ -4168,7 +4168,7 @@ impl App {
             }
             _ => {}
         }
-        self.prs_of(ticket)
+        self.card_prs(ticket)
             .iter()
             .map(|p| {
                 let (mark, reg) = self.pr_mark(p);
@@ -11357,6 +11357,18 @@ impl App {
     /// A ticket's pull requests (T-739), newest first.
     pub fn prs_of(&self, ticket: ulid::Ulid) -> Vec<&mesimon_core::command::PrItem> {
         self.prs.iter().filter(|p| p.ticket == ticket).collect()
+    }
+
+    /// The pull requests a card's line shows (T-797): those open or merged,
+    /// the closed ones too where every one is closed. A PR set aside beside
+    /// one that carries the work is history the page and `^h` keep; on a
+    /// ticket whose PRs are all closed it is why the board merges nothing.
+    pub fn card_prs(&self, ticket: ulid::Ulid) -> Vec<&mesimon_core::command::PrItem> {
+        let prs = self.prs_of(ticket);
+        if prs.iter().all(|p| p.state == "closed") {
+            return prs;
+        }
+        prs.into_iter().filter(|p| p.state != "closed").collect()
     }
 
     /// The pull requests dialog's cursor row (T-759), clamped to the rows

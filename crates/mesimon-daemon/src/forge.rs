@@ -249,8 +249,8 @@ pub struct Edge {
     /// which is the deploy edges' (`waiting`, `deployed`).
     pub passed: bool,
     /// Every PR of the set is merged, and was not before: the ticket's
-    /// arrival, on every repository at once (T-768). A closed PR is out of
-    /// the set (`forge::ticket_set`).
+    /// arrival, on every repository at once (T-768). A closed PR is no PR
+    /// to wait for (T-797): the set merged is one merged and none open.
     pub merged: bool,
     /// PRs, by label, read merged that were read open before (T-757): what
     /// the crown hears of a merge the worktree flags cannot say, the caller
@@ -412,7 +412,10 @@ pub fn edge(old: &[Pr], new: &[Pr], held: &[(String, u64)]) -> Edge {
         .iter()
         .filter(|p| p.state.is_open() && !held.iter().any(|(r, n)| *r == p.repo && *n == p.number))
         .collect();
-    let all_merged = |s: &[Pr]| !s.is_empty() && s.iter().all(|p| p.state == PrState::Merged);
+    // A closed PR stays in the set (T-797) and waits for nothing.
+    let all_merged = |s: &[Pr]| {
+        s.iter().any(|p| p.state == PrState::Merged) && !s.iter().any(|p| p.state.is_open())
+    };
     let before = arrived_envs(old);
     let (then, now) = (forge::pipeline_of(old), forge::pipeline_of(new));
     // The open PRs' own wait; a merged PR's is said per PR (T-782).
@@ -680,7 +683,7 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
         }
         if read {
             // A read's state and time reorder the set, and a closed one
-            // leaves it, as the list's would.
+            // sheds its pipeline, as the list's would.
             set = forge::ticket_set(set);
         }
         merged_reads(
@@ -1556,9 +1559,19 @@ impl State {
     }
 
     /// Any PR bound to the ticket, open, merged or closed (T-778): its
-    /// work goes through pull requests, and the forge merges it.
+    /// work goes through pull requests, and the forge merges it. A closed
+    /// one stays in the set for this (T-797).
     pub fn has_pr(&self, ticket: ulid::Ulid) -> bool {
         self.sets.get(&ticket).is_some_and(|s| !s.is_empty())
+    }
+
+    /// Whether the ticket's reads ever held the PR a printed URL names
+    /// (T-797): in any state, a closed one included, and one a later list
+    /// no longer shows. `held` holds every PR of every set.
+    pub fn held_url(&self, ticket: ulid::Ulid, url: &str) -> bool {
+        self.held.get(&ticket).is_some_and(|held| {
+            held.iter().any(|(repo, number)| forge::url_names(url, repo, *number))
+        }) || self.sets.get(&ticket).is_some_and(|s| s.iter().any(|p| forge::same_url(&p.url, url)))
     }
 
     /// The ticket's merged PR for the repository at `dir` at a tip
@@ -1952,6 +1965,39 @@ mod tests {
         );
         let bare = [pr(2, PrState::Open, Pipeline::Failed(String::new()))];
         assert_eq!(delta(Some(&before), &bare), ["pipeline failed #2"]);
+    }
+
+    /// T-797: a closed PR stays in the set. The feed says the closing, the
+    /// other PR merging beside it is the ticket's arrival, a closed PR
+    /// alone arrives nowhere, and a URL its ticket's reads ever held is
+    /// read, by number and path, whatever the case of the remote's path.
+    #[test]
+    fn a_closed_pr_stays_and_waits_for_nothing() {
+        let open = [
+            pr(1, PrState::Open, Pipeline::Running(String::new())),
+            pr(2, PrState::Open, Pipeline::None),
+        ];
+        let closed = forge::ticket_set(vec![pr(2, PrState::Closed, Pipeline::Failed("t".into()))]);
+        let mut merged = pr(1, PrState::Merged, Pipeline::Passed);
+        merged.merge_oid = "m1".into();
+        let now = forge::ticket_set(vec![merged, closed[0].clone()]);
+        // Newest first: #2 closed after #1 merged.
+        assert_eq!(delta(Some(&open), &now), ["closed #2", "merged #1", "pipeline passed #1"]);
+        let e = edge(&open, &now);
+        assert!(e.merged, "the open one merged; the closed one waits for nothing");
+        assert!(e.failed.is_none(), "a closed PR's pipeline is none");
+        assert!(!edge(&open[1..], &closed).merged, "closing alone merges nothing");
+        assert!(!edge(&now, &now).merged);
+
+        let mut s = State::default();
+        let t = ulid::Ulid::new();
+        s.opens(t, &closed);
+        s.sets.insert(t, closed);
+        assert!(s.has_pr(t));
+        assert!(s.held_url(t, "https://github.com/o/r/pull/2"));
+        assert!(s.held_url(t, "https://github.com/O/R/pull/2"));
+        assert!(!s.held_url(t, "https://github.com/o/r/pull/3"));
+        assert!(!s.held_url(ulid::Ulid::new(), "https://github.com/o/r/pull/2"));
     }
 
     #[test]

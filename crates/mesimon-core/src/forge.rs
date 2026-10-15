@@ -77,7 +77,9 @@ pub enum PrState {
     Open,
     Draft,
     Merged,
-    /// Closed without merging: abandoned, and dropped from a ticket's set.
+    /// Closed without merging: the team set the work aside. It stays in a
+    /// ticket's set (T-797), so the board still knows the work went through
+    /// a pull request, and judges no pipeline of it.
     Closed,
 }
 
@@ -872,13 +874,36 @@ pub fn same_url(a: &str, b: &str) -> bool {
     norm(a) == norm(b)
 }
 
-/// A ticket's set out of the bound PRs: open or merged ones, newest first;
-/// a closed unmerged PR is abandoned and drops out.
+/// Whether a URL a session printed names this PR (T-797): the same URL, or
+/// its number and repository path, the path in any case, as both forges
+/// route it. A remote spelled `Owner/Repo` names the PR the CLI printed as
+/// `owner/repo`.
+pub fn url_names(url: &str, repo: &str, number: u64) -> bool {
+    pr_number_of(url).is_some_and(|(_, n)| n == number)
+        && repo_of_url(url).is_some_and(|r| r.path.eq_ignore_ascii_case(repo))
+}
+
+/// A ticket's set out of the bound PRs, newest first, a closed one included
+/// (T-797): the merge stays the forge's for a ticket whose PRs are all
+/// closed, as for one whose PRs merged (T-778). A closed PR's pipeline,
+/// conflict and review were about work the team set aside, and read as
+/// none, so no fold, edge or mark reads them.
 pub fn ticket_set(mut prs: Vec<Pr>) -> Vec<Pr> {
-    prs.retain(|p| p.state != PrState::Closed);
+    for p in prs.iter_mut().filter(|p| p.state == PrState::Closed) {
+        p.pipeline = Pipeline::None;
+        p.conflict = false;
+        p.review = Review::None;
+    }
     prs.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms).then(b.number.cmp(&a.number)));
     prs.dedup_by(|a, b| a.repo == b.repo && a.number == b.number);
     prs
+}
+
+/// Whether a set holds a PR with a pipeline to judge: an open or a merged
+/// one. A set of closed PRs alone has none (T-797), and the pipeline gate
+/// reads it as no PR bound.
+pub fn pipelined(set: &[Pr]) -> bool {
+    set.iter().any(|p| p.state != PrState::Closed)
 }
 
 /// The set's merged PR for one repository at one tip: the newest merged PR
@@ -947,16 +972,42 @@ pub fn open_refusal(pr: &Pr) -> String {
 }
 
 /// Why a ticket's branch is not landed here (T-778), or `None`: the open
-/// PR's sentence while one is open (`open_refusal`), else, with any PR
-/// bound, that the forge carries the merge. Its PRs merged at heads other
+/// PR's sentence while one is open (`open_refusal`), else, with a PR
+/// merged, that the forge carries the merge. Its PRs merged at heads other
 /// than the branch's tip leave the branch reading ahead of a local base the
-/// forge never moved, and a fast-forward there lands the work twice.
+/// forge never moved, and a fast-forward there lands the work twice. With
+/// every PR closed unmerged (T-797) the team set the work aside on the
+/// forge, and reopening the newest is the road back to a merge.
 pub fn merge_refusal(set: &[Pr]) -> Option<String> {
     if let Some(open) = holding(set) {
         return Some(open_refusal(open));
     }
-    let newest = set.first()?;
-    Some(format!("its pull requests carry the merge — merge on {}", newest.forge.name()))
+    if let Some(merged) = set.iter().find(|p| p.state == PrState::Merged) {
+        return Some(format!(
+            "its pull requests carry the merge — merge on {}",
+            merged.forge.name()
+        ));
+    }
+    let closed = set.first()?;
+    Some(format!(
+        "{} {} closed unmerged — reopen it on {}",
+        closed.forge.noun(),
+        closed.label(),
+        closed.forge.name()
+    ))
+}
+
+/// Why the forge is who merges a ticket with a PR bound (T-778), in
+/// `get_ticket`'s `merge.why`, or `None` with none bound: its PRs closed
+/// unmerged, every one (T-797), else its work goes through them.
+pub fn merge_why(set: &[Pr]) -> Option<&'static str> {
+    if set.is_empty() {
+        None
+    } else if pipelined(set) {
+        Some("its work goes through pull requests")
+    } else {
+        Some("its pull requests were closed unmerged on the forge")
+    }
 }
 
 /// The worst pipeline over the set's open PRs; the merged commit's once
@@ -982,15 +1033,16 @@ pub fn pipeline_of(set: &[Pr]) -> Pipeline {
 
 /// Why a column that needs a passed pipeline refuses a ticket (T-739), or
 /// `None` when it may enter. `set` is the forge's last reading of the
-/// ticket's PRs; `opened_here` whether its transcripts opened one, `None`
-/// when they could not be read. A ticket with no PR bound and none opened
-/// has no pipeline to pass and enters, as a ticket with no branch passes
-/// the merge rule (T-750); one opened here and not yet read by the forge
-/// waits for it, so a turn's end seconds after a `pr create` is not waved
-/// through. Unknown is never green.
-pub fn entry_refusal(set: Option<&[Pr]>, opened_here: Option<bool>) -> Option<String> {
-    let set = set.filter(|s| !s.is_empty());
-    if set.is_none() && opened_here == Some(false) {
+/// ticket's PRs; `unread` whether its transcripts opened one a forge read
+/// still owes, `None` when they could not be read. A ticket with no PR
+/// bound and none unread has no pipeline to pass and enters, as a ticket
+/// with no branch passes the merge rule (T-750); one opened here and not
+/// yet read by the forge waits for it, so a turn's end seconds after a `pr
+/// create` is not waved through. A set of closed PRs alone is none bound
+/// (T-797): a closed PR has no pipeline to pass. Unknown is never green.
+pub fn entry_refusal(set: Option<&[Pr]>, unread: Option<bool>) -> Option<String> {
+    let set = set.filter(|s| pipelined(s));
+    if set.is_none() && unread == Some(false) {
         return None;
     }
     match set.map(pipeline_of).unwrap_or(Pipeline::Unknown) {
@@ -1614,14 +1666,29 @@ mod tests {
     }
 
     #[test]
-    fn the_set_is_newest_first_without_the_abandoned() {
+    fn the_set_is_newest_first_closed_included() {
+        let mut closed = pr("o/r", 2, PrState::Closed, "b", 20);
+        closed.pipeline = Pipeline::Failed("test".into());
+        closed.conflict = true;
+        closed.review = Review::ChangesRequested;
         let set = ticket_set(vec![
             pr("o/r", 1, PrState::Merged, "a", 10),
-            pr("o/r", 2, PrState::Closed, "b", 20),
+            closed,
             pr("o/r", 3, PrState::Open, "c", 30),
             pr("o/r", 3, PrState::Open, "c", 30),
         ]);
-        assert_eq!(set.iter().map(|p| p.number).collect::<Vec<_>>(), [3, 1]);
+        assert_eq!(set.iter().map(|p| p.number).collect::<Vec<_>>(), [3, 2, 1]);
+        // T-797: a closed PR stays, its pipeline, conflict and review read
+        // as none, and it lands nothing.
+        let closed = &set[1];
+        assert_eq!(
+            (closed.pipeline.clone(), closed.conflict, closed.review),
+            (Pipeline::None, false, Review::None)
+        );
+        assert!(pipelined(&set));
+        assert!(!pipelined(&set[1..2]), "a closed PR alone has no pipeline");
+        assert_eq!(merged_at(&set, &["o/r".into()], "b"), None);
+        assert_eq!(holding(&set[1..2]), None);
         assert_eq!(merged_at(&set, &["o/r".into()], "c"), None, "the newest is open");
         let landed = ticket_set(vec![pr("o/r", 1, PrState::Merged, "a", 10)]);
         assert_eq!(merged_at(&landed, &["o/r".into()], "a").map(|p| p.number), Some(1));
@@ -1899,6 +1966,30 @@ mod tests {
         // Unbound and nothing opened here: nothing to pass.
         assert_eq!(entry_refusal(None, Some(false)), None);
         assert_eq!(entry_refusal(Some(&[]), Some(false)), None);
+        // T-797: a closed PR alone is none bound. Nothing unread, it enters;
+        // a URL a read still owes holds it, as with no PR at all.
+        let closed = ticket_set(vec![pr("o/r", 1, PrState::Closed, "aa", 1)]);
+        assert_eq!(entry_refusal(Some(&closed), Some(false)), None);
+        assert_eq!(entry_refusal(Some(&closed), Some(true)).as_deref(), Some("pipeline not read"));
+        // Beside an open one, the open one is judged.
+        let mut both = with(Pipeline::Running(String::new()));
+        both.extend(closed);
+        assert_eq!(entry_refusal(Some(&both), Some(false)).as_deref(), Some("pipeline running"));
+    }
+
+    /// T-797: a URL names its PR by the same URL, or by its number and the
+    /// repository's path in any case; another number, another repository or
+    /// a URL that names no PR does not.
+    #[test]
+    fn a_printed_url_names_its_pr_by_number_and_path() {
+        let gh = "https://github.com/Example/Forge/pull/42";
+        assert!(url_names(gh, "example/forge", 42));
+        assert!(url_names(gh, "Example/Forge", 42));
+        assert!(!url_names(gh, "example/forge", 43));
+        assert!(!url_names(gh, "example/other", 42));
+        let gl = "https://gitlab.com/g/sub/p/-/merge_requests/3";
+        assert!(url_names(gl, "g/sub/p", 3));
+        assert!(!url_names("https://github.com/example/forge/issues/42", "example/forge", 42));
     }
 
     /// T-780: MR !5 passed at `a`, the worker pushed `b`, and the forge has
@@ -1962,5 +2053,29 @@ mod tests {
         );
         assert_eq!(merge_refusal(&set).as_deref(), Some("MR !3 open — merge it on GitLab"));
         assert_eq!(merge_refusal(&[]), None, "no PR: the board's merge");
+        assert_eq!(merge_why(&[]), None);
+        assert_eq!(merge_why(&landed), Some("its work goes through pull requests"));
+
+        // T-797: closed unmerged, every one, the newest is named and its
+        // reopening is the road back; one merged beside it is the forge's
+        // merge as before.
+        let closed = |n: u64, at: u64| gl(pr("g/app", n, PrState::Closed, "tip", at), "fix/x");
+        let abandoned = ticket_set(vec![closed(4, 40), closed(5, 50)]);
+        assert_eq!(
+            merge_refusal(&abandoned).as_deref(),
+            Some("MR !5 closed unmerged — reopen it on GitLab")
+        );
+        assert_eq!(
+            merge_why(&abandoned),
+            Some("its pull requests were closed unmerged on the forge")
+        );
+        let mut both = landed.clone();
+        both.push(closed(6, 60));
+        let both = ticket_set(both);
+        assert_eq!(
+            merge_refusal(&both).as_deref(),
+            Some("its pull requests carry the merge — merge on GitLab")
+        );
+        assert_eq!(merge_why(&both), Some("its work goes through pull requests"));
     }
 }

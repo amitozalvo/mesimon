@@ -1483,6 +1483,34 @@ Reply with the single word ready and end your turn."""
                 record["failures"].append("the merged PR never bound, or the card read merged")
                 return False
             return True
+        if what == "forge_closed":
+            # The worker's PR 42 closed unmerged on the forge at its branch's
+            # tip (T-797): the branch reads ahead of the local base, and the
+            # closed PR is all the forge holds of the work.
+            branch = next((w["branch"] for w in self.snapshot().get("worktrees", [])
+                           if w["ticket"] == test["ticket"]), None)
+            if not branch:
+                record["failures"].append("the worker has no worktree branch to open a PR from")
+                return False
+            d = self.forge_stub()
+            self.forge_branch = branch
+            self.write_pr(d, branch, "CLOSED", "passed")
+            env = {
+                "PATH": d + ":" + os.environ.get("PATH", ""),
+                "MSMN_GH_PRS": os.path.join(d, "prs.json"),
+                "MSMN_GH_CHECKS": os.path.join(d, "checks.json"),
+                "MESIMON_FORGE_EVERY_MS": "2000",
+            }
+            if not self.restart(env):
+                record["failures"].append("the daemon would not restart with the stub forge")
+                return False
+            bound = self.wait_for("the closed PR to bind", lambda: any(
+                p["ticket"] == test["ticket"] and p["number"] == 42 and p["state"] == "closed"
+                for p in self.snapshot().get("prs", [])), STEP_TIMEOUT, self.watch)
+            if not bound:
+                record["failures"].append("the closed PR never bound to the ticket")
+                return False
+            return True
         if what == "forge_empty":
             # The stub forge with no PR yet (T-769): the ticket's set is read
             # empty, so a PR that appears later is newly bound, not a

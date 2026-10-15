@@ -8394,6 +8394,48 @@ fn golden_board_prs_120() {
     std::fs::remove_file(&path).ok();
 }
 
+/// T-797: a closed PR stays off a card whose other PR carries the work, and
+/// is the card's line on a ticket whose PRs are all closed, struck and
+/// worded `closed`; the ticket page lists it with no pipeline's words.
+#[test]
+fn a_closed_pr_is_on_the_card_only_where_every_pr_is_closed() {
+    use mesimon_core::command::PrItem;
+    let mut app = app_prs();
+    let pr = |ticket: u128, number: u64, state: &str, pipeline: &str| PrItem {
+        ticket: ulid_n(ticket),
+        forge: "github".into(),
+        repo: "o/r".into(),
+        number,
+        url: format!("https://github.com/o/r/pull/{number}"),
+        state: state.into(),
+        pipeline: pipeline.into(),
+        job: None,
+        conflict: false,
+        review: "none".into(),
+        merged_oid: String::new(),
+        deployed: Vec::new(),
+    };
+    app.prs = vec![
+        pr(5, 44, "closed", "failed"),
+        pr(5, 43, "merged", "passed"),
+        pr(3, 42, "closed", "none"),
+    ];
+    let lines = render(&app, 120, 30);
+    let under = |title: &str| {
+        let y = lines.iter().position(|l| l.contains(title)).expect(title);
+        lines[y + 1].clone()
+    };
+    let t5 = under("Grapheme trunca");
+    assert!(t5.contains("●#43") && !t5.contains("#44"), "the merged one alone: {t5}");
+    let t3 = under("Fix OSC-11");
+    assert!(t3.contains("closed") && t3.contains("⊘#42"), "every PR closed: {t3}");
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
+    let page = render(&app, 120, 30).join("\n");
+    assert!(page.contains("⊘ PR #44 closed"), "{page}");
+    assert!(!page.contains("pipeline failed"), "a closed PR's pipeline is not said: {page}");
+    assert!(page.contains("● PR #43 merged"), "{page}");
+}
+
 /// T-788: the cursor card's pull-request line wears the card's band, the
 /// same surface as the title row above it, edge to edge.
 #[test]

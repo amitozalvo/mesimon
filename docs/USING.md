@@ -484,7 +484,8 @@ with the CLI on your PATH and signed in, each ticket's pull requests show on its
 branch row and on its card's second line, one glyph and the forge's own number per PR, newest
 first. `◯` is open with no pipeline, `◴` (turning once a second) open with its pipeline running,
 `◎` open with a manual job waiting for someone to start it, `◉` open and green (your turn: a
-review, the merge button), `✗` a failed pipeline, `●` merged, `◆` merged and deployed. A merged
+review, the merge button), `✗` a failed pipeline, `●` merged, `◆` merged and deployed, `⊘` closed
+without merging. A card shows a closed PR only when every PR of its ticket is closed. A merged
 PR whose merge commit's pipeline is still running turns `◴`, and one waiting on a manual job
 shows `◎`, until the pipeline settles, deployed or not: a PR deployed to staging and waiting on
 the production job shows `◎`, and `◆` once that pipeline passes. While a pipeline runs or waits,
@@ -503,16 +504,18 @@ follow-up fix after a merge reads as a new open PR until it lands.
 A PR merged on the forge reads merged here without a pull, squashed, rebased or not, and the
 ticket page says `merged into main (PR #42) as 1a2b3c4`. A commit a reviewer added on the forge
 before the merge changes nothing, as long as the PR carried the branch's last commit here; a
-commit made here after the merge is work not landed yet. While a PR is open, `m` and the merge
-train leave the merge to the forge; the train asks the agent to rebase only when the forge reports
-a conflict, and that ask ends with the push. An open PR holds DONE the same way: a column with
-**Entry needs a merged branch** refuses the ticket until the forge merges it, whoever moves it,
-and a ticket already there reads unmerged again. A column can wait for the forge: in a column's
-settings, **Arrives here when** moves a ticket there on its own when a PR opens, its pipeline
-passes, every PR is merged, or the merge reached an environment you name (`deployed to staging`),
-and **Entry needs a passed pipeline** refuses a ticket whose pipeline failed, still runs or was
-never read; a ticket with no pull request passes, as a ticket with no branch passes the merge
-rule, unless its agent opened one the forge has not read yet. A board without `gh` or `glab` changes nothing; **Settings › Behaviour › Fetch from
+commit made here after the merge is work not landed yet. Once a ticket has a PR, open, merged or
+closed, `m` and the merge train leave the merge to the forge; the train asks the agent to rebase
+only when the forge reports a conflict, and that ask ends with the push. A PR closed without
+merging is your team's decision about that work: to merge it, reopen it on the forge. An open PR
+holds DONE the same way: a column with **Entry needs a merged branch** refuses the ticket until
+the forge merges it, whoever moves it, and a ticket already there reads unmerged again. A column
+can wait for the forge: in a column's settings, **Arrives here when** moves a ticket there on its
+own when a PR opens, its pipeline passes, every PR is merged, or the merge reached an environment
+you name (`deployed to staging`), and **Entry needs a passed pipeline** refuses a ticket whose
+pipeline failed, still runs or was never read; a ticket with no pull request passes, as a ticket
+with no branch passes the merge rule, unless its agent opened one the forge has not read yet. A
+closed pull request has no pipeline to pass. A board without `gh` or `glab` changes nothing; **Settings › Behaviour › Fetch from
 the remote** alone makes a merged PR read merged once fetched. A crown hears what the forge says of the
 tickets it started or watches: it is woken when a pipeline fails or passes, a job waits on a
 person, the merge reaches an environment, a conflict comes or clears, or a review approves or

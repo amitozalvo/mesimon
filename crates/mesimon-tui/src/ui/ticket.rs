@@ -136,9 +136,13 @@ const PR_ROWS: usize = 3;
 /// pipeline and the job it is about, conflicts, the review, and every
 /// environment the merge reached, `in staging, production` (T-803) — what
 /// the page's rows and the pull requests dialog (T-759) both say. The forge's words — a job's name, an
-/// environment's — are untrusted text and cross `scrub_cells` here.
+/// environment's — are untrusted text and cross `scrub_cells` here. A PR
+/// closed unmerged says nothing past `closed` (T-797).
 pub(super) fn pr_clauses(p: &mesimon_core::command::PrItem) -> Vec<String> {
     use mesimon_core::text::scrub_cells;
+    if p.state == "closed" {
+        return Vec::new();
+    }
     let pipeline = match (p.pipeline.as_str(), p.job.as_deref()) {
         (w @ ("failed" | "waiting" | "running" | "cancelled"), Some(job)) => {
             Some(format!("pipeline {w}: {}", scrub_cells(job, false)))
@@ -154,9 +158,13 @@ pub(super) fn pr_clauses(p: &mesimon_core::command::PrItem) -> Vec<String> {
 /// `pr_clauses` past the pipeline's: conflicts, the review, and the
 /// environments the merge reached — every one, or with `last` the one it
 /// reached last (`deployed` is in the order it happened), as the card says.
+/// None for a closed PR (T-797).
 pub(super) fn pr_state_clauses(p: &mesimon_core::command::PrItem, last: bool) -> Vec<String> {
     use mesimon_core::text::scrub_cells;
     let mut words = Vec::new();
+    if p.state == "closed" {
+        return words;
+    }
     if p.conflict {
         words.push("conflicts".into());
     }

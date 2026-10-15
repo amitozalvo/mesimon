@@ -242,7 +242,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         let pr_words = if brief.is_empty() {
             None
         } else {
-            card::pr_words(&app.prs_of(t.id), |p| app.pr_passed_news(p))
+            card::pr_words(&app.card_prs(t.id), |p| app.pr_passed_news(p))
         };
         // A held ask's keys ride the cursor card (T-551) — the subject the
         // frame's `Ctx` was built for, so the keys it names act on THIS card.

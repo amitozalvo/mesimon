@@ -284,7 +284,9 @@ const PIPE_STEP_TICKS: usize = 10;
 /// merged PR's merge-commit pipeline that is running or waiting moves the
 /// mark the same way until it settles (T-758), deployed or not (T-781): a
 /// board with deploy columns deploys to staging and then waits on the
-/// manual production job, and that wait is the one thing to press.
+/// manual production job, and that wait is the one thing to press. A PR
+/// closed unmerged is the struck ring `⊘`, grey whatever its pipeline was
+/// (T-797): the team set it aside, and nothing about it is anyone's turn.
 /// Everything else — open with no pipeline, or one the forge did not name —
 /// is the hollow ring. One cell on both tiers.
 pub(crate) fn pr_mark(
@@ -296,6 +298,7 @@ pub(crate) fn pr_mark(
 ) -> (char, Register) {
     let ascii = tier == Tier::Ascii;
     match (state, pipeline) {
+        ("closed", _) => (if ascii { '-' } else { '⊘' }, Register::Grey),
         (_, "failed") => (if ascii { 'x' } else { '✗' }, Register::Err),
         (_, "waiting") => (if ascii { '@' } else { '◎' }, Register::Calm),
         (_, "running") => {
@@ -1408,6 +1411,7 @@ mod tests {
             ("open", "failed", false),
             ("merged", "passed", false),
             ("merged", "passed", true),
+            ("closed", "none", false),
         ];
         for tier in [Tier::Unicode, Tier::Ascii] {
             let mut marks: Vec<char> =
@@ -1439,6 +1443,16 @@ mod tests {
         assert_eq!(pr_mark(Tier::Unicode, "open", "waiting", false, 0), ('◎', Register::Calm));
         assert_eq!(pr_mark(Tier::Ascii, "open", "waiting", false, 0), ('@', Register::Calm));
         assert_eq!(pr_mark(Tier::Unicode, "open", "running", false, 0).1, Register::Grey);
+        // Closed unmerged (T-797): struck and grey, whatever the pipeline
+        // last said.
+        for tier in [Tier::Unicode, Tier::Ascii] {
+            for pipeline in ["failed", "waiting", "running", "passed", "none"] {
+                assert_eq!(
+                    pr_mark(tier, "closed", pipeline, false, 0),
+                    (if tier == Tier::Ascii { '-' } else { '⊘' }, Register::Grey)
+                );
+            }
+        }
         // A merged PR's merge-commit pipeline moves the mark while it is
         // not settled (T-758); failed and deployed keep their own.
         for tier in [Tier::Unicode, Tier::Ascii] {
