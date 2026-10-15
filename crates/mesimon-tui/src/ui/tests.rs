@@ -1683,6 +1683,30 @@ fn golden_column_settings_120() {
     golden("column_settings_120x30", &lines);
 }
 
+/// T-806: on a short screen the column dialog is a window over its rows
+/// that keeps the cursor's in view, as the Settings page is: at the foot,
+/// the door and the sections above it, the top rows scrolled away.
+#[test]
+fn golden_column_settings_60_scrolls_to_the_cursor() {
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 1;
+    app.cursor_row = None;
+    app.handle_key(
+        ratatui::crossterm::event::KeyCode::Enter,
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    )
+    .unwrap();
+    let door = mesimon_core::keymap::column_items(&app.ctx()).len() - 1;
+    if let Mode::ColumnSettings { idx, .. } = &mut app.mode {
+        *idx = door;
+    }
+    let lines = render(&app, 60, 20);
+    assert!(lines.iter().any(|l| l.contains("Agent behaviour")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("mode, tools and sleep")), "{lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("Description")), "{lines:?}");
+    golden("column_settings_60x20_end", &lines);
+}
+
 /// Agent options live one level below the column's own settings.
 #[test]
 fn golden_column_agent_behaviour_120() {
@@ -1707,7 +1731,7 @@ fn golden_column_agent_behaviour_120() {
     )
     .unwrap();
     let lines = render(&app, 120, 30);
-    assert!(lines.iter().any(|l| l.contains("Mode: inherit (auto)")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains(" Mode ") && l.contains("inherit (auto)")), "{lines:?}");
     golden("column_agent_behaviour_120x30", &lines);
 }
 
@@ -1741,9 +1765,12 @@ fn golden_codex_column_agent_behaviour() {
         [(120, 30, "column_codex_agent_120x30"), (60, 20, "column_codex_agent_60x20")]
     {
         let lines = render(&app, width, height);
-        assert!(lines.iter().any(|l| l.contains("Codex sandbox: workspace write")), "{lines:?}");
-        assert!(lines.iter().any(|l| l.contains("Codex approvals: on request")), "{lines:?}");
-        assert!(!lines.iter().any(|l| l.contains("Mode: inherit")), "{lines:?}");
+        let row = |name: &str, value: &str| {
+            lines.iter().any(|l| l.contains(name) && l.contains(value))
+        };
+        assert!(row("Codex sandbox", "workspace write"), "{lines:?}");
+        assert!(row("Codex approvals", "on request"), "{lines:?}");
+        assert!(!row(" Mode ", "inherit"), "{lines:?}");
         golden(name, &lines);
     }
 }

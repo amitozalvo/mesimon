@@ -1123,7 +1123,7 @@ pub enum SortBy {
 
 impl SortBy {
     /// `Tag` is LAST on purpose: the dialog's row opens on `ALL[0]` and the
-    /// column-settings goldens read `Sort now: newest first`.
+    /// column-settings goldens read `Sort once   newest first`.
     pub const ALL: [SortBy; 5] = [
         SortBy::NewestArrival,
         SortBy::OldestArrival,

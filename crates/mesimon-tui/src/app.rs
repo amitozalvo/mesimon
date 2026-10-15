@@ -6602,7 +6602,7 @@ impl App {
                     self.refuse_flashing(if here.is_none() {
                         "no new ticket: the board has no columns".into()
                     } else {
-                        "no new ticket: no column takes them (column settings → New tickets here)"
+                        "no new ticket: no column takes them (column settings → Filed here)"
                             .into()
                     });
                     return Ok(());
@@ -17849,7 +17849,8 @@ mod tests {
         let row = |app: &App| {
             keymap::column_items(&app.ctx()).into_iter().find(|m| m.verb == Verb::ColumnSleepAfter)
         };
-        assert_eq!((row(&app).unwrap().label)(&app.ctx()), "Sleep idle agents: off");
+        let shows = |app: &App| keymap::value(Verb::ColumnSleepAfter, &app.ctx());
+        assert_eq!(shows(&app), Some(keymap::Value::Word("off".into())));
         let idx = keymap::column_items(&app.ctx())
             .iter()
             .position(|m| m.verb == Verb::ColumnSleepAfter)
@@ -17863,7 +17864,7 @@ mod tests {
             assert_eq!(app.ctx().col_sleep_after, minutes);
         }
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert_eq!((row(&app).unwrap().label)(&app.ctx()), "Sleep idle agents after 1 min");
+        assert_eq!(shows(&app), Some(keymap::Value::Word("1 min".into())));
         assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetColumnSettings")).count(), 6);
         app.board_mut().agent_provider = mesimon_core::board::AgentProvider::Codex;
         assert!(row(&app).is_none(), "nothing parks a Codex agent here");
@@ -21834,16 +21835,8 @@ mod tests {
         assert!(app.ctx().col_collapsed);
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(!app.board.column("todo").unwrap().settings.collapsed);
-        // Enter the agent submenu; its move rows cycle other columns.
-        let door = keymap::column_items(&app.ctx())
-            .iter()
-            .position(|m| m.verb == Verb::ColumnAgentBehaviour)
-            .unwrap();
-        if let Mode::ColumnSettings { idx, .. } = &mut app.mode {
-            *idx = door;
-        }
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(app.column_agents);
+        // The card's own moves sit on the main page (T-806, GOING OUT) and
+        // cycle the other columns.
         let row = keymap::column_items(&app.ctx())
             .iter()
             .position(|m| m.verb == Verb::ColumnOnWorking)
@@ -21869,7 +21862,10 @@ mod tests {
         press(&mut app, 'k');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(keymap::column_items(&app.ctx())[0].verb, Verb::ColumnDescription);
-        assert_eq!((keymap::column_items(&app.ctx())[0].label)(&app.ctx()), "Description: none");
+        assert_eq!(
+            keymap::value(Verb::ColumnDescription, &app.ctx()),
+            Some(keymap::Value::Word("none".into()))
+        );
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.mode, Mode::ColumnSettings { describing: Some(_), .. }));
         assert_eq!(app.scope(), Scope::Input);

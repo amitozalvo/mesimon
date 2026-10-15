@@ -1,30 +1,30 @@
  BOARD   mesimon › kanban-tui   7 tickets
-
-    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
-
-    Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y     z Painted accent bar >1y
-
-    Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
-                           ╭─ COLUMN ∙ IN PROGRESS ─────────────────────────────────────────╮
-                           │   Description: none                                            │
-                           │   Collapsed: no                                                │
-                           │   Sort now: newest first                                       │
-                           │   New tickets here: yes                                        │
-                           │   Workspace for new tickets: board default                     │
-                           │   Agent behaviour                                              │
-                           │   Arrives here when: nothing                                   │
-                           │   Entry needs a merged branch: no                              │
-                           │   Entry needs a passed pipeline: no                            │
-                           │   Entry needs every summary box ticked: no                     │
-                           │   Offer: off                                                   │
-                           │   Auto merge: off                                              │
-                           │                                                                │
-                           │     what this column is for ∙ agents read it to pick a column  │
-                           ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
-
-
-
-
-
-
+                  ╭─ COLUMN ∙ IN PROGRESS ───────────────────────────────────────────────────────────╮
+    TODO          │  Description             none                                                    │               1
+                  │                                                                                  │
+    Decay treatmen│ LOOK                                                                             │d accent bar >1y
+                  │  Collapsed               ○ off                                                   │
+    Keymap validat│  Sort once               newest first                                            │
+                  │                                                                                  │
+                  │ NEW TICKETS                                                                      │
+                  │  Filed here              ● on                                                    │
+                  │  Workspace               ● board default   ○ worktree   ○ shared checkout        │
+                  │                                                                                  │
+                  │ COMING IN                                                                        │
+                  │  Moves in when           nothing                                                 │
+                  │  Needs merged branch     ○ off                                                   │
+                  │  Needs passed pipeline   ○ off                                                   │
+                  │  Needs boxes ticked      ○ off                                                   │
+                  │                                                                                  │
+                  │ GOING OUT                                                                        │
+                  │  Agent starts working    stays                                                   │
+                  │  Agent ends a turn       stays                                                   │
+                  │                                                                                  │
+                  │ FINISHED TICKETS                                                                 │
+                  │  Offer                   ● off   ○ sleep         ○ archive   ○ sleep + archive   │
+                  │  Auto merge              ● off   ○ rebase only   ○ on                            │
+                  │                                                                                  │
+                  │  Agent behaviour         mode auto ∙ tools full ∙ sleep off ›                    │
+                  │  what this column is for ∙ agents read it to pick a column                       │
+                  ╰──────────────────────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
  COLUMN                                                                                                          ? keys

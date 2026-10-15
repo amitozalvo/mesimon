@@ -189,8 +189,8 @@ session is waiting on you*.
 
 `x` sleeps a ticket's sessions and wakes them again. When finished agents sit idle in DONE, `X`
 sleeps them all. The Esc menu archives finished tickets and lists the archive. A column's
-settings can hold back a ticket whose `Summary` still has an unticked box (`Entry needs every
-summary box ticked`, off by default): it cannot enter that column, is never offered from it and
+settings can hold back a ticket whose `Summary` still has an unticked box (**Coming in › Needs
+boxes ticked**, off by default): it cannot enter that column, is never offered from it and
 cannot be archived from it until the box is ticked or taken out. When a rule like that refuses
 the move the board makes on its own at a turn's start or end, the card stays where it is and the
 ticket page says why in grey under the branch, in the rule's words (`held: pipeline running —
@@ -510,11 +510,11 @@ commit made here after the merge is work not landed yet. Once a ticket has a PR,
 closed, `m` and the merge train leave the merge to the forge; the train asks the agent to rebase
 only when the forge reports a conflict, and that ask ends with the push. A PR closed without
 merging is your team's decision about that work: to merge it, reopen it on the forge. An open PR
-holds DONE the same way: a column with **Entry needs a merged branch** refuses the ticket until
+holds DONE the same way: a column with **Needs merged branch** refuses the ticket until
 the forge merges it, whoever moves it, and a ticket already there reads unmerged again. A column
-can wait for the forge: in a column's settings, **Arrives here when** moves a ticket there on its
+can wait for the forge: in a column's settings, **Moves in when** moves a ticket there on its
 own when a PR opens, its pipeline passes, every PR is merged, or the merge reached an environment
-you name (`deployed to staging`), and **Entry needs a passed pipeline** refuses a ticket whose
+you name (`deployed to staging`), and **Needs passed pipeline** refuses a ticket whose
 pipeline failed, still runs or was never read; a ticket with no pull request passes, as a ticket
 with no branch passes the merge rule, unless its agent opened one the forge has not read yet. A
 closed pull request has no pipeline to pass. A board without `gh` or `glab` changes nothing; **Settings › Behaviour › Fetch from
@@ -536,7 +536,7 @@ train holds its tickets until it can.
 
 ## Sleeping idle agents
 
-A column can opt its own tickets in: **Agent behaviour › Sleep idle agents** in the column's
+A column can opt its own tickets in: **Agent behaviour › Sleep after** in the column's
 settings sleeps a Claude agent on a ticket in that column after 1, 5, 15 or 60 minutes idle.
 It is off by default and works even with the TUI closed; the daemon checks every ten seconds.
 Any agent idle at its prompt counts, including one you woke or interrupted that has not

@@ -8,16 +8,16 @@
 
 
 
-                           ╭─ AGENT BEHAVIOUR ∙ IN PROGRESS ────────────────────────────────╮
-                           │   Mode: inherit (auto)                                         │
-                           │   Agent tools: full                                            │
-                           │   When agent starts working: stay                              │
-                           │   When agent ends a turn: stay                                 │
-                           │   Sleep idle agents: off                                       │
-                           │                                                                │
-                           │     --permission-mode for an agent started here ∙ a wake pick~ │
-                           ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
-
+                  ╭─ AGENT BEHAVIOUR ∙ IN PROGRESS ──────────────────────────────────────────────────╮
+                  │ LAUNCH                                                                           │
+                  │  Mode          inherit (auto)                                                    │
+                  │  Tools         ● full   ○ notes + tags   ○ read only   ○ off                     │
+                  │                                                                                  │
+                  │ IDLE                                                                             │
+                  │  Sleep after   off                                                               │
+                  │                                                                                  │
+                  │  --permission-mode for an agent started here ∙ a wake picks a change up          │
+                  ╰──────────────────────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
 
 
 

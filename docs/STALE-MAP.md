@@ -26045,3 +26045,32 @@ for a question. `sleep` still refuses it (only idle sessions sleep), as it refus
 The rig's L1 (new; rig step `limit` sends the `StopFailure` through the real hook binary, since
 no account is made to hit a limit) on the real Sonnet (claude 2.1.300), 2026-10-15: PASS in 43 s,
 wakes `finished` then `limited`. The crown, told nothing of what to do, sent the worker no words.
+
+## The column dialog reads as a Settings page (T-806, 2026-10-15)
+
+**What shipped.** The column settings dialog was twelve `Label: value` lines with no groups:
+every value started where its label ended (cell 16 to 43), four vocabularies (`yes/no`,
+`on/off`, `nothing`, `stay`) said one idea, and the `Agent behaviour` door sat mid-list looking
+like a setting with its value missing. It now draws as a Settings page (T-717) does: a name
+column, the value beside it through `settings::row_line` and `keymap::Value` (a switch is
+`● on`/`○ off`, a short choice shows every option), and the rows under headings — LOOK, NEW
+TICKETS, COMING IN, GOING OUT, FINISHED TICKETS, then the door alone with its `›` and what is
+behind it (`mode auto ∙ tools full ∙ sleep off`). The agent page is LAUNCH (mode, Codex's two,
+tools) and IDLE (sleep). A design was approved as an artifact before any code.
+
+**Decisions.** The card's own moves on an agent's turn (`on_working`, `on_done`) left the agent
+page for GOING OUT, right under COMING IN, at the author's ask: every way a card enters or leaves
+the column is one screen, and the door keeps what is about the agent itself. Labels are names
+alone and the heading carries the context (`Needs boxes ticked`, not `Entry needs every summary
+box ticked`); `Sort now` is `Sort once`, an action kept under LOOK. `keymap::column_group` is
+the section table and `column_value` the values, reached through `value` after the Settings
+verbs. Option columns line up within a section, not across the dialog: across, the Workspace and
+Offer choices collapsed to their chosen word. The dialog is 82 wide (`TABLE_W`), the Offer row
+whole; at 120×30 the gap above the detail line is the first thing given up, and a shorter screen
+windows the rows around the cursor as Settings does. The Name row (a new column, a rename) keeps
+`draw_dense`: it stands alone, a field. The Description and `deployed to` fields take the
+value's place, the name column saying which. Nothing on the wire or on disk changed.
+
+**Tests.** `every_column_row_has_a_value_and_one_section` (no label spells its value, no section
+split, GOING OUT beside COMING IN); `the_sort_row_owns_h_and_l` reads the new rows; the four
+column goldens reminted and `golden_column_settings_60_scrolls_to_the_cursor` added.

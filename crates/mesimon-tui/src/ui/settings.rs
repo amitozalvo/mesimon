@@ -234,7 +234,7 @@ fn draw_page(f: &mut Frame, app: &App, area: Rect) {
 /// The cells each option column takes on a page: a switch is its first
 /// column, a choice's options are its columns in order, each wide enough
 /// for its widest mark and word.
-fn option_columns(values: impl Iterator<Item = Value>) -> Vec<usize> {
+pub(super) fn option_columns(values: impl Iterator<Item = Value>) -> Vec<usize> {
     let mut cols: Vec<usize> = Vec::new();
     let mut take = |i: usize, w: usize| {
         if cols.len() <= i {
@@ -258,7 +258,7 @@ fn option_columns(values: impl Iterator<Item = Value>) -> Vec<usize> {
 
 /// One row: its name, its value at the value column, and in board scope
 /// where the value comes from, at the right edge (T-361).
-fn row_line(
+pub(super) fn row_line(
     app: &App,
     ctx: &keymap::Ctx,
     item: &MenuItem,

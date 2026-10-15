@@ -41,10 +41,10 @@ fn scoped(app: &App, name: &str) -> String {
     }
 }
 
-/// The column settings dialog (T-117): thirteen rows at one line each, the
-/// selected row's detail on the last inner line — `draw_list`'s two lines a
-/// row would not fit `layout::MIN_H`. The Name row is a text field while
-/// the mode says so, edited in place with the hardware cursor.
+/// The column settings dialog (T-117), drawn as a Settings page since
+/// T-806: `draw_table`. A new column and a rename stand on the Name row
+/// alone, a text field edited in place with the hardware cursor, which is
+/// `draw_dense`'s shape.
 pub(super) fn draw_column(f: &mut Frame, app: &App) {
     let Mode::ColumnSettings { subject, idx, naming, describing, env_naming, .. } = &app.mode
     else {
@@ -59,12 +59,162 @@ pub(super) fn draw_column(f: &mut Frame, app: &App) {
         ColumnSubject::Existing(name) => format!("COLUMN ∙ {}", name.to_uppercase()),
         ColumnSubject::New { .. } => "NEW COLUMN".to_string(),
     };
-    let field = naming
+    if ctx.col_new || naming.is_some() {
+        draw_dense(f, app, &ctx, *idx, &title, &items, naming.as_ref().map(|b| ("Name: ", b)));
+        return;
+    }
+    // A field takes the value's place, so the name column already says
+    // which; the environment's lead is the half of the value it completes.
+    let field = describing
         .as_ref()
-        .map(|b| ("Name: ", b))
-        .or_else(|| describing.as_ref().map(|b| ("Description: ", b)))
-        .or_else(|| env_naming.as_ref().map(|b| ("Deployed to: ", b)));
-    draw_dense(f, app, &ctx, *idx, &title, &items, field);
+        .map(|b| ("", b))
+        .or_else(|| env_naming.as_ref().map(|b| ("deployed to ", b)));
+    draw_table(f, app, &ctx, *idx, &title, &items, field);
+}
+
+/// The column dialog's width: its widest row, the Offer choice, whole.
+const TABLE_W: u16 = 82;
+
+/// A line of the column dialog: a gap, a section's heading, or a row.
+enum Slot {
+    Gap,
+    Heading(&'static str),
+    Row(usize),
+}
+
+/// The column dialog as a Settings page draws one (T-806): a name column,
+/// every value lined up beside it (`settings::row_line`), the rows under
+/// their sections' headings (`keymap::column_group`), the selected row's
+/// detail on the last inner line, and a window over the rows that keeps
+/// the cursor's in view where the screen is short. A row that is a text
+/// field right now takes it in its value's place.
+fn draw_table(
+    f: &mut Frame,
+    app: &App,
+    ctx: &mesimon_core::keymap::Ctx,
+    idx: usize,
+    name: &str,
+    items: &[&'static MenuItem],
+    field: Option<(&str, &crate::text::EditBuffer)>,
+) {
+    let theme = &app.theme;
+    if items.is_empty() {
+        return;
+    }
+    let idx = idx.min(items.len() - 1);
+    let mut slots: Vec<Slot> = Vec::new();
+    let mut group: Option<&'static str> = None;
+    for (i, item) in items.iter().enumerate() {
+        let g = keymap::column_group(item.verb);
+        if i > 0 && g != group {
+            slots.push(Slot::Gap);
+        }
+        if g != group {
+            if let Some(h) = g.filter(|h| !h.is_empty()) {
+                slots.push(Slot::Heading(h));
+            }
+        }
+        group = g;
+        slots.push(Slot::Row(i));
+    }
+    // The rows, a gap, the detail: the gap is the first thing a short
+    // screen gives up.
+    let area = dialog::centred(f.area(), slots.len() as u16 + 2, TABLE_W);
+    let frame_w = area.width.saturating_sub(2) as usize;
+    let inner = dialog::frame(
+        f,
+        app,
+        area,
+        None,
+        &theme.rest,
+        dialog::Edges {
+            title: dialog::title(&theme.rest, name),
+            tail: dialog::keys(app, app.scope(), &theme.rest, frame_w.saturating_sub(4)),
+        },
+    );
+    // One cell in from the frame: the headings sit there, the rows a cell
+    // further, as the Settings page reads.
+    let body = Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner };
+    let width = usize::from(body.width);
+    let room = usize::from(body.height.saturating_sub(1));
+    if room == 0 {
+        return;
+    }
+    let at = slots.iter().position(|s| matches!(s, Slot::Row(i) if *i == idx)).unwrap_or(0);
+    let first = if slots.len() > room {
+        at.saturating_sub(room / 2).min(slots.len() - room)
+    } else {
+        0
+    };
+    let name_w = items.iter().map(|m| (m.label)(ctx).width()).max().unwrap_or(0);
+    // Options line up within a section, as a table's columns do; across
+    // sections they would push the widest choices past the frame.
+    let cols: Vec<Vec<usize>> = items
+        .iter()
+        .map(|m| {
+            let g = keymap::column_group(m.verb);
+            super::settings::option_columns(
+                items
+                    .iter()
+                    .filter(|o| keymap::column_group(o.verb) == g)
+                    .filter_map(|o| keymap::value(o.verb, ctx)),
+            )
+        })
+        .collect();
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut cursor_at: Option<(u16, u16)> = None;
+    for (n, slot) in slots.iter().enumerate().skip(first).take(room) {
+        let y = body.y + (n - first) as u16;
+        lines.push(match slot {
+            Slot::Gap => Line::default(),
+            Slot::Heading(h) => Line::from(Span::styled(h.to_string(), theme.dim3())),
+            Slot::Row(i) => {
+                app.hits
+                    .borrow_mut()
+                    .record(Rect { y, height: 1, ..body }, crate::mouse::Target::Row(*i));
+                let selected = *i == idx;
+                match field {
+                    Some((lead, buf)) if selected => {
+                        let label = truncate(&(items[*i].label)(ctx), name_w);
+                        let x = 1 + name_w + 3 + lead.width();
+                        let (shown, cx) = crate::text::edit_window(
+                            buf.as_str(),
+                            buf.width_before_cursor(),
+                            width.saturating_sub(x + 1),
+                        );
+                        cursor_at = Some((body.x + x as u16 + cx, y));
+                        let used = x + shown.width();
+                        Line::from(vec![
+                            Span::raw(" "),
+                            Span::styled(
+                                label.clone(),
+                                Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD),
+                            ),
+                            Span::raw(" ".repeat(name_w.saturating_sub(label.width()) + 3)),
+                            Span::styled(lead.to_string(), Style::default().fg(theme.sel.dim2)),
+                            Span::styled(shown, Style::default().fg(theme.sel.base)),
+                            Span::raw(" ".repeat(width.saturating_sub(used))),
+                        ])
+                        .style(theme.selected_row())
+                    }
+                    _ => super::settings::row_line(
+                        app, ctx, items[*i], name_w, &cols[*i], width, selected,
+                    ),
+                }
+            }
+        });
+    }
+    f.render_widget(Paragraph::new(lines), Rect { height: room as u16, ..body });
+    // The selected row's detail, marquee-revealed when it overflows.
+    let detail = keymap::item_detail(items[idx], ctx);
+    let shown = dialog::reveal(app, &detail, width.saturating_sub(1));
+    let foot = Rect { y: body.bottom().saturating_sub(1), height: 1, ..body };
+    f.render_widget(Paragraph::new(Span::styled(format!(" {shown}"), theme.dim2())), foot);
+    if let Some((x, y)) = cursor_at {
+        let at = (x.min(body.x + body.width.saturating_sub(1)), y);
+        f.set_cursor_position(at);
+        super::field_spot(app, body, at);
+    }
 }
 
 /// The agent-prompt list (T-353): the four sentences mesimon types into an

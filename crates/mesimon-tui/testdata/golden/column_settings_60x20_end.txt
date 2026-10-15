@@ -1,0 +1,20 @@
+ BOARD   mesimon › kanban-tui   7 tickets
+  ╭─ COLUMN ∙ IN PROGRESS ───────────────────────────────╮
+  │ COMING IN                                            │
+  │  Moves in when           nothing                     │
+  │  Needs merged branch     ○ off                       │
+  │  Needs passed pipeline   ○ off                       │
+  │  Needs boxes ticked      ○ off                       │
+  │                                                      │
+  │ GOING OUT                                            │
+  │  Agent starts working    stays                       │
+  │  Agent ends a turn       stays                       │
+  │                                                      │
+  │ FINISHED TICKETS                                     │
+  │  Offer                   off                         │
+  │  Auto merge              off                         │
+  │                                                      │
+  │  Agent behaviour         mode auto ∙ tools full ∙~ › │
+  │  mode, tools and sleep for an agent working here     │
+  ╰──────────────── jk select ∙ enter choose ∙ esc back ─╯
+ COLUMN                                              ? keys

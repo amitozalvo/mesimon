@@ -534,15 +534,15 @@ pub enum Verb {
     /// The column's idle park (T-543): Enter cycles `COLUMN_SLEEP_MINUTES`.
     ColumnSleepAfter,
     ColumnRequiresMerge,
-    /// The column dialog's `Entry needs a passed pipeline` row (T-739).
+    /// The column dialog's `Needs passed pipeline` row (T-739).
     ColumnRequiresPipeline,
-    /// The column dialog's `Arrives here when` row (T-739): what the forge
+    /// The column dialog's `Moves in when` row (T-739): what the forge
     /// saw that lands a ticket here; `deployed to` opens the environment's
     /// field in place, the Description row's shape.
     ColumnArrives,
     /// The column's summary-box gate (T-735): entry and an archive from it.
     ColumnRequiresTicked,
-    /// The column dialog's `New tickets here` row (T-764).
+    /// The column dialog's `Filed here` row (T-764).
     ColumnRefusesNew,
     ColumnReclaim,
     ColumnTrain,
@@ -1631,7 +1631,7 @@ pub struct Ctx {
     /// The dialog is on a column that does not exist yet (`O`): only the
     /// Name row stands.
     pub col_new: bool,
-    /// The cursor is on the dialog's `Sort now` row, where `h`/`l` step the
+    /// The cursor is on the dialog's `Sort once` row, where `h`/`l` step the
     /// order and Enter runs it.
     pub col_on_sort: bool,
     pub col_sort_word: &'static str,
@@ -5758,7 +5758,7 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
         }
         Verb::UsageClaude => Value::Switch(c.usage_claude),
         Verb::UsageCodex => Value::Switch(c.usage_codex),
-        _ => return None,
+        _ => return column_value(verb, c),
     })
 }
 
@@ -5887,19 +5887,14 @@ pub fn prompt_of(verb: Verb) -> Option<crate::prompts::AgentPrompt> {
     }
 }
 
-fn yes_no(b: bool) -> &'static str {
-    if b {
-        "yes"
-    } else {
-        "no"
-    }
-}
-
 /// The column settings dialog's rows (T-117): one column's every setting,
 /// every automation the daemon runs on a ticket there among them — this
-/// list is what "no magic" means. `MenuItem`s, so `ui/menu.rs` draws them
-/// and the menu laws read them; the column is mirrored onto `Ctx`'s `col_*`
-/// fields. A new column (`O`) has only its Name row until it exists.
+/// list is what "no magic" means. `MenuItem`s, so the menu laws read them;
+/// the column is mirrored onto `Ctx`'s `col_*` fields. A new column (`O`)
+/// has only its Name row until it exists. Since T-806 the dialog draws as
+/// a Settings page does: a row's label is its name alone, its state is
+/// `value`, and `column_group` puts it under a heading — so the order here
+/// is the order of the sections.
 static COLUMN_ITEMS: &[MenuItem] = &[
     MenuItem {
         verb: Verb::ColumnName,
@@ -5922,27 +5917,21 @@ static COLUMN_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::ColumnDescription,
-        label: |c| {
-            if c.col_description.is_empty() {
-                "Description: none".into()
-            } else {
-                format!("Description: {}", c.col_description)
-            }
-        },
+        label: |_| "Description".into(),
         detail: |_| "what this column is for ∙ agents read it to pick a column".into(),
         avail: |c| !c.col_new,
         key: "",
     },
     MenuItem {
         verb: Verb::ColumnCollapse,
-        label: |c| format!("Collapsed: {}", yes_no(c.col_collapsed)),
+        label: |_| "Collapsed".into(),
         detail: |_| "a one-cell spine until the cursor enters it".into(),
         avail: |c| !c.col_new,
         key: "",
     },
     MenuItem {
         verb: Verb::SortColumn,
-        label: |c| format!("Sort now: {}", or(c.col_sort_word, "newest first")),
+        label: |_| "Sort once".into(),
         detail: |_| "h l pick the order ∙ one sort, now".into(),
         avail: |c| !c.col_new,
         key: "",
@@ -5950,7 +5939,7 @@ static COLUMN_ITEMS: &[MenuItem] = &[
     // T-764: a column a ticket only reaches by moving.
     MenuItem {
         verb: Verb::ColumnRefusesNew,
-        label: |c| format!("New tickets here: {}", yes_no(!c.col_refuses_new)),
+        label: |_| "Filed here".into(),
         detail: |c| {
             if c.col_refuses_new {
                 "o here files into the nearest column that takes them, left first".into()
@@ -5963,36 +5952,109 @@ static COLUMN_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::ColumnWorkspace,
-        label: |c| {
-            format!("Workspace for new tickets: {}", or(c.col_workspace_word, "board default"))
-        },
+        label: |_| "Workspace".into(),
         detail: |_| "the composer starts here ∙ shift+tab still changes it".into(),
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    // What the forge saw that lands a ticket here (T-739): a column per
+    // environment and nobody syncs the board by hand.
+    MenuItem {
+        verb: Verb::ColumnArrives,
+        label: |_| "Moves in when".into(),
+        detail: |c| match c.col_arrives_word {
+            "nothing" => {
+                "a PR opened, its pipeline passing, every PR merged or a deployment".into()
+            }
+            "deployed to" => "the merge commit reached that environment on the forge".into(),
+            _ => "the card moves here on its own when the forge says so".into(),
+        },
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::ColumnRequiresMerge,
+        label: |_| "Needs merged branch".into(),
+        detail: |_| {
+            "a card with unmerged work or an open pull request is refused at the door".into()
+        },
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::ColumnRequiresPipeline,
+        label: |_| "Needs passed pipeline".into(),
+        detail: |_| "a failing, running or unread pipeline is refused at the door".into(),
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::ColumnRequiresTicked,
+        label: |_| "Needs boxes ticked".into(),
+        detail: |_| {
+            "every summary box ∙ an unticked one also keeps the card from being archived here"
+                .into()
+        },
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::ColumnOnWorking,
+        label: |_| "Agent starts working".into(),
+        detail: |_| "the card moves there on its own".into(),
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::ColumnOnDone,
+        label: |_| "Agent ends a turn".into(),
+        detail: |_| "the card moves there on its own".into(),
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::ColumnReclaim,
+        label: |_| "Offer".into(),
+        detail: |_| "for finished tickets here: sleep their agents, archive them, or both".into(),
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::ColumnTrain,
+        label: |_| "Auto merge".into(),
+        detail: |c| {
+            if !c.merge_train {
+                "needs auto merge on (Settings → Behaviour)".into()
+            } else {
+                match c.col_train_word {
+                    "auto-merge" => {
+                        "ff-merges finished branches here, asks idle agents to rebase".into()
+                    }
+                    "rebase asks" => "asks an idle agent here to rebase when the base moves".into(),
+                    _ => "auto merge does not act here".into(),
+                }
+            }
+        },
         avail: |c| !c.col_new,
         key: "",
     },
     MenuItem {
         verb: Verb::ColumnAgentBehaviour,
         label: |_| "Agent behaviour".into(),
-        detail: |_| "mode, tools, turn transitions and sleep".into(),
+        detail: |_| "mode, tools and sleep for an agent working here".into(),
         avail: |c| !c.col_new,
         key: "",
     },
     MenuItem {
         verb: Verb::ColumnClaudeMode,
-        label: |c| {
-            if c.col_claude_mode_word.is_empty() || c.col_claude_mode_word == "inherit" {
-                format!("Mode: inherit ({})", or(&c.col_inherit_mode, "unset"))
-            } else {
-                format!("Mode: {}", c.col_claude_mode_word)
-            }
-        },
+        label: |_| "Mode".into(),
         detail: |_| "--permission-mode for an agent started here ∙ a wake picks a change up".into(),
         avail: |c| !c.col_new && !c.claude_unused,
         key: "",
     },
     MenuItem {
         verb: Verb::ColumnCodexSandbox,
-        label: |c| format!("Codex sandbox: {}", or(c.col_codex_sandbox_word, "inherit")),
+        label: |_| "Codex sandbox".into(),
         detail: |_| {
             "native sandbox policy ∙ inherit keeps Codex configuration ∙ applies on launch/wake"
                 .into()
@@ -6002,7 +6064,7 @@ static COLUMN_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::ColumnCodexApproval,
-        label: |c| format!("Codex approvals: {}", or(c.col_codex_approval_word, "inherit")),
+        label: |_| "Codex approvals".into(),
         detail: |_| {
             "native approval policy ∙ never refuses requests requiring approval ∙ applies on launch/wake".into()
         },
@@ -6011,7 +6073,7 @@ static COLUMN_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::ColumnTools,
-        label: |c| format!("Agent tools: {}", or(c.col_tools_word, "full")),
+        label: |_| "Tools".into(),
         detail: |c| {
             if !c.mcp_tools {
                 "agent tools are off for this board (Settings)".into()
@@ -6031,126 +6093,118 @@ static COLUMN_ITEMS: &[MenuItem] = &[
         avail: |c| !c.col_new,
         key: "",
     },
-    MenuItem {
-        verb: Verb::ColumnOnWorking,
-        label: |c| {
-            if c.col_on_working.is_empty() {
-                "When agent starts working: stay".into()
-            } else {
-                format!("When agent starts working: move to {}", c.col_on_working)
-            }
-        },
-        detail: |_| "the card moves there on its own".into(),
-        avail: |c| !c.col_new,
-        key: "",
-    },
-    MenuItem {
-        verb: Verb::ColumnOnDone,
-        label: |c| {
-            if c.col_on_done.is_empty() {
-                "When agent ends a turn: stay".into()
-            } else {
-                format!("When agent ends a turn: move to {}", c.col_on_done)
-            }
-        },
-        detail: |_| "the card moves there on its own".into(),
-        avail: |c| !c.col_new,
-        key: "",
-    },
     // T-543, the board's only idle timer since T-610. Claude only: a Codex
     // board hides it, because nothing would act on a Codex agent here.
     MenuItem {
         verb: Verb::ColumnSleepAfter,
-        label: |c| match c.col_sleep_after {
-            0 => "Sleep idle agents: off".into(),
-            minutes => format!("Sleep idle agents after {minutes} min"),
-        },
+        label: |_| "Sleep after".into(),
         detail: |_| "any agent idle at its prompt".into(),
         avail: |c| !c.col_new && !c.claude_unused,
         key: "",
     },
-    // What the forge saw that lands a ticket here (T-739): a column per
-    // environment and nobody syncs the board by hand.
-    MenuItem {
-        verb: Verb::ColumnArrives,
-        label: |c| match c.col_arrives_word {
-            "deployed to" => {
-                format!("Arrives here when: deployed to {}", or(&c.col_arrives_env, "…"))
-            }
-            "" => "Arrives here when: nothing".into(),
-            w => format!("Arrives here when: {w}"),
-        },
-        detail: |c| match c.col_arrives_word {
-            "nothing" => {
-                "a PR opened, its pipeline passing, every PR merged or a deployment".into()
-            }
-            "deployed to" => "the merge commit reached that environment on the forge".into(),
-            _ => "the card moves here on its own when the forge says so".into(),
-        },
-        avail: |c| !c.col_new,
-        key: "",
-    },
-    MenuItem {
-        verb: Verb::ColumnRequiresMerge,
-        label: |c| format!("Entry needs a merged branch: {}", yes_no(c.col_requires_merge)),
-        detail: |_| {
-            "a card with unmerged work or an open pull request is refused at the door".into()
-        },
-        avail: |c| !c.col_new,
-        key: "",
-    },
-    MenuItem {
-        verb: Verb::ColumnRequiresPipeline,
-        label: |c| format!("Entry needs a passed pipeline: {}", yes_no(c.col_requires_pipeline)),
-        detail: |_| "a failing, running or unread pipeline is refused at the door".into(),
-        avail: |c| !c.col_new,
-        key: "",
-    },
-    MenuItem {
-        verb: Verb::ColumnRequiresTicked,
-        label: |c| {
-            format!("Entry needs every summary box ticked: {}", yes_no(c.col_requires_ticked))
-        },
-        detail: |_| "an unticked box also keeps the card from being archived here".into(),
-        avail: |c| !c.col_new,
-        key: "",
-    },
-    MenuItem {
-        verb: Verb::ColumnReclaim,
-        label: |c| format!("Offer: {}", or(c.col_offers_word, "off")),
-        detail: |_| "for finished tickets here: sleep their agents, archive them, or both".into(),
-        avail: |c| !c.col_new,
-        key: "",
-    },
-    MenuItem {
-        verb: Verb::ColumnTrain,
-        label: |c| {
-            format!(
-                "Auto merge: {}",
-                match c.col_train_word {
-                    "auto-merge" => "on",
-                    "rebase asks" => "rebase only",
-                    _ => "off",
-                }
-            )
-        },
-        detail: |c| {
-            if !c.merge_train {
-                "needs auto merge on (Settings → Behaviour)".into()
-            } else {
-                match c.col_train_word {
-                    "auto-merge" => {
-                        "ff-merges finished branches here, asks idle agents to rebase".into()
-                    }
-                    "rebase asks" => "asks an idle agent here to rebase when the base moves".into(),
-                    _ => "auto merge does not act here".into(),
-                }
-            }
-        },
-        avail: |c| !c.col_new,
-        key: "",
-    },
 ];
+
+/// The column dialog's sections (T-806): the heading a row sits under, drawn
+/// where the section changes. `None` is the untitled top (the description);
+/// `Some("")` a section set apart by its blank line alone (the agent door).
+pub fn column_group(verb: Verb) -> Option<&'static str> {
+    Some(match verb {
+        Verb::ColumnCollapse | Verb::SortColumn => "LOOK",
+        Verb::ColumnRefusesNew | Verb::ColumnWorkspace => "NEW TICKETS",
+        Verb::ColumnArrives
+        | Verb::ColumnRequiresMerge
+        | Verb::ColumnRequiresPipeline
+        | Verb::ColumnRequiresTicked => "COMING IN",
+        Verb::ColumnOnWorking | Verb::ColumnOnDone => "GOING OUT",
+        Verb::ColumnReclaim | Verb::ColumnTrain => "FINISHED TICKETS",
+        Verb::ColumnAgentBehaviour => "",
+        Verb::ColumnClaudeMode
+        | Verb::ColumnCodexSandbox
+        | Verb::ColumnCodexApproval
+        | Verb::ColumnTools => "LAUNCH",
+        Verb::ColumnSleepAfter => "IDLE",
+        _ => return None,
+    })
+}
+
+/// What the column dialog draws beside a row's name (T-806), as `value`
+/// does for a Settings row. The Name row has none: it is drawn alone, as a
+/// field.
+fn column_value(verb: Verb, c: &Ctx) -> Option<Value> {
+    let choice = |options: &'static [&'static str], word: &str| Value::Choice {
+        options,
+        at: options.iter().position(|o| *o == word).unwrap_or(0),
+    };
+    let moves = |to: &str| {
+        Value::Word(if to.is_empty() { "stays".into() } else { format!("moves to {to}") })
+    };
+    let mode = || {
+        if c.col_claude_mode_word.is_empty() || c.col_claude_mode_word == "inherit" {
+            format!("inherit ({})", or(&c.col_inherit_mode, "unset"))
+        } else {
+            c.col_claude_mode_word.to_string()
+        }
+    };
+    Some(match verb {
+        Verb::ColumnDescription => Value::Word(or(&c.col_description, "none").into()),
+        Verb::ColumnCollapse => Value::Switch(c.col_collapsed),
+        Verb::SortColumn => Value::Word(or(c.col_sort_word, "newest first").into()),
+        Verb::ColumnRefusesNew => Value::Switch(!c.col_refuses_new),
+        Verb::ColumnWorkspace => choice(
+            &["board default", "worktree", "shared checkout"],
+            or(c.col_workspace_word, "board default"),
+        ),
+        Verb::ColumnArrives => Value::Word(match c.col_arrives_word {
+            "deployed to" => format!("deployed to {}", or(&c.col_arrives_env, "…")),
+            "" => "nothing".into(),
+            w => w.into(),
+        }),
+        Verb::ColumnRequiresMerge => Value::Switch(c.col_requires_merge),
+        Verb::ColumnRequiresPipeline => Value::Switch(c.col_requires_pipeline),
+        Verb::ColumnRequiresTicked => Value::Switch(c.col_requires_ticked),
+        Verb::ColumnOnWorking => moves(&c.col_on_working),
+        Verb::ColumnOnDone => moves(&c.col_on_done),
+        Verb::ColumnReclaim => {
+            choice(&["off", "sleep", "archive", "sleep + archive"], or(c.col_offers_word, "off"))
+        }
+        Verb::ColumnTrain => Value::Choice {
+            options: &["off", "rebase only", "on"],
+            at: match c.col_train_word {
+                "rebase asks" => 1,
+                "auto-merge" => 2,
+                _ => 0,
+            },
+        },
+        // The door says what is behind it: the launch, the tools, the park.
+        Verb::ColumnAgentBehaviour => {
+            let tools = format!("tools {}", or(c.col_tools_word, "full"));
+            Value::Door(if c.claude_unused {
+                format!("sandbox {} ∙ {tools}", or(c.col_codex_sandbox_word, "inherit"))
+            } else {
+                let sleep = match c.col_sleep_after {
+                    0 => "sleep off".to_string(),
+                    m => format!("sleep {m} min"),
+                };
+                let mode = match c.col_claude_mode_word {
+                    "" | "inherit" => or(&c.col_inherit_mode, "inherit"),
+                    w => w,
+                };
+                format!("mode {mode} ∙ {tools} ∙ {sleep}")
+            })
+        }
+        Verb::ColumnClaudeMode => Value::Word(mode()),
+        Verb::ColumnCodexSandbox => Value::Word(or(c.col_codex_sandbox_word, "inherit").into()),
+        Verb::ColumnCodexApproval => Value::Word(or(c.col_codex_approval_word, "inherit").into()),
+        Verb::ColumnTools => {
+            choice(&["full", "notes + tags", "read only", "off"], or(c.col_tools_word, "full"))
+        }
+        Verb::ColumnSleepAfter => Value::Word(match c.col_sleep_after {
+            0 => "off".into(),
+            m => format!("{m} min"),
+        }),
+        _ => return None,
+    })
+}
 
 /// The column dialog's rows that apply right now.
 pub fn column_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
@@ -6163,8 +6217,6 @@ pub fn column_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
                     | Verb::ColumnCodexSandbox
                     | Verb::ColumnCodexApproval
                     | Verb::ColumnTools
-                    | Verb::ColumnOnWorking
-                    | Verb::ColumnOnDone
                     | Verb::ColumnSleepAfter
             );
             m.live(ctx)
@@ -6342,7 +6394,7 @@ static USAGE: &[Binding] = &[
 /// The column settings dialog (T-117): the Settings list's shapes on one
 /// column — `jk` selects, Enter does the row (a toggle advances, the sort
 /// runs, the delete arms then sends), Esc goes back — plus `h`/`l` on the
-/// `Sort now` row only, where they step the order the next Enter will use.
+/// `Sort once` row only, where they step the order the next Enter will use.
 /// The order is local to the dialog and costs no wire, and the two keys are
 /// gated on the row so they are inert and unhinted everywhere else.
 static COLUMN: &[Binding] = &[
@@ -9366,7 +9418,7 @@ mod tests {
         assert_eq!(resolve(Scope::DeleteChord, Key::Char('D'), &header), None);
     }
 
-    /// The column dialog's `Sort now` row owns `h` and `l` (T-117): they step
+    /// The column dialog's `Sort once` row owns `h` and `l` (T-117): they step
     /// the order and Enter runs it, and on every other row the two keys are
     /// inert and unhinted, so the list's vertical shape stays a list.
     #[test]
@@ -9384,19 +9436,42 @@ mod tests {
         let fresh = Ctx { col_new: true, ..Default::default() };
         let rows: Vec<Verb> = column_items(&fresh).iter().map(|m| m.verb).collect();
         assert_eq!(rows, vec![Verb::ColumnName]);
-        assert_eq!(column_items(&other).len(), 12);
+        assert_eq!(column_items(&other).len(), 14);
         assert!(!column_items(&other).iter().any(|m| m.verb == Verb::ColumnName));
         let agents = Ctx { column_agents: true, ..Default::default() };
         assert_eq!(
             column_items(&agents).iter().map(|m| m.verb).collect::<Vec<_>>(),
-            [
-                Verb::ColumnClaudeMode,
-                Verb::ColumnTools,
-                Verb::ColumnOnWorking,
-                Verb::ColumnOnDone,
-                Verb::ColumnSleepAfter
-            ]
+            [Verb::ColumnClaudeMode, Verb::ColumnTools, Verb::ColumnSleepAfter]
         );
+    }
+
+    /// The column dialog reads as a Settings page (T-806): every row past
+    /// the Name field has a value beside its name and the name says no
+    /// state of its own, and a section is one run of rows — a heading the
+    /// list left would come back as a second heading of the same name.
+    #[test]
+    fn every_column_row_has_a_value_and_one_section() {
+        let all = Ctx { codex_in_use: true, ..Default::default() };
+        for agents in [false, true] {
+            let ctx = Ctx { column_agents: agents, ..all.clone() };
+            let rows = column_items(&ctx);
+            let mut seen: Vec<Option<&str>> = Vec::new();
+            for m in &rows {
+                let label = (m.label)(&ctx);
+                assert!(value(m.verb, &ctx).is_some(), "{label} has no value");
+                assert!(!label.contains(':'), "{label} spells its value");
+                let g = column_group(m.verb);
+                if seen.last() != Some(&g) {
+                    assert!(!seen.contains(&g), "{g:?} is split around {label}");
+                    seen.push(g);
+                }
+            }
+        }
+        // The card's own moves sit beside its way in, not behind the door.
+        let main = column_items(&all);
+        let at = |v: Verb| main.iter().position(|m| m.verb == v).unwrap();
+        assert_eq!(column_group(Verb::ColumnOnDone), Some("GOING OUT"));
+        assert_eq!(at(Verb::ColumnOnWorking), at(Verb::ColumnRequiresTicked) + 1);
     }
 
     /// A column header is a cursor position (T-117): over an empty column it

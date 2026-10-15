@@ -8,15 +8,15 @@
 
 
 
-                           ╭─ AGENT BEHAVIOUR ∙ IN PROGRESS ────────────────────────────────╮
-                           │   Codex sandbox: workspace write                               │
-                           │   Codex approvals: on request                                  │
-                           │   Agent tools: full                                            │
-                           │   When agent starts working: stay                              │
-                           │   When agent ends a turn: stay                                 │
-                           │                                                                │
-                           │     native sandbox policy ∙ inherit keeps Codex configuration~ │
-                           ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
+
+                  ╭─ AGENT BEHAVIOUR ∙ IN PROGRESS ──────────────────────────────────────────────────╮
+                  │ LAUNCH                                                                           │
+                  │  Codex sandbox     workspace write                                               │
+                  │  Codex approvals   on request                                                    │
+                  │  Tools             ● full   ○ notes + tags   ○ read only   ○ off                 │
+                  │                                                                                  │
+                  │  native sandbox policy ∙ inherit keeps Codex configuration ∙ applies on launch/~ │
+                  ╰──────────────────────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
 
 
 

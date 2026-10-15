@@ -590,7 +590,7 @@ row is its registry entries as the flat `Board.tags` holds them, `MoveTag` is th
 arranges it, so carrying a tag left in `^t` raises its cards. Axis 1 decides and axis 2 breaks its
 ties (a `[u8; 10]` of row indices, compared lexicographically); an axis a ticket wears nothing on
 ranks `u8::MAX`, so the untagged sink; `Tag` is LAST in `SortBy::ALL` because the dialog's row
-opens on `ALL[0]` and the goldens read `Sort now: newest first`. The six commands are local-only (`agent_allows`),
+opens on `ALL[0]` and the goldens read `Sort once   newest first`. The six commands are local-only (`agent_allows`),
 `Mutate` on the board, barred under `columns_barred`. `mesimon doctor` prints a `columns` line.
 **In the TUI** the column HEADER is a cursor position (`App::cursor_row: Option<usize>`, `None`;
 an empty column IS its header — `App::on_column_header`, `Ctx::col_header`, both renamed off
