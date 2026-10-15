@@ -5896,7 +5896,8 @@ fn a_crown_start_whose_worktree_cannot_be_cut_wakes_the_crown_with_why() {
 /// T-802: a worker the crown started stops on a usage limit. The card needs
 /// you (QUOTA, the limit's words under the title), the crown hears `hit a
 /// usage limit`, and the worker's `get_ticket` says why. A prompt that runs
-/// takes the card back to work.
+/// takes the card back to work. T-808: limited again, the turn has ended —
+/// `sleep_agent` parks it and `start_agent` wakes it on another tier.
 #[test]
 fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
     let Some(h) = Harness::boot_with_env(
@@ -5965,4 +5966,57 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
 
     // The person's prompt runs: the wait is over.
     start(&mut c, ws);
+
+    // ---- T-808: the limit ended the turn; the crown parks it and moves it ---
+    // Limited again, the worker is no turn in progress: the checkout and the
+    // train are free of it, `sleep_agent` parks it with its conversation, and
+    // `start_agent` naming another tier wakes it there.
+    hook_send_with(&hook_sock, &ws.to_string(), "StopFailure", Some("rate_limit"), &body);
+    c.await_state(ws, "on the limit again", |s| *s == quota);
+    let board = c.board();
+    let rec = board.sessions.iter().find(|s| s.id == ws).expect("W's record");
+    assert!(!mesimon_core::quiet::is_working(rec), "the turn has ended");
+    assert!(mesimon_core::quiet::holds_against_words(rec), "words still wait");
+    assert_ne!(c.board().ticket(w).unwrap().column, "REVIEW", "no done move");
+    let deep = mesimon_core::tier::Tier {
+        id: "01DEEP".into(),
+        name: "deep".into(),
+        provider: mesimon_core::board::AgentProvider::ClaudeCode,
+        model: "opus".into(),
+        effort: mesimon_core::tier::Effort::Max,
+        description: String::new(),
+    };
+    let save = Command::SaveTier { scope: mesimon_core::tier::TierScope::Board, tier: deep };
+    assert!(matches!(c.request(save), Response::Ok));
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentSleepTicket { key: kw.clone(), seen: v.seen },
+    ) {
+        Response::AgentTicket { .. } => {}
+        other => panic!("sleep_agent over a usage limit: {other:?}"),
+    }
+    c.await_state(ws, "parked", |s| *s == SessionState::Sleeping);
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: Some("deep".into()),
+            workspace: Some("worktree".into()),
+        },
+    ) {
+        Response::AgentStarted { tier, .. } => assert_eq!(tier, "deep"),
+        other => panic!("start_agent on another tier: {other:?}"),
+    }
+    wait_until(std::time::Duration::from_secs(15), "W woken on the deep tier", || {
+        c.board().live_agent(w).is_some_and(|s| s.id == ws && s.state != SessionState::Sleeping)
+    });
+    let board = c.board();
+    let rec = board.live_agent(w).expect("W's seat");
+    assert_eq!(rec.tier, "01DEEP");
+    let model = rec.argv.iter().position(|a| a == "--model").and_then(|at| rec.argv.get(at + 1));
+    assert_eq!(model.map(String::as_str), Some("opus"), "{:?}", rec.argv);
 }

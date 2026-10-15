@@ -1842,11 +1842,13 @@ mod tests {
         let c = m2.apply(&Signal::StopFailure { class: StopFailureClass::RateLimit }, 1).unwrap();
         assert_eq!(c.to, SessionState::RequiresAction { reason: Reason::QuotaResume });
         assert!(c.attention_added, "a usage limit needs you (T-802)");
+        assert!(c.to.stopped_on_limit(), "and its turn has ended (T-808)");
 
         let mut m4 = m(SessionState::Running);
         let c = m4.apply(&Signal::StopFailure { class: StopFailureClass::Overloaded }, 1).unwrap();
         assert_eq!(c.to, SessionState::Throttled);
         assert!(!c.attention_added);
+        assert!(c.to.stopped_on_limit(), "an overload ends the turn too (T-808)");
 
         let mut m3 = m(SessionState::Running);
         let c = m3.apply(&Signal::StopFailure { class: StopFailureClass::ServerError }, 1).unwrap();

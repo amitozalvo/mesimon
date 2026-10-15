@@ -74,7 +74,9 @@
 #              (in its cwd, holding `brief_file`'s words), answered:<word> /
 #              refused (the crown's answer_agent outcome for it, from the
 #              feed, or none answered), unlanded (T-778: the ticket's branch
-#              is not on the checkout's base).
+#              is not on the checkout's base), tier:<name> (T-808: the tier
+#              the ticket's agent last launched on; the rig lays `rig-alt`
+#              beside its own `rig`, the same model, for L2).
 #   siblings   more tickets the test files beside its own ({key2}, {key3}
 #              in a step), each with the same brief and every check run on
 #              each.
@@ -932,3 +934,23 @@ checks = ["woke:limited", "not_fed:ask_agent", "final:needs_you"]
 
   [[test.steps]]
   rig = "limit"
+
+[[test]]
+id = "L2"
+title = "L2 · a worker stopped on a usage limit goes on another tier: do the steps below"
+workspace = "worktree"
+brief = "Reply with the single word done and end your turn. Read no file and run no command."
+expect = "the crown starts the worker, which answers and ends its turn; its session reports the account's usage limit and the board wakes the crown, hit a usage limit. Then the person asks the crown to carry the worker on with the rig-alt tier, naming no tool: the crown parks it (sleep_agent, which takes a stop on a limit since T-808: the turn has ended) and wakes it with start_agent naming rig-alt, and the worker comes back on that tier with its conversation kept."
+checks = ["woke:limited", "crown:sleep_agent", "tier:rig-alt"]
+
+  [[test.steps]]
+  crown = "L2: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: L2 started."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "limit"
+
+  [[test.steps]]
+  crown = "L2: {key}'s agent hit the account's usage limit. Carry it on with the rig-alt tier, then end your turn with the single line: L2 moved."
+  until = { events = ["SessionStart"], state = "idle" }

@@ -65,6 +65,8 @@ pub fn delivers_in<'a>(board: &'a Board, column: &'a str, state: &SessionState) 
         board.column(at).and_then(|c| pick(&c.settings).as_deref()).unwrap_or(at)
     };
     match state {
+        // A stop on a limit (T-808) ended its turn: nothing in flight.
+        s if s.stopped_on_limit() => column,
         SessionState::Spawning => rule(rule(column, |s| &s.on_working), |s| &s.on_done),
         SessionState::Running
         | SessionState::RequiresAction { .. }
@@ -156,6 +158,16 @@ mod tests {
         assert_eq!(automove(&col("TODO"), &modal, Confidence::High), None);
     }
 
+    /// T-808: a stop on a usage limit ended the turn, and its work is not
+    /// done: no `on_done`, and no `on_working` either.
+    #[test]
+    fn a_usage_limit_is_not_done() {
+        let quota = SessionState::RequiresAction { reason: Reason::QuotaResume };
+        for c in ["TODO", "IN PROGRESS", "REVIEW"] {
+            assert_eq!(automove(&col(c), &quota, Confidence::High), None, "{c}");
+        }
+    }
+
     /// A turn in flight delivers where its end puts the card (T-795): the
     /// template's worker in IN PROGRESS delivers in REVIEW, one starting in
     /// TODO takes both hops, and a turn already ended stays put.
@@ -168,6 +180,9 @@ mod tests {
         assert_eq!(at("TODO", SessionState::Spawning), "REVIEW");
         let question = SessionState::RequiresAction { reason: Reason::Question };
         assert_eq!(at("IN PROGRESS", question), "REVIEW");
+        let quota = SessionState::RequiresAction { reason: Reason::QuotaResume };
+        assert_eq!(at("IN PROGRESS", quota), "IN PROGRESS", "a usage limit ended the turn");
+        assert_eq!(at("IN PROGRESS", SessionState::Throttled), "IN PROGRESS");
         let tasks = SessionState::Idle { stop_reason: StopReason::Background };
         assert_eq!(at("IN PROGRESS", tasks), "REVIEW");
         // No turn in flight, or a column with no rule: where it sits.

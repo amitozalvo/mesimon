@@ -26074,3 +26074,60 @@ value's place, the name column saying which. Nothing on the wire or on disk chan
 **Tests.** `every_column_row_has_a_value_and_one_section` (no label spells its value, no section
 split, GOING OUT beside COMING IN); `the_sort_row_owns_h_and_l` reads the new rows; the four
 column goldens reminted and `golden_column_settings_60_scrolls_to_the_cursor` added.
+
+## A stop on a usage limit is a turn that has ended (T-808, 2026-10-15, "agent stopped on a usage limit is considered running")
+
+**Seen.** T-801's deep-tier worker hit the weekly Fable limit and sat `Throttled` (a record from
+before T-802) for hours. The crown could neither park it (`sleep_agent`: "agent still awake — only
+idle sessions sleep") nor move it to another tier (`^n` waits for an idle that never came), and
+`start_agent` rightly refused a second agent on the held seat. Only a person's `x` freed it. T-802's
+QUOTA had the same gaps, plus `is_working`, which read every `RequiresAction` as a turn in
+progress: the train's seat, the shared checkout and `turns_open` stayed held by an agent sitting at
+its composer.
+
+**Decided: one predicate, not a new state.** `SessionState::stopped_on_limit()` (board.rs) is true
+for `RequiresAction{QuotaResume}` and `Throttled`, and is the one place that says which states
+those are. `sessions.json` is unchanged: no new variant, no schema bump, and an older build reads
+every record as it did. A new `Idle{UsageLimit}` was refused because the attention set, the card's
+QUOTA, the notifier and T-802's crown wake are all keyed on `RequiresAction{QuotaResume}`, and
+an `Idle` in the attention set would have broken `is_attention`'s single rank table. `Throttled` is
+in the set because it is what every limit read as before T-802, and an overload's stop has ended
+its turn as well.
+
+Who reads it:
+- `quiet::is_working`: a stop on a limit is quiet, so the train, the shared checkout,
+  `turns_open`, the crown's `pending_on` turn and `train::plan` all see a finished turn.
+  `apply_change` now calls `turn_ended(_, false)` on the edge into QUOTA. That drops the turn's ask
+  and settles a rebase hold, with no probe and no `finished` wake: `Limited` is the wake.
+- `quiet::holds_against_words`: still true, by its own clause. Words would only meet the limit
+  again, and a person resumes it. `session_takes_words` needed `Idle` anyway.
+- `quiet::sleep_eligible`: an agent sleeps from it. That covers `z`, `x`, `sleep_agent` and
+  the reclaim offer. `SessionRecord::autosleep_due` takes it too, so a column's `sleep_after_minutes`
+  parks it (High confidence, as for any idle).
+- `quiet::at_rest` (new): idle at the prompt or stopped on a limit, and not working. The daemon's
+  `session_at_rest` reads it for the tier switch (`drain_tier_switches`, `relaunch_with` without
+  plan, a tier-owed seat's queued ask and send) and the TUI's `^n` line reads it as well. A
+  relaunch onto another tier is the way past the limit, and it carries any queued words there. A
+  plan relaunch keeps `session_idle` (strict): it pastes the words on the same tier.
+- `automove::delivers_in`: no turn in flight, so the card delivers where it sits. `automove`
+  already fired nothing on `RequiresAction`, so no done move happens.
+
+**The crown's words.** `CROWN_WAKES` now says the limit ended the worker's turn: `sleep_agent`
+parks it with its conversation kept, and `start_agent` naming another tier then wakes it there.
+Otherwise the person resumes it. `sleep_agent`'s description says "once idle or stopped on a
+usage limit" (≤820 bytes kept).
+
+**Not done.** A `Throttled` record from a rate limit is not re-read as QUOTA. The recovery
+restate reads only an attention record (`abort_only`). It is parkable and switchable, which is
+what T-801 needed.
+
+**Tests.** `cargo ut`: `a_stop_on_a_limit_is_a_turn_ended_that_holds_its_words` (quiet), the
+StopFailure arms (attention), `a_usage_limit_is_not_done` and `delivers_in` (automove),
+`autosleep_due` (board), and the crown's words (mcp). The T-802 crown_e2e goes on to a second
+limit: the worker is not working but holds its words, does not move to REVIEW, is parked by
+`sleep_agent`, and is woken by `start_agent` on a board tier `deep` with `--model opus` on its
+argv. Rig L2 (new; the rig lays a second board tier `rig-alt`, check `tier:<name>`): the person
+asks the crown to carry the limited worker on with rig-alt, without naming a tool. Run on the real
+Sonnet (claude 2.1.300), 2026-10-15: L2 PASS in 45 s (the crown called `sleep_agent` and then
+`start_agent` on rig-alt, and the worker resumed). L1 PASS beside it: told nothing, the crown still
+sent the worker no words and did not park it, and the card stayed QUOTA.

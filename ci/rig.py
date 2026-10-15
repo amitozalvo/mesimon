@@ -76,6 +76,11 @@ TIER_MODEL = "sonnet"  # Claude Code's alias for Sonnet 5.5 on 2.1.287
 TIER_MODEL_FULL = "claude-sonnet-5-5"
 TIER_EFFORT = "low"
 TIER_DESCRIPTION = "every rig test and the rig's crown"
+# A second board tier on the same model (T-808): where L2's crown moves a
+# worker stopped on a usage limit. Never the default, and never the built-in
+# `claude`, whose model is the account's own and may cost far more.
+ALT_TIER_NAME = "rig-alt"
+ALT_TIER_DESCRIPTION = "a worker the crown moves off a usage limit (L2)"
 STEP_TIMEOUT = 600
 # The stub forge CLI a rig test puts first on the daemon's PATH (T-739).
 GH_STUB = """#!/bin/sh
@@ -841,6 +846,12 @@ class Rig:
         if board.get("default_tier") != spec["id"]:
             self.wire.set_default_tier("board", spec["id"])
         self.tier = spec
+        alt = next((t for t in board.get("tiers", []) if t["name"] == ALT_TIER_NAME), None)
+        alt_spec = {**spec, "id": alt["id"] if alt else ulid(), "name": ALT_TIER_NAME,
+                    "description": ALT_TIER_DESCRIPTION}
+        if alt != alt_spec:
+            self.wire.save_tier("board", alt_spec)
+        self.alt_tier = alt_spec
         # The permission tests' column (T-581): Claude Code in manual mode.
         col = next((c for c in board["columns"] if c["name"] == MANUAL_COLUMN), None)
         if col is None:
@@ -1046,6 +1057,8 @@ Reply with the single word ready and end your turn."""
                 f"{TIER_MODEL_FULL} and the crown starts again")
             self.wire.save_tier("board", {**self.tier, "model": TIER_MODEL_FULL})
             self.tier["model"] = TIER_MODEL_FULL
+            self.wire.save_tier("board", {**self.alt_tier, "model": TIER_MODEL_FULL})
+            self.alt_tier["model"] = TIER_MODEL_FULL
             self.wire.sleep(rec["id"])
             self.wait_for("crown parked", lambda: word_of(
                 self.agent_of(self.board(), self.crown)["state"]) == "sleeping", 60)
@@ -2196,6 +2209,11 @@ Reply with the single word ready and end your turn."""
                 check(c, arg in (record["doctor"] or ""), record["doctor"] or "no line")
             elif name == "final":
                 check(c, word_of(rec["state"]) == arg, word_of(rec["state"]))
+            elif name == "tier":
+                # The tier the ticket's agent last launched on, by name (L2).
+                on = next((t["name"] for t in board.get("tiers", [])
+                           if t["id"] == rec.get("tier")), rec.get("tier") or "none")
+                check(c, on == arg, f"on {on}")
             elif name == "column" or name == "not_column":
                 # Where the ticket stands at the verdict (T-774).
                 col = next((t.get("column") for t in board.get("tickets", [])

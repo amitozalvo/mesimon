@@ -11,7 +11,9 @@
 //! Working means a turn is in progress or about to be: `Spawning`,
 //! `Running`, `RequiresAction` (a turn waiting on the user is still that
 //! turn), `Idle{Background}` (parked on a task, the turn resumes on its own),
-//! or an owed Enter (`pending_submit`). Everything else is quiet — `EndTurn`
+//! or an owed Enter (`pending_submit`). Everything else is quiet — a stop on
+//! a limit (`SessionState::stopped_on_limit`, T-808: the turn ended and the
+//! agent sits at its composer, QUOTA's needs-you notwithstanding), `EndTurn`
 //! said its piece, `Interrupted` was the user's own Esc, `Unknown` is a
 //! Claude session we lost track of and must not wait for, and a parked or dead
 //! record has no turn at all. A SHELL never counts: the daemon pins a Bash
@@ -42,13 +44,13 @@ pub fn is_working(s: &SessionRecord) -> bool {
                 && (s.codex_stopping
                     || s.observation_hold
                     || matches!(s.state, SessionState::Unknown { .. })))
-            || matches!(
+            || (matches!(
                 s.state,
                 SessionState::Spawning
                     | SessionState::Running
                     | SessionState::RequiresAction { .. }
                     | SessionState::Idle { stop_reason: StopReason::Background }
-            ))
+            ) && !s.state.stopped_on_limit()))
 }
 
 /// A session that holds back WORDS meant for it (T-599): `is_working` minus
@@ -60,12 +62,27 @@ pub fn is_working(s: &SessionRecord) -> bool {
 /// else keeps `is_working`: the merge train's seat, the attention set, the
 /// keep-awake hold, and another ticket's ask in the same checkout. Written
 /// in terms of `is_working`, so the two can only ever disagree about that
-/// one state.
+/// one state — and about a stop on a limit (T-808), which is no turn in
+/// progress but holds the words all the same: pasted, they would meet the
+/// limit again, and a person resumes it.
 pub fn holds_against_words(s: &SessionRecord) -> bool {
-    is_working(s)
+    (is_working(s)
         && !(s.kind == SessionKind::Claude
             && s.state == (SessionState::Idle { stop_reason: StopReason::Background })
-            && !s.pending_submit)
+            && !s.pending_submit))
+        || (s.kind.is_agent() && s.state.stopped_on_limit())
+}
+
+/// An agent BETWEEN TURNS whose pane may be ended and its conversation kept
+/// (T-808): idle at its prompt (not parked on background tasks), or stopped
+/// on a limit, and working by none of `is_working`'s signs. What a tier
+/// switch waits for — the daemon's `session_at_rest` and the TUI's `^n`
+/// line both ask it. A plan relaunch keeps the strict idle: it pastes the
+/// words on the same tier, where a limit would meet them again.
+pub fn at_rest(s: &SessionRecord) -> bool {
+    (matches!(s.state, SessionState::Idle { stop_reason } if stop_reason != StopReason::Background)
+        || s.state.stopped_on_limit())
+        && !is_working(s)
 }
 
 /// A session that holds its checkout AGAINST A PLAN ACCEPT (T-429):
@@ -110,9 +127,13 @@ pub fn is_mid_turn(s: &SessionRecord) -> bool {
 /// the chord never arms for an Enter the daemon would refuse and never
 /// refuses in words the daemon would not — a new clause (a pin, a floor)
 /// lands in both at once (T-249).
+///
+/// A stop on a limit sleeps as an idle does (T-808): the turn is over, and
+/// the conversation is kept for a wake on this tier or another.
 pub fn sleep_eligible(kind: SessionKind, state: &SessionState) -> Result<(), &'static str> {
     match (kind, state) {
         (SessionKind::Claude | SessionKind::Codex, SessionState::Idle { .. }) => Ok(()),
+        (SessionKind::Claude | SessionKind::Codex, s) if s.stopped_on_limit() => Ok(()),
         (SessionKind::Claude | SessionKind::Codex, _) => Err("only idle sessions sleep"),
         // Bash has no hook surface: Running IS its only live state, so the
         // manual path accepts it — the daemon then checks for live children.
@@ -214,6 +235,43 @@ mod tests {
             still_awake(SessionKind::Bash, "bash has live children (vim)"),
             "shell still awake — bash has live children (vim)"
         );
+    }
+
+    /// T-808: a stop on a usage limit ended its turn. It sleeps, takes a
+    /// tier switch and holds no checkout, and it still holds the words a
+    /// paste would lose to the limit again. The pre-T-802 `Throttled` the
+    /// same; a shell has no limit.
+    #[test]
+    fn a_stop_on_a_limit_is_a_turn_ended_that_holds_its_words() {
+        let t = ulid::Ulid::new();
+        for st in
+            [SessionState::RequiresAction { reason: Reason::QuotaResume }, SessionState::Throttled]
+        {
+            assert!(st.stopped_on_limit(), "{st:?}");
+            for kind in [SessionKind::Claude, SessionKind::Codex] {
+                assert_eq!(sleep_eligible(kind, &st), Ok(()), "{kind:?} {st:?}");
+            }
+            let mut s = session(t, SessionKind::Claude, "/r", st.clone());
+            assert!(!is_working(&s), "{st:?}");
+            assert!(!is_mid_turn(&s), "{st:?}");
+            assert!(at_rest(&s), "{st:?}");
+            assert!(holds_against_words(&s), "{st:?}");
+            assert!(working_tickets(&board_with(vec![s.clone()]), &HashSet::new(), None).is_empty());
+            s.pending_submit = true;
+            assert!(is_working(&s) && !at_rest(&s), "an owed Enter is a turn about to start");
+        }
+        for st in [
+            SessionState::RequiresAction { reason: Reason::Permission },
+            SessionState::RequiresAction { reason: Reason::Auth },
+            SessionState::Idle { stop_reason: StopReason::Background },
+            SessionState::Running,
+        ] {
+            assert!(!st.stopped_on_limit(), "{st:?}");
+            assert!(!at_rest(&session(t, SessionKind::Claude, "/r", st.clone())), "{st:?}");
+        }
+        let done = SessionState::Idle { stop_reason: StopReason::EndTurn };
+        let s = session(t, SessionKind::Claude, "/r", done);
+        assert!(at_rest(&s) && !holds_against_words(&s));
     }
 
     fn session(
@@ -330,6 +388,7 @@ mod tests {
             SessionState::Idle { stop_reason: StopReason::Unknown },
             SessionState::Sleeping,
             SessionState::Throttled,
+            SessionState::RequiresAction { reason: Reason::QuotaResume },
             SessionState::unknown(),
         ];
         for st in quiet {

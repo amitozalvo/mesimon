@@ -392,7 +392,8 @@ impl Daemon {
     /// Relaunch the seats that owe a tier switch (T-443). Two phases:
     ///
     /// A. A paned seat whose ticket's pick has stood still for
-    ///    `TIER_SETTLE_MS`, idle between turns, not the pane a person is
+    ///    `TIER_SETTLE_MS`, idle between turns or stopped on a limit
+    ///    (`session_at_rest`, T-808), not the pane a person is
     ///    inside, with a conversation to resume and no ask queued (a queued
     ///    ask carries the switch itself — `deliver` relaunches instead of
     ///    pasting — and keeps the checkout rules the queue has). Claude is
@@ -445,7 +446,7 @@ impl Daemon {
                         .tier_set_at
                         .get(&s.ticket)
                         .is_none_or(|at| now.saturating_sub(*at) >= TIER_SETTLE_MS)
-                    && self.session_idle(s.id)
+                    && self.session_at_rest(s.id)
                     && !self.queued.iter().any(|q| q.ticket == s.ticket)
                     && !self.owed.contains_key(&s.id)
                     && !self.pending_resumes.iter().any(|p| p.session == s.id)
@@ -519,7 +520,7 @@ impl Daemon {
         actor: &str,
     ) -> Response {
         let why = if plan { "plan mode" } else { "a tier switch" };
-        if !self.session_idle(id) {
+        if !(if plan { self.session_idle(id) } else { self.session_at_rest(id) }) {
             return Response::Err {
                 message: format!(
                     "{} is mid-turn ∙ {why} waits for idle",

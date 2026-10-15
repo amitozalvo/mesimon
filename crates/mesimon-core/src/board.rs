@@ -133,6 +133,20 @@ impl SessionState {
         SessionState::Unknown { reason: UnknownReason::NoSignal }
     }
 
+    /// The turn ended on a limit (T-808): a usage limit's QUOTA (T-802), or
+    /// `Throttled` — an overload, and every limit a build before T-802 kept.
+    /// The agent is back at its composer and nothing runs, so it is no turn
+    /// in progress: it sleeps, takes a tier switch and holds no checkout or
+    /// train. It is still no idle for WORDS, which would only meet the limit
+    /// again (`quiet::holds_against_words`), and no turn done (`automove`).
+    /// The one place that says which states these are; `quiet` reads it.
+    pub fn stopped_on_limit(&self) -> bool {
+        matches!(
+            self,
+            SessionState::RequiresAction { reason: Reason::QuotaResume } | SessionState::Throttled
+        )
+    }
+
     /// The agent stopped on a QUESTION — one whose answer may change what a
     /// queued follow-up should say, so the queue holds every ask behind it
     /// for a person's send (T-420, T-565). A permission prompt is not one:
@@ -628,14 +642,15 @@ impl SessionRecord {
     /// T-534 was woken in DONE and never slept). Background and monitoring
     /// are still work. The daemon additionally checks pending work,
     /// ownership and resume history; a conversation with no history yet is
-    /// its to refuse.
+    /// its to refuse. A stop on a limit (T-808) is idle at its prompt too.
     pub fn autosleep_due(&self, now: u64, timeout_ms: u64) -> bool {
-        matches!(
+        (matches!(
             self.state,
             SessionState::Idle {
                 stop_reason: StopReason::EndTurn | StopReason::Interrupted | StopReason::Unknown
             }
-        ) && self.park_clock_due(now, timeout_ms)
+        ) || self.state.stopped_on_limit())
+            && self.park_clock_due(now, timeout_ms)
     }
 
     fn park_clock_due(&self, now: u64, timeout_ms: u64) -> bool {
@@ -3412,7 +3427,6 @@ mod tests {
             SessionState::Sleeping,
             SessionState::RequiresAction { reason: Reason::Permission },
             SessionState::Failed { reason: FailReason::Unknown },
-            SessionState::Throttled,
             SessionState::unknown(),
             SessionState::Idle { stop_reason: StopReason::Background },
             SessionState::Idle { stop_reason: StopReason::Monitoring },
@@ -3420,6 +3434,14 @@ mod tests {
             let mut held = rec.clone();
             held.state = state;
             assert!(!held.autosleep_due(90_000, 60_000), "{:?}", held.state);
+        }
+        // A stop on a limit is at its prompt (T-808).
+        for state in
+            [SessionState::RequiresAction { reason: Reason::QuotaResume }, SessionState::Throttled]
+        {
+            let mut limited = rec.clone();
+            limited.state = state;
+            assert!(limited.autosleep_due(90_000, 60_000), "{:?}", limited.state);
         }
         for kind in [SessionKind::Codex, SessionKind::Bash] {
             let mut held = rec.clone();

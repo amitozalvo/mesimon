@@ -10674,7 +10674,7 @@ impl Daemon {
         // and the relaunch waits for idle: sent now at a working pane, the
         // words queue behind the turn instead of landing on the old tier.
         let queued = queued
-            || matches!(seat, QueuedSeat::Pane(id) if self.tier_owed(id) && !self.session_idle(id));
+            || matches!(seat, QueuedSeat::Pane(id) if self.tier_owed(id) && !self.session_at_rest(id));
         // Blank in, nothing out: an empty paste would press Enter on a turn
         // the user never wrote. An EMPTY SEAT is the one exception (T-294):
         // there the Enter lands on the ticket title the spawn types, which
@@ -10973,7 +10973,7 @@ impl Daemon {
             // so is a tier switch the seat owes (T-443), once it is idle:
             // the words ride the relaunch. Owed but mid-turn, a send-now
             // pastes on the tier it has; `prompt_session` queues its own.
-            QueuedSeat::Pane(id) if plan || (self.tier_owed(id) && self.session_idle(id)) => {
+            QueuedSeat::Pane(id) if plan || (self.tier_owed(id) && self.session_at_rest(id)) => {
                 self.relaunch(ticket, id, Some(text), plan, "local")
             }
             // `ack` is a pane's alone: a wake and a start park their words
@@ -11465,7 +11465,8 @@ impl Daemon {
         match q.seat {
             // A relaunch (plan mode, a tier switch owed) ends the pane and
             // its tasks with it, so it waits for a true idle (T-599).
-            QueuedSeat::Pane(id) if q.plan || self.tier_owed(id) => self.session_idle(id),
+            QueuedSeat::Pane(id) if q.plan => self.session_idle(id),
+            QueuedSeat::Pane(id) if self.tier_owed(id) => self.session_at_rest(id),
             QueuedSeat::Pane(id) => self.session_takes_words(id),
             // A Codex record wakes only once its runtime confirmed the stop
             // (a tier switch parks one and queues its words here, T-443);
@@ -11478,15 +11479,23 @@ impl Daemon {
     }
 
     /// Is this pane's session between turns — idle, not parked in the
-    /// background, and not working by any of `quiet`'s signs? What a
-    /// relaunch waits for (a tier switch, plan mode); a paste of words reads
-    /// the wider `session_takes_words` (T-599).
+    /// background, and not working by any of `quiet`'s signs? What a plan
+    /// relaunch waits for; a tier switch reads the wider `session_at_rest`,
+    /// a paste of words the wider `session_takes_words` (T-599).
     fn session_idle(&self, id: uuid::Uuid) -> bool {
         self.board.sessions.iter().any(|s| {
             s.id == id
                 && matches!(s.state, SessionState::Idle { stop_reason } if stop_reason != StopReason::Background)
                 && !mesimon_core::quiet::is_working(s)
         })
+    }
+
+    /// `session_idle`, or stopped on a limit (T-808, `quiet::at_rest`): what
+    /// a tier switch waits for. The relaunch ends a pane whose turn is over
+    /// and carries the conversation, and any words with it, to another
+    /// model; a plan relaunch stays on the tier the limit is on.
+    fn session_at_rest(&self, id: uuid::Uuid) -> bool {
+        self.board.sessions.iter().any(|s| s.id == id && mesimon_core::quiet::at_rest(s))
     }
 
     /// Will this pane's session take words now — `session_idle`, or idle at

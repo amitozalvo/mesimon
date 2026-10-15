@@ -151,9 +151,11 @@ pub const CROWN_WAKES: &str = concat!(
      its fix, which get_ticket on that ticket also carries (worktree_error). A fix outside \
      the ticket's brief is the person's: raise_hand on the crown's own ticket says it, and \
      start_agent once it is made tries again. A worker that hit a usage limit (get_ticket on it \
-     carries needs_you: quota) stopped mid-task on the account's limit: no word of the crown's \
-     resumes it, since the person resumes it with credits, another model or the limit's \
-     reset, and its work stays where the turn left it until then. Nothing needs \
+     carries needs_you: quota) stopped mid-task on the account's limit, and its turn has \
+     ended: no word of the crown's resumes it on that tier (ask_agent's words wait), and its \
+     work stays where the turn left it. sleep_agent parks it, conversation kept, and \
+     start_agent naming another tier then wakes it on that tier to go on; otherwise the \
+     person resumes it with credits, another model or the limit's reset. Nothing needs \
      polling. A background task or monitor left running does not hold the wake or a queued \
      word: they land at this session's composer as at any idle one. A worker the crown started \
      that sits idle with background tasks for 30 minutes wakes this session once (has been \
@@ -720,8 +722,8 @@ pub fn tools() -> Vec<Value> {
             "description": "Parks another mesimon ticket's agent (crown only), as x on its \
                             card does: the conversation is kept, and a person's c or \
                             start_agent wakes it. \
-                            Only an agent the crown started, and only once it is idle; a \
-                            working agent, a person's agent and this session's own are \
+                            Only an agent the crown started, once idle or stopped on a \
+                            usage limit; a working agent, a person's agent and this session's own are \
                             refused in words. A parked agent holds no seat in the crown's \
                             budget until it is woken, so parking a finished worker frees its \
                             seat; move_ticket then closes its ticket in the done column, and \
@@ -2512,8 +2514,14 @@ mod tests {
     /// ticket reads then, and that no word of its own resumes the worker.
     #[test]
     fn the_crown_is_told_a_usage_limit_is_the_persons() {
-        for words in ["hits a usage limit", "needs_you: quota", "no word of the crown's resumes it"]
-        {
+        for words in [
+            "hits a usage limit",
+            "needs_you: quota",
+            "no word of the crown's resumes it",
+            // T-808: the limit ended the turn, and the crown may move it.
+            "sleep_agent parks it, conversation kept",
+            "start_agent naming another tier then wakes it on that tier",
+        ] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
         }
     }

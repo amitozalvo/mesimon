@@ -43,10 +43,10 @@ fn launched(rec: &SessionRecord) -> String {
     }
 }
 
-/// Between turns, the way the daemon's `session_idle` reads it.
+/// Between turns, the way the daemon's `session_at_rest` reads it: a stop
+/// on a limit switches at once too (T-808).
 fn between_turns(rec: &SessionRecord) -> bool {
-    matches!(rec.state, SessionState::Idle { stop_reason } if stop_reason != mesimon_core::board::StopReason::Background)
-        && !mesimon_core::quiet::is_working(rec)
+    mesimon_core::quiet::at_rest(rec)
 }
 
 impl App {
