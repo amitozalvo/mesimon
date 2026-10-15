@@ -19,7 +19,9 @@
 //!    words ended, whatever it left behind;
 //! 4. **raised its hand** — `raise_hand`, as before, and **asks a
 //!    question** — a worker it started stopped on `AskUserQuestion`, where
-//!    the board lets the crown answer (T-569);
+//!    the board lets the crown answer (T-569); and **hit a usage limit**
+//!    (T-802) — its turn ended on the account's limit, which no turn of
+//!    its own ends: a person does, and the crown stops waiting on it;
 //! 5. **merged** — a worker it started has its branch read `merged` by the
 //!    worktree flags (`hear_merges`), however it got there: `m`, the train,
 //!    or a `git merge` in a terminal. A shared-checkout worker has no branch,
@@ -81,7 +83,7 @@
 //! crown started (`started_by_crown`), and — behind the board's
 //! `crown_watches` — for a ticket the crown watches (`watch_ticket`,
 //! `Daemon::crown_watched`): a person's worker the crown was told to wait
-//! for. A watched ticket is heard delivered, finished, raised and merged,
+//! for. A watched ticket is heard delivered, finished, raised, limited and merged,
 //! and the watch ends at the merge; its question and its plan stay the
 //! person's (the crown cannot answer a person's agent), and so does its
 //! lingering: the crown's words do reach a watched agent (T-734), but a
@@ -268,6 +270,10 @@ pub(super) enum WakeCause {
     Merged,
     Delivered,
     Answered,
+    /// Its turn ended on a usage limit (T-802): above an answer, since the
+    /// answer's turn is the one the limit cut, and under a hand, which a
+    /// worker raised on purpose.
+    Limited,
     Raised,
     Planned,
     Asked,
@@ -287,6 +293,7 @@ impl WakeCause {
             WakeCause::Merged => "merged",
             WakeCause::Delivered => "delivered",
             WakeCause::Answered => "answered your ask",
+            WakeCause::Limited => "hit a usage limit",
             WakeCause::Raised => "raised its hand",
             // Never the plan's words (T-414's rule for a hand's reason):
             // the crown reads them with `get_ticket`.
@@ -307,6 +314,7 @@ impl WakeCause {
             WakeCause::Merged => "merged",
             WakeCause::Delivered => "delivered",
             WakeCause::Answered => "answered",
+            WakeCause::Limited => "limited",
             WakeCause::Raised => "raised",
             WakeCause::Planned => "planned",
             WakeCause::Asked => "asked",
@@ -527,6 +535,16 @@ pub(super) fn asks_the_crown(
         SessionState::RequiresAction { reason: Reason::Plan } => Some(WakeCause::Planned),
         _ => None,
     }
+}
+
+/// Whether this state change is an agent stopping on a usage limit (T-802),
+/// whatever the crown mode: nothing the crown sends ends it, but a crown
+/// that does not hear it waits on a turn that will not come, since the
+/// limit is no turn's end. Whose agent it is is `note_crown_wake`'s.
+pub(super) fn limits_the_crown(kind: SessionKind, change: &Change) -> Option<WakeCause> {
+    let quota = SessionState::RequiresAction { reason: Reason::QuotaResume };
+    (kind.is_agent() && change.from != change.to && change.to == quota)
+        .then_some(WakeCause::Limited)
 }
 
 /// What is pending on a worker's ticket (T-596): the list in the module's
@@ -1642,8 +1660,8 @@ impl Daemon {
     /// Record that the crown is owed a wake about `worker`, and try to
     /// deliver it now. Only while the crown is worn, and — an answer aside,
     /// which the crown asked for — only for an agent THIS crown started, or
-    /// a ticket it watches (T-712), whose delivery, finished turn, hand and
-    /// merge are the crown's to hear and whose question or plan is not: a
+    /// a ticket it watches (T-712), whose delivery, finished turn, hand,
+    /// usage limit (T-802) and merge are the crown's to hear and whose question or plan is not: a
     /// person's agent is answered by the person, and its card's needs-you
     /// already calls them. The feed line names both tickets and the cause,
     /// never the sentence; the crown's card lights `woke` the way it lights
@@ -1672,7 +1690,11 @@ impl Daemon {
         }
         let watched_news = matches!(
             cause,
-            WakeCause::Delivered | WakeCause::Finished | WakeCause::Merged | WakeCause::Raised
+            WakeCause::Delivered
+                | WakeCause::Finished
+                | WakeCause::Merged
+                | WakeCause::Raised
+                | WakeCause::Limited
         );
         watched_news && self.watched_by_crown(worker, crown)
     }
@@ -2417,11 +2439,38 @@ mod tests {
         assert_eq!(WakeCause::Planned.clause(), "stops on a plan");
     }
 
+    /// T-802: a usage limit wakes the crown whatever its mode, on the edge
+    /// into it, from any agent; a person's prompt leaving it wakes nothing,
+    /// and nothing is owed on the ticket for it to wait out.
+    #[test]
+    fn a_usage_limit_wakes_the_crown_on_its_edge() {
+        let quota = SessionState::RequiresAction { reason: Reason::QuotaResume };
+        let change = |from: SessionState, to: SessionState| Change {
+            from,
+            to,
+            attention_added: false,
+            confidence: Confidence::High,
+        };
+        let limited = change(SessionState::Running, quota.clone());
+        for kind in [SessionKind::Claude, SessionKind::Codex] {
+            assert_eq!(limits_the_crown(kind, &limited), Some(WakeCause::Limited), "{kind:?}");
+        }
+        assert_eq!(limits_the_crown(SessionKind::Bash, &limited), None, "a shell has no quota");
+        let again = change(quota.clone(), quota.clone());
+        assert_eq!(limits_the_crown(SessionKind::Claude, &again), None);
+        let left = change(quota.clone(), SessionState::Running);
+        assert_eq!(limits_the_crown(SessionKind::Claude, &left), None);
+        let busy = Pending { turn: true, words: true, ..Pending::default() };
+        assert_eq!(due(Some(WakeCause::Limited), None, &busy), Due::Wake(WakeCause::Limited));
+        assert_eq!(WakeCause::Limited.clause(), "hit a usage limit");
+    }
+
     #[test]
     fn coalesced_causes_keep_the_strongest() {
         assert!(WakeCause::Asked > WakeCause::Planned);
         assert!(WakeCause::Planned > WakeCause::Raised);
-        assert!(WakeCause::Raised > WakeCause::Answered);
+        assert!(WakeCause::Raised > WakeCause::Limited);
+        assert!(WakeCause::Limited > WakeCause::Answered);
         assert!(WakeCause::Answered > WakeCause::Delivered);
         assert!(WakeCause::Delivered > WakeCause::Merged);
         assert!(WakeCause::Merged > WakeCause::Finished);

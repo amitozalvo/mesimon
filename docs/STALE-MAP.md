@@ -26001,3 +26001,47 @@ had it; `forge::Pr::title` is scrubbed at the parse (`str_of`), `PrRecord` keeps
 `forge.json` (no schema bump: an absent title is no title, and an older build dropping it widens
 nothing), and `PrItem` carries `title` and `updated_ms`. The TUI scrubs both again before drawing.
 `get_ticket`'s `AgentPrView` is unchanged: an agent is told nothing new.
+
+## A usage limit needs you, and the crown hears it (T-802, 2026-10-15, "quota issues doesn't read in mesimon as \"needs you\"")
+
+**Seen.** Four workers on the author's board stopped on `You've reached your Fable limit. Run
+/usage-credits to continue or switch models with /model.` The words sat under each card's title
+and nothing else said so: no needs-you, no notification, and the crown that had started one of
+them was never told. The feed shows why: the `StopFailure` came with class `rate_limit`, which
+mapped to `Throttled` (rank 10, outside the attention set), and `Throttled` was built to wait for
+Claude Code's quota auto-resume (`quota_auto_resume_fired` back to `Running`, `_stale` or
+`_disabled` to `RequiresAction{QuotaResume}`). No such notice appears anywhere in the board's
+feed, so the card waited, in grey, on an event that never came. Each one left only on a person's
+prompt.
+
+**Built.**
+- `StopFailure{RateLimit}` enters `RequiresAction{QuotaResume}` (rank 6, the card's `QUOTA`,
+  in the attention set): needs-you, the notification, and the limit's words kept as the detail.
+  `Overloaded` stays `Throttled`; it is the server's and passes. A prompt leaves on the usual
+  1.5 s settle, and a prompt that hits the limit again inside that settle is the same wait
+  (no second notification). `docs/state-scenarios/rate-limit.json` now pins this, and
+  `overloaded.json` keeps the throttle's 5 s leave.
+- **It does not go stale while it is true.** The 15-minute stale clock would have taken QUOTA off
+  the card (and its words with it) while the agent was still stopped. The recovery adapter restates
+  it the way T-363 restates a held dialog: once a minute, while the transcript's last word is the
+  limit's error row (`tail::api_error` with class `rate_limit`), it sends the same `StopFailure`,
+  which re-arms the clock. A prompt that got through writes past the row, so a lost clearing frame
+  still demotes.
+- **The crown hears it.** `WakeCause::Limited`, `T-12 "…" hit a usage limit`, on the edge into
+  QUOTA, whatever the crown mode, for a worker the crown started or a ticket it watches. A
+  limit ends no turn, so without it a crown waits on a worker whose turn will never end. It ranks
+  between an answer (the answer's turn is the one the limit cut) and a raised hand. crown.json stays
+  schema 1, as with `Forge` and `Unstarted`. `CROWN_WAKES` tells the crown that `get_ticket`
+  carries `needs_you: quota`, and that no word of the crown's resumes the worker: the person does.
+
+**Kept.** A QUOTA agent is `is_working` as every `RequiresAction` is, so queued words, including the
+crown's asks, wait instead of hitting the limit again, and the merge train's seat holds as it does
+for a question. `sleep` still refuses it (only idle sessions sleep), as it refused `Throttled`.
+
+**Tests.** `cargo ut`: the class routing and `a_usage_limit_holds_until_a_prompt_runs`
+(attention), `a_usage_limit_is_restated_off_the_tail_while_it_is_the_last_word` (recovery),
+`a_usage_limit_wakes_the_crown_on_its_edge` (crownwake), and the crown's words (mcp).
+`crown_e2e::a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker` on both roads.
+The rig's L1 (new; rig step `limit` sends the `StopFailure` through the real hook binary, since
+no account is made to hit a limit) on the real Sonnet (claude 2.1.300), 2026-10-15: PASS in 43 s,
+wakes `finished` then `limited`. The crown, told nothing of what to do, sent the worker no words.

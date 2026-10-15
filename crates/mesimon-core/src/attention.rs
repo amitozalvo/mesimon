@@ -973,7 +973,15 @@ impl Machine {
             },
             Signal::TeammateIdle { .. } | Signal::TeammateMessaged { .. } => None,
             Signal::StopFailure { class } => match class {
-                StopFailureClass::RateLimit | StopFailureClass::Overloaded => t(S::Throttled),
+                // A usage limit ends the turn, and nothing resumes it but a
+                // person: credits, another model, or a prompt after the
+                // window resets ("You've reached your Fable limit", T-802).
+                // Claude Code's quota auto-resume notices never came on the
+                // author's board, so `Throttled` waited on nothing and the
+                // card said it in grey. An overload is the server's, and
+                // passes.
+                StopFailureClass::RateLimit => t(S::RequiresAction { reason: Reason::QuotaResume }),
+                StopFailureClass::Overloaded => t(S::Throttled),
                 StopFailureClass::AuthenticationFailed
                 | StopFailureClass::OauthOrgNotAllowed
                 | StopFailureClass::BillingError => t(S::RequiresAction { reason: Reason::Auth }),
@@ -1832,6 +1840,11 @@ mod tests {
 
         let mut m2 = m(SessionState::Running);
         let c = m2.apply(&Signal::StopFailure { class: StopFailureClass::RateLimit }, 1).unwrap();
+        assert_eq!(c.to, SessionState::RequiresAction { reason: Reason::QuotaResume });
+        assert!(c.attention_added, "a usage limit needs you (T-802)");
+
+        let mut m4 = m(SessionState::Running);
+        let c = m4.apply(&Signal::StopFailure { class: StopFailureClass::Overloaded }, 1).unwrap();
         assert_eq!(c.to, SessionState::Throttled);
         assert!(!c.attention_added);
 
@@ -1858,6 +1871,24 @@ mod tests {
             m.apply(&Signal::Notification { kind: NotificationKind::QuotaStale }, 1000).unwrap();
         assert_eq!(c.to, SessionState::RequiresAction { reason: Reason::QuotaResume });
         assert!(c.attention_added);
+    }
+
+    /// T-802: a usage limit holds until a prompt gets through. A prompt that
+    /// hits the limit again inside the leave's settle is the same wait, and
+    /// one that runs leaves it.
+    #[test]
+    fn a_usage_limit_holds_until_a_prompt_runs() {
+        let quota = SessionState::RequiresAction { reason: Reason::QuotaResume };
+        let limit = Signal::StopFailure { class: StopFailureClass::RateLimit };
+        let mut m = m(SessionState::Running);
+        assert_eq!(m.apply(&limit, 1000).unwrap().to, quota);
+        assert!(m.apply(&Signal::UserPromptSubmit, 60_000).is_none(), "the leave settles");
+        assert!(m.apply(&limit, 61_000).is_none(), "limited again: the same wait");
+        assert!(m.tick(60_000 + SETTLE_MS + 1).is_none());
+        assert_eq!(m.state(), &quota);
+        assert!(m.apply(&Signal::UserPromptSubmit, 120_000).is_none());
+        let c = m.tick(120_000 + SETTLE_MS).expect("the prompt ran");
+        assert_eq!(c.to, SessionState::Running);
     }
 
     #[test]

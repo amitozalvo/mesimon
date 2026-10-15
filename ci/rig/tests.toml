@@ -22,7 +22,9 @@
 #              same with a wrapper that starts every session without its
 #              `--plugin-dir`: a Claude Code whose mods are off, T-598),
 #              `restart_plain` (back to the Claude Code on PATH), `doctor`
-#              (read its claude road line).
+#              (read its claude road line), `limit` (T-802: the worker's
+#              session reports a usage limit through the real hook binary;
+#              the step ends with the crown's turn on the board's wake).
 #   until      for a crown step: `stops = N` (that many Stop frames from the
 #              worker since the step began) and/or `events = [...]`, then the
 #              worker's card word `state` (working | needs_you | idle |
@@ -914,3 +916,19 @@ checks = ["woke:unstarted", "crown_hand:already exists"]
 
   [[test.steps]]
   rig = "free_branch"
+
+[[test]]
+id = "L1"
+title = "L1 · a worker that hits a usage limit: do the steps below"
+workspace = "worktree"
+brief = "Reply with the single word done and end your turn. Read no file and run no command."
+expect = "the crown starts the worker, which answers and ends its turn; then its session reports the account's usage limit, its card reads needs you (quota) and the board wakes the crown, hit a usage limit (T-802). Told nothing of what to do on that wake, the crown sends the worker no words: nothing it says resumes a worker on a limit, which is the person's."
+checks = ["woke:limited", "not_fed:ask_agent", "final:needs_you"]
+
+  [[test.steps]]
+  crown = "L1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: L1 started."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "limit"

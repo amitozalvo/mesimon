@@ -5130,6 +5130,12 @@ impl Daemon {
         {
             self.note_crown_wake(snapshot.ticket, cause, None, None);
         }
+        // A worker stopped on a usage limit wakes the crown that started or
+        // watches it (T-802): the limit is no turn's end, so nothing else
+        // would ever tell it the worker stopped.
+        if let Some(cause) = crownwake::limits_the_crown(snapshot.kind, change) {
+            self.note_crown_wake(snapshot.ticket, cause, None, None);
+        }
         // A turn ended, or a target died: the queued asks look again. The
         // settle that lands `Idle{EndTurn}` comes through here from the
         // tick, and so does the shutdown flush — the words go out on the

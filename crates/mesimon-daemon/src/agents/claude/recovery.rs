@@ -337,6 +337,29 @@ impl ClaudeRecovery {
         // below, the next prompt — and a tail that no longer shows the
         // dialog (a lost answer frame) affirms nothing, so the clock still
         // demotes that one.
+        // A usage limit is restated the same way (T-802): the turn closed on
+        // the limit's error row, and while that row is still the last word
+        // nothing has run since — the person has not been back. The clock
+        // still demotes a wait whose clearing frame was lost, since a prompt
+        // that got through writes past the row.
+        let mut limited = None;
+        if record.state == (SessionState::RequiresAction { reason: Reason::QuotaResume })
+            && abort_only
+            && self.affirmed_at.is_none_or(|at| now.saturating_sub(at) >= WAIT_AFFIRM_MS)
+        {
+            self.affirmed_at = Some(now);
+            limited = tail::api_error(&path)
+                .filter(|error| {
+                    super::hooks::failure_class(Some(&error.class))
+                        == attention::StopFailureClass::RateLimit
+                })
+                .map(|_| {
+                    observation(
+                        Signal::StopFailure { class: attention::StopFailureClass::RateLimit },
+                        "tail",
+                    )
+                });
+        }
         if let SessionState::RequiresAction { reason } = &record.state {
             if let Some((tool, hint)) = pending_dialog(*reason) {
                 if abort_only
@@ -400,6 +423,7 @@ impl ClaudeRecovery {
         }
         closed
             .into_iter()
+            .chain(limited)
             .chain(hints.into_iter().map(|(kind, preview)| RecoveryObservation {
                 signal: Signal::TranscriptHint { kind },
                 preview,
@@ -819,6 +843,43 @@ mod recovery_tests {
         // from a running tool.
         record.state = SessionState::RequiresAction { reason: Reason::Permission };
         assert!(recovery.poll(&record, RecoverySample::Transcript, 300_000).is_empty());
+    }
+
+    /// T-802: a usage limit is restated off the tail once a minute while
+    /// the limit's error row is the last word, so the stale clock never
+    /// takes QUOTA off a card whose agent is still stopped on it; a prompt
+    /// past the row, or another class of error, restates nothing.
+    #[test]
+    fn a_usage_limit_is_restated_off_the_tail_while_it_is_the_last_word() {
+        let history = History::new();
+        history.append(serde_json::json!({"uuid":"p", "type":"user", "message":{"content":"go"}}));
+        history.append(super::tail::error_row("rate_limit", "You've reached your Fable limit."));
+        let mut record = record(SessionState::RequiresAction { reason: Reason::QuotaResume });
+        record.transcript_path = Some(history.0.display().to_string());
+        let mut recovery = ClaudeRecovery::default();
+        let limit = |read: &[RecoveryObservation]| {
+            matches!(
+                read,
+                [RecoveryObservation {
+                    signal: Signal::StopFailure { class: attention::StopFailureClass::RateLimit },
+                    ..
+                }]
+            )
+        };
+        assert!(recovery.needs_poll(&record, RecoveryChannel::Transcript, 1000));
+        assert!(limit(&recovery.poll(&record, RecoverySample::Transcript, 1000)));
+        assert!(
+            recovery.poll(&record, RecoverySample::Transcript, 30_000).is_empty(),
+            "once a minute"
+        );
+        assert!(limit(&recovery.poll(&record, RecoverySample::Transcript, 61_000)));
+        // Another wait's record is not restated as a limit.
+        record.state = SessionState::RequiresAction { reason: Reason::Auth };
+        assert!(recovery.poll(&record, RecoverySample::Transcript, 130_000).is_empty());
+        // A prompt got through: the row is no longer the last word.
+        record.state = SessionState::RequiresAction { reason: Reason::QuotaResume };
+        history.append(serde_json::json!({"uuid":"q", "type":"user", "message":{"content":"on"}}));
+        assert!(recovery.poll(&record, RecoverySample::Transcript, 200_000).is_empty());
     }
 
     /// T-649: a question frame came 2 s after the turn's `Stop`, from no

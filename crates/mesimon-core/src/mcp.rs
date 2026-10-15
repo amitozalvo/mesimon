@@ -138,7 +138,7 @@ pub const CROWN_WAKES: &str = concat!(
     "The board wakes this session on its own: when an agent the crown started delivers, \
      finishes a turn with nothing pending on it (no words queued for it, no hand up, no merge \
      the merge train will make), is merged, answers the crown's ask, raises its hand, asks a \
-     question, stops on a plan, or its pull request has news from the forge (a pipeline failed \
+     question, stops on a plan, hits a usage limit, or its pull request has news from the forge (a pipeline failed \
      or passed, a job waiting, a deployment, a conflict, a review, a later PR merged, each \
      named with its PR; \
      its get_ticket carries the PR under prs), one sentence naming \
@@ -150,7 +150,10 @@ pub const CROWN_WAKES: &str = concat!(
      commits yet, a checkout on no branch) wakes it too: could not start, with the reason and \
      its fix, which get_ticket on that ticket also carries (worktree_error). A fix outside \
      the ticket's brief is the person's: raise_hand on the crown's own ticket says it, and \
-     start_agent once it is made tries again. Nothing needs \
+     start_agent once it is made tries again. A worker that hit a usage limit (get_ticket on it \
+     carries needs_you: quota) stopped mid-task on the account's limit: no word of the crown's \
+     resumes it, since the person resumes it with credits, another model or the limit's \
+     reset, and its work stays where the turn left it until then. Nothing needs \
      polling. A background task or monitor left running does not hold the wake or a queued \
      word: they land at this session's composer as at any idle one. A worker the crown started \
      that sits idle with background tasks for 30 minutes wakes this session once (has been \
@@ -2502,6 +2505,16 @@ mod tests {
             let bytes = serde_json::to_string(&t).unwrap().len();
             let name = t["name"].as_str().unwrap();
             assert!(bytes <= MAX_TOOL_BYTES, "{name} is {bytes} bytes, cap is {MAX_TOOL_BYTES}");
+        }
+    }
+
+    /// T-802: the crown is told a usage limit wakes it, how its worker's
+    /// ticket reads then, and that no word of its own resumes the worker.
+    #[test]
+    fn the_crown_is_told_a_usage_limit_is_the_persons() {
+        for words in ["hits a usage limit", "needs_you: quota", "no word of the crown's resumes it"]
+        {
+            assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
         }
     }
 

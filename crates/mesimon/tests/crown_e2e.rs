@@ -5892,3 +5892,77 @@ fn a_crown_start_whose_worktree_cannot_be_cut_wakes_the_crown_with_why() {
     assert_eq!(read(&mut c, sa, &kw).unwrap().worktree_error.as_deref(), Some(why));
     assert!(c.board().live_agent(w).is_none(), "no agent was started");
 }
+
+/// T-802: a worker the crown started stops on a usage limit. The card needs
+/// you (QUOTA, the limit's words under the title), the crown hears `hit a
+/// usage limit`, and the worker's `get_ticket` says why. A prompt that runs
+/// takes the card back to work.
+#[test]
+fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_limit",
+        Some(RECORDING_STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_limit");
+    let got = h.dir.join("got.txt");
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let a = create(&mut c, "coordinate");
+    let w = create(&mut c, "mesimon-probe-802 worker");
+    let kw = key_of(&mut c, w);
+    let sa = spawn(&mut c, a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
+
+    let v = read(&mut c, sa, &kw).unwrap();
+    assert!(matches!(
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket {
+                key: kw.clone(),
+                seen: v.seen,
+                plan: false,
+                tier: None,
+                workspace: Some("worktree".into()),
+            },
+        ),
+        Response::AgentStarted { .. }
+    ));
+    wait_until(std::time::Duration::from_secs(15), "W's worktree start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).expect("W holds a seat").id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, ws);
+
+    let words = "You've reached your Fable limit. Run /usage-credits to continue or switch \
+                 models with /model.";
+    let body = json!({ "error": "rate_limit", "last_assistant_message": words }).to_string();
+    hook_send_with(&hook_sock, &ws.to_string(), "StopFailure", Some("rate_limit"), &body);
+    let quota = SessionState::RequiresAction { reason: mesimon_core::board::Reason::QuotaResume };
+    c.await_state(ws, "on the limit", |s| *s == quota);
+    let board = c.board();
+    let rec = board.sessions.iter().find(|s| s.id == ws).expect("W's record");
+    assert!(mesimon_core::attention::is_attention(&rec.state), "it needs you");
+    assert!(rec.detail.as_deref().is_some_and(|d| d.contains("Fable limit")), "{:?}", rec.detail);
+
+    let wake = format!("{kw} \"mesimon-probe-802 worker\" hit a usage limit");
+    wait_until(std::time::Duration::from_secs(10), "the limit's wake on the crown", || {
+        std::fs::read_to_string(&got).unwrap_or_default().contains(&wake)
+    });
+    let needs = read(&mut c, sa, &kw).unwrap().needs_you.expect("the limit");
+    assert_eq!(needs.reason, "quota");
+
+    // The person's prompt runs: the wait is over.
+    start(&mut c, ws);
+}

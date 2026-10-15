@@ -1349,6 +1349,39 @@ Reply with the single word ready and end your turn."""
             record["pings"].append("no pong")
             record["failures"].append("ping: no pong")
             return False
+        if what == "limit":
+            # L1 (T-802): the account's usage limit, as Claude Code reports
+            # it — a `StopFailure` whose class is `rate_limit` — sent through
+            # the real hook binary on both roads (the daemon takes the one
+            # the session reports by). No real account is made to hit one.
+            rec = self.agent_of(self.board(), test["ticket"])
+            mark = len(self.feed_lines)
+            body = json.dumps({"error": "rate_limit", "last_assistant_message":
+                               "You've reached your Sonnet limit. Run /usage-credits to continue "
+                               "or switch models with /model."})
+            for road in (["--road", "mod"], []):
+                subprocess.run([self.bin, "hook", "--sock", os.path.join(self.paths.rt_dir, "hook.sock"),
+                                "--session", rec["id"], "--event", "StopFailure",
+                                "--reason", "rate_limit", *road],
+                               input=body, text=True, capture_output=True, timeout=10)
+            wake = self.wait_for("the board's limit wake for the crown", lambda: next((
+                l for l in self.feed_lines[mark:] if l.get("kind") == "crown_wake"
+                and l.get("worker") == test["ticket"]), None), WAKE_GRACE, self.watch)
+            record["wakes"].append(wake.get("cause") if wake else "none came")
+            if not wake:
+                record["failures"].append("the board never woke the crown for the limit")
+                return False
+            sent = self.wait_for("the wake's delivery", lambda: next((
+                l for l in self.feed_lines[mark:] if l.get("kind") == "board"
+                and l.get("cmd") == "crown_wake_sent" and l.get("at_ms", 0) >= wake["at_ms"]),
+                None), WAKE_GRACE, self.watch)
+            after = (sent or wake)["at_ms"]
+            if not self.wait_for("crown", lambda: self.crown_settled(after_ms=after, quiet=0),
+                                 STEP_TIMEOUT, self.watch):
+                record["failures"].append("the crown did not settle")
+                return False
+            self.closed()
+            return True
         if what in ("hold_branch", "free_branch"):
             # U1 (T-777): the ticket's own branch made before its start, so
             # the worktree's precheck refuses it; freed when the test ends.
