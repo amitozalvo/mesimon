@@ -1517,6 +1517,7 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::SaveNoteWithAttachments { .. }
         | Command::CreateTicketWithNote { .. }
         | Command::ReadNote { .. }
+        | Command::TicketSessions { .. }
         | Command::WriteNote { .. }
         | Command::RestoreTicket { .. }
         | Command::ArchiveTicket { .. }
@@ -3303,6 +3304,7 @@ mod tests {
             Command::NoteToAgent { ticket: t, note: t },
             // The ticket-addressed forms; the agent forms are the tier.
             Command::ReadNote { ticket: t, note: t },
+            Command::TicketSessions { ticket: t },
             Command::WriteNote { ticket: t, note: None, text: "x".into(), rev: None },
         ];
         // The tier's other-ticket writers (T-411) are admitted here and

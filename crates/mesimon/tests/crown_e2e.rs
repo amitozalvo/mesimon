@@ -1437,7 +1437,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     assert!(c.board().ticket(w2).unwrap().is_archived());
     assert!(!c.board().crown_started().iter().any(|s| s.ticket == w2), "the seat stays free");
     assert!(
-        c.board().sessions.iter().any(|s| s.id == ws2 && s.state == SessionState::Sleeping),
+        c.sessions_of(w2).iter().any(|s| s.id == ws2 && s.state == SessionState::Sleeping),
         "archive keeps the sleeping record"
     );
 

@@ -2523,6 +2523,7 @@ impl Daemon {
                 Draft { column, title, workspace, text, uploads, tags, tier },
             ),
             Command::ReadNote { ticket, note } => self.read_note(ticket, note),
+            Command::TicketSessions { ticket } => self.ticket_sessions(ticket),
             Command::WriteNote { ticket, note, text, rev } => {
                 self.write_note(ticket, note, text, rev, &Principal::Local)
             }
@@ -8151,19 +8152,13 @@ impl Daemon {
                 format!("pull requests not read — {trouble}{hold}"),
             ));
         }
-        // The foregrounds ride the snapshot's records and nothing else: the
-        // board on disk never carries one (T-366).
-        // So does the count of an idle agent's background tasks (T-599): the
-        // registry is never persisted.
+        // A parked record of an archived ticket stays home (T-804); the
+        // ticket page and the picker ask `TicketSessions` for the one
+        // archived ticket they show.
         let mut board = self.board.clone();
+        board.drop_archived_records();
         for rec in &mut board.sessions {
-            rec.foreground = self.foregrounds.get(&rec.id).cloned();
-            rec.tasks_running = (rec.kind.is_agent()
-                && rec.state == (SessionState::Idle { stop_reason: StopReason::Background }))
-            .then(|| u32::try_from(rec.background_tasks.count()).unwrap_or(u32::MAX));
-            // And whether the seat never took a prompt (T-603): one `stat`
-            // per idle or parked claude.
-            rec.unprompted = self.unprompted_hint(rec);
+            self.decorate(rec);
         }
         let terminals = self
             .terminals
@@ -10527,6 +10522,40 @@ impl Daemon {
         let meta = t.description()?;
         let body = store::read_note(&self.paths, &t.short_key, meta.id).ok()?;
         (!body.trim().is_empty()).then(|| body.trim_end().to_string())
+    }
+
+    /// What a record carries on the wire and never on disk. The
+    /// foregrounds ride the snapshot's records and nothing else: the board
+    /// on disk never carries one (T-366). So does the count of an idle
+    /// agent's background tasks (T-599): the registry is never persisted.
+    fn decorate(&self, rec: &mut mesimon_core::board::SessionRecord) {
+        rec.foreground = self.foregrounds.get(&rec.id).cloned();
+        rec.tasks_running = (rec.kind.is_agent()
+            && rec.state == (SessionState::Idle { stop_reason: StopReason::Background }))
+        .then(|| u32::try_from(rec.background_tasks.count()).unwrap_or(u32::MAX));
+        // And whether the seat never took a prompt (T-603): one `stat`
+        // per idle or parked claude.
+        rec.unprompted = self.unprompted_hint(rec);
+    }
+
+    /// `Command::TicketSessions` (T-804): one ticket's records, as the
+    /// snapshot would carry them if it carried them all.
+    fn ticket_sessions(&self, ticket: ulid::Ulid) -> Response {
+        if self.board.ticket(ticket).is_none() {
+            return no_such_ticket();
+        }
+        let sessions = self
+            .board
+            .sessions
+            .iter()
+            .filter(|rec| rec.ticket == ticket)
+            .map(|rec| {
+                let mut rec = rec.clone();
+                self.decorate(&mut rec);
+                rec
+            })
+            .collect();
+        Response::Sessions { sessions }
     }
 
     /// One note's body, whole, for the ticket page or an agent. The file is

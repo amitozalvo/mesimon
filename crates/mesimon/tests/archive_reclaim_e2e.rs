@@ -114,8 +114,12 @@ fn archive_reclaims_a_landed_worktree() {
     let board = c.board();
     let t = board.ticket(id).expect("archived, not deleted");
     assert!(t.is_archived());
+    // Off the snapshot now (T-804), asked for by the ticket's page.
     assert!(
-        board.sessions.iter().any(|s| s.ticket == id),
+        matches!(
+            c.request(Command::TicketSessions { ticket: id }),
+            Response::Sessions { sessions } if !sessions.is_empty()
+        ),
         "the session record is the ticket's history and stays"
     );
 

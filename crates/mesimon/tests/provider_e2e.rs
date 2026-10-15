@@ -152,8 +152,15 @@ fn spawn(c: &mut TestClient, ticket: ulid::Ulid) -> uuid::Uuid {
     }
 }
 
+/// An archived ticket's parked record is off the snapshot (T-804), and
+/// asked for by its ticket.
 fn session(c: &mut TestClient, id: uuid::Uuid) -> SessionRecord {
-    c.board().sessions.into_iter().find(|s| s.id == id).expect("session")
+    let board = c.board();
+    if let Some(rec) = board.sessions.iter().find(|s| s.id == id) {
+        return rec.clone();
+    }
+    let archived: Vec<_> = board.tickets.iter().filter(|t| t.is_archived()).map(|t| t.id).collect();
+    archived.into_iter().flat_map(|t| c.sessions_of(t)).find(|s| s.id == id).expect("session")
 }
 
 #[test]

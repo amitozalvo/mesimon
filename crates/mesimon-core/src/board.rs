@@ -3174,6 +3174,17 @@ impl Board {
             .collect()
     }
 
+    /// Drop what the snapshot leaves out (T-804): a record with no pane on
+    /// an archived ticket. On a board months old they were 614 of 629
+    /// records and two thirds of every snapshot, sent on every push and
+    /// drawn by nothing on the board; `Command::TicketSessions` is how a
+    /// client that shows one archived ticket gets them.
+    pub fn drop_archived_records(&mut self) {
+        let archived: std::collections::HashSet<ulid::Ulid> =
+            self.tickets.iter().filter(|t| t.is_archived()).map(|t| t.id).collect();
+        self.sessions.retain(|rec| rec.state.has_pane() || !archived.contains(&rec.ticket));
+    }
+
     pub fn ticket_awake_sessions(&self, id: ulid::Ulid) -> usize {
         self.sessions.iter().filter(|s| s.ticket == id && s.state.has_pane()).count()
     }
@@ -3780,6 +3791,39 @@ mod tests {
             notes: Vec::new(),
             archived: None,
         }
+    }
+
+    /// T-804: the snapshot leaves out a parked or gone record of an
+    /// archived ticket, and nothing else — a record with a pane rides
+    /// whatever its ticket, and a live ticket keeps its parked ones.
+    #[test]
+    fn the_snapshot_drops_only_paneless_records_of_archived_tickets() {
+        let mut board = Board {
+            tickets: vec![ticket(1, "todo", "a"), ticket(2, "todo", "b")],
+            ..Default::default()
+        };
+        board.tickets[1].archived =
+            Some(Archived { at: "@1".into(), by: "local".into(), until: None, needs_you: false });
+        let rec = |n: u128, t: u128, state: SessionState| {
+            SessionRecord::new(
+                uuid::Uuid::from_u128(n),
+                SessionKind::Claude,
+                ulid::Ulid(t),
+                Vec::new(),
+                "/repo".into(),
+                state,
+            )
+        };
+        let gone = SessionState::Exited { reason: ExitReason::UserQuit };
+        board.sessions = vec![
+            rec(1, 1, SessionState::Sleeping),
+            rec(2, 2, SessionState::Sleeping),
+            rec(3, 2, SessionState::Running),
+            rec(4, 2, gone),
+        ];
+        board.drop_archived_records();
+        let kept: Vec<u128> = board.sessions.iter().map(|s| s.id.as_u128()).collect();
+        assert_eq!(kept, vec![1, 3]);
     }
 
     #[test]

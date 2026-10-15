@@ -229,6 +229,17 @@ fn archive_gates_suggests_and_restores() {
     assert_eq!(resources.archive_tickets, 1, "cold re-priced away; empty still offered");
     let toml = std::fs::read_to_string(&ticket_toml).expect("ticket.toml");
     assert!(toml.contains("[archived]"), "field must persist: {toml}");
+    // Its parked record stays off the snapshot (T-804) and comes on its own ask.
+    assert!(!board.sessions.iter().any(|s| s.id == sid), "the snapshot leaves it out");
+    match c.request(Command::TicketSessions { ticket: cold }) {
+        Response::Sessions { sessions } => {
+            assert!(
+                matches!(sessions.as_slice(), [s] if s.id == sid && s.state == SessionState::Sleeping),
+                "{sessions:?}"
+            );
+        }
+        other => panic!("ticket_sessions: {other:?}"),
+    }
 
     // 4. The refusal guards.
     err_containing(
@@ -249,6 +260,8 @@ fn archive_gates_suggests_and_restores() {
 
     // 5. Restore: same column, field gone from disk.
     assert!(matches!(c.request(Command::UnarchiveTicket { id: cold }), Response::Ok));
+    let (board, _) = snapshot_of(c.request(Command::Snapshot));
+    assert!(board.sessions.iter().any(|s| s.id == sid), "restored, its record rides again");
     let (board, _) = snapshot_of(c.request(Command::Snapshot));
     let t = board.ticket(cold).unwrap();
     assert!(!t.is_archived());

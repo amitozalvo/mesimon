@@ -152,7 +152,7 @@ fn a_snoozed_ticket_leaves_and_comes_back_lit_at_the_top() {
     ));
     let board = c.board();
     assert!(board.ticket(napper).unwrap().is_archived());
-    assert!(board.sessions.iter().any(|s| s.id == sid && s.state == SessionState::Sleeping));
+    assert!(c.sessions_of(napper).iter().any(|s| s.id == sid && s.state == SessionState::Sleeping));
     assert_eq!(board.ticket_awake_sessions(napper), 0);
     drop(h);
 }

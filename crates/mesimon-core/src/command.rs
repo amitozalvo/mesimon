@@ -410,6 +410,13 @@ pub enum Command {
         ticket: ulid::Ulid,
         note: ulid::Ulid,
     },
+    /// An archived ticket's session records (T-804). The snapshot leaves out
+    /// a parked record of an archived ticket — on a long-lived board they
+    /// were two thirds of every snapshot — so the ticket page and the
+    /// picker's preview ask for the one ticket they are showing.
+    TicketSessions {
+        ticket: ulid::Ulid,
+    },
     /// Create (`note: None`) or replace (`Some`) a note on a ticket — the
     /// whole file, never a section (docs/13 §13.3: prose is an opaque blob).
     /// Blank text on an existing note deletes it. The daemon mints the id,
@@ -1339,6 +1346,7 @@ impl Command {
             | TerminalTail { .. }
             | FocusQuiet
             | ReadNote { .. }
+            | TicketSessions { .. }
             | AgentGetTicket
             | AgentReadTicket { .. }
             | AgentReadAttachment { .. }
@@ -1853,6 +1861,11 @@ pub enum Response {
     /// AgentListBoard's answer.
     AgentBoard {
         board: AgentBoardView,
+    },
+    /// TicketSessions' answer: the ticket's records, decorated and
+    /// trimmed as the snapshot's are.
+    Sessions {
+        sessions: Vec<crate::board::SessionRecord>,
     },
     /// ReadNote / AgentReadNote's answer: the body and its metadata.
     Note {

@@ -316,6 +316,15 @@ impl TestClient {
         board_of(self.request(Command::Snapshot))
     }
 
+    /// One ticket's records, an archived ticket's parked ones included: the
+    /// snapshot leaves those out (T-804).
+    pub fn sessions_of(&mut self, ticket: ulid::Ulid) -> Vec<mesimon_core::board::SessionRecord> {
+        match self.request(Command::TicketSessions { ticket }) {
+            Response::Sessions { sessions } => sessions,
+            other => panic!("ticket_sessions: {other:?}"),
+        }
+    }
+
     /// Let `column` take new tickets (T-764), for a test that mints straight
     /// into a column the template closes (IN PROGRESS, REVIEW).
     pub fn open_to_new(&mut self, column: &str) {

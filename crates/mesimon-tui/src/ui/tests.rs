@@ -1872,6 +1872,8 @@ fn golden_ticket_archived_120() {
     // The identity line carries the archived badge; A restores from here.
     let mut app = app_graphite(fixture_archived());
     app.screen = Screen::Ticket { ticket: ulid_n(7), rail_idx: 0 };
+    // Its records come on their own ask, as the loop's pump makes it (T-804).
+    app.poll_held();
     golden("ticket_archived_120x30", &render(&app, 120, 30));
 }
 

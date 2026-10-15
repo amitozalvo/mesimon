@@ -26239,3 +26239,31 @@ REVIEW ticket relaunched by a tier switch: armed while it is still starting, not
 train merges it. It fails with the `Idle{Unknown}` arm removed). No rig test: no rig step holds a
 worker busy in REVIEW or parks one before the train lands it, and the crown's tool text is
 unchanged.
+
+## The snapshot leaves an archived ticket's parked records out (T-804, 2026-10-15)
+
+The author's board stalled on every push. It had 674 tickets, 648 of them archived, and 629
+session records, 614 of them parked records of archived tickets: 1.52 MB per snapshot, 1.02 MB
+of it those records, which nothing on the board draws. The TUI fetches the snapshot on its UI
+thread after every `BoardChanged` (~14 a minute with one agent working) and after every
+mutating key, and the daemon serializes it on the writer thread. Measured on the dogfood debug
+build: a round-trip of 98–161 ms at p50 and 380–730 ms at p90 (822 ms max), against 0.3 ms for
+`gate_status`; offline, the debug build parses those 1.5 MB in 26–72 ms and serializes them in
+33–156 ms (release: 3–24 ms and 1.5–7 ms). Build load on the machine stretches all of it past a
+second.
+
+**Now:** `Daemon::snapshot` calls `Board::drop_archived_records`: a record with no pane on an
+archived ticket (a snooze included) stays off the wire; one with a pane always rides. The new
+read `Command::TicketSessions { ticket }` → `Response::Sessions` returns one ticket's records,
+decorated as the snapshot's are (`Daemon::decorate`). The TUI asks it for the archived ticket on
+screen: the ticket page, or the picker's preview (`App::shown_archived`, `App::poll_held` in
+`pump`), once when it comes on screen and again after each snapshot, and `absorb` lays the held
+records into every board meanwhile (`App::lay_held`), so the rail and the preview never draw
+empty for a frame. Closing the page drops them. An older daemon answers an unknown command, and
+its snapshot still carries every record. On the author's board the snapshot drops to ~0.5 MB.
+
+**Refuted:** dropping `argv` from the snapshot's records (proposed beside this). After the cut it
+is 11 KB, and ~80 e2e assertions read a live record's launch flags off the snapshot.
+
+**Not done:** the archived tickets themselves are ~420 KB of what remains (their `notes`
+metadata 160 KB), and the fetch still blocks the UI thread; that move is its own ticket.

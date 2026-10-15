@@ -589,6 +589,14 @@ impl Search {
     }
 }
 
+/// An archived ticket's records, asked for by the screen showing it (T-804).
+pub(crate) struct Held {
+    ticket: ulid::Ulid,
+    sessions: Vec<mesimon_core::board::SessionRecord>,
+    /// A snapshot landed since they were read.
+    stale: bool,
+}
+
 impl Default for Search {
     fn default() -> Self {
         Self::new()
@@ -1703,6 +1711,11 @@ pub struct App {
     /// ticket: started by `remember_summary` on a count that moved, read by
     /// the card, dropped by `poll_summaries` once played out.
     pub summary_pulses: std::collections::HashMap<ulid::Ulid, SummaryPulse>,
+    /// The archived ticket on screen and its records (T-804). The snapshot
+    /// leaves an archived ticket's parked records out, so the ticket page
+    /// and the picker's preview ask `TicketSessions` for the one they show
+    /// (`poll_held`), and `absorb` lays them back into every board after.
+    pub(crate) held: Option<Held>,
     /// The ticket page's preview zone: where `{ }` asked it to be, what the
     /// last draw measured, and the page turn in motion (see `Pager`).
     pub preview: Pager,
@@ -2064,6 +2077,7 @@ impl App {
             summaries: std::collections::HashMap::new(),
             summary_jump: Cell::new(None),
             summary_pulses: std::collections::HashMap::new(),
+            held: None,
             preview: Pager::default(),
             rich_cache: std::cell::RefCell::new(None),
             cursor_card: Cell::new(None),
@@ -2622,6 +2636,8 @@ impl App {
                 Some((t.ticket, (old.column.clone(), old.order.clone())))
             })
             .collect();
+        let mut board = board;
+        self.lay_held(&mut board);
         self.board = Arc::new(board);
         self.reindex_columns();
         self.grace = grace;
@@ -3206,6 +3222,7 @@ impl App {
             dirty |= self.poll_shell_tail();
             dirty |= self.poll_notes();
             dirty |= self.poll_summaries();
+            dirty |= self.poll_held();
             self.poll_pickup();
         }
         // The spoke marks: a redraw, never a snapshot — nothing on the wire
@@ -5599,6 +5616,59 @@ impl App {
             self.status = message;
         }
         self.refresh()
+    }
+
+    /// The archived ticket whose records are on screen (T-804): the page
+    /// open on one, or the picker's preview of one.
+    fn shown_archived(&self) -> Option<ulid::Ulid> {
+        let shown = match &self.mode {
+            Mode::Search(s) => s.selected().map(|h| h.id),
+            _ => self.ticket_page(),
+        };
+        shown.filter(|&t| self.board.ticket(t).is_some_and(|t| t.is_archived()))
+    }
+
+    /// Ask for the shown archived ticket's records (T-804): once when it
+    /// comes on screen and again after every snapshot while it stays, since
+    /// a record woken and parked again is the snapshot's in between. The
+    /// one write of the board outside `absorb`: the records are the part of
+    /// the snapshot this board asked for separately, and no observer reads
+    /// a parked record of an archived ticket.
+    pub(crate) fn poll_held(&mut self) -> bool {
+        let Some(ticket) = self.shown_archived() else {
+            self.held = None;
+            return false;
+        };
+        if self.held.as_ref().is_some_and(|h| h.ticket == ticket && !h.stale) {
+            return false;
+        }
+        // An older daemon sends every record on the snapshot and knows no
+        // such command: what the board has is the whole answer.
+        let Response::Sessions { sessions } = self.req(Command::TicketSessions { ticket }) else {
+            self.held = Some(Held { ticket, sessions: Vec::new(), stale: false });
+            return false;
+        };
+        let board = Arc::make_mut(&mut self.board);
+        board.sessions.retain(|s| !sessions.iter().any(|h| h.id == s.id));
+        board.sessions.extend(sessions.iter().cloned());
+        self.held = Some(Held { ticket, sessions, stale: false });
+        true
+    }
+
+    /// Lay the held records into a snapshot's board while their ticket is
+    /// still archived (a restored ticket's records ride the snapshot), and
+    /// mark them for asking again.
+    fn lay_held(&mut self, board: &mut Board) {
+        let Some(held) = self.held.as_mut() else { return };
+        held.stale = true;
+        if !board.ticket(held.ticket).is_some_and(|t| t.is_archived()) {
+            return;
+        }
+        for rec in &held.sessions {
+            if !board.sessions.iter().any(|s| s.id == rec.id) {
+                board.sessions.push(rec.clone());
+            }
+        }
     }
 
     /// The ticket whose PAGE is open, and only that — the board's cursor and
@@ -13489,6 +13559,16 @@ pub(crate) mod test_support {
                     t.workspace = workspace;
                     return Ok(Response::Ok);
                 }
+                Command::TicketSessions { ticket } => {
+                    let sessions = self
+                        .board
+                        .sessions
+                        .iter()
+                        .filter(|s| s.ticket == ticket)
+                        .cloned()
+                        .collect();
+                    return Ok(Response::Sessions { sessions });
+                }
                 Command::ReadNote { ticket, note } => {
                     let known = self.board.ticket(ticket).and_then(|t| t.note(note)).cloned();
                     return Ok(match (known, self.notes.get(&note)) {
@@ -13710,7 +13790,11 @@ pub(crate) mod test_support {
             }
             match command {
                 Command::Snapshot => Ok(Response::Board {
-                    board: self.board.clone(),
+                    board: {
+                        let mut board = self.board.clone();
+                        board.drop_archived_records();
+                        board
+                    },
                     grace: self.grace.clone(),
                     external: self.external.clone(),
                     external_scanning: false,
@@ -22600,6 +22684,10 @@ mod tests {
         app.on_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(app.status.contains("its session asleep"), "{}", app.status);
         assert!(app.board.ticket(ulid::Ulid(1)).unwrap().is_archived());
+        // A snoozed ticket's parked record is off the snapshot (T-804): its
+        // page asks for it.
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        app.poll_held();
         let rec = app.board.sessions.iter().find(|s| s.id == sid).unwrap();
         assert_eq!(rec.state, SessionState::Sleeping);
     }
@@ -23048,6 +23136,33 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.mode, Mode::Normal));
         assert!(matches!(app.screen, Screen::Ticket { ticket, .. } if ticket == ulid::Ulid(1)));
+    }
+
+    /// T-804: the snapshot leaves an archived ticket's parked records out,
+    /// and its page asks for them — once, and again after each snapshot,
+    /// which they are laid into meanwhile. The board forgets them when the
+    /// page closes.
+    #[test]
+    fn an_archived_tickets_page_asks_for_its_records() {
+        let (mut app, sent) = app_with_notes_state(Some(SessionState::Sleeping), &[]);
+        let id = ulid::Ulid(1);
+        archive(&mut app);
+        assert!(app.board.ticket(id).unwrap().is_archived());
+        assert!(app.board.sessions.is_empty(), "the snapshot leaves them out");
+        assert!(!app.poll_held(), "no archived ticket on screen");
+        app.screen = Screen::Ticket { ticket: id, rail_idx: 0 };
+        assert!(app.poll_held());
+        assert_eq!(app.rail_sessions(id).len(), 1);
+        assert!(!app.poll_held(), "asked once");
+        app.refresh().unwrap();
+        assert_eq!(app.rail_sessions(id).len(), 1, "laid into the next snapshot");
+        assert!(app.poll_held(), "and asked again after it");
+        let asks = sent.borrow().iter().filter(|c| c.contains("TicketSessions")).count();
+        assert_eq!(asks, 2);
+        app.screen = Screen::Board;
+        assert!(!app.poll_held());
+        app.refresh().unwrap();
+        assert!(app.board.sessions.is_empty());
     }
 
     #[test]
