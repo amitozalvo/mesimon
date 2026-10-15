@@ -25748,3 +25748,59 @@ The merge's environments read `in production` on the card, the last one `PrItem.
 names (it is in the order it happened, `forge::deploy_order`), and `in staging, production` on
 the ticket page's rows and in the `^h` dialog, which still say `pipeline passed`. The crown's
 wake words and `get_ticket`'s `deployed` field are unchanged.
+
+## T-800 — the forge's misreadings: forks, cancels, stale checks, aliases (2026-10-15)
+
+Eight of the T-795 bug hunt's "left open" findings, each answered as its brief proposed.
+
+**A cancelled run is its own word, `cancelled`, never green and never failed.** GitLab's
+`canceled`/`canceling` and GitHub's `CANCELLED` read failed before, and `merged_reads` settled a
+merge commit's failure for good: GitLab's auto-cancel of a redundant pipeline, or a deploy
+workflow's `cancel-in-progress`, woke the crown with "pipeline failed" and left a ✗ on the card
+forever. `Pipeline::Cancelled` ranks between a pass and a run (a cancel beside a run reads
+running; beside a pass, cancelled), so a `requires_pipeline` column refuses it ("pipeline
+cancelled"), no edge fires on it, the card says `cancelled` under the hollow ring, and a GitLab
+cancel names no job (every job of a cancelled pipeline is cancelled). A merge commit's `Failed`
+or `Cancelled` is read again while its merge is under `SUPERSEDED_READ_MS` old and settles after,
+so a main pipeline retried green reads passed; a pass still settles at once. Refuted: reading a
+cancel as passed (nothing was judged) or as failed (that was the bug).
+
+**GitHub's checks: `STALE` is no pass, and commit statuses count.** `gh_rollup`'s
+`("COMPLETED", _, _)` arm read any completed run passed, `STALE` included (GitHub marks a run
+left incomplete for 14 days stale). A pass is now `SUCCESS`, `NEUTRAL` or `SKIPPED` by name;
+`STALE`, `CANCELLED` and a conclusion this build does not know read `cancelled`. A merge commit
+read only `check-runs`, so CI that reports commit statuses (Jenkins, older CircleCI) read "no
+pipeline ran": `commit_pipeline` also reads `commits/{sha}/status` and takes the worse of the two
+(`forge::gh_commit_pipeline`); one of the two reads failing leaves the commit unknown, never the
+other's green. One more call per unsettled merge commit per pass. An open PR's
+`statusCheckRollup` already carried both.
+
+**The rest.** A fork's leg matches a PR under every remote's path on its remote's host
+(`forge::Remotes::paths`, `State::repo_paths`): `merged_at`, the fold, `pipeline_head_unread` and
+the reflog binding, so a PR opened against the upstream lands the ticket. The upstream is not
+*listed*: a stale `upstream` remote would fail every read and hold its tickets unread, so such a
+PR reaches the set by the URL `pr create` printed. `remote_of` reads `git remote -v` (git's
+`insteadOf` already applied) and resolves an SSH host through `ssh -G` (`~/.ssh/config`'s
+`HostName`); `ssh.github.com` and `altssh.gitlab.com` are their forges; a host that could be an
+option never reaches `ssh`. `doctor`'s forge line asks the CLI's `auth status` for that host and
+warns where no account is signed in. "The newest merged PR of a repository" is by `mergedAt`/
+`merged_at` (`Pr::merged_ms`, kept in `forge.json`; an older file's PR falls back to
+`updated_ms`), never by `updated_at`, which a comment moves. A failing repository backs off
+alone (`State::backing_off`); the minute reads the rest, and an error stays until that
+repository is read again or no ticket reads it. A list that comes back full (`LIST_LIMIT`, 100)
+and leaves out a PR the ticket held has that PR read by itself (`gh pr view`, GitLab's single
+MR read), its last reading kept where the read fails; a list with room to spare that leaves one
+out has said it is gone. A GitHub deployment counts where any of its statuses is `success`
+(`statuses?per_page=100`): `auto_inactive` marks a superseded success `inactive`.
+
+Tests: `forge::a_cancelled_or_stale_run_is_neither_green_nor_failed`,
+`the_newest_merged_pr_is_the_last_to_merge_not_the_last_touched`,
+`an_ssh_remote_names_the_host_ssh_would_reach`, the fork case in
+`the_set_is_newest_first_without_the_abandoned`; the daemon's
+`a_failed_merge_pipeline_is_read_again_while_young`, `a_pr_a_full_list_cut_off_is_read_by_itself`,
+`a_forks_remotes_name_the_upstream_beside_origin`, `an_ssh_alias_resolves_through_ssh_config`,
+the backoff in `the_state_is_due_on_its_cadence_and_backs_off_after_trouble`; `forge_e2e`'s
+`a_pull_request_binds_pipelines_gate_and_the_forges_merge_lands` (a Jenkins status fails the
+merge commit whose check runs passed, then a retry green reads passed). No rig test: the rig
+has no forge, and `cancelled` is a new word in `get_ticket`'s `pipeline`, not new behaviour of an
+agent's.

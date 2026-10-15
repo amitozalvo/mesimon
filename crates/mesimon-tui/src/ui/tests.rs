@@ -8465,6 +8465,12 @@ fn a_cards_pr_line_says_what_the_newest_pr_is_at() {
     (app.prs[1].pipeline, app.prs[1].job, app.prs[1].conflict) = ("passed".into(), None, true);
     (app.prs[1].state, app.prs[1].review) = ("draft".into(), "none".into());
     assert!(wide(&app).contains("conflicts ∙ draft  "), "{}", wide(&app));
+    // A cancelled run is its own quiet word, under the hollow ring (T-800).
+    (app.prs[1].pipeline, app.prs[1].job, app.prs[1].conflict) =
+        ("cancelled".into(), Some("deploy".into()), false);
+    app.prs[1].state = "open".into();
+    let line = wide(&app);
+    assert!(line.contains("cancelled: deploy ") && line.contains("✗!6 ◯!7"), "{line}");
     // No open PR: the newest, merged — its mark says so — says where it
     // went.
     app.prs.retain(|p| p.number == 6);

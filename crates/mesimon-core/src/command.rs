@@ -2339,10 +2339,10 @@ pub struct AgentRepoView {
 /// One pull request of a ticket, as `get_ticket` says it (T-739): the
 /// forge's own label (`#42`, `!7`), the repository, the URL, and four
 /// words — `state` (`open` | `draft` | `merged` | `closed`), `pipeline`
-/// (`unknown` | `none` | `passed` | `running` | `waiting` | `failed`, with
-/// the job it is about where the forge named one), `review` (`none` |
-/// `required` | `approved` | `changes_requested`) — and whether the forge
-/// reports a conflict.
+/// (`unknown` | `none` | `passed` | `cancelled` | `running` | `waiting` |
+/// `failed`, with the job it is about where the forge named one), `review`
+/// (`none` | `required` | `approved` | `changes_requested`) — and whether
+/// the forge reports a conflict.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentPrView {
     pub label: String,
@@ -2814,7 +2814,8 @@ pub struct PrItem {
     pub url: String,
     /// `open` | `draft` | `merged` | `closed`.
     pub state: String,
-    /// `unknown` | `none` | `passed` | `running` | `waiting` | `failed`.
+    /// `unknown` | `none` | `passed` | `cancelled` | `running` | `waiting` |
+    /// `failed`.
     pub pipeline: String,
     /// The job the pipeline word is about, where the forge named one.
     #[serde(default, skip_serializing_if = "Option::is_none")]

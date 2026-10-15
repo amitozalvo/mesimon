@@ -3938,6 +3938,7 @@ mod tests {
             review: mesimon_core::forge::Review::None,
             pipeline: mesimon_core::forge::Pipeline::Passed,
             updated_ms: 1,
+            merged_ms: 0,
             deployed: Vec::new(),
         };
         assert!(leg.fold_forge_merge(&pr));
@@ -3966,6 +3967,7 @@ mod tests {
             review: Review::None,
             pipeline: Pipeline::Passed,
             updated_ms,
+            merged_ms: 0,
             deployed: Vec::new(),
         };
         let set =
@@ -3973,7 +3975,7 @@ mod tests {
         let mut leg = leg_flags("", "b0", "t1", 1, true, false);
         leg.merged_in = "origin/main".into();
         leg.merged_oid = "p11".into();
-        let pr = merged_at(&set, "g/api", &leg.tip).expect("!9 is merged at the tip");
+        let pr = merged_at(&set, &["g/api".into()], &leg.tip).expect("!9 is merged at the tip");
         assert!(leg.fold_forge_merge(pr));
         assert_eq!((leg.merged_in.as_str(), leg.merged_oid.as_str()), ("main (MR !9)", "m9"));
         assert!(!leg.fold_forge_merge(pr), "every later pass folds the same words");

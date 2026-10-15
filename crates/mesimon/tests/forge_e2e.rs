@@ -53,8 +53,9 @@
 //! answers a ticket opened meanwhile binds.
 //!
 //! The stub is the forge: `auth status` passes, `pr list` prints the file
-//! the test writes, `api …/check-runs` the merge commit's pipeline and
-//! `api …/deployments` its deployments, by sha where the test wrote one. No
+//! the test writes, `api …/check-runs` and `api …/status` the merge
+//! commit's pipeline and `api …/deployments` its deployments, by sha where
+//! the test wrote one. No
 //! network, no token, nothing of the real CLI.
 
 // Integration-test crate: `allow-unwrap-in-tests` only reaches items marked
@@ -87,6 +88,7 @@ case "$1 $2" in
         sha=$(echo "$4" | sed -n 's|.*/commits/\([^/]*\)/check-runs.*|\1|p')
         if [ -f "$MSMN_GH_CHECKS.$sha" ]; then cat "$MSMN_GH_CHECKS.$sha"
         else cat "$MSMN_GH_CHECKS" 2>/dev/null || echo '{"check_runs":[]}'; fi ;;
+      */commits/*/status) cat "$MSMN_GH_STATUS" 2>/dev/null || echo '{"state":"pending","statuses":[]}' ;;
       *deployments/*/statuses*) echo '[{"state":"success"}]' ;;
       *deployments*)
         sha=$(echo "$4" | sed -n 's|.*sha=\([^&]*\).*|\1|p')
@@ -165,14 +167,30 @@ fn pr_json(
         None => r#"[{"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"SUCCESS"}]"#
             .to_string(),
     };
-    let merge = match merge_oid {
-        Some(oid) => format!(r#"{{"oid":"{oid}"}}"#),
-        None => "null".to_string(),
+    let (merge, merged_at) = match merge_oid {
+        Some(oid) => (format!(r#"{{"oid":"{oid}"}}"#), format!(r#""{}""#, iso_now())),
+        None => ("null".to_string(), "null".to_string()),
     };
     format!(
         r#"[{{"number":42,"url":"https://github.com/example/forge/pull/42","state":"{state}","isDraft":false,
-          "headRefName":"{branch}","headRefOid":"{tip}","mergeCommit":{merge},"mergeable":"MERGEABLE",
+          "headRefName":"{branch}","headRefOid":"{tip}","mergeCommit":{merge},"mergedAt":{merged_at},"mergeable":"MERGEABLE",
           "reviewDecision":"REVIEW_REQUIRED","updatedAt":"2026-10-13T06:00:00Z","statusCheckRollup":{rollup}}}]"#
+    )
+}
+
+/// Now, as the forges stamp a time: a merge this test makes is a young one.
+fn iso_now() -> String {
+    let secs =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let t = mesimon_core::usage::utc_of(secs);
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        t.year + 1900,
+        t.mon + 1,
+        t.mday,
+        t.hour,
+        t.min,
+        t.sec
     )
 }
 
@@ -197,6 +215,7 @@ fn a_pull_request_binds_pipelines_gate_and_the_forges_merge_lands() {
     }
     let prs_file = stub_dir.join("prs.json");
     let checks_file = stub_dir.join("checks.json");
+    let status_file = stub_dir.join("status.json");
     write(&prs_file, "[]");
     write(
         &checks_file,
@@ -217,6 +236,7 @@ fn a_pull_request_binds_pipelines_gate_and_the_forges_merge_lands() {
             ("PATH", &path_var),
             ("MSMN_GH_PRS", &prs_file.display().to_string()),
             ("MSMN_GH_CHECKS", &checks_file.display().to_string()),
+            ("MSMN_GH_STATUS", &status_file.display().to_string()),
         ],
     ) else {
         return;
@@ -309,11 +329,27 @@ fn a_pull_request_binds_pipelines_gate_and_the_forges_merge_lands() {
         feed_count(&h, "pr", id) >= 1
     });
 
-    // The merge commit's pipeline passing is its deploy run finishing, not
-    // the ticket's pipeline passing: REVIEW does not pull it back (T-767).
+    // The merge commit's check runs pass and its commit status, a Jenkins
+    // job's, fails: the worse of the two (T-800).
+    write(
+        &status_file,
+        r#"{"state":"failure","statuses":[{"context":"jenkins","state":"failure"}]}"#,
+    );
     write(
         &checks_file,
         r#"{"check_runs":[{"name":"release","status":"completed","conclusion":"success"}]}"#,
+    );
+    wait_until(Duration::from_secs(20), "the commit status to fail the merge commit", || {
+        prs_of(&mut c).iter().any(|p| {
+            p.ticket == id && p.pipeline == "failed" && p.job.as_deref() == Some("jenkins")
+        })
+    });
+    // Retried green: a failure hours young is read again (T-800). The merge
+    // commit's pipeline passing is its deploy run finishing, not the
+    // ticket's pipeline passing: REVIEW does not pull it back (T-767).
+    write(
+        &status_file,
+        r#"{"state":"success","statuses":[{"context":"jenkins","state":"success"}]}"#,
     );
     wait_until(Duration::from_secs(20), "the merge commit's pipeline to pass", || {
         prs_of(&mut c).iter().any(|p| p.ticket == id && p.pipeline == "passed")
@@ -1756,6 +1792,7 @@ case "$1 $2" in
     repo=$(echo "$4" | cut -d/ -f3)
     case "$4" in
       *check-runs*) echo '{"check_runs":[]}' ;;
+      */commits/*/status) echo '{"state":"pending","statuses":[]}' ;;
       *deployments/*/statuses*) echo '[{"state":"success"}]' ;;
       *deployments*) cat "$MSMN_GH_DEPLOYS.$repo" 2>/dev/null || echo '[]' ;;
       *) echo '{}' ;;

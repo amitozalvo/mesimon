@@ -307,8 +307,10 @@ pub(super) fn pr_words(
     match (p.pipeline.as_str(), job) {
         ("running", Some(job)) => words.push(job),
         ("running", None) => words.push("running".into()),
-        (word @ ("failed" | "waiting"), Some(job)) => words.push(format!("{word}: {job}")),
-        (word @ ("failed" | "waiting"), _) => words.push(word.into()),
+        (word @ ("failed" | "waiting" | "cancelled"), Some(job)) => {
+            words.push(format!("{word}: {job}"))
+        }
+        (word @ ("failed" | "waiting" | "cancelled"), _) => words.push(word.into()),
         ("passed", _) if passed_news(p) => words.push("passed".into()),
         _ => {}
     }

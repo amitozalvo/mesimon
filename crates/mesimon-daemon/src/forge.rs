@@ -15,7 +15,7 @@
 //! Every call is fenced as a fetch is (`gitstatus::fetch`): its own
 //! session, a deadline, the process group killed on overrun, every prompt
 //! door shut. A repository whose call failed is reported, not retried in a
-//! loop: the next sample waits `BACKOFF`.
+//! loop: that repository waits `BACKOFF` (T-800), the rest are read.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read};
@@ -46,8 +46,13 @@ pub const BURST_MS: u64 = 10_000;
 const PROBE_FOR: Duration = Duration::from_secs(6 * 3600);
 /// How many reflog entries a leg offers for binding.
 const REFLOG_CAP: &str = "2000";
-/// How many PRs one list call brings back.
-const LIST_LIMIT: &str = "100";
+/// How many PRs one list call brings back. A list that comes back full may
+/// have left an older PR out (T-800): a ticket's PR it does not name is
+/// read by itself (`unlisted`).
+const LIST_LIMIT: usize = 100;
+/// The fields one GitHub PR is read with, listed or viewed.
+const GH_FIELDS: &str = "number,url,state,isDraft,headRefName,headRefOid,mergeCommit,mergeable,\
+                         reviewDecision,updatedAt,mergedAt,statusCheckRollup";
 /// How long a merge commit a newer one superseded is still read (T-771): a
 /// day is past any deploy run, and the PR keeps what was read by then.
 pub const SUPERSEDED_READ_MS: u64 = 24 * 3600 * 1000;
@@ -160,6 +165,10 @@ impl RepoQuery {
 #[derive(Debug, Clone)]
 pub struct LegQuery {
     pub repo_path: String,
+    /// Every path a PR of this repository may name (`State::repo_paths`,
+    /// T-800): a commit made here binds a PR opened against the fork's
+    /// upstream too.
+    pub repo_paths: Vec<String>,
     pub dir: PathBuf,
 }
 
@@ -173,6 +182,9 @@ pub struct TicketQuery {
     /// Every repository the ticket's set can come from: its legs' remotes
     /// and the ones its sessions' URLs name (T-795).
     pub repos: Vec<Remote>,
+    /// The ticket's set as the board holds it: a PR in it a full list did
+    /// not name is read by itself (`unlisted`, T-800).
+    pub held: Vec<Pr>,
 }
 
 /// A host to probe on this pass: the candidate CLIs in the order to try.
@@ -373,12 +385,8 @@ fn arrived_envs(set: &[Pr]) -> Vec<String> {
     if set.iter().any(|p| p.state.is_open()) {
         return Vec::new();
     }
-    let mut newest: Vec<&Pr> = Vec::new();
-    for p in set.iter().filter(|p| p.state == PrState::Merged) {
-        if !newest.iter().any(|n| n.repo == p.repo) {
-            newest.push(p);
-        }
-    }
+    // Newest by when it merged (T-800), never by the last comment.
+    let newest = forge::newest_merged(set);
     let Some((first, rest)) = newest.split_first() else { return Vec::new() };
     first.deployed.iter().filter(|e| rest.iter().all(|p| p.deployed.contains(e))).cloned().collect()
 }
@@ -598,9 +606,13 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
         logs.push(legs);
     }
     let mut prs: Vec<Pr> = Vec::new();
+    let mut full: HashSet<String> = HashSet::new();
     for r in &q.repos {
         let error = match list(r) {
             Ok(mut found) => {
+                if found.len() >= LIST_LIMIT {
+                    full.insert(r.remote.path.clone());
+                }
                 prs.append(&mut found);
                 None
             }
@@ -611,15 +623,21 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
     for (t, logs) in q.tickets.iter().zip(logs) {
         let facts = Facts {
             branch: t.branch.clone(),
-            reflog: t
-                .legs
-                .iter()
-                .zip(logs)
-                .flat_map(|(l, log)| log.into_iter().map(move |oid| (l.repo_path.clone(), oid)))
-                .collect(),
+            reflog: t.legs.iter().zip(logs).map(|(l, log)| (l.repo_paths.clone(), log)).collect(),
             opened: t.opened.clone(),
         };
-        let bound: Vec<Pr> = prs.iter().filter(|p| forge::binds(p, &facts)).cloned().collect();
+        let mut bound: Vec<Pr> = prs.iter().filter(|p| forge::binds(p, &facts)).cloned().collect();
+        // A PR a full list cut off is read by itself, and keeps its last
+        // reading where that read fails (T-800).
+        let cut: Vec<Pr> = unlisted(&t.held, &bound, &full).into_iter().cloned().collect();
+        for old in cut {
+            let read = q
+                .repos
+                .iter()
+                .find(|r| r.remote.path == old.repo)
+                .and_then(|r| one_pr(r, old.number));
+            bound.push(read.unwrap_or(old));
+        }
         let mut set = forge::ticket_set(bound);
         // GitLab's list lags the MR by minutes: a head after a push (T-784),
         // a state after a merge (T-787). Every MR it calls open is read by
@@ -672,10 +690,13 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
 /// Each merged PR of a set, per PR (T-771): its merge commit's pipeline
 /// (the build-and-deploy run on main) and the environments it reached, what
 /// earlier passes learned kept and read again only while unsettled. A
-/// pipeline is read until it passes or fails, deployments until every
-/// wanted environment is in. A merge commit a newer one of the same
-/// repository superseded is read only for `SUPERSEDED_READ_MS` after its
-/// merge, so a ticket's old PRs cost nothing once the forge has moved on.
+/// pipeline is read until it passes, or until it has failed or been
+/// cancelled for `SUPERSEDED_READ_MS` after its merge (T-800): a run is
+/// retried, and a retried green one must not stay failed. Deployments are
+/// read until every wanted environment is in. A merge commit a newer one
+/// of the same repository superseded — newer by when it merged — is read
+/// only for `SUPERSEDED_READ_MS` after its merge, so a ticket's old PRs
+/// cost nothing once the forge has moved on.
 pub fn merged_reads(
     set: &mut [Pr],
     q: &Query,
@@ -683,17 +704,17 @@ pub fn merged_reads(
     mut pipeline: impl FnMut(&Pr) -> Pipeline,
     mut deployments: impl FnMut(&Pr) -> Vec<String>,
 ) {
-    let mut newest: Vec<String> = Vec::new();
+    let newest: Vec<(String, u64)> =
+        forge::newest_merged(set).iter().map(|p| (p.repo.clone(), p.number)).collect();
     for pr in set.iter_mut().filter(|p| p.state == PrState::Merged && !p.merge_oid.is_empty()) {
-        let superseded = newest.contains(&pr.repo);
-        if !superseded {
-            newest.push(pr.repo.clone());
-        }
-        let live = !superseded || now_ms.saturating_sub(pr.updated_ms) < SUPERSEDED_READ_MS;
+        let superseded = !newest.iter().any(|(r, n)| *r == pr.repo && *n == pr.number);
+        let young = now_ms.saturating_sub(pr.merged_order()) < SUPERSEDED_READ_MS;
+        let live = !superseded || young;
         let key = (pr.repo.clone(), pr.merge_oid.clone());
         let last = q.commit_pipelines.get(&key);
         pr.pipeline = match last {
-            Some(p @ (Pipeline::Passed | Pipeline::Failed(_))) => p.clone(),
+            Some(p @ Pipeline::Passed) => p.clone(),
+            Some(p @ (Pipeline::Failed(_) | Pipeline::Cancelled(_))) if !young => p.clone(),
             _ if live => match pipeline(pr) {
                 Pipeline::Unknown => last.cloned().unwrap_or(Pipeline::Unknown),
                 p => p,
@@ -732,7 +753,7 @@ pub fn list_probed(q: &mut Query, answered: &[(String, HostProbe)]) {
 fn probe_host(host: &str, candidates: &[Cli]) -> HostProbe {
     let mut lost = None;
     for c in candidates {
-        if let Err(e) = signed_in(c, host) {
+        if let Err(e) = auth_status(c, host, CALL_TIMEOUT) {
             lost.get_or_insert(e);
             continue;
         }
@@ -751,15 +772,15 @@ fn probe_host(host: &str, candidates: &[Cli]) -> HostProbe {
 /// `auth status` for the host. gh checks only the active account where it
 /// can (T-798): a second account's stale token fails the plain call, and a
 /// gh older than `--active` is asked without it.
-fn signed_in(c: &Cli, host: &str) -> Result<String, String> {
+fn auth_status(c: &Cli, host: &str, timeout: Duration) -> Result<String, String> {
     let status = ["auth", "status", "--hostname", host];
     if c.forge == Forge::GitHub {
-        match run(&c.bin, &[&status[..], &["--active"]].concat(), None) {
+        match run_for(&c.bin, &[&status[..], &["--active"]].concat(), None, timeout) {
             Err(e) if e.contains("unknown flag") => {}
             other => return other,
         }
     }
-    run(&c.bin, &status, None)
+    run_for(&c.bin, &status, None, timeout)
 }
 
 /// The signed-in account's PRs in one repository, every state.
@@ -779,10 +800,9 @@ fn list(r: &RepoQuery) -> Result<Vec<Pr>, String> {
                     "--state",
                     "all",
                     "--limit",
-                    LIST_LIMIT,
+                    &LIST_LIMIT.to_string(),
                     "--json",
-                    "number,url,state,isDraft,headRefName,headRefOid,mergeCommit,mergeable,\
-                     reviewDecision,updatedAt,statusCheckRollup",
+                    GH_FIELDS,
                 ],
                 Some(&r.dir),
             )?;
@@ -807,7 +827,7 @@ fn list(r: &RepoQuery) -> Result<Vec<Pr>, String> {
                     viewer,
                     "--all",
                     "--per-page",
-                    LIST_LIMIT,
+                    &LIST_LIMIT.to_string(),
                     "--output",
                     "json",
                 ],
@@ -816,6 +836,37 @@ fn list(r: &RepoQuery) -> Result<Vec<Pr>, String> {
             Ok(forge::parse_glab(&r.remote.path, &out))
         }
     }
+}
+
+/// One PR read by itself, any state (T-800): what a full list left out.
+/// `None` when the call fails or says something else.
+fn one_pr(r: &RepoQuery, number: u64) -> Option<Pr> {
+    match r.cli.forge {
+        Forge::GitHub => {
+            let n = number.to_string();
+            let repo = r.key();
+            let out = run(
+                &r.cli.bin,
+                &["pr", "view", &n, "--repo", &repo, "--json", GH_FIELDS],
+                Some(&r.dir),
+            )
+            .ok()?;
+            forge::parse_gh(&r.remote.path, &out).into_iter().find(|p| p.number == number)
+        }
+        Forge::GitLab => gitlab_mr(r, number).map(|m| m.pr),
+    }
+}
+
+/// The PRs a ticket held that this pass's lists did not name though their
+/// repository's list came back full (T-800): the account authored
+/// `LIST_LIMIT` newer ones there, and the list cut the ticket's off. Each is
+/// read by itself. A list with room to spare that leaves one out has said
+/// it is gone.
+pub fn unlisted<'a>(held: &'a [Pr], listed: &[Pr], full: &HashSet<String>) -> Vec<&'a Pr> {
+    held.iter()
+        .filter(|h| full.contains(&h.repo))
+        .filter(|h| !listed.iter().any(|p| p.repo == h.repo && p.number == h.number))
+        .collect()
 }
 
 /// One open MR read by itself (T-784, T-787). `None` when the call fails or
@@ -848,14 +899,21 @@ fn named_job(r: &RepoQuery, pipeline: Pipeline, id: u64) -> Pipeline {
 }
 
 /// A merge commit's pipeline on the forge: GitHub's check runs for the
-/// commit, GitLab's newest pipeline by sha. `Unknown` when the call fails.
+/// commit and its commit statuses, the worse of the two (T-800); GitLab's
+/// newest pipeline by sha. `Unknown` when a call fails.
 fn commit_pipeline(r: &RepoQuery, oid: &str) -> Pipeline {
     match r.cli.forge {
         Forge::GitHub => {
-            match r.api(&format!("repos/{}/commits/{oid}/check-runs?per_page=100", r.remote.path)) {
+            let path = &r.remote.path;
+            let runs = match r.api(&format!("repos/{path}/commits/{oid}/check-runs?per_page=100")) {
                 Ok(out) => forge::parse_gh_check_runs(&out),
+                Err(_) => return Pipeline::Unknown,
+            };
+            let statuses = match r.api(&format!("repos/{path}/commits/{oid}/status")) {
+                Ok(out) => forge::parse_gh_commit_status(&out),
                 Err(_) => Pipeline::Unknown,
-            }
+            };
+            forge::gh_commit_pipeline(runs, statuses)
         }
         Forge::GitLab => gitlab_pipeline(r, oid),
     }
@@ -878,7 +936,10 @@ fn deployments(r: &RepoQuery, oid: &str, envs: &[String]) -> Vec<String> {
                 if !envs.contains(&env) || out.iter().any(|(e, _)| *e == env) {
                     continue;
                 }
-                let path = format!("repos/{}/deployments/{id}/statuses?per_page=1", r.remote.path);
+                // Every status, not the newest alone: a success a newer
+                // deployment made `inactive` is still one (T-800).
+                let path =
+                    format!("repos/{}/deployments/{id}/statuses?per_page=100", r.remote.path);
                 if let Ok(status) = r.api(&path) {
                     if let Some(at) = forge::parse_gh_deployment_success(&status) {
                         out.push((env, at));
@@ -931,44 +992,116 @@ pub fn reflog(dir: &Path) -> Vec<String> {
 /// The remote a repository's base branch is judged against, parsed: the
 /// branch's own remote, else `origin`, else the one remote there is.
 pub fn remote_of(repo: &Path, base: &str) -> Option<Remote> {
-    let mut names: Vec<String> = Vec::new();
-    if let Some(r) = crate::gitstatus::remote_of(repo, base) {
-        names.push(r);
-    }
-    names.push("origin".into());
+    remotes_of(repo, base).map(|r| r.remote)
+}
+
+/// A repository's remotes as the forge reads them (T-800).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Remotes {
+    /// The one its base branch is judged against (`remote_of`): what is
+    /// listed.
+    pub remote: Remote,
+    /// The repository path of every remote URL, fetch and push, on that
+    /// one's host, its own first: a fork's `origin` beside its `upstream`.
+    /// A PR opened against the upstream names the upstream's path, and is
+    /// this repository's all the same.
+    pub paths: Vec<String>,
+}
+
+/// `remote_of`, with every remote's path beside it (`Remotes`). One `git
+/// remote -v`, which spells each URL after git's `insteadOf`, and one
+/// `ssh -G` per SSH host, which names the host an `~/.ssh/config` alias
+/// reaches (T-800): `git@github-work:o/r.git` is github.com's.
+pub fn remotes_of(repo: &Path, base: &str) -> Option<Remotes> {
     let out = crate::git::git(repo)
-        .args(["--no-optional-locks", "remote"])
+        .args(["--no-optional-locks", "remote", "-v"])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
-        .ok()?;
-    let all: Vec<String> =
-        String::from_utf8_lossy(&out.stdout).lines().map(|l| l.trim().to_string()).collect();
-    if let [only] = all.as_slice() {
-        names.push(only.clone());
-    }
-    for name in names {
-        if !all.contains(&name) {
-            continue;
+        .ok()
+        .filter(|o| o.status.success())?;
+    let listed = String::from_utf8_lossy(&out.stdout).into_owned();
+    // `<name>\t<url> (fetch|push)`.
+    let urls: Vec<(&str, &str, bool)> = listed
+        .lines()
+        .filter_map(|l| {
+            let (name, rest) = l.split_once('\t')?;
+            let (url, kind) = rest.rsplit_once(' ')?;
+            Some((name, url, kind == "(fetch)"))
+        })
+        .collect();
+    let mut names: Vec<&str> = Vec::new();
+    for (name, _, _) in &urls {
+        if !names.contains(name) {
+            names.push(name);
         }
-        let url = crate::git::git(repo)
-            .args(["--no-optional-locks", "remote", "get-url", &name])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .ok()?;
-        if url.status.success() {
-            if let Some(r) = Remote::parse(&String::from_utf8_lossy(&url.stdout)) {
-                return Some(r);
+    }
+    let tracking = crate::gitstatus::remote_of(repo, base);
+    let mut order: Vec<&str> = tracking.iter().map(String::as_str).collect();
+    order.push("origin");
+    if let [only] = names.as_slice() {
+        order.push(only);
+    }
+    let mut hosts: HashMap<String, Option<String>> = HashMap::new();
+    let mut parse = |url: &str| {
+        let mut r = Remote::parse(url)?;
+        if let Some(alias) = forge::ssh_alias(url) {
+            let resolved = hosts.entry(alias.clone()).or_insert_with(|| ssh_hostname(&alias, None));
+            if let Some(host) = resolved {
+                r.host = forge::canonical_host(host);
+            }
+        }
+        Some(r)
+    };
+    let remote = order.iter().find_map(|name| {
+        let (_, url, _) = urls.iter().find(|(n, _, fetch)| n == name && *fetch)?;
+        parse(url)
+    })?;
+    let mut paths = vec![remote.path.clone()];
+    for (_, url, _) in &urls {
+        if let Some(r) = parse(url).filter(|r| r.host == remote.host) {
+            if !paths.contains(&r.path) {
+                paths.push(r.path);
             }
         }
     }
-    None
+    Some(Remotes { remote, paths })
+}
+
+/// The host `ssh` reaches for `alias`, by `ssh -G` (which prints the
+/// resolved configuration and connects to nothing), read from `config`
+/// where given, else the person's own. `None` where ssh did not answer.
+pub fn ssh_hostname(alias: &str, config: Option<&Path>) -> Option<String> {
+    let mut args: Vec<&str> = vec!["-G"];
+    let config = config.map(|c| c.to_string_lossy().into_owned());
+    if let Some(c) = &config {
+        args.extend(["-F", c]);
+    }
+    args.extend(["--", alias]);
+    let out = run(Path::new("ssh"), &args, None).ok()?;
+    forge::ssh_config_hostname(&out)
+}
+
+/// Whether `cli` holds a signed-in account for `host` (T-800), as the
+/// probe asks it: `Err` with the CLI's own words where not. For `doctor`,
+/// on a shorter deadline than a sample's.
+pub fn signed_in(cli: &Cli, host: &str) -> Result<(), String> {
+    auth_status(cli, host, Duration::from_secs(8)).map(|_| ())
 }
 
 /// One fenced CLI call: stdout on success, the first stderr line (the
 /// CLI's own words) or the timeout on failure.
 fn run(bin: &Path, args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
+    run_for(bin, args, cwd, CALL_TIMEOUT)
+}
+
+/// `run` with its own deadline.
+fn run_for(
+    bin: &Path,
+    args: &[&str],
+    cwd: Option<&Path>,
+    timeout: Duration,
+) -> Result<String, String> {
     let mut cmd = Command::new(bin);
     cmd.args(args);
     if let Some(dir) = cwd {
@@ -1026,7 +1159,7 @@ fn run(bin: &Path, args: &[&str], cwd: Option<&Path>) -> Result<String, String> 
         }
         s
     });
-    let deadline = Instant::now() + CALL_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -1036,7 +1169,7 @@ fn run(bin: &Path, args: &[&str], cwd: Option<&Path>) -> Result<String, String> 
                 let _ = child.wait();
                 let _ = first_line.join();
                 let _ = reader.join();
-                return Err(format!("{name} did not finish within {}s", CALL_TIMEOUT.as_secs()));
+                return Err(format!("{name} did not finish within {}s", timeout.as_secs()));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(25)),
             Err(e) => return Err(format!("{name}: {e}")),
@@ -1060,6 +1193,9 @@ pub struct State {
     pub probes: HashMap<String, HostProbe>,
     /// Per repository directory: its remote, parsed once.
     pub remotes: HashMap<PathBuf, Option<Remote>>,
+    /// Per repository directory: every remote's path on its remote's host
+    /// (`Remotes::paths`, T-800), what a PR's `repo` is matched against.
+    pub paths: HashMap<PathBuf, Vec<String>>,
     /// Each ticket's set, newest first, and when it was read.
     pub sets: HashMap<ulid::Ulid, Vec<Pr>>,
     pub at_ms: HashMap<ulid::Ulid, u64>,
@@ -1160,14 +1296,19 @@ impl State {
         self.probes.insert(host, probe);
     }
 
-    /// Whether a pass is due: not in flight, and the cadence (or the
-    /// backoff after an error) passed.
+    /// Whether a pass is due: not in flight, and the cadence passed. A
+    /// repository whose call failed backs off on its own
+    /// (`backing_off`, T-800): one failing repository does not slow the
+    /// board's every other one.
     pub fn due(&self) -> bool {
-        if self.inflight {
-            return false;
-        }
-        let wait = if self.errors.is_empty() { every() } else { every().max(backoff()) };
-        self.last.is_none_or(|t| t.elapsed() >= wait)
+        !self.inflight && self.last.is_none_or(|t| t.elapsed() >= every())
+    }
+
+    /// Whether the minute's pass leaves a repository out: its last call
+    /// failed less than `backoff()` ago.
+    pub fn backing_off(&self, key: &str) -> bool {
+        self.errors.iter().any(|(k, _)| k == key)
+            && self.asked.get(key).is_some_and(|t| t.elapsed() < backoff())
     }
 
     /// Whether a repository may be read off the minute: for a turn's end
@@ -1250,9 +1391,27 @@ impl State {
     }
 
     /// The remote a repository directory is read through, parsed once
-    /// (`remote_of`) and kept.
+    /// (`remotes_of`) and kept, with its remotes' paths.
     pub fn remote(&mut self, repo: &Path, base: &str) -> Option<&Remote> {
-        self.remotes.entry(repo.to_path_buf()).or_insert_with(|| remote_of(repo, base)).as_ref()
+        if !self.remotes.contains_key(repo) {
+            let found = remotes_of(repo, base);
+            if let Some(r) = &found {
+                self.paths.insert(repo.to_path_buf(), r.paths.clone());
+            }
+            self.remotes.insert(repo.to_path_buf(), found.map(|r| r.remote));
+        }
+        self.remotes.get(repo).and_then(Option::as_ref)
+    }
+
+    /// Every path a PR of the repository at `dir` may name (T-800): its
+    /// remote's, and its other remotes' on that host. Empty where no forge
+    /// reads it.
+    pub fn repo_paths(&self, dir: &Path) -> Vec<String> {
+        match (self.remotes.get(dir), self.paths.get(dir)) {
+            (Some(Some(_)), Some(paths)) => paths.clone(),
+            (Some(Some(r)), None) => vec![r.path.clone()],
+            _ => Vec::new(),
+        }
     }
 
     /// Forgets every ticket not in `live`, in each per-ticket map.
@@ -1277,10 +1436,11 @@ impl State {
         self.sets.get(&ticket).is_some_and(|s| !s.is_empty())
     }
 
-    /// The ticket's merged PR for a repository at a tip, if the newest
-    /// there is merged at that tip (`forge::merged_at`).
-    pub fn merged_at(&self, ticket: ulid::Ulid, repo_path: &str, tip: &str) -> Option<&Pr> {
-        self.sets.get(&ticket).and_then(|s| forge::merged_at(s, repo_path, tip))
+    /// The ticket's merged PR for the repository at `dir` at a tip
+    /// (`forge::merged_at`), under any of its remotes' paths (T-800).
+    pub fn merged_at(&self, ticket: ulid::Ulid, dir: &Path, tip: &str) -> Option<&Pr> {
+        let paths = self.repo_paths(dir);
+        self.sets.get(&ticket).and_then(|s| forge::merged_at(s, &paths, tip))
     }
 
     /// The one line the advisory row and `doctor` say while a host's
@@ -1325,8 +1485,15 @@ pub struct PrRecord {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub job: String,
     pub updated_ms: u64,
+    /// When it merged (T-800); zero, and absent, in an older build's file.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub merged_ms: u64,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub deployed: Vec<String>,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl PrRecord {
@@ -1345,6 +1512,7 @@ impl PrRecord {
             pipeline: p.pipeline.word().into(),
             job: p.pipeline.job().unwrap_or_default().into(),
             updated_ms: p.updated_ms,
+            merged_ms: p.merged_ms,
             deployed: p.deployed.clone(),
         }
     }
@@ -1363,6 +1531,7 @@ impl PrRecord {
             merge_oid: self.merge_oid,
             conflict: self.conflict,
             updated_ms: self.updated_ms,
+            merged_ms: self.merged_ms,
             deployed: self.deployed,
         })
     }
@@ -1581,6 +1750,7 @@ pub fn delta(old: Option<&[Pr]>, new: &[Pr]) -> Vec<String> {
                         Pipeline::Passed if was.pipeline != Pipeline::None => {
                             out.push(format!("pipeline passed {label}"))
                         }
+                        Pipeline::Cancelled(_) => out.push(format!("pipeline cancelled {label}")),
                         _ => {}
                     }
                 }
@@ -1615,6 +1785,7 @@ mod tests {
             review: Default::default(),
             pipeline,
             updated_ms: number,
+            merged_ms: 0,
             deployed: Vec::new(),
         }
     }
@@ -1753,6 +1924,79 @@ mod tests {
         assert_eq!(e.deployed, ["staging"]);
         assert_eq!(e.news(&new), ["deployed to staging !2"]);
         assert!(edge(&new, &new).deployed.is_empty());
+    }
+
+    /// T-800: a merge commit's failure or cancel is read again while its
+    /// merge is young, so a retried run that passed reads passed, and
+    /// settles once the day is past; the newest merged PR is the one that
+    /// merged last, whatever a comment did to the older one's time.
+    #[test]
+    fn a_failed_merge_pipeline_is_read_again_while_young() {
+        let now = 10 * SUPERSEDED_READ_MS;
+        let merged = |number: u64, oid: &str, merged_ms: u64, updated_ms: u64| {
+            let mut p = pr(number, PrState::Merged, Pipeline::Unknown);
+            p.merge_oid = oid.into();
+            p.merged_ms = merged_ms;
+            p.updated_ms = updated_ms;
+            p
+        };
+        let key = |oid: &str| ("o/r".to_string(), oid.to_string());
+        let mut q = Query::default();
+        for last in [Pipeline::Failed("deploy".into()), Pipeline::Cancelled(String::new())] {
+            q.commit_pipelines.insert(key("m1"), last.clone());
+            let mut set = [merged(1, "m1", now - 60_000, now - 60_000)];
+            merged_reads(&mut set, &q, now, |_| Pipeline::Passed, |_| Vec::new());
+            assert_eq!(set[0].pipeline, Pipeline::Passed, "{last:?} retried green reads green");
+            let mut set = [merged(1, "m1", now - 60_000, now - 60_000)];
+            merged_reads(&mut set, &q, now, |_| Pipeline::Unknown, |_| Vec::new());
+            assert_eq!(set[0].pipeline, last, "an unanswered read keeps the last");
+            let mut set = [merged(1, "m1", now - SUPERSEDED_READ_MS, now)];
+            let mut asked = 0;
+            merged_reads(
+                &mut set,
+                &q,
+                now,
+                |_| {
+                    asked += 1;
+                    Pipeline::Passed
+                },
+                |_| Vec::new(),
+            );
+            assert_eq!((asked, &set[0].pipeline), (0, &last), "settled a day after its merge");
+        }
+        q.commit_pipelines.insert(key("m1"), Pipeline::Passed);
+        let mut set = [merged(1, "m1", now - 60_000, now - 60_000)];
+        merged_reads(&mut set, &q, now, |_| Pipeline::Failed(String::new()), |_| Vec::new());
+        assert_eq!(set[0].pipeline, Pipeline::Passed, "a pass is settled at once");
+
+        // #1 merged two days ago and was commented on just now: #2, merged
+        // yesterday, is the newest, and #1 is superseded and old.
+        q.commit_pipelines.clear();
+        let mut set = [
+            merged(1, "m1", now - 2 * SUPERSEDED_READ_MS, now - 1000),
+            merged(2, "m2", now - SUPERSEDED_READ_MS - 1000, now - SUPERSEDED_READ_MS - 1000),
+        ];
+        let mut asked: Vec<String> = Vec::new();
+        merged_reads(
+            &mut set,
+            &q,
+            now,
+            |p| {
+                asked.push(p.merge_oid.clone());
+                Pipeline::Passed
+            },
+            |_| Vec::new(),
+        );
+        assert_eq!(asked, ["m2"], "the PR that merged last is read, the commented one is not");
+        let mut one = set[0].clone();
+        one.deployed = vec!["staging".into()];
+        let mut two = set[1].clone();
+        two.deployed = vec!["production".into()];
+        assert_eq!(
+            arrived_envs(&[one, two]),
+            ["production"],
+            "the ticket stands where the PR that merged last stands"
+        );
     }
 
     /// T-767: with every PR merged, the merge commit's pipeline passing is
@@ -2376,7 +2620,11 @@ mod tests {
         std::fs::write(dir.join("a"), "a").unwrap();
         git(&["add", "."]);
         git(&["commit", "-qm", "one"]);
-        let legs = vec![LegQuery { repo_path: "o/r".into(), dir: dir.clone() }];
+        let legs = vec![LegQuery {
+            repo_path: "o/r".into(),
+            repo_paths: vec!["o/r".into()],
+            dir: dir.clone(),
+        }];
         let now = |legs: &[LegQuery]| {
             let logs: Vec<Vec<String>> = legs.iter().map(|l| reflog(&l.dir)).collect();
             pushed(legs, &logs)
@@ -2394,6 +2642,84 @@ mod tests {
         let other = git(&["commit-tree", "-m", "x", &format!("{tip}^{{tree}}")]);
         git(&["update-ref", "refs/remotes/origin/other", &other]);
         assert_eq!(now(&legs).unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-800: a full list (the account authored a hundred newer PRs in the
+    /// repository) that leaves a ticket's PR out has not said it is gone:
+    /// that one is read by itself. A list with room to spare has.
+    #[test]
+    fn a_pr_a_full_list_cut_off_is_read_by_itself() {
+        let held = [pr(3, PrState::Open, Pipeline::Passed), pr(4, PrState::Merged, Pipeline::None)];
+        let listed =
+            [pr(4, PrState::Merged, Pipeline::None), pr(900, PrState::Open, Pipeline::None)];
+        let full = HashSet::from(["o/r".to_string()]);
+        let cut: Vec<u64> = unlisted(&held, &listed, &full).iter().map(|p| p.number).collect();
+        assert_eq!(cut, [3]);
+        assert!(unlisted(&held, &listed, &HashSet::new()).is_empty(), "room to spare: gone");
+        let mut elsewhere = held.clone();
+        elsewhere[0].repo = "o/s".into();
+        assert!(unlisted(&elsewhere[..1], &listed, &full).is_empty(), "another repository's list");
+    }
+
+    /// T-800: a fork's checkout reads its `origin` and names its upstream
+    /// beside it, so a PR opened against the upstream is the leg's; a
+    /// remote on another host is not; `insteadOf` is git's own spelling.
+    #[test]
+    fn a_forks_remotes_name_the_upstream_beside_origin() {
+        let dir = std::env::temp_dir().join(format!("msmn-forge-fork-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let st = Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(args)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(st.success(), "git {args:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["remote", "add", "origin", "https://github.com/me/r.git"]);
+        git(&["remote", "add", "upstream", "gh:o/r.git"]);
+        git(&["config", "url.https://github.com/.insteadOf", "gh:"]);
+        git(&["remote", "add", "mirror", "https://gitlab.com/o/r.git"]);
+        let r = remotes_of(&dir, "main").unwrap();
+        assert_eq!(r.remote.key(), "github.com/me/r", "origin, the base branch tracking none");
+        assert_eq!(r.paths, ["me/r", "o/r"], "the upstream beside it, the other host's not");
+        assert_eq!(remote_of(&dir, "main"), Some(r.remote.clone()));
+        let mut s = State::default();
+        assert_eq!(s.remote(&dir, "main").map(Remote::key).as_deref(), Some("github.com/me/r"));
+        assert_eq!(s.repo_paths(&dir), ["me/r", "o/r"]);
+        assert!(s.repo_paths(&dir.join("nope")).is_empty());
+        let t = ulid::Ulid::new();
+        let mut upstream = pr(7, PrState::Merged, Pipeline::Passed);
+        upstream.repo = "o/r".into();
+        upstream.head_oid = "tip".into();
+        s.sets.insert(t, vec![upstream]);
+        assert!(s.merged_at(t, &dir, "tip").is_some(), "the upstream's PR lands the fork's leg");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-800: an `~/.ssh/config` alias names the host it reaches.
+    #[test]
+    fn an_ssh_alias_resolves_through_ssh_config() {
+        if Command::new("ssh").arg("-V").output().is_err() {
+            eprintln!("skipped: no ssh");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("msmn-forge-ssh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = dir.join("config");
+        std::fs::write(&config, "Host github-work\n  HostName ssh.github.com\n  Port 443\n")
+            .unwrap();
+        let host = ssh_hostname("github-work", Some(&config));
+        assert_eq!(host.as_deref(), Some("ssh.github.com"));
+        assert_eq!(forge::canonical_host(&host.unwrap()), "github.com");
+        assert_eq!(ssh_hostname("plain.example", Some(&config)).as_deref(), Some("plain.example"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2443,6 +2769,15 @@ mod tests {
         s.errors.push(("github.com/o/r".into(), "gh: not logged in".into()));
         assert_eq!(s.trouble().as_deref(), Some("github.com/o/r: gh: not logged in"));
         assert!(!s.present());
+        // One failing repository backs off alone (T-800): the pass is due
+        // on its minute, and leaves that one out until `BACKOFF` passed.
+        s.last = Some(Instant::now() - EVERY);
+        assert!(s.due(), "an error does not hold the whole board's pass");
+        s.asked.insert("github.com/o/r".into(), Instant::now() - EVERY);
+        assert!(s.backing_off("github.com/o/r"));
+        assert!(!s.backing_off("github.com/o/s"), "the others are read");
+        s.asked.insert("github.com/o/r".into(), Instant::now() - BACKOFF);
+        assert!(!s.backing_off("github.com/o/r"), "and it again after the backoff");
     }
 
     #[test]
@@ -2665,6 +3000,9 @@ mod tests {
         );
         assert_eq!(set[0].deployed, vec!["production".to_string()]);
         assert_eq!(s.commit_pipelines[&("g/p".to_string(), "m".to_string())], Pipeline::Passed);
-        assert!(s.merged_at(t, "g/p", "h").is_some());
+        let dir = PathBuf::from("/repo");
+        s.remotes.insert(dir.clone(), Remote::parse("https://gitlab.com/g/p"));
+        assert!(s.merged_at(t, &dir, "h").is_some());
+        assert_eq!(set[0].merged_ms, 0, "an older file names no merge time");
     }
 }

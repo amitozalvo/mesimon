@@ -7169,11 +7169,14 @@ impl Daemon {
         let tips: Vec<(String, String)> = b
             .legs(&self.paths.repo_root, &base)
             .iter()
-            .filter_map(|leg| {
-                let remote = self.forge.remotes.get(&leg.repo)?.as_ref()?;
-                set.iter()
-                    .any(|p| p.state.is_open() && p.repo == remote.path)
-                    .then(|| (remote.path.clone(), worktree::branch_tip(&leg.repo, &b.branch)))
+            .flat_map(|leg| {
+                // Under every path its remotes name (T-800): a fork's PR
+                // against its upstream is this leg's.
+                let paths = self.forge.repo_paths(&leg.repo);
+                let open = set.iter().any(|p| p.state.is_open() && paths.contains(&p.repo));
+                let tip =
+                    if open { worktree::branch_tip(&leg.repo, &b.branch) } else { String::new() };
+                paths.into_iter().filter(move |_| open).map(move |p| (p, tip.clone()))
             })
             .collect();
         mesimon_core::forge::head_unread(set, &b.branch, &tips)
@@ -9520,9 +9523,9 @@ impl Daemon {
                 return true;
             }
             // The forge's word (T-739), at the branch's tip as it stands.
-            if let Some(Some(remote)) = self.forge.remotes.get(&leg.repo) {
+            if let Some(Some(_)) = self.forge.remotes.get(&leg.repo) {
                 let tip = worktree::branch_tip(&leg.repo, &b.branch);
-                if self.forge.merged_at(id, &remote.path, &tip).is_some() {
+                if self.forge.merged_at(id, &leg.repo, &tip).is_some() {
                     return true;
                 }
             }
@@ -13727,6 +13730,7 @@ impl Daemon {
             let Some(remote) = self.forge.remote(&leg.repo, &leg.base).cloned() else { continue };
             out.push(crate::forge::LegQuery {
                 repo_path: remote.path.clone(),
+                repo_paths: self.forge.repo_paths(&leg.repo),
                 dir: leg.path.clone(),
             });
         }
@@ -13798,6 +13802,7 @@ impl Daemon {
                 legs: leg_queries,
                 opened,
                 repos: mine,
+                held: self.forge.sets.get(t).cloned().unwrap_or_default(),
             });
         }
         // Which CLI reads each host: probed on the worker where unknown or
@@ -13831,8 +13836,15 @@ impl Daemon {
             }
             probes.push(crate::forge::ProbeQuery { host: remote.host.clone(), candidates });
         }
+        // A repository no ticket reads any more says no trouble.
+        if only.is_none() {
+            self.forge.errors.retain(|(k, _)| repos.iter().any(|(r, _)| r.key() == *k));
+        }
+        // A repository whose call failed waits out its backoff alone
+        // (T-800); the minute reads the rest.
         let repo_queries: Vec<crate::forge::RepoQuery> = repos
             .iter()
+            .filter(|(remote, _)| only.is_some() || !self.forge.backing_off(&remote.key()))
             .filter_map(|(remote, dir)| {
                 let probe = self.forge.probes.get(&remote.host)?;
                 Some(crate::forge::RepoQuery {
@@ -13898,21 +13910,26 @@ impl Daemon {
             return;
         }
         self.forge.last = Some(Instant::now());
-        self.forge.errors =
-            sample.repos.iter().filter_map(|r| Some((r.key.clone(), r.error.clone()?))).collect();
+        self.forge_errors(&sample);
         self.absorb_forge(sample);
     }
 
-    /// A turn's end's read landed (T-761): taken as a pass is, its
-    /// repositories' errors alone replaced; the minute is not reset.
-    fn on_forge_burst(&mut self, sample: crate::forge::Sample) {
-        self.forge.burst_inflight = false;
+    /// A read's repositories' errors replace theirs; one the read left out
+    /// (backing off, T-800, or not on a turn's end's read) keeps its own.
+    fn forge_errors(&mut self, sample: &crate::forge::Sample) {
         for r in &sample.repos {
             self.forge.errors.retain(|(k, _)| *k != r.key);
             if let Some(e) = &r.error {
                 self.forge.errors.push((r.key.clone(), e.clone()));
             }
         }
+    }
+
+    /// A turn's end's read landed (T-761): taken as a pass is, its
+    /// repositories' errors alone replaced; the minute is not reset.
+    fn on_forge_burst(&mut self, sample: crate::forge::Sample) {
+        self.forge.burst_inflight = false;
+        self.forge_errors(&sample);
         self.absorb_forge(sample);
         // Owed while this one was out: asked now, or on the tick.
         self.queue_forge_burst();
@@ -14181,8 +14198,8 @@ impl Daemon {
         let mut changed = false;
         for leg in legs.iter_mut() {
             let dir = self.leg_dir(&leg.name);
-            let Some(Some(remote)) = self.forge.remotes.get(&dir) else { continue };
-            let Some(pr) = mesimon_core::forge::merged_at(set, &remote.path, &leg.tip) else {
+            let paths = self.forge.repo_paths(&dir);
+            let Some(pr) = mesimon_core::forge::merged_at(set, &paths, &leg.tip) else {
                 continue;
             };
             changed |= leg.fold_forge_merge(pr);

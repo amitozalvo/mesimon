@@ -140,10 +140,12 @@ const PR_ROWS: usize = 3;
 pub(super) fn pr_clauses(p: &mesimon_core::command::PrItem) -> Vec<String> {
     use mesimon_core::text::scrub_cells;
     let pipeline = match (p.pipeline.as_str(), p.job.as_deref()) {
-        (w @ ("failed" | "waiting" | "running"), Some(job)) => {
+        (w @ ("failed" | "waiting" | "running" | "cancelled"), Some(job)) => {
             Some(format!("pipeline {w}: {}", scrub_cells(job, false)))
         }
-        (w @ ("failed" | "waiting" | "running" | "passed"), _) => Some(format!("pipeline {w}")),
+        (w @ ("failed" | "waiting" | "running" | "cancelled" | "passed"), _) => {
+            Some(format!("pipeline {w}"))
+        }
         _ => None,
     };
     pipeline.into_iter().chain(pr_state_clauses(p, false)).collect()

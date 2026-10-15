@@ -1040,17 +1040,30 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
         };
         records.push(rec(Level::Ok, "merge base", word).advice(advice));
         // Which CLI would read this repository's pull requests (T-739): a
-        // stat of PATH, never a call, so doctor stays quick and offline.
+        // stat of PATH, and the CLI's own `auth status` for the host the
+        // remote reaches, an `~/.ssh/config` alias resolved (T-800) — the
+        // one question the board's probe asks, so this line says what the
+        // board will find.
         if let Some(remote) = mesimon_daemon::forge::remote_of(repo, &base) {
             use mesimon_core::forge::Forge;
-            let found: Vec<String> = remote
+            let clis: Vec<mesimon_daemon::forge::Cli> = remote
                 .candidates()
                 .iter()
                 .filter_map(|f| mesimon_daemon::forge::find_cli(*f, None))
-                .map(|c| {
-                    c.bin.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
-                })
                 .collect();
+            let name = |c: &mesimon_daemon::forge::Cli| {
+                c.bin.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+            };
+            let found: Vec<String> = clis.iter().map(name).collect();
+            let mut refusals: Vec<String> = Vec::new();
+            let signed =
+                clis.iter().any(|c| match mesimon_daemon::forge::signed_in(c, &remote.host) {
+                    Ok(()) => true,
+                    Err(why) => {
+                        refusals.push(format!("{}: {why}", name(c)));
+                        false
+                    }
+                });
             if found.is_empty() {
                 let want = match remote.known_forge() {
                     Some(Forge::GitHub) => "gh",
@@ -1063,6 +1076,31 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
                          ticket's pull requests, their pipelines and where they were deployed, \
                          through that CLI and reads only. Nothing is written to the forge.",
                         ),
+                );
+            } else if !signed {
+                records.push(
+                    rec(
+                        Level::Warn,
+                        "forge",
+                        format!(
+                            "{}: no signed-in account ({})",
+                            remote.host,
+                            // ASCII, as every doctor line is: gh marks its
+                            // refusal with a glyph.
+                            mesimon_core::text::scrub_text(&refusals.join("; "))
+                                .chars()
+                                .filter(char::is_ascii)
+                                .collect::<String>()
+                                .trim()
+                        ),
+                    )
+                    .advice(format!(
+                        "The board reads pull requests only through a CLI signed in to {host}, \
+                         so it reads none for this repository. `{cli} auth login --hostname \
+                         {host}` signs one in.",
+                        host = remote.host,
+                        cli = found.first().map(String::as_str).unwrap_or("gh"),
+                    )),
                 );
             } else {
                 records.push(

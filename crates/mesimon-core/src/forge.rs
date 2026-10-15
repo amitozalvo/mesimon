@@ -108,7 +108,8 @@ impl PrState {
 
 /// The pipeline of a commit — GitHub's checks and GitLab's pipelines under
 /// one word. Ordered by how loud it is: a failure outranks a wait, a wait a
-/// run, a run a pass, so the worst of several is the fold.
+/// run, a run a cancelled one, and that a pass, so the worst of several is
+/// the fold.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pipeline {
     /// Not asked yet, or the forge did not answer: never read as green.
@@ -116,6 +117,10 @@ pub enum Pipeline {
     /// The forge ran nothing for this commit.
     None,
     Passed,
+    /// Ended with no verdict (T-800): cancelled — GitLab's auto-cancel of a
+    /// redundant pipeline, a workflow's `cancel-in-progress` — or GitHub's
+    /// `stale`. Quiet, never green: nothing failed, and nothing passed.
+    Cancelled(String),
     /// The word names the job the forge says is running, where it said
     /// (T-794): a queued one where none has started yet.
     Running(String),
@@ -132,6 +137,7 @@ impl Pipeline {
             Pipeline::Unknown => "unknown",
             Pipeline::None => "none",
             Pipeline::Passed => "passed",
+            Pipeline::Cancelled(_) => "cancelled",
             Pipeline::Running(_) => "running",
             Pipeline::Waiting(_) => "waiting",
             Pipeline::Failed(_) => "failed",
@@ -141,7 +147,12 @@ impl Pipeline {
     /// The job the word is about, where there is one.
     pub fn job(&self) -> Option<&str> {
         match self {
-            Pipeline::Running(j) | Pipeline::Waiting(j) | Pipeline::Failed(j) if !j.is_empty() => {
+            Pipeline::Cancelled(j)
+            | Pipeline::Running(j)
+            | Pipeline::Waiting(j)
+            | Pipeline::Failed(j)
+                if !j.is_empty() =>
+            {
                 Some(j)
             }
             _ => None,
@@ -153,6 +164,7 @@ impl Pipeline {
         match word {
             "none" => Pipeline::None,
             "passed" => Pipeline::Passed,
+            "cancelled" => Pipeline::Cancelled(job),
             "running" => Pipeline::Running(job),
             "waiting" => Pipeline::Waiting(job),
             "failed" => Pipeline::Failed(job),
@@ -165,9 +177,10 @@ impl Pipeline {
             Pipeline::Unknown => 0,
             Pipeline::None => 1,
             Pipeline::Passed => 2,
-            Pipeline::Running(_) => 3,
-            Pipeline::Waiting(_) => 4,
-            Pipeline::Failed(_) => 5,
+            Pipeline::Cancelled(_) => 3,
+            Pipeline::Running(_) => 4,
+            Pipeline::Waiting(_) => 5,
+            Pipeline::Failed(_) => 6,
         }
     }
 
@@ -231,6 +244,10 @@ pub struct Pr {
     pub pipeline: Pipeline,
     /// Unix ms the forge last touched it; what orders a ticket's set.
     pub updated_ms: u64,
+    /// Unix ms it merged, zero where it has not or the forge did not say
+    /// (T-800): what "the newest merged" means, since `updated_ms` moves on
+    /// any comment or bot post.
+    pub merged_ms: u64,
     /// The environments the merge commit reached, as the forge names them;
     /// read only where a column asks for one, and only once merged.
     pub deployed: Vec<String>,
@@ -240,13 +257,47 @@ impl Pr {
     pub fn label(&self) -> String {
         self.forge.label(self.number)
     }
+
+    /// When it merged, for ordering merged PRs (T-800): the forge's merge
+    /// time, else its last touch where the forge gave none (a record from
+    /// an older build).
+    pub fn merged_order(&self) -> u64 {
+        if self.merged_ms > 0 {
+            self.merged_ms
+        } else {
+            self.updated_ms
+        }
+    }
 }
 
-/// Read `gh pr list --json …`'s array. A line that is not that shape reads
-/// as no PRs, never as an error: a forge's words are untrusted text and a
-/// surprise in them must not take the sample down.
+/// Each repository's newest merged PR in a set, by when it merged (T-800),
+/// never by `updated_ms`, which a comment on an older PR moves. In the
+/// order the set first names each repository.
+pub fn newest_merged(set: &[Pr]) -> Vec<&Pr> {
+    let mut out: Vec<&Pr> = Vec::new();
+    for p in set.iter().filter(|p| p.state == PrState::Merged) {
+        match out.iter_mut().find(|n| n.repo == p.repo) {
+            Some(n) => {
+                if (p.merged_order(), p.number) > (n.merged_order(), n.number) {
+                    *n = p;
+                }
+            }
+            None => out.push(p),
+        }
+    }
+    out
+}
+
+/// Read `gh pr list --json …`'s array, or `gh pr view --json …`'s one
+/// object (T-800). A line that is not that shape reads as no PRs, never as
+/// an error: a forge's words are untrusted text and a surprise in them must
+/// not take the sample down.
 pub fn parse_gh(repo: &str, json: &str) -> Vec<Pr> {
-    let Ok(Value::Array(items)) = serde_json::from_str::<Value>(json) else { return Vec::new() };
+    let items = match serde_json::from_str::<Value>(json) {
+        Ok(Value::Array(items)) => items,
+        Ok(one @ Value::Object(_)) => vec![one],
+        _ => return Vec::new(),
+    };
     items
         .iter()
         .filter_map(|v| {
@@ -282,6 +333,7 @@ pub fn parse_gh(repo: &str, json: &str) -> Vec<Pr> {
                 review,
                 pipeline: gh_rollup(v.get("statusCheckRollup")),
                 updated_ms: iso_ms(v.get("updatedAt")),
+                merged_ms: iso_ms(v.get("mergedAt")),
                 deployed: Vec::new(),
             })
         })
@@ -307,10 +359,15 @@ pub fn gh_rollup(rollup: Option<&Value>) -> Pipeline {
         let (status, conclusion, state) = (word("status"), word("conclusion"), word("state"));
         // A commit status (`StatusContext`) says `state` alone.
         let one = match (status.as_str(), conclusion.as_str(), state.as_str()) {
-            (_, "FAILURE" | "TIMED_OUT" | "STARTUP_FAILURE" | "CANCELLED", _)
-            | (_, _, "FAILURE" | "ERROR") => Pipeline::Failed(name),
+            (_, "FAILURE" | "TIMED_OUT" | "STARTUP_FAILURE", _) | (_, _, "FAILURE" | "ERROR") => {
+                Pipeline::Failed(name)
+            }
             (_, "ACTION_REQUIRED", _) | ("WAITING", _, _) => Pipeline::Waiting(name),
-            ("COMPLETED", _, _) | (_, _, "SUCCESS") => Pipeline::Passed,
+            (_, "SUCCESS" | "NEUTRAL" | "SKIPPED", _) | (_, _, "SUCCESS") => Pipeline::Passed,
+            // Cancelled, GitHub's `stale` (a run left incomplete for two
+            // weeks), or a verdict this build does not know: ended, and
+            // never a pass (T-800).
+            ("COMPLETED", _, _) | (_, "CANCELLED" | "STALE", _) => Pipeline::Cancelled(name),
             ("IN_PROGRESS", _, _) if !started && matches!(fold, Pipeline::Running(_)) => {
                 started = true;
                 fold = Pipeline::Running(name);
@@ -378,6 +435,7 @@ impl Pr {
         self.review = read.review;
         self.merge_oid = read.merge_oid.clone();
         self.updated_ms = self.updated_ms.max(read.updated_ms);
+        self.merged_ms = read.merged_ms;
     }
 }
 
@@ -430,6 +488,7 @@ fn glab_mr(repo: &str, v: &Value) -> Option<Pr> {
         review,
         pipeline: Pipeline::Unknown,
         updated_ms: iso_ms(v.get("updated_at")),
+        merged_ms: iso_ms(v.get("merged_at")),
         deployed: Vec::new(),
     })
 }
@@ -468,7 +527,8 @@ pub fn parse_gitlab_job(json: &str, status: &str) -> String {
 impl Pipeline {
     /// The GitLab job status that names this word's job: `running` for a
     /// run (T-794), `manual` for a wait, `failed` for a failure, `None` for
-    /// a word with no job or one already named.
+    /// a word with no job or one already named. A cancelled pipeline's jobs
+    /// are all cancelled with it, and none is the one (T-800).
     pub fn gitlab_job_status(&self) -> Option<&'static str> {
         match self {
             Pipeline::Running(j) if j.is_empty() => Some("running"),
@@ -484,6 +544,7 @@ impl Pipeline {
             Pipeline::Running(_) => Pipeline::Running(job),
             Pipeline::Waiting(_) => Pipeline::Waiting(job),
             Pipeline::Failed(_) => Pipeline::Failed(job),
+            Pipeline::Cancelled(_) => Pipeline::Cancelled(job),
             other => other,
         }
     }
@@ -493,7 +554,9 @@ impl Pipeline {
 pub fn gitlab_status(status: &str) -> Pipeline {
     match status {
         "success" => Pipeline::Passed,
-        "failed" | "canceled" | "cancelled" | "canceling" => Pipeline::Failed(String::new()),
+        "failed" => Pipeline::Failed(String::new()),
+        // Auto-cancelled as redundant, or by a person (T-800).
+        "canceled" | "cancelled" | "canceling" => Pipeline::Cancelled(String::new()),
         "manual" => Pipeline::Waiting(String::new()),
         "skipped" => Pipeline::None,
         "created" | "waiting_for_resource" | "preparing" | "pending" | "running" | "scheduled" => {
@@ -512,6 +575,30 @@ pub fn parse_gh_check_runs(json: &str) -> Pipeline {
         Some(runs @ Value::Array(_)) => gh_rollup(Some(runs)),
         _ => Pipeline::Unknown,
     }
+}
+
+/// The one `pipeline` word for GitHub's `commits/{sha}/status` answer
+/// (`{"state": …, "statuses": [...]}`): the commit statuses a CI that
+/// predates check runs reports (Jenkins, older CircleCI), folded as the
+/// rollup folds a `StatusContext` (T-800).
+pub fn parse_gh_commit_status(json: &str) -> Pipeline {
+    let Ok(v) = serde_json::from_str::<Value>(json) else { return Pipeline::Unknown };
+    match v.get("statuses") {
+        Some(Value::Array(a)) if a.is_empty() => Pipeline::None,
+        Some(statuses @ Value::Array(_)) => gh_rollup(Some(statuses)),
+        _ => Pipeline::Unknown,
+    }
+}
+
+/// A GitHub merge commit's pipeline: the worse of its check runs and its
+/// commit statuses (T-800), since a repository's CI may report either. One
+/// read that did not answer leaves the whole unknown: the other's pass is
+/// not the commit's.
+pub fn gh_commit_pipeline(check_runs: Pipeline, statuses: Pipeline) -> Pipeline {
+    if check_runs == Pipeline::Unknown || statuses == Pipeline::Unknown {
+        return Pipeline::Unknown;
+    }
+    check_runs.worst(statuses)
 }
 
 /// A string field, scrubbed: the forge's words are untrusted text and this
@@ -561,14 +648,16 @@ pub fn parse_gh_deployments(json: &str) -> Vec<(u64, String)> {
         .collect()
 }
 
-/// GitHub's `deployments/{id}/statuses?per_page=1` answer: when the newest
-/// status turned success, unix ms (zero where it names no time), or `None`
-/// where it is not a success.
+/// GitHub's `deployments/{id}/statuses` answer, newest first: when the
+/// deployment turned success, unix ms (zero where it names no time), or
+/// `None` where it never did. Any success counts, not only the newest
+/// status (T-800): GitHub's `auto_inactive` marks a successful deployment
+/// `inactive` once a newer one succeeds, and it was deployed all the same.
 pub fn parse_gh_deployment_success(json: &str) -> Option<u64> {
     let Ok(Value::Array(items)) = serde_json::from_str::<Value>(json) else { return None };
-    let first = items.first()?;
-    (first.get("state").and_then(Value::as_str) == Some("success"))
-        .then(|| iso_ms(first.get("created_at")))
+    let success =
+        items.iter().find(|s| s.get("state").and_then(Value::as_str) == Some("success"))?;
+    Some(iso_ms(success.get("created_at")))
 }
 
 /// GitLab's `deployments?environment=&status=success` answer: when one of
@@ -650,7 +739,7 @@ impl Remote {
         if host.is_empty() || path.is_empty() || !path.contains('/') {
             return None;
         }
-        Some(Remote { host: host.to_ascii_lowercase(), path: path.to_string() })
+        Some(Remote { host: canonical_host(host), path: path.to_string() })
     }
 
     /// The forge the host is known to be, before any CLI is asked:
@@ -674,15 +763,68 @@ impl Remote {
     }
 }
 
+/// A host as the forge CLIs name it: lower case, and a forge's SSH-over-443
+/// host as the forge itself (T-800) — `ssh.github.com` is github.com,
+/// `altssh.gitlab.com` gitlab.com.
+pub fn canonical_host(host: &str) -> String {
+    let host = host.to_ascii_lowercase();
+    match host.as_str() {
+        "ssh.github.com" => "github.com".into(),
+        "altssh.gitlab.com" => "gitlab.com".into(),
+        _ => host,
+    }
+}
+
+/// The SSH host a remote URL reaches its forge through, where git would
+/// speak SSH: an scp-like `git@github-work:o/r.git` or an `ssh://` URL
+/// (T-800). The name may be an `~/.ssh/config` alias, which `ssh -G`
+/// resolves. `None` for any other URL, and for a name that is not a plain
+/// host name, so nothing a remote spells reaches `ssh` as an option.
+pub fn ssh_alias(url: &str) -> Option<String> {
+    let url = url.trim();
+    let hostpart = match url.split_once("://") {
+        Some((scheme, rest)) => {
+            if !matches!(scheme.to_ascii_lowercase().as_str(), "ssh" | "git+ssh" | "ssh+git") {
+                return None;
+            }
+            let authority = rest.split('/').next()?;
+            let host = authority.rsplit('@').next()?;
+            // `[::1]:22` is no alias; `host:2222` is the host.
+            host.split(':').next()?
+        }
+        None => {
+            let (userhost, path) = url.split_once(':')?;
+            if path.starts_with("//") || userhost.contains('/') {
+                return None;
+            }
+            userhost.rsplit('@').next()?
+        }
+    };
+    let plain = !hostpart.is_empty()
+        && !hostpart.starts_with('-')
+        && hostpart.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
+    plain.then(|| hostpart.to_string())
+}
+
+/// The `hostname` an `ssh -G <alias>` answer resolves to, where it says one.
+pub fn ssh_config_hostname(out: &str) -> Option<String> {
+    out.lines().find_map(|l| {
+        let (key, value) = l.trim().split_once(' ')?;
+        let value = value.trim();
+        (key.eq_ignore_ascii_case("hostname") && !value.is_empty()).then(|| value.to_string())
+    })
+}
+
 /// The facts a ticket offers for binding: what its worktree legs hold and
 /// what its sessions printed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Facts {
     /// The ticket's own `msmn/` branch.
     pub branch: String,
-    /// Every commit a worktree leg's HEAD ever pointed at (its reflog), by
-    /// the leg's repository path as the remote spells it.
-    pub reflog: Vec<(String, String)>,
+    /// Every commit a worktree leg's HEAD ever pointed at (its reflog),
+    /// beside every path a PR of the leg's repository may name, as the
+    /// remotes spell them: a fork's own and its upstream's (T-800).
+    pub reflog: Vec<(Vec<String>, Vec<String>)>,
     /// URLs a `pr create` the ticket's sessions ran printed.
     pub opened: Vec<String>,
 }
@@ -699,7 +841,10 @@ pub fn binds(pr: &Pr, facts: &Facts) -> bool {
         return true;
     }
     !pr.head_oid.is_empty()
-        && facts.reflog.iter().any(|(repo, oid)| *repo == pr.repo && *oid == pr.head_oid)
+        && facts
+            .reflog
+            .iter()
+            .any(|(repos, oids)| repos.contains(&pr.repo) && oids.contains(&pr.head_oid))
 }
 
 /// Two URLs naming the same PR, a trailing slash or `.diff` aside.
@@ -729,12 +874,14 @@ pub fn ticket_set(mut prs: Vec<Pr>) -> Vec<Pr> {
 /// head. A later PR from another branch, merged or open, leaves the landing
 /// the one that names it (T-786): the lab's !11 from `fix/a` merged after
 /// !9 had, and the leg's words fell back to `origin/main`. An open one holds
-/// the ticket's merge on its own (`holding`, T-774).
-pub fn merged_at<'a>(set: &'a [Pr], repo: &str, tip: &str) -> Option<&'a Pr> {
+/// the ticket's merge on its own (`holding`, T-774). `repos` is every path
+/// the repository's PRs may name (T-800): a PR opened from a fork against
+/// its upstream names the upstream's.
+pub fn merged_at<'a>(set: &'a [Pr], repos: &[String], tip: &str) -> Option<&'a Pr> {
     if tip.is_empty() {
         return None;
     }
-    set.iter().find(|p| p.repo == repo && p.state == PrState::Merged && p.head_oid == tip)
+    set.iter().find(|p| repos.contains(&p.repo) && p.state == PrState::Merged && p.head_oid == tip)
 }
 
 /// The PR a ticket's merge waits on (T-774): the newest open one, on any
@@ -807,6 +954,8 @@ pub fn entry_refusal(set: Option<&[Pr]>, opened_here: Option<bool>) -> Option<St
         Pipeline::Waiting(job) => Some(format!("pipeline waiting: {job}")),
         Pipeline::Failed(job) if job.is_empty() => Some("pipeline failed".into()),
         Pipeline::Failed(job) => Some(format!("pipeline failed: {job}")),
+        Pipeline::Cancelled(job) if job.is_empty() => Some("pipeline cancelled".into()),
+        Pipeline::Cancelled(job) => Some(format!("pipeline cancelled: {job}")),
     }
 }
 
@@ -990,6 +1139,7 @@ mod tests {
             review: Review::None,
             pipeline: Pipeline::None,
             updated_ms: updated,
+            merged_ms: 0,
             deployed: Vec::new(),
         }
     }
@@ -1027,6 +1177,11 @@ mod tests {
         assert_eq!(prs[0].label(), "#14651");
         assert!(parse_gh("x", "not json").is_empty());
         assert!(parse_gh("x", "{}").is_empty());
+        let one = r#"{"number":7,"url":"https://github.com/o/r/pull/7","state":"MERGED","headRefName":"b",
+          "headRefOid":"h","mergeCommit":{"oid":"m"},"mergedAt":"2026-10-12T23:12:40Z"}"#;
+        let view = parse_gh("o/r", one);
+        assert_eq!(view.len(), 1, "`pr view`'s one object");
+        assert_eq!((view[0].number, view[0].state), (7, PrState::Merged));
     }
 
     #[test]
@@ -1072,6 +1227,106 @@ mod tests {
         );
     }
 
+    /// T-800: the newest merged PR of a repository is the one that merged
+    /// last, whatever was commented on since; both CLIs' merge time reads.
+    #[test]
+    fn the_newest_merged_pr_is_the_last_to_merge_not_the_last_touched() {
+        let gh = r#"[{"number":5,"url":"https://github.com/o/r/pull/5","state":"MERGED","headRefName":"a","headRefOid":"h5",
+          "mergeCommit":{"oid":"m5"},"mergedAt":"2026-10-13T06:00:00Z","updatedAt":"2026-10-13T06:00:00Z"},
+          {"number":4,"url":"https://github.com/o/r/pull/4","state":"MERGED","headRefName":"b","headRefOid":"h4",
+          "mergeCommit":{"oid":"m4"},"mergedAt":"2026-10-12T06:00:00Z","updatedAt":"2026-10-14T06:00:00Z"}]"#;
+        let set = ticket_set(parse_gh("o/r", gh));
+        assert_eq!(set[0].number, 4, "a bot's comment on #4 moved it first in the set");
+        assert_eq!(set[1].merged_ms, 1_791_871_200_000);
+        let newest: Vec<u64> = newest_merged(&set).iter().map(|p| p.number).collect();
+        assert_eq!(newest, [5], "but #5 merged last");
+        let glab = r#"[{"iid":3,"web_url":"https://gitlab.com/g/p/-/merge_requests/3","state":"merged","source_branch":"x",
+          "sha":"s","merge_commit_sha":"m","merged_at":"2026-10-13T04:00:00Z","updated_at":"2026-10-14T04:00:00Z"}]"#;
+        assert_eq!(parse_glab("g/p", glab)[0].merged_ms, 1_791_864_000_000);
+        let mut old = set[0].clone();
+        old.merged_ms = 0;
+        assert_eq!(old.merged_order(), old.updated_ms, "an older record's time stands in");
+        let mut other = set[1].clone();
+        other.repo = "o/s".into();
+        let two = [set[0].clone(), set[1].clone(), other];
+        let newest: Vec<(&str, u64)> =
+            newest_merged(&two).iter().map(|p| (p.repo.as_str(), p.number)).collect();
+        assert_eq!(newest, [("o/r", 5), ("o/s", 5)], "one per repository");
+    }
+
+    /// T-800: a cancelled run is its own quiet word, never green and never
+    /// a failure; GitHub's `stale` is no pass; and a merge commit's commit
+    /// statuses count beside its check runs.
+    #[test]
+    fn a_cancelled_or_stale_run_is_neither_green_nor_failed() {
+        let v = |s: &str| serde_json::from_str::<Value>(s).unwrap();
+        let cancelled = v(
+            r#"[{"name":"deploy","status":"COMPLETED","conclusion":"CANCELLED"},{"name":"lint","status":"COMPLETED","conclusion":"SUCCESS"}]"#,
+        );
+        assert_eq!(gh_rollup(Some(&cancelled)), Pipeline::Cancelled("deploy".into()));
+        let stale = v(r#"[{"name":"e2e","status":"COMPLETED","conclusion":"STALE"}]"#);
+        assert_eq!(gh_rollup(Some(&stale)), Pipeline::Cancelled("e2e".into()), "stale is no pass");
+        let unknown = v(r#"[{"name":"x","status":"COMPLETED","conclusion":"SOMETHING_NEW"}]"#);
+        assert_ne!(gh_rollup(Some(&unknown)), Pipeline::Passed, "an unknown verdict is no pass");
+        let neutral = v(r#"[{"name":"x","status":"COMPLETED","conclusion":"NEUTRAL"}]"#);
+        assert_eq!(gh_rollup(Some(&neutral)), Pipeline::Passed);
+        let mixed = v(
+            r#"[{"name":"a","status":"COMPLETED","conclusion":"CANCELLED"},{"name":"b","status":"IN_PROGRESS"}]"#,
+        );
+        assert_eq!(gh_rollup(Some(&mixed)), Pipeline::Running("b".into()), "a run is louder");
+        let failed = v(
+            r#"[{"name":"a","status":"COMPLETED","conclusion":"CANCELLED"},{"name":"b","status":"COMPLETED","conclusion":"FAILURE"}]"#,
+        );
+        assert_eq!(gh_rollup(Some(&failed)), Pipeline::Failed("b".into()));
+        assert_eq!(
+            parse_gh_check_runs(
+                r#"{"check_runs":[{"name":"deploy","status":"completed","conclusion":"cancelled"}]}"#
+            ),
+            Pipeline::Cancelled("deploy".into())
+        );
+        let c = Pipeline::Cancelled(String::new());
+        assert_eq!(Pipeline::from_words(c.word(), "deploy"), Pipeline::Cancelled("deploy".into()));
+        assert_eq!(Pipeline::Cancelled("deploy".into()).job(), Some("deploy"));
+        assert_eq!(c.gitlab_job_status(), None, "every job of a cancelled pipeline is cancelled");
+        let merged = |p: Pipeline| {
+            let mut m = pr("o/r", 1, PrState::Merged, "h", 1);
+            m.pipeline = p;
+            vec![m]
+        };
+        assert_eq!(
+            entry_refusal(Some(&merged(Pipeline::Cancelled(String::new()))), None).as_deref(),
+            Some("pipeline cancelled")
+        );
+        assert_eq!(
+            entry_refusal(Some(&merged(Pipeline::Cancelled("deploy".into()))), None).as_deref(),
+            Some("pipeline cancelled: deploy")
+        );
+
+        // Commit statuses: Jenkins reports these, not check runs.
+        let jenkins = r#"{"state":"success","statuses":[{"context":"continuous-integration/jenkins","state":"success"}],"total_count":1}"#;
+        assert_eq!(parse_gh_commit_status(jenkins), Pipeline::Passed);
+        let pending = r#"{"state":"pending","statuses":[{"context":"ci/circleci: build","state":"pending"}]}"#;
+        assert_eq!(parse_gh_commit_status(pending), Pipeline::Running("ci/circleci: build".into()));
+        let errored = r#"{"state":"failure","statuses":[{"context":"jenkins","state":"error"}]}"#;
+        assert_eq!(parse_gh_commit_status(errored), Pipeline::Failed("jenkins".into()));
+        assert_eq!(parse_gh_commit_status(r#"{"state":"pending","statuses":[]}"#), Pipeline::None);
+        assert_eq!(parse_gh_commit_status("{}"), Pipeline::Unknown);
+        let none = parse_gh_check_runs(r#"{"check_runs":[]}"#);
+        assert_eq!(
+            gh_commit_pipeline(none.clone(), parse_gh_commit_status(jenkins)),
+            Pipeline::Passed,
+            "a commit whose CI reports statuses alone has a pipeline"
+        );
+        assert_eq!(gh_commit_pipeline(none.clone(), Pipeline::None), Pipeline::None);
+        assert_eq!(
+            gh_commit_pipeline(Pipeline::Passed, parse_gh_commit_status(errored)),
+            Pipeline::Failed("jenkins".into()),
+            "the worse of the two"
+        );
+        assert_eq!(gh_commit_pipeline(Pipeline::Passed, Pipeline::Unknown), Pipeline::Unknown);
+        assert_eq!(gh_commit_pipeline(Pipeline::Unknown, Pipeline::Passed), Pipeline::Unknown);
+    }
+
     #[test]
     fn glab_json_reads_into_a_pr_and_its_pipeline_comes_by_sha() {
         let json = r#"[{"iid":4096,"web_url":"https://gitlab.com/gitlab-org/cli/-/merge_requests/4096","state":"opened",
@@ -1108,7 +1363,8 @@ mod tests {
         assert_eq!(read[0].review, Review::ChangesRequested, "GitLab's request for changes");
         assert_eq!(read[1].merge_oid, "");
         assert_eq!(read[1].url, "", "only a web page is handed to the opener");
-        assert_eq!(gitlab_status("canceling"), Pipeline::Failed(String::new()));
+        assert_eq!(gitlab_status("canceling"), Pipeline::Cancelled(String::new()));
+        assert_eq!(gitlab_status("canceled"), Pipeline::Cancelled(String::new()));
         assert_eq!(
             parse_gitlab_pipelines(r#"[{"status":"manual"}]"#).0,
             Pipeline::Waiting(String::new())
@@ -1265,11 +1521,33 @@ mod tests {
         assert_eq!(Remote::parse("https://host/onlyone"), None);
     }
 
+    /// T-800: GitHub's SSH-over-443 host is github.com, and an SSH remote's
+    /// host is the name `ssh -G` resolves, never one that could be an option.
+    #[test]
+    fn an_ssh_remote_names_the_host_ssh_would_reach() {
+        let r = Remote::parse("ssh://git@ssh.github.com:443/o/r.git").unwrap();
+        assert_eq!(r.key(), "github.com/o/r");
+        assert_eq!(r.known_forge(), Some(Forge::GitHub));
+        assert_eq!(Remote::parse("git@altssh.gitlab.com:g/p.git").unwrap().host, "gitlab.com");
+        assert_eq!(ssh_alias("git@github-work:o/r.git").as_deref(), Some("github-work"));
+        assert_eq!(ssh_alias("github-work:o/r.git").as_deref(), Some("github-work"));
+        assert_eq!(ssh_alias("ssh://git@gh_work:2222/o/r.git").as_deref(), Some("gh_work"));
+        assert_eq!(ssh_alias("git+ssh://git@gh.work/o/r").as_deref(), Some("gh.work"));
+        assert_eq!(ssh_alias("https://github.com/o/r.git"), None, "not SSH");
+        assert_eq!(ssh_alias("/srv/git/r.git"), None);
+        assert_eq!(ssh_alias("./a:b"), None, "a path with a colon");
+        assert_eq!(ssh_alias("git@-oProxyCommand=x:o/r"), None, "never an option");
+        assert_eq!(ssh_alias("git@a b:o/r"), None);
+        let out = "user git\nhostname github.com\nport 22\n";
+        assert_eq!(ssh_config_hostname(out).as_deref(), Some("github.com"));
+        assert_eq!(ssh_config_hostname("port 22\n"), None);
+    }
+
     #[test]
     fn a_pr_binds_by_a_fact_and_never_by_a_mention() {
         let facts = Facts {
             branch: "msmn/T-12-x".into(),
-            reflog: vec![("o/r".into(), "aaa".into()), ("o/r".into(), "bbb".into())],
+            reflog: vec![(vec!["o/r".into()], vec!["aaa".into(), "bbb".into()])],
             opened: vec!["https://gitlab.com/g/p/-/merge_requests/7/".into()],
         };
         assert!(binds(&pr("o/r", 1, PrState::Open, "bbb", 1), &facts), "made here");
@@ -1295,22 +1573,35 @@ mod tests {
             pr("o/r", 3, PrState::Open, "c", 30),
         ]);
         assert_eq!(set.iter().map(|p| p.number).collect::<Vec<_>>(), [3, 1]);
-        assert_eq!(merged_at(&set, "o/r", "c"), None, "the newest is open");
+        assert_eq!(merged_at(&set, &["o/r".into()], "c"), None, "the newest is open");
         let landed = ticket_set(vec![pr("o/r", 1, PrState::Merged, "a", 10)]);
-        assert_eq!(merged_at(&landed, "o/r", "a").map(|p| p.number), Some(1));
-        assert_eq!(merged_at(&landed, "o/r", "a2"), None, "a commit after the merge is unlanded");
-        assert_eq!(merged_at(&landed, "o/r", ""), None);
+        assert_eq!(merged_at(&landed, &["o/r".into()], "a").map(|p| p.number), Some(1));
+        assert_eq!(
+            merged_at(&landed, &["o/r".into()], "a2"),
+            None,
+            "a commit after the merge is unlanded"
+        );
+        assert_eq!(merged_at(&landed, &["o/r".into()], ""), None);
         // A later PR from another branch keeps the landing named (T-786),
         // merged or open, and on another repository it is not looked at.
         let mut later = pr("o/r", 11, PrState::Merged, "f", 60);
         later.head_ref = "fix/a".into();
         let both = ticket_set(vec![pr("o/r", 1, PrState::Merged, "a", 10), later.clone()]);
-        assert_eq!(merged_at(&both, "o/r", "a").map(|p| p.number), Some(1));
-        assert_eq!(merged_at(&both, "o/r", "f").map(|p| p.number), Some(11));
+        assert_eq!(merged_at(&both, &["o/r".into()], "a").map(|p| p.number), Some(1));
+        assert_eq!(merged_at(&both, &["o/r".into()], "f").map(|p| p.number), Some(11));
         later.state = PrState::Open;
         let open = ticket_set(vec![pr("o/r", 1, PrState::Merged, "a", 10), later]);
-        assert_eq!(merged_at(&open, "o/r", "a").map(|p| p.number), Some(1));
-        assert_eq!(merged_at(&open, "o/x", "a"), None);
+        assert_eq!(merged_at(&open, &["o/r".into()], "a").map(|p| p.number), Some(1));
+        assert_eq!(merged_at(&open, &["o/x".into()], "a"), None);
+        // A fork's leg (T-800): `origin` is me/r, the PR was opened against
+        // the upstream o/r, and either path names the repository.
+        let fork: Vec<String> = vec!["me/r".into(), "o/r".into()];
+        assert_eq!(merged_at(&landed, &fork, "a").map(|p| p.number), Some(1));
+        let facts = Facts { reflog: vec![(fork.clone(), vec!["a".into()])], ..Default::default() };
+        assert!(binds(&landed[0], &facts), "a commit made in the fork binds the upstream's PR");
+        let mine =
+            Facts { reflog: vec![(vec!["me/r".into()], vec!["a".into()])], ..Default::default() };
+        assert!(!binds(&landed[0], &mine), "and only a path the leg's remotes name");
         let mut running = pr("o/r", 4, PrState::Open, "d", 40);
         running.pipeline = Pipeline::Running(String::new());
         let mut failed = pr("o/r", 5, PrState::Draft, "e", 50);
@@ -1412,6 +1703,19 @@ mod tests {
             Some(iso_ms(Some(&Value::from("2026-10-15T00:00:05Z"))))
         );
         assert_eq!(parse_gh_deployment_success(r#"[{"state":"in_progress"}]"#), None);
+        assert_eq!(
+            parse_gh_deployment_success(
+                r#"[{"state":"inactive","created_at":"2026-10-15T00:09:00Z"},
+                    {"state":"success","created_at":"2026-10-15T00:00:05Z"},{"state":"in_progress"}]"#
+            ),
+            Some(iso_ms(Some(&Value::from("2026-10-15T00:00:05Z")))),
+            "a deployment a newer one superseded was deployed, when it succeeded (T-800)"
+        );
+        assert_eq!(
+            parse_gh_deployment_success(r#"[{"state":"inactive"},{"state":"failure"}]"#),
+            None,
+            "inactive alone is no deployment"
+        );
         assert_eq!(parse_gh_deployment_success("[]"), None);
         assert_eq!(parse_gitlab_deployed(r#"[{"sha":"abc","status":"success"}]"#, "abc"), Some(0));
         assert!(parse_gitlab_deployed(
@@ -1548,7 +1852,7 @@ mod tests {
         // tip, and the ticket is held all the same.
         let other = gl(pr("g/api", 3, PrState::Draft, "tip3", 30), "fix/api");
         let set = ticket_set(vec![first.clone(), other]);
-        assert!(merged_at(&set, "g/app", "tip1").is_some());
+        assert!(merged_at(&set, &["g/app".into()], "tip1").is_some());
         assert_eq!(holding(&set).map(|p| p.number), Some(3), "a draft is open");
 
         // Merged, the follow-up holds nothing.
