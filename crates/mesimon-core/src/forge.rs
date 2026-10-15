@@ -273,7 +273,7 @@ pub fn parse_gh(repo: &str, json: &str) -> Vec<Pr> {
                 forge: Forge::GitHub,
                 repo: repo.to_string(),
                 number,
-                url: str_of(v, "url"),
+                url: web_url(v, "url"),
                 state,
                 head_oid: str_of(v, "headRefOid"),
                 head_ref: str_of(v, "headRefName"),
@@ -396,9 +396,16 @@ fn glab_mr(repo: &str, v: &Value) -> Option<Pr> {
     // both shas: the pipeline and the deployments are the merge
     // commit's. A fast-forward or semi-linear squash has no merge
     // commit, and the squash sha is then what landed.
-    let merge_oid = ["merge_commit_sha", "squash_commit_sha"]
+    // A fast-forward merge without a squash has neither (T-795): the head
+    // itself is what landed.
+    let merged_keys: &[&str] = if state == PrState::Merged {
+        &["merge_commit_sha", "squash_commit_sha", "sha"]
+    } else {
+        &["merge_commit_sha", "squash_commit_sha"]
+    };
+    let merge_oid = merged_keys
         .iter()
-        .filter_map(|k| v.get(k).and_then(Value::as_str))
+        .filter_map(|k| v.get(*k).and_then(Value::as_str))
         .find(|s| !s.is_empty())
         .unwrap_or_default()
         .to_string();
@@ -407,13 +414,14 @@ fn glab_mr(repo: &str, v: &Value) -> Option<Pr> {
         v.get("has_conflicts").and_then(Value::as_bool) == Some(true) || status == "conflict";
     let review = match status {
         "not_approved" => Review::Required,
+        "requested_changes" => Review::ChangesRequested,
         _ => Review::None,
     };
     Some(Pr {
         forge: Forge::GitLab,
         repo: repo.to_string(),
         number,
-        url: str_of(v, "web_url"),
+        url: web_url(v, "web_url"),
         state,
         head_oid: str_of(v, "sha"),
         head_ref: str_of(v, "source_branch"),
@@ -485,7 +493,7 @@ impl Pipeline {
 pub fn gitlab_status(status: &str) -> Pipeline {
     match status {
         "success" => Pipeline::Passed,
-        "failed" | "canceled" | "cancelled" => Pipeline::Failed(String::new()),
+        "failed" | "canceled" | "cancelled" | "canceling" => Pipeline::Failed(String::new()),
         "manual" => Pipeline::Waiting(String::new()),
         "skipped" => Pipeline::None,
         "created" | "waiting_for_resource" | "preparing" | "pending" | "running" | "scheduled" => {
@@ -510,6 +518,19 @@ pub fn parse_gh_check_runs(json: &str) -> Pipeline {
 /// is the boundary they cross (`text::scrub_text`).
 fn str_of(v: &Value, key: &str) -> String {
     crate::text::scrub_text(v.get(key).and_then(Value::as_str).unwrap_or_default())
+}
+
+/// A PR's page, kept only as an `http(s)://` address (T-795): the board
+/// hands it to the opener, and a forge's answer is no more trusted than a
+/// note's link, which `links` admits on the same rule. Empty otherwise.
+fn web_url(v: &Value, key: &str) -> String {
+    let url = str_of(v, key);
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("https://") || lower.starts_with("http://") {
+        url
+    } else {
+        String::new()
+    }
 }
 
 /// How many bytes of a job's or an environment's name the board keeps: a
@@ -906,7 +927,9 @@ pub fn pr_urls(text: &str) -> Vec<String> {
         text.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '<' || c == '>')
     {
         let Some(at) = word.find("https://") else { continue };
-        let url = word[at..].trim_end_matches(['.', ',', ';', ':', ')', ']']);
+        // A JSON-encoded tool result spells its newline `\n` (T-795).
+        let url = word[at..].split('\\').next().unwrap_or_default();
+        let url = url.trim_end_matches(['.', ',', ';', ':', ')', ']']);
         if pr_number_of(url).is_some() && !out.iter().any(|u| same_url(u, url)) {
             out.push(url.to_string());
         }
@@ -1069,6 +1092,18 @@ mod tests {
             "sq2",
             "a fast-forward or semi-linear squash has no merge commit: the squash sha landed"
         );
+        // A fast-forward merge without a squash has neither: the head landed
+        // (T-795). An open MR's empty shas stay empty.
+        let plain_ff = r#"[{"iid":9,"web_url":"https://gitlab.com/g/p/-/merge_requests/9","state":"merged","source_branch":"z","sha":"h9",
+          "merge_commit_sha":null,"squash_commit_sha":null,"detailed_merge_status":"requested_changes","updated_at":"2026-10-13T04:00:00Z"},
+          {"iid":10,"web_url":"javascript:alert(1)","state":"opened","source_branch":"w","sha":"h10",
+          "merge_commit_sha":null,"squash_commit_sha":null,"updated_at":"2026-10-13T04:00:00Z"}]"#;
+        let read = parse_glab("g/p", plain_ff);
+        assert_eq!(read[0].merge_oid, "h9");
+        assert_eq!(read[0].review, Review::ChangesRequested, "GitLab's request for changes");
+        assert_eq!(read[1].merge_oid, "");
+        assert_eq!(read[1].url, "", "only a web page is handed to the opener");
+        assert_eq!(gitlab_status("canceling"), Pipeline::Failed(String::new()));
         assert_eq!(
             parse_gitlab_pipelines(r#"[{"status":"manual"}]"#).0,
             Pipeline::Waiting(String::new())
@@ -1341,6 +1376,11 @@ mod tests {
             Some((Forge::GitLab, 7))
         );
         assert_eq!(pr_number_of("https://github.com/o/r/pull/x"), None);
+        // A Codex result kept as a JSON string spells its newline (T-795).
+        assert_eq!(
+            pr_urls(r#"{"output":"https://github.com/o/r/pull/5\n","metadata":{}}"#),
+            ["https://github.com/o/r/pull/5"]
+        );
         assert!(same_url("https://a/b/pull/1/", "https://a/b/pull/1"));
         let r = repo_of_url("https://github.com/o/r/pull/42").unwrap();
         assert_eq!((r.host.as_str(), r.path.as_str()), ("github.com", "o/r"));

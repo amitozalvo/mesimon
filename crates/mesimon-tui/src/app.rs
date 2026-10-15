@@ -4087,11 +4087,28 @@ impl App {
 
     /// The ticket's pull requests in one line: what `news` compares.
     fn pr_fingerprint(&self, ticket: ulid::Ulid) -> String {
-        self.prs_of(ticket)
+        // Everything the line says (T-794's words and the deployed mark),
+        // by repository and number, so a reorder alone is no news (T-795).
+        let mut each: Vec<String> = self
+            .prs_of(ticket)
             .iter()
-            .map(|p| format!("{}:{}:{}:{}", p.forge, p.number, p.state, p.pipeline))
-            .collect::<Vec<_>>()
-            .join(" ")
+            .map(|p| {
+                format!(
+                    "{}:{}:{}:{}:{}:{}:{}:{}:{}",
+                    p.forge,
+                    p.repo,
+                    p.number,
+                    p.state,
+                    p.pipeline,
+                    p.job.as_deref().unwrap_or_default(),
+                    p.conflict,
+                    p.review,
+                    p.deployed.join(",")
+                )
+            })
+            .collect();
+        each.sort();
+        each.join(" ")
     }
 
     /// The card's pull-request line (T-739): one glyph and the forge's own
@@ -8392,7 +8409,10 @@ impl App {
             // The row's PR in the browser; the dialog stays, since a
             // ticket's PRs are often read one after another.
             Scope::PullRequests => {
-                if let Some(url) = self.pr_cursor().map(|p| p.url.clone()) {
+                // An address the forge gave that is not a web page is kept
+                // empty (`forge::web_url`), and opens nothing.
+                if let Some(url) = self.pr_cursor().map(|p| p.url.clone()).filter(|u| !u.is_empty())
+                {
                     self.open_outside(url);
                 }
                 Ok(())
@@ -12784,7 +12804,7 @@ impl App {
         // The ticket's pull requests (T-739): the forge's URLs, newest
         // first, each labelled as the forge spells it.
         for p in self.prs_of(ticket) {
-            if out.iter().any(|l| l.target == LinkTarget::Url(p.url.clone())) {
+            if p.url.is_empty() || out.iter().any(|l| l.target == LinkTarget::Url(p.url.clone())) {
                 continue;
             }
             out.push(TicketLink {

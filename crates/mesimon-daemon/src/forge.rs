@@ -135,7 +135,7 @@ impl RepoQuery {
 
     /// The repository's path as GitLab's API names a project.
     fn project(&self) -> String {
-        self.remote.path.replace('/', "%2F")
+        query_word(&self.remote.path)
     }
 }
 
@@ -286,8 +286,13 @@ impl Edge {
         let tail =
             |label: String| if label.is_empty() { String::new() } else { format!(" {label}") };
         let mut out: Vec<String> = self.landed.iter().map(|l| format!("merged {l}")).collect();
+        // The open PRs' failure where one is open, as `failed` is theirs
+        // (T-795): a merged PR's settled failure is not this one.
+        let open = new.iter().any(|p| p.state.is_open());
         if let Some(job) = &self.failed {
-            out.push(failed_words(&labels(&|p| matches!(p.pipeline, Pipeline::Failed(_))), job));
+            let failing =
+                |p: &Pr| matches!(p.pipeline, Pipeline::Failed(_)) && (!open || p.state.is_open());
+            out.push(failed_words(&labels(&failing), job));
         }
         if self.passed {
             out.push(format!("pipeline passed{}", tail(labels(&|p| p.state.is_open()))));
@@ -851,9 +856,11 @@ fn deployments(r: &RepoQuery, oid: &str, envs: &[String]) -> Vec<String> {
         Forge::GitLab => {
             let project = r.project();
             for env in envs {
+                // A name may hold a space, a `+` or a `#` (T-795).
                 let path = format!(
-                    "projects/{project}/deployments?environment={env}&status=success\
-                     &order_by=created_at&sort=desc&per_page=20"
+                    "projects/{project}/deployments?environment={}&status=success\
+                     &order_by=created_at&sort=desc&per_page=20",
+                    query_word(env)
                 );
                 if let Ok(list) = r.api(&path) {
                     if let Some(at) = forge::parse_gitlab_deployed(&list, oid) {
@@ -1228,7 +1235,8 @@ impl State {
     /// cannot be read.
     pub fn trouble(&self) -> Option<String> {
         let (key, why) = self.errors.first()?;
-        Some(format!("{key}: {why}"))
+        // A key can come from a URL a session printed (T-795).
+        Some(format!("{}: {why}", mesimon_core::text::scrub_text(key)))
     }
 }
 
@@ -1467,6 +1475,20 @@ pub fn read_whole(
         let key = format!("{}/{}", r.host, r.path);
         reports.iter().any(|x| x.key == key && x.error.is_none()) || no_cli(&r.host)
     })
+}
+
+/// `s` as one segment or value of an API path: every byte but the
+/// unreserved ones percent-encoded, `/` included.
+fn query_word(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(b));
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 /// `pipeline failed !1: test-linux`, bare where no job is named, and with
@@ -2376,6 +2398,26 @@ mod tests {
         pushed.head_oid = "moved".into();
         let set = carry(Some(std::slice::from_ref(&was)), vec![pushed], &only_r);
         assert_eq!(set[0].pipeline, Pipeline::Unknown, "a new head's pipeline is its own");
+    }
+
+    /// An open PR's failure names the open PRs failing, never a merged
+    /// one whose settled failure is older news (T-795).
+    #[test]
+    fn a_failure_names_the_open_prs_that_fail() {
+        let merged = pr(1, PrState::Merged, Pipeline::Failed("deploy".into()));
+        let green = pr(2, PrState::Open, Pipeline::Passed);
+        let red = pr(2, PrState::Open, Pipeline::Failed("test".into()));
+        let old = vec![green, merged.clone()];
+        let new = vec![red, merged];
+        assert_eq!(edge(&old, &new).news(&new), ["pipeline failed #2: test"]);
+    }
+
+    /// A path segment or a query value is percent-encoded whole (T-795).
+    #[test]
+    fn an_api_word_is_percent_encoded() {
+        assert_eq!(query_word("g/sub/p"), "g%2Fsub%2Fp");
+        assert_eq!(query_word("Production EU+1#x"), "Production%20EU%2B1%23x");
+        assert_eq!(query_word("a-b_c.d~e"), "a-b_c.d~e");
     }
 
     /// A ticket is read only where every repository it comes from answered,
