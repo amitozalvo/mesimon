@@ -9522,7 +9522,8 @@ impl Daemon {
             if !leg.base.is_empty() && worktree::is_merged(&leg.repo, &b.branch, &leg.base) {
                 return true;
             }
-            // The forge's word (T-739), at the branch's tip as it stands.
+            // The forge's word (T-739), at the branch's tip as it stands: a
+            // merged head that is the tip, or carries it (T-799).
             if let Some(Some(_)) = self.forge.remotes.get(&leg.repo) {
                 let tip = worktree::branch_tip(&leg.repo, &b.branch);
                 if self.forge.merged_at(id, &leg.repo, &tip).is_some() {
@@ -13732,6 +13733,7 @@ impl Daemon {
                 repo_path: remote.path.clone(),
                 repo_paths: self.forge.repo_paths(&leg.repo),
                 dir: leg.path.clone(),
+                base_oid: leg.base_oid.clone(),
             });
         }
         out
@@ -13897,6 +13899,7 @@ impl Daemon {
             envs,
             commit_pipelines: self.forge.commit_pipelines.clone(),
             deployed: self.forge.deployed.clone(),
+            landed: self.forge.landed.clone(),
         })
     }
 
@@ -13982,6 +13985,7 @@ impl Daemon {
         let mut openings: HashMap<ulid::Ulid, String> = HashMap::new();
         let mut arrivals: Vec<(ulid::Ulid, crate::forge::Edge)> = Vec::new();
         let mut basis = sample.basis;
+        let mut landed = sample.landed;
         for (t, set) in sample.sets {
             // A ticket a later read already answered (a turn's end's, while
             // the minute's was out) keeps that one.
@@ -14020,11 +14024,12 @@ impl Daemon {
                 // with `forge.json`'s sets (T-785).
                 self.forge.say_conflicts(t, &mut edge);
                 // A merge is the flags' to say where they flip on it (T-757):
-                // the PR whose head is a leg's tip lands the branch the flags
-                // read (`forge_fold_legs` folds exactly that one), and a flip
-                // waiting for the tick is being said. Any other PR — a later
-                // one on a ticket already merged, one from another branch —
-                // moves no flag, so the forge says it. And a merge read on the
+                // the PR whose head is a leg's tip, or carries it (T-799),
+                // lands the branch the flags read (`forge_fold_legs` folds
+                // exactly that one), and a flip waiting for the tick is being
+                // said. Any other PR — a later one on a ticket already
+                // merged, one from another branch — moves no flag, so the
+                // forge says it. And a merge read on the
                 // pass that reads its deployment, which the flags have not
                 // said, is said here, first (T-769): the forge's order, the
                 // flags' wake folding into this one (`hear_forge`). A leg's
@@ -14045,7 +14050,7 @@ impl Daemon {
                     set.iter().any(|p| {
                         p.label() == *label
                             && p.state == mesimon_core::forge::PrState::Merged
-                            && if tips.contains(&p.head_oid.as_str()) {
+                            && if tips.iter().any(|tip| p.lands(tip)) {
                                 !carried || (reached.contains(label) && !flags_said)
                             } else {
                                 !flipping
@@ -14067,11 +14072,18 @@ impl Daemon {
             }
             changed |= !unchanged;
             self.forge.sets.insert(t, set);
+            // What this pass asked of a head and a tip (T-799): a whole read
+            // stood on all the answers its ticket now needs, so the rest
+            // (a tip the branch has left) go; a partial one adds to them.
+            let answers = landed.remove(&t).unwrap_or_default();
             if read.contains(&t) {
+                self.forge.landed.insert(t, answers);
                 self.forge.at_ms.insert(t, sample.at_ms);
                 if let Some(b) = basis.remove(&t) {
                     self.forge.basis.insert(t, b);
                 }
+            } else {
+                self.forge.landed.entry(t).or_default().extend(answers);
             }
         }
         changed |= self.forge_arrivals(arrivals);
@@ -14190,10 +14202,10 @@ impl Daemon {
     }
 
     /// The merged clause the forge adds to a ticket's legs (T-739): a leg
-    /// whose repository's newest PR in `set` is merged at the leg's tip
-    /// reads merged, landed as that PR's merge commit — in the PR's words
-    /// though the git road read it merged first (T-780). True when a leg
-    /// changed.
+    /// whose repository's newest PR in `set` is merged at the leg's tip, or
+    /// with a head that carries it (T-799), reads merged, landed as that
+    /// PR's merge commit — in the PR's words though the git road read it
+    /// merged first (T-780). True when a leg changed.
     fn fold_set(&self, set: &[mesimon_core::forge::Pr], legs: &mut [worktree::RepoFlags]) -> bool {
         let mut changed = false;
         for leg in legs.iter_mut() {

@@ -3940,6 +3940,7 @@ mod tests {
             updated_ms: 1,
             merged_ms: 0,
             deployed: Vec::new(),
+            landed_tips: Vec::new(),
         };
         assert!(leg.fold_forge_merge(&pr));
         assert_eq!((leg.merged_in.as_str(), leg.merged_oid.as_str()), ("main (MR !8)", "m8"));
@@ -3969,6 +3970,7 @@ mod tests {
             updated_ms,
             merged_ms: 0,
             deployed: Vec::new(),
+            landed_tips: Vec::new(),
         };
         let set =
             ticket_set(vec![mr(9, "t1", "msmn/T-13-a", "m9", 1), mr(11, "f1", "fix/a", "m11", 2)]);

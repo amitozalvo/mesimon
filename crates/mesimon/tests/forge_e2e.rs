@@ -89,6 +89,9 @@ case "$1 $2" in
         if [ -f "$MSMN_GH_CHECKS.$sha" ]; then cat "$MSMN_GH_CHECKS.$sha"
         else cat "$MSMN_GH_CHECKS" 2>/dev/null || echo '{"check_runs":[]}'; fi ;;
       */commits/*/status) cat "$MSMN_GH_STATUS" 2>/dev/null || echo '{"state":"pending","statuses":[]}' ;;
+      *pulls/*/commits*)
+        n=$(echo "$4" | sed -n 's|.*/pulls/\([0-9]*\)/commits.*|\1|p')
+        cat "$MSMN_GH_COMMITS.$n" 2>/dev/null || echo '[]' ;;
       *deployments/*/statuses*) echo '[{"state":"success"}]' ;;
       *deployments*)
         sha=$(echo "$4" | sed -n 's|.*sha=\([^&]*\).*|\1|p')
@@ -3151,5 +3154,120 @@ fn an_open_mrs_state_is_read_from_the_mr_itself() {
     assert!(std::fs::read_to_string(&mrs).unwrap().contains("opened"), "the list never caught up");
     let pr = prs_of(&mut c).into_iter().find(|p| p.ticket == id).unwrap();
     assert_eq!(pr.state, "merged", "{pr:?}");
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// One merged PR as `gh pr list --json` prints it, squashed as `squash`.
+fn squashed_pr(n: u64, branch: &str, head: &str, squash: &str) -> String {
+    format!(
+        r#"{{"number":{n},"url":"https://github.com/example/forge/pull/{n}","state":"MERGED","isDraft":false,
+          "headRefName":"{branch}","headRefOid":"{head}","mergeCommit":{{"oid":"{squash}"}},"mergeable":"UNKNOWN",
+          "reviewDecision":"APPROVED","updatedAt":"2026-10-15T06:00:00Z",
+          "statusCheckRollup":[{{"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"SUCCESS"}}]}}"#
+    )
+}
+
+/// T-799: a reviewer committed a suggestion on GitHub, so #43's head is one
+/// past alpha's tip, and the PR was squash-merged. Nothing was fetched: git
+/// cannot say the tip landed, and the head is not the tip. The PR's commits
+/// carry the tip, so the leg lands: the card reads merged in the PR's words,
+/// `m` says so and DONE admits the ticket. Beta's #44 merged from its own
+/// branch too, but its head does not carry beta's tip (the branch was
+/// rewritten after the push): nothing lands, and DONE refuses. Each PR's
+/// commits are asked once, not on every pass.
+#[test]
+fn a_merged_pr_whose_head_carries_the_tip_lands_and_one_that_does_not_holds_done() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    let (stub_dir, path_var) = gh_stub("forge-past");
+    let prs_file = stub_dir.join("prs.json");
+    let commits = stub_dir.join("commits");
+    let log = stub_dir.join("gh.log");
+    write(&prs_file, "[]");
+    let Some(h) = Harness::boot_with_env(
+        "forge-past",
+        Some(STUB),
+        &[
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs_file.display().to_string()),
+            ("MSMN_GH_COMMITS", &commits.display().to_string()),
+            ("MSMN_GH_LOG", &log.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    let repo = h.repo.clone();
+    init_repo(&repo, "a.txt", "hello\n");
+    git(&repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let mut c = h.client("forge-past");
+    let (a, a_sid, a_branch, a_path) = ready(&mut c, "alpha");
+    let (b, b_sid, b_branch, b_path) = ready(&mut c, "beta");
+    let a_tip = git(&a_path, &["rev-parse", "HEAD"]).trim().to_string();
+    let b_tip = git(&b_path, &["rev-parse", "HEAD"]).trim().to_string();
+    // The suggestions' commits live on the forge alone.
+    let (a_head, a_squash) = ("5".repeat(40), "a".repeat(40));
+    let (b_head, b_squash) = ("6".repeat(40), "b".repeat(40));
+    write(&commits.with_extension("43"), &format!(r#"[{{"sha":"{a_tip}"}},{{"sha":"{a_head}"}}]"#));
+    let rewritten = "7".repeat(40);
+    assert_ne!(rewritten, b_tip);
+    write(
+        &commits.with_extension("44"),
+        &format!(r#"[{{"sha":"{rewritten}"}},{{"sha":"{b_head}"}}]"#),
+    );
+    write(
+        &prs_file,
+        &format!(
+            "[{},{}]",
+            squashed_pr(43, &a_branch, &a_head, &a_squash),
+            squashed_pr(44, &b_branch, &b_head, &b_squash)
+        ),
+    );
+
+    // Alpha: landed by the forge's word, though its head is past the tip.
+    wait_until(Duration::from_secs(20), "alpha's leg to land by #43", || {
+        wt_of(&mut c, a).is_some_and(|w| w.merged)
+    });
+    let wa = wt_of(&mut c, a).unwrap();
+    assert_eq!(wa.merged_in, "main (PR #43)", "landed on the base, in the PR's words");
+    assert_eq!(wa.merged_oid, a_squash);
+    assert!(!wa.needs_rebase);
+    let _ = c.request(Command::KillSession { id: a_sid });
+    wait_until(Duration::from_secs(15), "`m` to say alpha is merged", || {
+        matches!(
+            c.request(Command::MergeTicket { id: a }),
+            Response::Merge { outcome: MergeOutcome::AlreadyMerged, detail, .. }
+                if detail.contains("main (PR #43)")
+        )
+    });
+    assert!(matches!(
+        c.request(Command::MoveTicket { id: a, column: "DONE".into(), before: None }),
+        Response::Ok
+    ));
+
+    // Beta: #44 is merged and read, and its head does not carry the tip.
+    wait_until(Duration::from_secs(20), "beta's PR to read merged", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == b && p.number == 44 && p.state == "merged")
+    });
+    let asked = |n: u64| {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(&format!("pulls/{n}/commits")))
+            .count()
+    };
+    wait_until(Duration::from_secs(20), "beta's PR's commits to be asked", || asked(44) >= 1);
+    // Several passes on: each PR's commits were asked once.
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!((asked(43), asked(44)), (1, 1), "an answer is kept, not asked every pass");
+    assert!(!wt_of(&mut c, b).unwrap().merged, "a head that does not carry the tip lands nothing");
+    match c.request(Command::MoveTicket { id: b, column: "DONE".into(), before: None }) {
+        Response::Err { message } => {
+            assert_eq!(message, "worktree unmerged — merge before DONE")
+        }
+        other => panic!("DONE with the tip not landed: {other:?}"),
+    }
+    let _ = c.request(Command::KillSession { id: b_sid });
     let _ = std::fs::remove_dir_all(&stub_dir);
 }

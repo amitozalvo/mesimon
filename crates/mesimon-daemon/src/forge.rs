@@ -170,7 +170,15 @@ pub struct LegQuery {
     /// upstream too.
     pub repo_paths: Vec<String>,
     pub dir: PathBuf,
+    /// The commit the leg was cut at: a tip still there is no work of the
+    /// ticket's, and no merged head is asked whether it carries it (T-799).
+    pub base_oid: String,
 }
+
+/// A merged head and a branch tip, by repository path: the key a "does
+/// this head carry this tip" answer is kept under (T-799). Both are
+/// commits, so the answer never changes.
+pub type LandedKey = (String, String, String);
 
 /// One ticket's facts, to bind by.
 #[derive(Debug, Clone)]
@@ -219,6 +227,9 @@ pub struct Query {
     /// The environments each merge commit was seen reaching: a deployment
     /// is permanent, so one is read until every wanted environment is in.
     pub deployed: HashMap<(String, String), Vec<String>>,
+    /// Each ticket's answers to "does this merged head carry this tip"
+    /// (T-799), so a pass asks git or the forge only what moved.
+    pub landed: HashMap<ulid::Ulid, HashMap<LandedKey, bool>>,
 }
 
 /// What a pass saw change in a ticket's set (T-739): the edges a column's
@@ -524,6 +535,9 @@ pub struct Sample {
     pub basis: HashMap<ulid::Ulid, Basis>,
     /// Each queried ticket's repositories, as its query named them.
     pub repos_of: HashMap<ulid::Ulid, Vec<Remote>>,
+    /// Each queried ticket's "does this merged head carry this tip" answers
+    /// this pass stood on (T-799), kept or new: what the next pass is told.
+    pub landed: HashMap<ulid::Ulid, HashMap<LandedKey, bool>>,
 }
 
 /// The local facts a ticket's set was read on (T-761): what its legs had
@@ -682,6 +696,10 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
                 None => Vec::new(),
             },
         );
+        let landed = landed_reads(&mut set, t, q.landed.get(&t.ticket), |pr, tip| {
+            pr_carries(q.repos.iter().find(|r| r.remote.path == pr.repo)?, pr, tip)
+        });
+        out.landed.insert(t.ticket, landed);
         out.sets.insert(t.ticket, set);
     }
     out
@@ -732,6 +750,108 @@ pub fn merged_reads(
         }
         pr.deployed = known;
     }
+}
+
+/// Each merged PR of the ticket's own branch whose head is past a leg's
+/// tip (`forge::merged_past`, T-799): does that head carry the tip? A
+/// reviewer's commit on the forge puts the head one past the worktree, and
+/// a squash of it lands the tip all the same, though no fetch brought the
+/// head and no patch-id matches. Asked of git first, where the head is here
+/// (a fetch brought it, or it was this worktree's own commit): exact and
+/// free. Else of the forge, by the PR's commits (`forge`). Each answer is
+/// kept by head and tip, so a pass asks only what moved, and a tip the
+/// head carries is put on the PR (`Pr::landed_tips`) for `merged_at`. A leg
+/// at the commit it was cut at is not asked: every PR descends from that.
+/// Returns the answers this pass stood on, for the next pass.
+pub fn landed_reads(
+    set: &mut [Pr],
+    t: &TicketQuery,
+    known: Option<&HashMap<LandedKey, bool>>,
+    mut forge: impl FnMut(&Pr, &str) -> Option<bool>,
+) -> HashMap<LandedKey, bool> {
+    let mut answers = HashMap::new();
+    if !set.iter().any(|p| p.state == PrState::Merged && p.head_ref == t.branch) {
+        return answers;
+    }
+    for leg in &t.legs {
+        let tip = crate::worktree::branch_tip(&leg.dir, &t.branch);
+        if tip == leg.base_oid {
+            continue;
+        }
+        for pr in set.iter_mut() {
+            // Its PRs name the leg's repository, or its fork's upstream (T-800).
+            if !leg.repo_paths.contains(&pr.repo) || !forge::merged_past(pr, &t.branch, &tip) {
+                continue;
+            }
+            let key = (pr.repo.clone(), pr.head_oid.clone(), tip.clone());
+            let answer = known
+                .and_then(|k| k.get(&key).copied())
+                .or_else(|| carries_here(&leg.dir, &pr.head_oid, &tip))
+                .or_else(|| forge(pr, &tip));
+            // A forge that did not answer is asked again on the next pass.
+            let Some(carries) = answer else { continue };
+            answers.insert(key, carries);
+            if carries && !pr.landed_tips.contains(&tip) {
+                pr.landed_tips.push(tip.clone());
+            }
+        }
+    }
+    answers
+}
+
+/// Whether `head` carries `tip`, by git in `dir` (T-799): `None` where the
+/// head is not here. Reads only — `merge-base` writes nothing, and a
+/// partial clone is told not to fetch a missing head (`GIT_NO_LAZY_FETCH`),
+/// which would write a pack into the repository (promise 1).
+pub fn carries_here(dir: &Path, head: &str, tip: &str) -> Option<bool> {
+    if !forge::is_oid(head) || !forge::is_oid(tip) {
+        return None;
+    }
+    let status = crate::git::git(dir)
+        .args(["--no-optional-locks", "merge-base", "--is-ancestor", tip, head])
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok()?;
+    match status.code() {
+        Some(0) => Some(true),
+        Some(1) => Some(false),
+        // 128: a commit git does not have.
+        _ => None,
+    }
+}
+
+/// How many commits one page of a PR's commits holds.
+const COMMITS_PAGE: usize = 100;
+
+/// Whether a merged PR's commits hold `tip` (T-799), on the forge: GitHub's
+/// `pulls/:n/commits`, GitLab's merge request `commits`, a page at a time up
+/// to the 250 commits GitHub lists. `None` when a call failed or answered
+/// something else.
+fn pr_carries(r: &RepoQuery, pr: &Pr, tip: &str) -> Option<bool> {
+    for page in 1..=3 {
+        let path = match r.cli.forge {
+            Forge::GitHub => format!(
+                "repos/{}/pulls/{}/commits?per_page={COMMITS_PAGE}&page={page}",
+                r.remote.path, pr.number
+            ),
+            Forge::GitLab => format!(
+                "projects/{}/merge_requests/{}/commits?per_page={COMMITS_PAGE}&page={page}",
+                r.project(),
+                pr.number
+            ),
+        };
+        let oids = forge::parse_pr_commits(&r.api(&path).ok()?)?;
+        if oids.iter().any(|o| o == tip) {
+            return Some(true);
+        }
+        if oids.len() < COMMITS_PAGE {
+            return Some(false);
+        }
+    }
+    Some(false)
 }
 
 /// The pending repositories whose host's probe, answered on this pass,
@@ -1215,6 +1335,10 @@ pub struct State {
     pub commit_pipelines: HashMap<(String, String), Pipeline>,
     /// The environments each merge commit was seen reaching.
     pub deployed: HashMap<(String, String), Vec<String>>,
+    /// Each ticket's answers to "does this merged head carry this tip"
+    /// (T-799), as its last read stood on them; a carried tip is also on
+    /// its PR in `forge.json`, which seeds this after a restart.
+    pub landed: HashMap<ulid::Ulid, HashMap<LandedKey, bool>>,
     pub last: Option<Instant>,
     /// Unix ms of the last pass that answered, for the snapshot.
     pub last_ms: u64,
@@ -1423,6 +1547,7 @@ impl State {
         self.basis.retain(|t, _| live.contains(t));
         self.local.retain(|t, _| live.contains(t));
         self.owed.retain(|t, _| live.contains(t));
+        self.landed.retain(|t, _| live.contains(t));
     }
 
     /// Whether an open PR of the ticket's set has the forge's conflict.
@@ -1490,6 +1615,10 @@ pub struct PrRecord {
     pub merged_ms: u64,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub deployed: Vec<String>,
+    /// The branch tips its merged head carries (T-799). An older file has
+    /// none, and the first pass asks again.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub landed_tips: Vec<String>,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -1514,6 +1643,7 @@ impl PrRecord {
             updated_ms: p.updated_ms,
             merged_ms: p.merged_ms,
             deployed: p.deployed.clone(),
+            landed_tips: p.landed_tips.clone(),
         }
     }
 
@@ -1533,6 +1663,7 @@ impl PrRecord {
             updated_ms: self.updated_ms,
             merged_ms: self.merged_ms,
             deployed: self.deployed,
+            landed_tips: self.landed_tips,
         })
     }
 }
@@ -1630,6 +1761,18 @@ impl State {
             }
             let set = forge::ticket_set(records.into_iter().filter_map(PrRecord::pr).collect());
             self.opens(t, &set);
+            // What the file says a head carries is not asked again (T-799).
+            let landed: HashMap<LandedKey, bool> = set
+                .iter()
+                .flat_map(|p| {
+                    p.landed_tips
+                        .iter()
+                        .map(|tip| ((p.repo.clone(), p.head_oid.clone(), tip.clone()), true))
+                })
+                .collect();
+            if !landed.is_empty() {
+                self.landed.insert(t, landed);
+            }
             self.sets.insert(t, set);
         }
         for (t, said) in file.conflicts {
@@ -1787,6 +1930,7 @@ mod tests {
             updated_ms: number,
             merged_ms: 0,
             deployed: Vec::new(),
+            landed_tips: Vec::new(),
         }
     }
 
@@ -2624,6 +2768,7 @@ mod tests {
             repo_path: "o/r".into(),
             repo_paths: vec!["o/r".into()],
             dir: dir.clone(),
+            base_oid: String::new(),
         }];
         let now = |legs: &[LegQuery]| {
             let logs: Vec<Vec<String>> = legs.iter().map(|l| reflog(&l.dir)).collect();
@@ -2721,6 +2866,153 @@ mod tests {
         assert_eq!(forge::canonical_host(&host.unwrap()), "github.com");
         assert_eq!(ssh_hostname("plain.example", Some(&config)).as_deref(), Some("plain.example"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-799: #42 merged with its head one past the worktree's tip (a
+    /// reviewer's commit). Where the head is here, git says it carries the
+    /// tip and the forge is not asked; where it is not, the forge's commits
+    /// say, once — the next pass stands on the answer. A head the tip has
+    /// moved past, a failed call, a leg still at its cut and a side branch
+    /// land nothing.
+    #[test]
+    fn a_merged_head_past_the_tip_is_asked_of_git_then_once_of_the_forge() {
+        let dir = std::env::temp_dir().join(format!("msmn-forge-landed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .stderr(Stdio::null())
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let branch = "msmn/T-9-x";
+        git(&["init", "-q", "-b", "main"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-qb", branch]);
+        git(&["commit", "-q", "--allow-empty", "-m", "work"]);
+        let tip = git(&["rev-parse", "HEAD"]);
+        // The reviewer's commit, fetched: on the remote-tracking ref only.
+        let fetched =
+            git(&["commit-tree", "-p", &tip, "-m", "suggestion", &format!("{tip}^{{tree}}")]);
+        git(&["update-ref", &format!("refs/remotes/origin/{branch}"), &fetched]);
+        let remote_only = "e".repeat(40);
+        let t = TicketQuery {
+            ticket: ulid::Ulid(9),
+            branch: branch.into(),
+            legs: vec![LegQuery {
+                repo_path: "o/r".into(),
+                repo_paths: vec!["o/r".into()],
+                dir: dir.clone(),
+                base_oid: base.clone(),
+            }],
+            opened: Vec::new(),
+            repos: Vec::new(),
+            held: Vec::new(),
+        };
+        let merged = |head: &str| {
+            let mut p = pr(42, PrState::Merged, Pipeline::Passed);
+            p.head_oid = head.into();
+            p.head_ref = branch.into();
+            p.merge_oid = "f".repeat(40);
+            p
+        };
+        let here = ["o/r".to_string()];
+        let mut asked = 0;
+
+        // Fetched: git answers, the forge is never asked.
+        let mut set = [merged(&fetched)];
+        let known = landed_reads(&mut set, &t, None, |_, _| {
+            asked += 1;
+            None
+        });
+        assert_eq!(set[0].landed_tips, std::slice::from_ref(&tip));
+        assert_eq!(known.get(&("o/r".into(), fetched.clone(), tip.clone())), Some(&true));
+        assert_eq!(forge::merged_at(&set, &here, &tip).map(|p| p.number), Some(42));
+        assert_eq!(asked, 0, "a head here is git's to answer");
+
+        // Never fetched: the forge's commits answer, and the next pass
+        // stands on that answer without a call.
+        let mut set = [merged(&remote_only)];
+        let known = landed_reads(&mut set, &t, None, |p, at| {
+            asked += 1;
+            Some(p.number == 42 && at == tip)
+        });
+        assert_eq!((asked, set[0].landed_tips.clone()), (1, vec![tip.clone()]));
+        let mut again = [merged(&remote_only)];
+        let kept = landed_reads(&mut again, &t, Some(&known), |_, _| {
+            asked += 1;
+            Some(false)
+        });
+        assert_eq!((asked, again[0].landed_tips.clone()), (1, vec![tip.clone()]), "asked once");
+        assert_eq!(kept, known, "the answers the pass stood on, for the next");
+
+        // A forge that does not answer lands nothing and keeps no answer.
+        let mut set = [merged(&remote_only)];
+        assert!(landed_reads(&mut set, &t, None, |_, _| None).is_empty());
+        assert!(set[0].landed_tips.is_empty());
+
+        // The worker committed after the merge: the head is behind the tip,
+        // which git says without the forge.
+        git(&["commit", "-q", "--allow-empty", "-m", "after"]);
+        let after = git(&["rev-parse", "HEAD"]);
+        let mut set = [merged(&tip)];
+        let known = landed_reads(&mut set, &t, None, |_, _| {
+            asked += 1;
+            Some(true)
+        });
+        assert!(set[0].landed_tips.is_empty());
+        assert_eq!(known.get(&("o/r".into(), tip.clone(), after.clone())), Some(&false));
+        assert_eq!(forge::merged_at(&set, &here, &after), None, "a commit after is unlanded");
+
+        // A side branch's PR lands only at its head, and a leg still at the
+        // commit it was cut at is not asked.
+        let mut side = merged(&remote_only);
+        side.head_ref = "fix/a".into();
+        let mut set = [side];
+        assert!(landed_reads(&mut set, &t, None, |_, _| Some(true)).is_empty());
+        git(&["reset", "-q", "--hard", &base]);
+        let mut set = [merged(&remote_only)];
+        assert!(landed_reads(&mut set, &t, None, |_, _| Some(true)).is_empty());
+        assert!(set[0].landed_tips.is_empty());
+        assert_eq!(asked, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A carried tip survives a restart on its PR (T-799), and seeds the
+    /// answers so the first pass asks nothing again.
+    #[test]
+    fn a_carried_tip_round_trips_and_is_not_asked_again() {
+        let t = ulid::Ulid(3);
+        let mut s = State::default();
+        let mut p = pr(42, PrState::Merged, Pipeline::Passed);
+        p.landed_tips = vec!["a".repeat(40)];
+        s.sets.insert(t, vec![p.clone()]);
+        let text = serde_json::to_string(&ForgeFile::of(&s)).unwrap();
+        assert!(text.contains("landed_tips"), "{text}");
+        let mut back = State::default();
+        back.restore(crate::store::parse_versioned(&text, FORGE_SCHEMA).unwrap(), |_| true);
+        assert_eq!(back.sets[&t], vec![p]);
+        let key = ("o/r".to_string(), "h".to_string(), "a".repeat(40));
+        assert_eq!(back.landed[&t].get(&key), Some(&true));
+        let landed = forge::merged_at(&back.sets[&t], &["o/r".into()], &"a".repeat(40));
+        assert_eq!(landed.map(|p| p.number), Some(42));
+        let plain = serde_json::to_string(&ForgeFile::of(&{
+            let mut q = State::default();
+            q.sets.insert(t, vec![pr(1, PrState::Open, Pipeline::None)]);
+            q
+        }))
+        .unwrap();
+        assert!(!plain.contains("landed_tips"), "written only where there is one: {plain}");
     }
 
     #[test]

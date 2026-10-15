@@ -251,6 +251,12 @@ pub struct Pr {
     /// The environments the merge commit reached, as the forge names them;
     /// read only where a column asks for one, and only once merged.
     pub deployed: Vec<String>,
+    /// The ticket's branch tips this merged PR's head carries though it is
+    /// not one of them (T-799): a reviewer's commit on the forge put the
+    /// head past the worktree's tip, and the merge landed the tip all the
+    /// same. Read by ancestry on the daemon's worker (`merged_past`), never
+    /// off the forge's list.
+    pub landed_tips: Vec<String>,
 }
 
 impl Pr {
@@ -267,6 +273,11 @@ impl Pr {
         } else {
             self.updated_ms
         }
+    }
+
+    /// Whether this PR's head is `tip` or carries it (T-799).
+    pub fn lands(&self, tip: &str) -> bool {
+        !tip.is_empty() && (self.head_oid == tip || self.landed_tips.iter().any(|t| t == tip))
     }
 }
 
@@ -335,6 +346,7 @@ pub fn parse_gh(repo: &str, json: &str) -> Vec<Pr> {
                 updated_ms: iso_ms(v.get("updatedAt")),
                 merged_ms: iso_ms(v.get("mergedAt")),
                 deployed: Vec::new(),
+                landed_tips: Vec::new(),
             })
         })
         .collect()
@@ -490,6 +502,7 @@ fn glab_mr(repo: &str, v: &Value) -> Option<Pr> {
         updated_ms: iso_ms(v.get("updated_at")),
         merged_ms: iso_ms(v.get("merged_at")),
         deployed: Vec::new(),
+        landed_tips: Vec::new(),
     })
 }
 
@@ -869,19 +882,54 @@ pub fn ticket_set(mut prs: Vec<Pr>) -> Vec<Pr> {
 }
 
 /// The set's merged PR for one repository at one tip: the newest merged PR
-/// there whose head is that tip. A commit after the merge is work that has
-/// not landed, as the git road reads it, since the tip is then no merged
-/// head. A later PR from another branch, merged or open, leaves the landing
-/// the one that names it (T-786): the lab's !11 from `fix/a` merged after
-/// !9 had, and the leg's words fell back to `origin/main`. An open one holds
-/// the ticket's merge on its own (`holding`, T-774). `repos` is every path
+/// there whose head is that tip, or carries it (`Pr::lands`, T-799). A
+/// commit after the merge is work that has not landed, as the git road
+/// reads it, since no merged head is or carries the tip then. A later PR
+/// from another branch, merged or open, leaves the landing the one that
+/// names it (T-786): the lab's !11 from `fix/a` merged after !9 had, and
+/// the leg's words fell back to `origin/main`. An open one holds the
+/// ticket's merge on its own (`holding`, T-774). `repos` is every path
 /// the repository's PRs may name (T-800): a PR opened from a fork against
 /// its upstream names the upstream's.
 pub fn merged_at<'a>(set: &'a [Pr], repos: &[String], tip: &str) -> Option<&'a Pr> {
-    if tip.is_empty() {
-        return None;
-    }
-    set.iter().find(|p| repos.contains(&p.repo) && p.state == PrState::Merged && p.head_oid == tip)
+    set.iter().find(|p| repos.contains(&p.repo) && p.state == PrState::Merged && p.lands(tip))
+}
+
+/// A merged PR whose head may carry the leg's tip without being it
+/// (T-799), which only ancestry says: one from the ticket's own branch, its
+/// head and the tip both known and different. A reviewer's commit on the
+/// forge puts the head past the tip, and a squash of it is the ticket's
+/// merge all the same. A PR from another branch lands only at its head: its
+/// commits are not the ticket's branch, and a head that carries the tip
+/// there is a later branch cut from it.
+pub fn merged_past(pr: &Pr, branch: &str, tip: &str) -> bool {
+    pr.state == PrState::Merged
+        && !branch.is_empty()
+        && pr.head_ref == branch
+        && is_oid(&pr.head_oid)
+        && is_oid(tip)
+        && pr.head_oid != tip
+}
+
+/// A full commit id: 40 or 64 hex digits. A forge's head is untrusted text
+/// and reaches git's argv, where anything else could read as an option.
+pub fn is_oid(s: &str) -> bool {
+    matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// The commit ids of a PR's commits page (T-799): GitHub's
+/// `pulls/:n/commits` (`sha`) and GitLab's merge request `commits` (`id`).
+/// `None` for an answer that is not a list, so an error page is never read
+/// as "the tip is not there".
+pub fn parse_pr_commits(json: &str) -> Option<Vec<String>> {
+    let Ok(Value::Array(items)) = serde_json::from_str::<Value>(json) else { return None };
+    Some(
+        items
+            .iter()
+            .filter_map(|c| c.get("sha").or_else(|| c.get("id")).and_then(Value::as_str))
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 /// The PR a ticket's merge waits on (T-774): the newest open one, on any
@@ -1141,6 +1189,7 @@ mod tests {
             updated_ms: updated,
             merged_ms: 0,
             deployed: Vec::new(),
+            landed_tips: Vec::new(),
         }
     }
 
@@ -1615,6 +1664,51 @@ mod tests {
             "the merge commit's once nothing is open"
         );
         assert_eq!(pipeline_of(&[]), Pipeline::Unknown);
+    }
+
+    /// T-799: a reviewer's commit on the forge put #42's head one past the
+    /// worktree's tip, and the squash landed. The head carries the tip, so
+    /// the tip is merged; a commit after it is not, and nor is a tip the
+    /// head does not carry.
+    #[test]
+    fn a_merged_head_past_the_tip_lands_the_tip_it_carries() {
+        let (tip, head, after) = ("a".repeat(40), "b".repeat(40), "c".repeat(40));
+        let mut p = pr("o/r", 42, PrState::Merged, &head, 10);
+        p.head_ref = "msmn/T-9-x".into();
+        assert!(merged_past(&p, "msmn/T-9-x", &tip), "its own branch, its head past the tip");
+        let (here, there) = (["o/r".to_string()], ["o/x".to_string()]);
+        assert_eq!(merged_at(std::slice::from_ref(&p), &here, &tip), None, "not read yet");
+        p.landed_tips.push(tip.clone());
+        assert!(p.lands(&tip) && p.lands(&head) && !p.lands(&after) && !p.lands(""));
+        let set = [p.clone()];
+        assert_eq!(merged_at(&set, &here, &tip).map(|p| p.number), Some(42));
+        assert_eq!(merged_at(&set, &here, &after), None, "a commit after the merge");
+        assert_eq!(merged_at(&set, &there, &tip), None, "another repository");
+
+        // Only a merged PR of the ticket's own branch whose head is not the
+        // tip is asked, and only on real commit ids.
+        assert!(!merged_past(&p, "msmn/T-9-x", &head), "the head is the tip");
+        assert!(!merged_past(&p, "msmn/T-1-y", &tip), "another ticket's branch");
+        assert!(!merged_past(&p, "", &tip));
+        assert!(!merged_past(&p, "msmn/T-9-x", "--output=/tmp/x"), "never an option");
+        let mut open = p.clone();
+        open.state = PrState::Open;
+        assert!(!merged_past(&open, "msmn/T-9-x", &tip), "an open PR is T-780's");
+        let mut side = p.clone();
+        side.head_ref = "fix/a".into();
+        assert!(!merged_past(&side, "msmn/T-9-x", &tip), "a side branch lands at its head");
+        assert!(is_oid(&"0f".repeat(32)) && !is_oid("abc") && !is_oid(&"g".repeat(40)));
+    }
+
+    #[test]
+    fn a_prs_commits_read_off_either_forge_and_an_error_page_is_none() {
+        let gh = r#"[{"sha":"aaa","commit":{"message":"x"}},{"sha":"bbb"}]"#;
+        assert_eq!(parse_pr_commits(gh), Some(vec!["aaa".to_string(), "bbb".to_string()]));
+        let glab = r#"[{"id":"ccc","short_id":"ccc"}]"#;
+        assert_eq!(parse_pr_commits(glab), Some(vec!["ccc".to_string()]));
+        assert_eq!(parse_pr_commits("[]"), Some(Vec::new()));
+        assert_eq!(parse_pr_commits(r#"{"message":"Not Found"}"#), None);
+        assert_eq!(parse_pr_commits("<html>"), None);
     }
 
     #[test]
