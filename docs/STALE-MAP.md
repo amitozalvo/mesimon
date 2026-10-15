@@ -25804,3 +25804,50 @@ the backoff in `the_state_is_due_on_its_cadence_and_backs_off_after_trouble`; `f
 merge commit whose check runs passed, then a retry green reads passed). No rig test: the rig
 has no forge, and `cancelled` is a new word in `get_ticket`'s `pipeline`, not new behaviour of an
 agent's.
+
+## T-799 — a PR merged with its head past the local tip lands the leg (2026-10-15, from T-795's bug hunt)
+
+A reviewer commits a suggestion on GitHub, so the PR's head is one past the worktree's tip, and
+the PR is squash-merged. The forge's fold landed a leg only where a merged head *was* the tip
+(`merged_at`), the git road had no fetch or a squash whose patch-id is not the branch's, and the
+ticket read unmerged for good: DONE refused `worktree unmerged`, `m` said the PRs carry the merge,
+the crown heard `merged #42` and could not place the ticket. The way out was a `git pull` in the
+worktree that nothing suggested.
+
+**The rule.** A merged PR lands a leg's tip when its head is that tip **or carries it**
+(`Pr::lands`). Carrying is asked only of a PR from the ticket's own branch (`head_ref` equal to
+the binding's), merged, its head and the tip both full commit ids and different
+(`forge::merged_past`), and only for a leg whose tip has left the commit it was cut at: every PR
+descends from that one, so an untouched leg would read merged by any of them. A PR from another
+branch still lands only at its head (T-786). A commit made after the merge is not carried, so it
+reads unlanded as it did. Open PRs are T-780's `head_unread`, unchanged. A leg's PRs are the ones
+naming any of its repository's paths (`LegQuery::repo_paths`, T-800), so a PR opened from a fork
+against its upstream is asked too.
+
+**How it is read**, on the forge pass's worker (`forge::landed_reads`), never the writer's: git
+first, `merge-base --is-ancestor <tip> <head>` in the leg (`carries_here`), which answers exactly
+where the head is here (a fetch brought it, or it was the worktree's own commit, as when the
+worker committed after the merge) and exits 128 where it is not; `--no-optional-locks` and
+`GIT_NO_LAZY_FETCH=1`, so a partial clone never writes a pack for the missing head (promise 1).
+Else the forge: GitHub's `pulls/:n/commits`, GitLab's merge request `commits`, through
+`RepoQuery::api`, a page of 100 at a time up to GitHub's 250 (`pr_carries`); an answer that is not
+a list is no answer. A tip the head carries goes on the PR (`landed_tips`), so `merged_at`, the
+fold, `ticket_merged` and `forge_lands_all` read it with no change, and so does the crown's "who
+says the merge" clause in `absorb_forge` (the flags say a merge they flip on).
+
+**Asked once.** Each answer, yes or no, is kept per ticket by (repository, head, tip) in
+`forge::State::landed` and rides the next query: both are commits, so the answer never changes. A
+whole read replaces the ticket's answers with the ones it stood on (a tip the branch left drops
+out), a partial read adds to them, and a failed call keeps none and is asked again. `landed_tips`
+rides `forge.json` (`PrRecord`, skipped when empty, no schema bump: an older build drops it and
+reads the ticket as it always did) and seeds the answers on restore, so a restart neither asks
+again nor reads a landed ticket unmerged until the first pass, which would wake the crown with a
+second landing.
+
+Tests: `forge::a_merged_head_past_the_tip_lands_the_tip_it_carries` and
+`a_prs_commits_read_off_either_forge_and_an_error_page_is_none` (core);
+`forge::a_merged_head_past_the_tip_is_asked_of_git_then_once_of_the_forge` and
+`a_carried_tip_round_trips_and_is_not_asked_again` (daemon); `forge_e2e`'s
+`a_merged_pr_whose_head_carries_the_tip_lands_and_one_that_does_not_holds_done` — the card reads
+`main (PR #43)`, `m` says already merged, DONE admits it, and a sibling whose head does not carry
+its tip stays unmerged and refused; each PR's commits asked once. It times out on the old rule.
