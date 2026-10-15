@@ -60,7 +60,8 @@ fn run_w(r: &Run) -> usize {
 }
 
 /// One PR's facts in the dialog's words. The forge's words cross
-/// `scrub_cells` here; an empty fact is a cell left blank.
+/// `scrub_cells` here; an empty fact is a cell left blank, and a PR closed
+/// unmerged says nothing past `closed` (T-797), as the page's rows do.
 struct Facts {
     glyph: char,
     mark: Ink,
@@ -82,17 +83,22 @@ fn facts(app: &App, p: &PrItem, now_ms: u64) -> Facts {
         let short: String = one(&p.merged_oid).chars().take(7).collect();
         state.push((format!(" {short}"), Ink::Dim2));
     }
-    if p.conflict {
+    let closed = p.state == "closed";
+    if p.conflict && !closed {
         state.push((", conflicts".into(), Ink::Base));
     }
     let pipeline = match (p.pipeline.as_str(), p.job.as_deref()) {
-        (w @ ("failed" | "waiting" | "running"), Some(job)) if !job.is_empty() => {
+        _ if closed => Vec::new(),
+        (w @ ("failed" | "waiting" | "running" | "cancelled"), Some(job)) if !job.is_empty() => {
             vec![(format!("{w}:"), Ink::Base), (format!(" {}", one(job)), Ink::Dim2)]
         }
-        (w @ ("failed" | "waiting" | "running" | "passed"), _) => vec![(w.to_string(), Ink::Base)],
+        (w @ ("failed" | "waiting" | "running" | "cancelled" | "passed"), _) => {
+            vec![(w.to_string(), Ink::Base)]
+        }
         _ => Vec::new(),
     };
     let review = match p.review.as_str() {
+        _ if closed => "",
         "approved" => "approved",
         "changes_requested" => "changes requested",
         "required" => "required",
@@ -109,7 +115,11 @@ fn facts(app: &App, p: &PrItem, now_ms: u64) -> Facts {
         state,
         pipeline,
         review: review.into(),
-        reached: p.deployed.iter().map(|d| one(d)).collect::<Vec<_>>().join(", "),
+        reached: if closed {
+            String::new()
+        } else {
+            p.deployed.iter().map(|d| one(d)).collect::<Vec<_>>().join(", ")
+        },
         updated,
     }
 }

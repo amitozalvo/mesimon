@@ -4868,6 +4868,26 @@ fn a_long_title_wraps_in_its_column_and_blank_columns_go() {
     assert!(!text.contains("TITLE") && !text.contains("UPDATED"), "{text}");
 }
 
+/// T-805 over T-797: in the dialog a PR closed unmerged is `closed` and
+/// nothing past it, its pipeline's word and its review gone with it, and
+/// a cancelled pipeline is named with its job.
+#[test]
+fn the_dialog_says_closed_alone_and_names_a_cancelled_pipeline() {
+    let mut app = app_prs_titled();
+    app.prs[0].state = "closed".into();
+    app.prs[1].pipeline = "cancelled".into();
+    app.prs[1].job = Some("deploy".into());
+    app.mode = Mode::PullRequests { ticket: ulid_n(5), idx: 3 };
+    let lines = render(&app, 160, 30);
+    let text = lines.join("\n");
+    let row = lines.iter().find(|l| l.contains("✗ #43") || l.contains(" #43  ")).expect(&text);
+    assert!(row.contains("closed"), "{text}");
+    for gone in ["failed", "test-linux", "changes requested", "conflicts"] {
+        assert!(!row.contains(gone), "{gone:?} is not said of a closed PR: {row}");
+    }
+    assert!(text.contains("cancelled: deploy"), "{text}");
+}
+
 /// With no pull requests `^h` is inert, and a dialog whose PRs went while it
 /// was open says so rather than drawing nothing.
 #[test]
@@ -8526,6 +8546,7 @@ fn a_closed_pr_is_on_the_card_only_where_every_pr_is_closed() {
         review: "none".into(),
         merged_oid: String::new(),
         deployed: Vec::new(),
+        ..Default::default()
     };
     app.prs = vec![
         pr(5, 44, "closed", "failed"),
