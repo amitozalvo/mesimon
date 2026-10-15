@@ -814,14 +814,19 @@ impl Heard {
     /// was held with it), which is also what the crown has now heard.
     fn step_over(&mut self, column: Option<String>) -> Option<CrownWake> {
         let mut wake = self.stepped.take()?;
-        let column = column?;
-        if let Some(to) = wake.to.as_mut() {
+        self.land(&mut wake.to, column?);
+        Some(wake)
+    }
+
+    /// The column a wake's branch is read in, set on the wake and on what
+    /// the crown was told of that same tip, which it has now heard.
+    fn land(&mut self, to: &mut Option<Told>, column: String) {
+        if let Some(to) = to.as_mut() {
             if let Some(told) = self.told.as_mut().filter(|t| t.tip == to.tip) {
                 told.column.clone_from(&column);
             }
             to.column = column;
         }
-        Some(wake)
     }
 }
 
@@ -1401,25 +1406,14 @@ impl Daemon {
             .collect();
         let mut woke = false;
         for worker in over {
-            let Some(Forging { wake, .. }) =
-                self.crown_heard.get_mut(&worker).and_then(|h| h.forging.take())
-            else {
-                continue;
-            };
+            let Some(h) = self.crown_heard.get_mut(&worker) else { continue };
+            let Some(Forging { wake, .. }) = h.forging.take() else { continue };
             let Some(column) = self.board.ticket(worker).map(|t| t.column.clone()) else {
                 continue;
             };
-            // The column the read's arrival left the card in, which is
-            // also what the crown has now heard.
+            // The column the read's arrival left the card in.
             let mut to = wake.to;
-            if let Some(to) = to.as_mut() {
-                if let Some(h) = self.crown_heard.get_mut(&worker) {
-                    if let Some(told) = h.told.as_mut().filter(|t| t.tip == to.tip) {
-                        told.column.clone_from(&column);
-                    }
-                }
-                to.column = column;
-            }
+            h.land(&mut to, column);
             let owed = Owed { finished: wake.finished, linger: None, late: wake.late };
             self.enter_wake(crown, worker, wake.cause, wake.from, to, owed);
             woke = true;
@@ -1467,7 +1461,7 @@ impl Daemon {
             // leaves it (T-778), so the crown hears the delivery; the
             // verdict's age is the pass's concern, not this hold's.
             has_pr: self.forge.has_pr(worker),
-            pr_conflict: self.forge.open_of(worker).iter().any(|p| p.conflict),
+            pr_conflict: self.forge.pr_conflict(worker),
             forge_fresh: true,
         };
         let asked = self.train.asked_tips();

@@ -169,14 +169,7 @@ impl Daemon {
                 .and_then(|h| h.get("board"))
                 .is_none_or(|b| now.duration_since(b.sent) >= SHELF_REFRESH)
         });
-        let working = self.board.sessions.iter().any(|s| {
-            matches!(
-                s.state,
-                SessionState::Spawning
-                    | SessionState::Running
-                    | SessionState::RequiresAction { .. }
-            )
-        });
+        let working = self.board.sessions.iter().any(busy);
         if !(shelf.dirty || stale || working) {
             return;
         }
@@ -335,8 +328,8 @@ impl Daemon {
             }
             spent += size;
             count += 1;
-            if let Some(b) = &body {
-                built.push((name.clone(), plain_size(at, b)));
+            if body.is_some() {
+                built.push((name.clone(), size));
             }
             items.push(Planned { name, key, body, pending: false });
         }
@@ -372,24 +365,21 @@ impl Daemon {
             .saturating_sub(serde_json::to_vec(&notes).map_or(usize::MAX, |b| b.len()) + 1024);
         let mut order: Vec<&api::NoteRow> = rows.iter().skip(1).collect();
         order.sort_by_key(|r| std::cmp::Reverse(r.at));
-        let mut bodies = Vec::new();
-        for row in order {
-            let body = self.control_note(&principal, &ticket, &row.id);
+        // A note's body, where it is one and fits what is left.
+        let mut fit = |id: &str| {
+            let body = self.control_note(&principal, &ticket, id);
             let size = serde_json::to_vec(&body).map_or(usize::MAX, |b| b.len());
-            if matches!(body, Reply::Note { .. }) && size <= budget {
+            (matches!(body, Reply::Note { .. }) && size <= budget).then(|| {
                 budget -= size;
-                bodies.push(body);
-            }
-        }
+                body
+            })
+        };
+        let mut bodies: Vec<Reply> = order.into_iter().filter_map(|row| fit(&row.id)).collect();
         // A description too long to ride with the list was left off it
         // (`control_notes`): it rides as a body, when it fits.
         if description.is_none() {
-            if let Some(first) = rows.first() {
-                let body = self.control_note(&principal, &ticket, &first.id);
-                let size = serde_json::to_vec(&body).map_or(usize::MAX, |b| b.len());
-                if matches!(body, Reply::Note { .. }) && size <= budget {
-                    bodies.insert(0, body);
-                }
+            if let Some(body) = rows.first().and_then(|first| fit(&first.id)) {
+                bodies.insert(0, body);
             }
         }
         Some(Shelved::Notes { ticket, notes, bodies })

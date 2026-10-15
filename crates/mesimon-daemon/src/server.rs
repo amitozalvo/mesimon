@@ -7117,20 +7117,12 @@ impl Daemon {
         if self.agent_tools_for(id) < AgentTools::Full {
             return Vec::new();
         }
-        let unmerged = self.ticket_unmerged(id) || self.open_pr(id).is_some();
-        // Read only when some column asks: a board with the gate off reads
-        // no note here.
-        let unticked = self.board.columns.iter().any(|c| c.settings.requires_ticked)
-            && self.open_boxes(id) > 0;
-        let unpassed = self.board.columns.iter().any(|c| c.settings.requires_pipeline)
-            && self.pipeline_refusal(id).is_some();
+        // `column_gate` reads a note or a transcript only for a column
+        // whose gate asks: a board with the gates off reads none here.
         self.board
             .sorted_columns()
             .into_iter()
-            .filter(|c| c.name != t.column)
-            .filter(|c| !(unmerged && c.settings.requires_merge))
-            .filter(|c| !(unpassed && c.settings.requires_pipeline))
-            .filter(|c| !(unticked && c.settings.requires_ticked))
+            .filter(|c| c.name != t.column && self.column_gate(id, &c.name).is_none())
             .map(|c| c.name.clone())
             .collect()
     }
@@ -9302,16 +9294,13 @@ impl Daemon {
         if self.columns_barred {
             return Err(self.barred_message("columns"));
         }
-        let Some(col) = self.board.column(&column) else {
+        if self.board.column(&column).is_none() {
             return Err(format!("no such column: {column}"));
-        };
+        }
         // A column a ticket only reaches by moving (T-764): every road that
         // mints is refused there, and the refusal names where `o` would file.
-        if col.settings.refuses_new {
-            return Err(match self.board.filing_column(&column) {
-                Some(open) => format!("{column} takes no new tickets: file it in {open}"),
-                None => format!("{column} takes no new tickets"),
-            });
+        if let Some(why) = self.board.filing_refusal(&column) {
+            return Err(why);
         }
         // A title is user text on a card row; scrubbed and bounded here, at
         // the boundary — the composer's own cap is a courtesy a client can lift.
@@ -10086,7 +10075,7 @@ impl Daemon {
         // the forge's PR updates from the branch, and a rebase it never
         // sees is a rebase it never had.
         if matches!(request, mesimon_core::command::MergeRequest::Rebase) {
-            if let Some(pr) = self.forge.open_of(id).first() {
+            if let Some(pr) = self.open_pr(id) {
                 text.push_str(&format!(
                     " Then push with --force-with-lease so {} {} updates.",
                     pr.forge.noun(),
@@ -10105,7 +10094,7 @@ impl Daemon {
         // (2026-09-04). With the forge's conflict on its PR, against that
         // conflict too (T-770): not again until a read finds none.
         if matches!(request, mesimon_core::command::MergeRequest::Rebase) {
-            let conflict = self.forge.open_of(id).iter().any(|p| p.conflict);
+            let conflict = self.forge.pr_conflict(id);
             self.train.record_ask(
                 id,
                 self.base_tip_of(id).to_string(),
@@ -10268,7 +10257,7 @@ impl Daemon {
                         needs_rebase: self.wt_agg.get(t).is_some_and(|a| a.needs_rebase),
                         conflict: self.wt_conflicts.contains(&b.branch),
                         has_pr: self.forge.has_pr(*t),
-                        pr_conflict: self.forge.open_of(*t).iter().any(|p| p.conflict),
+                        pr_conflict: self.forge.pr_conflict(*t),
                         forge_fresh: self.forge_fresh(*t),
                     },
                 )
@@ -13652,19 +13641,7 @@ impl Daemon {
             return;
         }
         let only: std::collections::HashSet<ulid::Ulid> = self.forge.owed.keys().copied().collect();
-        let Some(query) = self.forge_query(Some(&only)) else { return };
-        let floor = Duration::from_millis(crate::forge::BURST_MS);
-        if query.repos.is_empty()
-            || query.repos.iter().any(|r| !self.forge.due_for(&r.key(), floor))
-        {
-            return;
-        }
-        self.forge.burst_inflight = true;
-        self.forge_asked(&query);
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(Msg::ForgeBurst(crate::forge::sample(query, now_ms())));
-        });
+        self.launch_forge_burst(&only, Duration::from_millis(crate::forge::BURST_MS));
     }
 
     /// A pipeline in flight's read (T-781): the tickets whose PR's pipeline
@@ -13680,8 +13657,17 @@ impl Daemon {
         if busy.is_empty() {
             return;
         }
-        let Some(query) = self.forge_query(Some(&busy)) else { return };
-        let floor = crate::forge::busy_every();
+        self.launch_forge_burst(&busy, crate::forge::busy_every());
+    }
+
+    /// The turn's end's road (`Msg::ForgeBurst`) for `only`'s repositories,
+    /// where each was last asked at least `floor` ago.
+    fn launch_forge_burst(
+        &mut self,
+        only: &std::collections::HashSet<ulid::Ulid>,
+        floor: Duration,
+    ) {
+        let Some(query) = self.forge_query(Some(only)) else { return };
         if query.repos.is_empty()
             || query.repos.iter().any(|r| !self.forge.due_for(&r.key(), floor))
         {
@@ -13801,15 +13787,10 @@ impl Daemon {
             {
                 continue;
             }
-            let order = match remote.known_forge() {
-                Some(mesimon_core::forge::Forge::GitHub) => {
-                    vec![mesimon_core::forge::Forge::GitHub]
-                }
-                _ => vec![mesimon_core::forge::Forge::GitLab, mesimon_core::forge::Forge::GitHub],
-            };
-            let candidates: Vec<crate::forge::Cli> = order
-                .into_iter()
-                .filter_map(|f| crate::forge::find_cli(f, path.as_deref()))
+            let candidates: Vec<crate::forge::Cli> = remote
+                .candidates()
+                .iter()
+                .filter_map(|f| crate::forge::find_cli(*f, path.as_deref()))
                 .collect();
             if candidates.is_empty() {
                 self.forge.probes.insert(
@@ -14030,29 +14011,15 @@ impl Daemon {
             }
         }
         changed |= self.forge_arrivals(arrivals);
-        let live: Vec<ulid::Ulid> = self.board.tickets.iter().map(|t| t.id).collect();
-        self.forge.sets.retain(|t, _| live.contains(t));
-        self.forge.at_ms.retain(|t, _| live.contains(t));
-        self.forge.held.retain(|t, _| live.contains(t));
-        self.forge.basis.retain(|t, _| live.contains(t));
-        self.forge.local.retain(|t, _| live.contains(t));
-        self.forge.owed.retain(|t, _| live.contains(t));
+        let live: std::collections::HashSet<ulid::Ulid> =
+            self.board.tickets.iter().map(|t| t.id).collect();
+        self.forge.keep_tickets(&live);
         self.persist_forge();
         let tickets: Vec<ulid::Ulid> = self.wt_repos.keys().copied().collect();
         for t in tickets {
             let Some(mut legs) = self.wt_repos.get(&t).cloned() else { continue };
             if self.forge_fold_legs(t, &mut legs) {
-                let a = worktree::aggregate(&legs);
-                let was = self.wt_agg.get(&t).map(|w| w.merged);
-                let owed = self.crown_heard.get(&t).is_some_and(|h| h.awaits_merge());
-                if a.merged
-                    && self.board.crown.is_some()
-                    && (was == Some(false) || (was.is_none() && owed))
-                {
-                    self.crown_landed.push(t);
-                }
-                changed |= self.wt_agg.get(&t) != Some(&a);
-                self.wt_agg.insert(t, a);
+                changed |= self.set_ticket_agg(t, &legs);
                 self.wt_repos.insert(t, legs);
             }
         }
@@ -14077,7 +14044,7 @@ impl Daemon {
             .train
             .conflict_asked()
             .into_iter()
-            .filter(|t| !self.forge.open_of(*t).iter().any(|p| p.conflict))
+            .filter(|t| !self.forge.pr_conflict(*t))
             .collect();
         let mut memo = false;
         for t in gone {
@@ -14154,33 +14121,55 @@ impl Daemon {
     }
 
     /// The merged clause the forge adds to a ticket's legs (T-739): a leg
-    /// whose repository's newest PR is merged at the leg's tip reads
-    /// merged, landed as that PR's merge commit — in the PR's words though
-    /// the git road read it merged first (T-780). True when a leg changed.
+    /// whose repository's newest PR in `set` is merged at the leg's tip
+    /// reads merged, landed as that PR's merge commit — in the PR's words
+    /// though the git road read it merged first (T-780). True when a leg
+    /// changed.
+    fn fold_set(&self, set: &[mesimon_core::forge::Pr], legs: &mut [worktree::RepoFlags]) -> bool {
+        let mut changed = false;
+        for leg in legs.iter_mut() {
+            let dir = self.leg_dir(&leg.name);
+            let Some(Some(remote)) = self.forge.remotes.get(&dir) else { continue };
+            let Some(pr) = mesimon_core::forge::merged_at(set, &remote.path, &leg.tip) else {
+                continue;
+            };
+            changed |= leg.fold_forge_merge(pr);
+        }
+        changed
+    }
+
+    /// `fold_set` with the ticket's own set.
+    fn forge_fold_legs(&self, t: ulid::Ulid, legs: &mut [worktree::RepoFlags]) -> bool {
+        self.forge.sets.get(&t).is_some_and(|set| self.fold_set(set, legs))
+    }
+
     /// Whether `t`'s legs read merged with `set` folded in as
     /// `forge_fold_legs` will fold it (T-782): the flags' `merged` wake then
     /// carries this pass's merge; on a ticket with a leg still unmerged it
     /// carries none.
     fn forge_lands_all(&self, t: ulid::Ulid, set: &[mesimon_core::forge::Pr]) -> bool {
         let Some(mut legs) = self.wt_repos.get(&t).cloned() else { return false };
-        for leg in legs.iter_mut() {
-            let dir = self.leg_dir(&leg.name);
-            let Some(Some(remote)) = self.forge.remotes.get(&dir) else { continue };
-            if let Some(pr) = mesimon_core::forge::merged_at(set, &remote.path, &leg.tip) {
-                leg.fold_forge_merge(pr);
-            }
-        }
+        self.fold_set(set, &mut legs);
         worktree::aggregate(&legs).merged
     }
 
-    fn forge_fold_legs(&self, t: ulid::Ulid, legs: &mut [worktree::RepoFlags]) -> bool {
-        let mut changed = false;
-        for leg in legs.iter_mut() {
-            let dir = self.leg_dir(&leg.name);
-            let Some(Some(remote)) = self.forge.remotes.get(&dir) else { continue };
-            let Some(pr) = self.forge.merged_at(t, &remote.path, &leg.tip) else { continue };
-            changed |= leg.fold_forge_merge(pr);
+    /// A ticket's legs, read anew, aggregated into `wt_agg`; true when the
+    /// aggregate changed. Unmerged to merged is a landing, whoever made it
+    /// (T-527). A first reading is one only for a branch the crown was
+    /// already told of, or whose delivery is held for the train (T-554):
+    /// the first sample comes a slow bucket after the cut, and a restart,
+    /// which forgets what the crown heard, must not re-hear every branch
+    /// merged before it.
+    fn set_ticket_agg(&mut self, t: ulid::Ulid, legs: &[worktree::RepoFlags]) -> bool {
+        let a = worktree::aggregate(legs);
+        let was = self.wt_agg.get(&t).map(|w| w.merged);
+        let owed = self.crown_heard.get(&t).is_some_and(|h| h.awaits_merge());
+        if a.merged && self.board.crown.is_some() && (was == Some(false) || (was.is_none() && owed))
+        {
+            self.crown_landed.push(t);
         }
+        let changed = self.wt_agg.get(&t) != Some(&a);
+        self.wt_agg.insert(t, a);
         changed
     }
 
@@ -14441,23 +14430,7 @@ impl Daemon {
             // road may not see for lack of a fetch (T-739): the same flag,
             // so the card, the gates, the train and the crown read alike.
             self.forge_fold_legs(t, &mut legs);
-            let a = worktree::aggregate(&legs);
-            let was = self.wt_agg.get(&t).map(|w| w.merged);
-            // Unmerged to merged is a landing, whoever made it (T-527). A
-            // first reading is one only for a branch the crown was already
-            // told of, or whose delivery is held for the train (T-554): the
-            // first sample comes a slow bucket after the cut, and a restart,
-            // which forgets what the crown heard, must not re-hear every
-            // branch merged before it.
-            let owed = self.crown_heard.get(&t).is_some_and(|h| h.awaits_merge());
-            if a.merged
-                && self.board.crown.is_some()
-                && (was == Some(false) || (was.is_none() && owed))
-            {
-                self.crown_landed.push(t);
-            }
-            changed |= self.wt_agg.get(&t) != Some(&a);
-            self.wt_agg.insert(t, a);
+            changed |= self.set_ticket_agg(t, &legs);
             let same_legs = self.wt_repos.get(&t).is_some_and(|old| {
                 old.len() == legs.len()
                     && old.iter().zip(&legs).all(|(o, n)| {

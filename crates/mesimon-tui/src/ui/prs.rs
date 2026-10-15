@@ -28,9 +28,8 @@ pub(super) const EMPTY: &str =
 /// the states line up.
 pub(super) fn rows(app: &App, ticket: ulid::Ulid) -> Vec<ListRow> {
     let theme = &app.theme;
-    let tier = theme.glyph_tier();
     let prs = app.prs_of(ticket);
-    let numbers: Vec<String> = prs.iter().map(|p| super::ticket::pr_number(p)).collect();
+    let numbers: Vec<String> = prs.iter().map(|p| p.label()).collect();
     let repos: Vec<String> =
         prs.iter().map(|p| crate::text::one_line(&scrub_cells(&p.repo, false))).collect();
     let num_w = numbers.iter().map(|n| n.width()).max().unwrap_or(0);
@@ -38,13 +37,7 @@ pub(super) fn rows(app: &App, ticket: ulid::Ulid) -> Vec<ListRow> {
     prs.iter()
         .zip(numbers.iter().zip(&repos))
         .map(|(p, (number, repo))| {
-            let (mark, reg) = crate::glyphs::pr_mark(
-                tier,
-                &p.state,
-                &p.pipeline,
-                !p.deployed.is_empty(),
-                app.spin_frame(),
-            );
+            let (mark, reg) = app.pr_mark(p);
             let mut words = vec![p.state.clone()];
             words.extend(super::ticket::pr_clauses(p));
             let repo = truncate(repo, repo_w);

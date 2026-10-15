@@ -68,22 +68,23 @@ impl Cli {
     }
 }
 
-/// `MESIMON_FORGE_EVERY_MS`: the sample cadence, a test seam.
-pub fn every() -> Duration {
-    std::env::var("MESIMON_FORGE_EVERY_MS")
+/// A cadence in milliseconds from a test seam, else `default`.
+fn seam_ms(var: &str, default: Duration) -> Duration {
+    std::env::var(var)
         .ok()
         .and_then(|v| v.parse().ok())
         .map(Duration::from_millis)
-        .unwrap_or(EVERY)
+        .unwrap_or(default)
+}
+
+/// `MESIMON_FORGE_EVERY_MS`: the sample cadence, a test seam.
+pub fn every() -> Duration {
+    seam_ms("MESIMON_FORGE_EVERY_MS", EVERY)
 }
 
 /// `MESIMON_FORGE_BUSY_MS`: the busy cadence, a test seam.
 pub fn busy_every() -> Duration {
-    std::env::var("MESIMON_FORGE_BUSY_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .map(Duration::from_millis)
-        .unwrap_or(BUSY_EVERY)
+    seam_ms("MESIMON_FORGE_BUSY_MS", BUSY_EVERY)
 }
 
 /// `gh` or `glab` on the captured shell `PATH`, else the daemon's own.
@@ -125,6 +126,16 @@ pub struct RepoQuery {
 impl RepoQuery {
     pub fn key(&self) -> String {
         format!("{}/{}", self.remote.host, self.remote.path)
+    }
+
+    /// One `api` read of `path` on the repository's host.
+    fn api(&self, path: &str) -> Result<String, String> {
+        run(&self.cli.bin, &["api", "--hostname", &self.remote.host, path], Some(&self.dir))
+    }
+
+    /// The repository's path as GitLab's API names a project.
+    fn project(&self) -> String {
+        self.remote.path.replace('/', "%2F")
     }
 }
 
@@ -243,18 +254,13 @@ pub struct Conflict {
 
 impl Edge {
     pub fn any(&self) -> bool {
-        !self.opened.is_empty()
-            || !self.bound.is_empty()
-            || self.passed
-            || self.merged
-            || !self.landed.is_empty()
-            || !self.deployed.is_empty()
-            || !self.reached.is_empty()
-            || self.failed.is_some()
-            || self.waiting.is_some()
-            || !self.stopped.is_empty()
-            || !self.conflict.is_empty()
-            || !self.review.is_empty()
+        *self != Edge::default()
+    }
+
+    /// The openings in the crown's words (T-773): `opened !2`, said only
+    /// on the wake of the turn that opened them.
+    pub fn opening(&self) -> Vec<String> {
+        self.opened.iter().map(|l| format!("opened {l}")).collect()
     }
 
     /// What the crown hears of the edge (T-744), one phrase per edge, each
@@ -264,17 +270,12 @@ impl Edge {
     /// `pipeline failed !1: test-linux`, in the forge's order: merged, then
     /// the pipelines, then deployed, then waiting (T-769, T-782) — a merge
     /// commit's deployment ran before the job its pipeline now waits on.
-    /// Never an opening, which wakes
-    /// no one by itself: the worker's turn end carries it (`opening`,
-    /// T-773). A newly bound PR's settled state is said (T-769). A merge is said only where the caller left it in `landed`:
-    /// the flags' merged wake says the one that lands the worktree's branch
-    /// (T-757). `new` is the read the edge was taken on, for the labels.
-    /// The openings in the crown's words (T-773): `opened !2`, said only
-    /// on the wake of the turn that opened them.
-    pub fn opening(&self) -> Vec<String> {
-        self.opened.iter().map(|l| format!("opened {l}")).collect()
-    }
-
+    /// Never an opening, which wakes no one by itself: the worker's turn
+    /// end carries it (`opening`, T-773). A newly bound PR's settled state
+    /// is said (T-769). A merge is said only where the caller left it in
+    /// `landed`: the flags' merged wake says the one that lands the
+    /// worktree's branch (T-757). `new` is the read the edge was taken on,
+    /// for the labels.
     pub fn news(&self, new: &[Pr]) -> Vec<String> {
         let labels = |pick: &dyn Fn(&Pr) -> bool| -> String {
             new.iter().filter(|p| pick(p)).map(Pr::label).collect::<Vec<_>>().join(" ")
@@ -283,11 +284,7 @@ impl Edge {
             |label: String| if label.is_empty() { String::new() } else { format!(" {label}") };
         let mut out: Vec<String> = self.landed.iter().map(|l| format!("merged {l}")).collect();
         if let Some(job) = &self.failed {
-            let label = labels(&|p| matches!(p.pipeline, Pipeline::Failed(_)));
-            match forge::job_word(job) {
-                j if j.is_empty() => out.push(format!("pipeline failed{}", tail(label))),
-                j => out.push(format!("pipeline failed{}: {j}", tail(label))),
-            }
+            out.push(failed_words(&labels(&|p| matches!(p.pipeline, Pipeline::Failed(_))), job));
         }
         if self.passed {
             out.push(format!("pipeline passed{}", tail(labels(&|p| p.state.is_open()))));
@@ -297,10 +294,9 @@ impl Edge {
         for (label, pipeline) in &self.bound {
             match pipeline {
                 Pipeline::Passed if !self.passed => out.push(format!("pipeline passed {label}")),
-                Pipeline::Failed(job) if self.failed.is_none() => match forge::job_word(job) {
-                    j if j.is_empty() => out.push(format!("pipeline failed {label}")),
-                    j => out.push(format!("pipeline failed {label}: {j}")),
-                },
+                Pipeline::Failed(job) if self.failed.is_none() => {
+                    out.push(failed_words(label, job))
+                }
                 _ => {}
             }
         }
@@ -384,11 +380,9 @@ pub fn edge(old: &[Pr], new: &[Pr], held: &[(String, u64)]) -> Edge {
             Pipeline::None
         }
     };
-    let (then_open, now_open) = (open_of(old), open_of(new));
     // The open set's own: a merged commit's pipeline passing is its deploy
     // run finishing, never a ticket's pipeline passing (T-767).
-    let open_passed =
-        |s: &[Pr]| s.iter().any(|p| p.state.is_open()) && forge::pipeline_of(s) == Pipeline::Passed;
+    let (then_open, now_open) = (open_of(old), open_of(new));
     // An open PR read open before too: its conflict and its review are
     // edges between the two reads. One newly bound says them as they stand.
     let kept: Vec<(&Pr, &Pr)> = new
@@ -408,8 +402,9 @@ pub fn edge(old: &[Pr], new: &[Pr], held: &[(String, u64)]) -> Edge {
             .collect(),
         // A PR whose head moved since (T-780) runs a new commit's pipeline:
         // its pass is an edge though the last read's passed too.
-        passed: open_passed(new)
-            && (!open_passed(old) || kept.iter().any(|(o, p)| o.head_oid != p.head_oid)),
+        passed: now_open == Pipeline::Passed
+            && (then_open != Pipeline::Passed
+                || kept.iter().any(|(o, p)| o.head_oid != p.head_oid)),
         merged: all_merged(new) && !all_merged(old),
         landed: new
             .iter()
@@ -577,21 +572,14 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
     }
     let mut prs: Vec<Pr> = Vec::new();
     for r in &q.repos {
-        match list(r) {
+        let error = match list(r) {
             Ok(mut found) => {
                 prs.append(&mut found);
-                out.repos.push(RepoReport {
-                    key: r.key(),
-                    path: r.remote.path.clone(),
-                    error: None,
-                });
+                None
             }
-            Err(e) => out.repos.push(RepoReport {
-                key: r.key(),
-                path: r.remote.path.clone(),
-                error: Some(e),
-            }),
-        }
+            Err(e) => Some(e),
+        };
+        out.repos.push(RepoReport { key: r.key(), path: r.remote.path.clone(), error });
     }
     for (t, logs) in q.tickets.iter().zip(logs) {
         let facts = Facts {
@@ -715,11 +703,7 @@ pub fn list_probed(q: &mut Query, answered: &[(String, HostProbe)]) {
 /// username beside it where the CLI needs one.
 fn probe_host(host: &str, candidates: &[Cli]) -> HostProbe {
     for c in candidates {
-        let ok = match c.forge {
-            Forge::GitHub => run(&c.bin, &["auth", "status", "--hostname", host], None).is_ok(),
-            Forge::GitLab => run(&c.bin, &["auth", "status", "--hostname", host], None).is_ok(),
-        };
-        if !ok {
+        if run(&c.bin, &["auth", "status", "--hostname", host], None).is_err() {
             continue;
         }
         let viewer = match c.forge {
@@ -738,7 +722,7 @@ fn probe_host(host: &str, candidates: &[Cli]) -> HostProbe {
 fn list(r: &RepoQuery) -> Result<Vec<Pr>, String> {
     match r.cli.forge {
         Forge::GitHub => {
-            let repo = format!("{}/{}", r.remote.host, r.remote.path);
+            let repo = r.key();
             let out = run(
                 &r.cli.bin,
                 &[
@@ -793,24 +777,19 @@ fn list(r: &RepoQuery) -> Result<Vec<Pr>, String> {
 /// One open MR read by itself (T-784, T-787). `None` when the call fails or
 /// says something else: the list's row stands, and the pipeline gate holds it.
 fn gitlab_mr(r: &RepoQuery, iid: u64) -> Option<forge::MrRead> {
-    let project = r.remote.path.replace('/', "%2F");
-    let path = format!("projects/{project}/merge_requests/{iid}");
-    let out = run(&r.cli.bin, &["api", "--hostname", &r.remote.host, &path], Some(&r.dir)).ok()?;
+    let out = r.api(&format!("projects/{}/merge_requests/{iid}", r.project())).ok()?;
     forge::parse_glab_mr(&r.remote.path, &out).filter(|m| m.pr.number == iid)
 }
 
 /// A GitLab commit's newest pipeline, by sha. `Unknown` when the call
 /// fails: never read as green.
 fn gitlab_pipeline(r: &RepoQuery, sha: &str) -> Pipeline {
-    let project = r.remote.path.replace('/', "%2F");
-    let path = format!("projects/{project}/pipelines?sha={sha}&per_page=1");
-    let Ok(out) = run(&r.cli.bin, &["api", "--hostname", &r.remote.host, &path], Some(&r.dir))
-    else {
+    let Ok(out) = r.api(&format!("projects/{}/pipelines?sha={sha}&per_page=1", r.project())) else {
         return Pipeline::Unknown;
     };
-    match forge::gitlab_pipeline_id(&out) {
-        Some(id) => named_job(r, forge::parse_gitlab_pipelines(&out), id),
-        None => forge::parse_gitlab_pipelines(&out),
+    match forge::parse_gitlab_pipelines(&out) {
+        (pipeline, Some(id)) => named_job(r, pipeline, id),
+        (pipeline, None) => pipeline,
     }
 }
 
@@ -818,9 +797,7 @@ fn gitlab_pipeline(r: &RepoQuery, sha: &str) -> Pipeline {
 /// jobs (T-772, T-794); a failed read, or any other word, leaves it as it is.
 fn named_job(r: &RepoQuery, pipeline: Pipeline, id: u64) -> Pipeline {
     let Some(status) = pipeline.gitlab_job_status() else { return pipeline };
-    let project = r.remote.path.replace('/', "%2F");
-    let path = format!("projects/{project}/pipelines/{id}/jobs?per_page=100");
-    match run(&r.cli.bin, &["api", "--hostname", &r.remote.host, &path], Some(&r.dir)) {
+    match r.api(&format!("projects/{}/pipelines/{id}/jobs?per_page=100", r.project())) {
         Ok(jobs) => pipeline.with_job(forge::parse_gitlab_job(&jobs, status)),
         Err(_) => pipeline,
     }
@@ -831,8 +808,7 @@ fn named_job(r: &RepoQuery, pipeline: Pipeline, id: u64) -> Pipeline {
 fn commit_pipeline(r: &RepoQuery, oid: &str) -> Pipeline {
     match r.cli.forge {
         Forge::GitHub => {
-            let path = format!("repos/{}/commits/{oid}/check-runs?per_page=100", r.remote.path);
-            match run(&r.cli.bin, &["api", "--hostname", &r.remote.host, &path], Some(&r.dir)) {
+            match r.api(&format!("repos/{}/commits/{oid}/check-runs?per_page=100", r.remote.path)) {
                 Ok(out) => forge::parse_gh_check_runs(&out),
                 Err(_) => Pipeline::Unknown,
             }
@@ -849,9 +825,8 @@ fn deployments(r: &RepoQuery, oid: &str, envs: &[String]) -> Vec<String> {
     let mut out: Vec<(String, u64)> = Vec::new();
     match r.cli.forge {
         Forge::GitHub => {
-            let path = format!("repos/{}/deployments?sha={oid}&per_page=30", r.remote.path);
             let Ok(list) =
-                run(&r.cli.bin, &["api", "--hostname", &r.remote.host, &path], Some(&r.dir))
+                r.api(&format!("repos/{}/deployments?sha={oid}&per_page=30", r.remote.path))
             else {
                 return Vec::new();
             };
@@ -860,9 +835,7 @@ fn deployments(r: &RepoQuery, oid: &str, envs: &[String]) -> Vec<String> {
                     continue;
                 }
                 let path = format!("repos/{}/deployments/{id}/statuses?per_page=1", r.remote.path);
-                if let Ok(status) =
-                    run(&r.cli.bin, &["api", "--hostname", &r.remote.host, &path], Some(&r.dir))
-                {
+                if let Ok(status) = r.api(&path) {
                     if let Some(at) = forge::parse_gh_deployment_success(&status) {
                         out.push((env, at));
                     }
@@ -870,15 +843,13 @@ fn deployments(r: &RepoQuery, oid: &str, envs: &[String]) -> Vec<String> {
             }
         }
         Forge::GitLab => {
-            let project = r.remote.path.replace('/', "%2F");
+            let project = r.project();
             for env in envs {
                 let path = format!(
                     "projects/{project}/deployments?environment={env}&status=success\
                      &order_by=created_at&sort=desc&per_page=20"
                 );
-                if let Ok(list) =
-                    run(&r.cli.bin, &["api", "--hostname", &r.remote.host, &path], Some(&r.dir))
-                {
+                if let Ok(list) = r.api(&path) {
                     if let Some(at) = forge::parse_gitlab_deployed(&list, oid) {
                         out.push((env.clone(), at));
                     }
@@ -1084,11 +1055,6 @@ pub struct State {
 }
 
 impl State {
-    /// The CLI a host is read through, if the probe said one.
-    pub fn cli_for(&self, host: &str) -> Option<&Cli> {
-        self.probes.get(host).and_then(|p| p.cli.as_ref())
-    }
-
     /// Whether `set` holds an open PR its ticket's reads never held
     /// (T-767), remembering every PR of it.
     pub fn opens(&mut self, t: ulid::Ulid, set: &[Pr]) -> bool {
@@ -1218,12 +1184,20 @@ impl State {
             && opened.iter().all(|u| basis.opened.iter().any(|b| forge::same_url(b, u)))
     }
 
-    /// The open PRs of a ticket's set.
-    pub fn open_of(&self, ticket: ulid::Ulid) -> Vec<&Pr> {
-        self.sets
-            .get(&ticket)
-            .map(|s| s.iter().filter(|p| p.state.is_open()).collect())
-            .unwrap_or_default()
+    /// Forgets every ticket not in `live`, in each per-ticket map.
+    pub fn keep_tickets(&mut self, live: &HashSet<ulid::Ulid>) {
+        self.sets.retain(|t, _| live.contains(t));
+        self.at_ms.retain(|t, _| live.contains(t));
+        self.held.retain(|t, _| live.contains(t));
+        self.conflicted.retain(|t, _| live.contains(t));
+        self.basis.retain(|t, _| live.contains(t));
+        self.local.retain(|t, _| live.contains(t));
+        self.owed.retain(|t, _| live.contains(t));
+    }
+
+    /// Whether an open PR of the ticket's set has the forge's conflict.
+    pub fn pr_conflict(&self, ticket: ulid::Ulid) -> bool {
+        self.sets.get(&ticket).is_some_and(|s| s.iter().any(|p| p.state.is_open() && p.conflict))
     }
 
     /// Any PR bound to the ticket, open, merged or closed (T-778): its
@@ -1299,7 +1273,7 @@ impl PrRecord {
         Some(Pr {
             forge: Forge::from_word(&self.forge)?,
             state: PrState::from_word(&self.state)?,
-            pipeline: Pipeline::from_words(&self.pipeline, Some(&self.job)),
+            pipeline: Pipeline::from_words(&self.pipeline, &self.job),
             review: Review::from_word(&self.review),
             repo: self.repo,
             number: self.number,
@@ -1416,7 +1390,7 @@ impl State {
         }
         for c in file.commits {
             let key = (c.repo, c.oid);
-            match Pipeline::from_words(&c.pipeline, Some(&c.job)) {
+            match Pipeline::from_words(&c.pipeline, &c.job) {
                 Pipeline::Unknown => {}
                 p => {
                     self.commit_pipelines.insert(key.clone(), p);
@@ -1453,6 +1427,16 @@ pub fn carry(old: Option<&[Pr]>, new: Vec<Pr>, failed: &[&str]) -> Vec<Pr> {
     forge::ticket_set(set)
 }
 
+/// `pipeline failed !1: test-linux`, bare where no job is named, and with
+/// no label where none is.
+fn failed_words(label: &str, job: &str) -> String {
+    let at = if label.is_empty() { String::new() } else { format!(" {label}") };
+    match forge::job_word(job) {
+        j if j.is_empty() => format!("pipeline failed{at}"),
+        j => format!("pipeline failed{at}: {j}"),
+    }
+}
+
 /// The feed's words for what changed in a ticket's set between two reads:
 /// a PR newly bound, one merged or closed, a pipeline that failed or
 /// passed. Nothing on the first read, which would say every old PR over.
@@ -1469,13 +1453,7 @@ pub fn delta(old: Option<&[Pr]>, new: &[Pr]) -> Vec<String> {
                 }
                 if was.pipeline != pr.pipeline {
                     match &pr.pipeline {
-                        Pipeline::Failed(job) if job.is_empty() => {
-                            out.push(format!("pipeline failed {label}"))
-                        }
-                        Pipeline::Failed(job) => out.push(format!(
-                            "pipeline failed {label}: {}",
-                            mesimon_core::text::scrub_text(job)
-                        )),
+                        Pipeline::Failed(job) => out.push(failed_words(&label, job)),
                         Pipeline::Passed if was.pipeline != Pipeline::None => {
                             out.push(format!("pipeline passed {label}"))
                         }

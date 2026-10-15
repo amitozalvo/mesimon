@@ -2199,15 +2199,6 @@ impl Theme {
         ('▎', Style::default().fg(self.bar_cursor))
     }
 
-    /// The card row's progress underline (T-696): the ticket's summary
-    /// boxes as a run from the cell after the bar's pad to the age, the
-    /// done share in the calm register — the done mark's own ink, never
-    /// the accent — and the rest, the track, in `dim3` on the row's ramp.
-    /// The underline channel is free on the row (tags spend it on the
-    /// bar's two cells, below TrueColor only). Where the terminal cannot
-    /// colour an underline the track would be as loud as the run, so the
-    /// 16-colour tier draws the run alone, plain; the ladder tiers draw
-    /// nothing and the open card's rows carry the count there.
     /// The underline one cell of the row wears for `count` (T-696): the
     /// done share of `cells` as the run, the rest as the track, by
     /// [`Theme::summary_under`]. `None` where the tier draws none.
@@ -2223,11 +2214,6 @@ impl Theme {
         self.summary_under(cursorish, cell < done_cells)
     }
 
-    /// How long a change to the boxes plays on the row (T-696): the
-    /// crowning's wave (T-442) crosses the row once, revealing the new run
-    /// behind its head; when the change ticked the last box it crosses a
-    /// second time over the finished run, the glint that says done. The
-    /// first read (`before` none) crosses once whatever it reveals.
     /// One cell of a resting card's new reply (T-720), `elapsed` after the
     /// reply was seen arrive, in a row `cells` wide: `None` ahead of the
     /// front (the cell is not written yet), the row's quiet ink once the
@@ -2306,6 +2292,11 @@ impl Theme {
         })
     }
 
+    /// How long a change to the boxes plays on the row (T-696): the
+    /// crowning's wave (T-442) crosses the row once, revealing the new run
+    /// behind its head; when the change ticked the last box it crosses a
+    /// second time over the finished run, the glint that says done. The
+    /// first read (`before` none) crosses once whatever it reveals.
     pub fn summary_pulse_ms(
         before: Option<mesimon_core::summary::Count>,
         after: mesimon_core::summary::Count,
@@ -2390,6 +2381,15 @@ impl Theme {
         Some(settled.underline_color(mix(ramp.base, cool, k)))
     }
 
+    /// The card row's progress underline (T-696): the ticket's summary
+    /// boxes as a run from the cell after the bar's pad to the age, the
+    /// done share in the calm register — the done mark's own ink, never
+    /// the accent — and the rest, the track, in `dim3` on the row's ramp.
+    /// The underline channel is free on the row (tags spend it on the
+    /// bar's two cells, below TrueColor only). Where the terminal cannot
+    /// colour an underline the track would be as loud as the run, so the
+    /// 16-colour tier draws the run alone, plain; the ladder tiers draw
+    /// nothing and the open card's rows carry the count there.
     pub fn summary_under(&self, cursorish: bool, done: bool) -> Option<Style> {
         let ramp = if cursorish { &self.sel } else { &self.rest };
         match self.profile {

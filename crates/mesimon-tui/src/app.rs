@@ -661,6 +661,18 @@ pub const GLIDE: Duration = GROW;
 const LAYOUT_FLASH_PHASE: Duration = Duration::from_millis(400);
 const LAYOUT_FLASH_PHASES: u32 = 3;
 
+/// Is a flash begun `at` still running?
+fn flash_running(at: Instant) -> bool {
+    at.elapsed() < LAYOUT_FLASH_PHASE * LAYOUT_FLASH_PHASES
+}
+
+/// Is a flash begun `at` running, in a lit phase?
+fn flash_lit(at: Instant) -> bool {
+    let elapsed = at.elapsed();
+    elapsed < LAYOUT_FLASH_PHASE * LAYOUT_FLASH_PHASES
+        && (elapsed.as_millis() / LAYOUT_FLASH_PHASE.as_millis()).is_multiple_of(2)
+}
+
 /// How far a motion that began at `at` and lasts `over` has come, 0.0 to
 /// 1.0, `None` once landed. Eased out: it leaves fast and settles gently.
 fn eased(at: Instant, over: Duration) -> Option<f32> {
@@ -2161,11 +2173,6 @@ impl App {
         self.selected_ticket().map(|t| t.title.as_str())
     }
 
-    /// Is a text field taking the keys right now?
-    pub(crate) fn typing_now(&self) -> bool {
-        self.text_field()
-    }
-
     /// Let the practice board's copy reach the clipboard: the person trying
     /// a lesson pressed the key themselves.
     pub(crate) fn practice_copies(&mut self, on: bool) {
@@ -2304,7 +2311,7 @@ impl App {
 
     /// Is the layout pause's flash still running?
     fn layout_flashing(&self) -> bool {
-        self.layout_flash.is_some_and(|at| at.elapsed() < LAYOUT_FLASH_PHASE * LAYOUT_FLASH_PHASES)
+        self.layout_flash.is_some_and(flash_running)
     }
 
     /// Whether the footer's pause sentence is in a lit phase of its flash
@@ -2312,10 +2319,7 @@ impl App {
     /// the sentence rests bold. Counted from the refusal, not the frame
     /// clock, so every no starts lit.
     pub(crate) fn layout_flash_lit(&self) -> bool {
-        self.layout_flashing()
-            && self.layout_flash.is_some_and(|at| {
-                (at.elapsed().as_millis() / LAYOUT_FLASH_PHASE.as_millis()).is_multiple_of(2)
-            })
+        self.layout_flash.is_some_and(flash_lit)
     }
 
     /// Say a refusal in the footer and flash it (T-764): the layout pause's
@@ -2326,17 +2330,16 @@ impl App {
     }
 
     fn status_flashing(&self) -> bool {
-        self.status_flash.as_ref().is_some_and(|(words, at)| {
-            *words == self.status && at.elapsed() < LAYOUT_FLASH_PHASE * LAYOUT_FLASH_PHASES
-        })
+        self.status_flash
+            .as_ref()
+            .is_some_and(|(words, at)| *words == self.status && flash_running(*at))
     }
 
     /// Whether the footer's status is in a lit phase of its flash.
     pub(crate) fn status_flash_lit(&self) -> bool {
-        self.status_flashing()
-            && self.status_flash.as_ref().is_some_and(|(_, at)| {
-                (at.elapsed().as_millis() / LAYOUT_FLASH_PHASE.as_millis()).is_multiple_of(2)
-            })
+        self.status_flash
+            .as_ref()
+            .is_some_and(|(words, at)| *words == self.status && flash_lit(*at))
     }
 
     /// How long ago `id` was crowned, while the crowning still runs on it
@@ -2415,6 +2418,22 @@ impl App {
                 0
             }
         }
+    }
+
+    /// A pull request's mark and its register, on this draw's tier and
+    /// frame (`glyphs::pr_mark`).
+    pub(crate) fn pr_mark(
+        &self,
+        p: &mesimon_core::command::PrItem,
+    ) -> (char, crate::glyphs::Register) {
+        let tier = self.theme.glyph_tier();
+        crate::glyphs::pr_mark(
+            tier,
+            &p.state,
+            &p.pipeline,
+            !p.deployed.is_empty(),
+            self.spin_frame(),
+        )
     }
 
     /// The working-spinner frame for this draw. The event loop redraws at
@@ -4089,20 +4108,11 @@ impl App {
             }
             _ => {}
         }
-        let tier = self.theme.glyph_tier();
-        let frame = self.spin_frame();
         self.prs_of(ticket)
             .iter()
             .map(|p| {
-                let (mark, reg) = crate::glyphs::pr_mark(
-                    tier,
-                    &p.state,
-                    &p.pipeline,
-                    !p.deployed.is_empty(),
-                    frame,
-                );
-                let sign = if p.forge == "gitlab" { '!' } else { '#' };
-                (format!("{mark}{sign}{}", p.number), reg)
+                let (mark, reg) = self.pr_mark(p);
+                (format!("{mark}{}", p.label()), reg)
             })
             .collect()
     }
@@ -5550,7 +5560,7 @@ impl App {
     /// query and the in-place fields of the dialogs, which is each barrier
     /// `handle_key_inner` routes before the keymap. Hebrew there is a
     /// title's letters, not a stray key, so the layout pause is not read.
-    fn text_field(&self) -> bool {
+    pub(crate) fn text_field(&self) -> bool {
         self.typing()
             || matches!(
                 self.mode,
@@ -12777,9 +12787,8 @@ impl App {
             if out.iter().any(|l| l.target == LinkTarget::Url(p.url.clone())) {
                 continue;
             }
-            let noun = if p.forge == "gitlab" { "MR !" } else { "PR #" };
             out.push(TicketLink {
-                label: Some(format!("{noun}{} {}", p.number, p.state)),
+                label: Some(format!("{} {} {}", p.forge_kind().noun(), p.label(), p.state)),
                 text: p.url.clone(),
                 target: LinkTarget::Url(p.url.clone()),
             });

@@ -2485,6 +2485,18 @@ impl Board {
             .map(|c| c.name.clone())
     }
 
+    /// Why a ticket may not be filed in `name` (T-764), naming where `o`
+    /// would file it: `None` where the column takes new tickets.
+    pub fn filing_refusal(&self, name: &str) -> Option<String> {
+        if !self.column(name)?.settings.refuses_new {
+            return None;
+        }
+        Some(match self.filing_column(name) {
+            Some(open) => format!("{name} takes no new tickets: file it in {open}"),
+            None => format!("{name} takes no new tickets"),
+        })
+    }
+
     /// Choose the landing column, or `None` to go back to the first column.
     /// Refused for a name the board does not have: a dangling default would
     /// read as the first column and the Settings row would say otherwise.

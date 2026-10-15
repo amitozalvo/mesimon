@@ -68,14 +68,14 @@ impl TicketSummary {
         let open = self.rows.iter().filter(|r| r.done == Some(false));
         let ticked = self.rows.iter().filter(|r| r.done == Some(true));
         let boxes: Vec<&SummaryRow> = open.chain(ticked).take(n).collect();
-        let hidden: Vec<Row> = self
-            .rows
-            .iter()
-            .filter(|r| r.done.is_some() && !boxes.iter().any(|b| std::ptr::eq(*b, *r)))
-            .map(|r| Row { line: r.line, text: String::new(), done: r.done })
-            .collect();
+        let hidden = Count::of_marks(
+            self.rows
+                .iter()
+                .filter(|r| !boxes.iter().any(|b| std::ptr::eq(*b, *r)))
+                .map(|r| r.done),
+        );
         shown.extend(boxes);
-        let fold = (!hidden.is_empty()).then(|| (hidden.len(), Count::of(&hidden).state()));
+        let fold = (hidden.total > 0).then(|| (hidden.total, hidden.state()));
         (shown, fold)
     }
 }
@@ -110,14 +110,13 @@ impl App {
         let Some(t) = self.board.ticket(ticket) else {
             return Count::default();
         };
-        let rows: Vec<Row> = t
-            .notes
-            .iter()
-            .filter_map(|n| self.summaries.get(&n.id))
-            .filter_map(|s| s.rows.as_ref())
-            .flat_map(|rows| rows.iter().cloned())
-            .collect();
-        Count::of(&rows)
+        Count::of_marks(
+            t.notes
+                .iter()
+                .filter_map(|n| self.summaries.get(&n.id))
+                .filter_map(|s| s.rows.as_ref())
+                .flat_map(|rows| rows.iter().map(|r| r.done)),
+        )
     }
 
     /// The change playing on this card, if one is: how long ago it landed
@@ -156,13 +155,7 @@ impl App {
         if rows.is_empty() {
             return None;
         }
-        let count = rows.iter().fold(Count::default(), |mut c, r| {
-            if let Some(d) = r.done {
-                c.total += 1;
-                c.done += usize::from(d);
-            }
-            c
-        });
+        let count = Count::of_marks(rows.iter().map(|r| r.done));
         Some(TicketSummary { rows, count })
     }
 

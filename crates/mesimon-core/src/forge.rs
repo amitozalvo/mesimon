@@ -148,8 +148,8 @@ impl Pipeline {
         }
     }
 
-    pub fn from_words(word: &str, job: Option<&str>) -> Pipeline {
-        let job = job.unwrap_or_default().to_string();
+    pub fn from_words(word: &str, job: &str) -> Pipeline {
+        let job = job.to_string();
         match word {
             "none" => Pipeline::None,
             "passed" => Pipeline::Passed,
@@ -427,22 +427,16 @@ fn glab_mr(repo: &str, v: &Value) -> Option<Pr> {
 }
 
 /// The one `pipeline` word for GitLab's `pipelines?sha=` answer: the newest
-/// pipeline's status. GitLab names no job on this road: a wait or a
-/// failure reads bare until the pipeline's jobs are read
-/// (`gitlab_pipeline_id`, `parse_gitlab_job`).
-pub fn parse_gitlab_pipelines(json: &str) -> Pipeline {
+/// pipeline's status, and its id for the read of its jobs (T-772). GitLab
+/// names no job on this road: a wait or a failure reads bare until the
+/// pipeline's jobs are read (`parse_gitlab_job`).
+pub fn parse_gitlab_pipelines(json: &str) -> (Pipeline, Option<u64>) {
     let Ok(Value::Array(items)) = serde_json::from_str::<Value>(json) else {
-        return Pipeline::Unknown;
+        return (Pipeline::Unknown, None);
     };
-    let Some(first) = items.first() else { return Pipeline::None };
-    gitlab_status(first.get("status").and_then(Value::as_str).unwrap_or_default())
-}
-
-/// The newest pipeline's id in GitLab's `pipelines?sha=` answer, for the
-/// read of its jobs (T-772).
-pub fn gitlab_pipeline_id(json: &str) -> Option<u64> {
-    let Ok(Value::Array(items)) = serde_json::from_str::<Value>(json) else { return None };
-    items.first()?.get("id")?.as_u64()
+    let Some(first) = items.first() else { return (Pipeline::None, None) };
+    let status = gitlab_status(first.get("status").and_then(Value::as_str).unwrap_or_default());
+    (status, first.get("id").and_then(Value::as_u64))
 }
 
 /// The job a GitLab pipeline stopped on, out of its `pipelines/:id/jobs`
@@ -674,6 +668,15 @@ impl Remote {
     /// github.com is GitHub; any other host is asked of both CLIs.
     pub fn known_forge(&self) -> Option<Forge> {
         (self.host == "github.com").then_some(Forge::GitHub)
+    }
+
+    /// The forges whose CLI is asked of the host, in order: GitHub's alone
+    /// for github.com, any other host GitLab's and then GitHub's.
+    pub fn candidates(&self) -> &'static [Forge] {
+        match self.known_forge() {
+            Some(Forge::GitHub) => &[Forge::GitHub],
+            _ => &[Forge::GitLab, Forge::GitHub],
+        }
     }
 }
 
@@ -1092,14 +1095,14 @@ mod tests {
             "a fast-forward or semi-linear squash has no merge commit: the squash sha landed"
         );
         assert_eq!(
-            parse_gitlab_pipelines(r#"[{"status":"manual"}]"#),
+            parse_gitlab_pipelines(r#"[{"status":"manual"}]"#).0,
             Pipeline::Waiting(String::new())
         );
         assert_eq!(
-            parse_gitlab_pipelines(r#"[{"status":"success"},{"status":"failed"}]"#),
+            parse_gitlab_pipelines(r#"[{"status":"success"},{"status":"failed"}]"#).0,
             Pipeline::Passed
         );
-        assert_eq!(parse_gitlab_pipelines("[]"), Pipeline::None);
+        assert_eq!(parse_gitlab_pipelines("[]"), (Pipeline::None, None));
         assert_eq!(gitlab_status("running"), Pipeline::Running(String::new()));
         assert_eq!(gitlab_status("failed"), Pipeline::Failed(String::new()));
     }
@@ -1194,8 +1197,10 @@ mod tests {
 
     #[test]
     fn a_gitlab_pipeline_names_the_job_it_stopped_on() {
-        assert_eq!(gitlab_pipeline_id(r#"[{"id":44,"status":"manual"},{"id":43}]"#), Some(44));
-        assert_eq!(gitlab_pipeline_id("[]"), None);
+        assert_eq!(
+            parse_gitlab_pipelines(r#"[{"id":44,"status":"manual"},{"id":43}]"#),
+            (Pipeline::Waiting(String::new()), Some(44))
+        );
         let jobs = r#"[{"name":"test","status":"success"},
             {"name":"lint","status":"failed","allow_failure":true},
             {"name":"deploy:production","status":"manual"},
@@ -1413,8 +1418,8 @@ mod tests {
         assert_eq!(iso_ms(Some(&v("2026-10-13T05:56:17.123Z"))), 1_791_870_977_000);
         assert_eq!(iso_ms(Some(&v("nope"))), 0);
         assert_eq!(iso_ms(None), 0);
-        assert_eq!(Pipeline::from_words("failed", Some("t")), Pipeline::Failed("t".into()));
-        assert_eq!(Pipeline::from_words("later", None), Pipeline::Unknown);
+        assert_eq!(Pipeline::from_words("failed", "t"), Pipeline::Failed("t".into()));
+        assert_eq!(Pipeline::from_words("later", ""), Pipeline::Unknown);
         assert_eq!(PrState::from_word("open"), Some(PrState::Open));
         assert_eq!(Review::from_word("approved"), Review::Approved);
         assert_eq!(Forge::from_word("gitlab"), Some(Forge::GitLab));

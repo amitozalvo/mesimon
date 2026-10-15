@@ -139,23 +139,21 @@ const PR_ROWS: usize = 3;
 /// environment's — are untrusted text and cross `scrub_cells` here.
 pub(super) fn pr_clauses(p: &mesimon_core::command::PrItem) -> Vec<String> {
     use mesimon_core::text::scrub_cells;
+    let pipeline = match (p.pipeline.as_str(), p.job.as_deref()) {
+        (w @ ("failed" | "waiting" | "running"), Some(job)) => {
+            Some(format!("pipeline {w}: {}", scrub_cells(job, false)))
+        }
+        (w @ ("failed" | "waiting" | "running" | "passed"), _) => Some(format!("pipeline {w}")),
+        _ => None,
+    };
+    pipeline.into_iter().chain(pr_state_clauses(p)).collect()
+}
+
+/// `pr_clauses` past the pipeline's: conflicts, the review, and the
+/// environments the merge reached.
+pub(super) fn pr_state_clauses(p: &mesimon_core::command::PrItem) -> Vec<String> {
+    use mesimon_core::text::scrub_cells;
     let mut words = Vec::new();
-    match (p.pipeline.as_str(), p.job.as_deref()) {
-        ("failed", Some(job)) => {
-            words.push(format!("pipeline failed: {}", scrub_cells(job, false)))
-        }
-        ("failed", None) => words.push("pipeline failed".into()),
-        ("waiting", Some(job)) => {
-            words.push(format!("pipeline waiting: {}", scrub_cells(job, false)))
-        }
-        ("waiting", None) => words.push("pipeline waiting".into()),
-        ("running", Some(job)) => {
-            words.push(format!("pipeline running: {}", scrub_cells(job, false)))
-        }
-        ("running", None) => words.push("pipeline running".into()),
-        ("passed", _) => words.push("pipeline passed".into()),
-        _ => {}
-    }
     if p.conflict {
         words.push("conflicts".into());
     }
@@ -169,13 +167,6 @@ pub(super) fn pr_clauses(p: &mesimon_core::command::PrItem) -> Vec<String> {
         words.push(format!("deployed: {}", names.join(", ")));
     }
     words
-}
-
-/// A pull request's number as its forge spells it: `!7` on GitLab, `#42`
-/// everywhere else.
-pub(super) fn pr_number(p: &mesimon_core::command::PrItem) -> String {
-    let sign = if p.forge == "gitlab" { '!' } else { '#' };
-    format!("{sign}{}", p.number)
 }
 
 /// The ticket's pull requests as header rows (T-739): `✗ PR #42 open ∙
@@ -200,19 +191,13 @@ fn pr_rows(
             rows.push(Line::from(Span::styled(format!("    ∙ +{} more", prs.len() - PR_ROWS), d2)));
             break;
         }
-        let tier = theme.glyph_tier();
-        let (mark, reg) =
-            glyphs::pr_mark(tier, &p.state, &p.pipeline, !p.deployed.is_empty(), app.spin_frame());
+        let (mark, reg) = app.pr_mark(p);
         let mark_style = match reg {
             glyphs::Register::Err => theme.err_text(),
             glyphs::Register::Calm => theme.calm_text(),
             _ => d2,
         };
-        let noun = match p.forge.as_str() {
-            "gitlab" => "MR",
-            _ => "PR",
-        };
-        let mut words = vec![format!("{noun} {} {}", pr_number(p), p.state)];
+        let mut words = vec![format!("{} {} {}", p.forge_kind().noun(), p.label(), p.state)];
         if p.repo != own_repo {
             words.push(scrub_cells(&p.repo, false));
         }

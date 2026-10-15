@@ -29,12 +29,6 @@ pub struct Row {
     pub done: Option<bool>,
 }
 
-impl Row {
-    pub fn is_task(&self) -> bool {
-        self.done.is_some()
-    }
-}
-
 /// How many boxes a list of rows holds, and how many are ticked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Count {
@@ -44,12 +38,14 @@ pub struct Count {
 
 impl Count {
     pub fn of(rows: &[Row]) -> Count {
-        rows.iter().fold(Count::default(), |mut c, r| {
-            if let Some(d) = r.done {
-                c.total += 1;
-                c.done += usize::from(d);
-            }
-            c
+        Count::of_marks(rows.iter().map(|r| r.done))
+    }
+
+    /// The count of rows by their box alone: `None` is a plain row.
+    pub fn of_marks(marks: impl IntoIterator<Item = Option<bool>>) -> Count {
+        marks.into_iter().flatten().fold(Count::default(), |c, d| Count {
+            done: c.done + usize::from(d),
+            total: c.total + 1,
         })
     }
 

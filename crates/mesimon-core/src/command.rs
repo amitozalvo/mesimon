@@ -2832,6 +2832,19 @@ pub struct PrItem {
     pub deployed: Vec<String>,
 }
 
+impl PrItem {
+    /// The forge by its word; one this build does not know spells as
+    /// GitHub does.
+    pub fn forge_kind(&self) -> crate::forge::Forge {
+        crate::forge::Forge::from_word(&self.forge).unwrap_or(crate::forge::Forge::GitHub)
+    }
+
+    /// The number as its forge spells it: `#42` or `!7`.
+    pub fn label(&self) -> String {
+        self.forge_kind().label(self.number)
+    }
+}
+
 /// The forge road's standing (T-739): whether a CLI reads one at all, and
 /// the trouble while a repository cannot be read.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

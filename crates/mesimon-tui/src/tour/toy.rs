@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use anyhow::Result;
 use mesimon_core::board::{
-    Archived, Board, Column, NoteMeta, SessionKind, SessionRecord, SessionState, Ticket,
+    Archived, Board, NoteMeta, SessionKind, SessionRecord, SessionState, Ticket,
 };
 use mesimon_core::command::{Command, PrItem, Response, WorktreeItem};
 use mesimon_core::fracindex;
@@ -136,7 +136,7 @@ impl World {
     /// Put an agent of `kind` on `ticket` in `state`, or move the one there
     /// to it: the part the hooks play on a real board.
     pub fn session(&mut self, ticket: ulid::Ulid, kind: SessionKind, state: SessionState) {
-        let now = mesimon_core::clock::now_ms() / 1000;
+        let now = mesimon_core::clock::now_ms();
         if let Some(s) =
             self.board.sessions.iter_mut().find(|s| s.ticket == ticket && s.kind == kind)
         {
@@ -377,46 +377,24 @@ impl World {
             | Command::SaveNoteWithAttachments { ticket, note, text, .. } => {
                 self.write_note(ticket, note, text)
             }
+            // The board's own rules, as the daemon applies them.
             Command::AddColumn { name, after } => {
-                let name = name.trim().to_string();
-                if name.is_empty() || self.board.column(&name).is_some() {
-                    return refuse("a column needs a name of its own");
-                }
-                let cols = self.board.sorted_columns();
-                let at = after
-                    .as_deref()
-                    .and_then(|a| cols.iter().position(|c| c.name == a))
-                    .unwrap_or(cols.len().saturating_sub(1));
-                let prev = cols.get(at).map(|c| c.order.clone()).unwrap_or_default();
-                let next = cols.get(at + 1).map(|c| c.order.clone()).unwrap_or_default();
-                let order = fracindex::between(&prev, &next);
-                self.board.columns.push(Column::new(name, order));
-                self.changed = true;
-                Response::Ok
+                let Some(name) = mesimon_core::board::sanitize_column_name(&name) else {
+                    return refuse("a column needs a name");
+                };
+                let done = self.board.add_column(name, after.as_deref());
+                self.applied(done)
             }
             Command::RenameColumn { name, to } => {
-                let to = to.trim().to_string();
-                if to.is_empty() || self.board.column(&to).is_some() {
-                    return refuse("a column needs a name of its own");
-                }
-                for t in self.board.tickets.iter_mut().filter(|t| t.column == name) {
-                    t.column = to.clone();
-                }
-                for c in self.board.columns.iter_mut() {
-                    if c.name == name {
-                        c.name = to.clone();
-                    }
-                }
-                self.changed = true;
-                Response::Ok
+                let Some(to) = mesimon_core::board::sanitize_column_name(&to) else {
+                    return refuse("a column needs a name");
+                };
+                let done = self.board.rename_column(&name, &to).map(drop);
+                self.applied(done)
             }
             Command::SetColumnSettings { name, settings } => {
-                let Some(c) = self.board.columns.iter_mut().find(|c| c.name == name) else {
-                    return refuse("no such column");
-                };
-                c.settings = settings;
-                self.changed = true;
-                Response::Ok
+                let done = self.board.set_column_settings(&name, settings);
+                self.applied(done)
             }
             Command::SetWorkspace { id, workspace } => self.edit(id, |t| t.workspace = workspace),
             Command::SetManualMerge { id, on } => self.edit(id, |t| t.manual_merge = on),
@@ -516,15 +494,23 @@ impl World {
         }
     }
 
+    /// A board edit's answer: the board changed, or why not.
+    fn applied(&mut self, done: std::result::Result<(), String>) -> Response {
+        match done {
+            Ok(()) => {
+                self.changed = true;
+                Response::Ok
+            }
+            Err(message) => refuse(&message),
+        }
+    }
+
     fn create(&mut self, column: &str, title: &str, text: &str) -> Response {
-        let Some(col) = self.board.column(column) else {
+        if self.board.column(column).is_none() {
             return refuse(&format!("no such column: {column}"));
-        };
-        if col.settings.refuses_new {
-            return refuse(&match self.board.filing_column(column) {
-                Some(open) => format!("{column} takes no new tickets: file it in {open}"),
-                None => format!("{column} takes no new tickets"),
-            });
+        }
+        if let Some(why) = self.board.filing_refusal(column) {
+            return refuse(&why);
         }
         let title = mesimon_core::board::sanitize_title(title);
         if title.trim().is_empty() {

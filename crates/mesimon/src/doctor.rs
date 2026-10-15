@@ -1043,11 +1043,8 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
         // stat of PATH, never a call, so doctor stays quick and offline.
         if let Some(remote) = mesimon_daemon::forge::remote_of(repo, &base) {
             use mesimon_core::forge::Forge;
-            let order = match remote.known_forge() {
-                Some(Forge::GitHub) => vec![Forge::GitHub],
-                _ => vec![Forge::GitLab, Forge::GitHub],
-            };
-            let found: Vec<String> = order
+            let found: Vec<String> = remote
+                .candidates()
                 .iter()
                 .filter_map(|f| mesimon_daemon::forge::find_cli(*f, None))
                 .map(|c| {

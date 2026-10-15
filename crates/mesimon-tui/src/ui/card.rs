@@ -306,7 +306,7 @@ pub(super) fn pr_words(prs: &[&mesimon_core::command::PrItem]) -> Option<(String
         (word @ ("failed" | "waiting" | "passed"), _) => words.push(word.into()),
         _ => {}
     }
-    words.extend(super::ticket::pr_clauses(p).into_iter().filter(|c| !c.starts_with("pipeline")));
+    words.extend(super::ticket::pr_state_clauses(p));
     if p.state == "draft" {
         words.push(p.state.clone());
     }

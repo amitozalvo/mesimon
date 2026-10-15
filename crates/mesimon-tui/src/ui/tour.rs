@@ -215,7 +215,7 @@ fn draw_board(f: &mut Frame, app: &App, tour: &Tour, at: Rect) {
     drop(frames);
     // A field being typed in on the practice board shows the terminal's
     // cursor where its own would be.
-    if tour.trying && tour.sandbox.typing_now() {
+    if tour.trying && tour.sandbox.text_field() {
         let Ok(p) = term.get_cursor_position();
         if p.x < at.width && p.y < at.height {
             f.set_cursor_position((at.x + p.x, at.y + p.y));
