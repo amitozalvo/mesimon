@@ -4644,6 +4644,7 @@ fn app_prs() -> App {
         review: if number == 43 { "changes_requested".into() } else { "none".into() },
         merged_oid: String::new(),
         deployed: Vec::new(),
+        ..Default::default()
     };
     let mut api = pr(7, "merged", "passed", None);
     api.forge = "gitlab".into();
@@ -4712,13 +4713,17 @@ fn golden_ticket_held_move_120() {
 }
 
 /// `^h` on the ticket page (T-759): every pull request, the one the page
-/// folds into `+1 more` included, each with the page's words whole and its
-/// repository in a column of its own; Enter hands the cursor row's URL to
-/// the opener and leaves the dialog up, `^h` closes it.
+/// folds into `+1 more` included; Enter hands the cursor row's URL to the
+/// opener and leaves the dialog up, `^h` closes it.
+///
+/// T-805: a table, one column per fact under its heading, as wide as its
+/// rows: the full repository, the title, the merge commit, a conflict, the
+/// review a PR still needs and the age, each whole with no marquee, and the
+/// cursor's link on the row above the footer.
 #[test]
 fn golden_ticket_prs_dialog_120() {
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
-    let mut app = app_prs();
+    let mut app = app_prs_titled();
     app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
     let page = render(&app, 120, 30).join("\n");
     assert!(!page.contains("#40"), "the page folds the fourth:\n{page}");
@@ -4726,25 +4731,39 @@ fn golden_ticket_prs_dialog_120() {
     assert!(matches!(app.mode, Mode::PullRequests { ticket, idx: 0 } if ticket == ulid_n(5)));
     let lines = render(&app, 120, 30);
     let text = lines.join("\n");
-    assert!(text.contains("PULL REQUESTS ∙ T-5 ∙ 4"), "{text}");
-    for row in [
-        "✗ #43  o/r    open ∙ pipeline failed: test-linux",
-        // The row the dialog cuts reads whole above the footer.
-        " #43  o/r    open ∙ pipeline failed: test-linux ∙ changes requested",
-        "◴ #42  o/r    open ∙ pipeline running",
-        "◆ !7   g/api  merged ∙ pipeline passed ∙ in staging",
-        "● #40  o/r    merged",
-    ] {
-        assert!(text.contains(row), "{row:?} is listed:\n{text}");
+    assert!(text.contains("PULL REQUESTS ∙ T-5 ∙ 4 ─"), "{text}");
+    let head = lines.iter().find(|l| l.contains("TITLE")).expect(&text);
+    for col in ["PR", "REPO", "TITLE", "STATE", "PIPELINE", "REVIEW", "REACHED", "UPDATED"] {
+        assert!(head.contains(col), "{col} heads a column: {head}");
     }
+    // At 120 columns every column of words wraps inside itself: a row grows
+    // a line rather than lose a word.
+    for row in [
+        "✗ #43  amitozalvo/mesimon  The board reads the pager's     open,      failed:",
+        "colour once, before raw mode    conflicts  test-linux  requested",
+        "◴ #42  amitozalvo/mesimon  Cards wrap Hebrew titles at     open       running:",
+        "(macos-14)",
+        "◆ !7   infra/deploy-api    Deploy the api behind the new   merged     passed",
+        "gateway                         3f9c2a1",
+        "staging,",
+        "production",
+        "● #40  amitozalvo/mesimon  Grapheme truncation for card    merged",
+        "2m ago",
+    ] {
+        assert!(text.contains(row), "{row:?} is drawn whole:\n{text}");
+    }
+    let dialog: Vec<&String> = lines.iter().filter(|l| l.contains('│')).collect();
+    assert!(dialog.iter().all(|l| !l.contains('~')), "nothing is cut:\n{text}");
+    assert_eq!(lines[28], " https://github.com/amitozalvo/mesimon/pull/43", "the cursor's link");
     golden("ticket_prs_dialog_120x30", &lines);
 
     app.opener = Some("open".into());
     app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE).unwrap();
+    assert_eq!(render(&app, 120, 30)[28], " https://github.com/amitozalvo/mesimon/pull/42");
     app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
     assert_eq!(
         app.pending_open,
-        Some(vec!["open".to_string(), "https://github.com/o/r/pull/42".to_string()])
+        Some(vec!["open".to_string(), "https://github.com/amitozalvo/mesimon/pull/42".to_string()])
     );
     assert!(matches!(app.mode, Mode::PullRequests { idx: 1, .. }), "the dialog stays");
     app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL).unwrap();
@@ -4755,6 +4774,98 @@ fn golden_ticket_prs_dialog_120() {
     app.mode = Mode::PullRequests { ticket: ulid_n(5), idx: 0 };
     let text = render(&app, 120, 30).join("\n");
     assert!(text.contains("PULL REQUESTS ∙ T-5 ∙ 4 ∙ read 3m ago"), "{text}");
+}
+
+/// `app_prs` as a forge that reads titles and ages says it (T-805): the
+/// repositories by their full paths, a conflict, a merge commit and a
+/// second environment.
+fn app_prs_titled() -> App {
+    let mut app = app_prs();
+    let now = mesimon_core::clock::now_ms();
+    let titles = [
+        "The board reads the pager's colour once, before raw mode",
+        "Cards wrap Hebrew titles at the grapheme",
+        "Deploy the api behind the new gateway",
+        "Grapheme truncation for card titles",
+    ];
+    for (i, p) in app.prs.iter_mut().enumerate() {
+        p.title = titles[i].into();
+        p.updated_ms = now.saturating_sub(150_000 + i as u64 * 3_600_000);
+        if p.repo == "o/r" {
+            p.repo = "amitozalvo/mesimon".into();
+            p.url = format!("https://github.com/amitozalvo/mesimon/pull/{}", p.number);
+        } else {
+            p.repo = "infra/deploy-api".into();
+        }
+    }
+    app.prs[0].conflict = true;
+    app.prs[1].job = Some("build (macos-14)".into());
+    app.prs[2].merged_oid = "3f9c2a1d5e".into();
+    app.prs[2].deployed.push("production".into());
+    app
+}
+
+/// T-805: where the table's fixed columns and a title's narrowest column do
+/// not fit, each PR is a head line, its title wrapped under the number,
+/// and its facts labelled and wrapped under that, at the usual dialog
+/// width: still nothing cut, and still the cursor's link above the footer.
+#[test]
+fn golden_ticket_prs_dialog_80() {
+    let mut app = app_prs_titled();
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
+    app.mode = Mode::PullRequests { ticket: ulid_n(5), idx: 0 };
+    let lines = render(&app, 80, 30);
+    let text = lines.join("\n");
+    assert!(!text.contains("TITLE"), "no table heading:\n{text}");
+    for row in [
+        "✗ #43  The board reads the pager's colour once, before raw",
+        "amitozalvo/mesimon ∙ open, conflicts ∙ pipeline failed:",
+        "test-linux ∙ review changes requested ∙ updated 2m ago",
+        "in staging, production ∙ updated 2h ago",
+    ] {
+        assert!(text.contains(row), "{row:?}:\n{text}");
+    }
+    let dialog: Vec<&String> = lines.iter().filter(|l| l.contains('│')).collect();
+    assert!(dialog.iter().all(|l| !l.contains('~')), "nothing is cut:\n{text}");
+    assert_eq!(lines[28], " https://github.com/amitozalvo/mesimon/pull/43");
+    golden("ticket_prs_dialog_80x30", &lines);
+}
+
+/// T-805: a title wider than its column wraps inside it, the row as tall as
+/// its title and every other cell on its first line; with every PR in one
+/// repository the REPO column goes and the title edge names it; and a
+/// daemon that says no titles or ages draws no column for them.
+#[test]
+fn a_long_title_wraps_in_its_column_and_blank_columns_go() {
+    let mut app = app_prs_titled();
+    app.prs.retain(|p| p.repo == "amitozalvo/mesimon");
+    app.prs[0].title = "Read the pager's background colour once before raw mode, so a late OSC 11 reply is never typed into the board as keys".into();
+    app.mode = Mode::PullRequests { ticket: ulid_n(5), idx: 1 };
+    let lines = render(&app, 120, 30);
+    let text = lines.join("\n");
+    assert!(text.contains("PULL REQUESTS ∙ T-5 ∙ 3 ∙ amitozalvo/mesimon"), "{text}");
+    let head = lines.iter().find(|l| l.contains("TITLE")).expect(&text);
+    assert!(!head.contains("REPO"), "one repository, no column: {head}");
+    // Cells, not bytes: the frame's `│` is three bytes.
+    let cells = |l: &str| l.chars().collect::<Vec<char>>();
+    let at = cells(head).windows(5).position(|w| w.iter().collect::<String>() == "TITLE");
+    let at = at.expect("TITLE");
+    let word_at = |l: &str| cells(l)[at..at + 4].iter().collect::<String>();
+    let y = lines.iter().position(|l| l.contains("✗ #43")).expect(&text);
+    assert!(lines[y].contains("open, conflicts"), "the other cells sit on the first line");
+    assert_eq!(word_at(&lines[y]), "Read", "{text}");
+    assert_eq!(word_at(&lines[y + 1]), "colo", "the title wraps under itself:\n{text}");
+    assert_eq!(word_at(&lines[y + 3]), "into", "{text}");
+    assert!(lines[y + 3].contains("as keys"), "every word of it:\n{text}");
+    assert!(lines.iter().filter(|l| l.contains('│')).all(|l| !l.contains('~')), "{text}");
+
+    for p in &mut app.prs {
+        p.title.clear();
+        p.updated_ms = 0;
+    }
+    let text = render(&app, 120, 30).join("\n");
+    assert!(text.contains("STATE"), "{text}");
+    assert!(!text.contains("TITLE") && !text.contains("UPDATED"), "{text}");
 }
 
 /// With no pull requests `^h` is inert, and a dialog whose PRs went while it
@@ -8354,6 +8465,7 @@ fn golden_board_prs_120() {
         review: "none".into(),
         merged_oid: String::new(),
         deployed: Vec::new(),
+        ..Default::default()
     };
     app.prs = vec![
         pr(3, 42, "github", "open", "failed"),
@@ -8467,6 +8579,7 @@ fn pr_on(ticket: ulid::Ulid) -> mesimon_core::command::PrItem {
         review: "none".into(),
         merged_oid: String::new(),
         deployed: Vec::new(),
+        ..Default::default()
     }
 }
 

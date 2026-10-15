@@ -51,8 +51,8 @@ const REFLOG_CAP: &str = "2000";
 /// read by itself (`unlisted`).
 const LIST_LIMIT: usize = 100;
 /// The fields one GitHub PR is read with, listed or viewed.
-const GH_FIELDS: &str = "number,url,state,isDraft,headRefName,headRefOid,mergeCommit,mergeable,\
-                         reviewDecision,updatedAt,mergedAt,statusCheckRollup";
+const GH_FIELDS: &str = "number,title,url,state,isDraft,headRefName,headRefOid,mergeCommit,\
+                         mergeable,reviewDecision,updatedAt,mergedAt,statusCheckRollup";
 /// How long a merge commit a newer one superseded is still read (T-771): a
 /// day is past any deploy run, and the PR keeps what was read by then.
 pub const SUPERSEDED_READ_MS: u64 = 24 * 3600 * 1000;
@@ -1642,6 +1642,8 @@ pub struct PrRecord {
     pub forge: String,
     pub repo: String,
     pub number: u64,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub title: String,
     pub url: String,
     pub state: String,
     pub head_oid: String,
@@ -1676,6 +1678,7 @@ impl PrRecord {
             forge: p.forge.word().into(),
             repo: p.repo.clone(),
             number: p.number,
+            title: p.title.clone(),
             url: p.url.clone(),
             state: p.state.word().into(),
             head_oid: p.head_oid.clone(),
@@ -1700,6 +1703,7 @@ impl PrRecord {
             review: Review::from_word(&self.review),
             repo: self.repo,
             number: self.number,
+            title: self.title,
             url: self.url,
             head_oid: self.head_oid,
             head_ref: self.head_ref,
@@ -1964,6 +1968,7 @@ mod tests {
             forge: Forge::GitHub,
             repo: "o/r".into(),
             number,
+            title: String::new(),
             url: format!("https://github.com/o/r/pull/{number}"),
             state,
             head_oid: "h".into(),

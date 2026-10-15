@@ -234,6 +234,9 @@ pub struct Pr {
     /// `owner/repo` or `group/sub/project`, as the remote spells it.
     pub repo: String,
     pub number: u64,
+    /// The PR's title as the forge spells it, scrubbed (T-805); what the
+    /// pull requests dialog names a row by.
+    pub title: String,
     pub url: String,
     pub state: PrState,
     /// The head commit, what `made here` matches against the commits the
@@ -339,6 +342,7 @@ pub fn parse_gh(repo: &str, json: &str) -> Vec<Pr> {
                 forge: Forge::GitHub,
                 repo: repo.to_string(),
                 number,
+                title: str_of(v, "title"),
                 url: web_url(v, "url"),
                 state,
                 head_oid: str_of(v, "headRefOid"),
@@ -495,6 +499,7 @@ fn glab_mr(repo: &str, v: &Value) -> Option<Pr> {
         forge: Forge::GitLab,
         repo: repo.to_string(),
         number,
+        title: str_of(v, "title"),
         url: web_url(v, "web_url"),
         state,
         head_oid: str_of(v, "sha"),
@@ -1267,6 +1272,7 @@ mod tests {
             forge: Forge::GitHub,
             repo: repo.into(),
             number,
+            title: String::new(),
             url: format!("https://github.com/{repo}/pull/{number}"),
             state,
             head_oid: head.into(),
@@ -1284,7 +1290,7 @@ mod tests {
 
     #[test]
     fn gh_json_reads_into_a_pr_with_its_pipeline_folded() {
-        let json = r#"[{"number":14651,"url":"https://github.com/cli/cli/pull/14651","state":"OPEN","isDraft":false,
+        let json = r#"[{"number":14651,"title":"Fix \u001b]52;c;eA==\u0007 the pager","url":"https://github.com/cli/cli/pull/14651","state":"OPEN","isDraft":false,
           "headRefName":"fix/issue-9789","headRefOid":"5d74d92f","mergeCommit":null,"mergedAt":null,
           "mergeable":"CONFLICTING","reviewDecision":"CHANGES_REQUESTED","updatedAt":"2026-10-13T05:56:17Z",
           "statusCheckRollup":[
@@ -1313,6 +1319,9 @@ mod tests {
         assert_eq!(prs[2].state, PrState::Draft);
         assert_eq!(prs[2].updated_ms, 0);
         assert_eq!(prs[0].label(), "#14651");
+        assert!(prs[0].title.starts_with("Fix ") && prs[0].title.ends_with(" the pager"));
+        assert!(!prs[0].title.contains('\u{1b}'), "a title is scrubbed: {:?}", prs[0].title);
+        assert_eq!(prs[1].title, "", "no title reads as none");
         assert!(parse_gh("x", "not json").is_empty());
         assert!(parse_gh("x", "{}").is_empty());
         let one = r#"{"number":7,"url":"https://github.com/o/r/pull/7","state":"MERGED","headRefName":"b",
@@ -1467,7 +1476,7 @@ mod tests {
 
     #[test]
     fn glab_json_reads_into_a_pr_and_its_pipeline_comes_by_sha() {
-        let json = r#"[{"iid":4096,"web_url":"https://gitlab.com/gitlab-org/cli/-/merge_requests/4096","state":"opened",
+        let json = r#"[{"iid":4096,"title":"Draft: mr view reads the pipeline","web_url":"https://gitlab.com/gitlab-org/cli/-/merge_requests/4096","state":"opened",
           "source_branch":"fix/x","sha":"deadbeef","merge_commit_sha":null,"squash_commit_sha":null,"draft":false,
           "has_conflicts":true,"detailed_merge_status":"conflict","updated_at":"2026-10-13T06:00:00.000+02:00"},
           {"iid":7,"web_url":"https://gitlab.com/g/p/-/merge_requests/7","state":"merged","source_branch":"y","sha":"s",
@@ -1477,6 +1486,7 @@ mod tests {
         assert!(prs[0].conflict);
         assert_eq!(prs[0].pipeline, Pipeline::Unknown, "the list says nothing of the pipeline");
         assert_eq!(prs[0].label(), "!4096");
+        assert_eq!(prs[0].title, "Draft: mr view reads the pipeline");
         assert_eq!(prs[0].updated_ms, 1_791_864_000_000, "+02:00 is two hours earlier in UTC");
         assert_eq!(
             prs[1].merge_oid, "m1",

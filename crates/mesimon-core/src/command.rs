@@ -2811,6 +2811,9 @@ pub struct PrItem {
     /// `owner/repo` as the remote spells it.
     pub repo: String,
     pub number: u64,
+    /// The forge's title, scrubbed (T-805); empty from an older daemon.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
     pub url: String,
     /// `open` | `draft` | `merged` | `closed`.
     pub state: String,
@@ -2831,6 +2834,9 @@ pub struct PrItem {
     /// The environments the merge commit reached, as the forge names them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deployed: Vec<String>,
+    /// Unix ms the forge last touched it (T-805); zero when unknown.
+    #[serde(default)]
+    pub updated_ms: u64,
 }
 
 impl PrItem {

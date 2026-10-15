@@ -3,22 +3,22 @@
  Grapheme truncation
  REVIEW for >1y ∙ created >1y ago
  ⎇ msmn/T-5-grapheme-truncation ∙ 2 to merge ∙ m merge
-   ✗ PR #43 open ∙ pipeline failed: test-linux ∙ changes requested
-   ◴ PR #42 open ∙ pipeline running
-   ◆ MR !7 merged ∙ g/api ∙ pipeline passed ∙ in staging
+   ✗ PR #43 open ∙ pipeline failed: test-linux ∙ conflicts ∙ changes requested
+   ◴ PR #42 open ∙ pipeline running: build (macos-14)
+   ◆ MR !7 merged ∙ infra/deploy-api ∙ pipeline passed ∙ in staging, production
     ∙ +1 more
-
-
-  PREVIEW                                                                                  SESSIONS                  1
-    ▄▄▄         ▄▄▄        ╭─ PULL REQUESTS ∙ T-5 ∙ 4 ──────────────────────────────────────╮
-    ▀▀█▀ ▄▀▀▀   ▀▀█▀       │ ✗ #43  o/r    open ∙ pipeline failed: test-linux ∙ changes req~│ claude               >1y
-      ██▀█▀▀     ███   ✦   │ ◴ #42  o/r    open ∙ pipeline running                          │sleep
-    ▄▀█████▀▀▀▀▀▀███▀▄     │ ◆ !7   g/api  merged ∙ pipeline passed ∙ in staging            │
-  ✦█████▀████████▀████▀    │ ● #40  o/r    merged                                           │
-   ████▀█▀██████▀█▀████    ╰────────────────── jk select ∙ enter open ∙ c copy ∙ esc close ─╯
-   █▀▀█████▀▀▀▀█████▀▀█
-   ▀▀▀██████▀▀██████▀▀▀
-      ▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  ╭─ PULL REQUESTS ∙ T-5 ∙ 4 ────────────────────────────────────────────────────────────────────────────────────────╮
+  │   PR   REPO                TITLE                           STATE      PIPELINE    REVIEW     REACHED     UPDATED │
+  │ ✗ #43  amitozalvo/mesimon  The board reads the pager's     open,      failed:     changes                2m ago  │
+  │                            colour once, before raw mode    conflicts  test-linux  requested                      │
+  │ ◴ #42  amitozalvo/mesimon  Cards wrap Hebrew titles at     open       running:                           62m ago │
+  │                            the grapheme                               build                                      │
+  │                                                                       (macos-14)                                 │
+  │ ◆ !7   infra/deploy-api    Deploy the api behind the new   merged     passed                 staging,    2h ago  │
+  │                            gateway                         3f9c2a1                           production          │
+  │ ● #40  amitozalvo/mesimon  Grapheme truncation for card    merged                                        3h ago  │
+  │                            titles                                                                                │
+  ╰──────────────────────────────────────────────────────────────────── jk select ∙ enter open ∙ c copy ∙ esc close ─╯
 
     done
     it left no transcript
@@ -26,5 +26,5 @@
 
 
 
- #43  o/r    open ∙ pipeline failed: test-linux ∙ changes requested
+ https://github.com/amitozalvo/mesimon/pull/43
  PULL REQUESTS  jk select ∙ enter open ∙ c copy ∙ esc close                                                      ? keys

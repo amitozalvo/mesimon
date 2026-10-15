@@ -25971,3 +25971,33 @@ beta, cut at !1's head, binds nothing, reads unmerged, and `get_ticket` lists no
 forge or "nobody" merger; alpha keeps !1, landed as `main (MR !1)`; after beta's first commit
 nothing binds and `m` fast-forwards main to it. It failed on the old code with beta holding !1.
 USING.md says a commit the worktree started from or pulled in binds nothing.
+## The pull requests dialog is a table as wide as its rows (T-805, 2026-10-15)
+
+The `^h` dialog (T-759) was one sentence a PR in the 64-cell list every dialog keeps, so a
+failing PR under review ended `changes req~`, the repository was cut to `o/r`, and the whole
+sentence came only for the cursor's row, above the footer, on the marquee. The author picked
+layout A of three proposed (a table; two lines a PR at 64; a list beside the cursor's details)
+with the optional title and age.
+
+**The table** (`ui/prs.rs::table`): one column per fact under dim headings, PR, REPO, TITLE,
+STATE, PIPELINE, REVIEW, REACHED, UPDATED, aligned by spaces (no rule inside the frame, the L1
+law). The dialog is as wide as its rows, up to the screen less the usual margins; this is the one
+dialog past `dialog::MAX_W`, and never narrower than it. A column no row fills is dropped; REPO
+is dropped when every PR is in one repository, and the title edge names it. STATE carries the
+merge commit's seven characters and `, conflicts`; REVIEW now says `required`, which the wire
+always carried and no surface drew.
+
+**Nothing is cut; a row grows instead.** Past the room the title gives way to 32 cells, then the
+columns of words (state, pipeline, review, environments) wrap inside themselves down to their
+longest word, widest first (`squeeze`), then the title to 20. At 120 columns with two
+repositories every such column wraps and a row is two or three lines; with one repository there
+is room for the title. Below even that, each PR is a head line (the title wrapped under the
+number) and its facts labelled and wrapped under it, at 64 (`stacked`). The row above the footer
+is the cursor's link, what Enter opens and `c` copies, since the row itself is whole. The
+list's scroll window is `dialog::window`, shared with `dialog::list`, over rows of any height.
+
+**Title and age ride the wire.** `GH_FIELDS` (gh's list and view) asks for `title`, glab's MR JSON already
+had it; `forge::Pr::title` is scrubbed at the parse (`str_of`), `PrRecord` keeps it in
+`forge.json` (no schema bump: an absent title is no title, and an older build dropping it widens
+nothing), and `PrItem` carries `title` and `updated_ms`. The TUI scrubs both again before drawing.
+`get_ticket`'s `AgentPrView` is unchanged: an agent is told nothing new.

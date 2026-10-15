@@ -14329,6 +14329,7 @@ impl Daemon {
                     forge: pr.forge.word().into(),
                     repo: pr.repo.clone(),
                     number: pr.number,
+                    title: pr.title.clone(),
                     url: pr.url.clone(),
                     state: pr.state.word().into(),
                     pipeline: pr.pipeline.word().into(),
@@ -14337,6 +14338,7 @@ impl Daemon {
                     review: pr.review.word().into(),
                     merged_oid: pr.merge_oid.clone(),
                     deployed: pr.deployed.clone(),
+                    updated_ms: pr.updated_ms,
                 });
             }
         }

@@ -215,24 +215,9 @@ pub(super) fn list(
     // tall as the screen gives it up, and scrolls one row sooner.
     let whole_y = f.area().bottom().saturating_sub(2);
     area.height = area.height.min(whole_y.saturating_sub(area.y)).max(3);
-    // The window, in lines: the cursor's row, about half the room above it,
-    // the rest below, and above again where the list ends first. With every
-    // row one height this is the row arithmetic it replaced; a heading
-    // (T-610) is one line in a list of two.
     let room = usize::from(area.height.saturating_sub(2));
-    let (mut first, mut last, mut used) = (idx, idx + 1, height(&rows[idx]));
-    while first > 0 && used + height(&rows[first - 1]) <= room / 2 + height(&rows[idx]) {
-        first -= 1;
-        used += height(&rows[first]);
-    }
-    while last < rows.len() && used + height(&rows[last]) <= room {
-        used += height(&rows[last]);
-        last += 1;
-    }
-    while first > 0 && used + height(&rows[first - 1]) <= room {
-        first -= 1;
-        used += height(&rows[first]);
-    }
+    let heights: Vec<usize> = rows.iter().map(height).collect();
+    let (first, last) = window(&heights, idx, room);
     // The count is of the rows a cursor can stand on: a heading is a label.
     let selectable = rows.iter().filter(|r| !r.heading).count();
     let name = if last - first < rows.len() {
@@ -332,6 +317,29 @@ pub(super) fn list(
     f.render_widget(Paragraph::new(lines), inner);
 }
 
+/// The rows `[first, last)` a list shows in `room` lines with the cursor on
+/// `idx`, each row `heights[i]` lines tall: the cursor's row, about half the
+/// room above it, the rest below, and above again where the list ends
+/// first. With every row one height this is plain row arithmetic; a heading
+/// (T-610) is one line in a list of two, and a pull request whose title
+/// wraps (T-805) is as tall as its title.
+pub(super) fn window(heights: &[usize], idx: usize, room: usize) -> (usize, usize) {
+    let (mut first, mut last, mut used) = (idx, idx + 1, heights[idx]);
+    while first > 0 && used + heights[first - 1] <= room / 2 + heights[idx] {
+        first -= 1;
+        used += heights[first];
+    }
+    while last < heights.len() && used + heights[last] <= room {
+        used += heights[last];
+        last += 1;
+    }
+    while first > 0 && used + heights[first - 1] <= room {
+        first -= 1;
+        used += heights[first];
+    }
+    (first, last)
+}
+
 /// The cursor row's words in full across the row above the footer (T-741),
 /// the board's hover row's place and its register (`chrome::hover_line`):
 /// a dialog is at most `MAX_W` wide and the frame is the terminal's, so a
@@ -339,7 +347,7 @@ pub(super) fn list(
 /// marquee. Past even that width a one-line list's head reveals on the
 /// row's own clock (`scroll`); a head and detail together are cut, since
 /// two reveals keyed on different words would reset that clock each frame.
-fn whole_row(f: &mut Frame, app: &App, y: u16, text: &str, scroll: bool) {
+pub(super) fn whole_row(f: &mut Frame, app: &App, y: u16, text: &str, scroll: bool) {
     if text.trim().is_empty() {
         return;
     }

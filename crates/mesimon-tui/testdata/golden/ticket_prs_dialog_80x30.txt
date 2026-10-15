@@ -1,0 +1,30 @@
+ TICKET (T-5)   mesimon › kanban-tui
+
+ Grapheme truncation
+ REVIEW for >1y ∙ created >1y ago
+ ⎇ msmn/T-5-grapheme-truncation ∙ 2 to merge ∙ m merge
+   ✗ PR #43 open ∙ pipeline failed: test-linux ∙ conflicts ∙ changes requested
+   ◴ PR #42 open ∙ pipeline running: build (macos-14)
+   ◆ MR !7 merged ∙ infra/deploy-api ∙ pipeline passed ∙ in staging, production
+    ∙ +╭─ PULL REQUESTS ∙ T-5 ∙ 4 ──────────────────────────────────────╮
+       │ ✗ #43  The board reads the pager's colour once, before raw     │
+       │        mode                                                    │
+  SESSI│        amitozalvo/mesimon ∙ open, conflicts ∙ pipeline failed: │    1
+       │        test-linux ∙ review changes requested ∙ updated 2m ago  │
+ ✓ ✻ cl│ ◴ #42  Cards wrap Hebrew titles at the grapheme                │  >1y
+  x sle│        amitozalvo/mesimon ∙ open ∙ pipeline running: build     │
+       │        (macos-14) ∙ updated 62m ago                            │
+       │ ◆ !7   Deploy the api behind the new gateway                   │
+       │        infra/deploy-api ∙ merged 3f9c2a1 ∙ pipeline passed ∙   │
+       │        in staging, production ∙ updated 2h ago                 │
+       │ ● #40  Grapheme truncation for card titles                     │
+       │        amitozalvo/mesimon ∙ merged ∙ updated 3h ago            │
+       ╰────────────────── jk select ∙ enter open ∙ c copy ∙ esc close ─╯
+
+
+
+
+
+
+ https://github.com/amitozalvo/mesimon/pull/43
+ PULL REQUESTS  jk select ∙ enter open ∙ c copy ∙ esc close              ? keys
