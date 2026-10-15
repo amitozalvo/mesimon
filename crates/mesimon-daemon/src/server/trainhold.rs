@@ -81,15 +81,7 @@ impl Daemon {
         let tails = if forge_legs.is_empty() {
             Vec::new()
         } else {
-            let live: Vec<String> = self
-                .board
-                .sessions
-                .iter()
-                .filter(|r| r.ticket == ticket)
-                .filter_map(crate::cost::transcript_of)
-                .map(|(p, _)| p.display().to_string())
-                .collect();
-            self.costs.tails(ticket, &live)
+            self.costs.tails(ticket, &self.live_transcripts(ticket))
         };
         if !forge_legs.is_empty() {
             self.forge.looking.insert(ticket);

@@ -1616,13 +1616,7 @@ fn draw_rail(
         let selected = i == rail_idx;
         let at = lines.len();
         let (g, reg) = glyphs::session_glyph(s, tier, app.spin_frame());
-        let glyph_style = match reg {
-            glyphs::Register::Attn => theme.attn_text(),
-            glyphs::Register::Err => theme.err_text(),
-            glyphs::Register::Calm => theme.calm_text(),
-            glyphs::Register::Grey => theme.dim2(),
-            glyphs::Register::Dormant => theme.dim3(),
-        };
+        let glyph_style = super::card::register_style(theme, reg);
         // The session's own name (OSC-0 title, same as the tmux status bar's
         // breadcrumb leaf) when it set one, else the kind word. A shell
         // running a command is named by the command (T-366): `$ cargo` is

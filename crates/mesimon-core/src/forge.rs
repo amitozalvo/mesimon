@@ -589,42 +589,10 @@ pub fn deploy_order(mut found: Vec<(String, u64)>, envs: &[String]) -> Vec<Strin
 }
 
 /// An ISO-8601 stamp (`2026-10-13T05:56:17Z`, or with an offset) as unix
-/// ms; zero where it is not one. Whole seconds are what both forges send.
+/// ms, to the whole second (`usage::rfc3339_ms`); zero where it is not one.
+/// Whole seconds are what both forges send.
 pub fn iso_ms(v: Option<&Value>) -> u64 {
-    let Some(s) = v.and_then(Value::as_str) else { return 0 };
-    let b = s.as_bytes();
-    if b.len() < 19 {
-        return 0;
-    }
-    let num = |from: usize, to: usize| s.get(from..to).and_then(|x| x.parse::<i64>().ok());
-    let (Some(y), Some(mo), Some(d), Some(h), Some(mi), Some(sec)) =
-        (num(0, 4), num(5, 7), num(8, 10), num(11, 13), num(14, 16), num(17, 19))
-    else {
-        return 0;
-    };
-    // Days from the civil date (Howard Hinnant's algorithm).
-    let (y2, mo2) = if mo <= 2 { (y - 1, mo + 9) } else { (y, mo - 3) };
-    let era = y2.div_euclid(400);
-    let yoe = y2 - era * 400;
-    let doy = (153 * mo2 + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    let mut secs = days * 86_400 + h * 3600 + mi * 60 + sec;
-    // A trailing offset, `+02:00` / `-0500`; `Z` or none is UTC.
-    let rest = &s[19..];
-    let rest = rest
-        .split_once('.')
-        .map_or(rest, |(_, after)| after.trim_start_matches(|c: char| c.is_ascii_digit()));
-    if let Some(sign) = rest.chars().next().filter(|c| *c == '+' || *c == '-') {
-        let digits: String = rest[1..].chars().filter(|c| c.is_ascii_digit()).collect();
-        if digits.len() == 4 {
-            let oh: i64 = digits[0..2].parse().unwrap_or(0);
-            let om: i64 = digits[2..4].parse().unwrap_or(0);
-            let off = oh * 3600 + om * 60;
-            secs = if sign == '+' { secs - off } else { secs + off };
-        }
-    }
-    u64::try_from(secs).map(|s| s * 1000).unwrap_or(0)
+    v.and_then(Value::as_str).and_then(crate::usage::rfc3339_ms).map_or(0, |ms| ms - ms % 1000)
 }
 
 /// A git remote, parsed: the host and the repository path the forge CLI
@@ -772,11 +740,18 @@ pub fn merge_refusal(set: &[Pr]) -> Option<String> {
 
 /// The worst pipeline over the set's open PRs; the merged commit's once
 /// nothing is open and one is merged (the caller has read it onto the PR);
-/// `Unknown` with no PR.
+/// `Unknown` with no PR. An open PR whose pipeline was not read makes a
+/// fold that would read green or none `Unknown` (T-795): unknown is never
+/// green, and a run, a wait or a failure beside it still says itself.
 pub fn pipeline_of(set: &[Pr]) -> Pipeline {
     let open: Vec<&Pr> = set.iter().filter(|p| p.state.is_open()).collect();
     if !open.is_empty() {
-        return open.iter().fold(Pipeline::None, |acc, p| acc.worst(p.pipeline.clone()));
+        let worst = open.iter().fold(Pipeline::None, |acc, p| acc.worst(p.pipeline.clone()));
+        let unread = open.iter().any(|p| p.pipeline == Pipeline::Unknown);
+        return match worst {
+            Pipeline::None | Pipeline::Passed if unread => Pipeline::Unknown,
+            worst => worst,
+        };
     }
     match set.iter().find(|p| p.state == PrState::Merged) {
         Some(p) => p.pipeline.clone(),
@@ -1455,9 +1430,23 @@ mod tests {
             Some("pipeline not read")
         );
         let open = with(Pipeline::Unknown);
-        assert!(
-            entry_refusal(Some(&open), Some(false)).is_some(),
+        assert_eq!(
+            entry_refusal(Some(&open), Some(false)).as_deref(),
+            Some("pipeline not read"),
             "an open PR unread is never green"
+        );
+        // Nor beside one that passed (T-795): the fold does not drop it.
+        let mut two = with(Pipeline::Passed);
+        let mut web = pr("o/web", 1, PrState::Open, "bb", 1);
+        web.pipeline = Pipeline::Unknown;
+        two.push(web);
+        assert_eq!(pipeline_of(&two), Pipeline::Unknown);
+        assert_eq!(entry_refusal(Some(&two), Some(false)).as_deref(), Some("pipeline not read"));
+        two[0].pipeline = Pipeline::Failed("test".into());
+        assert_eq!(
+            pipeline_of(&two),
+            Pipeline::Failed("test".into()),
+            "a failure still says itself"
         );
         // Unbound, a URL opened here: the forge has not read it yet.
         assert_eq!(entry_refusal(None, Some(true)).as_deref(), Some("pipeline not read"));

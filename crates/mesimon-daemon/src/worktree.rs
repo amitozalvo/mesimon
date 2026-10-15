@@ -585,10 +585,7 @@ pub fn cut_point(repo: &Path, base: &str, local: &str) -> Cut {
     if up_oid == local || !ff_possible(repo, &up_oid, local) {
         return stay;
     }
-    let behind = git_read(repo, &["rev-list", "--count", &format!("{local}..{up_oid}")])
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0);
+    let behind = ahead_count(repo, &up_oid, local);
     Cut { oid: up_oid, from: Some((up, behind)) }
 }
 

@@ -75,6 +75,7 @@ case "$1 $2" in
   "auth status") exit 0 ;;
   "pr list")
     [ -f "$MSMN_GH_SLOW" ] && sleep "$(cat "$MSMN_GH_SLOW")"
+    [ -f "$MSMN_GH_FAIL" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
     cat "$MSMN_GH_PRS" 2>/dev/null || echo '[]' ;;
   api\ *)
     case "$4" in
@@ -1444,6 +1445,75 @@ fn a_turn_that_pushed_is_read_at_its_end_not_on_the_minute() {
     // Under the floor of one read per repository per ten seconds from the
     // first pass; the minute is ten.
     assert!(took < Duration::from_secs(20), "merged {took:?} after the turn's end");
+}
+
+/// A read that failed reads nothing (T-795): the turn's end that pushed
+/// and opened a PR is owed a read, and a `pr list` that fails answers it
+/// no more than the forge's silence would. Before, the failed read stamped
+/// the ticket current with no PR bound, and the train fast-forwarded a
+/// branch whose work had gone to a pull request.
+#[test]
+fn a_failed_read_after_a_push_holds_the_train() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    let name = "forge_failed_read";
+    let (stub_dir, path_var) = gh_stub(name);
+    let prs_file = stub_dir.join("prs.json");
+    let fail = stub_dir.join("fail");
+    let log = stub_dir.join("calls.log");
+    write(&prs_file, "[]");
+    let Some(h) = Harness::boot_with_env(
+        name,
+        Some(STUB),
+        &[
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "600000"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs_file.display().to_string()),
+            ("MSMN_GH_FAIL", &fail.display().to_string()),
+            ("MSMN_GH_LOG", &log.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    let lists = || {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.starts_with("pr list"))
+            .count()
+    };
+    let repo = h.repo.clone();
+    init_repo(&repo, "a.txt", "hello\n");
+    git(&repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client(name);
+    assert!(matches!(
+        c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
+        Response::Ok
+    ));
+    let (id, sid, branch, path) = ready(&mut c, "alpha");
+    wait_until(Duration::from_secs(20), "the first forge pass to list", || lists() >= 1);
+    std::thread::sleep(Duration::from_millis(500));
+    let first = lists();
+    // The forge stops answering; the turn pushes, so its end is owed a read.
+    write(&fail, "1");
+    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sid, "running", |s| *s == SessionState::Running);
+    let tip = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
+    git(&path, &["update-ref", &format!("refs/remotes/origin/{branch}"), &tip]);
+    hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    wait_until(Duration::from_secs(20), "the turn's read to be tried", || lists() > first);
+    // The look and the read are seconds; a train that took the failed read
+    // for a current one has merged by now.
+    std::thread::sleep(Duration::from_secs(4));
+    assert!(
+        !git_ok(&repo, &["merge-base", "--is-ancestor", &branch, "main"]),
+        "a failed read is no read: the train holds"
+    );
+    assert!(c.board().ticket(id).is_some());
+    let _ = c.request(Command::Shutdown);
+    let _ = std::fs::remove_dir_all(&stub_dir);
 }
 
 /// One ask per conflict (T-770), the lab's D1 on a stub: the local base

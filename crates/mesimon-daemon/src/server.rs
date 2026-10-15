@@ -7151,15 +7151,7 @@ impl Daemon {
         let opened_here = if set.is_some_and(|s| !s.is_empty()) {
             None
         } else {
-            let live: Vec<String> = self
-                .board
-                .sessions
-                .iter()
-                .filter(|r| r.ticket == id)
-                .filter_map(crate::cost::transcript_of)
-                .map(|(p, _)| p.display().to_string())
-                .collect();
-            self.costs.opened_any(id, &live)
+            self.costs.opened_any(id, &self.live_transcripts(id))
         };
         mesimon_core::forge::entry_refusal(set, opened_here)
     }
@@ -7185,6 +7177,17 @@ impl Daemon {
             })
             .collect();
         mesimon_core::forge::head_unread(set, &b.branch, &tips)
+    }
+
+    /// The transcripts the ticket's live sessions write, by path.
+    pub(super) fn live_transcripts(&self, ticket: ulid::Ulid) -> Vec<String> {
+        self.board
+            .sessions
+            .iter()
+            .filter(|r| r.ticket == ticket)
+            .filter_map(crate::cost::transcript_of)
+            .map(|(p, _)| p.display().to_string())
+            .collect()
     }
 
     /// Every column's description (T-467), keyed by name, for `get_ticket`
@@ -10277,10 +10280,7 @@ impl Daemon {
             .flat_map(|b| b.legs(&self.paths.repo_root, &base))
             .collect();
         for leg in legs {
-            self.forge
-                .remotes
-                .entry(leg.repo.clone())
-                .or_insert_with(|| crate::forge::remote_of(&leg.repo, &leg.base));
+            self.forge.remote(&leg.repo, &leg.base);
         }
     }
 
@@ -13537,11 +13537,7 @@ impl Daemon {
                 // the remote parsed once, as `learn_remotes` does, and only
                 // where the upstream is asked too.
                 let forge = if ask_upstream {
-                    self.forge
-                        .remotes
-                        .entry(leg.repo.clone())
-                        .or_insert_with(|| crate::forge::remote_of(&leg.repo, &leg.base))
-                        .is_some()
+                    self.forge.remote(&leg.repo, &leg.base).is_some()
                 } else {
                     self.forge.remotes.get(&leg.repo).is_some_and(Option::is_some)
                 };
@@ -13699,13 +13695,7 @@ impl Daemon {
     fn forge_legs(&mut self, legs: &[worktree::Leg]) -> Vec<crate::forge::LegQuery> {
         let mut out = Vec::new();
         for leg in legs {
-            let remote = self
-                .forge
-                .remotes
-                .entry(leg.repo.clone())
-                .or_insert_with(|| crate::forge::remote_of(&leg.repo, &leg.base))
-                .clone();
-            let Some(remote) = remote else { continue };
+            let Some(remote) = self.forge.remote(&leg.repo, &leg.base).cloned() else { continue };
             out.push(crate::forge::LegQuery {
                 repo_path: remote.path.clone(),
                 dir: leg.path.clone(),
@@ -13751,8 +13741,12 @@ impl Daemon {
         let mut queries = Vec::new();
         for (t, branch, legs) in &tickets {
             let leg_queries = self.forge_legs(legs);
+            // The repositories this ticket's set comes from: a pass that
+            // did not hear from every one did not read it (T-795).
+            let mut mine: Vec<mesimon_core::forge::Remote> = Vec::new();
             for leg in legs {
                 if let Some(Some(remote)) = self.forge.remotes.get(&leg.repo) {
+                    mine.push(remote.clone());
                     add_repo(&mut repos, remote.clone(), leg.repo.clone());
                 }
             }
@@ -13764,6 +13758,7 @@ impl Daemon {
             for url in &opened {
                 if let Some(remote) = mesimon_core::forge::repo_of_url(url) {
                     if repos.iter().any(|(r, _)| r.host == remote.host) {
+                        mine.push(remote.clone());
                         add_repo(&mut repos, remote, self.paths.repo_root.clone());
                     }
                 }
@@ -13773,6 +13768,7 @@ impl Daemon {
                 branch: branch.clone(),
                 legs: leg_queries,
                 opened,
+                repos: mine,
             });
         }
         // Which CLI reads each host: probed on the worker where unknown or
@@ -13893,8 +13889,24 @@ impl Daemon {
         for (host, probe) in sample.probes {
             self.forge.probes.insert(host, probe);
         }
+        // A ticket the pass heard every repository of was read (T-795); one
+        // with a repository that failed or was not listed was not, and
+        // keeps its old PRs there, its last read's time and its basis. A
+        // host whose probe found no CLI is one nothing reads.
+        let answered: std::collections::HashSet<&str> =
+            sample.repos.iter().filter(|r| r.error.is_none()).map(|r| r.path.as_str()).collect();
+        let read: std::collections::HashSet<ulid::Ulid> = sample
+            .sets
+            .keys()
+            .filter(|t| {
+                crate::forge::read_whole(sample.repos_of.get(t), &sample.repos, |host| {
+                    self.forge.probes.get(host).is_some_and(|p| p.cli.is_none())
+                })
+            })
+            .copied()
+            .collect();
         // A read begun since a turn's end answers it.
-        self.forge.answer(sample.sets.keys(), sample.at_ms);
+        self.forge.answer(read.iter(), sample.at_ms);
         // What the merged commits' reads taught, per PR (T-771): pipelines
         // and the environments reached are kept, so a settled one costs no
         // call on the next pass and an older PR keeps its own.
@@ -13917,8 +13929,6 @@ impl Daemon {
         let mut news: Vec<(ulid::Ulid, String)> = Vec::new();
         let mut openings: HashMap<ulid::Ulid, String> = HashMap::new();
         let mut arrivals: Vec<(ulid::Ulid, crate::forge::Edge)> = Vec::new();
-        let failed: Vec<&str> =
-            sample.repos.iter().filter(|r| r.error.is_some()).map(|r| r.path.as_str()).collect();
         let mut basis = sample.basis;
         for (t, set) in sample.sets {
             // A ticket a later read already answered (a turn's end's, while
@@ -13929,7 +13939,7 @@ impl Daemon {
                 continue;
             }
             let old = self.forge.sets.get(&t);
-            let set = crate::forge::carry(old.map(Vec::as_slice), set, &failed);
+            let set = crate::forge::carry(old.map(Vec::as_slice), set, &answered);
             for line in crate::forge::delta(old.map(Vec::as_slice), &set) {
                 self.feed.board_outcome("forge", "pr", Some(t), &line);
             }
@@ -14005,9 +14015,11 @@ impl Daemon {
             }
             changed |= !unchanged;
             self.forge.sets.insert(t, set);
-            self.forge.at_ms.insert(t, sample.at_ms);
-            if let Some(b) = basis.remove(&t) {
-                self.forge.basis.insert(t, b);
+            if read.contains(&t) {
+                self.forge.at_ms.insert(t, sample.at_ms);
+                if let Some(b) = basis.remove(&t) {
+                    self.forge.basis.insert(t, b);
+                }
             }
         }
         changed |= self.forge_arrivals(arrivals);

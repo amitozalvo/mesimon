@@ -80,7 +80,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket: ulid::Ulid, idx: usize) {
     }
     if rows.is_empty() {
         let room = usize::from(dialog::MAX_W).min(usize::from(f.area().width).saturating_sub(6));
-        let lines = wrap(EMPTY, room.saturating_sub(2));
+        let lines = crate::peek::wrap(EMPTY, room.saturating_sub(2).max(1), usize::MAX);
         let area = dialog::centred(f.area(), lines.len() as u16, dialog::MAX_W);
         let inner_w = area.width.saturating_sub(2) as usize;
         let inner = dialog::frame(
@@ -108,22 +108,4 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket: ulid::Ulid, idx: usize) {
     }
     let idx = idx.min(rows.len() - 1);
     dialog::list(f, app, &name, false, Scope::PullRequests, idx, &rows);
-}
-
-/// `text` in lines of at most `room` cells, broken between words; a word
-/// longer than the room is cut.
-fn wrap(text: &str, room: usize) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
-    let mut line = String::new();
-    for word in text.split(' ') {
-        if !line.is_empty() && line.width() + 1 + word.width() > room {
-            lines.push(std::mem::take(&mut line));
-        }
-        if !line.is_empty() {
-            line.push(' ');
-        }
-        line.push_str(word);
-    }
-    lines.push(line);
-    lines.into_iter().map(|l| truncate(&l, room)).collect()
 }

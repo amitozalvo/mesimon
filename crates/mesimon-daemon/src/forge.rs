@@ -154,6 +154,9 @@ pub struct TicketQuery {
     pub branch: String,
     pub legs: Vec<LegQuery>,
     pub opened: Vec<String>,
+    /// Every repository the ticket's set can come from: its legs' remotes
+    /// and the ones its sessions' URLs name (T-795).
+    pub repos: Vec<Remote>,
 }
 
 /// A host to probe on this pass: the candidate CLIs in the order to try.
@@ -490,6 +493,8 @@ pub struct Sample {
     /// What each queried ticket had pushed and opened as the pass began
     /// (T-761): a later look that finds the same knows the set still holds.
     pub basis: HashMap<ulid::Ulid, Basis>,
+    /// Each queried ticket's repositories, as its query named them.
+    pub repos_of: HashMap<ulid::Ulid, Vec<Remote>>,
 }
 
 /// The local facts a ticket's set was read on (T-761): what its legs had
@@ -565,6 +570,7 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
     // after this read is one the lists may miss, so it must move the basis.
     let mut logs: Vec<Vec<Vec<String>>> = Vec::new();
     for t in &q.tickets {
+        out.repos_of.insert(t.ticket, t.repos.clone());
         let legs: Vec<Vec<String>> = t.legs.iter().map(|l| reflog(&l.dir)).collect();
         out.basis
             .insert(t.ticket, Basis { pushed: pushed(&t.legs, &legs), opened: t.opened.clone() });
@@ -1184,6 +1190,12 @@ impl State {
             && opened.iter().all(|u| basis.opened.iter().any(|b| forge::same_url(b, u)))
     }
 
+    /// The remote a repository directory is read through, parsed once
+    /// (`remote_of`) and kept.
+    pub fn remote(&mut self, repo: &Path, base: &str) -> Option<&Remote> {
+        self.remotes.entry(repo.to_path_buf()).or_insert_with(|| remote_of(repo, base)).as_ref()
+    }
+
     /// Forgets every ticket not in `live`, in each per-ticket map.
     pub fn keep_tickets(&mut self, live: &HashSet<ulid::Ulid>) {
         self.sets.retain(|t, _| live.contains(t));
@@ -1416,15 +1428,45 @@ pub fn load_or_recover(paths: &Paths) -> (ForgeFile, Vec<Notice>, bool) {
 }
 
 /// A ticket's set as a pass read it, with the previous read's PRs of every
-/// repository whose call failed on this pass carried over (T-752): a
-/// forge that did not answer said nothing, and a card does not lose its
-/// PRs to a timeout, nor a loaded set to the first pass after a restart.
-pub fn carry(old: Option<&[Pr]>, new: Vec<Pr>, failed: &[&str]) -> Vec<Pr> {
+/// repository that did not answer on this pass carried over (T-752,
+/// T-795): one whose call failed, one on a host no CLI was found for, one
+/// the pass did not list. A forge that did not answer said nothing, and a
+/// card does not lose its PRs to a timeout, nor a loaded set to the first
+/// pass after a restart. An open PR whose pipeline read failed keeps the
+/// pipeline last read at the same head: unknown is no news.
+pub fn carry(old: Option<&[Pr]>, new: Vec<Pr>, answered: &HashSet<&str>) -> Vec<Pr> {
     let Some(old) = old else { return new };
-    let kept = old.iter().filter(|p| failed.contains(&p.repo.as_str())).cloned();
-    let mut set: Vec<Pr> = new.into_iter().filter(|p| !failed.contains(&p.repo.as_str())).collect();
+    let kept = old.iter().filter(|p| !answered.contains(p.repo.as_str())).cloned();
+    let mut set: Vec<Pr> = new.into_iter().filter(|p| answered.contains(p.repo.as_str())).collect();
+    for p in set.iter_mut().filter(|p| p.state.is_open() && p.pipeline == Pipeline::Unknown) {
+        let last = old.iter().find(|o| {
+            o.repo == p.repo
+                && o.number == p.number
+                && o.head_oid == p.head_oid
+                && o.pipeline != Pipeline::Unknown
+        });
+        if let Some(o) = last {
+            p.pipeline = o.pipeline.clone();
+        }
+    }
     set.extend(kept);
     forge::ticket_set(set)
+}
+
+/// Whether a pass read all of a ticket's set (T-795): every repository it
+/// comes from answered, or sits on a host whose probe found no CLI
+/// (`no_cli`), which nothing reads. One that failed, or that the pass did
+/// not list (a burst skips a host not yet probed), leaves the ticket
+/// unread: not current for the train, its owed read still owed.
+pub fn read_whole(
+    repos: Option<&Vec<Remote>>,
+    reports: &[RepoReport],
+    no_cli: impl Fn(&str) -> bool,
+) -> bool {
+    repos.into_iter().flatten().all(|r| {
+        let key = format!("{}/{}", r.host, r.path);
+        reports.iter().any(|x| x.key == key && x.error.is_none()) || no_cli(&r.host)
+    })
 }
 
 /// `pipeline failed !1: test-linux`, bare where no job is named, and with
@@ -2308,20 +2350,56 @@ mod tests {
         assert!(q.pending.is_empty());
     }
 
-    /// A repository whose call failed keeps the previous read's PRs; one
-    /// that answered says what it says now (T-752).
+    /// A repository that did not answer keeps the previous read's PRs; one
+    /// that answered says what it says now (T-752, T-795).
     #[test]
-    fn a_failed_call_carries_its_repositorys_prs_over() {
+    fn a_repository_that_did_not_answer_carries_its_prs_over() {
         let mut other = pr(9, PrState::Open, Pipeline::Running(String::new()));
         other.repo = "o/other".into();
         let old = vec![pr(1, PrState::Open, Pipeline::Running(String::new())), other.clone()];
         let new = vec![pr(1, PrState::Merged, Pipeline::Passed)];
-        let set = carry(Some(&old), new.clone(), &["o/other"]);
+        let only_r = HashSet::from(["o/r"]);
+        let set = carry(Some(&old), new.clone(), &only_r);
         assert_eq!(set.len(), 2);
         assert!(set.iter().any(|p| p.number == 1 && p.state == PrState::Merged));
-        assert!(set.contains(&other));
-        assert_eq!(carry(Some(&old), new.clone(), &[]), new, "every call answered");
-        assert_eq!(carry(None, new.clone(), &["o/r"]), new, "a first read carries nothing");
+        assert!(set.contains(&other), "o/other did not answer: failed, unlisted or no CLI");
+        let both = HashSet::from(["o/r", "o/other"]);
+        assert_eq!(carry(Some(&old), new.clone(), &both), new, "every repository answered");
+        assert_eq!(carry(None, new.clone(), &only_r), new, "a first read carries nothing");
+        // An open PR's pipeline read that failed keeps the last one at the
+        // same head, and only there.
+        let was = pr(1, PrState::Open, Pipeline::Passed);
+        let unread = pr(1, PrState::Open, Pipeline::Unknown);
+        let set = carry(Some(std::slice::from_ref(&was)), vec![unread.clone()], &only_r);
+        assert_eq!(set[0].pipeline, Pipeline::Passed);
+        let mut pushed = unread.clone();
+        pushed.head_oid = "moved".into();
+        let set = carry(Some(std::slice::from_ref(&was)), vec![pushed], &only_r);
+        assert_eq!(set[0].pipeline, Pipeline::Unknown, "a new head's pipeline is its own");
+    }
+
+    /// A ticket is read only where every repository it comes from answered,
+    /// or nothing reads its host (T-795).
+    #[test]
+    fn a_ticket_is_read_only_where_every_repository_answered() {
+        let remote = |host: &str, path: &str| Remote { host: host.into(), path: path.into() };
+        let report = |key: &str, error: Option<&str>| RepoReport {
+            key: key.into(),
+            path: key.split_once('/').unwrap().1.into(),
+            error: error.map(str::to_string),
+        };
+        let repos = vec![remote("github.com", "o/a"), remote("gitlab.com", "g/b")];
+        let ok = [report("github.com/o/a", None), report("gitlab.com/g/b", None)];
+        assert!(read_whole(Some(&repos), &ok, |_| false));
+        let failed = [report("github.com/o/a", None), report("gitlab.com/g/b", Some("502"))];
+        assert!(!read_whole(Some(&repos), &failed, |_| false), "a failed call reads nothing");
+        let unlisted = [report("github.com/o/a", None)];
+        assert!(!read_whole(Some(&repos), &unlisted, |_| false), "nor a repository not listed");
+        assert!(
+            read_whole(Some(&repos), &unlisted, |h| h == "gitlab.com"),
+            "a host no CLI reads is no repository to wait for"
+        );
+        assert!(read_whole(None, &[], |_| false), "a ticket with no remote");
     }
 
     /// `forge.json` round-trips the sets, the conflicts said (T-785) and
