@@ -25851,3 +25851,67 @@ Tests: `forge::a_merged_head_past_the_tip_lands_the_tip_it_carries` and
 `a_merged_pr_whose_head_carries_the_tip_lands_and_one_that_does_not_holds_done` — the card reads
 `main (PR #43)`, `m` says already merged, DONE admits it, and a sibling whose head does not carry
 its tip stays unmerged and refused; each PR's commits asked once. It times out on the old rule.
+
+## A closed PR stays a ticket's (T-797, 2026-10-15, follow-up to T-778 and T-795)
+
+**Why.** T-795's bug hunt: `forge::ticket_set` dropped every closed PR, so `has_pr` (T-778's
+"open, merged or closed") never saw one. A ticket whose PR #42 the team closed unmerged had an
+empty set, and the train fast-forwarded its branch into local main; `m` did too, and `get_ticket`
+said the train or the crown merges it. If #42 was later reopened and merged, local main diverged
+from origin, T-778's lab incident by another road. And the pipeline gate refused forever: the
+ledger keeps the opened URL for good, so `opened_any` said `true` against an empty set and a
+`requires_pipeline` column answered `pipeline not read` to every mover, a person's hand
+included. The same forever-refusal held for a checkout ticket that ran `pr create` (no forge
+query asks about a ticket with no branch) and for a PR on a host no CLI reads.
+
+**Decided: a closed PR is the team's decision, and the merge stays the forge's.** The set keeps
+closed PRs; `ticket_set` reads a closed PR's pipeline, conflict and review as none, so no fold,
+edge or mark reads them. `has_pr`, the train's lane, `merge_by`, `crown_merge_refusal` and
+`merge_ticket` see it: the train and `m` land nothing of a ticket whose PRs are all closed.
+`forge::merge_refusal` says `PR #42 closed unmerged — reopen it on GitHub` (the newest closed
+PR) where no PR is open or merged; with one merged, T-778's words stand. `get_ticket`'s merge is
+`by: forge`, why `its pull requests were closed unmerged on the forge` (`forge::merge_why`). The
+road back is reopening the PR on the forge; landing it locally stays git by hand, as T-778 left
+it. Not chosen: basing `has_pr` on `State::held` (every PR ever bound), which would have needed
+`held` in `forge.json` and left the card, the gates and the train reading two different sets.
+
+**The pipeline gate.** A closed PR has no pipeline to pass: `forge::pipelined` (an open or a
+merged PR in the set) decides whether the set is judged, so a set of closed PRs alone reads as
+none bound, live or loaded. An opened-here URL now holds only while a read still owes it
+(`Daemon::opened_unread`, `Ledger::opened_unread`): the ticket is one a forge read asks about (a
+worktree binding with its branch, not tearing down), the URL's host is one the board's legs reach
+(`forge_hosts`, or unknown while a leg's remote is unparsed) and its probe did not find no CLI
+(`forge_reaches`), and, once read live, the ticket's reads never held its PR in any state
+(`State::held_url`, by number and path in any case, or the same URL). Anything else falls back to
+T-750's no-PR pass. The tail reader returns the URLs it finds (`urls_in_tails`) so a URL already
+read is dropped there too. A ticket with a PR to judge is judged by its pipeline as before; the
+transcripts are not read for it. `forge_query` now parses every ticket's leg remotes before it
+judges any printed URL's host, so a URL on a host another ticket's leg reaches is listed
+whatever order the tickets come in: the gate waits on exactly the hosts the query reads.
+
+**What changed beside.** The `merged` edge (`Arrives here when: merged`) is one merged PR and
+none open, so a closed PR beside a merged one waits for nothing. The feed's `closed #42` line in
+`forge::delta`, unreachable while closed PRs left the set, now fires. A closed PR is `⊘` (ascii
+`-`), grey whatever its pipeline was (`glyphs::pr_mark`), with no clauses past `closed` on the
+page and in the `^h` list. The card's line (`App::card_prs`) leaves closed PRs out while one is
+open or merged, and on a ticket whose PRs are all closed shows them with the word `closed`: there
+it is why the board merges nothing. `forge.json` now holds closed PRs; no schema bump, since
+`closed` was always a word the file's readers knew. A closed PR a full list cut off is read by
+itself like any held PR (T-800's `unlisted`), so a ticket keeps it past a hundred newer PRs and
+the train does not take the branch then.
+
+**Tests.** Core: `the_set_is_newest_first_closed_included`,
+`entry_needs_a_passed_pipeline_only_where_a_pr_is_or_was_opened` (a closed set alone enters, a
+URL still owed holds it, an open one beside is judged), `a_printed_url_names_its_pr_by_number_and_path`,
+and `an_open_pr_on_a_merged_ticket_holds_the_merge` for the closed words and `merge_why`.
+Daemon: `a_closed_pr_stays_and_waits_for_nothing` (the feed line, the `merged` edge, `held_url`)
+and the ledger's `a_pr_opened_in_the_unread_tail_is_seen_before_the_pass` with a read URL.
+TUI: `a_closed_pr_is_on_the_card_only_where_every_pr_is_closed` and the glyph test. `forge_e2e`:
+`a_ticket_whose_work_went_through_a_pr_is_never_the_trains` gains a ticket whose PR #43 closed
+at its tip (off the train's list, `m` refused in the closed words, `get_ticket` by forge); with
+`has_pr` blind to closed PRs it fails on the train's pending list.
+`a_ticket_with_no_pull_request_enters_and_one_opened_here_waits` gains a worktree ticket whose
+turn printed #44, read closed, entering a `requires_pipeline` REVIEW, and a checkout ticket whose
+turn printed #45 entering it too; each fails with its fix taken out. Rig F9 (real Sonnet): a
+crown asked to land a branch whose PR is closed reads `merge`, lands nothing and says it was
+closed.
