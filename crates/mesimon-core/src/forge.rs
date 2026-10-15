@@ -655,6 +655,11 @@ impl Remote {
 
     /// The forge the host is known to be, before any CLI is asked:
     /// github.com is GitHub; any other host is asked of both CLIs.
+    /// `host/path`: the repository's one name across the board's reads.
+    pub fn key(&self) -> String {
+        format!("{}/{}", self.host, self.path)
+    }
+
     pub fn known_forge(&self) -> Option<Forge> {
         (self.host == "github.com").then_some(Forge::GitHub)
     }

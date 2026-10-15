@@ -125,7 +125,7 @@ pub struct RepoQuery {
 
 impl RepoQuery {
     pub fn key(&self) -> String {
-        format!("{}/{}", self.remote.host, self.remote.path)
+        self.remote.key()
     }
 
     /// One `api` read of `path` on the repository's host.
@@ -1472,7 +1472,7 @@ pub fn read_whole(
     no_cli: impl Fn(&str) -> bool,
 ) -> bool {
     repos.into_iter().flatten().all(|r| {
-        let key = format!("{}/{}", r.host, r.path);
+        let key = r.key();
         reports.iter().any(|x| x.key == key && x.error.is_none()) || no_cli(&r.host)
     })
 }

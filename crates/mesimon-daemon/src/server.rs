@@ -7695,6 +7695,12 @@ impl Daemon {
     /// What the column `dest` refuses `id` for on the way in, in the words
     /// the mover hears (T-749 reads it again to clear a held line).
     fn column_gate(&self, id: ulid::Ulid, dest: &str) -> Option<String> {
+        self.gate_with(id, dest, || self.ticket_unmerged(id))
+    }
+
+    /// `column_gate` with the merge clause's reading given: git now for a
+    /// move, the cached flags for what the snapshot shows.
+    fn gate_with(&self, id: ulid::Ulid, dest: &str, unmerged: impl Fn() -> bool) -> Option<String> {
         // M4 DONE gate (author rule 3), now the column's `requires_merge`
         // (T-117): entering means the work landed — an unmerged worktree
         // blocks the move. It lived inside the human's move path until T-84,
@@ -7707,7 +7713,7 @@ impl Daemon {
             if let Some(why) = self.open_pr_refusal(id) {
                 return Some(format!("{why} before {dest}"));
             }
-            if self.ticket_unmerged(id) {
+            if unmerged() {
                 return Some(format!("worktree unmerged — merge before {dest}"));
             }
         }
@@ -7823,9 +7829,16 @@ impl Daemon {
     /// The held lines still standing (T-749): a column rule's until the
     /// rule passes, the move gate's until the ticket moves.
     fn held_items(&self) -> Vec<mesimon_core::command::HeldMove> {
+        // On every snapshot (T-795): the merge clause as the card reads it,
+        // off the cached flags, never a git fork per held line.
+        let unmerged_cached = |t: ulid::Ulid| {
+            self.worktrees.get(&t).is_some_and(|b| {
+                !b.branch.is_empty() && !self.wt_agg.get(&t).is_some_and(|a| a.merged)
+            })
+        };
         self.held.standing(
             |t| self.board.ticket(t).is_some(),
-            |t, dest| self.column_gate(t, dest).is_some(),
+            |t, dest| self.gate_with(t, dest, || unmerged_cached(t)).is_some(),
         )
     }
 
@@ -13663,6 +13676,25 @@ impl Daemon {
         only: &std::collections::HashSet<ulid::Ulid>,
         floor: Duration,
     ) {
+        // The floor first, off the cached remotes (T-795): this is asked
+        // every tick, and a query walks the tickets and copies the settled
+        // commits. A leg's repository not due is one the query would hold.
+        let base = self.base_branch.clone().unwrap_or_default();
+        let held = self
+            .worktrees
+            .iter()
+            .filter(|(t, _)| only.contains(t))
+            .flat_map(|(_, b)| b.legs(&self.paths.repo_root, &base))
+            .any(|leg| {
+                self.forge
+                    .remotes
+                    .get(&leg.repo)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|r| !self.forge.due_for(&r.key(), floor))
+            });
+        if held {
+            return;
+        }
         let Some(query) = self.forge_query(Some(only)) else { return };
         if query.repos.is_empty()
             || query.repos.iter().any(|r| !self.forge.due_for(&r.key(), floor))
@@ -13680,11 +13712,8 @@ impl Daemon {
     /// The repositories a read is about to ask, stamped for the floor.
     fn forge_asked(&mut self, query: &crate::forge::Query) {
         let now = Instant::now();
-        for key in query
-            .repos
-            .iter()
-            .map(|r| r.key())
-            .chain(query.pending.iter().map(|p| format!("{}/{}", p.remote.host, p.remote.path)))
+        for key in
+            query.repos.iter().map(|r| r.key()).chain(query.pending.iter().map(|p| p.remote.key()))
         {
             self.forge.asked.insert(key, now);
         }
@@ -14088,6 +14117,8 @@ impl Daemon {
         let mut moved = false;
         for (t, edge) in arrivals {
             let Some(from) = self.board.ticket(t).map(|x| x.column.clone()) else { continue };
+            // Read once, and only for a column a pass takes to (T-795).
+            let head_unread = std::cell::OnceCell::new();
             // The furthest stage: a deployment over a merge over a pass over
             // an opening; among equals, the first in board order.
             let dest = self
@@ -14108,7 +14139,10 @@ impl Daemon {
                         Arrival::Merged if edge.merged => 3,
                         // A pass on a head the branch has left is the
                         // commit before's (T-780).
-                        Arrival::PipelinePasses if edge.passed && !self.pipeline_head_unread(t) => {
+                        Arrival::PipelinePasses
+                            if edge.passed
+                                && !*head_unread.get_or_init(|| self.pipeline_head_unread(t)) =>
+                        {
                             2
                         }
                         Arrival::PrOpened if !edge.opened.is_empty() => 1,
