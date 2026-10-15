@@ -15,9 +15,9 @@ use mesimon_backend_tmux::TmuxBackend;
 use mesimon_core::attention::{self, Change, EndKind, Machine, Signal, StartSource};
 use mesimon_core::board::{
     agent_reason_word, agent_state_word, bash_mode_foreground, foreground_of, sanitize_tag,
-    AgentProvider, AgentTools, Archived, Board, Confidence, CrownMode, ExitReason, PickedUp,
-    Provenance, Reason, SessionKind, SessionRecord, SessionState, StopReason, Tag, TagRef, Ticket,
-    UnknownReason, WorkspaceStrategy, PICKED_AT_DESK, PICKED_BY_AGENT,
+    AgentProvider, AgentTools, Archived, Board, Confidence, CrownMode, ExitReason, MergeInto,
+    PickedUp, Provenance, Reason, SessionKind, SessionRecord, SessionState, StopReason, Tag,
+    TagRef, Ticket, UnknownReason, WorkspaceStrategy, PICKED_AT_DESK, PICKED_BY_AGENT,
 };
 use mesimon_core::command::{
     AgentAutomoveView, AgentBackgroundView, AgentBoardView, AgentMergeView, AgentNeedsYouView,
@@ -1051,7 +1051,13 @@ pub fn run(paths: Paths) -> Result<()> {
     notices.extend(crown_notices);
     let (train_file, train_notices, train_barred) = crate::train::load_or_recover(&paths);
     notices.extend(train_notices);
-    let (forge_file, forge_notices, forge_barred) = crate::forge::load_or_recover(&paths);
+    // Read only on a board whose branches land through pull requests
+    // (T-810): a board that merges into main never meets the forge.
+    let (forge_file, forge_notices, forge_barred) = if board.merge_into.pull_requests() {
+        crate::forge::load_or_recover(&paths)
+    } else {
+        Default::default()
+    };
     notices.extend(forge_notices);
     let queued: Vec<QueuedAsk> = queue_entries
         .into_iter()
@@ -2552,6 +2558,7 @@ impl Daemon {
             Command::SetDefaultTier { scope, id } => self.set_default_tier(scope, id),
             Command::SetCrownBudget { budget } => self.set_crown_budget(budget),
             Command::SetCrownMode { mode } => self.set_crown_mode(mode),
+            Command::SetMergeInto { into } => self.set_merge_into(into),
             Command::SetCrownArchives { on } => self.set_crown_archives(on),
             Command::SetCrownWatches { on } => self.set_crown_watches(on),
             Command::SetStatusLine { top } => self.set_status_line(top),
@@ -7141,6 +7148,11 @@ impl Daemon {
     /// judges the `pr create` of that same turn (T-750).
     fn pipeline_refusal(&self, id: ulid::Ulid) -> Option<String> {
         use mesimon_core::forge::pipelined;
+        // A board that merges into main reads no pipeline, and the column's
+        // setting is inert there (T-810).
+        if !self.through_prs() {
+            return None;
+        }
         // A live read only (T-752): a set `forge.json` brought back may be
         // a day old, and a pipeline, unlike a merge, can turn back. A loaded
         // set with a PR to judge waits for the first live pass; one with
@@ -7287,12 +7299,24 @@ impl Daemon {
         if self.merge_state_word(id).as_deref() == Some("merged") {
             return view("nobody", "already merged");
         }
-        // A PR bound, open, merged or closed (T-778, T-797): the forge
-        // merges it, whatever the mode and the train, and `merge_ticket`
-        // refuses it. Closed unmerged, every one, the why says so.
-        if let Some(why) = self.forge.sets.get(&id).and_then(|s| mesimon_core::forge::merge_why(s))
-        {
-            return view("forge", why);
+        // A board whose branches land through pull requests (T-810): the
+        // forge merges every worktree ticket's, PR bound or not yet, whatever
+        // the crown's mode and the train, and `merge_ticket` refuses it. A
+        // bound set says how (T-778, T-797); a shared-checkout ticket's
+        // commits are on the base already, as on any board.
+        if self.through_prs() {
+            if let Some(why) =
+                self.forge.sets.get(&id).and_then(|s| mesimon_core::forge::merge_why(s))
+            {
+                return view("forge", why);
+            }
+            if self
+                .board
+                .ticket(id)
+                .is_some_and(|t| t.workspace_strategy() == WorkspaceStrategy::Worktree)
+            {
+                return view("forge", "this board merges through pull requests");
+            }
         }
         if !self.board.crown_mode.merges() {
             return view("person", "crown mode is supervised");
@@ -7385,11 +7409,9 @@ impl Daemon {
         match state.as_str() {
             "merged" => Some(format!("{key}'s branch is already merged")),
             "clean" => Some(format!("{key}'s branch has no commits to merge yet")),
-            // The forge's merge (T-778), before a rebase the forge does not
-            // need.
-            _ if self.forge.has_pr(target) => {
-                self.pr_merge_refusal(target).map(|why| format!("{key}: {why}"))
-            }
+            // The forge's merge (T-778, T-810), before a rebase the forge
+            // does not need.
+            _ if self.through_prs() => Some(format!("{key}: {}", self.prs_refusal(target))),
             "needs_rebase" => Some(format!(
                 "{key}'s branch is behind its base ({}): {}",
                 // The upstream where the counts were taken against it (T-786).
@@ -8675,7 +8697,7 @@ impl Daemon {
     /// The single write path for `forge.json` (T-752): each ticket's pull
     /// requests and what the passes settled, written when they changed.
     fn persist_forge(&mut self) {
-        if self.forge_barred {
+        if self.forge_barred || !self.through_prs() {
             return;
         }
         let file = crate::forge::ForgeFile::of(&self.forge);
@@ -9634,10 +9656,25 @@ impl Daemon {
         self.open_pr(id).map(mesimon_core::forge::open_refusal)
     }
 
-    /// Why the board lands nothing of a ticket with a PR bound
-    /// (`forge::merge_refusal`, T-778): its work goes through pull requests.
-    fn pr_merge_refusal(&self, id: ulid::Ulid) -> Option<String> {
-        self.forge.sets.get(&id).and_then(|s| mesimon_core::forge::merge_refusal(s))
+    /// Why the board lands no worktree branch on a board that merges
+    /// through pull requests (T-810): its bound set's sentence
+    /// (`forge::merge_refusal`, T-778), else that a PR is to be opened, on
+    /// the forge its root leg's host was probed to be.
+    fn prs_refusal(&self, id: ulid::Ulid) -> String {
+        if let Some(why) =
+            self.forge.sets.get(&id).and_then(|s| mesimon_core::forge::merge_refusal(s))
+        {
+            return why;
+        }
+        let forge = self.legs_of(id).iter().find_map(|leg| {
+            let remote = self.forge.remotes.get(&leg.repo)?.as_ref()?;
+            self.forge
+                .probes
+                .get(&remote.host)
+                .and_then(|p| p.cli.as_ref().map(|c| c.forge))
+                .or_else(|| remote.known_forge())
+        });
+        mesimon_core::forge::open_one_refusal(forge)
     }
 
     /// The binding's legs, with the daemon's base branch for a single-repo
@@ -10017,13 +10054,14 @@ impl Daemon {
                 notified: false,
             };
         }
-        // An open PR is the merge (T-739): the team reviews and presses the
-        // forge's button, and mesimon never fast-forwards past it. `m`, the
-        // crown and the train all hear this one sentence. With every PR
-        // merged or closed the work still went through them (T-778): a
-        // branch reading ahead of a base the forge never moved is no work
-        // left to land here.
-        if let Some(detail) = self.pr_merge_refusal(id) {
+        // On a board whose branches land through pull requests (T-810) the
+        // PR is the merge: the team reviews and presses the forge's button,
+        // and mesimon never fast-forwards a worktree branch. `m`, the crown
+        // and the train all hear this one sentence: the open PR's, the
+        // forge's where every PR merged or closed (T-739, T-778), or that
+        // one is to be opened.
+        if self.through_prs() {
+            let detail = self.prs_refusal(id);
             return Response::Merge { outcome: MergeOutcome::Refused, detail, notified: false };
         }
         // ff-only policy, leg by leg (T-368): every touched leg is judged
@@ -10350,27 +10388,10 @@ impl Daemon {
                         conflict: self.wt_conflicts.contains(&b.branch),
                         has_pr: self.forge.has_pr(*t),
                         pr_conflict: self.forge.pr_conflict(*t),
-                        forge_fresh: self.forge_fresh(*t),
                     },
                 )
             })
             .collect()
-    }
-
-    /// Each worktree leg's repository remote, parsed once (T-739): what
-    /// says whether a forge reads this board at all. A few git reads per
-    /// repository directory, on the writer thread, the first time only.
-    fn learn_remotes(&mut self) {
-        let base = self.base_branch.clone().unwrap_or_default();
-        let legs: Vec<worktree::Leg> = self
-            .worktrees
-            .values()
-            .filter(|b| !b.branch.is_empty())
-            .flat_map(|b| b.legs(&self.paths.repo_root, &base))
-            .collect();
-        for leg in legs {
-            self.forge.remote(&leg.repo, &leg.base);
-        }
     }
 
     /// The forge's verdict on a ticket is current (`forge::State::fresh`),
@@ -10436,10 +10457,6 @@ impl Daemon {
         {
             return false;
         }
-        // Whether a forge reads this board is known before the train judges
-        // freshness (T-739): a board with no remote must not wait a bucket
-        // for the forge pass to say so, and neither must one after a restart.
-        self.learn_remotes();
         if !self.train_busy().is_empty() {
             return false;
         }
@@ -12486,6 +12503,41 @@ impl Daemon {
         Response::Ok
     }
 
+    /// `Command::SetMergeInto` (T-810): where the board's worktree branches
+    /// land. Into pull requests, the pull requests the last such stretch
+    /// wrote (`forge.json`) come back and the next tick reads the forge. Into
+    /// main, everything the forge said is let go — the cards, the gates, the
+    /// train and `get_ticket` read no PR from here — and a read still out
+    /// lands on nothing; the file is left as it was, unread and unwritten.
+    fn set_merge_into(&mut self, into: MergeInto) -> Response {
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        if self.board.merge_into != into {
+            self.board.merge_into = into;
+            if into.pull_requests() {
+                let (file, notices, barred) = crate::forge::load_or_recover(&self.paths);
+                self.notices.extend(notices);
+                self.forge_barred = barred;
+                self.restore_forge(file);
+            } else {
+                let gen = self.forge.gen.wrapping_add(1);
+                self.forge = crate::forge::State::default();
+                self.forge.gen = gen;
+                self.forge_written.clear();
+            }
+            self.persist_and_notify();
+        }
+        Response::Ok
+    }
+
+    /// The board's worktree branches land through pull requests (T-810):
+    /// the question every road to the forge asks first. Merging into main,
+    /// no forge is read, probed or written down.
+    pub(super) fn through_prs(&self) -> bool {
+        self.board.merge_into.pull_requests()
+    }
+
     /// `Command::SetCrownArchives` (T-590): whether the crown's
     /// `archive_ticket` archives and restores. Judged at each call, so an
     /// off holds from the crown's next one.
@@ -13372,13 +13424,16 @@ impl Daemon {
         // script sees the environment the agent will, and the seam.
         let launcher = self.init_launcher();
         let init_timeout = worktree::init_timeout();
+        // Cut at the fetched upstream only where the board merges through
+        // pull requests (T-779, T-810).
+        let upstream = self.through_prs();
         std::thread::spawn(move || {
             let started = Instant::now();
             let ptx = tx.clone();
             let result = match evicted {
                 Some(prior) => worktree::provision_existing(&repo, ticket, &prior),
                 None if census.is_empty() => {
-                    worktree::provision(&repo, &root, ticket, &key, &title)
+                    worktree::provision(&repo, &root, ticket, &key, &title, upstream)
                 }
                 None => worktree::provision_workspace(
                     &repo,
@@ -13388,6 +13443,7 @@ impl Daemon {
                     ticket,
                     &key,
                     &title,
+                    upstream,
                     &mut |done, total| {
                         let _ = ptx.send(Msg::ProvisionProgress(ticket, done, total));
                     },
@@ -13679,11 +13735,14 @@ impl Daemon {
                 // A forge's repository counts against its upstream (T-786):
                 // the remote parsed once, as `learn_remotes` does, and only
                 // where the upstream is asked too.
-                let forge = if ask_upstream {
-                    self.forge.remote(&leg.repo, &leg.base).is_some()
-                } else {
-                    self.forge.remotes.get(&leg.repo).is_some_and(Option::is_some)
-                };
+                // Only where the board merges through pull requests (T-810):
+                // into main, the local base is what the train moves.
+                let forge = self.through_prs()
+                    && if ask_upstream {
+                        self.forge.remote(&leg.repo, &leg.base).is_some()
+                    } else {
+                        self.forge.remotes.get(&leg.repo).is_some_and(Option::is_some)
+                    };
                 queries.push(worktree::RepoQuery {
                     name: leg.name.clone(),
                     repo: leg.repo.clone(),
@@ -13751,7 +13810,7 @@ impl Daemon {
     /// found. The remotes are parsed once per repository directory, here,
     /// since a parse is three git reads.
     fn queue_forge_sample(&mut self) {
-        if !self.forge.due() || self.worktrees.is_empty() {
+        if !self.through_prs() || !self.forge.due() || self.worktrees.is_empty() {
             return;
         }
         let Some(query) = self.forge_query(None) else { return };
@@ -13770,6 +13829,9 @@ impl Daemon {
     /// repository; a host not probed yet is the minute's. Held by the floor
     /// or a read already out, it is asked again on the next tick.
     fn queue_forge_burst(&mut self) {
+        if !self.through_prs() {
+            return;
+        }
         // A ticket the minute's read or a look made current is owed nothing.
         let current: Vec<ulid::Ulid> =
             self.forge.owed.keys().copied().filter(|t| self.forge_fresh(*t)).collect();
@@ -13789,7 +13851,7 @@ impl Daemon {
     /// rides the turn's end's road, one read out at a time, and a
     /// repository whose call failed is the minute's backoff's.
     fn queue_forge_busy(&mut self) {
-        if self.forge.inflight || self.forge.burst_inflight {
+        if !self.through_prs() || self.forge.inflight || self.forge.burst_inflight {
             return;
         }
         let busy = self.forge.busy();
@@ -14041,7 +14103,7 @@ impl Daemon {
     /// sample gives them.
     fn on_forge_sampled(&mut self, gen: u64, mut sample: crate::forge::Sample) {
         self.forge.inflight = false;
-        if gen != self.forge.gen {
+        if gen != self.forge.gen || !self.through_prs() {
             return;
         }
         self.forge.last = Some(Instant::now());
@@ -14066,6 +14128,9 @@ impl Daemon {
     /// repositories' errors alone replaced; the minute is not reset.
     fn on_forge_burst(&mut self, mut sample: crate::forge::Sample) {
         self.forge.burst_inflight = false;
+        if !self.through_prs() {
+            return;
+        }
         self.forge_errors(&sample);
         self.forge.carried.extend(std::mem::take(&mut sample.carried));
         self.absorb_forge(sample);
@@ -14441,6 +14506,7 @@ impl Daemon {
         let base = self.base_branch.clone();
         let cached: HashMap<String, Option<String>> = self.upstreams.clone();
         let parsed: Vec<std::path::PathBuf> = self.forge.remotes.keys().cloned().collect();
+        let prs = self.through_prs();
         // Single-repo legs need the base to make a query at all; with the
         // cache empty the worker resolves it and the queries are built here
         // against that answer once it lands. A workspace leg carries its
@@ -14474,7 +14540,7 @@ impl Daemon {
                     q.upstream = worktree::upstream_base(&q.repo, &q.base);
                 }
                 // So is whether a forge reads its remote (T-786).
-                if !parsed.contains(&q.repo) {
+                if prs && !parsed.contains(&q.repo) {
                     q.forge = crate::forge::remote_of(&q.repo, &q.base).is_some();
                 }
             }
@@ -14545,10 +14611,6 @@ impl Daemon {
         seq: u64,
         only: Option<ulid::Ulid>,
     ) -> bool {
-        // Whether a forge reads this board is learned with the flags
-        // (T-739): the snapshot's owed row plans on the flags the moment
-        // they land, and must not wait a pass of the train to be told.
-        self.learn_remotes();
         // Whether any of it is NEWS — what the board would draw differently.
         // The tick's road broadcasts on that and nothing else: a fetch that
         // lands a merge moves no session and fires no hook, so without this

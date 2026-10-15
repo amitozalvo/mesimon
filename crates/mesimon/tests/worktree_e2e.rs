@@ -15,7 +15,7 @@ use common::*;
 use std::process::Command as Proc;
 use std::time::{Duration, Instant};
 
-use mesimon_core::board::{Board, SessionKind, WorkspaceStrategy};
+use mesimon_core::board::{Board, MergeInto, SessionKind, WorkspaceStrategy};
 use mesimon_core::command::{Command, DiffTarget, MergeOutcome, Response, WorktreeItem};
 
 fn board_of(resp: Response) -> (Board, Vec<WorktreeItem>) {
@@ -523,6 +523,11 @@ fn a_forge_boards_worktree_starts_at_the_fetched_upstream() {
     git(repo, &["remote", "set-url", "origin", "https://gitlab.example.com/g/api.git"]);
 
     let mut c = h.client("wtcut");
+    // T-810: a board whose branches land through pull requests.
+    assert!(matches!(
+        c.request(Command::SetMergeInto { into: MergeInto::PullRequests }),
+        Response::Ok
+    ));
     let ticket = match c.request(Command::CreateTicket {
         column: "TODO".into(),
         title: "starts current".into(),
@@ -570,4 +575,40 @@ fn a_forge_boards_worktree_starts_at_the_fetched_upstream() {
     assert_eq!(wt.ahead, 1, "counted against origin/main, not local main: {wt:?}");
     assert_eq!(wt.counted, "origin/main");
     assert!(!wt.needs_rebase && !wt.merged, "{wt:?}");
+
+    // T-810: on a board that merges into main the train lands a branch in
+    // the local main, so that is where a branch starts and what it counts
+    // against: the forge's merges are not this board's.
+    assert!(matches!(c.request(Command::SetMergeInto { into: MergeInto::Main }), Response::Ok));
+    let local_ticket = match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "starts local".into(),
+        workspace: Some(WorkspaceStrategy::Worktree),
+        tier: None,
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("create failed: {other:?}"),
+    };
+    assert!(matches!(
+        c.request(Command::SpawnSession {
+            ticket: local_ticket,
+            kind: SessionKind::Claude,
+            submit_prompt: false,
+            plan: false
+        }),
+        Response::Provisioning
+    ));
+    let wt = wait_wt_status(&mut c, local_ticket, "attached", Duration::from_secs(10));
+    assert_eq!(git(repo, &["rev-parse", &wt.branch]).trim(), local, "cut at the local main");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let (_, wts) = board_of(c.request(Command::Snapshot));
+        let first = wts.iter().find(|w| w.ticket == ticket).cloned();
+        if first.as_ref().is_some_and(|w| w.counted.is_empty()) {
+            assert_eq!(first.unwrap().ahead, 5, "the first ticket counted against local main");
+            break;
+        }
+        assert!(Instant::now() < deadline, "never counted against local main: {first:?}");
+        std::thread::sleep(Duration::from_millis(150));
+    }
 }

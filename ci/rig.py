@@ -1489,6 +1489,7 @@ Reply with the single word ready and end your turn."""
                 "MSMN_GH_CHECKS": os.path.join(d, "checks.json"),
                 "MESIMON_FORGE_EVERY_MS": "2000",
             }
+            self.wire.set_merge_into("pull_requests")
             if not self.restart(env):
                 record["failures"].append("the daemon would not restart with the stub forge")
                 return False
@@ -1517,6 +1518,7 @@ Reply with the single word ready and end your turn."""
                 "MSMN_GH_CHECKS": os.path.join(d, "checks.json"),
                 "MESIMON_FORGE_EVERY_MS": "2000",
             }
+            self.wire.set_merge_into("pull_requests")
             if not self.restart(env):
                 record["failures"].append("the daemon would not restart with the stub forge")
                 return False
@@ -1547,6 +1549,7 @@ Reply with the single word ready and end your turn."""
                 "MSMN_GH_CHECKS": os.path.join(d, "checks.json"),
                 "MESIMON_FORGE_EVERY_MS": "2000",
             }
+            self.wire.set_merge_into("pull_requests")
             if not self.restart(env):
                 record["failures"].append("the daemon would not restart with the stub forge")
                 return False
@@ -1578,6 +1581,7 @@ Reply with the single word ready and end your turn."""
                 "MSMN_GH_CHECKS": os.path.join(d, "checks.json"),
                 "MESIMON_FORGE_EVERY_MS": "2000",
             }
+            self.wire.set_merge_into("pull_requests")
             if not self.restart(env):
                 record["failures"].append("the daemon would not restart with the stub forge")
                 return False
@@ -1740,6 +1744,7 @@ Reply with the single word ready and end your turn."""
                                  STEP_TIMEOUT, self.watch):
                 record["failures"].append("forge.json never kept the conflict said")
                 return False
+            self.wire.set_merge_into("pull_requests")
             if not self.restart(self.forge_env(d)):
                 record["failures"].append("the daemon would not restart with the stub forge")
                 return False
@@ -1766,8 +1771,24 @@ Reply with the single word ready and end your turn."""
                 record["failures"].append("the second PR never bound, or the card stayed merged")
                 return False
             return True
+        if what == "prs_board":
+            # The board's branches land through pull requests (T-810), on
+            # the stub forge with no PR: what the board says of a branch
+            # nobody has opened one from yet.
+            d = self.forge_stub()
+            path = os.path.join(d, "prs.json")
+            with open(path + ".tmp", "w") as f:
+                f.write("[]")
+            os.replace(path + ".tmp", path)
+            self.wire.set_merge_into("pull_requests")
+            if not self.restart(self.forge_env(d)):
+                record["failures"].append("the daemon would not restart with the stub forge")
+                return False
+            return True
         if what == "forge_off":
-            # The board's own Claude Code and PATH back: the stub is gone.
+            # The board's own Claude Code and PATH back: the stub is gone,
+            # and the board merges into main again (T-810).
+            self.wire.set_merge_into("main")
             d = self.forge_stub()
             for name in ("prs.json", "checks.json"):
                 try:
@@ -1922,7 +1943,8 @@ Reply with the single word ready and end your turn."""
             name, _, arg = c.partition(":")
             # A start that made no agent (U1) is judged on the board's and
             # the crown's side alone.
-            if rec is None and name not in ("woke", "crown_hand", "crown_reply", "crown"):
+            if rec is None and name not in ("woke", "crown_hand", "crown_reply", "crown_line",
+                                            "crown"):
                 check(c, False, "no agent record on the ticket")
             elif name == "road":
                 check(c, rec.get("road", "hooks") == arg, f"road {rec.get('road', 'hooks')}")
@@ -2234,6 +2256,27 @@ Reply with the single word ready and end your turn."""
                 crown = self.agent_of(board, self.crown)
                 said = last_reply(transcript(crown)) if crown else ""
                 check(c, arg.lower() in said.lower(), f"said {said[:100]!r}")
+            elif name == "crown_line":
+                # The crown's last line beginning `prefix` (T-810), `word`
+                # within it, or with `!word` not: one test asks the crown
+                # twice and reads each answer by its own line.
+                # The line runs to the end of its reply: a crown may put
+                # the prefix on a line of its own and its answer under it.
+                prefix, _, word = arg.rpartition(":")
+                crown = self.agent_of(board, self.crown)
+                line = ""
+                for r in reversed(replies(transcript(crown)) if crown else []):
+                    said = [l.strip().strip("*`").strip() for l in r.splitlines()]
+                    at = next((i for i in reversed(range(len(said)))
+                               if said[i].startswith(prefix)), None)
+                    if at is not None:
+                        line = " ".join(l for l in said[at:] if l)
+                        break
+                if word.startswith("!"):
+                    ok = bool(line) and word[1:].lower() not in line.lower()
+                else:
+                    ok = word.lower() in line.lower()
+                check(c, ok, f"said {line[:120]!r}" if line else f"no line {prefix!r}")
             elif name == "woke":
                 causes = [l.get("cause") for l in lines if l.get("kind") == "crown_wake"
                           and l.get("worker") == tid]

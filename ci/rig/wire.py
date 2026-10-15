@@ -187,6 +187,10 @@ class Wire:
     def set_crown_watches(self, on):
         return self.request({"cmd": "set_crown_watches", "on": on})
 
+    def set_merge_into(self, into):
+        """`main` or `pull_requests` (T-810)."""
+        return self.request({"cmd": "set_merge_into", "into": into})
+
     def set_crown_budget(self, budget):
         return self.request({"cmd": "set_crown_budget", "budget": budget})
 

@@ -1114,6 +1114,26 @@ pub fn merge_refusal(set: &[Pr]) -> Option<String> {
     ))
 }
 
+/// Why a worktree branch with no PR bound is not landed here on a board
+/// that merges through pull requests (T-810): one is opened from it, and
+/// merged on the forge. `forge` is the one its repository's host was
+/// probed to be, where that is known.
+pub fn open_one_refusal(forge: Option<Forge>) -> String {
+    match forge {
+        Some(f) => format!(
+            "this board merges through pull requests — open {} from its branch and merge it on {}",
+            match f {
+                Forge::GitHub => "a PR",
+                Forge::GitLab => "an MR",
+            },
+            f.name()
+        ),
+        None => "this board merges through pull requests — open one from its branch and merge it \
+                 on GitHub or GitLab"
+            .into(),
+    }
+}
+
 /// Why the forge is who merges a ticket with a PR bound (T-778), in
 /// `get_ticket`'s `merge.why`, or `None` with none bound: its PRs closed
 /// unmerged, every one (T-797), else its work goes through them.
@@ -2295,6 +2315,13 @@ mod tests {
         );
         assert_eq!(merge_refusal(&set).as_deref(), Some("MR !3 open — merge it on GitLab"));
         assert_eq!(merge_refusal(&[]), None, "no PR: the board's merge");
+        // T-810: no PR on a board that merges through them asks for one.
+        assert_eq!(
+            open_one_refusal(Some(Forge::GitLab)),
+            "this board merges through pull requests — open an MR from its branch and merge it on \
+             GitLab"
+        );
+        assert!(open_one_refusal(None).ends_with("merge it on GitHub or GitLab"));
         assert_eq!(merge_why(&[]), None);
         assert_eq!(merge_why(&landed), Some("its work goes through pull requests"));
 

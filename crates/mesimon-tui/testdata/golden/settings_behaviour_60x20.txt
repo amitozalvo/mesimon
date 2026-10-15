@@ -5,15 +5,15 @@
   │  Mouse                     ● on                      │
   │                                                      │
   │ SNOOZE                                               │
-  │  Comes back                ● lit   ○ quiet           │
+  │  Comes back                ● lit    ○ quiet          │
   │  Week starts on            Monday                    │
+  │                                                      │
+  │ MERGE                                                │
+  │  Merge into                ● main   ○ pull requests  │
   │                                                      │
   │ REMOTE                                               │
   │  Fetch from the remote     off                       │
   │                                                      │
-  │ AUTO MERGE                                           │
-  │  Auto merge                ● on                      │
-  │  Tells the agent           ● on                      │
   │                                                      │
   │ the machine sleeps on its own clock, agents or not   │
   ╰──────────── jk select ∙ enter change ∙ b this board ─╯

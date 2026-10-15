@@ -712,6 +712,10 @@ pub enum Verb {
     /// The Behaviour row for the periodic fetch (T-739): off, or every 1,
     /// 5 or 15 minutes. `prefs.json`, board-overridable.
     FetchEvery,
+    /// The Behaviour row for where the board's worktree branches land
+    /// (T-810): into main, or through pull requests. Board state like
+    /// `McpTools`, in `columns.toml`; Enter toggles it.
+    MergeInto,
     /// The Settings row that turns the agent tool surface on or off for this
     /// board (T-217). Board state, not a preference: it is per repo, it
     /// lives in `columns.toml`, and the daemon reads it at every spawn.
@@ -1090,6 +1094,7 @@ impl SettingsSection {
             Verb::MergeTrain
             | Verb::MergeTrainNotice
             | Verb::FetchEvery
+            | Verb::MergeInto
             | Verb::SnoozeQuiet
             | Verb::WeekStart
             | Verb::KeepAwake
@@ -1131,6 +1136,9 @@ pub struct Ctx {
     pub crown_budget: u8,
     /// `Board::crown_mode` (T-610), for the row under it.
     pub crown_mode: crate::board::CrownMode,
+    /// `Board::merge_into` (T-810): the Behaviour row, and why the
+    /// pull-request rows are inert under main.
+    pub merge_into: crate::board::MergeInto,
     /// `Board::crown_archives` (T-590), for the row under that.
     pub crown_archives: bool,
     /// `Board::crown_watches` (T-712), for the row under that.
@@ -4996,6 +5004,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         verb: Verb::CardPrs,
         label: |_| "Pull requests on cards".into(),
         detail: |c| match or(c.card_prs_word, "always") {
+            _ if !c.merge_into.pull_requests() => PRS_INERT.into(),
             "news" => "the line only until you rest on the card, as a new reply".into(),
             "off" => "the branch mark alone says merged ∙ the ticket page lists them".into(),
             _ => "a line under every card with a PR, newest first".into(),
@@ -5060,11 +5069,32 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // One workflow per board (T-810): a worktree branch lands in main by
+    // the train and m, or through its pull request, merged on the forge.
+    // Board state like the agent tools, in `columns.toml`.
+    MenuItem {
+        verb: Verb::MergeInto,
+        label: |_| "Merge into".into(),
+        detail: |c| {
+            if c.merge_into.pull_requests() {
+                "a branch lands through its PR, merged on the forge ∙ the board reads GitHub or \
+                 GitLab"
+                    .into()
+            } else {
+                "a branch lands by the train or m ∙ no forge is read".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
     MenuItem {
         verb: Verb::MergeTrain,
         label: |_| "Auto merge".into(),
         detail: |c| {
-            if c.merge_train && c.merge_train_armed {
+            if c.merge_into.pull_requests() {
+                "asks an idle agent to rebase where the forge reports a conflict ∙ the forge merges"
+                    .into()
+            } else if c.merge_train && c.merge_train_armed {
                 "merges quiet REVIEW branches, asks idle agents to rebase ∙ armed while this board is open".into()
             } else if c.merge_train {
                 "merges quiet REVIEW branches, asks idle agents to rebase ∙ arming…".into()
@@ -5540,6 +5570,11 @@ static SUGGESTIONS: &[Suggestion] = &[
     },
 ];
 
+/// Why a row about pull requests does nothing on a board that merges into
+/// main (T-810): no forge is read there, so no PR, pipeline or deployment.
+pub const PRS_INERT: &str =
+    "needs Merge into: pull requests (Settings → Behaviour), so the row is inert";
+
 /// The menu row a verb belongs to, if any.
 fn menu_row(verb: Verb) -> Option<&'static MenuItem> {
     MENU_ITEMS.iter().find(|m| m.verb == verb)
@@ -5592,6 +5627,9 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::Mouse,
             Verb::SnoozeQuiet,
             Verb::WeekStart,
+            // The workflow before the two rows that serve it: the fetch
+            // and the train.
+            Verb::MergeInto,
             Verb::FetchEvery,
             Verb::MergeTrain,
             Verb::MergeTrainNotice,
@@ -5646,6 +5684,7 @@ pub fn settings_heading(verb: Verb) -> Option<&'static str> {
         Verb::NotifyWords => Some("BANNER"),
         Verb::NotifySoundNeedsYou => Some("SOUND"),
         Verb::SnoozeQuiet => Some("SNOOZE"),
+        Verb::MergeInto => Some("MERGE"),
         Verb::FetchEvery => Some("REMOTE"),
         Verb::MergeTrain => Some("AUTO MERGE"),
         Verb::UsageShow => Some("QUOTA LINE"),
@@ -5728,6 +5767,7 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
             format!("{} at once", c.crown_budget)
         }),
         Verb::CrownMode => choice(&["autonomous", "supervised"], c.crown_mode.word()),
+        Verb::MergeInto => choice(&["main", "pull requests"], c.merge_into.word()),
         Verb::CrownArchives => Value::Switch(c.crown_archives),
         Verb::CrownWatches => Value::Switch(c.crown_watches),
         Verb::TabTitle => Value::Choice {
@@ -5967,6 +6007,7 @@ static COLUMN_ITEMS: &[MenuItem] = &[
         verb: Verb::ColumnArrives,
         label: |_| "Moves in when".into(),
         detail: |c| match c.col_arrives_word {
+            _ if !c.merge_into.pull_requests() => PRS_INERT.into(),
             "nothing" => {
                 "a PR opened, its pipeline passing, every PR merged or a deployment".into()
             }
@@ -5988,7 +6029,13 @@ static COLUMN_ITEMS: &[MenuItem] = &[
     MenuItem {
         verb: Verb::ColumnRequiresPipeline,
         label: |_| "Needs passed pipeline".into(),
-        detail: |_| "a failing, running or unread pipeline is refused at the door".into(),
+        detail: |c| {
+            if c.merge_into.pull_requests() {
+                "a failing, running or unread pipeline is refused at the door".into()
+            } else {
+                PRS_INERT.into()
+            }
+        },
         avail: |c| !c.col_new,
         key: "",
     },
@@ -9965,6 +10012,7 @@ mod tests {
                     Verb::Mouse,
                     Verb::SnoozeQuiet,
                     Verb::WeekStart,
+                    Verb::MergeInto,
                     Verb::FetchEvery,
                     Verb::MergeTrain,
                 ],
@@ -9997,7 +10045,7 @@ mod tests {
         .iter()
         .map(|m| m.verb)
         .collect();
-        assert_eq!(on[5..7], [Verb::MergeTrain, Verb::MergeTrainNotice]);
+        assert_eq!(on[6..8], [Verb::MergeTrain, Verb::MergeTrainNotice]);
         for v in prefs {
             assert!(!verbs.contains(&v), "{v:?} is a preference and belongs in Settings");
         }
@@ -10682,6 +10730,36 @@ mod tests {
         }
         assert_eq!(pref_key(Verb::Tiers), None, "a door");
         assert_eq!(pref_key(Verb::McpTools), None, "board state");
+        assert_eq!(pref_key(Verb::MergeInto), None, "board state");
+    }
+
+    /// T-810: on a board that merges into main the rows about pull
+    /// requests say why they do nothing, and the train's row says what it
+    /// still does through pull requests.
+    #[test]
+    fn pull_request_rows_are_inert_on_a_board_that_merges_into_main() {
+        use crate::board::MergeInto;
+        let detail = |verb: Verb, into: MergeInto| {
+            let item = SETTINGS_ITEMS.iter().chain(COLUMN_ITEMS).find(|m| m.verb == verb).unwrap();
+            (item.detail)(&Ctx {
+                merge_into: into,
+                col_arrives_word: "merged",
+                ..Default::default()
+            })
+        };
+        for verb in [Verb::CardPrs, Verb::ColumnArrives, Verb::ColumnRequiresPipeline] {
+            assert_eq!(detail(verb, MergeInto::Main), PRS_INERT, "{verb:?}");
+            assert_ne!(detail(verb, MergeInto::PullRequests), PRS_INERT, "{verb:?}");
+        }
+        assert!(detail(Verb::MergeTrain, MergeInto::PullRequests).contains("the forge merges"));
+        assert!(detail(Verb::MergeTrain, MergeInto::Main).contains("merges quiet REVIEW branches"));
+        assert!(detail(Verb::MergeInto, MergeInto::Main).contains("no forge is read"));
+        let c = Ctx { merge_into: MergeInto::PullRequests, ..Default::default() };
+        assert_eq!(
+            value(Verb::MergeInto, &c),
+            Some(Value::Choice { options: &["main", "pull requests"], at: 1 })
+        );
+        assert_eq!(SettingsSection::for_verb(Verb::MergeInto), SettingsSection::Behaviour);
     }
 
     /// Every row a Settings page draws has a value beside its name (T-717)

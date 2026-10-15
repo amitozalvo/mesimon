@@ -478,9 +478,16 @@ suite) and the board cannot tell.
 
 ## Pull requests
 
-If your team merges through pull requests, the board reads them through the `gh` or `glab` you
-are signed in to: `gh` for a github.com remote, `glab` for a GitLab host. Nothing to configure:
-with the CLI on your PATH and signed in, each ticket's pull requests show on its page under the
+A board merges its worktree branches one way. **Settings › Behaviour › Merge into** is `main` on
+every board: the merge train and `m` fast-forward a finished branch into your local main, and the
+board never calls a forge. Set it to `pull requests` if your team merges through them: a branch
+then lands through its pull request, merged on the forge, and the board reads the forge through
+the `gh` or `glab` you are signed in to: `gh` for a github.com remote, `glab` for a GitLab host.
+A new worktree starts at your fetched `origin/main` when your local main is behind it, and counts
+its commits against it. Tickets on the shared checkout are the same under either setting: their
+commits are on main as they are made.
+
+With the CLI on your PATH and signed in, each ticket's pull requests show on its page under the
 branch row and on its card's second line, one glyph and the forge's own number per PR, newest
 first. `◯` is open with no pipeline, `◴` (turning once a second) open with its pipeline running,
 `◎` open with a manual job waiting for someone to start it, `◉` open and green (your turn: a
@@ -506,9 +513,10 @@ follow-up fix after a merge reads as a new open PR until it lands.
 A PR merged on the forge reads merged here without a pull, squashed, rebased or not, and the
 ticket page says `merged into main (PR #42) as 1a2b3c4`. A commit a reviewer added on the forge
 before the merge changes nothing, as long as the PR carried the branch's last commit here; a
-commit made here after the merge is work not landed yet. Once a ticket has a PR, open, merged or
-closed, `m` and the merge train leave the merge to the forge; the train asks the agent to rebase
-only when the forge reports a conflict, and that ask ends with the push. A PR closed without
+commit made here after the merge is work not landed yet. `m` and the merge train never merge a
+worktree branch on such a board, PR or not yet: `m` says to open one, or names the PR to merge on
+the forge, and the train asks the agent to rebase only when the forge reports a conflict on its
+PR, an ask that ends with the push. A PR closed without
 merging is your team's decision about that work: to merge it, reopen it on the forge. An open PR
 holds DONE the same way: a column with **Needs merged branch** refuses the ticket until
 the forge merges it, whoever moves it, and a ticket already there reads unmerged again. A column
@@ -517,8 +525,10 @@ own when a PR opens, its pipeline passes, every PR is merged, or the merge reach
 you name (`deployed to staging`), and **Needs passed pipeline** refuses a ticket whose
 pipeline failed, still runs or was never read; a ticket with no pull request passes, as a ticket
 with no branch passes the merge rule, unless its agent opened one the forge has not read yet. A
-closed pull request has no pipeline to pass. A board without `gh` or `glab` changes nothing; **Settings › Behaviour › Fetch from
-the remote** alone makes a merged PR read merged once fetched. A crown hears what the forge says of the
+closed pull request has no pipeline to pass. These column settings and **Settings › Appearance ›
+Pull requests on cards** do nothing on a board that merges into main, and their rows say so.
+Without `gh` or `glab`, **Settings › Behaviour › Fetch from the remote** alone makes a merged PR
+read merged once fetched. A crown hears what the forge says of the
 tickets it started or watches: it is woken when a pipeline fails or passes, a job waits on a
 person, the merge reaches an environment, a conflict comes or clears, or a review approves or
 asks for changes, and when a later pull request merges on a ticket whose branch already
@@ -531,8 +541,8 @@ brief.
 mesimon reads the forge and never writes to it: no PR is opened, merged or commented on from the
 board, and no token is stored; the CLI's own sign-in is the only credential. The activity feed
 says when a PR binds, merges or its pipeline fails; `mesimon doctor` names the CLI that reads the
-repository; a repository the CLI cannot read shows on the board's advisory row, and the merge
-train holds its tickets until it can.
+repository and the board's Merge into setting; a repository the CLI cannot read shows on the
+board's advisory row.
 
 ## Sleeping idle agents
 

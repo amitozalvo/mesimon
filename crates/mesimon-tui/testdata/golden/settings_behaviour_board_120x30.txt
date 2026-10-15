@@ -6,18 +6,18 @@
       │                      Mouse                     ● on                                             machine  │
     Ke│  Appearance                                                                                              │
       │                     SNOOZE                                                                               │
-      │  Notifications       Comes back                ● lit   ○ quiet                                inherited  │
+      │  Notifications       Comes back                ● lit    ○ quiet                               inherited  │
       │                      Week starts on            Monday                                           machine  │
       │▎ Behaviour                                                                                               │
-      │                     REMOTE                                                                               │
-      │  Agents              Fetch from the remote     ● off   ○ 1 min   ○ 5 min   ○ 15 min           inherited  │
+      │                     MERGE                                                                                │
+      │  Agents              Merge into                ● main   ○ pull requests                                  │
       │                                                                                                          │
-      │  Crown              AUTO MERGE                                                                           │
-      │                      Auto merge                ● on                                            set here  │
-      │  Terminal            Tells the agent           ● on                                           inherited  │
-      │                                                                                                          │
-      │  Usage                                                                                                   │
-      │                                                                                                          │
+      │  Crown              REMOTE                                                                               │
+      │                      Fetch from the remote     ● off    ○ 1 min           ○ 5 min   ○ 15 min  inherited  │
+      │  Terminal                                                                                                │
+      │                     AUTO MERGE                                                                           │
+      │  Usage               Auto merge                ● on                                            set here  │
+      │                      Tells the agent           ● on                                           inherited  │
       │                                                                                                          │
       │                                                                                                          │
       │                                                                                                          │

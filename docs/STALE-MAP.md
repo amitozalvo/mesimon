@@ -26267,3 +26267,95 @@ is 11 KB, and ~80 e2e assertions read a live record's launch flags off the snaps
 
 **Not done:** the archived tickets themselves are ~420 KB of what remains (their `notes`
 metadata 160 KB), and the fetch still blocks the UI thread; that move is its own ticket.
+
+## A board merges into main or through pull requests, never both (T-810, 2026-10-15, the author: "Worktree merge to main and PR are two different workflows I don't believe people would mix. Is the train responsible for the PRs workflow or is the train specifically to merge to main?")
+
+**Why.** The forge integration (T-739 onward) never shipped, and it mixed the two workflows
+ticket by ticket: a ticket with a PR bound merged on the forge, one without was fast-forwarded
+into main by the train. Mixing is what made the train wait for a forge read after every turn
+that pushed (`forge_fresh`, T-752/T-761): it could not otherwise rule out a PR. A board where
+`gh` was signed in but nobody opened PRs held its train while GitHub was unreachable (T-795).
+The author chose a per-board workflow over a plain forge on/off, which supersedes the
+"Pull requests: auto / off" switch T-795's crown proposed.
+
+**The setting.** `Board::merge_into` (`MergeInto::Main | PullRequests`), `#[serde(default)]`
+main, a scalar in `columns.toml` beside `crown_mode`, no schema bump (a build before it reads
+every board's forge, which widens nothing an agent or a spawn gets). `Command::SetMergeInto`,
+local only (`agent_allows`: who merges is the team's workflow). Settings › Behaviour › Merge
+into, under its own `MERGE` heading above the fetch row; board state like Agent tools, so no
+`PrefKey`. `doctor` prints `merge into` beside `merge base`. No migration: the author's
+forge-lab boards switch by hand.
+
+**Main is the board before T-739.** `Daemon::through_prs` is the first question of every road
+to the forge: the minute's pass, the turn's end's burst, the busy cadence and a turn's look
+(`look_legs`) ask nothing; a read that lands after a switch is dropped; `forge.json` is not
+loaded at start and not written (`persist_forge`). Switching to main drops `forge::State`
+whole (the cards, the gates, the train and `get_ticket` read no PR) and leaves the file as it
+was; switching to pull requests loads it back and the next tick reads. `doctor` asks no CLI
+either. The PR-only rows say why they are inert (`keymap::PRS_INERT`: Pull requests on cards,
+Moves in when, Needs passed pipeline), and `pipeline_refusal` passes every ticket.
+
+**The train reads the mode, and `forge_fresh` is gone.** `train::Reading::merge_into`. Into
+main: the merge and rebase lanes as before T-739, `has_pr` unread. Through pull requests: no
+merge lane, and the rebase lane is the PR conflict alone (T-770's once per conflict). Neither
+mode needs the forge's freshness: main reads nothing, and a pull-requests train makes no merge
+a read could have to rule out, so `WtFlags::forge_fresh` and `learn_remotes` (which existed to
+learn freshness early) are deleted. The turn's end's read stays for what else waits on it: the
+crown's wake (T-773) and the cards.
+
+**Decided: a branch with no PR yet, behind its local base, is asked nothing** on a
+pull-requests board. The base its PR will target is the forge's; the forge says whether the PR
+conflicts once it is open, and the train asks then. Asking on the local base would spend a turn
+the forge may never need, and would bring `forge_fresh` back (the train would have to rule out a
+PR the turn just opened, T-739's very wait).
+
+**Who merges.** `merge_by` says `forge` for every worktree ticket of a pull-requests board,
+whatever the crown's mode and the train: the bound set's why where there is one (T-778, T-797),
+else `this board merges through pull requests`. `merge_ticket` (`m`, the crown, the train)
+refuses every worktree branch there, after the merged check, in `Daemon::prs_refusal`: the set's
+sentence, else `forge::open_one_refusal` (`this board merges through pull requests — open a PR
+from its branch and merge it on GitHub`; `an MR … GitLab`, the forge the root leg's host was
+probed to be; `GitHub or GitLab` before any probe). `crown_merge_refusal` says it with the key in
+front. The DONE gate still admits a branch the forge merged (`ticket_merged`'s forge clause).
+Shared-checkout tickets are unchanged under either mode (T-797).
+
+**Decided: the upstream counting follows pull requests only** (T-779's cut, T-786's count,
+T-787's fetch words). On a board that merges into main the train lands a branch in the local
+main, so that is where a branch starts and what it is counted against: a branch cut at a
+fetched `origin/main` ahead of local main would carry the upstream's commits into the person's
+main on its fast-forward, and counting against the upstream would understate what that lands.
+`worktree::provision` and `provision_workspace` take `upstream` (the daemon's `through_prs`);
+the flag queries set `RepoQuery::forge` only under pull requests, and the fetch words follow
+`counted`. `doctor`'s cut words print only there.
+
+**The crown.** `CROWN_WAKES`: the forge's merge is every worktree ticket's on a board whose
+Merge into is pull requests, and nothing is the forge's on one that merges into main. Rig M1
+(`ci/rig/tests.toml`, new check `crown_line:<prefix>:<word>`, new step `prs_board`): one crown,
+asked who merges a delivered ticket under each mode, naming no tool. On the real Sonnet,
+2026-10-15, PASS: `M1 main: the crown merges it, because the train is off.` and `M1 prs: the
+forge merges it, because this board merges through pull requests.` The first run answered right
+and failed a `!forge` check (`… so the forge does not merge it`), which was dropped; the second
+put each answer under its prefix line, which the check now reads to the reply's end. Every
+`forge_*` rig step that starts the stub sets pull requests, and `forge_off` sets main back;
+F7 passed on that change.
+
+**Tests.** Core: `train::a_board_merges_into_main_or_through_pull_requests_never_both`,
+`a_board_through_pull_requests_is_never_the_trains_to_merge` (T-778's, on the mode), the T-770
+test under pull requests, `board::merge_into_defaults_main_and_pull_requests_is_kept`,
+`keymap::pull_request_rows_are_inert_on_a_board_that_merges_into_main`, `open_one_refusal` in
+the T-774 forge test. Daemon: `store::merge_into_is_main_unless_the_file_says_pull_requests`, the
+T-779 cut test (a main board cuts at the local base). TUI:
+`merge_into_setting_toggles_through_board_command`; goldens `settings_behaviour_*` reminted (the
+`MERGE` row). `forge_e2e`: every test sets pull requests but
+`a_board_that_merges_into_main_never_calls_the_forge` (`gh` signed in on a github.com remote, the
+train merges a turn that pushed, the stub's log stays empty, no `forge.json`; pull requests then
+starts the reads), which replaces T-761's two freshness tests and T-795's
+`a_failed_read_after_a_push_holds_the_train` (nothing left to hold); T-778's test now shows a
+no-PR ticket off the train with `m` asking for a PR, and T-796's `m` asks beta for an MR.
+`crown_e2e::the_crown_merges_where_the_train_will_not` reads `forge` and a refused
+`merge_ticket` under pull requests before the crown's merge. `worktree_e2e`'s T-779 test sets
+pull requests, and under main a second ticket cuts at local main while the first counts 5 ahead
+of it.
+
+**Kept.** The cost ledger still notes a `pr create` URL in a transcript under either mode (local
+reading, no forge call); Mesophon reads the snapshot's empty `prs` under main.

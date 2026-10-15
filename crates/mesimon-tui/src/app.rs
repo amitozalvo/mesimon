@@ -5835,6 +5835,7 @@ impl App {
             agent_provider: self.board.agent_provider,
             crown_budget: self.board.crown_budget,
             crown_mode: self.board.crown_mode,
+            merge_into: self.board.merge_into,
             crown_archives: self.board.crown_archives,
             crown_watches: self.board.crown_watches,
             column_agents: self.column_agents,
@@ -7102,6 +7103,25 @@ impl App {
                                 .into()
                         } else {
                             "crown supervised ∙ its asks wait for ^y, every question and plan for you"
+                                .into()
+                        };
+                    }
+                }
+            }
+            // Where the board's worktree branches land (T-810): board state
+            // like the crown's mode, so it goes to the daemon and comes back
+            // on the snapshot.
+            Verb::MergeInto => {
+                let into = self.board.merge_into.toggled();
+                match self.client.request(Command::SetMergeInto { into })? {
+                    Response::Err { message } => self.status = message,
+                    _ => {
+                        self.refresh()?;
+                        self.status = if into.pull_requests() {
+                            "merge into pull requests ∙ branches land on the forge, which the board now reads"
+                                .into()
+                        } else {
+                            "merge into main ∙ the train and m land branches, and no forge is read"
                                 .into()
                         };
                     }
@@ -13995,6 +14015,10 @@ pub(crate) mod test_support {
                     self.board.crown_mode = mode;
                     Ok(Response::Ok)
                 }
+                Command::SetMergeInto { into } => {
+                    self.board.merge_into = into;
+                    Ok(Response::Ok)
+                }
                 Command::SetCrownArchives { on } => {
                     self.board.crown_archives = on;
                     Ok(Response::Ok)
@@ -17360,6 +17384,26 @@ mod tests {
         assert_eq!(app.ctx().crown_mode, CrownMode::Autonomous);
         assert!(app.status.contains("agents it started"), "{}", app.status);
         assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownMode")).count(), 2);
+    }
+
+    /// Merge into (T-810) is main on a fresh board, sits in Behaviour above
+    /// the fetch row, and toggles through its own board command.
+    #[test]
+    fn merge_into_setting_toggles_through_board_command() {
+        use mesimon_core::board::MergeInto;
+        let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
+        app.settings_section = keymap::SettingsSection::Behaviour;
+        let idx = app.settings_row(Verb::MergeInto);
+        assert_eq!(idx + 1, app.settings_row(Verb::FetchEvery), "above the fetch row");
+        app.mode = Mode::Settings { idx };
+        assert_eq!(app.ctx().merge_into, MergeInto::Main, "main by default");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.board.merge_into, MergeInto::PullRequests);
+        assert!(app.status.contains("branches land on the forge"), "{}", app.status);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.ctx().merge_into, MergeInto::Main);
+        assert!(app.status.contains("no forge is read"), "{}", app.status);
+        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetMergeInto")).count(), 2);
     }
 
     /// The crown's archive switch (T-590) is OFF on a fresh board, sits

@@ -939,6 +939,12 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
     // whether the opt-in fetch is armed — read through the daemon's own
     // sampler, so doctor and the header cannot disagree.
     let g = mesimon_daemon::gitstatus::sample(repo);
+    // Where this board's worktree branches land (T-810): the forge is read,
+    // here as on the board, only where they land through pull requests.
+    let merge_into = mesimon_daemon::Paths::for_repo(repo)
+        .map(|p| mesimon_daemon::store::read_columns_scalars(&p).merge_into)
+        .unwrap_or_default();
+    let prs = merge_into.pull_requests();
     // A workspace (T-225): repositories nested one level under the root.
     // Said before the branch line, because the branch line is then about
     // the meta repo and reads as the whole board's without this.
@@ -1008,8 +1014,9 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
         };
         let mut line = format!("{whose}{}, {upstream}, {fetch}", g.branch);
         // Where a fresh worktree starts when the forge moved the upstream
-        // past a local base nothing else moves (T-779).
-        if let Ok(base) = mesimon_daemon::worktree::default_branch(repo) {
+        // past a local base nothing else moves (T-779), on a board whose
+        // branches land through pull requests (T-810).
+        if let Some(base) = mesimon_daemon::worktree::default_branch(repo).ok().filter(|_| prs) {
             let local = mesimon_daemon::worktree::branch_tip(repo, &base);
             if !local.is_empty() {
                 let cut = mesimon_daemon::worktree::cut_point(repo, &base, &local);
@@ -1039,12 +1046,19 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
             ),
         };
         records.push(rec(Level::Ok, "merge base", word).advice(advice));
+        records.push(if prs {
+            rec(Level::Ok, "merge into", "pull requests - a worktree branch lands through its PR, merged on the forge")
+                .advice("The board reads each ticket's pull requests through the forge's CLI, and the train and m fast-forward no worktree branch: the train asks a rebase only where the forge reports a conflict. Settings > Behaviour > Merge into sets main.")
+        } else {
+            rec(Level::Ok, "merge into", format!("main - the train and m fast-forward a worktree branch into {base}"))
+                .advice("No forge is read on this board. Settings > Behaviour > Merge into sets pull requests, where a branch lands through its PR and the board reads GitHub or GitLab.")
+        });
         // Which CLI would read this repository's pull requests (T-739): a
         // stat of PATH, and the CLI's own `auth status` for the host the
         // remote reaches, an `~/.ssh/config` alias resolved (T-800) — the
         // one question the board's probe asks, so this line says what the
         // board will find.
-        if let Some(remote) = mesimon_daemon::forge::remote_of(repo, &base) {
+        if let Some(remote) = mesimon_daemon::forge::remote_of(repo, &base).filter(|_| prs) {
             use mesimon_core::forge::Forge;
             let clis: Vec<mesimon_daemon::forge::Cli> = remote
                 .candidates()

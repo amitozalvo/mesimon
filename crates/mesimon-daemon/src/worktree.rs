@@ -571,6 +571,9 @@ pub struct Cut {
 /// the branch starts at the upstream's tip. A local base equal to, ahead of
 /// or diverged from its upstream keeps today's cut: unpushed commits are the
 /// person's. Reads only; the cut itself writes what provisioning always did.
+/// Asked only on a board that merges through pull requests (T-810,
+/// `provision`'s `upstream`): into main, the local base is where the branch
+/// lands, so it is where it starts.
 pub fn cut_point(repo: &Path, base: &str, local: &str) -> Cut {
     let stay = Cut { oid: local.to_string(), from: None };
     if crate::forge::remote_of(repo, base).is_none() {
@@ -614,12 +617,15 @@ pub fn cut_words(base: &str, cut: &Cut) -> Option<String> {
 
 /// Provisioning stages 0/1/1b/2/5. Runs OFF the writer thread (add is ~1.8 s of
 /// filesystem work). Returns the ready binding, or the failing stage.
+/// `upstream`: the board merges through pull requests (T-810), so a fresh
+/// branch is cut where `cut_point` says; else at the local base.
 pub fn provision(
     repo: &Path,
     root: &Path,
     ticket_id: ulid::Ulid,
     short_key: &str,
     title: &str,
+    upstream: bool,
 ) -> std::result::Result<Binding, (String, String)> {
     let branch = mesimon_core::workspace::branch_name(short_key, title);
     let dir = root.join(mesimon_core::workspace::dir_name(short_key, title));
@@ -650,7 +656,7 @@ pub fn provision(
         return Err(("precheck".into(), format!("{} already exists", dir.display())));
     }
 
-    let base_oid = cut_point(repo, &base, &base_oid).oid;
+    let base_oid = if upstream { cut_point(repo, &base, &base_oid).oid } else { base_oid };
 
     // Stages 1/1b/2.
     add_leg(repo, &dir, &branch, Some(&base_oid), ticket_id)?;
@@ -775,6 +781,7 @@ pub fn provision_workspace(
     ticket_id: ulid::Ulid,
     short_key: &str,
     title: &str,
+    upstream: bool,
     progress: &mut dyn FnMut(u32, u32),
 ) -> std::result::Result<Binding, (String, String)> {
     let branch = mesimon_core::workspace::branch_name(short_key, title);
@@ -797,7 +804,7 @@ pub fn provision_workspace(
                 format!("branch {branch} already exists in {}", leg_word(&name)),
             ));
         }
-        let head = cut_point(&repo, &base, &head).oid;
+        let head = if upstream { cut_point(&repo, &base, &head).oid } else { head };
         plan.push((name, repo, base, head));
     }
     if plan.is_empty() {
@@ -2507,7 +2514,7 @@ mod tests {
         let Some(repo) = scratch_repo("rebuild") else { return };
         let root = repo.join("_wtroot");
         std::fs::create_dir_all(&root).unwrap();
-        let b = provision(&repo, &root, ulid::Ulid(1), "T-1", "Fix thing").unwrap();
+        let b = provision(&repo, &root, ulid::Ulid(1), "T-1", "Fix thing", false).unwrap();
 
         let rebuilt = rebuild_from_disk(&repo, &repo.join("_wtroot"));
         let got = rebuilt.get(&ulid::Ulid(1)).expect("ticket recovered from its marker");
@@ -2565,12 +2572,12 @@ mod tests {
 
         // Fully-landed provision, but the binding was persisted still
         // Provisioning (daemon died between the worktree add and the ack).
-        let done = provision(&repo, &root, ulid::Ulid(1), "T-1", "Landed").unwrap();
+        let done = provision(&repo, &root, ulid::Ulid(1), "T-1", "Landed", false).unwrap();
         let mut bindings = Bindings::new();
         bindings
             .insert(ulid::Ulid(1), Binding { status: BindingStatus::Provisioning, ..done.clone() });
         // Branch exists, dir never landed → replay via the evicted path.
-        let evicted = provision(&repo, &root, ulid::Ulid(2), "T-2", "Half").unwrap();
+        let evicted = provision(&repo, &root, ulid::Ulid(2), "T-2", "Half", false).unwrap();
         remove(&repo, &evicted.path).unwrap();
         bindings
             .insert(ulid::Ulid(2), Binding { status: BindingStatus::Queued, ..evicted.clone() });
@@ -2605,7 +2612,7 @@ mod tests {
             },
         );
         // Attached stays untouched.
-        let ok = provision(&repo, &root, ulid::Ulid(5), "T-5", "Fine").unwrap();
+        let ok = provision(&repo, &root, ulid::Ulid(5), "T-5", "Fine", false).unwrap();
         bindings.insert(ulid::Ulid(5), ok.clone());
 
         assert!(reconcile_interrupted(&repo, &mut bindings));
@@ -2634,12 +2641,14 @@ mod tests {
         };
         run(&["checkout", "-q", "--detach"]);
         run(&["branch", "-q", "-D", "main"]);
-        let (stage, message) = provision(&repo, &root, ulid::Ulid(1), "T-1", "x").unwrap_err();
+        let (stage, message) =
+            provision(&repo, &root, ulid::Ulid(1), "T-1", "x", false).unwrap_err();
         assert_eq!((stage.as_str(), message.as_str()), ("precheck", DETACHED_HEAD));
 
         // Unborn: HEAD names a branch with no commits on it.
         run(&["checkout", "-q", "--orphan", "trunk"]);
-        let (stage, message) = provision(&repo, &root, ulid::Ulid(1), "T-1", "x").unwrap_err();
+        let (stage, message) =
+            provision(&repo, &root, ulid::Ulid(1), "T-1", "x", false).unwrap_err();
         assert_eq!(stage, "precheck");
         assert_eq!(message, "no commits on trunk yet — make a first commit, then start again");
         assert!(std::fs::read_dir(&root).unwrap().next().is_none(), "nothing written");
@@ -2652,7 +2661,7 @@ mod tests {
         let root = repo.join("_wtroot");
         std::fs::create_dir_all(&root).unwrap();
 
-        let b = provision(&repo, &root, ulid::Ulid(1), "T-1", "Fix thing").unwrap();
+        let b = provision(&repo, &root, ulid::Ulid(1), "T-1", "Fix thing", false).unwrap();
         assert_eq!(b.branch, "msmn/T-1-fix-thing");
         assert!(b.path.join("a.txt").is_file());
         assert_eq!(b.status, BindingStatus::Attached);
@@ -2664,7 +2673,7 @@ mod tests {
         assert!(std::fs::read_to_string(mp).unwrap().starts_with(&ulid::Ulid(1).to_string()));
 
         // Same branch again refuses at precheck.
-        let e = provision(&repo, &root, ulid::Ulid(2), "T-1", "Fix thing").unwrap_err();
+        let e = provision(&repo, &root, ulid::Ulid(2), "T-1", "Fix thing", false).unwrap_err();
         assert_eq!(e.0, "precheck");
 
         // The same ticket again adopts its own tree (T-793): a daemon that
@@ -2684,7 +2693,7 @@ mod tests {
         bindings.insert(ulid::Ulid(1), blank);
         reconcile_interrupted(&repo, &mut bindings);
         assert!(!bindings.contains_key(&ulid::Ulid(1)), "a blank binding is dropped");
-        let again = provision(&repo, &root, ulid::Ulid(1), "T-1", "Fix thing").unwrap();
+        let again = provision(&repo, &root, ulid::Ulid(1), "T-1", "Fix thing", false).unwrap();
         assert_eq!(
             (&again.path, &again.branch, &again.base_oid, &again.branch_oid),
             (&b.path, &b.branch, &b.base_oid, &b.branch_oid)
@@ -2720,7 +2729,7 @@ mod tests {
         let Some(repo) = scratch_repo("conf") else { return };
         let root = repo.join("_wtroot");
         std::fs::create_dir_all(&root).unwrap();
-        let b = provision(&repo, &root, ulid::Ulid(3), "T-3", "clash").unwrap();
+        let b = provision(&repo, &root, ulid::Ulid(3), "T-3", "clash", false).unwrap();
 
         // Diverge: same file changed on main and on the branch.
         std::fs::write(repo.join("a.txt"), "main side\n").unwrap();
@@ -2767,7 +2776,7 @@ mod tests {
         let Some(repo) = scratch_repo("dirtymain") else { return };
         let root = repo.join("_wtroot");
         std::fs::create_dir_all(&root).unwrap();
-        let b = provision(&repo, &root, ulid::Ulid(9), "T-9", "dirty").unwrap();
+        let b = provision(&repo, &root, ulid::Ulid(9), "T-9", "dirty", false).unwrap();
         let run = |d: &Path, args: &[&str]| {
             let ok = Command::new("git").arg("-C").arg(d).args(args).output().unwrap();
             assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
@@ -2788,7 +2797,7 @@ mod tests {
         let Some(repo) = scratch_repo("lock") else { return };
         let root = repo.join("_wtroot");
         std::fs::create_dir_all(&root).unwrap();
-        let b = provision(&repo, &root, ulid::Ulid(4), "T-4", "locked").unwrap();
+        let b = provision(&repo, &root, ulid::Ulid(4), "T-4", "locked", false).unwrap();
 
         // Foreign lock reason survives the sweep.
         let wt_s = b.path.to_string_lossy().into_owned();
@@ -2848,7 +2857,7 @@ mod tests {
 
         let root = repo.join("_wtroot");
         std::fs::create_dir_all(&root).unwrap();
-        let b = provision(&repo, &root, ulid::Ulid(5), "T-5", "env").unwrap();
+        let b = provision(&repo, &root, ulid::Ulid(5), "T-5", "env", false).unwrap();
         assert_eq!(std::fs::read_to_string(b.path.join(".env")).unwrap(), "SECRET=1\n");
         // Not in .worktreeinclude → not copied.
         assert!(!b.path.join("node_modules/big.js").exists());
@@ -3223,10 +3232,13 @@ mod tests {
         r.run(&["reset", "-q", "--hard", &a]);
         let root = r.dir.join("_wtroot");
         std::fs::create_dir_all(&root).unwrap();
-        let bound = provision(&r.dir, &root, ulid::Ulid(1), "T-1", "Cut").unwrap();
+        let bound = provision(&r.dir, &root, ulid::Ulid(1), "T-1", "Cut", true).unwrap();
         assert_eq!(bound.base_oid, b, "the cut point is the binding's base");
         assert_eq!(tip(&bound.branch), b);
         assert_eq!(tip("main"), a, "the local base never moves");
+        // A board that merges into main cuts at its local base (T-810).
+        let local_cut = provision(&r.dir, &root, ulid::Ulid(2), "T-2", "Main", false).unwrap();
+        assert_eq!(local_cut.base_oid, a, "into main: where the branch lands");
         std::fs::remove_dir_all(&r.dir).ok();
     }
 
@@ -3676,7 +3688,17 @@ mod tests {
         let wtroot = root.join("_wtroot");
         std::fs::create_dir_all(&wtroot).unwrap();
         let census = crate::gitstatus::census(root);
-        provision_workspace(root, &wtroot, &census, is_meta, ulid::Ulid(1), "T-1", "Fix", progress)
+        provision_workspace(
+            root,
+            &wtroot,
+            &census,
+            is_meta,
+            ulid::Ulid(1),
+            "T-1",
+            "Fix",
+            false,
+            progress,
+        )
     }
 
     #[test]

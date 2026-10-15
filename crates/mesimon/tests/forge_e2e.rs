@@ -14,9 +14,10 @@
 //! carries it while the forge has not answered yet, and the first live pass
 //! says only what moved while the daemon was down.
 //!
-//! The train reads the forge at a turn's end (T-761): a turn that pushed
-//! nothing merges on the look after it with no read at all, and one that
-//! pushed is read at once rather than on the minute.
+//! One workflow per board (T-810): every test here sets Merge into: pull
+//! requests but one, which shows a board that merges into main calling no
+//! `gh` at all while its train merges a turn that pushed. A pull-requests
+//! board's train lands no branch and `m` asks for a PR.
 //!
 //! The train asks once per conflict (T-770): a PR the forge flips to
 //! conflicting is asked about once, in words naming it; its flip back asks
@@ -81,7 +82,7 @@ use common::*;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use mesimon_core::board::{Arrival, SessionKind, SessionState, WorkspaceStrategy};
+use mesimon_core::board::{Arrival, MergeInto, SessionKind, SessionState, WorkspaceStrategy};
 use mesimon_core::command::{Command, MergeOutcome, PrItem, Response};
 use mesimon_core::Principal;
 
@@ -151,6 +152,15 @@ fn cut(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, Path
     });
     let sid = c.board().sessions.iter().find(|s| s.ticket == id).unwrap().id;
     (id, sid, wt.branch, path)
+}
+
+/// The board's branches land through pull requests (T-810): every test
+/// here but the one about main reads the forge.
+fn through_prs(c: &mut TestClient) {
+    assert!(matches!(
+        c.request(Command::SetMergeInto { into: MergeInto::PullRequests }),
+        Response::Ok
+    ));
 }
 
 fn prs_of(c: &mut TestClient) -> Vec<PrItem> {
@@ -265,6 +275,7 @@ fn a_pull_request_binds_pipelines_gate_and_the_forges_merge_lands() {
     // A github.com remote is what names the forge; nothing is ever fetched.
     git(&repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
     let mut c = h.client("forge");
+    through_prs(&mut c);
     let (id, sid, branch, path) = ready(&mut c, "alpha");
     let tip = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
 
@@ -420,6 +431,7 @@ fn a_ticket_with_no_pull_request_enters_and_one_opened_here_waits() {
     git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("forge_nopr");
+    through_prs(&mut c);
     let mut review = c.board().column("REVIEW").unwrap().settings.clone();
     review.requires_pipeline = true;
     assert!(matches!(
@@ -645,6 +657,7 @@ fn the_crown_hears_the_forges_edges() {
     git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("forge_crown");
+    through_prs(&mut c);
     let got = h.dir.join("got.txt");
     let feed_path = h.paths.state_dir.join("activity.jsonl");
     let lines_with = |needle: &str| -> Vec<String> {
@@ -927,6 +940,7 @@ fn the_prs_survive_a_restart_and_the_first_pass_lists() {
     init_repo(&repo, "a.txt", "hello\n");
     git(&repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
     let mut c = h.client("forge-keep");
+    through_prs(&mut c);
     // The PR is on the forge before the ticket's first pass: bound by the
     // branch mesimon will cut.
     let _ = c.request(Command::CreateTicket {
@@ -1065,6 +1079,7 @@ fn a_lost_sign_in_is_said_and_asked_again_on_the_backoff() {
     init_repo(&repo, "a.txt", "hello\n");
     git(&repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
     let mut c = h.client(name);
+    through_prs(&mut c);
     let (keep, _, keep_branch, _) = ready(&mut c, "keep");
     write(&prs_file, &format!("[{}]", numbered_pr(42, &keep_branch, "0000", false)));
     wait_until(Duration::from_secs(20), "the PR to bind", || {
@@ -1211,6 +1226,7 @@ fn a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_co
     );
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("forge_folder");
+    through_prs(&mut c);
     let got = h.dir.join("got.txt");
     let lines_with = |needle: &str| -> Vec<String> {
         std::fs::read_to_string(&got)
@@ -1445,6 +1461,7 @@ fn a_two_repo_tickets_first_merge_and_its_wait_are_said() {
     }
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("forge_two");
+    through_prs(&mut c);
     let got = h.dir.join("got.txt");
     let all = || std::fs::read_to_string(&got).unwrap_or_default();
     let lines_with = |needle: &str| -> Vec<String> {
@@ -1582,81 +1599,72 @@ fn a_two_repo_tickets_first_merge_and_its_wait_are_said() {
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
 
-/// One train ticket's turn ends with the forge's minute far away (T-761):
-/// the train merges it on the turn's own look. `push` moves the branch's
-/// remote-tracking ref in the turn, as a `git push` does. The calls `gh pr
-/// list` made after the first read, and how long the merge took.
-fn turn_end_merges(name: &str, push: bool) -> Option<(usize, Duration)> {
+/// A board that merges into main never meets the forge (T-810): with `gh`
+/// signed in and the repository on github.com, the train merges a ticket
+/// whose turn pushed, and the stub is never called — no probe, no list, no
+/// read at the turn's end — and `forge.json` is never written. Turning
+/// pull requests on is what starts the reads.
+#[test]
+fn a_board_that_merges_into_main_never_calls_the_forge() {
     const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
-    let stub_dir = std::env::temp_dir().join(format!("msmn-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&stub_dir);
-    std::fs::create_dir_all(&stub_dir).unwrap();
-    let gh = stub_dir.join("gh");
-    std::fs::write(&gh, GH_STUB).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    let name = "forge_main";
+    let (stub_dir, path_var) = gh_stub(name);
     let prs_file = stub_dir.join("prs.json");
     let log = stub_dir.join("calls.log");
     write(&prs_file, "[]");
-    let path_var = format!(
-        "{}:{}",
-        stub_dir.display(),
-        std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
-    );
-    // The minute is ten: after the first pass, any read is the turn's.
-    let h = Harness::boot_with_env(
+    let Some(h) = Harness::boot_with_env(
         name,
         Some(STUB),
         &[
             ("MESIMON_WT_REFRESH_TICKS", "4"),
-            ("MESIMON_FORGE_EVERY_MS", "600000"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
             ("PATH", &path_var),
             ("MSMN_GH_PRS", &prs_file.display().to_string()),
             ("MSMN_GH_LOG", &log.display().to_string()),
         ],
-    )?;
-    let lists = || {
-        std::fs::read_to_string(&log)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.starts_with("pr list"))
-            .count()
+    ) else {
+        return;
     };
+    let calls = || std::fs::read_to_string(&log).unwrap_or_default();
     let repo = h.repo.clone();
     init_repo(&repo, "a.txt", "hello\n");
     git(&repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client(name);
+    assert_eq!(c.board().merge_into, MergeInto::Main, "every board merges into main");
     assert!(matches!(
         c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
         Response::Ok
     ));
     let (id, sid, branch, path) = ready(&mut c, "alpha");
-    // The first pass reads the ticket, before its turn.
-    wait_until(Duration::from_secs(20), "the first forge pass to list", || lists() >= 1);
-    std::thread::sleep(Duration::from_millis(500));
-    let first = lists();
+    // The turn pushes, as a `git push` does: on a board reading the forge
+    // its end would be owed a read.
     hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
     c.await_state(sid, "running", |s| *s == SessionState::Running);
-    if push {
-        let tip = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
-        git(&path, &["update-ref", &format!("refs/remotes/origin/{branch}"), &tip]);
-    }
-    let stopped = std::time::Instant::now();
+    let tip = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
+    git(&path, &["update-ref", &format!("refs/remotes/origin/{branch}"), &tip]);
     hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
     wait_until(Duration::from_secs(30), "the train to merge on the turn's end", || {
         git_ok(&repo, &["merge-base", "--is-ancestor", &branch, "main"])
     });
-    let took = stopped.elapsed();
-    assert!(c.board().ticket(id).is_some());
-    let reads = lists() - first;
+    wait_until(Duration::from_secs(10), "the train's merge in the feed", || {
+        feed_count(&h, "merge_train_merged", id) >= 1
+    });
+    // Several forge minutes pass at this cadence.
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(calls(), "", "no gh call on a board that merges into main");
+    assert!(prs_of(&mut c).is_empty());
+    assert!(!h.paths.forge_file().exists(), "forge.json is neither read nor written");
+
+    // Pull requests: the forge is read from the next tick.
+    assert!(matches!(
+        c.request(Command::SetMergeInto { into: MergeInto::PullRequests }),
+        Response::Ok
+    ));
+    wait_until(Duration::from_secs(20), "the first forge pass", || calls().contains("pr list"));
     let _ = c.request(Command::Shutdown);
     let _ = std::fs::remove_dir_all(&stub_dir);
-    Some((reads, took))
 }
 
 fn git_ok(repo: &Path, args: &[&str]) -> bool {
@@ -1667,92 +1675,6 @@ fn git_ok(repo: &Path, args: &[&str]) -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
-}
-
-#[test]
-fn a_turn_that_pushed_nothing_merges_on_its_look_with_no_read() {
-    let Some((reads, took)) = turn_end_merges("forge_nopush", false) else { return };
-    assert_eq!(reads, 0, "nothing pushed, nothing opened: no forge read");
-    // The look is a few git forks; the minute is ten.
-    assert!(took < Duration::from_secs(10), "merged {took:?} after the turn's end");
-}
-
-#[test]
-fn a_turn_that_pushed_is_read_at_its_end_not_on_the_minute() {
-    let Some((reads, took)) = turn_end_merges("forge_pushed", true) else { return };
-    assert_eq!(reads, 1, "the turn's own read, of its repository alone");
-    // Under the floor of one read per repository per ten seconds from the
-    // first pass; the minute is ten.
-    assert!(took < Duration::from_secs(20), "merged {took:?} after the turn's end");
-}
-
-/// A read that failed reads nothing (T-795): the turn's end that pushed
-/// and opened a PR is owed a read, and a `pr list` that fails answers it
-/// no more than the forge's silence would. Before, the failed read stamped
-/// the ticket current with no PR bound, and the train fast-forwarded a
-/// branch whose work had gone to a pull request.
-#[test]
-fn a_failed_read_after_a_push_holds_the_train() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
-    let name = "forge_failed_read";
-    let (stub_dir, path_var) = gh_stub(name);
-    let prs_file = stub_dir.join("prs.json");
-    let fail = stub_dir.join("fail");
-    let log = stub_dir.join("calls.log");
-    write(&prs_file, "[]");
-    let Some(h) = Harness::boot_with_env(
-        name,
-        Some(STUB),
-        &[
-            ("MESIMON_WT_REFRESH_TICKS", "4"),
-            ("MESIMON_FORGE_EVERY_MS", "600000"),
-            ("MESIMON_PANE_QUIET_MS", "600000"),
-            ("PATH", &path_var),
-            ("MSMN_GH_PRS", &prs_file.display().to_string()),
-            ("MSMN_GH_FAIL", &fail.display().to_string()),
-            ("MSMN_GH_LOG", &log.display().to_string()),
-        ],
-    ) else {
-        return;
-    };
-    let lists = || {
-        std::fs::read_to_string(&log)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.starts_with("pr list"))
-            .count()
-    };
-    let repo = h.repo.clone();
-    init_repo(&repo, "a.txt", "hello\n");
-    git(&repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
-    let hook_sock = h.paths.hook_sock();
-    let mut c = h.client(name);
-    assert!(matches!(
-        c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
-        Response::Ok
-    ));
-    let (id, sid, branch, path) = ready(&mut c, "alpha");
-    wait_until(Duration::from_secs(20), "the first forge pass to list", || lists() >= 1);
-    std::thread::sleep(Duration::from_millis(500));
-    let first = lists();
-    // The forge stops answering; the turn pushes, so its end is owed a read.
-    write(&fail, "1");
-    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-    c.await_state(sid, "running", |s| *s == SessionState::Running);
-    let tip = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
-    git(&path, &["update-ref", &format!("refs/remotes/origin/{branch}"), &tip]);
-    hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-    wait_until(Duration::from_secs(20), "the turn's read to be tried", || lists() > first);
-    // The look and the read are seconds; a train that took the failed read
-    // for a current one has merged by now.
-    std::thread::sleep(Duration::from_secs(4));
-    assert!(
-        !git_ok(&repo, &["merge-base", "--is-ancestor", &branch, "main"]),
-        "a failed read is no read: the train holds"
-    );
-    assert!(c.board().ticket(id).is_some());
-    let _ = c.request(Command::Shutdown);
-    let _ = std::fs::remove_dir_all(&stub_dir);
 }
 
 /// One ask per conflict (T-770), the lab's D1 on a stub: the local base
@@ -1810,6 +1732,7 @@ fn a_pr_conflict_is_asked_about_once_and_again_only_when_it_returns() {
     // Several forge passes, each one a train pass (T-761).
     let passes = || std::thread::sleep(Duration::from_secs(3));
     let mut c = h.client("forge-conflict");
+    through_prs(&mut c);
     arm(&mut c);
     let (id, sid, branch, path) = ready(&mut c, "alpha");
     let tip = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
@@ -1939,6 +1862,7 @@ fn a_deployed_arrival_waits_for_every_repositorys_pr() {
         git(&root.join(name), &["remote", "add", "origin", &url]);
     }
     let mut c = h.client("forge_two");
+    through_prs(&mut c);
     let id = match c.request(Command::CreateTicket {
         column: "TODO".into(),
         title: "two repos".into(),
@@ -2084,6 +2008,7 @@ fn an_older_pr_keeps_its_pipeline_and_deployments_after_a_newer_one_merges() {
     init_repo(&h.repo, "a.txt", "hello\n");
     git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
     let mut c = h.client("forge_older");
+    through_prs(&mut c);
     let (id, _sid, branch, path) = ready(&mut c, "alpha");
     let tip = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
     // A second commit in HEAD's reflog and off the branch: #43's head.
@@ -2186,6 +2111,7 @@ fn a_running_pipeline_is_read_on_the_busy_cadence_and_a_settled_one_on_the_minut
     init_repo(&h.repo, "a.txt", "hello\n");
     git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
     let mut c = h.client("forge_busy");
+    through_prs(&mut c);
     let (id, _sid, branch, path) = ready(&mut c, "alpha");
     let tip = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
     let merge_oid = "3333333333333333333333333333333333333333";
@@ -2373,6 +2299,7 @@ fn a_freshly_bound_prs_state_is_news_and_its_merge_comes_before_its_deployment()
     git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("forge_fresh");
+    through_prs(&mut c);
     // A column waits on staging, so the pass asks for deployments.
     let mut done = c.board().column("DONE").unwrap().settings.clone();
     done.arrives_on = Arrival::Deployed;
@@ -2476,6 +2403,7 @@ fn a_later_deploy_carrying_every_merged_mr_moves_the_ticket_to_prod() {
     git(&h.repo, &["remote", "add", "origin", "https://gitlab.example.com/lab/forge-lab-api.git"]);
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("forge_batch");
+    through_prs(&mut c);
     // A PROD column a ticket arrives in once production runs its merges.
     assert!(matches!(
         c.request(Command::AddColumn { name: "PROD".into(), after: Some("REVIEW".into()) }),
@@ -2604,6 +2532,7 @@ fn a_conflict_said_before_a_restart_says_its_clear_after_it() {
     git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("forge_clear");
+    through_prs(&mut c);
     let k = crowned(&h, &mut c);
     let got = h.dir.join("got.txt");
     let said =
@@ -2729,6 +2658,7 @@ fn a_train_rebase_turn_is_read_at_its_end() {
     git(&repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("forge_rebase_read");
+    through_prs(&mut c);
     assert!(matches!(
         c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
         Response::Ok
@@ -2842,6 +2772,7 @@ fn an_open_pr_holds_done_and_a_ticket_there_reads_unmerged() {
     init_repo(&repo, "a.txt", "hello\n");
     git(&repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
     let mut c = h.client("forge-done");
+    through_prs(&mut c);
     let (a, a_sid, a_branch, a_path) = ready(&mut c, "alpha");
     git(&repo, &["merge", "-q", "--ff-only", &a_branch]);
     let (b, _, b_branch, b_path) = ready(&mut c, "beta");
@@ -2937,6 +2868,7 @@ fn a_turn_end_wake_waits_for_the_turns_forge_read() {
     git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("forge_wait");
+    through_prs(&mut c);
     let k = crowned(&h, &mut c);
     let key = c.board().ticket(k.worker).unwrap().short_key.clone();
     let got = h.dir.join("got.txt");
@@ -3010,6 +2942,7 @@ fn an_opening_read_mid_turn_rides_the_turns_wake() {
     git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("forge_midturn");
+    through_prs(&mut c);
     let k = crowned(&h, &mut c);
     let got = h.dir.join("got.txt");
     let finished = format!("{} finished its turn (", k.named);
@@ -3040,8 +2973,9 @@ fn an_opening_read_mid_turn_rides_the_turns_wake() {
 /// still reading ahead of a local base the forge never moved, is the
 /// forge's. The armed train lands none of it — the lab's train had, and its
 /// local main and `origin/main` diverged 4 and 4 — `get_ticket` says the
-/// forge merges it, and `m` refuses in the forge's words. A ticket beside
-/// it with no PR is merged by the same train, so the hold is no idle train.
+/// forge merges it, and `m` refuses in the forge's words. On a board that
+/// merges through pull requests (T-810) a ticket beside it with no PR yet
+/// is the forge's as well: no train merge, and `m` asks for a PR.
 #[test]
 fn a_ticket_whose_work_went_through_a_pr_is_never_the_trains() {
     const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
@@ -3066,6 +3000,7 @@ fn a_ticket_whose_work_went_through_a_pr_is_never_the_trains() {
     git(&repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("forge-carried");
+    through_prs(&mut c);
     assert!(matches!(
         c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
         Response::Ok
@@ -3154,14 +3089,34 @@ fn a_ticket_whose_work_went_through_a_pr_is_never_the_trains() {
     }
     assert_eq!(git(&repo, &["rev-parse", "main"]).trim(), main_before);
 
-    // The same train merges a ticket with no PR.
+    // T-810: a ticket with no PR yet is the forge's on this board too: the
+    // train lands nothing, `get_ticket` says the forge, and `m` asks for a
+    // PR.
     let (beta, bsid, _, _) = ready(&mut c, "beta");
     turn(&mut c, &hook_sock, bsid);
-    wait_until(Duration::from_secs(30), "the train to merge the ticket with no PR", || {
-        feed_count(&h, "merge_train_merged", beta) >= 1
+    wait_until(Duration::from_secs(10), "beta's turn's end to land it in REVIEW", || {
+        c.board().ticket(beta).is_some_and(|t| t.column == "REVIEW")
     });
-    assert_eq!(feed_count(&h, "merge_train_merged", id), 0);
-    assert_eq!(feed_count(&h, "merge_train_merged", gamma), 0);
+    std::thread::sleep(Duration::from_secs(4));
+    assert_eq!(feed_count(&h, "merge_train_merged", beta), 0, "the train merges nothing");
+    let view = match c.send(Principal::Agent { session: bsid }, Command::AgentGetTicket) {
+        Response::AgentTicket { ticket } => ticket,
+        other => panic!("get_ticket: {other:?}"),
+    };
+    let merge = view.merge.expect("a branch says who merges it");
+    assert_eq!(
+        (merge.by.as_str(), merge.why.as_str()),
+        ("forge", "this board merges through pull requests")
+    );
+    match c.request(Command::MergeTicket { id: beta }) {
+        Response::Merge { outcome: MergeOutcome::Refused, detail, .. } => assert_eq!(
+            detail,
+            "this board merges through pull requests — open a PR from its branch and merge it on \
+             GitHub"
+        ),
+        other => panic!("m with no PR on a pull-requests board: {other:?}"),
+    }
+    assert_eq!(git(&repo, &["rev-parse", "main"]).trim(), main_before, "local main untouched");
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
 
@@ -3195,6 +3150,7 @@ fn the_pipeline_gate_judges_the_branchs_tip() {
     git(&repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("forge-tip");
+    through_prs(&mut c);
     let mut review = c.board().column("REVIEW").unwrap().settings.clone();
     review.requires_pipeline = true;
     review.arrives_on = Arrival::PipelinePasses;
@@ -3308,6 +3264,7 @@ fn an_open_mrs_head_and_pipeline_are_read_from_the_mr_itself() {
     git(&repo, &["remote", "add", "origin", "https://gitlab.example.com/lab/api.git"]);
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("forge-mr");
+    through_prs(&mut c);
     let mut review = c.board().column("REVIEW").unwrap().settings.clone();
     review.requires_pipeline = true;
     review.arrives_on = Arrival::PipelinePasses;
@@ -3401,6 +3358,7 @@ fn an_open_mrs_state_is_read_from_the_mr_itself() {
     init_repo(&repo, "a.txt", "hello\n");
     git(&repo, &["remote", "add", "origin", "https://gitlab.example.com/lab/api.git"]);
     let mut c = h.client("forge-state");
+    through_prs(&mut c);
     let mut review = c.board().column("REVIEW").unwrap().settings.clone();
     review.arrives_on = Arrival::PipelinePasses;
     assert!(matches!(
@@ -3494,6 +3452,7 @@ fn a_merged_pr_whose_head_carries_the_tip_lands_and_one_that_does_not_holds_done
     init_repo(&repo, "a.txt", "hello\n");
     git(&repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
     let mut c = h.client("forge-past");
+    through_prs(&mut c);
     let (a, a_sid, a_branch, a_path) = ready(&mut c, "alpha");
     let (b, b_sid, b_branch, b_path) = ready(&mut c, "beta");
     let a_tip = git(&a_path, &["rev-parse", "HEAD"]).trim().to_string();
@@ -3588,7 +3547,8 @@ fn lists(log: &Path) -> usize {
 /// (T-779). Its worktree's HEAD reflog holds that head as the commit it was
 /// cut at, which is no work of its own: the MR binds the ticket whose
 /// worktree wrote the commit, not the one cut at it. The new ticket reads
-/// unmerged with no PR, and once it has a commit of its own `m` merges it.
+/// unmerged with no PR, and once it has a commit of its own `m` asks for an
+/// MR of its own (T-810).
 /// The MR's own ticket, bound by its reflog alone (the MR is from
 /// `fix/alpha`), keeps it after the base took the merge.
 #[test]
@@ -3630,6 +3590,7 @@ fn a_ticket_cut_at_a_fast_forward_merge_binds_nothing_of_it() {
     init_repo(&repo, "a.txt", "hello\n");
     git(&repo, &["remote", "add", "origin", "https://gitlab.example.com/lab/api.git"]);
     let mut c = h.client("forge-cut");
+    through_prs(&mut c);
 
     // alpha's commit went up as `fix/alpha` and !1 merged it fast-forward;
     // a fetch took `origin/main` there and local main stayed behind.
@@ -3655,8 +3616,8 @@ fn a_ticket_cut_at_a_fast_forward_merge_binds_nothing_of_it() {
             assert!(ticket.prs.is_empty(), "{:?}", ticket.prs);
             assert_ne!(ticket.merge_state.as_deref(), Some("merged"));
             let merge = ticket.merge.expect("a branch says who merges it");
-            assert_ne!(merge.by, "nobody", "{merge:?}");
-            assert_ne!(merge.by, "forge", "{merge:?}");
+            // The board's forge (T-810), not !1's merge.
+            assert_eq!(merge.why, "this board merges through pull requests", "{merge:?}");
         }
         other => panic!("get_ticket: {other:?}"),
     }
@@ -3665,7 +3626,8 @@ fn a_ticket_cut_at_a_fast_forward_merge_binds_nothing_of_it() {
     let row = wt_of(&mut c, alpha).unwrap();
     assert!(row.merged && row.merged_in.contains("MR !1"), "alpha landed as !1: {row:?}");
 
-    // beta's first commit: no PR carries its merge, and `m` lands it.
+    // beta's first commit: no PR carries its merge, and `m` asks for one
+    // (T-810), not the !1 that never was beta's.
     std::fs::write(beta_path.join("beta.txt"), "beta\n").unwrap();
     git(&beta_path, &["add", "."]);
     git(&beta_path, &["commit", "-qm", "beta"]);
@@ -3678,19 +3640,17 @@ fn a_ticket_cut_at_a_fast_forward_merge_binds_nothing_of_it() {
     wait_until(Duration::from_secs(15), "beta to go quiet", || {
         c.board().sessions.iter().filter(|s| s.ticket == beta).all(|s| !s.state.has_pane())
     });
+    let main_before = git(&repo, &["rev-parse", "main"]).trim().to_string();
     let mut last = String::new();
-    wait_until(Duration::from_secs(20), "`m` to merge beta", || {
+    wait_until(Duration::from_secs(20), "`m` to ask beta for an MR", || {
         match c.request(Command::MergeTicket { id: beta }) {
-            Response::Merge { outcome: MergeOutcome::Merged, .. } => true,
             Response::Merge { outcome: MergeOutcome::Refused, detail, .. } => {
-                assert!(!detail.contains("pull request"), "{detail}");
                 last = detail;
-                false
+                last.contains("open an MR from its branch and merge it on GitLab")
             }
             other => panic!("merge: {other:?} (last refusal: {last})"),
         }
     });
-    let tip = git(&beta_path, &["rev-parse", "HEAD"]).trim().to_string();
-    assert_eq!(git(&repo, &["rev-parse", "main"]).trim(), tip);
+    assert_eq!(git(&repo, &["rev-parse", "main"]).trim(), main_before, "nothing lands here");
     let _ = std::fs::remove_dir_all(&stub_dir);
 }

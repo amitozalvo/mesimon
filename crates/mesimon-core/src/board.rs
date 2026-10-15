@@ -2105,6 +2105,44 @@ impl CrownMode {
     }
 }
 
+/// Where a board's worktree branches land (T-810): one workflow per board,
+/// never both. `Main`, every board's default, is the board as before the
+/// forge integration (T-739): the train and `m` fast-forward a branch into
+/// the local base, and nothing reads a forge. `PullRequests`: a branch lands
+/// through its PR, merged on the forge; the board reads the forge, never
+/// fast-forwards a worktree branch, and the train asks only the rebase a PR
+/// conflict needs. A shared-checkout ticket is unchanged under either: its
+/// commits are on the base the moment they exist.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeInto {
+    #[default]
+    Main,
+    PullRequests,
+}
+
+impl MergeInto {
+    /// Branches land through pull requests: the forge is read, and merges.
+    pub fn pull_requests(self) -> bool {
+        self == Self::PullRequests
+    }
+
+    /// The setting's value in the words the row and `doctor` show.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Main => "main",
+            Self::PullRequests => "pull requests",
+        }
+    }
+
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Main => Self::PullRequests,
+            Self::PullRequests => Self::Main,
+        }
+    }
+}
+
 /// Default timing for a person's follow-up composer, stored per board.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -2144,6 +2182,12 @@ pub struct Board {
     /// had them comes up autonomous, the author's call for every board.
     #[serde(default)]
     pub crown_mode: CrownMode,
+    /// Where the board's worktree branches land (T-810): into main by the
+    /// train and `m`, or through pull requests merged on the forge. Main by
+    /// default, and the forge is read only under pull requests. Nothing
+    /// shipped mixed the two, so no migration and no schema bump.
+    #[serde(default)]
+    pub merge_into: MergeInto,
     /// The crown archives (T-590): `archive_ticket`, archive and restore
     /// alike, is refused while this is off; nothing else of the crown's
     /// changes. Taking a card off the board is
@@ -2337,6 +2381,7 @@ impl Default for Board {
             agent_provider: AgentProvider::default(),
             crown_budget: DEFAULT_CROWN_BUDGET,
             crown_mode: CrownMode::default(),
+            merge_into: MergeInto::default(),
             crown_archives: false,
             crown_watches: true,
             next_key: 0,
@@ -3325,6 +3370,24 @@ mod tests {
         assert!(!back.sends() && !back.answers());
         assert!(CrownMode::Autonomous.sends() && CrownMode::Autonomous.answers());
         assert_eq!(back.toggled(), CrownMode::Autonomous);
+    }
+
+    /// T-810: every board merges into main unless it says pull requests.
+    #[test]
+    fn merge_into_defaults_main_and_pull_requests_is_kept() {
+        assert_eq!(Board::default().merge_into, MergeInto::Main);
+        let mut wire = serde_json::to_value(Board::default()).unwrap();
+        assert_eq!(wire["merge_into"], "main");
+        wire.as_object_mut().unwrap().remove("merge_into");
+        assert_eq!(
+            serde_json::from_value::<Board>(wire.clone()).unwrap().merge_into,
+            MergeInto::Main
+        );
+        wire["merge_into"] = serde_json::json!("pull_requests");
+        let back = serde_json::from_value::<Board>(wire).unwrap().merge_into;
+        assert!(back.pull_requests() && !MergeInto::Main.pull_requests());
+        assert_eq!(back.toggled(), MergeInto::Main);
+        assert_eq!((MergeInto::Main.word(), back.word()), ("main", "pull requests"));
     }
 
     /// T-590: a board from before the field leaves archiving to a person,

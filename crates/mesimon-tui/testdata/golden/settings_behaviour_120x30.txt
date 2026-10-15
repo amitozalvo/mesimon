@@ -6,18 +6,18 @@
       │                      Mouse                     ● on                                                      │
     Ke│  Appearance                                                                                              │
       │                     SNOOZE                                                                               │
-      │  Notifications       Comes back                ● lit   ○ quiet                                           │
+      │  Notifications       Comes back                ● lit    ○ quiet                                          │
       │                      Week starts on            Monday                                                    │
       │▎ Behaviour                                                                                               │
-      │                     REMOTE                                                                               │
-      │  Agents              Fetch from the remote     ● off   ○ 1 min   ○ 5 min   ○ 15 min                      │
+      │                     MERGE                                                                                │
+      │  Agents              Merge into                ● main   ○ pull requests                                  │
       │                                                                                                          │
-      │  Crown              AUTO MERGE                                                                           │
-      │                      Auto merge                ● on                                                      │
-      │  Terminal            Tells the agent           ● on                                                      │
-      │                                                                                                          │
-      │  Usage                                                                                                   │
-      │                                                                                                          │
+      │  Crown              REMOTE                                                                               │
+      │                      Fetch from the remote     ● off    ○ 1 min           ○ 5 min   ○ 15 min             │
+      │  Terminal                                                                                                │
+      │                     AUTO MERGE                                                                           │
+      │  Usage               Auto merge                ● on                                                      │
+      │                      Tells the agent           ● on                                                      │
       │                                                                                                          │
       │                                                                                                          │
       │                                                                                                          │

@@ -1474,16 +1474,15 @@ impl Daemon {
             merged: look.merged,
             needs_rebase: look.needs_rebase,
             conflict: look.conflict,
-            // What the train will do once it has read the forge (T-739): a
-            // ticket with a PR bound is the forge's to merge and the train
-            // leaves it (T-778), so the crown hears the delivery; the
-            // verdict's age is the pass's concern, not this hold's.
+            // On a board that merges through pull requests the forge merges
+            // and the train asks only a conflict's rebase (T-810), so the
+            // crown hears the delivery.
             has_pr: self.forge.has_pr(worker),
             pr_conflict: self.forge.pr_conflict(worker),
-            forge_fresh: true,
         };
         let asked = self.train.asked_tips();
         let reading = mesimon_core::train::Reading {
+            merge_into: self.board.merge_into,
             reach: self.board.column(&t.column).map(|c| c.settings.train).unwrap_or_default(),
             flags: &flags,
             seat: self.train_seat(worker),

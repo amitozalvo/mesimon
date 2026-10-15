@@ -1,0 +1,20 @@
+ BOARD   mesimon › kanban-tui   6 tickets
+  ╭─ SETTINGS ∙ BEHAVIOUR ∙ MACHINE ─────────────────────╮
+  │                                                      │
+  │ SNOOZE                                               │
+  │  Comes back                ● lit    ○ quiet          │
+  │  Week starts on            Monday                    │
+  │                                                      │
+  │ MERGE                                                │
+  │  Merge into                ● main   ○ pull requests  │
+  │                                                      │
+  │ REMOTE                                               │
+  │  Fetch from the remote     off                       │
+  │                                                      │
+  │ AUTO MERGE                                           │
+  │  Auto merge                ● on                      │
+  │  Tells the agent           ● on                      │
+  │                                                      │
+  │ pastes the merged notice into the agent, which star~ │
+  ╰──────────── jk select ∙ enter change ∙ b this board ─╯
+ SETTINGS                                            ? keys

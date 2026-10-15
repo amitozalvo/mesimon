@@ -160,6 +160,10 @@ impl Daemon {
 
     /// The legs of `ticket` a forge may read, for its look (T-761).
     fn look_legs(&mut self, ticket: ulid::Ulid) -> Vec<crate::forge::LegQuery> {
+        // A board that merges into main reads no forge (T-810).
+        if !self.through_prs() {
+            return Vec::new();
+        }
         let base = self.base_branch.clone().unwrap_or_default();
         let legs = match self.worktrees.get(&ticket) {
             Some(b) if !b.branch.is_empty() => b.legs(&self.paths.repo_root, &base),

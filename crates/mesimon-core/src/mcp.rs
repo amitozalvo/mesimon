@@ -164,9 +164,10 @@ pub const CROWN_WAKES: &str = concat!(
      and the board cannot tell which, so it merges, parks and ends nothing for it: ask_agent \
      reaches the worker while its tasks run, to ask whether it is done and what they wait on. \
      A delivered worker's get_ticket says who merges its branch (merge: by train, crown, \
-     person or forge, and why), and the delivered line carries the word. The forge's — a \
-     pull request bound to the ticket — is merged on the forge, and merge_ticket refuses \
-     it. The train's is waited for: \
+     person or forge, and why), and the delivered line carries the word. The forge's — every \
+     worktree ticket's on a board whose Merge into setting is pull requests — lands through its \
+     pull request, merged on the forge, and merge_ticket refuses it; on a board that merges \
+     into main nothing is the forge's. The train's is waited for: \
      the crown hears it once, at the merge. The crown's — the train off, the ticket out of it \
      by t, or a column the train stops short of, under autonomous mode — is merged with \
      merge_ticket while merge_state reads ahead; at needs_rebase the agent is asked to rebase \
@@ -1574,6 +1575,9 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // and the crown answering a worker's question is a decision made
         // for the person. Only the person may hand either over.
         | Command::SetCrownMode { .. }
+        // T-810: who merges a branch, the train or the forge, is the
+        // team's workflow; an agent choosing it chooses its own merger.
+        | Command::SetMergeInto { .. }
         // T-590: the crown taking a card off the board is the person's
         // gesture handed over. Only the person may hand it over.
         | Command::SetCrownArchives { .. }
@@ -3112,8 +3116,10 @@ mod tests {
         for words in [
             "says who merges its branch (merge: by train, crown, person or forge, and why)",
             "the delivered line carries the word",
-            "The forge's — a pull request bound to the ticket — is merged on the forge, and",
-            "merge_ticket refuses it",
+            "The forge's — every worktree ticket's on a board whose Merge into setting is pull \
+             requests — lands through its pull request, merged on the forge, and merge_ticket \
+             refuses it",
+            "on a board that merges into main nothing is the forge's",
             "The train's is waited for",
             "the train off, the ticket out of it by t, or a column the train stops short of",
             "merged with merge_ticket while merge_state reads ahead",
@@ -3174,6 +3180,7 @@ mod tests {
             Command::SetAgentProvider { provider: crate::board::AgentProvider::Codex },
             Command::SetCrownBudget { budget: 3 },
             Command::SetCrownMode { mode: crate::board::CrownMode::Autonomous },
+            Command::SetMergeInto { into: crate::board::MergeInto::PullRequests },
             Command::SetCrownArchives { on: true },
             Command::SetCrownWatches { on: true },
             Command::SetTicketTier { id: t, tier: Some("claude".into()) },

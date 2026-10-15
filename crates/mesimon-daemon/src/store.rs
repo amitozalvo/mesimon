@@ -10,7 +10,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use mesimon_core::board::{
-    AgentProvider, Board, Column, CrownMode, SessionRecord, Ticket, KEY_PREFIX,
+    AgentProvider, Board, Column, CrownMode, MergeInto, SessionRecord, Ticket, KEY_PREFIX,
 };
 use mesimon_core::command::Notice;
 use mesimon_core::prompts::PromptSet;
@@ -144,6 +144,12 @@ struct ColumnsFile {
         skip_serializing_if = "Option::is_none"
     )]
     legacy_crown_answers: Option<bool>,
+    /// Where the board's worktree branches land (`Board::merge_into`,
+    /// T-810). Absent means main, every file before the field; written
+    /// either way. No bump: a build before it reads every board's forge,
+    /// which widens nothing an agent or a spawn gets.
+    #[serde(default)]
+    merge_into: MergeInto,
     /// The crown archives and restores tickets (`Board::crown_archives`,
     /// T-590). Absent means OFF — every file before the field, and every
     /// board whose person never turned it on. Written either way, so an on
@@ -593,6 +599,7 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                 agent_provider: cf.agent_provider,
                                 crown_budget: cf.crown_budget,
                                 crown_mode: cf.crown_mode,
+                                merge_into: cf.merge_into,
                                 crown_archives: cf.crown_archives,
                                 crown_watches: cf.crown_watches,
                                 tags: cf.tags,
@@ -797,6 +804,8 @@ pub struct ColumnsScalars {
     pub crown_budget: u8,
     /// `Board::crown_mode` (T-610).
     pub crown_mode: CrownMode,
+    /// `Board::merge_into` (T-810).
+    pub merge_into: MergeInto,
     /// `Board::crown_archives` (T-590).
     pub crown_archives: bool,
     /// `Board::crown_watches` (T-712).
@@ -825,6 +834,7 @@ impl Default for ColumnsScalars {
             tiers: Vec::new(),
             crown_budget: mesimon_core::board::DEFAULT_CROWN_BUDGET,
             crown_mode: CrownMode::default(),
+            merge_into: MergeInto::default(),
             crown_archives: false,
             crown_watches: true,
             mcp_tools: true,
@@ -859,6 +869,7 @@ pub fn read_columns_scalars(paths: &Paths) -> ColumnsScalars {
         tiers: cf.tiers,
         crown_budget: cf.crown_budget,
         crown_mode: cf.crown_mode,
+        merge_into: cf.merge_into,
         crown_archives: cf.crown_archives,
         crown_watches: cf.crown_watches,
         mcp_tools: cf.mcp_tools,
@@ -895,6 +906,7 @@ fn columns_text(board: &Board) -> Result<String> {
         crown_budget: board.crown_budget,
         crown_mode: board.crown_mode,
         legacy_crown_answers: (!board.crown_mode.answers()).then_some(false),
+        merge_into: board.merge_into,
         crown_archives: board.crown_archives,
         crown_watches: board.crown_watches,
         tags_seeded: board.tags_seeded,
@@ -1262,6 +1274,32 @@ mod tests {
         assert!(text.contains("crown_answers = false"), "for an older build: {text}");
         assert_eq!(load(&paths).unwrap().board.crown_mode, CrownMode::Supervised, "kept");
         assert_eq!(read_columns_scalars(&paths).crown_mode, CrownMode::Supervised);
+        cleanup(&dir, &paths);
+    }
+
+    /// T-810: a `columns.toml` that never carried `merge_into` merges into
+    /// main, in the daemon and in doctor alike, and pull requests survive a
+    /// save.
+    #[test]
+    fn merge_into_is_main_unless_the_file_says_pull_requests() {
+        let (dir, paths) = scratch("mergeinto");
+        let cols = dir.join(".mesimon/board/columns.toml");
+        write(
+            &cols,
+            &format!(
+                "schema_version = {COLUMNS_SCHEMA}\nnext_key = 2\n\n\
+                 [[columns]]\nname = \"TODO\"\norder = \"a0\"\n"
+            ),
+        );
+        assert_eq!(read_columns_scalars(&paths).merge_into, MergeInto::Main, "doctor");
+        let mut b = load(&paths).unwrap().board;
+        assert_eq!(b.merge_into, MergeInto::Main);
+        b.merge_into = MergeInto::PullRequests;
+        save_columns(&paths, &b).unwrap();
+        let text = std::fs::read_to_string(&cols).unwrap();
+        assert!(text.contains("merge_into = \"pull_requests\""), "{text}");
+        assert_eq!(load(&paths).unwrap().board.merge_into, MergeInto::PullRequests, "kept");
+        assert_eq!(read_columns_scalars(&paths).merge_into, MergeInto::PullRequests);
         cleanup(&dir, &paths);
     }
 
@@ -2353,6 +2391,7 @@ order = "a0"
             crown_budget: 5,
             crown_mode: CrownMode::Supervised,
             legacy_crown_answers: Some(false),
+            merge_into: MergeInto::PullRequests,
             crown_archives: true,
             crown_watches: true,
             tags_seeded: true,

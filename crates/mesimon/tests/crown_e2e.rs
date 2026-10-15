@@ -24,7 +24,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use mesimon_core::board::{CrownMode, SessionKind, SessionState, WorkspaceStrategy};
+use mesimon_core::board::{CrownMode, MergeInto, SessionKind, SessionState, WorkspaceStrategy};
 use mesimon_core::command::{AgentTicketView, AskRoad, Command, CrownTouch, Deliver, Response};
 use mesimon_core::Principal;
 use serde_json::json;
@@ -5004,7 +5004,9 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
 /// delivered wake line carries the word. `merge_ticket` is refused in words
 /// on the crown's own ticket, with nothing to merge, under supervised mode
 /// and at `needs_rebase` (the rebase word), and otherwise takes the ff-only
-/// road: the branch lands, the card reads `♛ merged`, the feed names the
+/// road (none of it on a board that merges through pull requests, T-810,
+/// where the forge is named and `merge_ticket` asks for a PR): the branch
+/// lands, the card reads `♛ merged`, the feed names the
 /// agent's `merge_ticket` with its outcome, and the merged notice goes to
 /// the worker where the pref is on, so the crown's `merged` wake waits for
 /// that notice turn (T-596). With the pref off (this board's `prefs.json`,
@@ -5226,6 +5228,17 @@ fn the_crown_merges_where_the_train_will_not() {
     wait_state(&mut c, "ahead");
 
     // ---- 5. the crown merges, pref off: no notice, the wake at once -------
+    // T-810: not on a board that merges through pull requests, where the
+    // forge merges every worktree branch and the crown is asked for none.
+    assert!(matches!(
+        c.request(Command::SetMergeInto { into: MergeInto::PullRequests }),
+        Response::Ok
+    ));
+    let (by, why, seen) = who(&mut c, &kw);
+    assert_eq!((by.as_str(), why.as_str()), ("forge", "this board merges through pull requests"));
+    refused(merge(&mut c, &kw, seen), &[&kw, "open one from its branch", "merge it on GitHub"]);
+    assert!(!merged());
+    assert!(matches!(c.request(Command::SetMergeInto { into: MergeInto::Main }), Response::Ok));
     let (by, _, seen) = who(&mut c, &kw);
     assert_eq!(by, "crown");
     match merge(&mut c, &kw, seen) {

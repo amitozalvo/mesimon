@@ -605,6 +605,13 @@ pub enum Command {
     SetCrownMode {
         mode: crate::board::CrownMode,
     },
+    /// Where the board's worktree branches land (`Board::merge_into`,
+    /// T-810): into main, or through pull requests. Local only: the
+    /// workflow is the team's, and an agent choosing it would be choosing
+    /// who merges its own branch.
+    SetMergeInto {
+        into: crate::board::MergeInto,
+    },
     /// Whether the crown may archive and restore tickets with
     /// `archive_ticket` (`Board::crown_archives`, T-590). Local only: taking
     /// a card off the board is the person's gesture, and only the person may
@@ -1439,6 +1446,7 @@ impl Command {
             | SetDefaultTier { .. }
             | SetCrownBudget { .. }
             | SetCrownMode { .. }
+            | SetMergeInto { .. }
             | SetCrownArchives { .. }
             | SetCrownWatches { .. }
             | SetSystemPrompt { .. }

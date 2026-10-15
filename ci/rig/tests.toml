@@ -76,7 +76,9 @@
 #              feed, or none answered), unlanded (T-778: the ticket's branch
 #              is not on the checkout's base), tier:<name> (T-808: the tier
 #              the ticket's agent last launched on; the rig lays `rig-alt`
-#              beside its own `rig`, the same model, for L2).
+#              beside its own `rig`, the same model, for L2),
+#              crown_line:<prefix>:<word> (T-810: the crown's last line
+#              beginning <prefix> holds <word>, or with `!<word>` does not).
 #   siblings   more tickets the test files beside its own ({key2}, {key3}
 #              in a step), each with the same brief and every check run on
 #              each.
@@ -88,7 +90,10 @@
 #              worker's dialog in its pane), `resend` (the person's resend of
 #              the worker's unsent words), `restart_drop_mod` (the daemon
 #              again with MESIMON_MOD_DIR naming a copy of the mod whose first
-#              submit in each session is dropped).
+#              submit in each session is dropped). `prs_board` (T-810) sets
+#              Merge into: pull requests on a stub forge holding no PR; every
+#              `forge_*` step that starts the stub sets it too, and
+#              `forge_off` sets main back.
 #
 # The prompts are explicit and small, so the repository's CLAUDE.md does not
 # send a Sonnet worker off to work: a run is a few turns per test, cents.
@@ -860,6 +865,33 @@ checks = ["road:mod", "started_by_crown", "unlanded", "crown_reply:closed", "rep
 
   [[test.steps]]
   crown = "F9: {key}'s branch reads ahead of its base. Call get_ticket with key {key}, and land {key}'s branch if landing it is the crown's to do. Then end your turn with the single line: F9 merge by, then who merges {key}'s branch and why, in get_ticket's words."
+  until = { state = "idle" }
+
+  [[test.steps]]
+  rig = "forge_off"
+
+[[test]]
+id = "M1"
+title = "M1 · the crown says who merges a delivered ticket, on a board that merges into main and then through pull requests: do the steps below"
+workspace = "worktree"
+brief = "Write a file named M1.txt holding the single line m1, commit it with git with the message M1, then reply with the single word done and end your turn. Read no other file and run no other command."
+expect = "the worker commits and delivers. Asked who merges the branch, naming no tool or field, the crown reads get_ticket's merge on a board that merges into main (by crown, the train is off: the rig arms no train) and answers the crown (its line may name the forge to rule it out, as Sonnet's first run did). The board's Merge into then becomes pull requests (T-810) on a stub forge with no PR, and asked again the crown answers the forge (this board merges through pull requests). It lands nothing either time: the branch is not on the base."
+checks = ["road:mod", "started_by_crown", "unlanded", "crown_line:M1 main:crown", "crown_line:M1 prs:forge", "replies:done"]
+
+  [[test.steps]]
+  crown = "M1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: M1 started. When the board wakes you because {key}'s agent delivered or finished, end your turn with the single line: M1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  crown = "M1: who merges {key}'s branch on this board, and why? Merge nothing. End your turn with the single line: M1 main, then your answer."
+  until = { state = "idle" }
+
+  [[test.steps]]
+  rig = "prs_board"
+
+  [[test.steps]]
+  crown = "M1: the board's settings changed. Who merges {key}'s branch now, and why? Merge nothing. End your turn with the single line: M1 prs, then your answer."
   until = { state = "idle" }
 
   [[test.steps]]

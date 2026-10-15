@@ -33,7 +33,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::board::{Board, Confidence, SessionState, StopReason, Ticket, TrainReach};
+use crate::board::{Board, Confidence, MergeInto, SessionState, StopReason, Ticket, TrainReach};
 
 /// The `Principal::Automation { rule }` word, and the feed's.
 pub const RULE: &str = "merge_train";
@@ -47,19 +47,12 @@ pub struct WtFlags {
     pub needs_rebase: bool,
     pub conflict: bool,
     /// A pull request is bound to the ticket, open, merged or closed, on
-    /// any repository (T-739, T-778): its work goes through pull requests,
-    /// so the forge merges it and the train never fast-forwards it. A PR
-    /// merged at a head other than the branch's tip leaves the branch
-    /// reading ahead of a local base the forge never moved, and landing it
-    /// there lands the work twice. A rebase is asked only on a conflict the
-    /// forge reports, not on a base that merely moved.
+    /// any repository (T-739, T-778). Read only on a board that merges
+    /// through pull requests (T-810): a board that merges into main reads
+    /// no forge.
     pub has_pr: bool,
     /// The forge reports a conflict on an open PR.
     pub pr_conflict: bool,
-    /// The forge's verdict on this ticket is younger than its agent's last
-    /// end of turn, or no forge reads this board at all: the train acts on
-    /// nothing it has not read (T-739).
-    pub forge_fresh: bool,
 }
 
 pub struct Input<'a> {
@@ -162,6 +155,8 @@ pub enum Lane {
 /// board and the daemon's memory; the crown's wake (T-554) builds one from a
 /// turn's own look, to ask what the train will do with a delivery.
 pub struct Reading<'a> {
+    /// Where the board's branches land (T-810).
+    pub merge_into: MergeInto,
     /// The ticket's column's `train` setting.
     pub reach: TrainReach,
     pub flags: &'a WtFlags,
@@ -176,6 +171,18 @@ pub struct Reading<'a> {
 }
 
 /// The list `t` is on, if any: the one predicate `plan` runs per ticket.
+///
+/// One workflow per board (T-810). Merging into main, the train is the
+/// board before the forge (T-739): it merges a branch ahead and
+/// fast-forwardable, and asks a rebase once per base tip. Through pull
+/// requests it never merges: the forge does. Its one ask there is the
+/// rebase a conflict the forge reports on an open PR needs, once per
+/// conflict (T-770); the local base tip is no memo for it, since a forge
+/// merge never moves the checkout's base. A branch with no PR yet is asked
+/// nothing: the base its PR will target is the forge's, and the forge says
+/// whether the PR conflicts once it is opened. So neither mode waits for a
+/// forge read before it acts: under main nothing is read, and under pull
+/// requests the train makes no merge a read could have to rule out.
 pub fn lane(t: &Ticket, r: &Reading) -> Option<Lane> {
     let f = r.flags;
     if !f.attached
@@ -187,28 +194,13 @@ pub fn lane(t: &Ticket, r: &Reading) -> Option<Lane> {
     {
         return None;
     }
-    // The train acts on nothing it has not read (T-739): a forge verdict
-    // older than the agent's last turn may not yet know the PR that turn
-    // opened.
-    if !f.forge_fresh {
-        return None;
-    }
-    if r.reach == TrainReach::Merge
-        && f.ahead > 0
-        && !f.needs_rebase
-        && !f.has_pr
-        && r.seat.lets_merge()
+    let prs = r.merge_into.pull_requests();
+    if !prs && r.reach == TrainReach::Merge && f.ahead > 0 && !f.needs_rebase && r.seat.lets_merge()
     {
         return Some(Lane::Merge);
     }
-    // With a PR bound the base moving past the branch is not a reason: the
-    // forge merges a branch behind its base. A conflict it reports is, and
-    // it is owed one ask (T-770): the local base tip is no memo for it, since
-    // a forge merge never moves the checkout's base, so a second conflict at
-    // the same local tip was never asked about and a moved local tip asked
-    // again about the same one.
-    let owed = if f.has_pr {
-        f.pr_conflict && !r.conflict_asked
+    let owed = if prs {
+        f.has_pr && f.pr_conflict && !r.conflict_asked
     } else {
         f.needs_rebase && r.asked.is_none_or(|at| at != r.base_tip)
     };
@@ -230,6 +222,7 @@ pub fn plan(input: &Input) -> Plan {
         for t in input.board.column_tickets(&col.name) {
             let Some(flags) = input.flags.get(&t.id) else { continue };
             let reading = Reading {
+                merge_into: input.board.merge_into,
                 reach: col.settings.train,
                 flags,
                 seat: seat(input.board, t.id, input.owed.contains(&t.id)),
@@ -307,27 +300,27 @@ mod tests {
             conflict: false,
             has_pr: false,
             pr_conflict: false,
-            forge_fresh: true,
         }
     }
 
-    /// T-739: an open PR takes a ticket off the merge list, a rebase is
-    /// asked only on a conflict the forge reports, and a stale forge verdict
-    /// holds the ticket off both lists.
+    /// T-810: one workflow per board. Into main the train merges a branch
+    /// ahead and asks a rebase of one behind, once per base tip, and a PR is
+    /// never read. Through pull requests it merges nothing, and its one ask
+    /// is the rebase a conflict the forge reports needs: a branch behind its
+    /// local base, PR or not, is the forge's.
     #[test]
-    fn an_open_pr_is_the_merge_and_a_stale_verdict_holds() {
-        let b = board();
+    fn a_board_merges_into_main_or_through_pull_requests_never_both() {
+        let mut b = board();
+        b.sessions.push(claude(1, idle(), Confidence::High));
         let t = ticket(1, REVIEW, "a");
-        let idle = claude(1, idle(), Confidence::High);
-        let mut b2 = b.clone();
-        b2.sessions.push(idle);
-        let reading = |f: &WtFlags| {
+        let read = |into: MergeInto, f: &WtFlags| {
             lane(
                 &t,
                 &Reading {
+                    merge_into: into,
                     reach: TrainReach::Merge,
                     flags: f,
-                    seat: seat(&b2, t.id, false),
+                    seat: seat(&b, t.id, false),
                     base_tip: "tip",
                     asked: None,
                     conflict_asked: false,
@@ -335,19 +328,28 @@ mod tests {
                 },
             )
         };
-        let mut f = flags(2, false);
-        assert_eq!(reading(&f), Some(Lane::Merge), "no PR: the train's merge");
-        f.has_pr = true;
-        assert_eq!(reading(&f), None, "an open PR is the merge");
-        f.needs_rebase = true;
-        assert_eq!(reading(&f), None, "a base moved past a PR branch is not a reason");
-        f.pr_conflict = true;
-        assert_eq!(reading(&f), Some(Lane::Rebase), "a conflict the forge reports is");
-        f.forge_fresh = false;
-        assert_eq!(reading(&f), None, "a verdict older than the turn holds the ticket");
-        let mut plain = flags(2, true);
-        plain.forge_fresh = false;
-        assert_eq!(reading(&plain), None, "on both lists");
+        let ahead = flags(2, false);
+        let behind = flags(2, true);
+        let conflict = WtFlags { has_pr: true, pr_conflict: true, ..flags(2, true) };
+        assert_eq!(read(MergeInto::Main, &ahead), Some(Lane::Merge), "main: the train merges");
+        assert_eq!(read(MergeInto::Main, &behind), Some(Lane::Rebase), "and asks the rebase");
+        let prs = MergeInto::PullRequests;
+        assert_eq!(read(prs, &ahead), None, "pull requests: the forge merges");
+        assert_eq!(read(prs, &behind), None, "a branch with no PR yet is asked nothing");
+        let open = WtFlags { has_pr: true, ..flags(2, true) };
+        assert_eq!(read(prs, &open), None, "a base moved past a PR branch is not a reason");
+        assert_eq!(read(prs, &conflict), Some(Lane::Rebase), "a conflict the forge reports is");
+        let parked = Reading {
+            merge_into: prs,
+            reach: TrainReach::Merge,
+            flags: &conflict,
+            seat: Seat::Busy,
+            base_tip: "tip",
+            asked: None,
+            conflict_asked: false,
+            fused: false,
+        };
+        assert_eq!(lane(&t, &parked), None, "asked only of an idle agent");
     }
 
     /// T-770: with a PR open the forge's conflict is the reason whatever the
@@ -355,10 +357,11 @@ mod tests {
     /// forge merge never moves, is no memo either way: a conflict asked
     /// about stays answered when the local base moves, and a ticket asked
     /// at this local tip is asked again about a conflict it was not asked
-    /// about. A ticket with no PR keeps its once-per-base-tip rule.
+    /// about.
     #[test]
     fn a_pr_conflict_is_asked_once_whatever_the_local_base_says() {
         let mut b = board();
+        b.merge_into = MergeInto::PullRequests;
         b.tickets.push(ticket(1, REVIEW, "a"));
         b.sessions.push(claude(1, idle(), Confidence::High));
         let t = &b.tickets[0];
@@ -366,6 +369,7 @@ mod tests {
             lane(
                 t,
                 &Reading {
+                    merge_into: MergeInto::PullRequests,
                     reach: TrainReach::Merge,
                     flags: f,
                     seat: seat(&b, t.id, false),
@@ -387,9 +391,6 @@ mod tests {
         assert_eq!(read(&conflict, Some("tip0"), true), None, "a moved local base changes nothing");
         let open = WtFlags { has_pr: true, ..flags(1, true) };
         assert_eq!(read(&open, None, false), None, "a PR behind its base and clean is the forge's");
-        let behind = flags(1, true);
-        assert_eq!(read(&behind, Some("tip1"), false), None, "no PR: once per base tip");
-        assert_eq!(read(&behind, Some("tip0"), true), Some(Lane::Rebase), "the base moved");
         // And `plan` reads the same memo.
         let flags = HashMap::from([(t.id, conflict)]);
         let asked_about = HashSet::from([t.id]);
@@ -408,14 +409,16 @@ mod tests {
         assert_eq!(p(&asked_about), Plan::default());
     }
 
-    /// T-778: a ticket whose PRs are all merged or closed is still the
-    /// forge's. Its branch reads ahead of a local base the forge never
-    /// moved (the PR merged at another head, as merge commits), and the
-    /// train landing it there landed the work a second time: it is never a
-    /// merge candidate, and a base that moved asks no rebase.
+    /// T-778, T-810: on a board that merges through pull requests no
+    /// branch is the train's to merge, PR or not, and a base that moved asks
+    /// no rebase. A PR merged at another head leaves its branch reading
+    /// ahead of a local base the forge never moved, and landing it there
+    /// lands the work a second time. The same branches on a board that
+    /// merges into main are the train's: `plan` reads the board's mode.
     #[test]
-    fn a_ticket_with_a_merged_pr_is_never_the_trains_to_merge() {
+    fn a_board_through_pull_requests_is_never_the_trains_to_merge() {
         let mut b = board();
+        b.merge_into = MergeInto::PullRequests;
         b.tickets.push(ticket(1, REVIEW, "a"));
         b.tickets.push(ticket(2, REVIEW, "b"));
         b.sessions.push(claude(1, idle(), Confidence::High));
@@ -423,10 +426,11 @@ mod tests {
         let behind = WtFlags { has_pr: true, ..flags(4, true) };
         let pr = HashMap::from([(ulid::Ulid(1), landed), (ulid::Ulid(2), behind)]);
         assert_eq!(run(&b, &pr), Plan::default(), "ahead or behind, the forge's");
-        // With no PR bound the same branches are the train's.
         let plain =
             HashMap::from([(ulid::Ulid(1), flags(4, false)), (ulid::Ulid(2), flags(4, true))]);
-        assert_eq!(run(&b, &plain).merge, vec![ulid::Ulid(1)]);
+        assert_eq!(run(&b, &plain), Plan::default(), "no PR yet: the forge's all the same");
+        b.merge_into = MergeInto::Main;
+        assert_eq!(run(&b, &plain).merge, vec![ulid::Ulid(1)], "into main: the train's");
     }
 
     /// Every ticket 1..=4 stands on the same base tip.
@@ -771,6 +775,7 @@ mod tests {
         lane(
             &t,
             &Reading {
+                merge_into: MergeInto::Main,
                 reach,
                 flags: f,
                 seat,
