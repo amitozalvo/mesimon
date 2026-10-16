@@ -623,6 +623,18 @@ pub(super) fn hint_spans(
     out
 }
 
+/// A binding's key alone, bold, where the words beside it already say what
+/// it does (the summary fold's `N more ^j`, T-819): the first available of
+/// `items` that fits `budget`, clickable as a spelled hint is.
+pub(super) fn key_spans(items: &[&Binding], ink: &Ramp, budget: usize) -> Vec<Span<'static>> {
+    let key = Style::default().fg(ink.base).add_modifier(Modifier::BOLD);
+    let Some(b) = items.iter().find(|b| b.show.width() <= budget) else { return Vec::new() };
+    if let Some(k) = keymap::click_key(b) {
+        crate::mouse::note_key(b.show, k);
+    }
+    vec![Span::styled(b.show.to_string(), key)]
+}
+
 /// Is a framed dialog open? Its keys are in its frame; the footer under it
 /// then carries only the mode chip and the right cluster.
 fn dialog_open(app: &App) -> bool {

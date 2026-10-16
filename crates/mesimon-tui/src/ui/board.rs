@@ -303,7 +303,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 app.card_tier_word(t.id).as_deref(),
                 app.card_corner(t.id),
                 summary.as_ref(),
-                (!summary_keys.is_empty()).then_some((summary_keys.as_slice(), &*keys_ctx)),
+                (!summary_keys.is_empty()).then_some(summary_keys.as_slice()),
                 app.summary_pulse(t.id),
                 app.prefs.summary == crate::prefs::SummaryShow::Full,
                 fresh.as_ref().map(|(words, ago, crown)| (words.as_str(), *ago, *crown)),

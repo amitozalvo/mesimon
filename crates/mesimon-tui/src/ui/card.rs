@@ -481,7 +481,7 @@ pub(super) fn render(
     tier_word: Option<&str>,
     corner: Option<String>,
     summary: Option<&crate::app::TicketSummary>,
-    summary_keys: Option<(&[&'static mesimon_core::keymap::Binding], &mesimon_core::keymap::Ctx)>,
+    summary_keys: Option<&[&'static mesimon_core::keymap::Binding]>,
     summary_pulse: Option<(u64, Option<mesimon_core::summary::Count>)>,
     summary_underline: bool,
     fresh: Option<(&str, u64, bool)>,
@@ -1216,8 +1216,9 @@ pub(super) fn render(
         // The summary rows (T-696), under the reply: the first plain row,
         // then the open boxes in their order (ticked ones after, when few
         // are open), then a fold row counting the rest with their state —
-        // every box ticked, none, or some — and the key that lists them
-        // all, through the keymap so a key drawn here is a key that works.
+        // every box ticked, none, or some — and, right after the count, the
+        // key that lists them all (T-819: the key alone, its word is the
+        // count's), through the keymap so a key drawn here is a key that works.
         // The rows start on the glyph column, two cells before the reply's
         // words (author: "to indicate it's not the transcript"): a box
         // heads a task, a dash a plain row — centred in the box's three
@@ -1240,20 +1241,17 @@ pub(super) fn render(
             if let Some((n, state)) = fold {
                 let words = format!("{} {n} more", box_mark(tier, state));
                 let mut row = vec![Span::styled(words.clone(), faint)];
-                if let Some((keys, kctx)) = summary_keys {
+                if let Some(keys) = summary_keys {
                     let budget = t_cells.saturating_sub(words.width() + 1);
-                    let mut hint = super::chrome::hint_spans(keys, kctx, ramp, budget);
+                    let mut key = super::chrome::key_spans(keys, ramp, budget);
                     if trail {
-                        for s in &mut hint {
+                        for s in &mut key {
                             s.style = faint;
                         }
                     }
-                    let used = super::spans_width(&hint);
-                    if !hint.is_empty() {
-                        row.push(Span::raw(
-                            " ".repeat(t_cells.saturating_sub(words.width() + used)),
-                        ));
-                        row.extend(hint);
+                    if !key.is_empty() {
+                        row.push(Span::raw(" "));
+                        row.extend(key);
                     }
                 }
                 push(row);

@@ -26813,3 +26813,11 @@ cursor held), and its ghost renders with `selected` (the accordion, the peek rul
 `card::render`'s new `ghost` keeps it from looking like the cursor (`cursorish` off: no band, no
 cursor bar, rest ink). It then gives up its rows at `glide::ROW_MS` as before. Test:
 `ui::the_cursors_card_leaves_an_open_ghost_that_shrinks`.
+
+## The summary fold spells its key after the count (T-819, 2026-10-16, the author: "switch \"^j summary\" with ^j next to the N more")
+
+The open cursor card's summary fold row read `[✓] 2 more` with `^j summary` right-aligned across
+the card. It now reads `[✓] 2 more ^j`: the count already says what the key opens, so the key
+stands alone, bold, one space after it. `chrome::key_spans` draws a binding's key without its
+word and notes it with `mouse::note_key`, so the lone `^j` is clickable as a spelled hint is
+(T-716). Tests: the `board_summary_120x30` golden, `ui::the_summary_folds_key_alone_clicks`.

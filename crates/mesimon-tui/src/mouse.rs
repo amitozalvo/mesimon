@@ -184,6 +184,12 @@ pub(crate) fn note_hint(show: &str, word: &str, key: Key) {
     HINTS.with(|h| h.borrow_mut().push((format!("{show} {word}"), key)));
 }
 
+/// A key was spelled alone, bold, its word already said beside it
+/// (`chrome::key_spans`): a spot over the key.
+pub(crate) fn note_key(show: &str, key: Key) {
+    HINTS.with(|h| h.borrow_mut().push((show.to_string(), key)));
+}
+
 /// Forget the hints of the frame before.
 pub(crate) fn forget_hints() {
     HINTS.with(|h| h.borrow_mut().clear());
