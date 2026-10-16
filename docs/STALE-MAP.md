@@ -26826,3 +26826,16 @@ Addendum (2026-10-16, the author: "it's too white, add bullet before it and keep
 rest of the text before it"): the row reads `[✓] 2 more ∙ ^j`, the bullet and the key in the
 count's faint ink, not bold. A scraped hint needs a bold first cell to tell it from running text;
 `note_key` records `∙ ^j` with that check off, the bullet doing the telling.
+
+## The links list reads latest first (T-820, 2026-10-16, "links order")
+
+The ask: "latest first (transcript originated links is always latest)". `App::ticket_links`
+now lists the agent's latest words first, then every note and pull request by when it last
+changed (a note's `edited_at`, else `created_at`; a PR's `updated_ms`), newest first. A tie
+keeps the notes' order, so an untouched ticket still reads description first. Inside one body
+the order stays the document's: the words were written together, and reversing them would
+scramble a sentence. A target listed twice keeps its latest place, so a URL the agent repeats
+from the description rises to the top. `^K` (Ctrl+Shift+K) opens the first row, which is now
+the agent's latest link, not the description's.
+
+Tests: `the_agents_latest_words_are_links_too`, `the_newest_note_lists_its_links_first`.

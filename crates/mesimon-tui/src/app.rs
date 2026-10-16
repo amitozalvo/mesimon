@@ -13345,46 +13345,62 @@ impl App {
             .unwrap_or_else(|| self.repo_root.clone())
     }
 
-    /// The links in this ticket's notes and in what its agent last said,
-    /// from the bodies already fetched — resolved now, against the live
-    /// board and the disk: a key names a ticket that exists and is not this
-    /// one, a path is a file that exists. Document order, description
-    /// first, the agent's latest words last; one row per target.
+    /// The links in this ticket's notes, its pull requests and what its
+    /// agent last said, from the bodies already fetched — resolved now,
+    /// against the live board and the disk: a key names a ticket that exists
+    /// and is not this one, a path is a file that exists. Latest first
+    /// (T-820): the agent's latest words always lead, then each note and
+    /// pull request by when it last changed, newest first; inside one body,
+    /// document order. One row per target, where it is latest.
     pub fn ticket_links(&self, ticket: ulid::Ulid) -> Vec<TicketLink> {
         let Some(t) = self.board.ticket(ticket) else {
             return Vec::new();
         };
         let dir = self.link_dir(ticket);
         let mut out: Vec<TicketLink> = Vec::new();
+        // What the agent last said (T-307) is the newest thing there is: a
+        // URL an agent prints at the end of a turn is the commonest thing to
+        // follow. The source is the peek: EXACTLY the words the card's peek
+        // row and the ticket page's PREVIEW already show, so what can be
+        // read can be opened, and nothing is listed from a part of the
+        // transcript nobody can see.
+        if let Some(words) = self.latest_words(ticket) {
+            self.push_links(ticket, &dir, &words, &mut out);
+        }
+        enum Source<'a> {
+            Note(&'a str),
+            Pr(&'a mesimon_core::command::PrItem),
+        }
+        let mut sources: Vec<(u64, Source)> = Vec::new();
         for meta in &t.notes {
             let Some(body) = self.note_text(meta) else {
                 continue;
             };
-            self.push_links(ticket, &dir, body, &mut out);
+            let stamp = if meta.edited_at.is_empty() { &meta.created_at } else { &meta.edited_at };
+            let ms = mesimon_core::board::stamp_secs(stamp).unwrap_or(0).saturating_mul(1000);
+            sources.push((ms, Source::Note(body)));
         }
-        // The ticket's pull requests (T-739): the forge's URLs, newest
-        // first, each labelled as the forge spells it.
+        // The ticket's pull requests (T-739), by the forge's last touch.
         for p in self.prs_of(ticket) {
-            if p.url.is_empty() || out.iter().any(|l| l.target == LinkTarget::Url(p.url.clone())) {
-                continue;
-            }
-            out.push(TicketLink {
-                label: Some(format!("{} {} {}", p.forge_kind().noun(), p.label(), p.state)),
-                text: p.url.clone(),
-                target: LinkTarget::Url(p.url.clone()),
-            });
+            sources.push((p.updated_ms, Source::Pr(p)));
         }
-        // …and what the agent last said (T-307). The notes are the ticket's
-        // record and go first — the description's Jira link is what `^K`
-        // opens, and a reply rewrites itself every turn — but a URL an agent
-        // prints at the end of a turn is the commonest thing there is to
-        // follow, and until now the only road to it was attaching to the
-        // pane and clicking in tmux. The source is the peek: EXACTLY the
-        // words the card's peek row and the ticket page's PREVIEW already
-        // show, so what can be read can be opened, and nothing is listed
-        // from a part of the transcript nobody can see.
-        if let Some(words) = self.latest_words(ticket) {
-            self.push_links(ticket, &dir, &words, &mut out);
+        // Stable: a tie keeps the notes' order, the description first.
+        sources.sort_by_key(|(ms, _)| std::cmp::Reverse(*ms));
+        for (_, source) in sources {
+            match source {
+                Source::Note(body) => self.push_links(ticket, &dir, body, &mut out),
+                Source::Pr(p) => {
+                    let target = LinkTarget::Url(p.url.clone());
+                    if p.url.is_empty() || out.iter().any(|l| l.target == target) {
+                        continue;
+                    }
+                    out.push(TicketLink {
+                        label: Some(format!("{} {} {}", p.forge_kind().noun(), p.label(), p.state)),
+                        text: p.url.clone(),
+                        target,
+                    });
+                }
+            }
         }
         out
     }
@@ -15464,19 +15480,32 @@ mod tests {
         let words = "ran https://ci.test/9, src/b.rs:7, ./blob.bin, https://jira.test/browse/AB-1";
         speaker_on(&mut app, ulid::Ulid(1), &dir, SessionState::Running, words);
         ctrl(&mut app, 'k');
-        // The notes' rows first, then the reply's — and a target either of
-        // them already listed does not list twice.
+        // The reply's rows first — the latest words always lead (T-820) —
+        // then the notes', and a target the reply already listed keeps the
+        // reply's place.
         assert_eq!(
             links_of(&app),
             [
+                "https://ci.test/9",
+                "src/b.rs:7",
+                "./blob.bin",
                 "https://jira.test/browse/AB-1",
                 "T-2",
                 "src/a.rs:3",
                 "T-3",
-                "./blob.bin",
-                "https://ci.test/9",
-                "src/b.rs:7",
             ]
+        );
+    }
+
+    /// T-820: the note edited last lists first; inside it, document order.
+    #[test]
+    fn the_newest_note_lists_its_links_first() {
+        let (mut app, _sent, _dir) = app_with_links("newest");
+        app.board_mut().tickets[0].notes[1].edited_at = "@2000".into();
+        ctrl(&mut app, 'k');
+        assert_eq!(
+            links_of(&app),
+            ["T-3", "https://jira.test/browse/AB-1", "./blob.bin", "T-2", "src/a.rs:3"]
         );
     }
 
