@@ -26737,10 +26737,10 @@ it after; a column's Workspace row lost `board default` and shows the board's an
 column says nothing.
 
 **Promise 3** now says Setup shows the brief and turns it on; a board from before Setup keeps it
-off. `rig` B1 (`brief_on`, `first_tool:get_ticket`, `brief_argv`): on the real Sonnet the worker's
-first call past Claude Code's `ToolSearch` is `get_ticket`. Measured on the way: a ticket whose
-description says "read no file and run no command" is obeyed over the brief, and the worker makes
-no call at all.
+off. No rig test: the brief's text and delivery are T-224's, unchanged, and when it is on is
+board state `setup_e2e` reads. Measured once on the real Sonnet all the same: a worker on a board
+with the brief calls `get_ticket` first (past Claude Code's `ToolSearch`), and a ticket whose
+description says "read no file and run no command" is obeyed over the brief, with no call at all.
 
 Tests: `board::every_template_is_a_valid_board`, `a_template_is_refused_once_a_ticket_exists`;
 `setup_e2e` (both); `setup::every_page_plays_to_its_end` (both workflows, both forges, a folder of

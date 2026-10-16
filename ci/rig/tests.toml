@@ -78,10 +78,7 @@
 #              the ticket's agent last launched on; the rig lays `rig-alt`
 #              beside its own `rig`, the same model, for L2),
 #              crown_line:<prefix>:<word> (T-810: the crown's last line
-#              beginning <prefix> holds <word>, or with `!<word>` does not),
-#              first_tool:<tool> (T-816: the worker's first tool call is that
-#              board tool, Claude Code's ToolSearch for a deferred tool not
-#              counted), brief_argv (the agent brief rides its argv).
+#              beginning <prefix> holds <word>, or with `!<word>` does not).
 #   siblings   more tickets the test files beside its own ({key2}, {key3}
 #              in a step), each with the same brief and every check run on
 #              each.
@@ -96,8 +93,7 @@
 #              submit in each session is dropped). `prs_board` (T-810) sets
 #              Merge into: pull requests on a stub forge holding no PR; every
 #              `forge_*` step that starts the stub sets it too, and
-#              `forge_off` sets main back. `brief_on` / `brief_off` (T-816)
-#              turn the agent brief on and off for the board, as Setup does.
+#              `forge_off` sets main back.
 #
 # The prompts are explicit and small, so the repository's CLAUDE.md does not
 # send a Sonnet worker off to work: a run is a few turns per test, cents.
@@ -990,24 +986,3 @@ checks = ["woke:limited", "crown:sleep_agent", "tier:rig-alt"]
   [[test.steps]]
   crown = "L2: {key}'s agent hit the account's usage limit. Carry it on with the rig-alt tier, then end your turn with the single line: L2 moved."
   until = { events = ["SessionStart"], state = "idle" }
-
-[[test]]
-id = "B1"
-title = "B1 · reply with the single word done and end your turn"
-workspace = "worktree"
-# No "read no file and run no command" here: a worker obeys the ticket's
-# words over the brief, and those forbid the very call B1 looks for.
-brief = "Reply with the single word done and end your turn."
-expect = "on a board with the agent brief on, as Setup leaves it (T-816), the crown starts the worker with a bare ask; the brief rides its argv, and the worker's first tool call is get_ticket, before it answers done."
-checks = ["brief_argv", "first_tool:get_ticket", "reply:done"]
-
-  [[test.steps]]
-  rig = "brief_on"
-
-  [[test.steps]]
-  crown = "B1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: B1 started."
-  until = { stops = 1, state = "idle" }
-  wake = true
-
-  [[test.steps]]
-  rig = "brief_off"

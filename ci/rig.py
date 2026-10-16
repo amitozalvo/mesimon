@@ -1452,10 +1452,6 @@ Reply with the single word ready and end your turn."""
             if not ok:
                 record["failures"].append("the daemon did not come back on the mod")
             return ok
-        if what in ("brief_on", "brief_off"):
-            # B1 (T-816): the agent brief Setup turns on, on this board.
-            self.wire.request({"cmd": "set_system_prompt", "on": what == "brief_on"})
-            return True
         if what in ("gate_pipeline", "gate_off"):
             # H1 (T-749): REVIEW refuses a ticket whose pipeline has not
             # passed, so a turn's end in IN PROGRESS is held there.
@@ -2016,17 +2012,6 @@ Reply with the single word ready and end your turn."""
                 check(c, not missing and not failed,
                       f"{len(arg.split(','))} served with no error" if not missing and not failed
                       else f"missing {missing}; refused {failed}")
-            elif name == "first_tool":
-                # B1 (T-816): the worker's first tool call, by its name.
-                # ToolSearch is Claude Code loading a deferred tool's schema
-                # (board tools are deferred), not a step of the work.
-                calls = [n for n, _ in tool_calls(rows) if n != "ToolSearch"]
-                first = calls[0] if calls else None
-                check(c, first == f"mcp__mesimon__{arg}", f"first {first}; {len(calls)} calls")
-            elif name == "brief_argv":
-                argv = rec["argv"]
-                check(c, "--append-system-prompt" in argv, "--append-system-prompt on argv"
-                      if "--append-system-prompt" in argv else "no brief on argv")
             elif name == "never":
                 check(c, arg not in words, " → ".join(words) or "none")
             elif name == "plan_mode":
