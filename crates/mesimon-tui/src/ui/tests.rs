@@ -12070,23 +12070,63 @@ fn a_moved_card_leaves_a_ghost_and_a_trail_in_the_gutter() {
     assert!(found[0].find("Adopt").expect("x") > 60, "in REVIEW: {}", found[0]);
 }
 
-/// T-817: a moved card the cursor has not rested on shimmers along its
-/// row, grey on grey: some of its letters are a shade off their own ink
-/// at the crest, and none is `attn`. Seen, it is still.
+/// T-817: a moved card the cursor has not rested on wears a bold glyph,
+/// and holds still — two frames apart are the same cells; a card with no
+/// glyph wears a bold title instead. Seen, neither is bold.
 #[test]
-fn an_unseen_moved_card_shimmers() {
-    let app = app_gliding(crate::glide::GLIDE_MS + 10);
+fn an_unseen_moved_card_wears_a_bold_glyph() {
+    use ratatui::style::Modifier;
+    let mut app = app_gliding(crate::glide::GLIDE_MS + 2_500);
+    app.cursor_col = 3;
+    app.cursor_row = Some(0);
     let still = cells(&app, 120, 30);
-    let mut app = app_gliding(crate::glide::GLIDE_MS + 10);
     let now = mesimon_core::clock::now_ms();
-    app.unseen_moves.insert(ulid_n(4), now - crate::theme::PR_SHIMMER_MS / 2);
-    let lit = cells(&app, 120, 30);
-    let y = lines_of(&lit).iter().position(|l| l.contains("Adopt drawer import")).expect("row");
-    let changed: Vec<u16> =
-        (66..88).filter(|&x| lit[(x, y as u16)].fg != still[(x, y as u16)].fg).collect();
-    assert!(!changed.is_empty(), "the crest is on the row");
-    assert!(changed.iter().all(|&x| lit[(x, y as u16)].fg != app.theme.attn), "never attn");
-    assert!(changed.iter().all(|&x| lit[(x, y as u16)].symbol() == still[(x, y as u16)].symbol()));
+    app.unseen_moves.insert(ulid_n(4), now - 10);
+    app.unseen_moves.insert(ulid_n(1), now - 10);
+    let marked = cells(&app, 120, 30);
+    let at = |buf: &ratatui::buffer::Buffer, needle: &str| {
+        let lines = lines_of(buf);
+        let y = lines.iter().position(|l| l.contains(needle)).expect(needle);
+        let x = lines[y].find(needle).expect(needle);
+        (lines[y][..x].chars().count() as u16, y as u16)
+    };
+    let (x, y) = at(&marked, "Adopt drawer import");
+    let glyph = (x - 2, y);
+    assert!(marked[glyph].modifier.contains(Modifier::BOLD), "the glyph is bold");
+    assert!(!still[glyph].modifier.contains(Modifier::BOLD), "and was not before");
+    assert!(!marked[(x + 1, y)].modifier.contains(Modifier::BOLD), "the title is not");
+    let (x, y) = at(&marked, "Decay treatments");
+    assert!(marked[(x, y)].modifier.contains(Modifier::BOLD), "no glyph: the title carries it");
+    assert!(!still[(x, y)].modifier.contains(Modifier::BOLD));
+    let again = cells(&app, 120, 30);
+    let (x, y) = at(&again, "Decay treatments");
+    assert_eq!(again[(x + 3, y)], marked[(x + 3, y)], "it holds still");
+}
+
+/// T-817: a card on the move is its title row alone where it went, until
+/// it has landed, and then it opens a row at a time.
+#[test]
+fn a_moving_card_is_one_row_and_opens_once_landed() {
+    use crate::glide::{GLIDE_MS, IN_MS, OUT_MS, ROW_MS, TRAIL_MS};
+    let agent_rows = |ms: u64| {
+        let mut app = app_gliding(ms);
+        // A shell beside its agent: the cursor's card then lists both.
+        app.board_mut().sessions.push(session(
+            42,
+            ulid_n(4),
+            SessionKind::Bash,
+            SessionState::Running,
+        ));
+        app.cursor_col = 2;
+        app.cursor_row = Some(0);
+        let lines = render(&app, 120, 30);
+        lines.iter().filter(|l| l.get(61..).is_some_and(|r| r.contains("claude"))).count()
+    };
+    assert_eq!(agent_rows(GLIDE_MS + 2_500), 1, "landed and opened: the card shows its agent");
+    assert_eq!(agent_rows(OUT_MS + TRAIL_MS / 2), 0, "one row while the trail runs");
+    assert_eq!(agent_rows(OUT_MS + TRAIL_MS + IN_MS / 2), 0, "and while it fades in");
+    assert_eq!(agent_rows(GLIDE_MS + 10), 0, "the title first");
+    assert_eq!(agent_rows(GLIDE_MS + ROW_MS + 10), 1, "then the next row");
 }
 
 /// T-817: under a card's dialog the rest of the board recedes and the

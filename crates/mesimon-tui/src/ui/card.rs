@@ -487,6 +487,7 @@ pub(super) fn render(
     fresh: Option<(&str, u64, bool)>,
     prs: &[(String, Register)],
     pr_words: Option<(&str, bool)>,
+    moved: bool,
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
     let t_cells = (ctx.width as usize).saturating_sub(BAR_WIDTH + 2);
@@ -707,6 +708,10 @@ pub(super) fn render(
         Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)
     } else if matches!(crown, CrownMark::Touched { .. }) && landed {
         theme.crown_text()
+    } else if moved && glyph.is_none() {
+        // A moved card the cursor has not rested on (T-817), with no glyph
+        // to carry the mark: its title does.
+        Style::default().fg(theme.rest.base).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme.rest.base)
     };
@@ -730,6 +735,9 @@ pub(super) fn render(
         } else {
             register_style(theme, reg)
         };
+        // A moved card the cursor has not rested on (T-817): its glyph is
+        // bold until it does. Still, so it never reads as working.
+        let gs = if moved && !trail { gs.add_modifier(Modifier::BOLD) } else { gs };
         spans.push(Span::styled(format!("{g} "), gs));
     }
     // The crowning (T-442): a wavefront flows out of the mark and across

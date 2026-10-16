@@ -66,8 +66,9 @@ pub enum PrefKey {
     CrownLightning,
     /// A card that moves by anything but this board's own keys plays its
     /// move (T-817): it fades out where it was, a trail runs through the
-    /// gaps, it fades in where it went and shimmers until the cursor rests
-    /// on it. On by default; off lets the card simply be where it went.
+    /// gaps, it fades in where it went and its glyph is bold until the
+    /// cursor rests on it. On by default; off lets the card simply be
+    /// where it went.
     CardMoves,
     /// The subscription quota line above the board's keys (T-327): a named
     /// value — `near` (only while a provider warns, the default), `every`

@@ -26764,3 +26764,23 @@ Validation: the full TUI suite (1040 passed), `cargo ut`, formatting and
 `git diff --check` passed; the sole golden diff was inspected. The existing
 live-network check and timing benchmark remain ignored. Integration, Linux and
 manual TUI checks were not repeated for this card-label-only change.
+
+## A moved card is marked by a bold glyph, and moves as one row (T-817 addendum, 2026-10-16, the author: "it's not good that the shimmer doesn't stop, because it reads as ticket still working. instead of shimmer, use bold glyph" and "the target card before the trail reaches it sits ghosted and is very bulky")
+
+**Refutes the shimmer.** Anything moving on a card reads as its agent working, and the shimmer ran
+until the cursor came, so a finished card looked busy. `unseen_moves` now marks the card still:
+`card::render`'s `moved` makes its state glyph bold (`App::moved_unseen`, from its landing until a
+keypress leaves the cursor on it), and a card with no glyph — a TODO card a phone moved — wears a
+bold title instead. `Theme::move_shimmer` and the `quiet` hook in `glide::draw` are gone;
+`shimmer_crest` stays the pipeline's own.
+
+**A card on the move is one row.** An open card (the cursor's, `P`, a summary) held its whole
+height blank in the new column while the trail ran, a block nothing explained. `board.rs` now
+truncates the ghost to its title row and the landing card to `App::landing_rows`: one row until it
+lands, then one more every `glide::ROW_MS` (60 ms). A glide is kept `SETTLE_MS` (2 s) past its
+landing for the opening (`Glide::settled`, which `absorb_moves` prunes by and `gliding` asks for
+the fast frames); past that the card is whole whatever its height.
+
+Tests: `ui::an_unseen_moved_card_wears_a_bold_glyph` (glyph, title fallback, still frame to frame),
+`ui::a_moving_card_is_one_row_and_opens_once_landed`; `app::a_move_from_elsewhere_plays_and_is_marked_until_seen`
+renamed from the shimmer's.

@@ -13,9 +13,10 @@
 //!   the column headers when a column lies between, down the gutter beside
 //!   the one it went to and into the card — never over a card;
 //! - **in**: the card fades in where it went, along the move, and the ghost
-//!   goes with that;
-//! - then its row **shimmers**, the pipeline's crest, until the cursor
-//!   rests on it.
+//!   goes with that; a card that was open lands as its title row alone and
+//!   opens a row at a time;
+//! - then its glyph is **bold** until the cursor rests on it — still, since
+//!   anything moving on a card reads as its agent working.
 //!
 //! This board's own moves never play — the cursor rides those — and the
 //! crown's keep their bolt (`strike.rs`). Status, never a demand: grey on
@@ -42,6 +43,11 @@ pub(crate) const TRAIL_MS: u64 = 600;
 pub(crate) const IN_MS: u64 = 450;
 /// The whole move, start to landing.
 pub(crate) const GLIDE_MS: u64 = OUT_MS + TRAIL_MS + IN_MS;
+/// A card that lands open shows one more of its rows every this long.
+pub(crate) const ROW_MS: u64 = 60;
+/// How long after its landing a move is kept, for the opening: past this
+/// the card is whole whatever its height.
+const SETTLE_MS: u64 = 2_000;
 /// Several moves in one snapshot (the train merging three) start this far
 /// apart, so each is seen to go.
 pub(crate) const STAGGER_MS: u64 = 150;
@@ -85,6 +91,11 @@ impl Glide {
 
     pub(crate) fn landed_at(&self) -> u64 {
         self.start + GLIDE_MS
+    }
+
+    /// Landed and opened: the move can be let go.
+    pub(crate) fn settled(&self, now: u64) -> bool {
+        now >= self.landed_at() + SETTLE_MS
     }
 
     /// How far a phase that starts `from` ms in and lasts `len` has come:
@@ -238,9 +249,8 @@ impl CardSpot {
 }
 
 /// The board's moves, over the columns `area` this frame drew: after the
-/// columns and the bolts, before any dialog. `quiet` names a card whose row
-/// already moves (a running pipeline's words): it does not shimmer too.
-pub(crate) fn draw(f: &mut Frame, app: &App, area: Rect, quiet: &dyn Fn(ulid::Ulid) -> bool) {
+/// columns and the bolts, before any dialog.
+pub(crate) fn draw(f: &mut Frame, app: &App, area: Rect) {
     if !app.prefs.card_moves {
         return;
     }
@@ -270,25 +280,6 @@ pub(crate) fn draw(f: &mut Frame, app: &App, area: Rect, quiet: &dyn Fn(ulid::Ul
             let dots = walk(&route(from, to, g.right, area.y + 1));
             let on = lit(g.phase(now, OUT_MS, TRAIL_MS), dots.len());
             paint_trail(buf, area, theme, &dots[on]);
-        }
-    }
-    for (&id, &landed) in &app.unseen_moves {
-        if now < landed || quiet(id) {
-            continue;
-        }
-        let Some(spot) = spots.card(id) else { continue };
-        let row = Rect { height: 1, ..spot.rect() }.intersection(area);
-        let lead = crate::tags::BAR_WIDTH as u16 + 1;
-        let (x0, cells) = (row.x + lead, usize::from(row.width.saturating_sub(lead)));
-        for i in 0..cells {
-            let x = x0 + i as u16;
-            if buf[(x, row.y)].symbol() == " " || !on_ground(buf, theme, x, row.y) {
-                continue;
-            }
-            let ink = buf[(x, row.y)].fg;
-            if let Some(style) = theme.move_shimmer(now - landed, cells, i, ink) {
-                buf[(x, row.y)].set_style(style);
-            }
         }
     }
 }

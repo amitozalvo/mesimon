@@ -1338,10 +1338,10 @@ fn mix(a: Color, b: Color, k: f32) -> Color {
 }
 
 /// How much of its lift the shimmer's crest gives `cell` of `cells`,
-/// `at_ms` into its clock (T-794, shared with a moved card's, T-817): a
-/// soft crest crosses the cells in `PR_SHIMMER_MS`, then rests for
-/// `PR_SHIMMER_REST_MS`, again. 0 off the crest, `PR_SHIMMER_PEAK` on it.
-pub(crate) fn shimmer_crest(at_ms: u64, cells: usize, cell: usize) -> f32 {
+/// `at_ms` into its clock (T-794): a soft crest crosses the cells in
+/// `PR_SHIMMER_MS`, then rests for `PR_SHIMMER_REST_MS`, again. 0 off the
+/// crest, `PR_SHIMMER_PEAK` on it.
+fn shimmer_crest(at_ms: u64, cells: usize, cell: usize) -> f32 {
     if cells == 0 {
         return 0.0;
     }
@@ -1402,9 +1402,6 @@ const REPLY_REVEAL_FADE: f32 = 10.0;
 /// `PR_SHIMMER_REST_MS`, again for as long as the pipeline runs.
 pub(crate) const PR_SHIMMER_MS: u64 = 2_400;
 const PR_SHIMMER_REST_MS: u64 = 1_600;
-/// How far toward the ground a moved card's shimmer takes a letter at its
-/// crest (T-817).
-const MOVE_SHADE: f32 = 0.55;
 /// How much of its own colour a cell keeps when the board recedes behind
 /// a card's dialog (T-817).
 const RECEDE: f32 = 0.4;
@@ -2319,22 +2316,6 @@ impl Theme {
             k if k > 0.0 => Style::default().fg(mix(lift, ink, k)),
             _ => still,
         }
-    }
-
-    /// A moved card's row under its shimmer (T-817), `at_ms` after it
-    /// landed: the pipeline's crest and clock, but a shade where the
-    /// pipeline's is a lift. A title already stands at the top of the
-    /// ramp, with no lighter grey above it to cross with, so the crest
-    /// takes the letters it passes part of the way to the ground and
-    /// gives them back. `None` off the crest, and where there is no
-    /// colour to mix.
-    pub fn move_shimmer(&self, at_ms: u64, cells: usize, cell: usize, ink: Color) -> Option<Style> {
-        let k = shimmer_crest(at_ms, cells, cell);
-        if k <= 0.0 || !self.has_colour() {
-            return None;
-        }
-        let keep = 1.0 - MOVE_SHADE * k / PR_SHIMMER_PEAK;
-        Some(Style::default().fg(self.toward_ground(ink, keep)))
     }
 
     /// A colour some of the way to the ground (T-817): `keep` of it stays.

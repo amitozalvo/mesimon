@@ -360,6 +360,7 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
         None,
         &[],
         None,
+        false,
     );
     let w = inner.width as usize;
     let now = now_ms();

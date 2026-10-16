@@ -1507,7 +1507,8 @@ pub struct App {
     /// has landed.
     pub glides: Vec<crate::glide::Glide>,
     /// The moved cards the cursor has not rested on since, and when each
-    /// landed: the row shimmers until it does (T-817). Local state only.
+    /// lands: its glyph is bold from then until it does (T-817). Local
+    /// state only.
     pub unseen_moves: std::collections::HashMap<ulid::Ulid, u64>,
     /// The cards this board itself just sent to another column, and when
     /// (T-817): the snapshot that carries the move does not play it.
@@ -2507,12 +2508,38 @@ impl App {
             .collect()
     }
 
-    /// Is a card's move playing on the board right now (T-817)?
+    /// Is a card's move playing on the board right now (T-817), its
+    /// opening after the landing included?
     fn gliding(&self) -> bool {
         let now = mesimon_core::clock::now_ms();
         self.prefs.card_moves
             && matches!(self.screen, Screen::Board)
-            && self.glides.iter().any(|g| !g.over(now))
+            && self.glides.iter().any(|g| !g.settled(now))
+    }
+
+    /// How many of a moving card's rows show (T-817): one until it has
+    /// landed, then one more every `glide::ROW_MS`, so an open card opens
+    /// where it arrived. `None` for a card that is not moving, or has
+    /// opened.
+    pub(crate) fn landing_rows(&self, id: ulid::Ulid) -> Option<usize> {
+        if !self.prefs.card_moves {
+            return None;
+        }
+        let now = mesimon_core::clock::now_ms();
+        let g = self.glides.iter().find(|g| g.ticket == id && !g.settled(now))?;
+        let since = now.saturating_sub(g.landed_at());
+        let landed = now >= g.landed_at();
+        Some(1 + usize::from(landed) * (since / crate::glide::ROW_MS) as usize)
+    }
+
+    /// Has a card moved since the cursor last rested on it, and landed
+    /// (T-817)? Its glyph is bold.
+    pub(crate) fn moved_unseen(&self, id: ulid::Ulid) -> bool {
+        self.prefs.card_moves
+            && self
+                .unseen_moves
+                .get(&id)
+                .is_some_and(|&landed| mesimon_core::clock::now_ms() >= landed)
     }
 
     /// The archived cards still burning in `column` (T-544): the crown
@@ -5730,7 +5757,7 @@ impl App {
         // unread done mark: the cursor resting here is the reader having
         // seen what the coordinator did to this card. Local state only.
         self.crown_residue.remove(&id);
-        // And a moved card's shimmer (T-817), by the same glance.
+        // And a moved card's bold glyph (T-817), by the same glance.
         self.unseen_moves.remove(&id);
         if !self.board.ticket(id).is_some_and(|t| t.is_woke()) {
             return Ok(());
@@ -5743,7 +5770,8 @@ impl App {
 
     /// The moves off a snapshot (T-817): each card another mover took to
     /// another column starts its glide, staggered when several came at
-    /// once, and shimmers after it lands until the cursor rests on it. Not
+    /// once, and wears a bold glyph after it lands until the cursor rests
+    /// on it. Not
     /// one this board sent (the cursor rode it), not the crown's (it keeps
     /// its bolt), not a move from or to a column this board does not draw
     /// (a renamed or deleted one), and nothing at all with the switch off.
@@ -5756,7 +5784,7 @@ impl App {
     ) {
         let now = (self.now)();
         self.own_moves.retain(|_, at| now.saturating_sub(*at) < crate::glide::OWN_MOVE_MS);
-        self.glides.retain(|g| !g.over(now));
+        self.glides.retain(|g| !g.settled(now));
         let board = Arc::clone(&self.board);
         self.unseen_moves.retain(|id, _| board.ticket(*id).is_some_and(|t| !t.is_archived()));
         let cols = board.sorted_columns();
@@ -23862,10 +23890,10 @@ mod tests {
 
     /// T-817: a card another mover took to another column plays its move,
     /// toward where it went, with its ghost in the column it left, and its
-    /// row shimmers until the cursor rests on it. A move back plays the
+    /// glyph is bold until the cursor rests on it. A move back plays the
     /// other way and replaces the first.
     #[test]
-    fn a_move_from_elsewhere_plays_and_shimmers_until_seen() {
+    fn a_move_from_elsewhere_plays_and_is_marked_until_seen() {
         let mut app = app_three_columns();
         app.cursor_col = 0;
         app.cursor_row = Some(0);
@@ -23891,12 +23919,12 @@ mod tests {
         // The cursor comes to rest on it: seen.
         app.on_key(KeyCode::Char('j'), KeyModifiers::NONE).unwrap();
         assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(2)));
-        assert!(app.unseen_moves.is_empty(), "the glance takes the shimmer off");
+        assert!(app.unseen_moves.is_empty(), "the glance takes the mark off");
     }
 
     /// T-817: what does not play — this board's own move (the cursor rode
     /// it), a reorder inside a column, a card whose column was renamed, a
-    /// card the cursor was on (seen, so it plays but does not shimmer),
+    /// card the cursor was on (seen, so it plays but wears no mark),
     /// and anything with the switch off.
     #[test]
     fn own_moves_reorders_renames_and_the_switch_do_not_play() {

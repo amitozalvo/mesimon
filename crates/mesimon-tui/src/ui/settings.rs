@@ -602,6 +602,7 @@ fn sample_card(
         )),
         &[],
         None,
+        false,
     )
 }
 

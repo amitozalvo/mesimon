@@ -4897,7 +4897,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         label: |_| "Card moves".into(),
         detail: |c| {
             if c.card_moves {
-                "a moved card shimmers until the cursor rests on it".into()
+                "a moved card's glyph is bold until the cursor rests on it".into()
             } else {
                 "a moved card is simply where it went".into()
             }

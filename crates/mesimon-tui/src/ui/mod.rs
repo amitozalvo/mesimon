@@ -216,12 +216,8 @@ fn draw_screen(f: &mut Frame, app: &App) {
     board::draw_columns(f, outer[2], app);
     // The crown's bolts (T-544), over the cards and under every dialog.
     crate::strike::draw(f, app, outer[2]);
-    // A card another mover took plays its move (T-817); one whose pipeline
-    // words already shimmer does not shimmer twice.
-    let running = |id: ulid::Ulid| {
-        card::pr_words(&app.card_prs(id), |p| app.pr_passed_news(p)).is_some_and(|(_, r)| r)
-    };
-    crate::glide::draw(f, app, outer[2], &running);
+    // A card another mover took plays its move (T-817).
+    crate::glide::draw(f, app, outer[2]);
     // Behind a card's dialog the rest of the board recedes (T-817).
     board::recede(f, app, outer[2]);
     chrome::draw_advisory(f, outer[3], app);

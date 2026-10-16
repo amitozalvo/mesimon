@@ -428,8 +428,8 @@ pub(crate) struct Prefs {
     /// screen is about the person watching it, not about a repo.
     pub crown_lightning: bool,
     /// A card moved by anything but this board's own keys plays its move
-    /// (T-817): out where it was, a trail, in where it went, then a
-    /// shimmer until the cursor rests on it. ON by default; per machine,
+    /// (T-817): out where it was, a trail, in where it went, then a bold
+    /// glyph until the cursor rests on it. ON by default; per machine,
     /// as the crown's lightning is — motion is about the person watching.
     pub card_moves: bool,
     /// The board reads the mouse (T-716): clicks, the wheel and hover. ON

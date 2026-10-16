@@ -302,9 +302,24 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 fresh.as_ref().map(|(words, ago, crown)| (words.as_str(), *ago, *crown)),
                 &brief,
                 pr_words.as_ref().map(|(w, running)| (w.as_str(), *running)),
+                !left && app.moved_unseen(t.id),
             )
         };
         let mut lines = render(open, peek.as_deref());
+        // A card on the move is one row (T-817): its ghost, and the card
+        // where it goes until it has landed, which then opens a row at a
+        // time. An open card's rows held blank while the trail ran were a
+        // block in its column.
+        let rows = if glide {
+            Some(1)
+        } else if left {
+            None
+        } else {
+            app.landing_rows(t.id)
+        };
+        if let Some(n) = rows {
+            lines.truncate(n.max(1));
+        }
         let t_cells = usize::from(ctx.width).saturating_sub(crate::tags::BAR_WIDTH + 2);
         // Line 2, or an open card's last line (T-789).
         let spans = card::brief_spans(ctx.theme, &brief, t_cells);
