@@ -11219,8 +11219,9 @@ fn golden_cards_show_their_cost() {
     let all = rows.join("\n");
     assert!(all.contains("Fix OSC-11 detecti~ $12"), "{all}");
     assert!(all.contains("Decay treatments      <$1"), "{all}");
-    assert_eq!(app.card_corner(ulid_n(5)).as_deref(), Some("unpriced"));
-    assert!(all.contains("unpriced"), "{all}");
+    assert_eq!(app.card_corner(ulid_n(5)).as_deref(), Some("?"));
+    assert!(all.contains("Grapheme truncation"), "{all}");
+    assert!(!all.contains("unpriced"), "{all}");
     assert!(!rows[4].contains(">1y"), "no card wears its age: {:?}", rows[4]);
     golden("board_cost_corner_120x30", &rows);
     press(&mut app, '$');

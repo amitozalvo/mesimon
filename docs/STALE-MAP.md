@@ -26750,3 +26750,17 @@ answers_in_one_command`, `setup_esc_twice_is_the_defaults`; goldens `setup_work_
 `setup_fix_120x30`, `setup_brief_120x36`, `setup_ready_80x24`, and the Behaviour and column
 goldens reminted. `MESIMON_SETUP_DUMP=<page>[,<cursor>[,team]] cargo test -p mesimon-tui
 dump_a_page -- --nocapture` prints a page's scene beat by beat.
+
+## An unpriced card uses one character (T-815, 2026-10-16)
+
+The card's dollar corner now uses `?`, not `unpriced`, for counted tokens with no
+known price. This meets the requested three-character maximum for that marker
+without shortening the title unnecessarily. Usage retains its explicit
+`unpriced` label; priced amounts and tickets with nothing counted are unchanged.
+The cost-corner regression and its golden cover the compact marker and the
+restored full title.
+
+Validation: the full TUI suite (1040 passed), `cargo ut`, formatting and
+`git diff --check` passed; the sole golden diff was inspected. The existing
+live-network check and timing benchmark remain ignored. Integration, Linux and
+manual TUI checks were not repeated for this card-label-only change.

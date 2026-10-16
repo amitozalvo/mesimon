@@ -5202,7 +5202,7 @@ impl App {
     }
 
     /// What a card's corner says in place of its age (T-327): the ticket's
-    /// estimated cost while `$` has the corner on cost, or `unpriced` when
+    /// estimated cost while `$` has the corner on cost, or `?` when
     /// only tokens are known; `None` while the corner shows the age.
     pub(crate) fn card_corner(&self, ticket: ulid::Ulid) -> Option<String> {
         (self.prefs.card_corner == crate::prefs::CardCorner::Cost).then(|| {
@@ -5211,7 +5211,7 @@ impl App {
                     if cost.usd > 0.0 {
                         mesimon_core::cost::usd_corner(cost.usd)
                     } else if cost.unpriced > 0 {
-                        "unpriced".into()
+                        "?".into()
                     } else {
                         String::new()
                     }
