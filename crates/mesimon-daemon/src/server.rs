@@ -2576,6 +2576,10 @@ impl Daemon {
             Command::SetCrownBudget { budget } => self.set_crown_budget(budget),
             Command::SetCrownMode { mode } => self.set_crown_mode(mode),
             Command::SetMergeInto { into } => self.set_merge_into(into),
+            Command::SetBoardWorkspace { workspace } => self.set_board_workspace(workspace),
+            Command::ApplySetup { template, noun, merge_into, workspace, agent_tools } => {
+                self.apply_setup(template, &noun, merge_into, workspace, agent_tools)
+            }
             Command::SetCrownArchives { on } => self.set_crown_archives(on),
             Command::SetCrownWatches { on } => self.set_crown_watches(on),
             Command::SetStatusLine { top } => self.set_status_line(top),
@@ -9476,8 +9480,9 @@ impl Daemon {
         if let Err(e) = self.write_columns() {
             return Err(format!("could not reserve a ticket key: {e:#}"));
         }
-        let workspace =
-            workspace.or_else(|| self.board.column(&column).and_then(|c| c.settings.workspace));
+        let workspace = workspace
+            .or_else(|| self.board.column(&column).and_then(|c| c.settings.workspace))
+            .or(self.board.workspace);
         let last =
             self.board.column_tickets(&column).last().map(|t| t.order.clone()).unwrap_or_default();
         let now = now_iso();
@@ -12550,6 +12555,72 @@ impl Daemon {
             }
             self.persist_and_notify();
         }
+        Response::Ok
+    }
+
+    /// `Command::SetBoardWorkspace` (T-816): the workspace a ticket is
+    /// stamped with at mint when nothing closer chose. A worktree needs a
+    /// repository, so a folder with none is refused in words.
+    fn set_board_workspace(&mut self, workspace: WorkspaceStrategy) -> Response {
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        if workspace == WorkspaceStrategy::AdoptExisting {
+            return Response::Err { message: "a board cannot adopt one worktree for all".into() };
+        }
+        if workspace == WorkspaceStrategy::Worktree && !self.has_repo() {
+            return Response::Err {
+                message: "no git repository here to cut a worktree from".into(),
+            };
+        }
+        let shared = workspace == WorkspaceStrategy::SharedCheckout;
+        let now = if shared { None } else { Some(workspace) };
+        if self.board.workspace != now {
+            self.board.workspace = now;
+            self.persist_and_notify();
+        }
+        Response::Ok
+    }
+
+    /// A worktree can be cut here: the root is a repository, or holds some.
+    fn has_repo(&self) -> bool {
+        let root = &self.paths.repo_root;
+        root.join(".git").exists() || !crate::gitstatus::census(root).is_empty()
+    }
+
+    /// `Command::ApplySetup` (T-816): Setup's answers in one turn. The
+    /// template replaces the columns only while the board has no ticket (a
+    /// phone may have filed one before the person reached Setup); a
+    /// worktree needs a repository to cut it from, so a folder with none
+    /// gets the shared checkout whatever was asked; the brief goes on, as
+    /// Setup showed it.
+    fn apply_setup(
+        &mut self,
+        template: mesimon_core::board::Template,
+        noun: &str,
+        merge_into: MergeInto,
+        workspace: WorkspaceStrategy,
+        agent_tools: mesimon_core::board::AgentTools,
+    ) -> Response {
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        let noun = if noun == "MR" { "MR" } else { "PR" };
+        if self.board.tickets.is_empty() {
+            let _ = self.board.apply_template(template, noun);
+        }
+        for c in &mut self.board.columns {
+            c.settings.agent_tools = agent_tools;
+        }
+        self.board.workspace =
+            Some(if self.has_repo() { workspace } else { WorkspaceStrategy::SharedCheckout });
+        self.board.system_prompt = true;
+        self.board.setup_pending = false;
+        if self.board.merge_into != merge_into {
+            // Its own road: the forge state follows the switch.
+            return self.set_merge_into(merge_into);
+        }
+        self.persist_and_notify();
         Response::Ok
     }
 

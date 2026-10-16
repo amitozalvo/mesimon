@@ -33,6 +33,7 @@ mod qr;
 mod quiet;
 mod release;
 mod rich;
+mod setup;
 mod strike;
 mod tags;
 mod text;
@@ -211,6 +212,11 @@ pub fn run(repo_root: &Path) -> Result<()> {
     // asking before raw mode is on gets a false negative. This is the single
     // gate on every `Key::ShiftEnter` binding.
     app.rich_keys = kitty_keyboard_supported();
+    // Setup over a board that was just made (T-816), with the prefs and
+    // the keys it draws in now known; it may ask git and the forge's CLI.
+    app.setup_armed = true;
+    app.setup_probes = true;
+    app.open_setup();
     // Which terminal the tab belongs to (T-492) — set here and never in
     // `App::new`, so no test app reads a developer's terminal.
     app.terminal = title::terminal();

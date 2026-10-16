@@ -923,6 +923,25 @@ pub fn list_probed(q: &mut Query, answered: &[(String, HostProbe)]) {
     }
 }
 
+/// Setup's question (T-816): which forge the repository at `dir` is on,
+/// and whether its CLI is signed in there. `None` where the repository has
+/// no `origin` a forge could serve. Runs git and the CLIs, so off any
+/// thread that draws.
+pub fn setup_probe(dir: &Path) -> Option<(Forge, bool)> {
+    let out = crate::git::git(dir).args(["remote", "get-url", "origin"]).output().ok()?;
+    let remote = forge::Remote::parse(&String::from_utf8_lossy(&out.stdout))?;
+    let found: Vec<Cli> = remote.candidates().iter().filter_map(|f| find_cli(*f, None)).collect();
+    if let Some(cli) = probe_host(&remote.host, &found).cli {
+        return Some((cli.forge, true));
+    }
+    let guess = remote
+        .known_forge()
+        .or_else(|| remote.host.contains("gitlab").then_some(Forge::GitLab))
+        .or_else(|| found.first().map(|c| c.forge))
+        .unwrap_or(Forge::GitHub);
+    Some((guess, false))
+}
+
 /// Which candidate is signed in to the host, in order; the viewer's
 /// username beside it where the CLI needs one. Where none is, the first
 /// one's words.

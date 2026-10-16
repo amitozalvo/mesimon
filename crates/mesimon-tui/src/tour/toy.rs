@@ -32,6 +32,9 @@ pub(crate) struct World {
     pub external: Vec<mesimon_core::command::ExternalItem>,
     pub automation: mesimon_core::command::AutomationStatus,
     pub machine_tiers: mesimon_core::tier::MachineTiers,
+    /// What each agent last said, by its session's transcript path: the
+    /// practice board has no transcript, so the card reads these (T-816).
+    pub peeks: HashMap<String, String>,
     /// Something changed that the board has not fetched yet.
     pub changed: bool,
     /// The commands the toy refused, by name: what a lesson's keys reached
@@ -174,6 +177,15 @@ impl World {
                 self.arrive(ticket, &dest);
             }
         }
+    }
+
+    /// `ticket`'s agent says `text`: its card's peek reads it (T-816).
+    pub fn says(&mut self, ticket: ulid::Ulid, text: &str) {
+        let Some(s) = self.board.sessions.iter_mut().find(|s| s.ticket == ticket) else { return };
+        let path = format!("/practice/{}.jsonl", s.id);
+        s.transcript_path = Some(path.clone());
+        self.peeks.insert(path, text.to_string());
+        self.changed = true;
     }
 
     /// A worktree for `ticket` with `ahead` commits on its branch.
@@ -458,6 +470,23 @@ impl World {
                     .map(|s| s.id)
                     .unwrap_or_default();
                 Response::Spawned { id, fresh: true }
+            }
+            // A person's words to the agent (T-816): it takes them and
+            // starts a turn, as a pane would.
+            Command::PromptSession { ticket, .. } => {
+                if self.board.ticket(ticket).is_none() {
+                    return refuse("no such ticket");
+                }
+                self.session(ticket, SessionKind::Claude, SessionState::Running);
+                Response::Asked {
+                    sent: 1,
+                    woke: 0,
+                    started: 0,
+                    queued: 0,
+                    skipped: 0,
+                    failed: 0,
+                    accepts: 0,
+                }
             }
             // The board's own settings, pushed as it opens: the practice
             // board keeps none of them.

@@ -8,11 +8,11 @@
   │  Comes back                ● lit    ○ quiet          │
   │  Week starts on            Monday                    │
   │                                                      │
+  │ TICKETS                                              │
+  │  Worktrees                 ○ off                     │
+  │                                                      │
   │ MERGE                                                │
   │  Merge into                ● main   ○ pull requests  │
-  │                                                      │
-  │ REMOTE                                               │
-  │  Fetch from the remote     off                       │
   │                                                      │
   │                                                      │
   │ the machine sleeps on its own clock, agents or not   │

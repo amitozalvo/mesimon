@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui   7 tickets
+ ╭─ SETUP ────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │                                                                                                                    │
+ │   How you work   Merging   Board   Agents   Brief   Ready                                                          │
+ │                                                                                                                    │
+ │  How do you usually work?                                                                                          │
+ │                                                                                                                    │
+ │  › On my own  finished work goes straight into main                                                                │
+ │    With pull requests  work goes to GitHub for review first                                                        │
+ │                                                                                                                    │
+ │  ╭─ preview ────────────────────────────────────────────────────────────────────────────────────────────────────╮  │
+ │  │ BOARD   mesimon › practice   1 ticket                                                                        │  │
+ │  │                                                                                                              │  │
+ │  │    TODO                1 →     IN PROGRESS        0 →     REVIEW             0 →     DONE                 0  │  │
+ │  │                                                                                                              │  │
+ │  │    Fix the login redi~ now                                                                                   │  │
+ │  │                        T-1                                                                                   │  │
+ │  │                                                                                                              │  │
+ │  │                                                                                                              │  │
+ │  │                                                                                                              │  │
+ │  │                                                                                                              │  │
+ │  │                                                                                                              │  │
+ │  │                                                                                                              │  │
+ │  │                                                                                                              │  │
+ │  │                                                                                                              │  │
+ │  │ T-1 Fix the login redirect ∙ created just now                                                                │  │
+ │  │ enter ticket page ∙ shift+enter start + ask agent ∙ o new ticket ∙ HJKL move card          esc menu ∙ ? keys │  │
+ │  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ SETUP  jk choose ∙ enter next ∙ s skip ∙ esc skip the rest                                                      ? keys

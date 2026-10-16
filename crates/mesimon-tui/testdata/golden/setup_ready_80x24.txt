@@ -1,0 +1,24 @@
+ BOARD   mesimon › kanban-tui   7 tickets
+ ╭─ SETUP ────────────────────────────────────────────────────────────────────╮
+ │                                                                            │
+ │   How you work –   Merging –   Board –   Agents –   Brief –   Ready        │
+ │                                                                            │
+ │  Your board is ready                                                       │
+ │                                                                            │
+ │  › Open the board                                                          │
+ │    Take the guided tour first                                              │
+ │                                                                            │
+ │  ╭─ preview ────────────────────────────────────────────────────────────╮  │
+ │  │ BOARD   mesimon › practice   1 ticket                                │  │
+ │  │                                                                      │  │
+ │  │    TODO                   1 →     IN PROGRESS           0 →   0   0  │  │
+ │  │                                                                      │  │
+ │  │    Fix the login redirect now                                 R   D  │  │
+ │  │                           T-1                                 E   O  │  │
+ │  │                                                               V   N  │  │
+ │  │                                                               I   E  │  │
+ │  │ T-1 Fix the login redirect ∙ created just now                        │  │
+ │  │ enter ticket page ∙ o new ticket ∙ tab describe    esc menu ∙ ? keys │  │
+ │  ╰──────────────────────────────────────────────────────────────────────╯  │
+ ╰────────────────────────────────────────────────────────────────────────────╯
+ SETUP  jk choose ∙ enter done ∙ h back ∙ esc open the board             ? keys

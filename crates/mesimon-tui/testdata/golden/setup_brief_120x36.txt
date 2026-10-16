@@ -1,0 +1,36 @@
+ BOARD   mesimon › kanban-tui   7 tickets
+ ╭─ SETUP ────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │                                                                                                                    │
+ │   How you work ✓   Merging ✓   Board ✓   Agents ✓   Brief   Ready                                                  │
+ │                                                                                                                    │
+ │  Every agent mesimon starts here gets these lines first:                                                           │
+ │                                                                                                                    │
+ │    This session was started by mesimon on a ticket. FIRST,                                                         │
+ │    before reading code or planning, call the get_ticket                                                            │
+ │    tool and read the ticket's description and notes: they                                                          │
+ │    are the brief, and the prompt is often only the ticket's                                                        │
+ │    title. Do not start work without them. Work stays on                                                            │
+ │    this ticket; a ticket filed from here is worked by a                                                            │
+ │    session of its own, never this one.                                                                             │
+ │                                                                                                                    │
+ │  › Continue                                                                                                        │
+ │                                                                                                                    │
+ │  ╭─ preview ────────────────────────────────────────────────────────────────────────────────────────────────────╮  │
+ │  │ BOARD   mesimon › practice   1 ticket                                                                        │  │
+ │  │                                                                                                              │  │
+ │  │    TODO                1 →     IN PROGRESS        0 →     REVIEW             0 →     DONE                 0  │  │
+ │  │                                                                                                              │  │
+ │  │    Fix the login redi~ now                                                                                   │  │
+ │  │                        T-1                                                                                   │  │
+ │  │                                                                                                              │  │
+ │  │                                                                                                              │  │
+ │  │                                                                                                              │  │
+ │  │                                                                                                              │  │
+ │  │                                                                                                              │  │
+ │  │                                                                                                              │  │
+ │  │                                                                                                              │  │
+ │  │ T-1 Fix the login redirect ∙ created just now                                                                │  │
+ │  │ enter ticket page ∙ shift+enter start + ask agent ∙ o new ticket ∙ HJKL move card          esc menu ∙ ? keys │  │
+ │  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ SETUP  enter continue ∙ h back ∙ esc skip the rest                                                              ? keys

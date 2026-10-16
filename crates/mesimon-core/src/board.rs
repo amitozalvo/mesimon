@@ -1286,7 +1286,7 @@ pub struct ColumnSettings {
     pub collapsed: bool,
     /// The workspace a ticket CREATED here starts with, stamped onto the
     /// ticket at mint; the ticket field stays the truth and a change here is
-    /// never retroactive. `None` = the board default.
+    /// never retroactive. `None` = the board's (`Board::workspace`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceStrategy>,
     /// No ticket is minted here (T-764): a column a ticket only reaches by
@@ -1934,9 +1934,11 @@ impl WorkspaceStrategy {
     }
 }
 
-/// Layer-0 board default. A column's `workspace` setting defaults a ticket
-/// CREATED in it by stamping the ticket field at mint (T-117), so this stays
-/// the answer for a ticket nothing stamped.
+/// What a ticket nothing stamped works in. A column's `workspace` setting
+/// defaults a ticket CREATED in it by stamping the ticket field at mint
+/// (T-117), and the board's (`Board::workspace`, T-816) stamps one the
+/// column left alone, so this is the answer for a ticket minted before
+/// either.
 pub const DEFAULT_WORKSPACE: WorkspaceStrategy = WorkspaceStrategy::SharedCheckout;
 
 impl Ticket {
@@ -1975,7 +1977,7 @@ impl Ticket {
     }
 
     /// Layered resolution: ticket field (a column's default is stamped here
-    /// at mint), else the board default.
+    /// at mint, as is the board's own since T-816), else the shared checkout.
     pub fn workspace_strategy(&self) -> WorkspaceStrategy {
         self.workspace.unwrap_or(DEFAULT_WORKSPACE)
     }
@@ -2309,6 +2311,20 @@ pub struct Board {
     /// This board's default tier; `None` inherits the machine's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_tier: Option<String>,
+    /// The board was just made and its person has not been through Setup
+    /// yet (T-816): the TUI opens Setup over it once. Set only by the store
+    /// on a repository with no `columns.toml`, so every board before the
+    /// field, and every board a test builds, reads as set up. Cleared by
+    /// `Command::ApplySetup`, the skip included.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub setup_pending: bool,
+    /// Where a ticket works when neither its composer nor its column chose
+    /// (T-816): stamped onto the ticket at mint, like a column's. `None` is
+    /// the shared checkout, every board before Setup; Setup writes a
+    /// worktree unless the person chose otherwise or there is no repository
+    /// to cut one from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<WorkspaceStrategy>,
 }
 
 /// The crown's spawn budget when the file says nothing (T-412): three
@@ -2396,6 +2412,8 @@ impl Default for Board {
             crown: None,
             tiers: Vec::new(),
             default_tier: None,
+            setup_pending: false,
+            workspace: None,
         }
     }
 }
@@ -2440,6 +2458,89 @@ pub fn template_settings(name: &str) -> Option<ColumnSettings> {
     })
 }
 
+/// The boards Setup offers (T-816): each its columns and their rules, so a
+/// template's moves never depend on what its columns are called. `Kanban`
+/// is the board every repository got before Setup, `DEFAULT_COLUMNS` under
+/// `template_settings`; the two pull-request boards move cards on what the
+/// forge reports (`arrives_on`), and the last one adds a production column
+/// a person widens to more environments from its settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Template {
+    #[default]
+    Kanban,
+    PullRequests,
+    PullRequestsProduction,
+}
+
+impl Template {
+    pub const ALL: [Template; 3] =
+        [Template::Kanban, Template::PullRequests, Template::PullRequestsProduction];
+
+    /// The board's columns, first to last, with their settings. `noun` is
+    /// the forge's own word for one, `PR` or `MR` (`forge::Forge::noun`),
+    /// which names the column a ticket waits in while it is open.
+    pub fn columns(self, noun: &str) -> Vec<(String, ColumnSettings)> {
+        let d = ColumnSettings::default;
+        if self == Template::Kanban {
+            return DEFAULT_COLUMNS
+                .iter()
+                .map(|n| (n.to_string(), template_settings(n).unwrap_or_default()))
+                .collect();
+        }
+        let open = format!("{noun} OPEN");
+        let prod = self == Template::PullRequestsProduction;
+        let mut out = vec![
+            ("TODO".to_string(), ColumnSettings { on_working: Some("IN PROGRESS".into()), ..d() }),
+            (
+                "IN PROGRESS".to_string(),
+                ColumnSettings { train: TrainReach::Rebase, refuses_new: true, ..d() },
+            ),
+            (
+                open,
+                ColumnSettings {
+                    arrives_on: Arrival::PrOpened,
+                    train: TrainReach::Rebase,
+                    refuses_new: true,
+                    ..d()
+                },
+            ),
+            (
+                "MERGED".to_string(),
+                ColumnSettings {
+                    arrives_on: Arrival::Merged,
+                    requires_merge: true,
+                    reclaim: !prod,
+                    refuses_new: true,
+                    ..d()
+                },
+            ),
+        ];
+        if prod {
+            out.push((
+                "PRODUCTION".to_string(),
+                ColumnSettings {
+                    arrives_on: Arrival::Deployed,
+                    arrives_env: Some("production".into()),
+                    requires_merge: true,
+                    reclaim: true,
+                    refuses_new: true,
+                    ..d()
+                },
+            ));
+        }
+        out
+    }
+
+    /// Where its branches land: a pull-request board merges through them.
+    pub fn merge_into(self) -> MergeInto {
+        match self {
+            Template::Kanban => MergeInto::Main,
+            _ => MergeInto::PullRequests,
+        }
+    }
+}
+
 /// What every short key starts with: `T-12`. The mint, the on-disk recovery
 /// of the counter and the link recogniser (`links.rs`) all read it here.
 pub const KEY_PREFIX: &str = "T-";
@@ -2455,6 +2556,27 @@ impl Board {
         }
         b.seed_template_settings();
         b
+    }
+
+    /// Replace the columns with `template`'s (T-816), for Setup on a board
+    /// with no ticket yet: refused once one exists, because a ticket in a
+    /// column the template lacks would be stranded.
+    pub fn apply_template(&mut self, template: Template, noun: &str) -> Result<(), String> {
+        if !self.tickets.is_empty() {
+            return Err("this board already has tickets, so its columns stay".into());
+        }
+        let mut prev = String::new();
+        self.columns = template
+            .columns(noun)
+            .into_iter()
+            .map(|(name, settings)| {
+                let order = crate::fracindex::between(&prev, "");
+                prev = order.clone();
+                Column { name, order, settings }
+            })
+            .collect();
+        self.default_column = None;
+        Ok(())
     }
 
     /// Give every column named like the template its template settings, then
@@ -4414,6 +4536,52 @@ mod tests {
 
     /// The seeding table covers exactly the template — the one place a name
     /// is read as a literal, and it reads no other.
+    /// Every Setup template's rules name columns it has and pass the
+    /// board's own column validation, one column takes new tickets, and
+    /// Kanban is the board a repository got before Setup (T-816).
+    #[test]
+    fn every_template_is_a_valid_board() {
+        for t in Template::ALL {
+            for noun in ["PR", "MR"] {
+                let mut b = Board::default();
+                b.apply_template(t, noun).expect("an empty board takes a template");
+                let names: Vec<String> =
+                    b.sorted_columns().iter().map(|c| c.name.clone()).collect();
+                assert_eq!(names, t.columns(noun).into_iter().map(|(n, _)| n).collect::<Vec<_>>());
+                for c in b.columns.clone() {
+                    b.set_column_settings(&c.name, c.settings.clone())
+                        .unwrap_or_else(|e| panic!("{t:?} {}: {e}", c.name));
+                }
+                assert!(b.prune_dangling_refs().is_empty(), "{t:?}");
+                assert!(b.columns.iter().any(|c| !c.settings.refuses_new), "{t:?}");
+            }
+        }
+        let mut b = Board::default();
+        b.apply_template(Template::Kanban, "PR").expect("template");
+        let fresh = Board::with_default_columns();
+        let shape = |b: &Board| -> Vec<(String, ColumnSettings)> {
+            b.sorted_columns().iter().map(|c| (c.name.clone(), c.settings.clone())).collect()
+        };
+        assert_eq!(shape(&b), shape(&fresh));
+        let names = |t: Template| t.columns("MR").into_iter().map(|(n, _)| n).collect::<Vec<_>>();
+        assert_eq!(names(Template::PullRequests), ["TODO", "IN PROGRESS", "MR OPEN", "MERGED"]);
+        assert_eq!(
+            names(Template::PullRequestsProduction).last().map(String::as_str),
+            Some("PRODUCTION")
+        );
+        assert_eq!(Template::Kanban.merge_into(), MergeInto::Main);
+        assert!(Template::PullRequests.merge_into().pull_requests());
+    }
+
+    /// A board with a ticket keeps its columns: a template would strand it.
+    #[test]
+    fn a_template_is_refused_once_a_ticket_exists() {
+        let mut b = Board::with_default_columns();
+        b.tickets.push(ticket(1, "REVIEW", "a"));
+        assert!(b.apply_template(Template::PullRequests, "PR").is_err());
+        assert!(b.column("REVIEW").is_some());
+    }
+
     #[test]
     fn template_settings_cover_exactly_the_default_columns() {
         for name in DEFAULT_COLUMNS {

@@ -1578,6 +1578,9 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // T-810: who merges a branch, the train or the forge, is the
         // team's workflow; an agent choosing it chooses its own merger.
         | Command::SetMergeInto { .. }
+        // T-816: Setup is the person choosing every one of these at once.
+        | Command::ApplySetup { .. }
+        | Command::SetBoardWorkspace { .. }
         // T-590: the crown taking a card off the board is the person's
         // gesture handed over. Only the person may hand it over.
         | Command::SetCrownArchives { .. }
@@ -3181,6 +3184,14 @@ mod tests {
             Command::SetCrownBudget { budget: 3 },
             Command::SetCrownMode { mode: crate::board::CrownMode::Autonomous },
             Command::SetMergeInto { into: crate::board::MergeInto::PullRequests },
+            Command::SetBoardWorkspace { workspace: crate::board::WorkspaceStrategy::Worktree },
+            Command::ApplySetup {
+                template: crate::board::Template::PullRequests,
+                noun: "PR".into(),
+                merge_into: crate::board::MergeInto::PullRequests,
+                workspace: crate::board::WorkspaceStrategy::Worktree,
+                agent_tools: crate::board::AgentTools::Full,
+            },
             Command::SetCrownArchives { on: true },
             Command::SetCrownWatches { on: true },
             Command::SetTicketTier { id: t, tier: Some("claude".into()) },

@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui   7 tickets
+ ╭─ SETUP ────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │                                                                                                                    │
+ │   How you work ✓   PRs   Board   Agents   Brief   Ready                                                            │
+ │                                                                                                                    │
+ │  If a pull request falls behind main, should its agent bring it up to date?                                        │
+ │  no GitHub or GitLab remote here yet                                                                               │
+ │                                                                                                                    │
+ │  › Yes                                                                                                             │
+ │    No, I'll do it myself                                                                                           │
+ │                                                                                                                    │
+ │  ╭─ preview ────────────────────────────────────────────────────────────────────────────────────────────────────╮  │
+ │  │ BOARD   mesimon › practice   2 tickets ∙ pull requests                                                       │  │
+ │  │                                                                                                              │  │
+ │  │    TODO                0 →     IN PROGRESS        0 →     REVIEW             2 →     DONE                 0  │  │
+ │  │                                                                                                              │  │
+ │  │   o  new ticket                                           ✓ Fix the logi~ ⎇↑ now                             │  │
+ │  │                                                                              T-1                             │  │
+ │  │                                                             approved       ◉#412                             │  │
+ │  │                                                                                                              │  │
+ │  │                                                           ✓ Dark mode to~ ⎇↑ now                             │  │
+ │  │                                                                              T-2                             │  │
+ │  │                                                             approved       ◉#411                             │  │
+ │  │                                                                                                              │  │
+ │  │                                                                                                              │  │
+ │  │                                                                                                              │  │
+ │  │ enter column settings ∙ o new ticket ∙ O new column ∙ HJKL move column ∙ r rename column   esc menu ∙ ? keys │  │
+ │  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ SETUP  jk choose ∙ enter next ∙ s skip ∙ h back ∙ esc skip the rest                                             ? keys

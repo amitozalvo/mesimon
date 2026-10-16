@@ -33,7 +33,7 @@ pub(crate) use mesimon_daemon::agents::{AgentActivity as Doing, AgentPreview as 
 /// claude's transcript a once-a-second read; see the module doc for what
 /// that costs.
 #[derive(Default)]
-pub(crate) struct PeekCache(RefCell<HashMap<String, Entry>>);
+pub(crate) struct PeekCache(RefCell<HashMap<String, Entry>>, RefCell<HashMap<String, Rc<Peek>>>);
 
 struct Entry {
     kind: SessionKind,
@@ -74,9 +74,19 @@ impl PeekCache {
         self.read(kind, path, false)
     }
 
+    /// What a practice board's agent says (T-816): the scene's words for
+    /// `path`, read in place of a transcript the practice board never has.
+    pub(crate) fn stage(&self, path: &str, text: &str) {
+        let peek = Peek { text: Some(sanitize(text)), activity: None, reply_key: None };
+        self.1.borrow_mut().insert(path.to_string(), Rc::new(peek));
+    }
+
     fn read(&self, kind: SessionKind, path: &str, windowed: bool) -> Option<Rc<Peek>> {
         if !kind.is_agent() {
             return None;
+        }
+        if let Some(p) = self.1.borrow().get(path) {
+            return Some(Rc::clone(p));
         }
         let now = Instant::now();
         let mut map = self.0.borrow_mut();

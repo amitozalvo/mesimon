@@ -11868,6 +11868,49 @@ fn a_selection_reads_on_every_surface() {
     }
 }
 
+// ---- setup (T-816) ---------------------------------------------------------
+
+/// A board that was just made, Setup open over it on its first page, then
+/// `keys` pressed.
+fn setting_up(keys: &str) -> App {
+    let mut board = fixture(false);
+    board.setup_pending = true;
+    let mut app = app_graphite(board);
+    assert!(matches!(app.mode, Mode::Normal), "Setup waits to be armed");
+    app.setup_armed = true;
+    app.open_setup();
+    assert!(matches!(app.mode, Mode::Setup), "a board that waits for Setup opens it");
+    for c in keys.chars() {
+        let code = match c {
+            '\n' => ratatui::crossterm::event::KeyCode::Enter,
+            '<' => ratatui::crossterm::event::KeyCode::Esc,
+            c => ratatui::crossterm::event::KeyCode::Char(c),
+        };
+        app.handle_key(code, ratatui::crossterm::event::KeyModifiers::NONE).expect("key");
+    }
+    app
+}
+
+#[test]
+fn golden_setup_first_page() {
+    golden("setup_work_120x30", &render(&setting_up(""), 120, 30));
+}
+
+#[test]
+fn golden_setup_pull_requests() {
+    golden("setup_fix_120x30", &render(&setting_up("j\n"), 120, 30));
+}
+
+#[test]
+fn golden_setup_brief() {
+    golden("setup_brief_120x36", &render(&setting_up("\n\n\n\n"), 120, 36));
+}
+
+#[test]
+fn golden_setup_ready_narrow() {
+    golden("setup_ready_80x24", &render(&setting_up("<"), 80, 24));
+}
+
 // ---- the guided tour (T-763) ----------------------------------------------
 
 /// The board with the tour open from the menu, on lesson `n`, its playback

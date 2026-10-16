@@ -272,13 +272,16 @@ pub enum Scope {
     /// own (the tour's keymap is not asked), so this scope is the lesson
     /// list's alone.
     Tour,
+    /// Setup (T-816), over a board that was just made: one question at a
+    /// time, the practice board under it playing the answer.
+    Setup,
 }
 
 impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 34] = [
+    pub const ALL: [Scope; 35] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -313,6 +316,7 @@ impl Scope {
         Scope::Summary,
         Scope::PullRequests,
         Scope::Tour,
+        Scope::Setup,
     ];
 
     /// The scope a key falls through to when this one does not bind it.
@@ -339,7 +343,8 @@ impl Scope {
             | Scope::Usage
             | Scope::Summary
             | Scope::PullRequests
-            | Scope::Tour => Some(Scope::Global),
+            | Scope::Tour
+            | Scope::Setup => Some(Scope::Global),
             Scope::Global
             | Scope::Move
             | Scope::DiffView
@@ -390,6 +395,7 @@ impl Scope {
             Scope::Input => "INPUT",
             Scope::Editor => "EDIT",
             Scope::Tour => "TOUR",
+            Scope::Setup => "SETUP",
         }
     }
 }
@@ -554,6 +560,11 @@ pub enum Verb {
     ReleaseNotes,
     /// Open the guided tour from the menu (T-763).
     Tour,
+    /// Setup's `s` (T-816): leave this question on its default and go on.
+    SetupSkip,
+    /// Settings › Behaviour › Workspace (T-816): where a new ticket works
+    /// when its column and its composer leave it alone.
+    BoardWorkspace,
     // ---- sessions ----
     Shell,
     /// Shift+Enter on the board: open a one-line field on the selected card
@@ -1102,6 +1113,7 @@ impl SettingsSection {
             Verb::MergeTrain
             | Verb::MergeTrainNotice
             | Verb::FetchEvery
+            | Verb::BoardWorkspace
             | Verb::MergeInto
             | Verb::SnoozeQuiet
             | Verb::WeekStart
@@ -1131,6 +1143,16 @@ pub struct Ctx {
     pub tour_tryable: bool,
     /// This is the tour's practice board.
     pub practice: bool,
+    /// Setup is past its first question (T-816): `h` goes back one.
+    pub setup_back: bool,
+    /// Setup's page has one answer only (the brief, the last page): Enter
+    /// goes on and there is nothing to choose or skip.
+    pub setup_single: bool,
+    /// Setup is on its last page.
+    pub setup_ready: bool,
+    /// A ticket nothing else stamped works in a worktree on this board
+    /// (`Board::workspace`, T-816).
+    pub board_worktree: bool,
     pub settings_section: SettingsSection,
     /// The board's three agent-prompt templates (T-353), as the rows label
     /// themselves off them. `Default` is "mesimon's own words", which is what
@@ -3608,6 +3630,75 @@ static TOUR: &[Binding] = &[
     },
 ];
 
+/// Setup (T-816): one question at a time. Esc and q leave the rest on
+/// their defaults and go to the last page, never out without answers: the
+/// board is applied from there.
+static SETUP: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
+        verb: Verb::CursorDown,
+        show: "jk",
+        hint: |_| "choose",
+        avail: |c| !c.setup_single,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Enter],
+        verb: Verb::Act,
+        show: "enter",
+        hint: |c| {
+            if c.setup_ready {
+                "done"
+            } else if c.setup_single {
+                "continue"
+            } else {
+                "next"
+            }
+        },
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: true,
+        prio: 20,
+    },
+    Binding {
+        keys: &[Key::Char('s')],
+        verb: Verb::SetupSkip,
+        show: "s",
+        hint: |_| "skip",
+        avail: |c| !c.setup_single && !c.setup_ready,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 30,
+    },
+    Binding {
+        keys: &[Key::Char('h'), Key::Left],
+        verb: Verb::CursorLeft,
+        show: "h",
+        hint: |_| "back",
+        avail: |c| c.setup_back,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 40,
+    },
+    Binding {
+        keys: &[Key::Char('q'), Key::Esc],
+        verb: Verb::Back,
+        show: "esc",
+        hint: |c| if c.setup_ready { "open the board" } else { "skip the rest" },
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 250,
+    },
+];
+
 /// The duplicate hint appears only after the undisclosed first `y`.
 static DUPLICATE: &[Binding] = &[Binding {
     keys: &[Key::Char('y')],
@@ -5098,6 +5189,21 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // Where a new ticket works (T-816): Setup's answer, and the column's
+    // Workspace row reads it where the column says nothing.
+    MenuItem {
+        verb: Verb::BoardWorkspace,
+        label: |_| "Worktrees".into(),
+        detail: |c| {
+            if c.board_worktree {
+                "each new ticket gets a branch and a folder of its own".into()
+            } else {
+                "new tickets work in this checkout, one agent writing at a time".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
     // One workflow per board (T-810): a worktree branch lands in main by
     // the train and m, or through its pull request, merged on the forge.
     // Board state like the agent tools, in `columns.toml`.
@@ -5657,8 +5763,9 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::Mouse,
             Verb::SnoozeQuiet,
             Verb::WeekStart,
-            // The workflow before the two rows that serve it: the fetch
-            // and the train.
+            // Where a new ticket works, then the workflow before the two
+            // rows that serve it: the fetch and the train.
+            Verb::BoardWorkspace,
             Verb::MergeInto,
             Verb::FetchEvery,
             Verb::MergeTrain,
@@ -5714,6 +5821,7 @@ pub fn settings_heading(verb: Verb) -> Option<&'static str> {
         Verb::NotifyWords => Some("BANNER"),
         Verb::NotifySoundNeedsYou => Some("SOUND"),
         Verb::SnoozeQuiet => Some("SNOOZE"),
+        Verb::BoardWorkspace => Some("TICKETS"),
         Verb::MergeInto => Some("MERGE"),
         Verb::FetchEvery => Some("REMOTE"),
         Verb::MergeTrain => Some("AUTO MERGE"),
@@ -5799,6 +5907,7 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
         }),
         Verb::CrownMode => choice(&["autonomous", "supervised"], c.crown_mode.word()),
         Verb::MergeInto => choice(&["main", "pull requests"], c.merge_into.word()),
+        Verb::BoardWorkspace => Value::Switch(c.board_worktree),
         Verb::CrownArchives => Value::Switch(c.crown_archives),
         Verb::CrownWatches => Value::Switch(c.crown_watches),
         Verb::TabTitle => Value::Choice {
@@ -6233,9 +6342,10 @@ fn column_value(verb: Verb, c: &Ctx) -> Option<Value> {
         Verb::ColumnCollapse => Value::Switch(c.col_collapsed),
         Verb::SortColumn => Value::Word(or(c.col_sort_word, "newest first").into()),
         Verb::ColumnRefusesNew => Value::Switch(!c.col_refuses_new),
+        // A column that says nothing works where the board does (T-816).
         Verb::ColumnWorkspace => choice(
-            &["board default", "worktree", "shared checkout"],
-            or(c.col_workspace_word, "board default"),
+            &["worktree", "shared checkout"],
+            or(c.col_workspace_word, if c.board_worktree { "worktree" } else { "shared checkout" }),
         ),
         Verb::ColumnArrives => Value::Word(match c.col_arrives_word {
             "deployed to" => format!("deployed to {}", or(&c.col_arrives_env, "…")),
@@ -7684,6 +7794,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::Input => INPUT,
         Scope::Editor => EDITOR,
         Scope::Tour => TOUR,
+        Scope::Setup => SETUP,
     }
 }
 
@@ -8038,6 +8149,7 @@ mod tests {
                 Scope::Summary => 31,
                 Scope::PullRequests => 32,
                 Scope::Tour => 33,
+                Scope::Setup => 34,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -10069,6 +10181,7 @@ mod tests {
                     Verb::Mouse,
                     Verb::SnoozeQuiet,
                     Verb::WeekStart,
+                    Verb::BoardWorkspace,
                     Verb::MergeInto,
                     Verb::FetchEvery,
                     Verb::MergeTrain,
@@ -10102,7 +10215,7 @@ mod tests {
         .iter()
         .map(|m| m.verb)
         .collect();
-        assert_eq!(on[6..8], [Verb::MergeTrain, Verb::MergeTrainNotice]);
+        assert_eq!(on[7..9], [Verb::MergeTrain, Verb::MergeTrainNotice]);
         for v in prefs {
             assert!(!verbs.contains(&v), "{v:?} is a preference and belongs in Settings");
         }
@@ -10469,6 +10582,7 @@ mod tests {
             Scope::Header,
             Scope::Sharing,
             Scope::Tour,
+            Scope::Setup,
         ] {
             assert_eq!(resolve(s, Key::Char('q'), &ctx), Some(Verb::Back), "{s:?}");
             assert_eq!(resolve(s, Key::Esc, &ctx), Some(Verb::Back), "{s:?}");

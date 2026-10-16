@@ -17,6 +17,7 @@ mod prs;
 pub(crate) mod releases;
 mod search;
 mod settings;
+mod setup;
 mod tagpicker;
 #[cfg(test)]
 mod tests;
@@ -281,6 +282,9 @@ fn draw_screen(f: &mut Frame, app: &App) {
     }
     if matches!(app.mode, Mode::Tour) {
         tour::draw(f, app);
+    }
+    if matches!(app.mode, Mode::Setup) {
+        setup::draw(f, app);
     }
     // The merge dialog, over the card whose branch it is about (T-697): the
     // ticket page's, the same frame and words.

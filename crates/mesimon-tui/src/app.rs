@@ -505,6 +505,10 @@ pub enum Mode {
     /// The guided tour (T-763): its lesson list, cursor and practice board
     /// live in `App::tour`, which is `Some` exactly while this is the mode.
     Tour,
+    /// Setup (T-816), over a board that was just made: its pages and its
+    /// practice board live in `App::setup`, `Some` exactly while this is
+    /// the mode.
+    Setup,
     /// The column settings dialog (T-117): a list over `keymap::column_items`
     /// on one column, every row relabelling off the snapshot and none closing
     /// the dialog (the Settings list's rule). Esc goes back to the board, or
@@ -1904,6 +1908,18 @@ pub struct App {
     pub help: bool,
     /// The guided tour while it is open (T-763), practice board and all.
     pub tour: Option<Box<crate::tour::Tour>>,
+    /// Setup while it is open (T-816).
+    pub setup: Option<Box<crate::setup::Setup>>,
+    /// Setup was applied from this board: it is not opened again before
+    /// the snapshot that says so lands.
+    setup_applied: bool,
+    /// Setup opens over a board that waits for it (T-816): armed in
+    /// `lib.rs::run` once the prefs are loaded, so no test app meets it
+    /// unasked.
+    pub setup_armed: bool,
+    /// Setup may ask git and the forge's CLI what the folder is: set in
+    /// `lib.rs::run`, so no test runs a CLI.
+    pub setup_probes: bool,
     /// This App is the tour's practice board: a copy says what it would
     /// have copied and copies nothing, unless `practice_copies` (the person
     /// trying it pressed the key), and nothing opens outside it.
@@ -2165,6 +2181,10 @@ impl App {
             last_action: None,
             help: false,
             tour: None,
+            setup: None,
+            setup_applied: false,
+            setup_armed: false,
+            setup_probes: false,
             practice: false,
             practice_copies: false,
             force_redraw: false,
@@ -2233,6 +2253,84 @@ impl App {
             return format!("{subject} copied");
         }
         crate::clipboard::copy_status(subject, text)
+    }
+
+    /// Setup over a board that was just made (T-816): once, on the first
+    /// snapshot that says so, on the person's own board and never on a
+    /// practice one or a board joined from someone else.
+    pub(crate) fn open_setup(&mut self) {
+        let joined = self.team.board.as_ref().is_some_and(|b| b.role != "owner");
+        if !self.setup_armed
+            || !self.board.setup_pending
+            || self.setup_applied
+            || self.practice
+            || joined
+            || self.setup.is_some()
+            || !matches!(self.mode, Mode::Normal)
+        {
+            return;
+        }
+        let theme = (self.theme.flavor, self.theme.profile);
+        let repos = self.git.repos.len();
+        match crate::setup::Setup::new(
+            theme,
+            self.prefs.clone(),
+            self.repo_root.clone(),
+            repos,
+            self.setup_probes,
+        ) {
+            Ok(s) => {
+                self.setup = Some(Box::new(s));
+                self.mode = Mode::Setup;
+            }
+            Err(e) => self.status = format!("setup could not start: {e:#}"),
+        }
+    }
+
+    /// Setup's clock: its practice board, the forge probe, and the
+    /// folder's repositories as the git sample learns them.
+    fn tick_setup(&mut self, now: u64) -> Result<bool> {
+        let repos = self.git.repos.len();
+        let Some(s) = self.setup.as_mut() else { return Ok(false) };
+        let mut dirty = false;
+        if s.facts.repos != repos {
+            s.facts.repos = repos;
+            let at = s.at;
+            s.go(at, now)?;
+            dirty = true;
+        }
+        Ok(s.tick(now)? || dirty)
+    }
+
+    /// Setup's last page left (T-816): the answers to the daemon in one
+    /// command, this board's auto merge where an answer turned it off, and
+    /// the tour where it was asked for.
+    fn finish_setup(&mut self) -> Result<()> {
+        let Some(s) = self.setup.take() else { return Ok(()) };
+        let o = s.outcome();
+        self.mode = Mode::Normal;
+        self.setup_applied = true;
+        let sent = self.client.request(Command::ApplySetup {
+            template: o.template,
+            noun: o.noun.into(),
+            merge_into: o.merge_into,
+            workspace: o.workspace,
+            agent_tools: o.agent_tools,
+        })?;
+        if let Response::Err { message } = sent {
+            self.status = message;
+            return Ok(());
+        }
+        if o.auto_merge_off {
+            self.set_board_pref("auto merge off", |b| b.set_bool(PrefKey::MergeTrain, false));
+            self.push_automation();
+        }
+        self.refresh()?;
+        self.status = "board set up ∙ Esc › Settings changes any of it".into();
+        if o.tour {
+            self.open_tour();
+        }
+        Ok(())
     }
 
     /// Open the guided tour (T-763) on its first lesson, or say why not.
@@ -2314,6 +2412,7 @@ impl App {
             || self.settings_striking()
             || self.reply_revealing()
             || self.tour.as_ref().is_some_and(|t| t.animating())
+            || self.setup.as_ref().is_some_and(|s| s.animating())
     }
 
     /// Is the Appearance page's preview striking (T-717)? Once, from the
@@ -2809,6 +2908,7 @@ impl App {
         // The cursor holds its TICKET across the pass, never its index.
         self.research(true);
         self.hand_board();
+        self.open_setup();
     }
 
     /// The two observer threads read this board, not one of their own
@@ -3248,6 +3348,8 @@ impl App {
         if let Some(tour) = self.tour.as_mut() {
             dirty |= tour.tick(mesimon_core::clock::now_ms())?;
         }
+        // Setup's practice board and its probe (T-816).
+        dirty |= self.tick_setup(mesimon_core::clock::now_ms())?;
         // The loop redraws once per tick, so the poll timeout is the frame
         // rate: 100 ms paces the spinner, and a panel in motion gets a
         // shorter one for the few frames it takes to settle.
@@ -5944,6 +6046,7 @@ impl App {
             Mode::Summary { .. } => Scope::Summary,
             Mode::PullRequests { .. } => Scope::PullRequests,
             Mode::Tour => Scope::Tour,
+            Mode::Setup => Scope::Setup,
             Mode::Search(_) => Scope::Search,
             // Naming a column IS a text field (the tag picker's rule), and
             // saying so is what puts `enter save ∙ esc cancel` in the edge.
@@ -6367,6 +6470,10 @@ impl App {
             rich_keys: self.rich_keys,
             practice: self.practice,
             tour_tryable: self.tour.as_ref().is_some_and(|t| !t.trying && t.lesson().ask.is_some()),
+            setup_back: self.setup.as_ref().is_some_and(|s| s.at > 0),
+            setup_single: self.setup.as_ref().is_some_and(|s| s.options().len() < 2),
+            setup_ready: self.setup.as_ref().is_some_and(|s| s.ready()),
+            board_worktree: self.board.workspace == Some(WorkspaceStrategy::Worktree),
             prompts: self.board.prompts.clone(),
             prompt_editing: matches!(self.mode, Mode::Prompts { editing: Some(_), .. }),
             // An identity the relay has not admitted is not signed in: the
@@ -8110,13 +8217,21 @@ impl App {
                     }
                 }
             }
-            Verb::ColumnWorkspace => self.set_column(|s| {
-                s.workspace = match s.workspace {
-                    None => Some(WorkspaceStrategy::Worktree),
-                    Some(WorkspaceStrategy::Worktree) => Some(WorkspaceStrategy::SharedCheckout),
-                    Some(_) => None,
-                }
-            })?,
+            // Two answers (T-816): a column that says nothing works where
+            // the board does, so the row steps to the other one and back
+            // to saying nothing.
+            Verb::ColumnWorkspace => {
+                let board = self.board.workspace.unwrap_or(WorkspaceStrategy::SharedCheckout);
+                self.set_column(|s| {
+                    let now = s.workspace.unwrap_or(board);
+                    let next = if now == WorkspaceStrategy::Worktree {
+                        WorkspaceStrategy::SharedCheckout
+                    } else {
+                        WorkspaceStrategy::Worktree
+                    };
+                    s.workspace = (next != board).then_some(next);
+                })?
+            }
             Verb::ColumnClaudeMode => self.set_column(|s| s.claude_mode = s.claude_mode.next())?,
             Verb::ColumnCodexSandbox => self.set_column(|s| s.codex_sandbox = s.codex_sandbox.next())?,
             Verb::ColumnCodexApproval => self.set_column(|s| s.codex_approval = s.codex_approval.next())?,
@@ -8163,6 +8278,27 @@ impl App {
             Verb::ColumnTrain => self.set_column(|s| s.train = s.train.next())?,
             Verb::ReleaseNotes => self.open_releases(),
             Verb::Tour => self.open_tour(),
+            Verb::SetupSkip => {
+                if let Some(s) = self.setup.as_mut() {
+                    s.skip(mesimon_core::clock::now_ms())?;
+                }
+            }
+            // Where a ticket nothing else chose works (T-816): board state,
+            // to the daemon and back on the snapshot.
+            Verb::BoardWorkspace => {
+                let workspace = if self.board.workspace == Some(WorkspaceStrategy::Worktree) {
+                    WorkspaceStrategy::SharedCheckout
+                } else {
+                    WorkspaceStrategy::Worktree
+                };
+                match self.client.request(Command::SetBoardWorkspace { workspace })? {
+                    Response::Err { message } => self.status = message,
+                    _ => {
+                        self.refresh()?;
+                        self.status = format!("new tickets work in a {}", workspace.word());
+                    }
+                }
+            }
             Verb::AdoptObserve => self.adopt_external(false)?,
             // Shift+Tab on a ticket that has not started yet (T-309): the
             // composer's pick, still open. The composer and the editor keep
@@ -8384,6 +8520,19 @@ impl App {
             Scope::Links => {
                 if let Mode::Links { links, idx, .. } = &mut self.mode {
                     *idx = step(*idx, links.len(), down);
+                }
+            }
+            Scope::Setup => {
+                if let Some(s) = self.setup.as_mut() {
+                    let now = mesimon_core::clock::now_ms();
+                    let done = match verb {
+                        Verb::CursorLeft => s.back(now),
+                        Verb::CursorUp | Verb::CursorDown => s.cursor_step(down, now),
+                        _ => Ok(()),
+                    };
+                    if let Err(e) = done {
+                        self.status = format!("{e:#}");
+                    }
                 }
             }
             Scope::Tour => {
@@ -8713,6 +8862,16 @@ impl App {
                 }
                 Ok(())
             }
+            Scope::Setup => {
+                let ready = self.setup.as_ref().is_some_and(|s| s.ready());
+                if ready {
+                    return self.finish_setup();
+                }
+                if let Some(s) = self.setup.as_mut() {
+                    s.next(mesimon_core::clock::now_ms())?;
+                }
+                Ok(())
+            }
             Scope::Links => {
                 let Mode::Links { links, idx, .. } = &self.mode else {
                     return Ok(());
@@ -8846,6 +9005,22 @@ impl App {
             Scope::Tour => {
                 self.tour = None;
                 self.mode = Mode::Normal;
+            }
+            // Setup's Esc: the rest on their defaults, then the last page;
+            // there, the board.
+            Scope::Setup => {
+                let now = mesimon_core::clock::now_ms();
+                let done = match self.setup.as_mut() {
+                    Some(s) if s.ready() => {
+                        s.cursor = 0;
+                        self.finish_setup()
+                    }
+                    Some(s) => s.skip_rest(now),
+                    None => Ok(()),
+                };
+                if let Err(e) = done {
+                    self.status = format!("{e:#}");
+                }
             }
             // The menu is the board's, so the notes always return there.
             Scope::Releases => {
@@ -24444,5 +24619,64 @@ mod tests {
         assert!(app.poll_image_paste());
         assert_eq!(editor(&app).body.as_str(), "one\ntwo\n");
         assert!(!sent.borrow().iter().any(|s| s.contains("WriteNote")));
+    }
+
+    /// Setup (T-816): opened once, armed, over a board that waits for it;
+    /// every answer reaches the daemon in one command, auto merge is this
+    /// board's own off, and a snapshot that still says pending does not
+    /// open it again.
+    #[test]
+    fn setup_applies_its_answers_in_one_command() {
+        let mut board = board_three_columns();
+        board.setup_pending = true;
+        let (mut app, sent) = App::for_test_logged(board, theme(), false);
+        assert!(app.setup.is_none(), "not armed, not opened");
+        app.setup_armed = true;
+        app.open_setup();
+        assert_eq!(app.mode, Mode::Setup);
+        let enter = |app: &mut App| app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        press(&mut app, 'j'); // with pull requests
+        enter(&mut app);
+        press(&mut app, 'j'); // no, I'll bring it up to date myself
+        enter(&mut app);
+        for _ in 0..3 {
+            enter(&mut app); // the board, the agents, the brief
+        }
+        assert!(app.setup.as_ref().is_some_and(|s| s.ready()));
+        assert!(!sent.borrow().iter().any(|s| s.contains("ApplySetup")), "nothing before the end");
+        enter(&mut app);
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.setup.is_none());
+        let applied: Vec<String> =
+            sent.borrow().iter().filter(|s| s.contains("ApplySetup")).cloned().collect();
+        assert_eq!(applied.len(), 1, "{applied:?}");
+        assert!(applied[0].contains("template: PullRequests,"), "{}", applied[0]);
+        assert!(applied[0].contains("merge_into: PullRequests"), "{}", applied[0]);
+        assert_eq!(app.board_prefs.bool(PrefKey::MergeTrain), Some(false));
+        app.refresh().unwrap();
+        assert_eq!(app.mode, Mode::Normal, "applied here: not opened again");
+    }
+
+    /// Esc leaves the rest on their defaults and shows the last page; Esc
+    /// there opens the board on today's defaults, the tour not asked for.
+    #[test]
+    fn setup_esc_twice_is_the_defaults() {
+        let mut board = board_three_columns();
+        board.setup_pending = true;
+        let (mut app, sent) = App::for_test_logged(board, theme(), false);
+        app.setup_armed = true;
+        app.open_setup();
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(app.setup.as_ref().is_some_and(|s| s.ready()));
+        app.handle_key(KeyCode::Char('q'), KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        let applied: Vec<String> =
+            sent.borrow().iter().filter(|s| s.contains("ApplySetup")).cloned().collect();
+        assert_eq!(applied.len(), 1);
+        assert!(
+            applied[0].contains("template: Kanban") && applied[0].contains("workspace: Worktree")
+        );
+        assert_eq!(app.board_prefs.bool(PrefKey::MergeTrain), None, "auto merge left alone");
+        assert!(app.tour.is_none());
     }
 }

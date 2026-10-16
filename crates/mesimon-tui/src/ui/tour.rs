@@ -175,10 +175,25 @@ fn draw_lesson(f: &mut Frame, app: &App, tour: &Tour, area: Rect) {
 
 /// The practice board, drawn whole on its own canvas and laid into `at`.
 fn draw_board(f: &mut Frame, app: &App, tour: &Tour, at: Rect) {
+    lay_board(f, app, &tour.canvas, &tour.sandbox, at, tour.trying);
+}
+
+/// A practice board (`sandbox`), drawn whole on `canvas` at `at`'s size by
+/// the very `ui::draw` that draws this one, and its cells laid into `at`:
+/// the tour's and Setup's (T-816). `typing` shows the terminal's cursor
+/// where a field on it has its own.
+pub(super) fn lay_board(
+    f: &mut Frame,
+    app: &App,
+    canvas: &std::cell::RefCell<Option<ratatui::Terminal<ratatui::backend::TestBackend>>>,
+    sandbox: &App,
+    at: Rect,
+    typing: bool,
+) {
     if at.width == 0 || at.height == 0 {
         return;
     }
-    let mut canvas = tour.canvas.borrow_mut();
+    let mut canvas = canvas.borrow_mut();
     let fits = canvas.as_ref().is_some_and(|t| {
         let b = t.backend().buffer().area;
         b.width == at.width && b.height == at.height
@@ -191,7 +206,7 @@ fn draw_board(f: &mut Frame, app: &App, tour: &Tour, at: Rect) {
     // The practice board's hints are its own: the board's under it keep
     // theirs for the mouse.
     let hints = crate::mouse::stash_hints();
-    let drawn = term.draw(|g| super::draw(g, &tour.sandbox)).is_ok();
+    let drawn = term.draw(|g| super::draw(g, sandbox)).is_ok();
     crate::mouse::restore_hints(hints);
     if !drawn {
         return;
@@ -209,13 +224,13 @@ fn draw_board(f: &mut Frame, app: &App, tour: &Tour, at: Rect) {
     }
     // Its frames are frames on this one, where they now are.
     let mut frames = app.frames.borrow_mut();
-    for r in tour.sandbox.frames.borrow().iter() {
+    for r in sandbox.frames.borrow().iter() {
         frames.push(Rect { x: r.x + at.x, y: r.y + at.y, ..*r });
     }
     drop(frames);
     // A field being typed in on the practice board shows the terminal's
     // cursor where its own would be.
-    if tour.trying && tour.sandbox.text_field() {
+    if typing && sandbox.text_field() {
         let Ok(p) = term.get_cursor_position();
         if p.x < at.width && p.y < at.height {
             f.set_cursor_position((at.x + p.x, at.y + p.y));

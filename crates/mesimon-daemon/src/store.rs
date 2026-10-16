@@ -198,6 +198,17 @@ struct ColumnsFile {
     /// that drops it narrows nothing an agent gets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     default_column: Option<String>,
+    /// The board was made by this daemon and has not been through Setup
+    /// (`Board::setup_pending`, T-816). Absent means set up: every board
+    /// before the field. No bump: a build that drops it opens no Setup.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    setup_pending: bool,
+    /// Where a ticket works when nothing else chose (`Board::workspace`,
+    /// T-816). Absent means the shared checkout, every board before Setup.
+    /// No bump: a build that drops it mints into the shared checkout, as
+    /// it always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace: Option<mesimon_core::board::WorkspaceStrategy>,
     #[serde(default)]
     follow_up_mode: mesimon_core::board::FollowUpMode,
     /// The three agent-prompt templates (`Board::prompts`, T-353), one
@@ -558,7 +569,10 @@ fn readd_missing_columns(board: &mut Board) {
 fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bool, bool) {
     let defaults = || Board::with_default_columns();
     if !cols_path.is_file() {
-        return (defaults(), false, false, false); // fresh repo; caller writes it out
+        // A fresh repo; the caller writes it out. Its person meets Setup
+        // first (T-816); a quarantined board below does not.
+        let fresh = Board { setup_pending: true, ..defaults() };
+        return (fresh, false, false, false);
     }
     let text = match std::fs::read_to_string(cols_path) {
         Ok(t) => t,
@@ -608,6 +622,8 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                 claude_md_ignored: cf.claude_md_ignored,
                                 system_prompt: cf.system_prompt,
                                 default_column: cf.default_column,
+                                setup_pending: cf.setup_pending,
+                                workspace: cf.workspace,
                                 follow_up_mode: cf.follow_up_mode,
                                 prompts: PromptSet {
                                     rebase: cf.prompt_rebase,
@@ -914,6 +930,8 @@ fn columns_text(board: &Board) -> Result<String> {
         claude_md_ignored: board.claude_md_ignored,
         system_prompt: board.system_prompt,
         default_column: board.default_column.clone(),
+        setup_pending: board.setup_pending,
+        workspace: board.workspace,
         follow_up_mode: board.follow_up_mode,
         prompt_rebase: board.prompts.rebase.clone(),
         prompt_merged: board.prompts.merged.clone(),
@@ -2399,6 +2417,8 @@ order = "a0"
             claude_md_ignored: true,
             system_prompt: true,
             default_column: Some("TODO".into()),
+            setup_pending: true,
+            workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             follow_up_mode: mesimon_core::board::FollowUpMode::Steer,
             prompt_rebase: Some("catch {branch} up to {base}".into()),
             prompt_merged: None,

@@ -9,18 +9,18 @@
       │  Notifications       Comes back                ● lit    ○ quiet                                          │
       │                      Week starts on            Monday                                                    │
       │▎ Behaviour                                                                                               │
-      │                     MERGE                                                                                │
-      │  Agents              Merge into                ● main   ○ pull requests                                  │
+      │                     TICKETS                                                                              │
+      │  Agents              Worktrees                 ○ off                                                     │
       │                                                                                                          │
-      │  Crown              REMOTE                                                                               │
-      │                      Fetch from the remote     ● off    ○ 1 min           ○ 5 min   ○ 15 min             │
+      │  Crown              MERGE                                                                                │
+      │                      Merge into                ● main   ○ pull requests                                  │
       │  Terminal                                                                                                │
+      │                     REMOTE                                                                               │
+      │  Usage               Fetch from the remote     ● off    ○ 1 min           ○ 5 min   ○ 15 min             │
+      │                                                                                                          │
       │                     AUTO MERGE                                                                           │
-      │  Usage               Auto merge                ● on                                                      │
+      │                      Auto merge                ● on                                                      │
       │                      Tells the agent           ● on                                                      │
-      │                                                                                                          │
-      │                                                                                                          │
-      │                                                                                                          │
       │                                                                                                          │
       │                                                                                                          │
       │                                                                                                          │

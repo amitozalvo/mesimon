@@ -612,6 +612,25 @@ pub enum Command {
     SetMergeInto {
         into: crate::board::MergeInto,
     },
+    /// Where a ticket works when its composer and its column leave it
+    /// alone (`Board::workspace`, T-816): Settings › Behaviour › Workspace.
+    /// Never retroactive; local only, as Setup is.
+    SetBoardWorkspace {
+        workspace: crate::board::WorkspaceStrategy,
+    },
+    /// Setup's answers, all at once (T-816): the template's columns (kept
+    /// as they are on a board that already has a ticket), where branches
+    /// land, where a ticket works, what an agent may do on its card, and the
+    /// agent brief on. Clears `Board::setup_pending`, the skip included.
+    /// Local only, as each of the settings it writes is.
+    ApplySetup {
+        template: crate::board::Template,
+        /// The forge's word for one (`PR`, `MR`), naming the open column.
+        noun: String,
+        merge_into: crate::board::MergeInto,
+        workspace: crate::board::WorkspaceStrategy,
+        agent_tools: crate::board::AgentTools,
+    },
     /// Whether the crown may archive and restore tickets with
     /// `archive_ticket` (`Board::crown_archives`, T-590). Local only: taking
     /// a card off the board is the person's gesture, and only the person may
@@ -1447,6 +1466,8 @@ impl Command {
             | SetCrownBudget { .. }
             | SetCrownMode { .. }
             | SetMergeInto { .. }
+            | ApplySetup { .. }
+            | SetBoardWorkspace { .. }
             | SetCrownArchives { .. }
             | SetCrownWatches { .. }
             | SetSystemPrompt { .. }

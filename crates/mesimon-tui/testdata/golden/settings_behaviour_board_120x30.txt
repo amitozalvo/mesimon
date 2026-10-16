@@ -9,18 +9,18 @@
       │  Notifications       Comes back                ● lit    ○ quiet                               inherited  │
       │                      Week starts on            Monday                                           machine  │
       │▎ Behaviour                                                                                               │
-      │                     MERGE                                                                                │
-      │  Agents              Merge into                ● main   ○ pull requests                                  │
+      │                     TICKETS                                                                              │
+      │  Agents              Worktrees                 ○ off                                                     │
       │                                                                                                          │
-      │  Crown              REMOTE                                                                               │
-      │                      Fetch from the remote     ● off    ○ 1 min           ○ 5 min   ○ 15 min  inherited  │
+      │  Crown              MERGE                                                                                │
+      │                      Merge into                ● main   ○ pull requests                                  │
       │  Terminal                                                                                                │
+      │                     REMOTE                                                                               │
+      │  Usage               Fetch from the remote     ● off    ○ 1 min           ○ 5 min   ○ 15 min  inherited  │
+      │                                                                                                          │
       │                     AUTO MERGE                                                                           │
-      │  Usage               Auto merge                ● on                                            set here  │
+      │                      Auto merge                ● on                                            set here  │
       │                      Tells the agent           ● on                                           inherited  │
-      │                                                                                                          │
-      │                                                                                                          │
-      │                                                                                                          │
       │                                                                                                          │
       │                                                                                                          │
       │                                                                                                          │
