@@ -6561,21 +6561,61 @@ fn golden_links_120() {
     golden("links_120x30", &render(&app_links(), 120, 30));
 }
 
+/// A links row naming a ticket flashes that ticket's card under the
+/// dialog (T-820): lit out of the recess, then receded with the rest, on
+/// the MOVE ghost's cadence. The pointer's row wins over the cursor's.
+#[test]
+fn a_ticket_links_row_flashes_its_card_on_the_board() {
+    // The title row's first inked cell of ticket 1's card, as drawn.
+    let ink = |app: &App| {
+        let buf = cells(app, 120, 30);
+        let spot = *app.spots.borrow().card(ulid_n(1)).expect("T-1's card is on screen");
+        (spot.x..spot.x + spot.width)
+            .map(|x| &buf[(x, spot.y)])
+            .find(|c| c.symbol() != " ")
+            .map(|c| c.fg)
+            .expect("the title row holds ink")
+    };
+    let mut app = app_links();
+    assert_eq!(app.link_hovered(), Some(ulid_n(1)), "the cursor's row names T-1");
+    app.spin_epoch.set(Some(std::time::Instant::now()));
+    let lit = ink(&app);
+    assert!(app.animating(), "the flash wants its frames");
+    app.spin_epoch.set(Some(std::time::Instant::now() - std::time::Duration::from_millis(410)));
+    let dark = ink(&app);
+    assert_ne!(lit, dark, "the lit phase skips the recess, the dark one takes it");
+    // The url row names no ticket: the card recedes as the dark phase did.
+    let Mode::Links { idx, .. } = &mut app.mode else { unreachable!() };
+    *idx = 0;
+    app.spin_epoch.set(Some(std::time::Instant::now()));
+    assert_eq!(app.link_hovered(), None);
+    assert_eq!(ink(&app), dark);
+    // The pointer resting on T-1's row names it, wherever the cursor is.
+    app.hover.set(Some((crate::mouse::Target::Row(1), std::time::Instant::now())));
+    assert_eq!(app.link_hovered(), Some(ulid_n(1)));
+    // The ticket page has no board under its dialog.
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    assert_eq!(app.link_hovered(), None);
+}
+
 /// The cursor's links row reveals what its cut hides, the way the cursor
 /// card's title does (T-702): held at the start, then walked to the end.
 #[test]
 fn the_cursors_links_row_scrolls_its_cut_into_view() {
     let mut app = app_links();
-    let Mode::Links { idx, .. } = &mut app.mode else { unreachable!() };
+    let Mode::Links { idx, links, .. } = &mut app.mode else { unreachable!() };
     *idx = 0;
+    let url = "https://jira.example.com/browse/ABC-123?focusedCommentId=4";
+    links[0].text = url.into();
     let row = |app: &App| {
         render(app, 120, 30).into_iter().find(|l| l.contains("jira.example.com")).unwrap()
     };
-    assert!(row(&app).contains("ABC-1~"), "held at the start: {}", row(&app));
-    let head = "url    the Jira ticket ∙ https://jira.example.com/browse/ABC-123";
-    let landed = std::time::Instant::now() - std::time::Duration::from_millis(1900);
-    app.menu_marquee.set(Some((crate::text::hash64(head), landed)));
-    assert!(row(&app).contains("browse/ABC-123│"), "walked to the end: {}", row(&app));
+    assert!(row(&app).contains("~│"), "held at the start: {}", row(&app));
+    let head = format!("url  the Jira ticket ∙ {url}");
+    // Six steps' hold, then a cell a step: inside the hold at the end.
+    let landed = std::time::Instant::now() - std::time::Duration::from_millis(5000);
+    app.menu_marquee.set(Some((crate::text::hash64(&head), landed)));
+    assert!(row(&app).contains("CommentId=4│"), "walked to the end: {}", row(&app));
 }
 
 /// The cursor's row reads whole on the row above the footer (T-741), over
@@ -6583,7 +6623,7 @@ fn the_cursors_links_row_scrolls_its_cut_into_view() {
 /// fits, as the board's row names the cursor card either way.
 #[test]
 fn the_cursors_row_reads_whole_above_the_footer() {
-    let head = "url    the Jira ticket ∙ https://jira.example.com/browse/ABC-123";
+    let head = "url  the Jira ticket ∙ https://jira.example.com/browse/ABC-123";
     for page in [false, true] {
         let mut app = app_links();
         if page {
@@ -6596,7 +6636,7 @@ fn the_cursors_row_reads_whole_above_the_footer() {
         let Mode::Links { idx, .. } = &mut app.mode else { unreachable!() };
         *idx = 1;
         let rows = render(&app, 120, 30);
-        assert_eq!(rows[28].trim(), "ticket T-1 ∙ Decay treatments", "page {page}: {}", rows[28]);
+        assert_eq!(rows[28].trim(), "T-1  Decay treatments", "page {page}: {}", rows[28]);
     }
 }
 

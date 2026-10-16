@@ -26852,3 +26852,18 @@ from the description rises to the top. `^K` (Ctrl+Shift+K) opens the first row, 
 the agent's latest link, not the description's.
 
 Tests: `the_agents_latest_words_are_links_too`, `the_newest_note_lists_its_links_first`.
+
+Addendum (2026-10-16, the author: "inside links render ticket references as the ticket ID instead
+of 'ticket' and also when hovering a referenced ticket flash it on board (if it's there)", then
+"make sure the table is aligned"): a ticket row's first column is its key (`T-2  Decay
+treatments`), no longer the word `ticket` and the key again. That column is as wide as its widest
+entry, every row padded to it, so the bodies start in one column whatever the keys' lengths; the
+old fixed six cells cut a URL that now fits. The row the pointer rests on, else the cursor's row,
+names a ticket (`App::link_hovered`); on a board, that card blinks out of the recess
+(`board::recede`): lit for 400 ms, receded with the rest for 400 ms, on the MOVE ghost's
+cadence, for as long as the row is chosen. It takes no new colour, so the
+one-saturated-colour law holds. A card scrolled off its column, the ticket page (no board under
+it) and an archived ticket flash nothing.
+
+Tests: `a_ticket_links_row_flashes_its_card_on_the_board`; goldens `links_120x30`,
+`picture_link_unavailable_120x30`.

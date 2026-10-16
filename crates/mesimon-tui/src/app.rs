@@ -2410,6 +2410,7 @@ impl App {
             || self.striking()
             || self.gliding()
             || self.summary_pulsing()
+            || self.link_flashing()
             || self.settings_striking()
             || self.reply_revealing()
             || self.tour.as_ref().is_some_and(|t| t.animating())
@@ -2454,6 +2455,31 @@ impl App {
             | Mode::PullRequests { ticket, .. } => Some(*ticket),
             _ => self.merge_dialog.as_ref().map(|d| d.ticket),
         }
+    }
+
+    /// The ticket the links dialog's row names (T-820), on a board: the row
+    /// the pointer rests on, else the cursor's. Its card flashes under the
+    /// dialog, so the board says where the link leads.
+    pub(crate) fn link_hovered(&self) -> Option<ulid::Ulid> {
+        if !matches!(self.screen, Screen::Board) {
+            return None;
+        }
+        let Mode::Links { links, idx, .. } = &self.mode else {
+            return None;
+        };
+        let row = match self.hover.get() {
+            Some((crate::mouse::Target::Row(i), _)) => i,
+            _ => *idx,
+        };
+        match links.get(row)?.target {
+            LinkTarget::Ticket(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Is that card on screen, flashing? It wants the frames its blink does.
+    fn link_flashing(&self) -> bool {
+        self.link_hovered().is_some_and(|id| self.spots.borrow().card(id).is_some())
     }
 
     /// Where that card stands on screen this frame, whole: what the dialog

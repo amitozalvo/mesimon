@@ -885,16 +885,34 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
 /// their header row and the card the dialog is about recedes toward the
 /// ground, so that card is the one the board still shows. Drawn after the
 /// columns and the bolts, before the dialogs.
+/// One phase of a linked card's flash, in spinner frames: the MOVE
+/// ghost's 400 ms (`Theme::move_blink`).
+const LINK_FLASH_FRAMES: usize = 4;
+
 pub(super) fn recede(f: &mut Frame, app: &App, area: Rect) {
     if app.dialog_card().is_none() {
         return;
     }
     let keep = app.dialog_anchor();
+    // The card a links row names (T-820) blinks out of the recess on the
+    // MOVE ghost's cadence: lit, then receded with the rest, while hovered.
+    let flash = app
+        .link_hovered()
+        .and_then(|id| {
+            app.spots.borrow().card(id).map(|c| Rect {
+                x: c.x,
+                y: c.y,
+                width: c.width,
+                height: c.rows,
+            })
+        })
+        .filter(|_| (app.spin_frame() / LINK_FLASH_FRAMES).is_multiple_of(2));
     let theme = &app.theme;
     let buf = f.buffer_mut();
     for y in area.y.saturating_add(1)..area.bottom() {
         for x in area.x..area.right() {
-            if keep.is_some_and(|r| r.contains(ratatui::layout::Position { x, y })) {
+            let at = ratatui::layout::Position { x, y };
+            if keep.is_some_and(|r| r.contains(at)) || flash.is_some_and(|r| r.contains(at)) {
                 continue;
             }
             let cell = &mut buf[(x, y)];

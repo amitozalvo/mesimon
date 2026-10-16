@@ -7,9 +7,9 @@
     Keymap validator      >1y       $ bash            ◦ >1y     x Flaky e2e on runner >1y
 
             ╭─ LINKS ∙ T-3 ∙ 3 ──────────────┴───────────────────────────────╮
-            │ url    the Jira ticket ∙ https://jira.example.com/browse/ABC-1~│
-            │ ticket T-1 ∙ Decay treatments                                  │
-            │ file   crates/mesimon-core/src/board.rs:42                     │
+            │ url  the Jira ticket ∙ https://jira.example.com/browse/ABC-123 │
+            │ T-1  Decay treatments                                          │
+            │ file crates/mesimon-core/src/board.rs:42                       │
             ╰────────────────── jk select ∙ enter open ∙ c copy ∙ esc close ─╯
 
 
@@ -26,5 +26,5 @@
 
 
 
- ticket T-1 ∙ Decay treatments
+ T-1  Decay treatments
  LINKS  jk select ∙ enter open ∙ c copy ∙ esc close                                                              ? keys

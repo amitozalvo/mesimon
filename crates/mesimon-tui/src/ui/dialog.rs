@@ -501,13 +501,20 @@ pub(super) fn draw_links(
     idx: usize,
 ) {
     let key = app.board.ticket(ticket).map(|t| t.short_key.clone()).unwrap_or_default();
+    // The first column: a ticket's key in place of its kind (T-820), every
+    // row padded to the widest so the bodies stand in one column.
+    let lead = |l: &crate::app::TicketLink| match l.target {
+        crate::app::LinkTarget::Ticket(_) => l.text.clone(),
+        _ => l.kind().to_string(),
+    };
+    let width = links.iter().map(|l| lead(l).width()).max().unwrap_or(0);
     let rows: Vec<ListRow> = links
         .iter()
         .map(|l| {
             let body = match (&l.target, &l.label) {
                 (crate::app::LinkTarget::Ticket(id), _) => {
                     let title = app.board.ticket(*id).map(|t| t.title.as_str()).unwrap_or("");
-                    format!("{} ∙ {title}", l.text)
+                    title.to_string()
                 }
                 (crate::app::LinkTarget::Attachment { ticket, attachment }, label) => {
                     let label = label.as_deref().unwrap_or("Picture");
@@ -531,7 +538,7 @@ pub(super) fn draw_links(
             ListRow {
                 lead: " ".into(),
                 lead_ink: None,
-                head: format!("{:<6} {}", l.kind(), crate::text::one_line(&body)),
+                head: format!("{:<width$} {}", lead(l), crate::text::one_line(&body)),
                 right: String::new(),
                 detail: None,
                 heading: false,

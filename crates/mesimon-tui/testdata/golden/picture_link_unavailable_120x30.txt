@@ -7,7 +7,7 @@
     Keymap validator      >1y       $ bash            ◦ >1y     x Flaky e2e on runner >1y
 
             ╭─ LINKS ∙ T-3 ∙ 1 ──────────────┴───────────────────────────────╮
-            │ image  [Image #1] ∙ image unavailable on this machine          │
+            │ image [Image #1] ∙ image unavailable on this machine           │
             ╰────────────────── jk select ∙ enter open ∙ c copy ∙ esc close ─╯
 
 
@@ -26,5 +26,5 @@
 
 
 
- image  [Image #1] ∙ image unavailable on this machine
+ image [Image #1] ∙ image unavailable on this machine
  LINKS  jk select ∙ enter open ∙ c copy ∙ esc close                                                              ? keys
