@@ -59,6 +59,45 @@ def patch_invocations(records):
     return patches
 
 
+def native_spawns(items, records=()):
+    spawns = [item for item in items if item.get("type") == "collabAgentToolCall"
+              and item.get("tool") == "spawnAgent"]
+    returned_paths = set()
+    returned_calls = set()
+    calls = {row["payload"].get("call_id") for row in records
+             if row.get("type") == "response_item" and row.get("payload", {}).get("type") == "function_call"
+             and row["payload"].get("name") == "spawn_agent"}
+    for row in records:
+        payload = row.get("payload", {})
+        if payload.get("type") != "function_call_output" or payload.get("call_id") not in calls:
+            continue
+        try:
+            output = json.loads(payload.get("output", ""))
+        except (TypeError, ValueError):
+            continue
+        if isinstance(output, dict) and isinstance(output.get("task_name"), str):
+            returned_calls.add((payload["call_id"], output["task_name"]))
+    for item in items:
+        if item.get("type") == "functionCallOutput" and item.get("name") == "spawn_agent":
+            try:
+                output = json.loads(item.get("output", ""))
+            except (TypeError, ValueError):
+                continue
+            if isinstance(output, dict) and isinstance(output.get("task_name"), str):
+                returned_paths.add(output["task_name"])
+    for item in items:
+        if item.get("type") != "subAgentActivity" or item.get("kind") != "started":
+            continue
+        child = item.get("agentThreadId")
+        if not child or any(child in spawn.get("receiverThreadIds", []) for spawn in spawns):
+            continue
+        completed = (item.get("agentPath") in returned_paths
+                     or (item["id"], item.get("agentPath")) in returned_calls)
+        spawns.append(dict(receiverThreadIds=[child], id=item["id"],
+                           status="completed" if completed else "inProgress"))
+    return spawns
+
+
 def validate_guard_capture(directory):
     """Review a retained owned capture; preserve its original runner outcome."""
     directory = directory.resolve(strict=True)
@@ -345,8 +384,8 @@ class Verification:
         origin = value.get("origins", {}).get("model", {}).get("name", {})
         if value.get("config", {}).get("model") != self.args.model or origin.get("file") != str(self.home / "config.toml"):
             raise AssertionError("effective native model/config origin is outside the isolated fixture")
-        if value.get("config", {}).get("model_reasoning_effort") != "low":
-            raise AssertionError("economical fixture reasoning effort is not low")
+        if value.get("config", {}).get("model_reasoning_effort") != getattr(self.args, "effort", "low"):
+            raise AssertionError("native reasoning effort differs from the fixture selection")
         if self.args.case == "brief" and self.developer not in (value.get("config", {}).get("developer_instructions") or ""):
             raise AssertionError("fixture developer sentinel is absent before trust or submission")
         if self.args.case == "guard":
@@ -366,8 +405,15 @@ class Verification:
     def startup_consent(self, sid, screen):
         target = sid.replace("-", "")[:16]
         session = next(s for s in self.client.board()["sessions"] if s["id"] == sid)
-        if session["kind"] == "codex" and any(marker in screen for marker in ("trust this folder", "Do you trust", "Hooks need review", "Press t to trust")):
+        if session["kind"] == "codex" and any(marker in screen for marker in ("trust this folder", "Trust this folder?", "Do you trust", "Hooks need review", "Press t to trust")):
             self.verify_native_home(sid)
+        if "Trust this folder?" in screen and "› 1. Trust and continue" in screen:
+            if str(self.repo) not in screen:
+                raise Inconclusive("folder trust does not identify this disposable repository")
+            self.tm("send-keys", "-t", target, "Enter")
+            self.mark(action="native_fixture_repository_trust", session=sid)
+            time.sleep(0.3)
+            return
         if "❯ No, exit" in screen and "Yes, I trust this folder" in screen:
             self.tm("send-keys", "-t", target, "Down")
             self.mark(action="native_select_fixture_repository_trust", session=sid)
@@ -398,7 +444,8 @@ class Verification:
             self.hook_review.add(sid)
             self.mark(action="native_review_fixture_hooks_before_trust", session=sid)
             return
-        if "Press t to trust all;" in screen and sid in self.hook_review and sid not in self.hook_trusted:
+        trust_all = "Press t to trust all;" in screen or "t trust all · enter review · esc close" in screen
+        if trust_all and sid in self.hook_review and sid not in self.hook_trusted:
             history = session.get("transcript_path")
             if not history:
                 return
@@ -417,7 +464,10 @@ class Verification:
             self.hook_trusted.add(sid)
             self.mark(action="native_trust_reviewed_fixture_hooks", session=sid)
             return
-        if "Press enter to view hooks; esc to close" in screen and sid in self.hook_trusted:
+        close_hooks = "Press enter to view hooks; esc to close" in screen or (
+            "Lifecycle hooks from config and enabled plugins." in screen
+            and "esc close" in screen)
+        if close_hooks and sid in self.hook_trusted:
             self.tm("send-keys", "-t", target, "Escape")
             return
         # Only the explicitly requested, read-only scoped tool can be approved.
@@ -502,7 +552,7 @@ class Verification:
             return
         sentinel = "MESIMON_CODEX_ACCEPTED"
         if self.args.case == "mcp":
-            prompt = "Use mesimon get_ticket to read this ticket, then reply exactly " + sentinel + ". Do not modify files."
+            prompt = "Call mesimon get_ticket once to read this ticket, then answer in chat exactly " + sentinel + ". Do not write notes, modify files, or call other board tools."
         elif self.args.case == "interrupt":
             prompt = "Run sleep 25 in the terminal, wait until it finishes, then reply exactly " + sentinel + "."
         else:
@@ -724,11 +774,13 @@ class Verification:
                   model_turns=1, thread_id=thread)
 
     def child(self):
-        sid = self.start('I explicitly request one child. Execute this exact JavaScript in exec once: '
-            'text(await tools.multi_agent_v1__spawn_agent({model:"gpt-5.6-luna",reasoning_effort:"low",'
-            'message:"Run sleep 4 once, then reply MESIMON_CHILD_DONE. No edits, other tools, or agents."})); '
-            'Use the message field exactly as written. Await only the spawn call, not child completion. '
-            'After receiving the child ID, reply MESIMON_PARENT_DONE. No other calls, prompts, or responses.')
+        sid = self.start('I explicitly request exactly one native child agent. Discover the available '
+            'spawn_agent tool if needed, then spawn once using model ' + json.dumps(self.args.model)
+            + ' and reasoning effort ' + json.dumps(getattr(self.args, "effort", "low")) + '. '
+            'Give the child exactly this task: "Run sleep 4 once, then reply MESIMON_CHILD_DONE. '
+            'No edits, other tools, or agents." Await only the spawn call, not child completion. '
+            'After receiving the child ID, answer in chat MESIMON_PARENT_DONE. '
+            'No other work, prompts, or responses.')
         self.manifest["child_turn_budget"] = 1
         thread = None
         child_id = None
@@ -746,10 +798,22 @@ class Verification:
                 time.sleep(0.15)
                 continue
             parent = self.native_read(sid, "thread/turns/list", {"threadId": thread, "limit": 3, "itemsView": "full"})
+            write(self.out / "parent-turns.json", parent)
             if parent.get("nextCursor") or len(parent.get("data", [])) > 1:
                 raise AssertionError("child fixture exceeded its single foreground parent turn")
             items = [item for turn in parent.get("data", []) for item in turn.get("items", [])]
-            spawns = [item for item in items if item.get("type") == "collabAgentToolCall" and item.get("tool") == "spawnAgent"]
+            records = []
+            if session.get("transcript_path"):
+                history = Path(session["transcript_path"])
+                history.resolve().relative_to(self.home.resolve())
+                if history.stat().st_size > 16 * 1024 * 1024:
+                    raise Inconclusive("native parent history exceeded its evidence bound")
+                for line in history.read_text().splitlines():
+                    try:
+                        records.append(json.loads(line))
+                    except ValueError:
+                        continue
+            spawns = native_spawns(items, records)
             if len(spawns) > 1:
                 raise AssertionError("native parent spawned more than one child")
             identities = {ident for item in spawns for ident in item.get("receiverThreadIds", [])}

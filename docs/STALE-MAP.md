@@ -26439,3 +26439,74 @@ Tests: `keymap::header_workflow_chip_is_the_last_and_opens_merge_into`,
 now carry ` ∙ train`. `merge_train_e2e::the_train_merges_asks_to_rebase_once_and_stops_with_its_board`
 reads the stamp after the merge, `forge_e2e::the_crown_hears_the_forges_edges` after the opening and
 the pipeline's pass.
+
+## A bounded native Codex rig beside the Claude crown rig (T-815, 2026-10-16)
+
+`ci/rig.py --provider codex --live` runs real Codex through the production daemon,
+sequentially, in supervised disposable boards. `--lay` lists the selection without
+starting anything; `--only` selects cases and `--failed` includes inconclusive and
+unattempted cases. The Claude crown/worker rig keeps its existing board and road.
+Codex prints each board's external-terminal watch command and retains verdicts,
+snapshots and native evidence under `target/rig/codex`, then reaps the fixture.
+It does not leave a persistent board or use Claude's stale-board sweep.
+
+The smoke cases are completion/automove, scoped MCP, additive brief/exact wake,
+queued prompt ordering, sleep/resume across a provider switch, and daemon handover.
+Extended cases reuse the native gate, plan, interruption, child and lifecycle
+checks. A Codex question or plan remains the person's: the runner exercises native
+dialogs, not unsupported crown dialog automation. This is a provider-specific
+adapter over the existing native fixtures, not a translation of Claude mod checks.
+
+Every case checks authenticated, paginated `model/list` before any scenario turn;
+the exact selected model and effort must be advertised and later appear in native
+turn contexts. The default is `gpt-6-luna`, low effort, with no model fallback.
+MCP/brief fixtures offer read-only board tools. Other than the explicit child
+case, model-created children are disabled. Turn allowances include the child,
+Stop continuation and compaction where requested; observed total tokens include
+cached input. Per-case deadlines and the bounded runner own cancellation. Native
+usage is delayed and may omit overhead, so the stop threshold is not a hard
+token or dollar cap. A failure stops subsequent cases; cleanup and missing
+evidence never become a pass. Reports preserve each run separately.
+
+Codex 0.163.0 changed the folder-trust and hooks-review screens used by the old
+0.153.4 fixtures. The driver now recognizes their current labels, still verifying
+the isolated configuration, repository and exact allowed hook definitions before
+trusting them. These are fixture changes, not changes to production trust policy.
+The historical compatibility manifest remains version-scoped; a new smoke run
+does not certify every entry of the old acceptance matrix for a new CLI.
+
+The native runs also caught two fixture assumptions: entering `/plan` chose
+medium effort despite the ordinary low-effort setting, and child creation now
+uses discovered native spawn tools and `subAgentActivity` records. The fixture
+pins `plan_mode_reasoning_effort` and child defaults separately. A modern child
+identity is correlated with its actual completed spawn result in owned native
+history; a `started` activity alone does not certify a completed spawn. The
+live-child checkout-hold assertion remains required. Interruption waits for
+native model activity before cancelling, so its model/usage audit is meaningful.
+
+Runner usage and the case matrix are in `ci/rig/README.md`; offline budget,
+selection, history containment and trust checks are in `ci/codex_rig_test.py`.
+
+Validation on Codex CLI 0.163.0 with `gpt-6-luna` at low effort passed all fourteen
+native cases across focused runs, each with clean fixture teardown. The six
+successful smoke cases recorded 220984 total tokens including cached input;
+that is observed usage, not a price estimate or the total spent on failed fixture
+development attempts. Earlier failed and inconclusive captures remain retained,
+not relabelled as passes. All 35 Python harness tests passed, including the 15
+new offline rig tests. `cargo ut` passed after removing the CLI environment's
+inherited `NO_COLOR`, which otherwise suppresses escape sequences required by an
+existing underline-colour assertion; no rendering code changed.
+
+The one full-workspace nextest run stopped at an unrelated worktree-init timing
+assertion (`failed ∙ exit 2 ∙ 1 s` versus the test's exact `0 s`): 697 passed,
+one failed, three intentionally skipped, and 1787 not run after fail-fast. Its
+fixture audit was clean; the unchanged `worktree_init_e2e` binary passed alone
+with clean teardown. This is not recorded as a passing full-suite run. The three
+skips are the timing benchmark, the live-release network check, and a subprocess
+helper exercised by the restart-skew tests.
+
+The mod-road integration pass that fail-fast prevented was run separately under
+`MESIMON_TEST_ROAD=mod`: all 208 tests passed, with only that subprocess helper
+skipped as a standalone test, and a clean fixture audit. Python syntax checks,
+the existing six offline native-driver self-tests, and `git diff --check` passed.
+Linux and manual TUI checks were not run for this Python-only harness change.

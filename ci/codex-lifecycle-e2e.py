@@ -133,7 +133,8 @@ class Verification(state.Verification):
         return rows
 
     def startup_consent(self, sid, screen):
-        if "Press t to trust all;" not in screen:
+        trust_all = "Press t to trust all;" in screen or "t trust all · enter review · esc close" in screen
+        if not trust_all or sid in self.hook_trusted:
             return super().startup_consent(sid, screen)
         if sid not in self.hook_review or sid in self.hook_trusted:
             return

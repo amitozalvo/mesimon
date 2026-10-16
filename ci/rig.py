@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""The rig (T-588): a mesimon board inside this ticket worktree drives the
-real Claude Code on the mod road, one test at a time, through its own crown.
+"""Real-agent verification: Claude crown/worker tests on the mod road, or
+bounded native Codex cases with --provider codex (ci/rig/README.md).
 
     python3 -B ci/rig.py            build, start or find the rig's daemon, lay
                                     the board, file the tests, run them all
@@ -2462,10 +2462,13 @@ Reply with the single word ready and end your turn."""
 def main():
     global LOG
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--lay", action="store_true", help="lay the board and file the tests; start nothing")
-    ap.add_argument("--only", help="a comma list of test ids, as R1,R3; a letter alone is its group")
+    ap.add_argument("--provider", choices=("claude", "codex"), default="claude")
+    from codex import add_arguments, run as run_codex
+    add_arguments(ap)
+    ap.add_argument("--lay", action="store_true", help="lay the Claude board or list Codex cases; start nothing")
+    ap.add_argument("--only", help="test ids: Claude R1,R3 (or a group letter); Codex mcp,sleep-resume")
     ap.add_argument("--failed", action="store_true",
-                    help="only the tests the last run's verdicts.md lists as FAIL")
+                    help="rerun unsuccessful tests from the provider's last verdicts")
     ap.add_argument("--reset", action="store_true", help="park and archive everything, stop the daemon and tmux")
     ap.add_argument("--stale", action="store_true",
                     help="list the dead rig boards every run clears; remove nothing")
@@ -2481,6 +2484,11 @@ def main():
     branch = git(repo, "rev-parse", "--abbrev-ref", "HEAD") or ""
     if branch == "main" or not branch.startswith("msmn/"):
         die(f"the rig runs only in a ticket worktree (a msmn/… branch); this checkout is on {branch!r}")
+    if args.provider == "codex":
+        sys.exit(run_codex(repo, args, ap))
+    if args.live or args.suite != "smoke" or any(value is not None for value in
+            (args.model, args.effort, args.max_turns, args.max_tokens, args.case_timeout)):
+        ap.error("model, budget, --live and --suite options are for the Codex rig")
     rig = Rig(repo, args)
     rig.branch = branch
     os.makedirs(rig.out, exist_ok=True)
