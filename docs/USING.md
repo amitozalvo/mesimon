@@ -241,11 +241,13 @@ speeds up; avoid its tail, the cards and the screen edges. Scores and bests
 last while the games are open.
 
 The games occupy empty space around the cards. Tickets, agent states and the
-header keep updating. A change to the playing field pauses and repositions
-the pieces without taking a life or score; a newly raised attention item,
-lost terminal focus or disconnected board pauses too. A crowded board may
-need a larger terminal. Click a card or scroll to leave the game, then use
-the board normally.
+header keep updating. Moving cards leave the round running; only covered
+pieces move to nearby empty space, preserving Snake's length and Breaker's
+remaining targets, combo and lives. A terminal resize, newly raised attention
+item, lost terminal focus or disconnected board pauses play. If cards leave
+too little room, the game waits with its progress intact and continues when
+space returns. Click a card or scroll to leave the game, then use the board
+normally.
 
 ## Descriptions, notes and links
 

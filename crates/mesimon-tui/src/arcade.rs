@@ -1,7 +1,7 @@
 //! Small, local games in the board's unused cells (T-823). The rendered
 //! cards are solid terrain, never erased bricks. No game calls a transport,
-//! edits a board, or writes a preference. A changed layout re-seats the
-//! pieces and pauses before a step can collide with the new terrain.
+//! edits a board, or writes a preference. Live terrain changes preserve
+//! the round, moving only pieces that would be covered by the board.
 use std::collections::{HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
@@ -67,6 +67,35 @@ impl Field {
         largest
     }
 
+    fn paddle_lanes(&self) -> Vec<(i32, i32)> {
+        let row = self.area.height as i32 - 1;
+        let mut runs = Vec::new();
+        let mut start = None;
+        for x in 0..=self.area.width as i32 {
+            let open = (0..7).all(|dy| self.free((x, row - dy)));
+            match (start, open) {
+                (None, true) => start = Some(x),
+                (Some(a), false) => {
+                    if x - a >= 14 {
+                        runs.push((a, x));
+                    }
+                    start = None;
+                }
+                _ => {}
+            }
+        }
+        runs
+    }
+
+    fn in_lane(&self, lane: (i32, i32)) -> Self {
+        let mut field = self.clone();
+        for (i, wall) in field.walls.iter_mut().enumerate() {
+            let x = (i % field.area.width as usize) as i32;
+            *wall |= x < lane.0 || x >= lane.1;
+        }
+        field
+    }
+
     fn card_at(&self, p: Point) -> Option<ulid::Ulid> {
         let x = p.0 + self.area.x as i32;
         let y = p.1 + self.area.y as i32;
@@ -89,7 +118,7 @@ enum Kind {
     Snake,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct Snake {
     body: Vec<Point>,
     dir: Point,
@@ -97,7 +126,7 @@ struct Snake {
     food: Option<Point>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct Breaker {
     ball: (f64, f64),
     velocity: (f64, f64),
@@ -188,12 +217,116 @@ impl Arcade {
         if self.field == field {
             return;
         }
-        let first = self.field.walls.is_empty();
-        self.field = field;
-        self.place();
-        if !matches!(self.message, "a ticket needs you" | "board disconnected") {
-            self.pause(if first { "space to play" } else { "board changed; space to continue" });
+        let first = self.snake.is_none() && self.breaker.is_none();
+        let resized = self.field.area != field.area;
+        let previous = std::mem::replace(&mut self.field, field);
+        if first {
+            self.place();
+        } else {
+            self.ready = match self.kind {
+                Kind::Snake => self.adapt_snake(&previous),
+                Kind::Breaker => self.adapt_breaker(),
+            };
         }
+        if (first || resized)
+            && !matches!(self.message, "a ticket needs you" | "board disconnected")
+        {
+            self.pause(if first { "space to play" } else { "board resized; space to continue" });
+        }
+    }
+
+    fn adapt_snake(&mut self, previous: &Field) -> bool {
+        let Some(mut snake) = self.snake.clone() else { return false };
+        let head = snake.body[0];
+        let next = add(head, snake.turns.front().copied().unwrap_or(snake.dir));
+        // Moving cards must not kill the snake on the very next step.
+        // Existing walls remain the player's responsibility.
+        let protect_next = previous.free(next) && !self.field.free(next);
+        let fits = |offset| {
+            snake.body.iter().all(|&p| self.field.free(add(p, offset)))
+                && ((offset == (0, 0) && !protect_next) || self.field.free(add(next, offset)))
+        };
+        if !fits((0, 0)) {
+            let Some(offset) = self
+                .field
+                .points()
+                .map(|p| (p.0 - head.0, p.1 - head.1))
+                .filter(|&offset| fits(offset))
+                .min_by_key(|&(x, y)| x.abs() + y.abs())
+            else {
+                return false;
+            };
+            for p in &mut snake.body {
+                *p = add(*p, offset);
+            }
+        }
+        let cells = self.field.component(snake.body[0], &snake.body[1..]);
+        if !snake.food.is_some_and(|p| cells.contains(&p) && !snake.body.contains(&p)) {
+            let choices: Vec<_> = cells.into_iter().filter(|p| !snake.body.contains(p)).collect();
+            if choices.is_empty() {
+                return false;
+            }
+            snake.food = Some(choices[self.random(choices.len())]);
+        }
+        self.snake = Some(snake);
+        true
+    }
+
+    fn adapt_breaker(&mut self) -> bool {
+        let Some(mut breaker) = self.breaker.clone() else { return false };
+        // Keep the current lane if it still fits. Newly opened space must
+        // not move the paddle or reset the ball just because it is wider.
+        let lanes = self.field.paddle_lanes();
+        if !lanes.iter().any(|&(a, b)| a <= breaker.lane.0 && b >= breaker.lane.1) {
+            let Some(lane) = lanes.into_iter().min_by_key(|&(a, b)| {
+                let ball_x = breaker.ball.0.round() as i32;
+                (
+                    breaker.launched && !(a..b).contains(&ball_x),
+                    (breaker.paddle - breaker.paddle.clamp(a, b - 5)).abs(),
+                )
+            }) else {
+                return false;
+            };
+            breaker.lane = lane;
+        }
+        breaker.row = self.field.area.height as i32 - 1;
+        breaker.paddle = breaker.paddle.clamp(breaker.lane.0, breaker.lane.1 - 5);
+        let terrain = self.field.in_lane(breaker.lane);
+        let ball = (breaker.ball.0.round() as i32, breaker.ball.1.round() as i32);
+        if !breaker.launched {
+            breaker.ball = ((breaker.paddle + 2) as f64, (breaker.row - 1) as f64);
+        } else if !terrain.free(ball) || ball.1 >= breaker.row {
+            let Some(p) = terrain
+                .points()
+                .filter(|&p| p.1 < breaker.row && terrain.free(p))
+                .min_by_key(|&(x, y)| (x - ball.0).abs() + (y - ball.1).abs())
+            else {
+                return false;
+            };
+            breaker.ball = (p.0 as f64, p.1 as f64);
+        }
+        let start = (breaker.ball.0.round() as i32, breaker.ball.1.round() as i32);
+        let reachable: HashSet<_> = terrain.component(start, &[]).into_iter().collect();
+        let fits = |(x, y): Point| {
+            y < breaker.row - 3 && (0..3).all(|dx| reachable.contains(&(x + dx, y)))
+        };
+        // Preserve every unbroken target. Only covered or disconnected
+        // targets move; none are regenerated, scored, or silently removed.
+        let mut bricks: Vec<_> = breaker.bricks.iter().copied().filter(|&p| fits(p)).collect();
+        for &old in breaker.bricks.iter().filter(|&&p| !fits(p)) {
+            let Some(p) = terrain
+                .points()
+                .filter(|&p| fits(p))
+                .filter(|&(x, y)| !bricks.iter().any(|&(bx, by)| y == by && (x - bx).abs() < 3))
+                .min_by_key(|&(x, y)| (x - old.0).abs() + (y - old.1).abs())
+            else {
+                return false;
+            };
+            bricks.push(p);
+        }
+        breaker.bricks = bricks;
+        self.breaker = Some(breaker);
+        true
     }
 
     fn place(&mut self) {
@@ -227,21 +360,8 @@ impl Arcade {
             }
             Kind::Breaker => {
                 let row = self.field.area.height as i32 - 1;
-                let mut runs = Vec::new();
-                let mut start = None;
-                for x in 0..=self.field.area.width as i32 {
-                    let open = (0..7).all(|dy| self.field.free((x, row - dy)));
-                    match (start, open) {
-                        (None, true) => start = Some(x),
-                        (Some(a), false) => {
-                            runs.push((a, x));
-                            start = None;
-                        }
-                        _ => {}
-                    }
-                }
                 if let Some((a, b)) =
-                    runs.into_iter().max_by_key(|(a, b)| b - a).filter(|(a, b)| b - a >= 14)
+                    self.field.paddle_lanes().into_iter().max_by_key(|(a, b)| b - a)
                 {
                     let (lives, level) =
                         self.breaker.as_ref().map_or((3, 1), |b| (b.lives, b.level));
@@ -290,11 +410,7 @@ impl Arcade {
         let start = (b.ball.0.round() as i32, b.ball.1.round() as i32);
         // A crowded board can leave only one paddle lane. Keep targets
         // in the part the ball can reach without leaving that lane.
-        let mut terrain = self.field.clone();
-        for (i, wall) in terrain.walls.iter_mut().enumerate() {
-            let x = (i % terrain.area.width as usize) as i32;
-            *wall |= x < b.lane.0 || x >= b.lane.1;
-        }
+        let terrain = self.field.in_lane(b.lane);
         let reachable: HashSet<_> = terrain.component(start, &[]).into_iter().collect();
         let mut bricks = Vec::new();
         // Separate little bricks in free space, including below a full
@@ -683,21 +799,198 @@ mod tests {
     }
 
     #[test]
-    fn terrain_changes_pause_and_preserve_score_and_lives() {
-        let mut g = game(Kind::Breaker);
-        g.score = 120;
-        g.breaker.as_mut().unwrap().lives = 2;
+    fn moving_cards_leave_unaffected_rounds_running_and_pieces_unchanged() {
+        for kind in [Kind::Breaker, Kind::Snake] {
+            let mut g = game(kind);
+            g.score = 120;
+            g.key(Verb::GamePause);
+            if let Some(b) = &mut g.breaker {
+                b.lives = 2;
+                b.level = 3;
+                b.combo = 4;
+                b.hit_cards.insert(ulid::Ulid(7));
+                b.bricks = vec![(25, 5)];
+            }
+            if let Some(s) = &mut g.snake {
+                s.body.push(add(*s.body.last().unwrap(), (-1, 0)));
+                s.food = Some((35, 12));
+                s.turns.push_back((0, -1));
+            }
+            let snake = g.snake.clone();
+            let breaker = g.breaker.clone();
+            let last_step = g.last_step;
+            for y in 0..10 {
+                let mut f = field(60, 20);
+                f.cards.push((ulid::Ulid(1), Rect::new(0, y, 4, 2)));
+                for dx in 0..4 {
+                    for dy in 0..2 {
+                        let i = f.index((dx, y as i32 + dy)).unwrap();
+                        f.walls[i] = true;
+                    }
+                }
+                g.sync(f);
+                assert!(g.playing());
+                assert_eq!(g.score, 120);
+                assert_eq!(g.snake, snake);
+                assert_eq!(g.breaker, breaker);
+                assert_eq!(g.last_step, last_step);
+            }
+        }
+    }
+
+    #[test]
+    fn a_card_covering_the_snake_moves_its_whole_body_without_resetting_it() {
+        let mut g = game(Kind::Snake);
         g.key(Verb::GamePause);
-        assert!(g.playing());
+        g.score = 80;
+        let s = g.snake.as_mut().unwrap();
+        s.body = vec![(8, 8), (7, 8), (7, 9), (6, 9), (5, 9)];
+        s.turns.push_back((0, -1));
+        s.food = Some((40, 10));
+        let before = s.clone();
         let mut f = g.field.clone();
-        f.walls[4] = true;
-        g.sync(f.clone());
-        assert!(!g.playing());
-        assert_eq!(g.score, 120);
-        assert_eq!(g.breaker.as_ref().unwrap().lives, 2);
-        g.key(Verb::GamePause);
+        let i = f.index((8, 8)).unwrap();
+        f.walls[i] = true;
         g.sync(f);
-        assert!(g.playing(), "identical redraws must not pause");
+        assert!(g.playing());
+        let s = g.snake.as_ref().unwrap();
+        let offset = (s.body[0].0 - before.body[0].0, s.body[0].1 - before.body[0].1);
+        assert_eq!(s.body, before.body.iter().map(|&p| add(p, offset)).collect::<Vec<_>>());
+        assert!(s.body.iter().all(|&p| g.field.free(p)));
+        assert_eq!(s.dir, before.dir);
+        assert_eq!(s.turns, before.turns);
+        assert_eq!(s.food, before.food);
+        assert_eq!(g.score, 80);
+        g.step_snake();
+        assert!(!g.over);
+    }
+
+    #[test]
+    fn a_card_entering_the_next_snake_step_cannot_cause_an_instant_loss() {
+        let mut g = game(Kind::Snake);
+        g.key(Verb::GamePause);
+        let s = g.snake.as_ref().unwrap();
+        let next = add(s.body[0], s.dir);
+        let mut f = g.field.clone();
+        let i = f.index(next).unwrap();
+        f.walls[i] = true;
+        g.sync(f);
+        g.step_snake();
+        assert!(g.playing());
+        assert!(!g.over);
+    }
+
+    #[test]
+    fn covered_food_moves_to_a_reachable_cell_without_moving_the_snake() {
+        let mut g = game(Kind::Snake);
+        g.key(Verb::GamePause);
+        let before = g.snake.clone().unwrap();
+        let mut f = g.field.clone();
+        let i = f.index(before.food.unwrap()).unwrap();
+        f.walls[i] = true;
+        g.sync(f);
+        let s = g.snake.as_ref().unwrap();
+        assert!(g.playing());
+        assert_eq!(s.body, before.body);
+        assert_ne!(s.food, before.food);
+        assert!(g.field.component(s.body[0], &s.body[1..]).contains(&s.food.unwrap()));
+    }
+
+    #[test]
+    fn covered_breaker_pieces_move_without_relaunching_or_restoring_targets() {
+        let mut g = game(Kind::Breaker);
+        g.key(Verb::GamePause);
+        g.score = 120;
+        let b = g.breaker.as_mut().unwrap();
+        b.ball = (10.0, 8.0);
+        b.bricks = vec![(10, 4), (30, 4)];
+        b.lives = 2;
+        b.combo = 4;
+        b.hit_cards.insert(ulid::Ulid(7));
+        let before = b.clone();
+        let mut f = g.field.clone();
+        for p in [(10, 8), (10, 4)] {
+            let i = f.index(p).unwrap();
+            f.walls[i] = true;
+        }
+        g.sync(f);
+        let b = g.breaker.as_ref().unwrap();
+        assert!(g.playing());
+        assert!(g.field.free((b.ball.0.round() as i32, b.ball.1.round() as i32)));
+        assert_eq!(b.velocity, before.velocity);
+        assert_eq!(b.paddle, before.paddle);
+        assert_eq!(b.lane, before.lane);
+        assert_eq!(b.lives, before.lives);
+        assert_eq!(b.level, before.level);
+        assert_eq!(b.combo, before.combo);
+        assert_eq!(b.hit_cards, before.hit_cards);
+        assert!(b.launched);
+        assert_eq!(b.bricks.len(), before.bricks.len());
+        assert!(b.bricks.contains(&(30, 4)));
+        assert!(b.bricks.iter().all(|&(x, y)| (0..3).all(|dx| g.field.free((x + dx, y)))));
+        assert_eq!(g.score, 120);
+    }
+
+    #[test]
+    fn temporary_crowding_preserves_both_games_and_resumes_when_space_returns() {
+        for kind in [Kind::Breaker, Kind::Snake] {
+            let mut g = game(kind);
+            g.key(Verb::GamePause);
+            let snake = g.snake.clone();
+            let breaker = g.breaker.clone();
+            let original = g.field.clone();
+            let mut crowded = original.clone();
+            crowded.walls.fill(true);
+            g.sync(crowded);
+            assert!(!g.playing());
+            assert_eq!(g.snake, snake);
+            assert_eq!(g.breaker, breaker);
+            g.sync(original);
+            assert!(g.playing());
+            assert_eq!(g.snake, snake);
+            assert_eq!(g.breaker, breaker);
+        }
+    }
+
+    #[test]
+    fn a_card_covering_the_paddle_changes_its_lane_without_losing_the_ball() {
+        let mut g = game(Kind::Breaker);
+        g.key(Verb::GamePause);
+        let b = g.breaker.as_mut().unwrap();
+        b.ball = (10.0, 8.0);
+        b.bricks = vec![(10, 4), (30, 4)];
+        let before = b.clone();
+        let mut f = g.field.clone();
+        let i = f.index((before.paddle, before.row)).unwrap();
+        f.walls[i] = true;
+        g.sync(f);
+        let b = g.breaker.as_ref().unwrap();
+        assert!(g.playing());
+        assert_ne!(b.lane, before.lane);
+        assert!(b.paddle >= b.lane.0 && b.paddle + 5 <= b.lane.1);
+        assert_eq!(b.ball, before.ball);
+        assert_eq!(b.velocity, before.velocity);
+        assert_eq!(b.lives, before.lives);
+        assert_eq!(b.bricks.len(), before.bricks.len());
+    }
+
+    #[test]
+    fn resizing_pauses_without_resetting_and_card_motion_never_unpauses() {
+        for kind in [Kind::Snake, Kind::Breaker] {
+            let mut g = game(kind);
+            g.key(Verb::GamePause);
+            let snake = g.snake.clone();
+            g.sync(field(0, 0));
+            assert!(!g.playing());
+            g.sync(field(60, 20));
+            assert_eq!(g.snake, snake);
+            assert!(!g.playing());
+            assert_eq!(g.message, "board resized; space to continue");
+            let mut f = g.field.clone();
+            f.walls[4] = true;
+            g.sync(f);
+            assert!(!g.playing());
+        }
     }
 
     #[test]

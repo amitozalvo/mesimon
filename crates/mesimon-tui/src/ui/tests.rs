@@ -12407,7 +12407,7 @@ fn arcade_input_cannot_mutate_tickets_or_start_agents_and_escape_restores_naviga
 }
 
 #[test]
-fn arcade_shows_live_board_changes_and_pauses_for_new_geometry() {
+fn arcade_shows_live_board_changes_without_interrupting_play() {
     use mesimon_core::keymap::Verb;
     let mut app = app_graphite(fixture(false));
     open_arcade(&mut app);
@@ -12420,8 +12420,25 @@ fn arcade_shows_live_board_changes_and_pauses_for_new_geometry() {
     app.board_mut().tickets.push(ticket(99, "T-99", "New live ticket", "done", "z"));
     let live = render(&app, 120, 30).join("\n");
     assert!(live.contains("New live ticket"));
-    assert!(!app.arcade.borrow().as_ref().unwrap().playing());
-    assert!(live.contains("board changed"));
+    assert!(app.arcade.borrow().as_ref().unwrap().playing());
+    assert!(!live.contains("space to continue"));
+}
+
+#[test]
+fn arcade_keeps_playing_through_every_phase_of_a_card_move() {
+    use mesimon_core::keymap::Verb;
+    for kind in ['1', '2'] {
+        let mut app = app_gliding(0);
+        open_arcade(&mut app);
+        press(&mut app, kind);
+        render(&app, 120, 30);
+        app.arcade.borrow_mut().as_mut().unwrap().key(Verb::GamePause);
+        for ms in (0..=crate::glide::GLIDE_MS + 500).step_by(50) {
+            app.glides[0].start = mesimon_core::clock::now_ms() - ms;
+            render(&app, 120, 30);
+            assert!(app.arcade.borrow().as_ref().unwrap().playing(), "game {kind} at {ms}ms");
+        }
+    }
 }
 
 #[test]

@@ -26984,6 +26984,30 @@ input isolation, help and clickable exit. Shin's Garden is a separate planning
 and design ticket, T-825; seeds and a persistent personal world are outside this
 arcade's scope.
 
+### Card movement preserves an arcade round (T-823 follow-up, 2026-10-16)
+
+The live-board layout pause above interrupted normal play: every changed card
+rectangle, animation trail or nonblank cell called `place`, recreating Snake's
+body and Breaker's ball, targets and combo before pausing. Preserving only the
+score and lives still felt like a restart, as the person reported.
+
+Terrain synchronization now keeps the round running. Unaffected pieces and the
+step clock stay unchanged. A covered Snake moves as a whole to the closest fitting
+position, retaining its length, direction and buffered turns; a newly blocked
+next step receives the same protection. Covered or disconnected food moves to a
+reachable cell. Breaker retains its paddle lane when it still fits and moves only
+a covered paddle, ball or unreachable target. The remaining target count, ball
+velocity, launch state, combo, card-hit history, wave, lives and score survive.
+Cards and animation trails remain protected from game ink on every frame.
+
+If there is no safe placement, the game holds its existing pieces and progress
+until room returns, without requiring a fresh launch. Explicit pauses, attention,
+focus loss and disconnection still hold; terminal resizing pauses but also
+preserves the round. Tests cover repeated terrain updates, every card-glide phase
+in both games, covered pieces, next-step protection, paddle-lane changes, temporary
+crowding and zero-size resize recovery. The narrow Snake golden now shows the
+preserved body and the resize-specific pause message.
+
 ## Column auto-sleep includes Codex (T-828, 2026-10-16)
 
 The column timer still required `SessionKind::Claude`, so a confirmed idle Codex session
