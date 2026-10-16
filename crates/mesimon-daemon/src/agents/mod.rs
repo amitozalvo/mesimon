@@ -96,6 +96,33 @@ pub fn read_transcript(
     transcript::page(path, ask, &|at, v| adapter.rows(at, v)).ok()
 }
 
+pub fn read_transcript_reply(
+    provider: SessionKind,
+    path: &Path,
+    mut ask: transcript::Ask,
+    conversation: Option<&str>,
+) -> Option<mesimon_core::mesophon::Reply> {
+    let path = if provider == SessionKind::Codex {
+        codex::discovery::current_rollout(path)
+    } else {
+        path.to_path_buf()
+    };
+    let name = transcript::conversation(&path.to_string_lossy());
+    if conversation != Some(name.as_str()) {
+        ask.after = None;
+        if conversation.is_some() {
+            ask.before = None;
+        }
+    }
+    read_transcript(provider, &path, ask).map(|page| mesimon_core::mesophon::Reply::Transcript {
+        conversation: name,
+        rows: page.rows,
+        from: page.from,
+        end: page.end,
+        next_before: page.next_before,
+    })
+}
+
 /// A bounded normalized artifact, independent of either native history format.
 pub fn read_preview_artifact(path: &Path) -> Option<AgentPreview> {
     use std::io::Read;

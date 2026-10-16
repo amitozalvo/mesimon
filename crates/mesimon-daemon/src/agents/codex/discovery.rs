@@ -245,11 +245,62 @@ pub fn read_preview(path: &Path) -> Option<super::super::AgentPreview> {
     })
 }
 
+pub fn current_rollout(path: &Path) -> PathBuf {
+    let mut budget = SCAN_BYTES;
+    let Some(original) = window(path, false, &mut budget).and_then(|bytes| head(&bytes)) else {
+        return path.to_path_buf();
+    };
+    let Some(directory) = path.parent() else { return path.to_path_buf() };
+    let root = directory
+        .ancestors()
+        .nth(3)
+        .filter(|root| root.file_name().is_some_and(|name| name == "sessions"))
+        .unwrap_or(directory);
+    let mut chosen = path.to_path_buf();
+    let mut modified = path.metadata().and_then(|meta| meta.modified()).ok();
+    let marker = format!("-{}", original.id);
+    for candidate in rollout_paths(root, if root == directory { 0 } else { 3 }) {
+        if candidate == path {
+            continue;
+        }
+        let matches = candidate.file_stem().and_then(|name| name.to_str()).is_some_and(|name| {
+            name.starts_with("rollout-")
+                && name
+                    .rsplit_once(&marker)
+                    .is_some_and(|(_, suffix)| suffix.is_empty() || suffix.starts_with('_'))
+        });
+        if !matches {
+            continue;
+        }
+        let Ok(next_modified) = candidate.metadata().and_then(|meta| meta.modified()) else {
+            continue;
+        };
+        if modified.is_some_and(|previous| next_modified <= previous) {
+            continue;
+        }
+        let Some(next) = window(&candidate, false, &mut budget).and_then(|bytes| head(&bytes))
+        else {
+            continue;
+        };
+        if next.id == original.id && next.cwd == original.cwd {
+            chosen = candidate;
+            modified = Some(next_modified);
+        }
+    }
+    chosen
+}
+
 /// Scan only native sessions, at the documented year/month/day depth. Symlinks,
 /// unreadable records, oversized heads and unrelated repository roots are skipped.
 pub fn scan(home: &Path, roots: &[PathBuf], known: &dyn Fn(&str) -> bool) -> Vec<ExternalItem> {
+    let paths = rollout_paths(&home.join("sessions"), 3);
+    let inventory = ProcessInventory::read();
+    scan_paths(paths, roots, known, &inventory)
+}
+
+fn rollout_paths(root: &Path, max_depth: usize) -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    let mut stack = vec![(home.join("sessions"), 0)];
+    let mut stack = vec![(root.to_path_buf(), 0)];
     let mut entries = 0;
     while let Some((dir, depth)) = stack.pop() {
         let Ok(children) = std::fs::read_dir(dir) else { continue };
@@ -259,7 +310,7 @@ pub fn scan(home: &Path, roots: &[PathBuf], known: &dyn Fn(&str) -> bool) -> Vec
                 break;
             }
             let Ok(kind) = child.file_type() else { continue };
-            if kind.is_dir() && depth < 3 {
+            if kind.is_dir() && depth < max_depth {
                 stack.push((child.path(), depth + 1));
             } else if kind.is_file() && child.path().extension().is_some_and(|ext| ext == "jsonl") {
                 paths.push(child.path());
@@ -269,8 +320,7 @@ pub fn scan(home: &Path, roots: &[PathBuf], known: &dyn Fn(&str) -> bool) -> Vec
             break;
         }
     }
-    let inventory = ProcessInventory::read();
-    scan_paths(paths, roots, known, &inventory)
+    paths
 }
 
 fn scan_paths(
@@ -514,6 +564,120 @@ mod tests {
     fn reply(role: &str, text: &str) -> String {
         json!({"timestamp":"2026-09-10T00:01:00Z","type":"response_item",
             "payload":{"type":"message","role":role,"content":[{"type":if role == "assistant" {"output_text"} else {"input_text"},"text":text}]}}).to_string()
+    }
+
+    fn rollout(path: &Path, id: &str, cwd: &str, text: &str, seconds: u64) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, format!("{}\n{}\n", record(id, cwd), reply("assistant", text)))
+            .unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(seconds))
+            .unwrap();
+    }
+
+    #[test]
+    fn current_rollout_follows_only_newer_matching_native_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let sessions = directory.path().join("sessions");
+        let original = sessions.join("2026/10/16/rollout-start-thread.jsonl");
+        rollout(&original, "thread", "/repo", "Original", 100);
+        assert_eq!(current_rollout(&original), original);
+        let continued = sessions.join("2026/10/17/rollout-next-thread_segment.jsonl");
+        rollout(&continued, "thread", "/repo", "Continued", 200);
+        let sibling = continued.parent().unwrap();
+        rollout(&sibling.join("rollout-old-thread_segment.jsonl"), "thread", "/repo", "Old", 50);
+        rollout(&sibling.join("rollout-fork-thread_segment.jsonl"), "fork", "/repo", "Fork", 300);
+        rollout(
+            &sibling.join("rollout-other-thread_segment.jsonl"),
+            "thread",
+            "/other",
+            "Other",
+            300,
+        );
+        rollout(
+            &sibling.join("rollout-prefix-thread-extra.jsonl"),
+            "thread",
+            "/repo",
+            "Prefix",
+            300,
+        );
+        let system = sibling.join("rollout-system-thread_segment.jsonl");
+        let mut metadata: Value = serde_json::from_str(&record("thread", "/repo")).unwrap();
+        metadata["payload"]["thread_source"] = "system".into();
+        std::fs::write(&system, format!("{metadata}\n")).unwrap();
+        std::fs::write(sibling.join("rollout-partial-thread_segment.jsonl"), "{\"type\":").unwrap();
+        let outside = directory.path().join("outside.jsonl");
+        rollout(&outside, "thread", "/repo", "Linked", 400);
+        std::os::unix::fs::symlink(&outside, sibling.join("rollout-link-thread_segment.jsonl"))
+            .unwrap();
+        std::os::unix::fs::symlink(directory.path(), sessions.join("linked")).unwrap();
+        assert_eq!(current_rollout(&original), continued);
+        assert_eq!(current_rollout(&continued), continued);
+        let absent = directory.path().join("absent.jsonl");
+        assert_eq!(current_rollout(&absent), absent);
+    }
+
+    #[test]
+    fn remote_transcript_resets_offsets_when_codex_continues_in_another_rollout() {
+        use crate::agents::{read_transcript_reply, transcript};
+        use mesimon_core::board::SessionKind;
+        use mesimon_core::mesophon::Reply;
+
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("rollout-start-thread.jsonl");
+        rollout(&original, "thread", "/repo", "Original", 100);
+        let before_rotation = std::fs::read(&original).unwrap();
+        let Reply::Transcript { conversation: old_name, end: old_end, .. } =
+            read_transcript_reply(SessionKind::Codex, &original, transcript::Ask::default(), None)
+                .unwrap()
+        else {
+            panic!("transcript reply")
+        };
+        let continued = directory.path().join("rollout-next-thread_segment.jsonl");
+        rollout(&continued, "thread", "/repo", "Continued", 200);
+        let Reply::Transcript { conversation, rows, end, .. } = read_transcript_reply(
+            SessionKind::Codex,
+            &original,
+            transcript::Ask { after: Some(old_end), before: Some(1), limit: None },
+            Some(&old_name),
+        )
+        .unwrap() else {
+            panic!("continued transcript")
+        };
+        assert_ne!(conversation, old_name);
+        assert_eq!(conversation, transcript::conversation(&continued.to_string_lossy()));
+        assert_eq!(rows.iter().map(|row| row.text.as_str()).collect::<Vec<_>>(), ["Continued"]);
+        use std::io::Write;
+        writeln!(
+            std::fs::OpenOptions::new().append(true).open(&continued).unwrap(),
+            "{}",
+            reply("assistant", "Newest")
+        )
+        .unwrap();
+        let Reply::Transcript { rows, .. } = read_transcript_reply(
+            SessionKind::Codex,
+            &original,
+            transcript::Ask { after: Some(end), ..Default::default() },
+            Some(&conversation),
+        )
+        .unwrap() else {
+            panic!("appended transcript")
+        };
+        assert_eq!(rows.iter().map(|row| row.text.as_str()).collect::<Vec<_>>(), ["Newest"]);
+        let Reply::Transcript { rows, .. } = read_transcript_reply(
+            SessionKind::Codex,
+            &original,
+            transcript::Ask { before: Some(end), ..Default::default() },
+            None,
+        )
+        .unwrap() else {
+            panic!("older transcript")
+        };
+        assert_eq!(rows.iter().map(|row| row.text.as_str()).collect::<Vec<_>>(), ["Continued"]);
+        assert_eq!(std::fs::read(&original).unwrap(), before_rotation);
     }
 
     #[test]

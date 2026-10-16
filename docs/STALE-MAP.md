@@ -26641,3 +26641,43 @@ One earlier default-concurrency run timed out waiting for the provider test's
 provisioning hook. It passed five isolated repetitions and both final suite
 passes without a code change; that timeout was not reproduced or claimed fixed.
 Linux, manual TUI and paid-agent runs were not repeated for these test-only fixes.
+
+## Remote Control follows Codex's continued rollout (T-815, 2026-10-16)
+
+Codex 0.163.0 was observed continuing the same thread in a new native rollout:
+the selected thread's original file held startup context, while a later
+`rollout-…-<thread>_<segment>.jsonl` held the conversation. The session record
+still named the original file, so Remote Control read an empty or stale chat.
+
+The transcript worker now resolves a newer native rollout before reading its
+page. Discovery stays bounded at the existing native sessions depth and entry,
+file and byte limits; candidate filenames narrow the read, but matching metadata
+identity and working directory decide whether the file belongs to this history.
+The shared directory walk skips symlinks. Unknown or unreadable histories retain
+the original path. No conversation is modified, and history remains display
+evidence, never authority for an agent's state or checkout ownership.
+
+The page's conversation token names the resolved file, so a changed rollout
+resets the browser's tail cursor rather than applying an old byte offset to it.
+The same reader supplies the offline shelf. Codex's shelf pages are checked on
+each scheduled shelf build and keyed by the resulting page, so rotation is
+noticed even when the original file is unchanged, without resending identical
+pages. Claude's metadata cache, the wire format and authorization stay unchanged;
+no browser or relay deployment is needed. The rebuilt host daemon needs its
+normal handover before the new reader is in use.
+
+Regression tests cover cross-day rotation, matching metadata, unrelated files,
+incremental and older pages, cursor resets, unchanged native files and stable
+shelf keys. A shelf key also includes the agent session, so replacing the session
+refreshes its copy even when the conversation's page is identical.
+
+Validation: the three focused regressions, `cargo ut`, workspace build, daemon
+Clippy with warnings denied, formatting and `git diff --check` passed. The final
+bounded six-worker run passed 2503 workspace tests and all 208 mod-road tests;
+fixture cleanup was clean for all 411 owners. The existing live-network check,
+timing benchmark and subprocess helper remain intentionally skipped. An earlier
+verification run was deliberately stopped for the shelf-key correction, not
+counted as a pass; its retained `runner-lost` owner had no fixture sockets or
+repositories, and its processes and temporary directory were confirmed gone.
+Linux, live-phone and paid-model checks were not repeated for this read-only host
+change; live-phone verification awaits the rebuilt daemon's normal handover.

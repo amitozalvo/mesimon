@@ -3097,7 +3097,7 @@ impl Daemon {
         by: &Principal,
         asker: (&str, BoardId, u64),
         target: (&str, &str),
-        mut ask: crate::agents::transcript::Ask,
+        ask: crate::agents::transcript::Ask,
         conversation: Option<String>,
     ) -> Option<Reply> {
         let (ticket, session) = target;
@@ -3126,12 +3126,6 @@ impl Daemon {
                 next_before: None,
             });
         };
-        let name = crate::agents::transcript::conversation(&path.to_string_lossy());
-        // `after` is an offset in the file the phone holds; a new file
-        // (`/clear`, `/resume`) starts from its tail.
-        if conversation.as_deref() != Some(name.as_str()) {
-            ask.after = None;
-        }
         if self.control.reading >= READING_MAX {
             return Some(Reply::Rejected { message: "transcript busy; try again".into() });
         }
@@ -3139,16 +3133,11 @@ impl Daemon {
         let (peer, grant, command) = (asker.0.to_string(), asker.1, asker.2);
         let (kind, tx) = (rec.kind, self.control.tx.clone());
         std::thread::spawn(move || {
-            let reply = match crate::agents::read_transcript(kind, &path, ask) {
-                Some(page) => Reply::Transcript {
-                    conversation: name,
-                    rows: page.rows,
-                    from: page.from,
-                    end: page.end,
-                    next_before: page.next_before,
-                },
-                None => Reply::Rejected { message: "transcript unavailable".into() },
-            };
+            let reply =
+                crate::agents::read_transcript_reply(kind, &path, ask, conversation.as_deref())
+                    .unwrap_or_else(|| Reply::Rejected {
+                        message: "transcript unavailable".into(),
+                    });
             let _ = tx.send(Msg::TranscriptRead(peer, grant, command, reply));
         });
         None

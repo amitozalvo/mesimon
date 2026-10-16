@@ -93,6 +93,7 @@ pub(crate) struct PageRead {
     ticket: String,
     session: String,
     page: Option<Reply>,
+    key: Option<u64>,
 }
 struct Read {
     name: String,
@@ -103,20 +104,20 @@ struct Read {
 }
 impl Read {
     fn run(self) -> PageRead {
-        let path = self.path.to_string_lossy().into_owned();
-        let page = crate::agents::read_transcript(
+        let page = crate::agents::read_transcript_reply(
             self.kind,
             &self.path,
             crate::agents::transcript::Ask::default(),
-        )
-        .map(|page| Reply::Transcript {
-            conversation: crate::agents::transcript::conversation(&path),
-            rows: page.rows,
-            from: page.from,
-            end: page.end,
-            next_before: page.next_before,
-        });
-        PageRead { name: self.name, ticket: self.ticket, session: self.session, page }
+            None,
+        );
+        let key = (self.kind == SessionKind::Codex)
+            .then(|| {
+                page.as_ref()
+                    .and_then(|page| serde_json::to_vec(page).ok())
+                    .map(|bytes| key_of(&(&self.session, bytes)))
+            })
+            .flatten();
+        PageRead { name: self.name, ticket: self.ticket, session: self.session, page, key }
     }
 }
 
@@ -269,7 +270,7 @@ impl Daemon {
             let name = format!("transcript:{}", t.id);
             let key = key_of(&(&path, meta.len(), mtime, s.id));
             spent += self.control.shelf.sizes.get(&name).copied().unwrap_or(PAGE_GUESS);
-            if everywhere(&name, key) {
+            if s.kind != SessionKind::Codex && everywhere(&name, key) {
                 items.push(Planned { name, key, body: None, pending: false });
             } else {
                 reads.push(Read {
@@ -393,6 +394,9 @@ impl Daemon {
             item.pending = false;
             match p.page {
                 Some(page) => {
+                    if let Some(key) = p.key {
+                        item.key = key;
+                    }
                     let body = Shelved::Transcript { ticket: p.ticket, session: p.session, page };
                     self.control.shelf.sizes.insert(p.name, plain_size(build.at, &body));
                     item.body = Some(body);
@@ -509,6 +513,54 @@ mod tests {
     }
     fn names(items: &[Planned], seal: &[usize]) -> Vec<String> {
         seal.iter().map(|&i| items[i].name.clone()).collect()
+    }
+
+    #[test]
+    fn codex_shelf_reads_follow_rotation_and_only_changed_pages_need_sending() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("rollout-start-thread.jsonl");
+        let continued = directory.path().join("rollout-next-thread_segment.jsonl");
+        let write = |path: &std::path::Path, text: &str, seconds| {
+            let metadata =
+                serde_json::json!({"type":"session_meta","payload":{"id":"thread","cwd":"/repo"}});
+            let message = serde_json::json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":text}]}});
+            std::fs::write(path, format!("{metadata}\n{message}\n")).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(seconds))
+                .unwrap();
+        };
+        let read = |session: &str| {
+            Read {
+                name: "transcript:a".into(),
+                ticket: "a".into(),
+                session: session.into(),
+                kind: SessionKind::Codex,
+                path: original.clone(),
+            }
+            .run()
+        };
+        write(&original, "Original", 100);
+        let old = read("session");
+        write(&continued, "Continued", 200);
+        let current = read("session");
+        assert_ne!(old.key, current.key);
+        assert_eq!(current.key, read("session").key);
+        assert_ne!(current.key, read("replacement").key);
+        let Some(Reply::Transcript { rows, .. }) = current.page else {
+            panic!("shelved transcript")
+        };
+        assert_eq!(rows[0].text, "Continued");
+        let now = Instant::now();
+        let first = choose(None, &[item("transcript:a", old.key.unwrap(), true)], now);
+        let changed =
+            choose(Some(&first.held), &[item("transcript:a", current.key.unwrap(), true)], now);
+        assert_eq!(changed.seal, [0]);
+        let unchanged =
+            choose(Some(&changed.held), &[item("transcript:a", current.key.unwrap(), true)], now);
+        assert!(unchanged.seal.is_empty());
     }
 
     /// A browser new to the shelf gets every item; then only what changed,
