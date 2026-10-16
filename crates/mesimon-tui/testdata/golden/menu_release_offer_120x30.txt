@@ -1,10 +1,10 @@
  BOARD   mesimon › kanban-tui   6 tickets                                              ◦ v0.1.0-alpha.5 available (esc)
 
-    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
+   TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    0
 
-    Decay treatments      >╭─ MENU ─────────────────────────────────────────────────────────╮
+   Decay treatments       >╭─ MENU ─────────────────────────────────────────────────────────╮
                            │ SUGGESTED                                                      │
-    Keymap validator      >│ ◦ Install v0.1.0-alpha.5                                       │
+   Keymap validator       >│ ◦ Install v0.1.0-alpha.5                                       │
                            │     downloads and verifies it ∙ nothing restarts yet           │
                            │                                                                │
                            │   External sessions                                            │

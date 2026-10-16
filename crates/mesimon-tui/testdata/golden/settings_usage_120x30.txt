@@ -1,10 +1,10 @@
  BOARD   mesimon › kanban-tui   6 tickets
 
-    TO╭─ SETTINGS ───────────────────────────────────────────────────────────────────────────────────────────────╮   0
+   TOD╭─ SETTINGS ───────────────────────────────────────────────────────────────────────────────────────────────╮   0
       │                                                                                                          │
-    De│  Theme              claude      not read yet ∙ r reads it                                                │
+   Dec│  Theme              claude      not read yet ∙ r reads it                                                │
       │                     codex       not read yet ∙ r reads it                                                │
-    Ke│  Appearance         this board  nothing counted yet                                                      │
+   Key│  Appearance         this board  nothing counted yet                                                      │
       │                                                                                                          │
       │  Notifications       Details             pace and cost ›                                                 │
       │                                                                                                          │

@@ -1,7 +1,8 @@
 //! One card (07 §4 owns the anatomy; 06 supplies glyphs and tokens).
 //!
-//! Frame per line: `[bar 2][pad 1][content T][pad 1]`, `T = width - 4`.
-//! The fixed-width bar carries tags; its shape stays the same when opened.
+//! Frame per line: `[bar B][pad 1][content T][pad 1]`, `T = width - B - 2`.
+//! The bar carries tags, one cell or two across the whole board
+//! (`tags::bar_width`); its shape stays the same when opened.
 //! Line 1: `[glyph+sp when stateful][title][fill][age 3]` — a card with no
 //! aggregate glyph (quiet-idle only) starts its title at T[0]; spawning left
 //! that set when Shift+Enter made the launch window something a user watches. The meta strip (line 2) carries only the session
@@ -18,7 +19,6 @@ use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use crate::glyphs::{self, ahead_mark, behind_mark, branch_mark, merged_mark, Register, Tier};
-use crate::tags::BAR_WIDTH;
 use crate::text::{
     age_slot, created_at_epoch_ms, edit_window, marquee_offset, marquee_window, truncate,
     EditBuffer,
@@ -36,6 +36,8 @@ pub(super) struct CardCtx<'a> {
     /// (T-410)? True on the board, where nothing else names it; false where
     /// the frame around the card already does (the search preview).
     pub names_key: bool,
+    /// The tag bar's width on this board (`App::bar_width`, T-821).
+    pub bar: usize,
 }
 
 /// Render the in-place title editor as a card line (create + rename share it).
@@ -46,7 +48,7 @@ pub(super) fn render_edit(
     tags: &[crate::tags::Painted],
 ) -> (Line<'static>, u16) {
     let theme = ctx.theme;
-    let t_cells = (ctx.width as usize).saturating_sub(BAR_WIDTH + 2);
+    let t_cells = (ctx.width as usize).saturating_sub(ctx.bar + 2);
     let (bar_ch, bar_style) = theme.bar(BarWeight::Cursor);
     // The tags picked with `^t` colour the phantom card's bar exactly as they
     // will colour the real one.
@@ -58,11 +60,12 @@ pub(super) fn render_edit(
         tags,
         crate::theme::TagLevel::Selected,
         theme.selected_bg,
+        ctx.bar,
     );
     // Scroll only as far as keeps the hardware cursor visible.
     let budget = t_cells.saturating_sub(1);
     let (shown, cx) = edit_window(buffer.as_str(), buffer.width_before_cursor(), budget);
-    let x_off = BAR_WIDTH as u16 + 1 + cx;
+    let x_off = ctx.bar as u16 + 1 + cx;
     spans.extend([
         Span::raw(" "),
         Span::styled(shown, Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)),
@@ -98,11 +101,11 @@ pub(super) fn render_prompt(
     let theme = ctx.theme;
     // Bar-width indent, pad, caret, space. The caret is what an empty field has to
     // show; without it the state is an empty row.
-    const LEAD: u16 = BAR_WIDTH as u16 + 3;
-    let budget = (ctx.width as usize).saturating_sub(LEAD as usize + 2);
+    let lead = ctx.bar as u16 + 3;
+    let budget = (ctx.width as usize).saturating_sub(lead as usize + 2);
     let (shown, cx) = edit_window(buffer.as_str(), buffer.width_before_cursor(), budget);
     let mut spans = vec![
-        Span::raw(" ".repeat(BAR_WIDTH + 1)),
+        Span::raw(" ".repeat(ctx.bar + 1)),
         Span::styled("› ", Style::default().fg(theme.sel.dim2)),
     ];
     if buffer.as_str().is_empty() {
@@ -117,7 +120,7 @@ pub(super) fn render_prompt(
             Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD),
         ));
     }
-    (Line::from(spans).style(theme.selected_row()), LEAD + cx)
+    (Line::from(spans).style(theme.selected_row()), lead + cx)
 }
 
 /// The whole ask field for one ticket's seat — the prompt row and, when the
@@ -190,7 +193,7 @@ pub(super) fn render_workspace_selector(
     // No `(default)` tail when the pick is the column's own (T-766): the
     // word is the workspace the ticket gets, wherever it came from.
     let mut spans = vec![
-        Span::raw(" ".repeat(BAR_WIDTH + 1)),
+        Span::raw(" ".repeat(ctx.bar + 1)),
         Span::styled(format!("⎇ {word}"), Style::default().fg(theme.sel.dim1)),
     ];
     let hint = "  shift+tab";
@@ -225,7 +228,7 @@ pub(super) fn render_ask_mode(
 ) -> Line<'static> {
     let theme = ctx.theme;
     let mut spans = vec![
-        Span::raw(" ".repeat(BAR_WIDTH + 1)),
+        Span::raw(" ".repeat(ctx.bar + 1)),
         Span::styled(word.to_string(), Style::default().fg(theme.sel.dim1)),
     ];
     // `^n` (T-443): the tier the words switch the agent to.
@@ -492,7 +495,7 @@ pub(super) fn render(
     ghost: bool,
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
-    let t_cells = (ctx.width as usize).saturating_sub(BAR_WIDTH + 2);
+    let t_cells = (ctx.width as usize).saturating_sub(ctx.bar + 2);
     let tier = theme.glyph_tier();
     // The `z` chord is armed on this card: it opens and names the preset on
     // a row of its own, the way a quick tag opens the card it tagged.
@@ -608,9 +611,9 @@ pub(super) fn render(
     let bar_surface = if cursorish { theme.selected_bg.or(theme.bg) } else { theme.bg };
     let bar_spans = || {
         if trail {
-            vec![Span::styled(ladder_ch.to_string().repeat(BAR_WIDTH), state_style)]
+            vec![Span::styled(ladder_ch.to_string().repeat(ctx.bar), state_style)]
         } else {
-            crate::tags::bar_spans(theme, ladder_ch, bar_base, tags, level, bar_surface)
+            crate::tags::bar_spans(theme, ladder_ch, bar_base, tags, level, bar_surface, ctx.bar)
         }
     };
 
@@ -868,7 +871,7 @@ pub(super) fn render(
         spans.push(Span::styled(format!(" {a:>3}"), quiet_style));
     }
     if let Some(count) = under {
-        let from = BAR_WIDTH + 1;
+        let from = ctx.bar + 1;
         let to = super::spans_width(&spans);
         spans = underline_row(theme, spans, from, to, cursorish, count, summary_pulse);
     }
@@ -1234,7 +1237,7 @@ pub(super) fn render(
             let brief = if brief_last { brief.clone() } else { Vec::new() };
             let mut row = Vec::new();
             words_row(&mut row, ship_words);
-            let used = BAR_WIDTH + 1 + super::spans_width(&row);
+            let used = ctx.bar + 1 + super::spans_width(&row);
             let bw = super::spans_width(&brief);
             row.push(Span::raw(" ".repeat((ctx.width as usize).saturating_sub(used + bw + 1))));
             row.extend(brief);

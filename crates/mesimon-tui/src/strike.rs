@@ -475,6 +475,8 @@ pub(crate) fn draw(f: &mut Frame, app: &App, area: Rect) {
     let now = mesimon_core::clock::now_ms();
     let spots = app.spots.borrow();
     let theme = &app.theme;
+    // A bolt lands on a title, one pad past the tag bar.
+    let lead = app.bar_width() as u16 + 1;
     let mut bolts: Vec<(Vec<Dot>, u64)> = Vec::new();
     // The title rows no bolt draws on — the struck card's and the one it
     // leaves from — as (y, x, width), and the crown marks that flare.
@@ -489,7 +491,7 @@ pub(crate) fn draw(f: &mut Frame, app: &App, area: Rect) {
         let Some(from_id) = s.from.or(app.board.crown) else { continue };
         let from = match spots.card(from_id) {
             Some(c) => {
-                let x = c.mark.unwrap_or(c.x + crate::tags::BAR_WIDTH as u16 + 1);
+                let x = c.mark.unwrap_or(c.x + lead);
                 if c.mark.is_some() {
                     marks.push(((x, c.y), t));
                 }
@@ -502,7 +504,7 @@ pub(crate) fn draw(f: &mut Frame, app: &App, area: Rect) {
                 None => continue,
             },
         };
-        let hit = (to.x + crate::tags::BAR_WIDTH as u16 + 1, to.y);
+        let hit = (to.x + lead, to.y);
         if from == hit {
             continue;
         }
@@ -511,7 +513,7 @@ pub(crate) fn draw(f: &mut Frame, app: &App, area: Rect) {
         let mut stops = vec![from];
         if let Some(ghost) = spots.trail(s.target) {
             rows.push((ghost.y, ghost.x, ghost.width));
-            stops.push((ghost.x + crate::tags::BAR_WIDTH as u16 + 1, ghost.y));
+            stops.push((ghost.x + lead, ghost.y));
         }
         stops.push(hit);
         bolts.push((bolt(s.seed(), &stops, area.y), t));

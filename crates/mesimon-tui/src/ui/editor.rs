@@ -45,9 +45,6 @@ const PAGE_PAD: u16 = 1;
 /// session and chip rows do — which is also what lets frame zero of the
 /// grow be the card itself, row for row.
 const DIALOG_HEAD_ROWS: u16 = 3;
-/// The dialog's frame is a card's: `[bar 2][pad 1][content][pad 1]`.
-const DIALOG_LEAD: u16 = tags::BAR_WIDTH as u16 + 1;
-const DIALOG_FRAME: u16 = DIALOG_LEAD + 1;
 /// The dialog covers WHOLE columns (`dialog_rect`): its edges fall on the
 /// board's gutters, so the cards beside it show complete and never as a
 /// sliver cut mid-word — which is what a free-floating centred box left on
@@ -146,12 +143,16 @@ pub(super) fn draw(f: &mut Frame, app: &App, ed: &Editor) {
 /// editor's scope.
 pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
     let theme = &app.theme;
+    // The dialog's frame is a card's: `[bar][pad 1][content][pad 1]`, the
+    // bar as wide as the board's (`App::bar_width`).
+    let bar = app.bar_width() as u16;
+    let (lead, chrome) = (bar + 1, bar + 2);
     let rest = dialog_rect(app, cards);
     let area = match (ed.grow, ed.grow_progress()) {
         (Some((from, _)), Some(t)) => lerp_rect(from, rest, t),
         _ => rest,
     };
-    if area.width <= DIALOG_FRAME || area.height == 0 {
+    if area.width <= chrome || area.height == 0 {
         return;
     }
     let (surface, ink) = surface(theme);
@@ -175,11 +176,11 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
             tail: dialog::keys(app, Scope::Editor, ink, (area.width as usize).saturating_sub(6)),
         },
     );
-    if area.width <= DIALOG_FRAME || area.height == 0 {
+    if area.width <= chrome || area.height == 0 {
         return;
     }
 
-    // ---- the stripe: the card's two-cell bar, wearing the tags
+    // ---- the stripe: the card's bar, wearing the tags
     // exactly as the real card will (`render_edit` paints the phantom card's
     // the same way) --------------------------------------------------------
     // The picked tags composing; the ticket's own on a description, so the
@@ -196,21 +197,26 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
         EditorPurpose::Ask { target: AskTarget::Column(_), .. } => Vec::new(),
     };
     let (plain_ch, plain_style) = theme.bar(BarWeight::Cursor);
-    let bar = tags::bar_spans(theme, plain_ch, plain_style, &worn, TagLevel::Selected, surface);
-    let stripe: Vec<Line<'static>> = (0..area.height).map(|_| Line::from(bar.clone())).collect();
+    let stripe_spans = tags::bar_spans(
+        theme,
+        plain_ch,
+        plain_style,
+        &worn,
+        TagLevel::Selected,
+        surface,
+        bar.into(),
+    );
+    let stripe: Vec<Line<'static>> =
+        (0..area.height).map(|_| Line::from(stripe_spans.clone())).collect();
     f.render_widget(
         Paragraph::new(stripe),
-        Rect { x: area.x, y: area.y, width: tags::BAR_WIDTH as u16, height: area.height },
+        Rect { x: area.x, y: area.y, width: bar, height: area.height },
     );
 
     // ---- the head: the title where the card's title row was, the context
     // under it where the card's meta row was ----------------------------------
-    let inner = Rect {
-        x: area.x + DIALOG_LEAD,
-        y: area.y,
-        width: area.width - DIALOG_FRAME,
-        height: area.height,
-    };
+    let inner =
+        Rect { x: area.x + lead, y: area.y, width: area.width - chrome, height: area.height };
     let (spans, cx) = title_spans(ed, inner.width as usize, ink);
     let mut cursor = cx.map(|cx| ((inner.x + cx).min(area.x + area.width - 1), inner.y));
     title_spot(app, ed, inner, cx);

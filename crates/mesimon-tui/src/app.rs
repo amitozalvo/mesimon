@@ -2732,6 +2732,20 @@ impl App {
         )
     }
 
+    /// Every tag bar's width on this frame (`tags::bar_width`, T-821).
+    pub fn bar_width(&self) -> usize {
+        // The draft's own picked tags count, so its phantom card (or the
+        // grown editor's stripe) widens the board on the second pick.
+        let composing = match &self.mode {
+            Mode::Input { purpose: InputPurpose::Create { tags, .. }, .. }
+            | Mode::Editor(Editor { purpose: EditorPurpose::Compose { tags, .. }, .. }) => {
+                tags.len()
+            }
+            _ => 0,
+        };
+        crate::tags::bar_width(&self.board, composing)
+    }
+
     /// The working-spinner frame for this draw. The event loop redraws at
     /// least every 100 ms (`tick`'s poll timeout), which is what actually
     /// paces the animation; this just makes the frame a function of time so

@@ -1,10 +1,10 @@
  BOARD   mesimon › kanban-tui   6 tickets ∙ remote
 
-    TODO                          2     IN PROGRESS                  2   2   0
+   TODO                           2    IN PROGRESS                   2   2   0
 
-    Decay treatments            >1y     ⠋ Fix OSC-11 detection     >1y   R   D
+   Decay treatments             >1y    ⠋ Fix OSC-11 detection      >1y   R   D
                                                                          E   O
-    Key╭─ REMOTE CONTROL ∙ CONNECTED ───────────────────────────────────╮V   N
+   Keym╭─ REMOTE CONTROL ∙ CONNECTED ───────────────────────────────────╮V   N
        │ THIS BOARD                                                     │I   E
        │   Browser: https://relay.example:8444                          │E
        │   Pair a browser                                               │W

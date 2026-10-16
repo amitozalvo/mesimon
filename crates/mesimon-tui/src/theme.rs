@@ -2448,7 +2448,7 @@ impl Theme {
     /// done share in the calm register — the done mark's own ink, never
     /// the accent — and the rest, the track, in `dim3` on the row's ramp.
     /// The underline channel is free on the row (tags spend it on the
-    /// bar's two cells, below TrueColor only). Where the terminal cannot
+    /// bar's cells, below TrueColor only). Where the terminal cannot
     /// colour an underline the track would be as loud as the run, so the
     /// 16-colour tier draws the run alone, plain; the ladder tiers draw
     /// nothing and the open card's rows carry the count there.

@@ -45,7 +45,7 @@ pub(super) fn draw_columns(f: &mut Frame, area: Rect, app: &App) {
                 app.spots.borrow_mut().columns.push((ci, rect.x, width));
                 app.spots.borrow_mut().heads.push((
                     name.clone(),
-                    rect.x + crate::tags::BAR_WIDTH as u16 + 1,
+                    rect.x + app.bar_width() as u16 + 1,
                     rect.y,
                 ));
                 draw_column(f, rect, app, ci, name);
@@ -94,6 +94,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         now_ms: now_ms(),
         spin: app.spin_frame(),
         names_key: true,
+        bar: app.bar_width(),
     };
 
     // Marquee clock: reset when the cursor lands on a different ticket.
@@ -331,7 +332,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         if let Some(n) = rows {
             lines.truncate(n.max(1));
         }
-        let t_cells = usize::from(ctx.width).saturating_sub(crate::tags::BAR_WIDTH + 2);
+        let t_cells = usize::from(ctx.width).saturating_sub(ctx.bar + 2);
         // Line 2, or an open card's pull-request row (T-789, T-829).
         let spans = card::brief_spans(ctx.theme, &brief, t_cells);
         // The words beside the marks (T-794) are the same click, where they
@@ -617,7 +618,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         let arrow = overflow_arrow(up);
         let direction = if up { "above" } else { "below" };
         Line::from(vec![
-            Span::raw(" ".repeat(crate::tags::BAR_WIDTH + 1)),
+            Span::raw(" ".repeat(ctx.bar + 1)),
             Span::styled(format!("{arrow} {count} {direction}"), theme.dim2()),
         ])
     };
@@ -642,17 +643,17 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     let mut header_cursor_x: Option<u16> = None;
     if col_header || header_edit.is_some() {
         let (bar_ch, bar_style) = theme.bar(crate::theme::BarWeight::Cursor);
-        head.push(Span::styled(bar_ch.to_string().repeat(crate::tags::BAR_WIDTH), bar_style));
+        head.push(Span::styled(bar_ch.to_string().repeat(ctx.bar), bar_style));
         head.push(Span::raw(" "));
     } else {
-        head.push(Span::raw(" ".repeat(crate::tags::BAR_WIDTH + 1)));
+        head.push(Span::raw(" ".repeat(ctx.bar + 1)));
     }
     if let Some(buf) = header_edit {
         // The name edited in place, with the hardware cursor (06 §5.7),
         // the badges standing down for the field.
-        let budget = (area.width as usize).saturating_sub(crate::tags::BAR_WIDTH + 2);
+        let budget = (area.width as usize).saturating_sub(ctx.bar + 2);
         let (shown, cx) = edit_window(buf.as_str(), buf.width_before_cursor(), budget);
-        header_cursor_x = Some(crate::tags::BAR_WIDTH as u16 + 1 + cx);
+        header_cursor_x = Some(ctx.bar as u16 + 1 + cx);
         head.push(Span::styled(
             shown,
             Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD),

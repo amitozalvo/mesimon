@@ -1,10 +1,10 @@
  BOARD   mesimon › kanban-tui   7 tickets
                   ╭─ COLUMN ∙ IN PROGRESS ───────────────────────────────────────────────────────────╮
-    TODO          │  Description             none                                                    │               1
+   TODO           │  Description             none                                                    │               1
                   │                                                                                  │
-    Decay treatmen│ LOOK                                                                             │d accent bar >1y
+   Decay treatment│ LOOK                                                                             │ accent bar  >1y
                   │  Collapsed               ○ off                                                   │
-    Keymap validat│  Sort once               newest first                                            │
+   Keymap validato│  Sort once               newest first                                            │
                   │                                                                                  │
                   │ NEW TICKETS                                                                      │
                   │  Filed here              ● on                                                    │

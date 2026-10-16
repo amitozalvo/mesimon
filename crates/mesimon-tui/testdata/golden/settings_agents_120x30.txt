@@ -1,10 +1,10 @@
  BOARD   mesimon › kanban-tui   6 tickets
 
-    TO╭─ SETTINGS ∙ MACHINE ─────────────────────────────────────────────────────────────────────────────────────╮   0
+   TOD╭─ SETTINGS ∙ MACHINE ─────────────────────────────────────────────────────────────────────────────────────╮   0
       │                                                                                                          │
-    De│  Theme               Default tier    claude                                                              │
+   Dec│  Theme               Default tier    claude                                                              │
       │                      Tiers           none yet ›                                                          │
-    Ke│  Appearance          Agent tools     ● on                                                                │
+   Key│  Appearance          Agent tools     ● on                                                                │
       │                      Agent brief     ● on                                                                │
       │  Notifications       Agent prompts   mesimon's words ›                                                   │
       │                                                                                                          │

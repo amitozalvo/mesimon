@@ -1,10 +1,10 @@
  BOARD   mesimon › kanban-tui   7 tickets
 
-    TO╭─ SETTINGS ───────────────────────────────────────────────────────────────────────────────────────────────╮   1
+   TOD╭─ SETTINGS ───────────────────────────────────────────────────────────────────────────────────────────────╮   1
       │                                                                                                          │
-    De│  Theme              claude      5h 14% ∙ week 63% ∙ Fable 64%   read 2m ago                              │ >1y
+   Dec│  Theme              claude      5h 14% ∙ week 63% ∙ Fable 64%   read 2m ago                              │ >1y
       │                     codex       signed out                                                               │
-    Ke│  Appearance         this board  24 hours $3.40 ∙ 7 days $12.52 ∙ 30 days $12.52   an estimate            │
+   Key│  Appearance         this board  24 hours $3.40 ∙ 7 days $12.52 ∙ 30 days $12.52   an estimate            │
       │                                                                                                          │
       │  Notifications       Details             pace and cost ›                                                 │
       │                                                                                                          │

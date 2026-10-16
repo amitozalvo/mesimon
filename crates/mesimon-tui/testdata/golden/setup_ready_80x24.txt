@@ -10,9 +10,9 @@
 │  ╭─ preview ──────────────────────────────────────────────────────────────╮  │
 │  │ BOARD   mesimon › practice   1 ticket                                  │  │
 │  │                                                                        │  │
-│  │    TODO                    1 →     IN PROGRESS            0 →   0   0  │  │
+│  │   TODO                     1 →    IN PROGRESS             0 →   0   0  │  │
 │  │                                                                        │  │
-│  │    Fix the login redirect  now                                  R   D  │  │
+│  │   Fix the login redirect   now                                  R   D  │  │
 │  │                            T-1                                  E   O  │  │
 │  │                                                                 V   N  │  │
 │  │                                                                 I   E  │  │

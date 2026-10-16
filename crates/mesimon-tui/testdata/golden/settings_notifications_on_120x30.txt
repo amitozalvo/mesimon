@@ -1,10 +1,10 @@
  BOARD   mesimon › kanban-tui   6 tickets
 
-    TO╭─ SETTINGS ∙ MACHINE ─────────────────────────────────────────────────────────────────────────────────────╮   0
+   TOD╭─ SETTINGS ∙ MACHINE ─────────────────────────────────────────────────────────────────────────────────────╮   0
       │                                                                                                          │
-    De│  Theme               mesimon                                       ♪ Glass                               │
+   Dec│  Theme               mesimon                                       ♪ Glass                               │
       │                      kanban-tui ∙ Fix the OSC parser                                                     │
-    Ke│  Appearance          “Keep the old parser as a fallback?”                                                │
+   Key│  Appearance          “Keep the old parser as a fallback?”                                                │
       │                                                                                                          │
       │▎ Notifications       Notifications                 ● on                                                  │
       │                      Delivered by                  ● mesimon   ○ your terminal                           │

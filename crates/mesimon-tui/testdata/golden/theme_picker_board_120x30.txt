@@ -1,10 +1,10 @@
  BOARD   mesimon › kanban-tui   6 tickets
 
-    TO╭─ SETTINGS ∙ THIS BOARD ──────────────────────────────────────────────────────────────────────────────────╮   0
+   TOD╭─ SETTINGS ∙ THIS BOARD ──────────────────────────────────────────────────────────────────────────────────╮   0
       │                                                                                                          │
-    De│▎ Theme               ○ dark and light   ● dark   ○ light                                                 │
+   Dec│▎ Theme               ○ dark and light   ● dark   ○ light                                                 │
       │                                                                                                          │
-    Ke│  Appearance          ● inherit                 ╭─ graphite ───────────────────────────────────────────╮  │
+   Key│  Appearance          ● inherit                 ╭─ graphite ───────────────────────────────────────────╮  │
       │                        graphite        dark    │ BOARD  kanban ∙ 5 tickets                            │  │
       │  Notifications         chalk          light    │                                                      │  │
       │                        blue            dark    │   TODO         2   IN PROGRESS  2   REVIEW       1   │  │

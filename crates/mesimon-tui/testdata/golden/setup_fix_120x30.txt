@@ -11,14 +11,14 @@
 │  ╭─ preview ──────────────────────────────────────────────────────────────────────────────────────────────────────╮  │
 │  │ BOARD   mesimon › practice   2 tickets ∙ pull requests                                                         │  │
 │  │                                                                                                                │  │
-│  │    TODO                0 →     IN PROGRESS         0 →     REVIEW              2 →     DONE                 0  │  │
+│  │   TODO                 0 →    IN PROGRESS          0 →    REVIEW               2 →    DONE                  0  │  │
 │  │                                                                                                                │  │
-│  │   o  new ticket                                            ✓ Fix the login~ ⎇↑ now                             │  │
-│  │                                                              approved        ◉#412                             │  │
+│  │   o  new ticket                                           ✓ Fix the login ~ ⎇↑ now                             │  │
+│  │                                                             approved         ◉#412                             │  │
 │  │                                                                                T-1                             │  │
 │  │                                                                                                                │  │
-│  │                                                            ✓ Dark mode tog~ ⎇↑ now                             │  │
-│  │                                                              approved        ◉#411                             │  │
+│  │                                                           ✓ Dark mode togg~ ⎇↑ now                             │  │
+│  │                                                             approved         ◉#411                             │  │
 │  │                                                                                T-2                             │  │
 │  │                                                                                                                │  │
 │  │                                                                                                                │  │

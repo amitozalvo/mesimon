@@ -1,10 +1,10 @@
  BOARD   mesimon › kanban-tui   6 tickets
 
-    TO╭─ SETTINGS ───────────────────────────────────────────────────────────────────────────────────────────────╮   0
+   TOD╭─ SETTINGS ───────────────────────────────────────────────────────────────────────────────────────────────╮   0
       │                                                                                                          │
-    De│  Theme               Starts agents      3 at once                                                        │
+   Dec│  Theme               Starts agents      3 at once                                                        │
       │                      Mode               ● autonomous   ○ supervised                                      │
-    Ke│  Appearance          Archives tickets   ○ off                                                            │
+   Key│  Appearance          Archives tickets   ○ off                                                            │
       │                      Watches tickets    ● on                                                             │
       │  Notifications                                                                                           │
       │                                                                                                          │

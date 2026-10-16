@@ -3575,8 +3575,12 @@ fn test_tag_count_keeps_the_title_editor_aligned() {
         [Profile::TrueColor, Profile::Ansi256, Profile::Ansi16, Profile::Ansi8, Profile::Mono]
     {
         let theme = crate::theme::Theme::new(Flavor::Graphite, profile);
-        for width in [12, 29, 48] {
-            let ctx = card::CardCtx { theme: &theme, width, now_ms: 0, spin: 0, names_key: true };
+        for (width, bar) in [12, 29, 48]
+            .into_iter()
+            .flat_map(|w| [crate::tags::BAR_NARROW, crate::tags::BAR_WIDE].map(|b| (w, b)))
+        {
+            let ctx =
+                card::CardCtx { theme: &theme, width, now_ms: 0, spin: 0, names_key: true, bar };
             let mut previous = None;
             for n in 0..=2 {
                 let worn: Vec<_> =
@@ -3584,7 +3588,7 @@ fn test_tag_count_keeps_the_title_editor_aligned() {
                 let (line, cursor) = card::render_edit(&ctx, &buffer, &worn);
                 let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
                 let title_x = text.replace('▉', " ").find("hello").expect("title");
-                assert_eq!(title_x, crate::tags::BAR_WIDTH + 1);
+                assert_eq!(title_x, bar + 1);
                 assert!(line.width() <= width as usize);
                 assert!(cursor < width);
                 if let Some(prev) = previous {
@@ -3800,6 +3804,28 @@ fn golden_board_tags_120() {
     let mut app = app_graphite(fixture_tagged());
     app.cursor_col = 0;
     golden("board_tags_120x30", &render(&app, 120, 30));
+}
+
+/// The bar is one cell until a ticket on the board wears two tags, then two
+/// on every card and column header at once (T-821), so a column's titles
+/// still start together.
+#[test]
+fn a_second_tag_on_any_ticket_widens_every_bar() {
+    use mesimon_core::board::TagRef;
+    let starts = |app: &App, needle: &str| {
+        let lines = render(app, 120, 30);
+        lines.iter().find_map(|l| l.find(needle)).expect(needle)
+    };
+    let mut board = fixture(false);
+    board.tickets[0].tags = vec![TagRef { name: "BUG".into(), group: 1 }];
+    let app = app_graphite(board.clone());
+    assert_eq!(app.bar_width(), crate::tags::BAR_NARROW, "one tag fits one cell");
+    let (title, head) = (starts(&app, "Keymap validator"), starts(&app, "TODO"));
+    board.tickets[0].tags.push(TagRef { name: "QUESTION".into(), group: 2 });
+    let app = app_graphite(board);
+    assert_eq!(app.bar_width(), crate::tags::BAR_WIDE);
+    assert_eq!(starts(&app, "Keymap validator"), title + 1, "an untagged card widens too");
+    assert_eq!(starts(&app, "TODO"), head + 1, "and the column's header");
 }
 
 /// The peeked card with its tags named: the row under the title, then the
@@ -6751,8 +6777,10 @@ fn the_composer_dialog_grows_out_of_its_card() {
     // card's cells, the meta row under it where the card's was, and the rest
     // of the board is still on screen around it.
     let first = render(&app, 120, 30);
-    assert!(first[card_row].starts_with("    Ship the diff viewer"), "{:?}", first[card_row]);
-    assert!(first[card_row + 1].starts_with("    NEW TICKET"), "{:?}", first[card_row + 1]);
+    // The left pad, the board's one-cell bar (no ticket wears two tags) and
+    // the bar's pad.
+    assert!(first[card_row].starts_with("   Ship the diff viewer"), "{:?}", first[card_row]);
+    assert!(first[card_row + 1].starts_with("   NEW TICKET"), "{:?}", first[card_row + 1]);
     assert!(
         first.iter().any(|l| l.contains("Fix OSC-11")),
         "the other columns show through while the dialog is small"
@@ -6771,8 +6799,8 @@ fn the_composer_dialog_grows_out_of_its_card() {
     assert!(after[2].contains("TODO") && after[2].contains("IN PROGRESS"), "{:?}", after[2]);
     let title_at =
         after[4].find("Ship the diff viewer").expect("the title on the dialog's first row");
-    let dialog_x = after[4][..title_at].chars().count() - 2;
-    assert_eq!(dialog_x, 32, "one cell before the title, after the two-cell bar: {:?}", after[4]);
+    let dialog_x = after[4][..title_at].chars().count() - app.bar_width() - 1;
+    assert_eq!(dialog_x, 31, "the stripe, a pad, then the title: {:?}", after[4]);
     // The frame's top edge names the dialog on the breathing row over the
     // cards; the context row under the title starts at the column.
     assert!(after[3].contains("NEW TICKET"), "{:?}", after[3]);
@@ -6782,8 +6810,8 @@ fn the_composer_dialog_grows_out_of_its_card() {
         assert!(!after.iter().any(|l| l.contains(covered)), "{covered} is under the dialog");
     }
     assert!(
-        after[4].starts_with("    Decay treatments      >1y")
-            && after[4].contains("z Painted accent bar >1y"),
+        after[4].starts_with("   Decay treatments       >1y")
+            && after[4].contains("z Painted accent bar  >1y"),
         "whole cards on both sides, never a sliver: {:?}",
         after[4]
     );
@@ -7130,7 +7158,7 @@ fn the_description_dialog_grows_out_of_the_card() {
     // Frame zero is the card: the title in the card's cells, and with no
     // frame edge to carry it the context row says what the text is.
     let first = render(&app, 120, 30);
-    assert!(first[card_row].starts_with("    Decay treatments"), "{:?}", first[card_row]);
+    assert!(first[card_row].starts_with("   Decay treatments"), "{:?}", first[card_row]);
     assert!(first.iter().any(|l| l.contains("Fix OSC-11")), "the board shows through");
 
     // Settled: the dialog over the middle columns, its frame's top edge
@@ -8579,7 +8607,7 @@ fn golden_board_prs_120() {
         lines[y + 1].clone()
     };
     let t3 = under(&lines, "Fix OSC-11");
-    assert!(t3.contains("Fixed the~ ✗#42 ●!7 ◎!6"), "the reply is cut against the brief: {t3}");
+    assert!(t3.contains("Fixed the ~ ✗#42 ●!7 ◎!6"), "the reply is cut against the brief: {t3}");
     let t5 = under(&lines, "Grapheme truncation");
     assert!(t5.contains("◴#44 ◉#43 +3"), "the oldest fold into a count: {t5}");
     // `news`: the line stays until the cursor rests on the card, then goes;
@@ -8697,7 +8725,7 @@ fn a_cards_pr_line_says_what_the_newest_pr_is_at() {
     (merged.number, merged.state, merged.pipeline) = (6, "merged".into(), "failed".into());
     app.prs = vec![merged, pr.clone()];
     let line = under(&app, "Grapheme truncation");
-    assert!(line.contains("build-linux     ✗!6 ◴!7"), "the open PR's running job: {line}");
+    assert!(line.contains("build-linux      ✗!6 ◴!7"), "the open PR's running job: {line}");
     // Each other word the PR can be at, cut against the marks.
     let wide = |app: &App| {
         let lines = render(app, 300, 30);
@@ -8710,7 +8738,7 @@ fn a_cards_pr_line_says_what_the_newest_pr_is_at() {
     assert!(wide(&app).contains("running "), "{}", wide(&app));
     (app.prs[1].pipeline, app.prs[1].job) = ("failed".into(), Some("test-linux".into()));
     app.prs[1].review = "changes_requested".into();
-    assert!(wide(&app).contains("failed: test-linux ∙ cha~  ✗!6 ✗!7"), "{}", wide(&app));
+    assert!(wide(&app).contains("failed: test-linux ∙ chan~  ✗!6 ✗!7"), "{}", wide(&app));
     (app.prs[1].pipeline, app.prs[1].job, app.prs[1].conflict) = ("passed".into(), None, true);
     (app.prs[1].state, app.prs[1].review) = ("draft".into(), "none".into());
     assert!(wide(&app).contains("conflicts ∙ draft  "), "{}", wide(&app));
@@ -9797,9 +9825,9 @@ fn test_archive_refused_shakes_the_card() {
     };
     let (rest, y) = at(&app, "Fix OSC-11");
     let bystander = at(&app, "Adopt drawer");
-    // bar(2) + pad + glyph + pad precede the title of a card with sessions.
+    // bar + pad + glyph + pad precede the title of a card with sessions.
     // The bar is a painted cell: its ground is what moves.
-    let bar_x = rest - 5;
+    let bar_x = rest - (app.bar_width() as u16 + 3);
     let bar = cells(&app, 120, 30)[(bar_x, y)].bg;
     assert_ne!(bar, ratatui::style::Color::Reset, "the cursor card wears its bar");
     press(&mut app, 'a');
@@ -10849,7 +10877,7 @@ fn a_move_leaves_a_trail_where_the_card_was() {
     let todo = app.spots.borrow().heads.iter().find(|h| h.0 == "todo").map(|h| h.1);
     let trail = *app.spots.borrow().trails.first().expect("the trail is drawn");
     assert_eq!(trail.id, t1);
-    assert_eq!(Some(trail.x + crate::tags::BAR_WIDTH as u16 + 1), todo, "in the column it left");
+    assert_eq!(Some(trail.x + app.bar_width() as u16 + 1), todo, "in the column it left");
     // The trail's own row, in the column it left.
     let row = unbolted(&lines[trail.y as usize], (trail.x + trail.width) as usize);
     assert!(row.contains("Decay treatments"), "the trail is the card: {row}");
@@ -11292,8 +11320,8 @@ fn golden_cards_show_their_cost() {
     assert!(app.status.contains("an estimate at API prices"), "{}", app.status);
     let rows = render(&app, 120, 30);
     let all = rows.join("\n");
-    assert!(all.contains("Fix OSC-11 detecti~ $12"), "{all}");
-    assert!(all.contains("Decay treatments      <$1"), "{all}");
+    assert!(all.contains("Fix OSC-11 detection $12"), "{all}");
+    assert!(all.contains("Decay treatments       <$1"), "{all}");
     assert_eq!(app.card_corner(ulid_n(5)).as_deref(), Some("?"));
     assert!(all.contains("Grapheme truncation"), "{all}");
     assert!(!all.contains("unpriced"), "{all}");

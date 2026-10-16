@@ -1,6 +1,6 @@
  BOARD   mesimon › kanban-tui   6 tickets
 
-    TODO                          2     IN PROGRESS                  2   2   0
+   TODO                           2    IN PROGRESS                   2   2   0
    ╭─ SEARCH ∙ 2/7 ─────────────────────────────────────────────────────────╮
    │ › ac                                                                   │D
    │                                                                        │O

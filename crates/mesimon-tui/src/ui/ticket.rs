@@ -810,6 +810,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             now_ms: now,
             spin: app.spin_frame(),
             names_key: false,
+            bar: app.bar_width(),
         };
         super::card::render_ask_field(
             &ctx,

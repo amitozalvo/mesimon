@@ -27207,3 +27207,23 @@ live-release network test and indirectly exercised subprocess helper remain excl
 ordinary discovery. Optional object-cache pruning was stopped after the audits to release
 the runner lock. Formatting and `git diff --check` passed. No live-model rig was run: this
 changes Codex filesystem preparation, not model instructions or turn submission.
+
+## The tag bar is one cell until a ticket wears two tags (T-821, 2026-10-16, the author: "single tag if no 2 tags attached on any ticket currently in board … half the width of the tag box right now (also on columns)")
+
+The bar was one cell until 47102fec (2026-09-09) widened it to two so two tags could each take a
+`▉`. On a board where no ticket wears a second tag, that second cell was ink beside one colour.
+The width is now the board's, worked out on every frame (`tags::bar_width`, `App::bar_width`):
+`BAR_WIDE` (2) when any ticket on the board wears two tags or more, `BAR_NARROW` (1) otherwise.
+Archived tickets are not on the board and do not count; the draft being composed does, so the
+phantom card (and the grown editor's stripe) widens the board on its second `^t` pick.
+
+- One width for the whole board, never per card: a column's titles must start in one column, so
+  an untagged card and the column header move with the two-tag ticket.
+- `CardCtx.bar` carries it into the card; the column header, the dialog's stripe and lead
+  (`editor.rs`), the glide's fade, the crown's bolt and the settings sample read
+  `App::bar_width`.
+- `bar_spans` at one cell paints a single tag whole. Handed two tags at one cell, which
+  `bar_width` never allows, it paints the first.
+
+Goldens: every fixture without a two-tag ticket went narrow; `board_tags_*` keep the wide bar.
+`a_second_tag_on_any_ticket_widens_every_bar` pins the flip.

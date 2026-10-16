@@ -9,13 +9,13 @@
  │    Tags                         ╭─ practice board ───────────────────────────────────────────────────────────────────────────────────╮ │
  │    Copy a ticket's title        │ BOARD   mesimon › practice   6 tickets                                                             │ │
  │    Duplicate a ticket           │                                                                                                    │ │
- │    Archive a ticket             │    TODO                    3 →     IN PROGRESS             1 →     REVIEW                 1 →   1  │ │
+ │    Archive a ticket             │   TODO                     3 →    IN PROGRESS              1 →    REVIEW                  1 →   1  │ │
  │    Delete a ticket              │                                                                                                    │ │
- │                                 │    Fix the login redirect  now     Dark mode toggle        now     Rate-limit the public~ now   D  │ │
+ │                                 │   Fix the login redirect   now    Dark mode toggle         now    Rate-limit the public ~ now   D  │ │
  │  MOVING                         │                                                                                                 O  │ │
- │    Move a card                  │    Write the onboarding g~ now                                                                  N  │ │
+ │    Move a card                  │   Write the onboarding gu~ now                                                                  N  │ │
  │    Order the cards              │                                                                                                 E  │ │
- │    Automatic moves              │    Cache the avatar images now                                                                     │ │
+ │    Automatic moves              │   Cache the avatar images  now                                                                     │ │
  │                                 │                                                                                                    │ │
  │  FINDING                        │                                                                                                    │ │
  │    Search                       │                                                                                                    │ │

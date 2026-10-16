@@ -1,10 +1,10 @@
  BOARD   mesimon › kanban-tui   6 tickets
 
-    TO╭─ SETTINGS ∙ THIS BOARD ──────────────────────────────────────────────────────────────────────────────────╮   0
+   TOD╭─ SETTINGS ∙ THIS BOARD ──────────────────────────────────────────────────────────────────────────────────╮   0
       │                                                                                                          │
-    De│  Theme               Keep this machine awake   ○ off                                          inherited  │
+   Dec│  Theme               Keep this machine awake   ○ off                                          inherited  │
       │                      Mouse                     ● on                                             machine  │
-    Ke│  Appearance                                                                                              │
+   Key│  Appearance                                                                                              │
       │                     SNOOZE                                                                               │
       │  Notifications       Comes back                ● lit    ○ quiet                               inherited  │
       │                      Week starts on            Monday                                           machine  │

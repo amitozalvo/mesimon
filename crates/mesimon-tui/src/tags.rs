@@ -1,9 +1,11 @@
 //! Fixed-width tag bars and the named chips shown in an open card.
 //!
-//! Every bar reserves two cells. One tag fills both; two tags use `▉▉`,
-//! each glyph leaving a one-eighth-cell gap on the row's background.
-//! The shape and tag order stay the same when a card opens. Tag colors do
-//! not fade with selection; the neutral bar retains its selection ladder.
+//! Every bar on the board is one width (`bar_width`): one cell while no
+//! ticket on it wears two tags, two cells once one does (T-821). A bar
+//! holding one tag is painted whole; two tags use `▉▉`, each glyph leaving a
+//! one-eighth-cell gap on the row's background. The shape and tag order
+//! stay the same when a card opens. Tag colors do not fade with selection;
+//! the neutral bar retains its selection ladder.
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
@@ -30,12 +32,31 @@ pub(crate) fn painted(board: &Board, tags: &[TagRef]) -> Vec<Painted> {
     out
 }
 
-/// The same footprint for zero, one, or two tags, in every color profile.
-pub(crate) const BAR_WIDTH: usize = 2;
+/// The bar a board with a two-tag ticket on it gives every card, so the
+/// cards' titles still start in one column.
+pub(crate) const BAR_WIDE: usize = 2;
+/// The bar while no ticket on the board wears a second tag: it was this one
+/// cell before two tags needed a glyph each, and a second cell beside one
+/// colour is only ink.
+pub(crate) const BAR_NARROW: usize = 1;
 pub(crate) const TAGS_ON_CARD: usize = 2;
 
-/// Paint the bar on this row's surface. Explicitly replace the neutral bar's
-/// background for two tags: leaving it behind the glyph would fill the gap.
+/// How wide every bar on this board is: `BAR_WIDE` when any ticket on it
+/// (archived ones are not on it) wears two tags or more, or the ticket being
+/// composed will (`composing`, its picked tags), else `BAR_NARROW`. One width
+/// for the whole board, in every color profile, so a column's titles line up.
+pub(crate) fn bar_width(board: &Board, composing: usize) -> usize {
+    let two = |n: usize| n >= TAGS_ON_CARD;
+    if two(composing) || board.tickets.iter().any(|t| !t.is_archived() && two(t.tags.len())) {
+        BAR_WIDE
+    } else {
+        BAR_NARROW
+    }
+}
+
+/// Paint the bar, `width` cells (`bar_width`), on this row's surface.
+/// Explicitly replace the neutral bar's background for two tags: leaving it
+/// behind the glyph would fill the gap.
 /// `▉` is an intentional exception to the block-glyph restriction. Like the
 /// former half-block it is width-ambiguous; ASCII profiles never use it.
 pub(crate) fn bar_spans(
@@ -45,21 +66,24 @@ pub(crate) fn bar_spans(
     tags: &[Painted],
     level: TagLevel,
     surface: Option<Color>,
+    width: usize,
 ) -> Vec<Span<'static>> {
     let Some(first) = tags.first() else {
         let faded = style.bg.map(|c| theme.faded(c, level));
         let style = faded.map(|c| style.bg(c)).unwrap_or(style);
-        return vec![Span::styled(ch.to_string().repeat(BAR_WIDTH), style)];
+        return vec![Span::styled(ch.to_string().repeat(width), style)];
     };
     if !theme.paints_tags() {
         // Keep the existing underline fallback and its ASCII state ladder.
         return vec![Span::styled(
-            ch.to_string().repeat(BAR_WIDTH),
+            ch.to_string().repeat(width),
             style.add_modifier(Modifier::UNDERLINED),
         )];
     }
-    if tags.len() == 1 {
-        return vec![Span::styled("  ", style.bg(theme.pip(first.tint as usize)))];
+    // One tag, or a bar too narrow for a second (`bar_width` widens the
+    // board before one is worn, so this is only a caller's slip): the first.
+    if tags.len() == 1 || width < TAGS_ON_CARD {
+        return vec![Span::styled(" ".repeat(width), style.bg(theme.pip(first.tint as usize)))];
     }
     tags.iter()
         .take(TAGS_ON_CARD)
@@ -156,15 +180,21 @@ mod tests {
             let base = Style::default().bg(theme.rest.dim3);
             for n in 0..=5 {
                 let worn = tags(n);
-                for level in [TagLevel::Selected, TagLevel::Rest] {
-                    let spans = bar_spans(&theme, ' ', base, &worn, level, theme.bg);
-                    assert_eq!(spans.iter().map(Span::width).sum::<usize>(), BAR_WIDTH);
+                for (level, width) in [TagLevel::Selected, TagLevel::Rest]
+                    .into_iter()
+                    .flat_map(|l| [BAR_NARROW, BAR_WIDE].map(|w| (l, w)))
+                {
+                    let spans = bar_spans(&theme, ' ', base, &worn, level, theme.bg, width);
+                    assert_eq!(spans.iter().map(Span::width).sum::<usize>(), width);
                     match n {
                         0 => {
                             assert_eq!(spans[0].style.bg, Some(theme.faded(theme.rest.dim3, level)))
                         }
-                        1 => {
-                            assert_eq!(spans[0].content, "  ");
+                        // One tag, or two on a bar with room for one: the
+                        // first, painted whole.
+                        _ if n == 1 || width == BAR_NARROW => {
+                            assert_eq!(spans.len(), 1);
+                            assert_eq!(spans[0].content, " ".repeat(width));
                             assert_eq!(spans[0].style.bg, Some(theme.pip(0)));
                         }
                         _ => {
@@ -181,6 +211,31 @@ mod tests {
         }
     }
 
+    /// One cell until a ticket on the board wears a second tag (T-821), the
+    /// draft being composed included; an archived ticket is not on it.
+    #[test]
+    fn the_bar_widens_only_for_a_second_tag_on_the_board() {
+        let tag = |name: &str, group: u8| TagRef { group, name: name.into() };
+        let mut board = Board::default();
+        assert_eq!(bar_width(&board, 0), BAR_NARROW, "an empty board");
+        board.tickets.push(
+            serde_json::from_value(serde_json::json!({
+                "id": ulid::Ulid(1).to_string(), "short_key": "T-1", "title": "one tag",
+                "column": "TODO", "order": "a", "created_at": "@0",
+            }))
+            .expect("a ticket from its required fields"),
+        );
+        board.tickets[0].tags = vec![tag("BUG", 1)];
+        assert_eq!(bar_width(&board, 0), BAR_NARROW, "one tag fills one cell");
+        assert_eq!(bar_width(&board, 1), BAR_NARROW, "a draft with one tag");
+        assert_eq!(bar_width(&board, 2), BAR_WIDE, "a draft picking its second");
+        board.tickets[0].tags.push(tag("QUESTION", 2));
+        assert_eq!(bar_width(&board, 0), BAR_WIDE, "a second tag widens every bar");
+        board.tickets[0].archived = serde_json::from_value(serde_json::json!({ "at": "@1" })).ok();
+        assert!(board.tickets[0].is_archived());
+        assert_eq!(bar_width(&board, 0), BAR_NARROW, "an archived ticket is off the board");
+    }
+
     #[test]
     fn two_equal_tints_still_have_a_gap_on_each_surface() {
         for flavor in Flavor::ALL {
@@ -194,6 +249,7 @@ mod tests {
                     &worn,
                     TagLevel::Selected,
                     surface,
+                    BAR_WIDE,
                 );
                 for span in spans {
                     assert_eq!(span.content, "▉");
@@ -209,12 +265,22 @@ mod tests {
         for p in [Profile::Ansi256, Profile::Ansi16, Profile::Ansi8, Profile::Mono] {
             let theme = Theme::new(Flavor::Graphite, p);
             for n in 0..=3 {
-                let spans =
-                    bar_spans(&theme, '|', Style::default(), &tags(n), TagLevel::Selected, None);
-                assert_eq!(spans.len(), 1);
-                assert_eq!(spans[0].content, "||");
-                assert_eq!(spans[0].style.bg, None);
-                assert_eq!(spans[0].style.add_modifier.contains(Modifier::UNDERLINED), n > 0);
+                for width in [BAR_NARROW, BAR_WIDE] {
+                    let worn = tags(n);
+                    let spans = bar_spans(
+                        &theme,
+                        '|',
+                        Style::default(),
+                        &worn,
+                        TagLevel::Selected,
+                        None,
+                        width,
+                    );
+                    assert_eq!(spans.len(), 1);
+                    assert_eq!(spans[0].content, "|".repeat(width));
+                    assert_eq!(spans[0].style.bg, None);
+                    assert_eq!(spans[0].style.add_modifier.contains(Modifier::UNDERLINED), n > 0);
+                }
             }
         }
     }

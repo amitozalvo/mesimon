@@ -1,10 +1,10 @@
  BOARD   mesimon › kanban-tui   6 tickets
 
-    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
+   TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    0
 
-    ╭─ SEARCH ∙ 3/7 ───────────────────────────────────────────────────────────╮╭─ T-3 ────────────────────────────╮
-    │ ›                                                                        ││   ⠋ Fix OSC-11 detection     >1y │
-    │ viewed recently ∙ type to search the whole board                         ││                                  │
+   D╭─ SEARCH ∙ 3/7 ───────────────────────────────────────────────────────────╮╭─ T-3 ────────────────────────────╮
+    │ ›                                                                        ││  ⠋ Fix OSC-11 detection      >1y │
+   K│ viewed recently ∙ type to search the whole board                         ││                                  │
     │ T-3   Fix OSC-11 detection                                 IN PROGRESS   ││ IN PROGRESS for >1y              │
     │ T-1   Decay treatments                                     TODO          ││                                  │
     │ T-7   Painted accent bar                                   DONE archived ││                                  │

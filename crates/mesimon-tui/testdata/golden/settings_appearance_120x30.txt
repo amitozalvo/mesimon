@@ -1,12 +1,12 @@
  BOARD   mesimon › kanban-tui   6 tickets
 
-    TO╭─ SETTINGS ∙ MACHINE ─────────────────────────────────────────────────────────────────────────────────────╮   0
+   TOD╭─ SETTINGS ∙ MACHINE ─────────────────────────────────────────────────────────────────────────────────────╮   0
       │                                                                                                          │
-    De│  Theme              the cursor's card           another card                                             │
+   Dec│  Theme              the cursor's card           another card                                             │
       │                                                                              ╭─ an agent's pane ───────╮ │
-    Ke│▎ Appearance            Plan the beta       3h      Fix the parser      3h    │ ⏺ Reading src/osc.rs    │ │
-      │                        [ ] parse it                Parser fixed, tests g~    │ T-2 Fix the parser      │ │
-      │  Notifications         [✓] read the reply                                    ╰─────────────────────────╯ │
+   Key│▎ Appearance           Plan the beta        3h     Fix the parser       3h    │ ⏺ Reading src/osc.rs    │ │
+      │                       [ ] parse it                Parser fixed, tests gr~    │ T-2 Fix the parser      │ │
+      │  Notifications        [✓] read the reply                                     ╰─────────────────────────╯ │
       │                                                                                                          │
       │  Behaviour                                                                                               │
       │                      Status line              ○ top         ● bottom                                     │

@@ -224,9 +224,10 @@ fn paint_trail(buf: &mut Buffer, area: Rect, theme: &Theme, dots: &[(i32, i32)])
 /// a cell it has not reached is not there yet and one it has comes in
 /// from the ground — except the tag bar, which is there from the start,
 /// a little muted, and comes up to its own colour as the front passes.
-fn fade(buf: &mut Buffer, rect: Rect, theme: &Theme, p: f32, right: bool, out: bool) {
+/// `bar` is the tag bar's width on this board (`App::bar_width`).
+fn fade(buf: &mut Buffer, rect: Rect, bar: u16, theme: &Theme, p: f32, right: bool, out: bool) {
     let w = usize::from(rect.width);
-    let bar = rect.x..rect.x + crate::tags::BAR_WIDTH as u16;
+    let bar = rect.x..rect.x + bar;
     for y in rect.y..rect.bottom() {
         for i in 0..w {
             let x = if right { rect.x + i as u16 } else { rect.right() - 1 - i as u16 };
@@ -272,6 +273,7 @@ pub(crate) fn draw(f: &mut Frame, app: &App, area: Rect) {
     let spots = app.spots.borrow();
     let theme = &app.theme;
     let braille = theme.glyph_tier() == crate::glyphs::Tier::Unicode;
+    let bar = app.bar_width() as u16;
     let buf = f.buffer_mut();
     for g in app.glides.iter().filter(|g| !g.over(now)) {
         let from = spots.trail(g.ticket);
@@ -280,6 +282,7 @@ pub(crate) fn draw(f: &mut Frame, app: &App, area: Rect) {
             fade(
                 buf,
                 from.rect().intersection(area),
+                bar,
                 theme,
                 g.phase(now, 0, OUT_MS),
                 g.right,
@@ -288,7 +291,7 @@ pub(crate) fn draw(f: &mut Frame, app: &App, area: Rect) {
         }
         if let Some(to) = to {
             let p = g.phase(now, OUT_MS + TRAIL_MS, IN_MS);
-            fade(buf, to.rect().intersection(area), theme, p, g.right, false);
+            fade(buf, to.rect().intersection(area), bar, theme, p, g.right, false);
         }
         if let (Some(from), Some(to), true) = (from, to, braille) {
             let dots = walk(&route(from, to, g.right, area.y + 1));
@@ -402,10 +405,10 @@ mod tests {
             buf[(x, 0)].set_bg(ground);
         }
         buf.set_string(3, 0, "Adopt drawer import", Style::default().bg(ground));
-        for x in 0..crate::tags::BAR_WIDTH as u16 {
+        for x in 0..crate::tags::BAR_WIDE as u16 {
             buf[(x, 0)].set_bg(tag);
         }
-        fade(&mut buf, rect, &theme, 0.0, true, false);
+        fade(&mut buf, rect, crate::tags::BAR_WIDE as u16, &theme, 0.0, true, false);
         let bar = buf[(0, 0)].bg;
         assert!(bar != tag && bar != ground && bar != Color::Reset, "muted: {bar:?}");
         let Color::Rgb(r, g, b) = bar else { panic!("{bar:?}") };
