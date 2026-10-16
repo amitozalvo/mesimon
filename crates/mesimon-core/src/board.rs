@@ -635,7 +635,7 @@ impl SessionRecord {
         }
     }
 
-    /// A column's opt-in (T-543): a confirmed Claude idle at its prompt past
+    /// A column's opt-in (T-543): a confirmed agent idle at its prompt past
     /// the timeout, whether or not a turn finished there — just woken,
     /// interrupted, or done waiting on background work — because a column
     /// that asked for its agents to sleep meant every idle one (the author's
@@ -655,8 +655,13 @@ impl SessionRecord {
 
     fn park_clock_due(&self, now: u64, timeout_ms: u64) -> bool {
         timeout_ms > 0
-            && self.kind == SessionKind::Claude
+            && self.kind.is_agent()
             && self.confidence == Confidence::High
+            && (self.kind != SessionKind::Codex
+                || (!self.observation_hold
+                    && !self.codex_stopping
+                    && !self.codex_submit_sent
+                    && self.codex_pending_seq.is_none()))
             && self.state_changed_at.is_some_and(|at| now.saturating_sub(at) >= timeout_ms)
             && !self.argv.is_empty()
             && !self.pending_submit
@@ -3601,61 +3606,75 @@ mod tests {
 
     #[test]
     fn autosleep_requires_a_confirmed_idle_and_ages_from_settlement() {
-        let mut rec = SessionRecord::new(
-            uuid::Uuid::new_v4(),
-            SessionKind::Claude,
-            ulid::Ulid::new(),
-            vec!["claude".into()],
-            "/repo".into(),
-            SessionState::Idle { stop_reason: StopReason::EndTurn },
-        );
-        rec.confidence = Confidence::High;
-        assert!(!rec.autosleep_due(99_000, 60_000), "unknown idle age");
-        rec.state_changed_at = Some(30_000);
-        assert!(!rec.autosleep_due(89_999, 60_000));
-        assert!(rec.autosleep_due(90_000, 60_000));
-        assert!(!rec.autosleep_due(90_000, 0), "off");
-        assert!(!rec.autosleep_due(29_999, 60_000), "clock moved backwards");
-        for state in [
-            SessionState::Running,
-            SessionState::Spawning,
-            SessionState::Sleeping,
-            SessionState::RequiresAction { reason: Reason::Permission },
-            SessionState::Failed { reason: FailReason::Unknown },
-            SessionState::unknown(),
-            SessionState::Idle { stop_reason: StopReason::Background },
-            SessionState::Idle { stop_reason: StopReason::Monitoring },
-        ] {
+        for kind in [SessionKind::Claude, SessionKind::Codex] {
+            let mut rec = SessionRecord::new(
+                uuid::Uuid::new_v4(),
+                kind,
+                ulid::Ulid::new(),
+                vec!["claude".into()],
+                "/repo".into(),
+                SessionState::Idle { stop_reason: StopReason::EndTurn },
+            );
+            rec.confidence = Confidence::High;
+            rec.observation_hold = false;
+            assert!(!rec.autosleep_due(99_000, 60_000), "unknown idle age");
+            rec.state_changed_at = Some(30_000);
+            assert!(!rec.autosleep_due(89_999, 60_000));
+            assert!(rec.autosleep_due(90_000, 60_000));
+            assert!(!rec.autosleep_due(90_000, 0), "off");
+            assert!(!rec.autosleep_due(29_999, 60_000), "clock moved backwards");
+            for state in [
+                SessionState::Running,
+                SessionState::Spawning,
+                SessionState::Sleeping,
+                SessionState::RequiresAction { reason: Reason::Permission },
+                SessionState::Failed { reason: FailReason::Unknown },
+                SessionState::unknown(),
+                SessionState::Idle { stop_reason: StopReason::Background },
+                SessionState::Idle { stop_reason: StopReason::Monitoring },
+            ] {
+                let mut held = rec.clone();
+                held.state = state;
+                assert!(!held.autosleep_due(90_000, 60_000), "{:?}", held.state);
+            }
+            // A stop on a limit is at its prompt (T-808).
+            for state in [
+                SessionState::RequiresAction { reason: Reason::QuotaResume },
+                SessionState::Throttled,
+            ] {
+                let mut limited = rec.clone();
+                limited.state = state;
+                assert!(limited.autosleep_due(90_000, 60_000), "{:?}", limited.state);
+            }
+            let mut shell = rec.clone();
+            shell.kind = SessionKind::Bash;
+            assert!(!shell.autosleep_due(90_000, 60_000));
+            if kind == SessionKind::Codex {
+                for flag in 0..4 {
+                    let mut held = rec.clone();
+                    match flag {
+                        0 => held.observation_hold = true,
+                        1 => held.codex_stopping = true,
+                        2 => held.codex_submit_sent = true,
+                        _ => held.codex_pending_seq = Some(1),
+                    }
+                    assert!(!held.autosleep_due(90_000, 60_000), "Codex hold {flag}");
+                }
+            }
+            for confidence in [Confidence::Medium, Confidence::Low, Confidence::Stale] {
+                let mut held = rec.clone();
+                held.confidence = confidence;
+                assert!(!held.autosleep_due(90_000, 60_000));
+            }
             let mut held = rec.clone();
-            held.state = state;
-            assert!(!held.autosleep_due(90_000, 60_000), "{:?}", held.state);
-        }
-        // A stop on a limit is at its prompt (T-808).
-        for state in
-            [SessionState::RequiresAction { reason: Reason::QuotaResume }, SessionState::Throttled]
-        {
-            let mut limited = rec.clone();
-            limited.state = state;
-            assert!(limited.autosleep_due(90_000, 60_000), "{:?}", limited.state);
-        }
-        for kind in [SessionKind::Codex, SessionKind::Bash] {
-            let mut held = rec.clone();
-            held.kind = kind;
+            held.pending_submit = true;
             assert!(!held.autosleep_due(90_000, 60_000));
-        }
-        for confidence in [Confidence::Medium, Confidence::Low, Confidence::Stale] {
-            let mut held = rec.clone();
-            held.confidence = confidence;
+            held = rec.clone();
+            held.pending_prefill = true;
             assert!(!held.autosleep_due(90_000, 60_000));
+            rec.argv.clear();
+            assert!(!rec.autosleep_due(90_000, 60_000), "observe-only adoption");
         }
-        let mut held = rec.clone();
-        held.pending_submit = true;
-        assert!(!held.autosleep_due(90_000, 60_000));
-        held = rec.clone();
-        held.pending_prefill = true;
-        assert!(!held.autosleep_due(90_000, 60_000));
-        rec.argv.clear();
-        assert!(!rec.autosleep_due(90_000, 60_000), "observe-only adoption");
     }
 
     #[test]

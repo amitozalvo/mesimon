@@ -26982,3 +26982,18 @@ including all themes and terminal profiles, unchanged card cells, live updates,
 input isolation, help and clickable exit. Shin's Garden is a separate planning
 and design ticket, T-825; seeds and a persistent personal world are outside this
 arcade's scope.
+
+## Column auto-sleep includes Codex (T-828, 2026-10-16)
+
+The column timer still required `SessionKind::Claude`, so a confirmed idle Codex session
+never reached the daemon's ordinary sleep path. `SessionRecord::autosleep_due` now accepts
+both agent providers. Codex additionally requires no observation hold, pending observation,
+unacknowledged submit or runtime cleanup; shells remain excluded. The existing idle-state,
+confidence, elapsed-time, pending-input, ownership, conversation-identity, attached-client
+and queued-work guards still apply. Sleeping and waking use the provider's existing path,
+which retains the Codex thread and resumes it exactly.
+
+The core timer test now runs its state and clock cases for both providers and covers each
+Codex hold. `provider_e2e::column_autosleep_parks_codex_only_when_observed_quiet_and_resumes_its_thread`
+uses the synthetic runtime through the real daemon and tmux to check opt-in, held and working
+sessions, automatic cleanup, the automation feed, exact-thread wake and sleeping again.

@@ -30,6 +30,14 @@ impl Fixture {
     }
 
     fn boot_with_spawn_failure(name: &str, enable_spawn_failure: bool) -> Option<Self> {
+        Self::boot_configured(name, enable_spawn_failure, &[])
+    }
+
+    fn boot_configured(
+        name: &str,
+        enable_spawn_failure: bool,
+        env: &[(&str, &str)],
+    ) -> Option<Self> {
         if !require_tmux() {
             return None;
         }
@@ -57,6 +65,9 @@ impl Fixture {
             std::fs::set_permissions(&wrapper, std::os::unix::fs::PermissionsExt::from_mode(0o700))
                 .unwrap();
             owner.set_env("MESIMON_TMUX_BIN", wrapper);
+        }
+        for (key, value) in env {
+            owner.set_env(key, value);
         }
         let paths = owner.paths(&repo);
         let _daemon = owner.daemon(&repo);
@@ -264,6 +275,71 @@ fn project_switches_preserve_old_running_and_sleeping_sessions_and_scoped_tools(
     assert_eq!(session(&mut c, codex).kind, SessionKind::Codex);
     assert_eq!(session(&mut c, codex).codex_thread_id.as_deref(), Some(thread.as_str()));
     assert_eq!(session(&mut c, claude).kind, SessionKind::Claude);
+}
+
+/// A column's timer applies to Codex too, but an idle-looking observation
+/// hold and an active turn must survive it. Wake keeps the exact thread.
+#[test]
+fn column_autosleep_parks_codex_only_when_observed_quiet_and_resumes_its_thread() {
+    let Some(h) = Fixture::boot_configured(
+        "codexautosleep",
+        false,
+        &[("MESIMON_INACTIVITY_PARK_TICKS", "1"), ("MESIMON_INACTIVITY_MINUTE_MS", "3000")],
+    ) else {
+        return;
+    };
+    let mut c = h.client();
+    select(&mut c, AgentProvider::Codex);
+    let mut ids = Vec::new();
+    for title in ["quiet", "held", "working"] {
+        let t = ticket(&mut c, title, None);
+        let id = spawn(&mut c, t);
+        h.codex_ready(&mut c, id);
+        ids.push(id);
+    }
+    let [quiet, held, working] = ids[..] else { unreachable!() };
+    h.control(held, json!({"hold":true}));
+    h.control(working, json!({"state":{"state":"running"},"turn_id":"working-turn"}));
+    c.await_state(working, "active Codex turn", |s| *s == SessionState::Running);
+    wait_until(Duration::from_secs(10), "observation hold", || {
+        session(&mut c, held).observation_hold
+    });
+    let thread = session(&mut c, quiet).codex_thread_id.unwrap();
+    std::thread::sleep(Duration::from_secs(4));
+    assert!(session(&mut c, quiet).state.has_pane(), "timer defaults off");
+    for column in c.board().columns {
+        let mut settings = column.settings;
+        settings.sleep_after_minutes = 1;
+        assert!(matches!(
+            c.request(Command::SetColumnSettings { name: column.name, settings }),
+            Response::Ok
+        ));
+    }
+    c.await_state(quiet, "Codex automatically sleeping", |s| *s == SessionState::Sleeping);
+    assert!(session(&mut c, held).state.has_pane(), "observation hold prevents auto-sleep");
+    assert_eq!(session(&mut c, working).state, SessionState::Running);
+    wait_until(Duration::from_secs(10), "automatic Codex cleanup", || {
+        !session(&mut c, quiet).codex_stopping
+    });
+    assert_eq!(session(&mut c, quiet).codex_thread_id.as_deref(), Some(thread.as_str()));
+    let feed = std::fs::read_to_string(h.paths.state_dir.join("activity.jsonl")).unwrap();
+    assert!(feed
+        .lines()
+        .any(|line| { line.contains("\"autosleep\"") && line.contains("\"automation\"") }));
+    assert!(matches!(
+        c.request(Command::WakeSession { id: quiet }),
+        Response::Spawned { fresh: false, .. }
+    ));
+    h.codex_ready(&mut c, quiet);
+    assert_eq!(session(&mut c, quiet).codex_thread_id.as_deref(), Some(thread.as_str()));
+    let launches = std::fs::read_to_string(h.owner.dir.join("runtime-launches.jsonl")).unwrap();
+    assert!(launches
+        .lines()
+        .any(|line| { serde_json::from_str::<Value>(line).unwrap()["resume"] == thread }));
+    c.await_state(quiet, "resumed Codex sleeps again", |s| *s == SessionState::Sleeping);
+    h.control(held, json!({"hold":false}));
+    c.await_state(held, "released observation hold sleeps", |s| *s == SessionState::Sleeping);
+    assert_eq!(session(&mut c, working).state, SessionState::Running);
 }
 
 fn starts_with_any_status_line(footer: &str) {

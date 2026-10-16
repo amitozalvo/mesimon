@@ -15574,7 +15574,7 @@ impl Daemon {
     }
 
     /// Automatic sleep is deliberately narrower than a user's sleep gesture:
-    /// a High-confidence idle Claude, timed from its settled state
+    /// a High-confidence idle agent, timed from its settled state
     /// transition, by the rule that is due (`Board::idle_park_due`): the
     /// ticket's column's own `sleep_after_minutes` over any idle at its
     /// prompt (T-543), the only timer since T-610.
@@ -15628,7 +15628,7 @@ impl Daemon {
             if quiet_secs.is_some_and(|secs| secs.saturating_mul(1000) < timeout) {
                 continue;
             }
-            let adapter = crate::agents::adapter(rec.kind).expect("Claude adapter");
+            let adapter = crate::agents::adapter(rec.kind).expect("agent adapter");
             // Preserve the exact conversation, using the same history and identity
             // predicates as resume. A fresh-start fallback is not an automatic park.
             if adapter.history_missing(rec) || adapter.conversation_key(rec).is_none() {
