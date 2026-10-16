@@ -64,6 +64,11 @@ pub enum PrefKey {
     /// default; off keeps the board still and the card's word alone says
     /// what the crown did.
     CrownLightning,
+    /// A card that moves by anything but this board's own keys plays its
+    /// move (T-817): it fades out where it was, a trail runs through the
+    /// gaps, it fades in where it went and shimmers until the cursor rests
+    /// on it. On by default; off lets the card simply be where it went.
+    CardMoves,
     /// The subscription quota line above the board's keys (T-327): a named
     /// value — `near` (only while a provider warns, the default), `every`
     /// window, the `headline` alone, or `off`. The six after it say which
@@ -104,7 +109,7 @@ pub enum PrefKey {
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 41] = [
+    pub const ALL: [PrefKey; 42] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::SnoozeNeedsYou,
@@ -133,6 +138,7 @@ impl PrefKey {
         PrefKey::NotifyVia,
         PrefKey::Peek,
         PrefKey::CrownLightning,
+        PrefKey::CardMoves,
         PrefKey::UsageLine,
         PrefKey::UsageFiveHour,
         PrefKey::UsageWeekly,
@@ -179,6 +185,7 @@ impl PrefKey {
             PrefKey::NotifyVia => "notify_via",
             PrefKey::Peek => "peek",
             PrefKey::CrownLightning => "crown_lightning",
+            PrefKey::CardMoves => "card_moves",
             PrefKey::UsageLine => "usage_line",
             PrefKey::UsageFiveHour => "usage_5h",
             PrefKey::UsageWeekly => "usage_week",
@@ -203,8 +210,9 @@ impl PrefKey {
     /// board and has no Settings row to set it per board — `p` and `P` set
     /// it. The dock bounce is a notification and follows its group. The
     /// crown's lightning (T-544) is motion on the screen, which is about
-    /// the person watching it, so one switch holds for every board. The
-    /// usage line's seven (T-327) are about the person's subscription,
+    /// the person watching it, so one switch holds for every board, and the
+    /// card moves' (T-817) for the same reason. The usage line's seven
+    /// (T-327) are about the person's subscription,
     /// which is one sign-in whichever board shows it. Who posts the banner
     /// (T-676) is a question about the terminal, so it is the machine's.
     pub fn board_overridable(self) -> bool {
@@ -223,6 +231,7 @@ impl PrefKey {
                 | PrefKey::WeekStart
                 | PrefKey::Peek
                 | PrefKey::CrownLightning
+                | PrefKey::CardMoves
                 | PrefKey::UsageLine
                 | PrefKey::UsageFiveHour
                 | PrefKey::UsageWeekly
@@ -271,6 +280,7 @@ impl PrefKey {
             PrefKey::Summary => "summary on cards",
             PrefKey::NewReplies => "new replies on cards",
             PrefKey::CrownLightning => "crown lightning",
+            PrefKey::CardMoves => "card moves",
             PrefKey::UsageLine => "usage line",
             PrefKey::UsageFiveHour => "usage line's 5-hour window",
             PrefKey::UsageWeekly => "usage line's weekly window",
@@ -342,6 +352,7 @@ mod tests {
                 PrefKey::NotifyVia,
                 PrefKey::Peek,
                 PrefKey::CrownLightning,
+                PrefKey::CardMoves,
                 PrefKey::UsageLine,
                 PrefKey::UsageFiveHour,
                 PrefKey::UsageWeekly,

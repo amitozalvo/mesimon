@@ -11,11 +11,11 @@
       │  Behaviour                                                                                               │
       │                      Status line              ○ top         ● bottom                                     │
       │  Agents              Crown's actions          ● lightning   ○ still                                      │
-      │                      Summary on cards         ● full        ○ hover    ○ none                            │
-      │  Crown               New replies              ● on                                                       │
-      │                      Pull requests on cards   ● always      ○ news     ○ off                             │
-      │  Terminal            Card corner              ● age         ○ cost                                       │
-      │                                                                                                          │
+      │                      Card moves               ● animated    ○ instant                                    │
+      │  Crown               Summary on cards         ● full        ○ hover     ○ none                           │
+      │                      New replies              ● on                                                       │
+      │  Terminal            Pull requests on cards   ● always      ○ news      ○ off                            │
+      │                      Card corner              ● age         ○ cost                                       │
       │  Usage                                                                                                   │
       │                                                                                                          │
       │                                                                                                          │

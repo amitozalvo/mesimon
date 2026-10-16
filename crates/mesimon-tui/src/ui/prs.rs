@@ -453,7 +453,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket: ulid::Ulid, idx: usize) {
         let name = format!("PULL REQUESTS ∙ {key}{}", read.unwrap_or_default());
         let room = usize::from(dialog::MAX_W).min(room);
         let lines = crate::peek::wrap(EMPTY, room.saturating_sub(2).max(1), usize::MAX);
-        let area = dialog::centred(screen, lines.len() as u16, dialog::MAX_W);
+        let area = dialog::placed(app, screen, lines.len() as u16, dialog::MAX_W);
         let inner_w = area.width.saturating_sub(2) as usize;
         let inner = dialog::frame(
             f,
@@ -471,6 +471,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket: ulid::Ulid, idx: usize) {
                 ),
             },
         );
+        dialog::notch(f, app, area);
         let lines: Vec<Line<'static>> = lines
             .into_iter()
             .map(|l| Line::from(Span::styled(format!(" {l}"), theme.dim2())))
@@ -494,7 +495,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket: ulid::Ulid, idx: usize) {
     let head_h = usize::from(head.is_some());
     let wanted = head_h + heights.iter().sum::<usize>();
     let mut area =
-        dialog::centred(screen, u16::try_from(wanted).unwrap_or(u16::MAX), inner_w as u16);
+        dialog::placed(app, screen, u16::try_from(wanted).unwrap_or(u16::MAX), inner_w as u16);
     // The row above the footer stays the cursor's link.
     let whole_y = screen.bottom().saturating_sub(2);
     area.height = area.height.min(whole_y.saturating_sub(area.y)).max(3);
@@ -523,6 +524,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket: ulid::Ulid, idx: usize) {
             tail: dialog::keys(app, Scope::PullRequests, &theme.rest, tail_w),
         },
     );
+    dialog::notch(f, app, area);
     let width = usize::from(inner.width);
     if let Some(url) = prs.get(idx).map(|p| p.url.as_str()).filter(|u| !u.is_empty()) {
         dialog::whole_row(f, app, whole_y, url, true);

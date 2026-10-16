@@ -509,6 +509,9 @@ pub enum Verb {
     /// The crown's actions strike their tickets with a bolt (T-544): a
     /// switch on the Appearance list, on by default, per machine.
     CrownLightning,
+    /// A card moved by anything but this board's own keys plays its move
+    /// (T-817): a switch on the Appearance list, on by default, per machine.
+    CardMoves,
     /// The board reads the mouse (T-716): a switch on the Behaviour list,
     /// on by default, per machine.
     Mouse,
@@ -1065,6 +1068,7 @@ impl SettingsSection {
         match verb {
             Verb::StatusLine
             | Verb::CrownLightning
+            | Verb::CardMoves
             | Verb::SummaryShow
             | Verb::NewReplies
             | Verb::CardPrs
@@ -1224,6 +1228,8 @@ pub struct Ctx {
     pub theme_os_barred: bool,
     /// The crown's actions strike their tickets with a bolt (T-544).
     pub crown_lightning: bool,
+    /// A moved card plays its move (T-817).
+    pub card_moves: bool,
     /// The board reads the mouse (T-716).
     pub mouse: bool,
     /// A resting card shows its agent's new reply under its title (T-720).
@@ -4792,6 +4798,22 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // A card's move (T-817), by automove, an agent, the merge train, a phone
+    // or a teammate: on by default, since an instant move is easy to miss.
+    // This board's own keys never play one; the cursor rides those.
+    MenuItem {
+        verb: Verb::CardMoves,
+        label: |_| "Card moves".into(),
+        detail: |c| {
+            if c.card_moves {
+                "a moved card shimmers until the cursor rests on it".into()
+            } else {
+                "a moved card is simply where it went".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
     // The terminal's own tab (T-492). Everything off by default: the tab
     // is the terminal's, and a board that renames it uninvited is a board
     // that wrote where it was not asked to. Per machine, the status line's
@@ -5608,6 +5630,7 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
         SettingsSection::Appearance => &[
             Verb::StatusLine,
             Verb::CrownLightning,
+            Verb::CardMoves,
             Verb::SummaryShow,
             Verb::NewReplies,
             Verb::CardPrs,
@@ -5731,6 +5754,7 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
     Some(match verb {
         Verb::StatusLine => pick(&["top", "bottom"], !c.status_top),
         Verb::CrownLightning => pick(&["lightning", "still"], !c.crown_lightning),
+        Verb::CardMoves => pick(&["animated", "instant"], !c.card_moves),
         Verb::SummaryShow => choice(&["full", "hover", "none"], or(c.summary_word, "full")),
         Verb::FetchEvery => choice(
             &["off", "1 min", "5 min", "15 min"],
@@ -5838,6 +5862,7 @@ pub fn pref_key(verb: Verb) -> Option<PrefKey> {
         Verb::MergeTrainNotice => PrefKey::MergeTrainNotice,
         Verb::StatusLine => PrefKey::StatusTop,
         Verb::CrownLightning => PrefKey::CrownLightning,
+        Verb::CardMoves => PrefKey::CardMoves,
         Verb::Mouse => PrefKey::Mouse,
         Verb::TabTitle => PrefKey::TabTitle,
         Verb::TabTitleNeedsYou => PrefKey::TabTitleNeedsYou,
@@ -10018,6 +10043,7 @@ mod tests {
                 vec![
                     Verb::StatusLine,
                     Verb::CrownLightning,
+                    Verb::CardMoves,
                     Verb::SummaryShow,
                     Verb::NewReplies,
                     Verb::CardPrs,
@@ -10725,6 +10751,7 @@ mod tests {
         let prefs = [
             Verb::StatusLine,
             Verb::CrownLightning,
+            Verb::CardMoves,
             Verb::SummaryShow,
             Verb::NewReplies,
             Verb::CardPrs,

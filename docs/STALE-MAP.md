@@ -26510,3 +26510,53 @@ The mod-road integration pass that fail-fast prevented was run separately under
 skipped as a standalone test, and a clean fixture audit. Python syntax checks,
 the existing six offline native-driver self-tests, and `git diff --check` passed.
 Linux and manual TUI checks were not run for this Python-only harness change.
+
+## A card's move plays out, and a card's dialog hangs from its card (T-817, 2026-10-16, the author: "when cards move it's instant and can be missed easily by the user" and "when opening card dialog using ^hjk it's hard to know which card was this opened from")
+
+Proposed as a live simulation first and shaped by the author's answers: no landing light (it
+"can be misread as cursor moved to the card"), no gutter dot, no arc ("too aggressive"), and no
+italic, which SGR 3's ban kept off the board anyway.
+
+**A move plays (`glide.rs`).** `App::absorb` diffs the snapshot against the board it replaces:
+a ticket on the board in both, in another column, both columns drawn, is a move. It plays unless
+this board sent it (`req` stamps every `MoveTicket` in `own_moves` for `OWN_MOVE_MS`, 10 s: the
+cursor rode it), unless the crown did (its `moved` touch keeps the T-544 bolt), and only with
+**Settings › Appearance › Card moves** on (`Prefs::card_moves`, machine-only like the lightning,
+on by default). Three phases along the direction of travel, 1.5 s in all: **out** (450 ms) — the
+card fades along the move, left to right for a move right, down to a ghost that keeps 30 % of
+its ink; **trail** (600 ms) — a grey braille stretch, 40 % of the path, travels from the ghost to
+the new slot in straight runs through the gaps alone (`glide::route`: out of the card's end into
+the gutter beside its column, along the gutter, along the empty row under the headers when a
+column lies between, down the target column's gutter, in); **in** (450 ms) — the card fades in
+along the move, its slot held blank until then. The ghost is the T-544 trail's place
+(`App::gliding_out`, `Place::Glide`) drawn as the card itself, since the fade does the dimming.
+Several in one snapshot start `STAGGER_MS` (150) apart, at most `MAX_PLAYED` (4); the rest are
+simply where they went. The trail is braille, so the ascii tier plays the fades alone.
+
+**Then it shimmers until seen.** `unseen_moves` keeps each played card and its landing; the row
+wears the pipeline's crest and clock (`theme::shimmer_crest`, T-794's numbers, shared) until a
+keypress leaves the cursor on it (`ack_woke`, the crown residue's rule). A card the cursor rode
+is seen at once. **A shade, not a lift**: the preview lifted grey toward white, but a resting
+title is already the ramp's top (graphite's E9E7E1 has nowhere to go), so `Theme::move_shimmer`
+takes the crest's letters 55 % toward the ground and back. A card whose pipeline words already
+shimmer does not shimmer twice. Grey on grey; `attn` stays needs-you's.
+
+**A card's dialog hangs from its card.** `App::dialog_card` names the card a board dialog is
+about — links (`^k`), summary (`^j`), pull requests (`^h`), the merge dialog — on the board alone.
+That card is drawn selected under its dialog (it collapsed before, the cards under it jumping
+up), the board records its whole rect (`Spots::about`), and `dialog::placed` hangs the dialog one
+row under it, centred on it and kept on the screen, or over it when it sits low, or centred when
+neither fits. `dialog::notch` turns the edge cell nearest the card's middle into `┴` (`┬` from
+above, `+` ascii) — a frame cell on the recorded perimeter, which `test_no_drawn_structure` now
+sweeps. `board::recede` takes every other cell of the columns (not the header row) to 40 % of
+its colour toward the ground (`Theme::recede`; mono has no step and keeps its own).
+
+Tests: `glide::tests` (the front, the route through the gaps, the travelling stretch, a trail that
+never covers a letter or a painted cell, the ghost's life),
+`app::a_move_from_elsewhere_plays_and_shimmers_until_seen`,
+`app::own_moves_reorders_renames_and_the_switch_do_not_play`,
+`app::a_burst_of_moves_staggers_and_is_capped`,
+`ui::a_moved_card_leaves_a_ghost_and_a_trail_in_the_gutter`, `ui::an_unseen_moved_card_shimmers`,
+`ui::the_board_recedes_behind_a_cards_dialog`, `prefs::card_moves_default_on_and_round_trip`; the
+links, summary and picture-link goldens hang from T-3 now, and the Appearance goldens carry the
+row.

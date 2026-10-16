@@ -170,9 +170,11 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     let mut groups: Vec<Group> = Vec::new();
     // `left`: this is the trail a card the crown moved out left behind
     // (T-544), drawn in the move trail's look and with no crown mark.
+    // `glide`: a card some other mover took out (T-817) — the same ghost,
+    // drawn as itself, since `glide::draw` fades it along the move.
     // The card the pointer opened (T-716).
     let hovered = app.hover_peek();
-    let mut push_card = |t: &Ticket, selected: bool, held: bool, left: bool| {
+    let mut push_card = |t: &Ticket, selected: bool, held: bool, left: bool, glide: bool| {
         let sessions = ticket_sessions(app, t.id);
         let waiting = card::needs_you(t, &sessions);
         // The registry lives on the board, so colours resolve here rather
@@ -192,7 +194,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             });
             return;
         }
-        let trail = left || (!held && moving == Some(t.id));
+        let trail = (left && !glide) || (!held && moving == Some(t.id));
         let mq = if selected { Some(marquee_ms(t)) } else { None };
         // Is this card open? The `p` preference, or a quick-tag digit still
         // inside its reveal — on the cursor card; `P` opens every card
@@ -351,14 +353,14 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             for (i, t) in rows.iter().enumerate() {
                 if i == gidx {
                     if let Some(gt) = ghost_ticket {
-                        push_card(gt, false, true, false);
+                        push_card(gt, false, true, false, false);
                     }
                 }
-                push_card(t, false, false, false);
+                push_card(t, false, false, false, false);
             }
             if gidx >= rows.len() {
                 if let Some(gt) = ghost_ticket {
-                    push_card(gt, false, true, false);
+                    push_card(gt, false, true, false, false);
                 }
             }
         }
@@ -372,6 +374,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 Own,
                 Burning,
                 Trail,
+                Glide,
             }
             let mut merged: Vec<(&Ticket, &str, Place)> =
                 rows.iter().map(|t| (*t, t.order.as_str(), Place::Own)).collect();
@@ -379,7 +382,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 .burning(name)
                 .into_iter()
                 .map(|b| (b, b.order.as_str(), Place::Burning))
-                .chain(app.leaving(name).into_iter().map(|(t, o)| (t, o, Place::Trail)));
+                .chain(app.leaving(name).into_iter().map(|(t, o)| (t, o, Place::Trail)))
+                .chain(app.gliding_out(name).into_iter().map(|(t, o)| (t, o, Place::Glide)));
             for (g, order, place) in ghosts {
                 let at = merged.partition_point(|(t, o, _)| (*o, t.id) < (order, g.id));
                 merged.insert(at, (g, order, place));
@@ -387,7 +391,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             let mut i = 0;
             for (t, _, place) in merged {
                 if place != Place::Own {
-                    push_card(t, false, false, place == Place::Trail);
+                    let glide = place == Place::Glide;
+                    push_card(t, false, false, place == Place::Trail || glide, glide);
                     continue;
                 }
                 // A prompted card stays the cursor card. Every other text
@@ -395,10 +400,14 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 // becomes the cursor card instead), but this one is anchored
                 // to a real ticket, and collapsing it mid-prompt would take
                 // the agent's own state off screen while you type at it.
-                let selected = is_cursor_col
+                // So does the card a dialog is about (T-817): it stays lit and
+                // whole under its links, summary, pull requests or merge, so
+                // the board still says which card the dialog came from.
+                let selected = (is_cursor_col
                     && app.cursor_row == Some(i)
-                    && (matches!(app.mode, Mode::Normal) || prompt_of(t).is_some());
-                push_card(t, selected, false, false);
+                    && (matches!(app.mode, Mode::Normal) || prompt_of(t).is_some()))
+                    || app.dialog_card() == Some(t.id);
+                push_card(t, selected, false, false, false);
                 i += 1;
             }
         }
@@ -769,6 +778,20 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             // The card's rows on screen are the mouse's to pick (T-716);
             // a trail is where the card was, not where it is.
             let (lo, hi) = (start.max(content_start), end.min(content_end));
+            // The card a dialog is about, whole on screen, is what the
+            // dialog hangs from (T-817).
+            if !trail
+                && start >= content_start
+                && end <= content_end
+                && app.dialog_card() == Some(id)
+            {
+                spots.about = Some(Rect {
+                    x: area.x,
+                    y: row_of(start),
+                    width: area.width,
+                    height: (end - start) as u16,
+                });
+            }
             if !trail && lo < hi {
                 let rect =
                     Rect { x: area.x, y: row_of(lo), width: area.width, height: (hi - lo) as u16 };
@@ -787,6 +810,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                     x: area.x,
                     y: area.y + head_rows as u16 + (top_cue_rows + start - content_start) as u16,
                     width: area.width,
+                    rows: (end.min(content_end) - start) as u16,
                     mark: mark.map(|m| area.x + m),
                 };
                 if trail {
@@ -830,6 +854,31 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         let at = (area.x + x.min(area.width.saturating_sub(1)), area.y + header_cursor_y);
         f.set_cursor_position(at);
         super::field_spot(app, area, at);
+    }
+}
+
+/// The board behind a card's dialog (T-817): every cell of the columns but
+/// their header row and the card the dialog is about recedes toward the
+/// ground, so that card is the one the board still shows. Drawn after the
+/// columns and the bolts, before the dialogs.
+pub(super) fn recede(f: &mut Frame, app: &App, area: Rect) {
+    if app.dialog_card().is_none() {
+        return;
+    }
+    let keep = app.dialog_anchor();
+    let theme = &app.theme;
+    let buf = f.buffer_mut();
+    for y in area.y.saturating_add(1)..area.bottom() {
+        for x in area.x..area.right() {
+            if keep.is_some_and(|r| r.contains(ratatui::layout::Position { x, y })) {
+                continue;
+            }
+            let cell = &mut buf[(x, y)];
+            cell.fg = theme.recede(cell.fg);
+            if cell.bg != ratatui::style::Color::Reset && Some(cell.bg) != theme.bg {
+                cell.bg = theme.recede_ground(cell.bg);
+            }
+        }
     }
 }
 

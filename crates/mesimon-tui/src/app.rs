@@ -1498,6 +1498,16 @@ pub struct App {
     /// its card's beat is over. Kept whatever `crown_lightning` says, so a
     /// switch turned on mid-strike picks the clock up where it is.
     pub strikes: Vec<crate::strike::Strike>,
+    /// The moves this board is playing (T-817): a card some other mover
+    /// took to another column, first seen in a snapshot, dropped once it
+    /// has landed.
+    pub glides: Vec<crate::glide::Glide>,
+    /// The moved cards the cursor has not rested on since, and when each
+    /// landed: the row shimmers until it does (T-817). Local state only.
+    pub unseen_moves: std::collections::HashMap<ulid::Ulid, u64>,
+    /// The cards this board itself just sent to another column, and when
+    /// (T-817): the snapshot that carries the move does not play it.
+    own_moves: std::collections::HashMap<ulid::Ulid, u64>,
     /// Where the last board draw put each card's title row and each
     /// column's header, for the bolts to join (T-544). Draw-side, like
     /// `cursor_card`; `ui::draw` clears it.
@@ -2077,6 +2087,9 @@ impl App {
             crown_residue: std::collections::HashSet::new(),
             crowned_at: None,
             strikes: Vec::new(),
+            glides: Vec::new(),
+            unseen_moves: std::collections::HashMap::new(),
+            own_moves: std::collections::HashMap::new(),
             spots: std::cell::RefCell::new(crate::strike::Spots::default()),
             spoke: std::collections::HashMap::new(),
             crown_said: std::collections::HashMap::new(),
@@ -2296,6 +2309,7 @@ impl App {
             || self.status_flashing()
             || self.board.crown.is_some_and(|id| self.crowning_ms(id).is_some())
             || self.striking()
+            || self.gliding()
             || self.summary_pulsing()
             || self.settings_striking()
             || self.reply_revealing()
@@ -2325,6 +2339,31 @@ impl App {
         self.prefs.crown_lightning && self.theme.glyph_tier() == crate::glyphs::Tier::Unicode
     }
 
+    /// The card a board dialog is about (T-817): its links, its summary,
+    /// its pull requests or its merge, opened on the cursor's card. That
+    /// card stays lit under the dialog, the dialog hangs from it, and the
+    /// rest of the board recedes, so the board says which card it was. The
+    /// ticket page has no board under it: `None` there.
+    pub(crate) fn dialog_card(&self) -> Option<ulid::Ulid> {
+        if !matches!(self.screen, Screen::Board) {
+            return None;
+        }
+        match &self.mode {
+            Mode::Links { ticket, .. }
+            | Mode::Summary { ticket, .. }
+            | Mode::PullRequests { ticket, .. } => Some(*ticket),
+            _ => self.merge_dialog.as_ref().map(|d| d.ticket),
+        }
+    }
+
+    /// Where that card stands on screen this frame, whole: what the dialog
+    /// hangs from. `None` when no such dialog is open or the card is cut by
+    /// its column's edge.
+    pub(crate) fn dialog_anchor(&self) -> Option<ratatui::layout::Rect> {
+        self.dialog_card()?;
+        self.spots.borrow().about
+    }
+
     /// Is a strike moving on the board right now?
     fn striking(&self) -> bool {
         let now = mesimon_core::clock::now_ms();
@@ -2351,6 +2390,30 @@ impl App {
                 Some((self.board.ticket(s.target)?, order.as_str()))
             })
             .collect()
+    }
+
+    /// The cards another mover took out of `column` a moment ago (T-817),
+    /// each with the order it had there: the ghost holds its place until
+    /// the card has landed where it went. Drawn, never navigable, never
+    /// counted.
+    pub(crate) fn gliding_out(&self, column: &str) -> Vec<(&Ticket, &str)> {
+        if !self.prefs.card_moves {
+            return Vec::new();
+        }
+        let now = mesimon_core::clock::now_ms();
+        self.glides
+            .iter()
+            .filter(|g| g.ghost(now) && g.was.0 == column)
+            .filter_map(|g| Some((self.board.ticket(g.ticket)?, g.was.1.as_str())))
+            .collect()
+    }
+
+    /// Is a card's move playing on the board right now (T-817)?
+    fn gliding(&self) -> bool {
+        let now = mesimon_core::clock::now_ms();
+        self.prefs.card_moves
+            && matches!(self.screen, Screen::Board)
+            && self.glides.iter().any(|g| !g.over(now))
     }
 
     /// The archived cards still burning in `column` (T-544): the crown
@@ -2590,6 +2653,11 @@ impl App {
     /// becomes an ordinary Err response (every call site already surfaces
     /// those) and flags the reconnect cadence.
     fn req(&mut self, command: Command) -> Response {
+        // A card this board sends to another column is its own move: the
+        // cursor rides it, and it is not played back (T-817).
+        if let Command::MoveTicket { id, .. } = &command {
+            self.own_moves.insert(*id, (self.now)());
+        }
         match self.client.request(command) {
             Ok(r) => r,
             Err(_) => {
@@ -2674,6 +2742,20 @@ impl App {
                 Some((t.ticket, (old.column.clone(), old.order.clone())))
             })
             .collect();
+        // Every card another mover took to another column since the last
+        // snapshot (T-817): where it was, and where it went.
+        let moved: Vec<(ulid::Ulid, String, String, String)> = board
+            .tickets
+            .iter()
+            .filter(|t| !t.is_archived())
+            .filter_map(|t| {
+                let old = self.board.ticket(t.id).filter(|o| !o.is_archived())?;
+                (old.column != t.column)
+                    .then(|| (t.id, old.column.clone(), old.order.clone(), t.column.clone()))
+            })
+            .collect();
+        let crown_moved: std::collections::HashSet<ulid::Ulid> =
+            crown_touches.iter().filter(|t| t.action == "moved").map(|t| t.ticket).collect();
         let mut board = board;
         self.lay_held(&mut board);
         self.board = Arc::new(board);
@@ -2703,6 +2785,7 @@ impl App {
         let said = &self.crown_said;
         self.crown_said_seen.retain(|t, _| said.contains_key(t));
         self.absorb_crown_touches(crown_touches, crown_was, &placed);
+        self.absorb_moves(moved, &crown_moved, followed);
         self.settle_drawer();
         self.seed_team_drafts();
         self.follow_ticket(followed);
@@ -5538,6 +5621,8 @@ impl App {
         // unread done mark: the cursor resting here is the reader having
         // seen what the coordinator did to this card. Local state only.
         self.crown_residue.remove(&id);
+        // And a moved card's shimmer (T-817), by the same glance.
+        self.unseen_moves.remove(&id);
         if !self.board.ticket(id).is_some_and(|t| t.is_woke()) {
             return Ok(());
         }
@@ -5545,6 +5630,49 @@ impl App {
             self.status = message;
         }
         self.refresh()
+    }
+
+    /// The moves off a snapshot (T-817): each card another mover took to
+    /// another column starts its glide, staggered when several came at
+    /// once, and shimmers after it lands until the cursor rests on it. Not
+    /// one this board sent (the cursor rode it), not the crown's (it keeps
+    /// its bolt), not a move from or to a column this board does not draw
+    /// (a renamed or deleted one), and nothing at all with the switch off.
+    /// `followed` is the card the cursor held: it has been seen.
+    fn absorb_moves(
+        &mut self,
+        moved: Vec<(ulid::Ulid, String, String, String)>,
+        crown_moved: &std::collections::HashSet<ulid::Ulid>,
+        followed: Option<ulid::Ulid>,
+    ) {
+        let now = (self.now)();
+        self.own_moves.retain(|_, at| now.saturating_sub(*at) < crate::glide::OWN_MOVE_MS);
+        self.glides.retain(|g| !g.over(now));
+        let board = Arc::clone(&self.board);
+        self.unseen_moves.retain(|id, _| board.ticket(*id).is_some_and(|t| !t.is_archived()));
+        let cols = board.sorted_columns();
+        let place = |name: &str| cols.iter().position(|c| c.name == name);
+        let mut played = 0u64;
+        for (id, from, order, to) in moved {
+            if self.own_moves.remove(&id).is_some() || crown_moved.contains(&id) {
+                continue;
+            }
+            let (Some(a), Some(b)) = (place(&from), place(&to)) else { continue };
+            if !self.prefs.card_moves || played as usize >= crate::glide::MAX_PLAYED {
+                self.unseen_moves.remove(&id);
+                continue;
+            }
+            let start = now + played * crate::glide::STAGGER_MS;
+            played += 1;
+            self.glides.retain(|g| g.ticket != id);
+            let glide = crate::glide::Glide { ticket: id, was: (from, order), start, right: b > a };
+            if followed == Some(id) {
+                self.unseen_moves.remove(&id);
+            } else {
+                self.unseen_moves.insert(id, glide.landed_at());
+            }
+            self.glides.push(glide);
+        }
     }
 
     /// The crown's touches off a snapshot (T-411): every touched card
@@ -5963,6 +6091,7 @@ impl App {
             theme_light: self.prefs.light.name(),
             theme_os_barred: self.appearance_barred,
             crown_lightning: self.prefs.crown_lightning,
+            card_moves: self.prefs.card_moves,
             mouse: self.prefs.mouse,
             new_replies: self.prefs.new_replies,
             card_prs_word: self.prefs.card_prs.key(),
@@ -7404,6 +7533,16 @@ impl App {
                     "the crown's actions hold still ∙ the card still says what was done"
                 };
                 self.set_pref(word, |p| p.crown_lightning = on);
+            }
+            // T-817. Read on every frame; nothing to push.
+            Verb::CardMoves => {
+                let on = !self.prefs.card_moves;
+                let word = if on {
+                    "a moved card plays its move"
+                } else {
+                    "a moved card is simply where it went"
+                };
+                self.set_pref(word, |p| p.card_moves = on);
             }
             // T-739. Read on every frame; nothing to push.
             Verb::CardPrs => {
@@ -23537,6 +23676,111 @@ mod tests {
         board.tickets.remove(1);
         app.absorb(Snapshot { board, ..Default::default() });
         assert_eq!(app.cursor_col, 1);
+    }
+
+    /// T-817: a card another mover took to another column plays its move,
+    /// toward where it went, with its ghost in the column it left, and its
+    /// row shimmers until the cursor rests on it. A move back plays the
+    /// other way and replaces the first.
+    #[test]
+    fn a_move_from_elsewhere_plays_and_shimmers_until_seen() {
+        let mut app = app_three_columns();
+        app.cursor_col = 0;
+        app.cursor_row = Some(0);
+        let mut board = board_three_columns();
+        board.tickets[1].column = "done".into();
+        app.absorb(Snapshot { board, ..Default::default() });
+        assert_eq!(app.glides.len(), 1);
+        let g = app.glides[0].clone();
+        assert_eq!((g.ticket, g.right), (ulid::Ulid(2), true));
+        assert_eq!(g.was, ("todo".into(), "b".into()), "where it was");
+        let ghosts: Vec<ulid::Ulid> = app.gliding_out("todo").iter().map(|(t, _)| t.id).collect();
+        assert_eq!(ghosts, vec![ulid::Ulid(2)], "the ghost holds its place");
+        assert!(app.gliding_out("done").is_empty());
+        assert!(app.animating(), "a move wants the fast frames");
+        assert_eq!(app.unseen_moves.get(&ulid::Ulid(2)), Some(&g.landed_at()));
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(1)), "the cursor stays");
+
+        app.absorb(Snapshot { board: board_three_columns(), ..Default::default() });
+        assert_eq!(app.glides.len(), 1, "the move back replaces it");
+        assert_eq!((app.glides[0].ticket, app.glides[0].right), (ulid::Ulid(2), false));
+        assert_eq!(app.gliding_out("done").len(), 1);
+
+        // The cursor comes to rest on it: seen.
+        app.on_key(KeyCode::Char('j'), KeyModifiers::NONE).unwrap();
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(2)));
+        assert!(app.unseen_moves.is_empty(), "the glance takes the shimmer off");
+    }
+
+    /// T-817: what does not play — this board's own move (the cursor rode
+    /// it), a reorder inside a column, a card whose column was renamed, a
+    /// card the cursor was on (seen, so it plays but does not shimmer),
+    /// and anything with the switch off.
+    #[test]
+    fn own_moves_reorders_renames_and_the_switch_do_not_play() {
+        let mut app = app_three_columns();
+        let _ = app.req(Command::MoveTicket {
+            id: ulid::Ulid(1),
+            column: "doing".into(),
+            before: None,
+        });
+        let mut board = board_three_columns();
+        board.tickets[0].column = "doing".into();
+        app.absorb(Snapshot { board, ..Default::default() });
+        assert!(app.glides.is_empty() && app.unseen_moves.is_empty(), "this board's own move");
+
+        let mut app = app_three_columns();
+        let mut board = board_three_columns();
+        board.tickets[1].order = "0".into();
+        app.absorb(Snapshot { board, ..Default::default() });
+        assert!(app.glides.is_empty(), "a reorder is not a move");
+
+        let mut app = app_three_columns();
+        let mut board = board_three_columns();
+        board.columns[0].name = "later".into();
+        for t in board.tickets.iter_mut().filter(|t| t.column == "todo") {
+            t.column = "later".into();
+        }
+        app.absorb(Snapshot { board, ..Default::default() });
+        assert!(app.glides.is_empty(), "a renamed column moves nothing");
+
+        let mut app = app_three_columns();
+        app.cursor_col = 0;
+        app.cursor_row = Some(1);
+        let mut board = board_three_columns();
+        board.tickets[1].column = "doing".into();
+        app.absorb(Snapshot { board, ..Default::default() });
+        assert_eq!(app.glides.len(), 1, "it plays");
+        assert!(app.unseen_moves.is_empty(), "but the cursor rode it: seen");
+
+        let mut app = app_three_columns();
+        app.seed_pref(|p| p.card_moves = false);
+        let mut board = board_three_columns();
+        board.tickets[1].column = "doing".into();
+        app.absorb(Snapshot { board, ..Default::default() });
+        assert!(app.glides.is_empty() && app.unseen_moves.is_empty(), "switched off");
+        assert!(app.gliding_out("todo").is_empty() && !app.animating());
+    }
+
+    /// T-817: several moves in one snapshot start staggered, and past the
+    /// cap the rest are simply where they went.
+    #[test]
+    fn a_burst_of_moves_staggers_and_is_capped() {
+        let mut board = board_three_columns();
+        for n in 4..=8 {
+            board.tickets.push(ticket(n, "todo", &format!("c{n}")));
+        }
+        let mut app = App::for_test(board.clone(), theme());
+        app.cursor_col = 2;
+        app.cursor_row = Some(0);
+        for t in board.tickets.iter_mut().filter(|t| t.column == "todo") {
+            t.column = "done".into();
+        }
+        app.absorb(Snapshot { board, ..Default::default() });
+        assert_eq!(app.glides.len(), crate::glide::MAX_PLAYED);
+        let starts: Vec<u64> = app.glides.iter().map(|g| g.start).collect();
+        assert!(starts.windows(2).all(|w| w[1] == w[0] + crate::glide::STAGGER_MS), "{starts:?}");
+        assert_eq!(app.unseen_moves.len(), crate::glide::MAX_PLAYED);
     }
 
     /// The boards section (T-335): the join row, then the boards; Enter on

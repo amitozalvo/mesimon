@@ -42,6 +42,55 @@ pub(super) fn centred(screen: Rect, rows: u16, max_w: u16) -> Rect {
     }
 }
 
+/// Where a dialog about one card stands (T-817): hung one row under the
+/// card it was opened from, or over it when the card sits too low, centred
+/// on the card and kept on the screen, so the card stays in sight beside
+/// what it opened. No such card on screen, or no room either side, is
+/// `centred`. The footer and the row above it stay the screen's, and the
+/// board's top row and the one under it.
+pub(super) fn placed(app: &App, screen: Rect, rows: u16, max_w: u16) -> Rect {
+    let area = centred(screen, rows, max_w);
+    let Some(card) = app.dialog_anchor() else { return area };
+    let (w, h) = (area.width, area.height);
+    let margin = (screen.width.saturating_sub(w) / 2).min(2);
+    let lo = screen.x + margin;
+    let hi = screen.right().saturating_sub(w + margin).max(lo);
+    let x = (card.x + card.width / 2).saturating_sub(w / 2).clamp(lo, hi);
+    let below = card.bottom() + 1;
+    if below + h <= screen.bottom().saturating_sub(2) {
+        return Rect { x, y: below, width: w, height: h };
+    }
+    match card.y.checked_sub(h + 1) {
+        Some(y) if y >= screen.y + 2 => Rect { x, y, width: w, height: h },
+        _ => area,
+    }
+}
+
+/// The notch a dialog hung from its card wears (T-817): one cell of its
+/// edge, the one nearest the card's middle, turned toward the card — a
+/// tee in the top edge of a dialog under the card, in the bottom edge of
+/// one over it. Still a frame cell, on the recorded perimeter; never one
+/// the title or the keys stand in.
+pub(super) fn notch(f: &mut Frame, app: &App, area: Rect) {
+    let Some(card) = app.dialog_anchor() else { return };
+    if area.width < 4 || area.height < 3 {
+        return;
+    }
+    let g = crate::glyphs::frame_set(app.theme.glyph_tier());
+    let (y, ch) = if area.y >= card.bottom() {
+        (area.y, g.up)
+    } else if area.bottom() <= card.y {
+        (area.bottom() - 1, g.down)
+    } else {
+        return;
+    };
+    let x = (card.x + card.width / 2).clamp(area.x + 1, area.right() - 2);
+    let cell = &mut f.buffer_mut()[(x, y)];
+    if cell.symbol().chars().eq([g.h]) {
+        cell.set_char(ch);
+    }
+}
+
 /// What the frame carries: the title in its top edge, the keys in its
 /// bottom edge. Either may be empty; the edge is then a plain rule.
 pub(super) struct Edges {
@@ -210,7 +259,12 @@ pub(super) fn list(
     let per = if tall { 2 } else { 1 };
     let height = |r: &ListRow| if r.heading { 1 } else { per };
     let wanted = u16::try_from(rows.iter().map(height).sum::<usize>()).unwrap_or(u16::MAX);
-    let mut area = centred(f.area(), wanted, MAX_W);
+    // The links and the summary are about the cursor's card (T-817).
+    let mut area = if matches!(scope, Scope::Links | Scope::Summary) {
+        placed(app, f.area(), wanted, MAX_W)
+    } else {
+        centred(f.area(), wanted, MAX_W)
+    };
     // The row above the footer stays the frame's (`whole_row`): a list as
     // tall as the screen gives it up, and scrolls one row sooner.
     let whole_y = f.area().bottom().saturating_sub(2);
@@ -239,6 +293,9 @@ pub(super) fn list(
             tail: keys(app, scope, &theme.rest, inner_w.saturating_sub(4)),
         },
     );
+    if matches!(scope, Scope::Links | Scope::Summary) {
+        notch(f, app, area);
+    }
     // The right edge keeps one cell of margin after it.
     let edge = |row: &ListRow| if row.right.is_empty() { 0 } else { row.right.width() + 1 };
     // The cursor's row, whole, cut or not, as the board's row names the
@@ -530,7 +587,7 @@ pub(super) fn draw_merge(f: &mut Frame, app: &App, d: &crate::app::MergeDialog) 
     if rows.is_empty() {
         return;
     }
-    let area = centred(f.area(), rows.len() as u16, MAX_W);
+    let area = placed(app, f.area(), rows.len() as u16, MAX_W);
     let inner_w = area.width.saturating_sub(2) as usize;
     let inner = frame(
         f,
@@ -543,6 +600,7 @@ pub(super) fn draw_merge(f: &mut Frame, app: &App, d: &crate::app::MergeDialog) 
             tail: keys(app, Scope::MergeChord, &theme.rest, inner_w.saturating_sub(4)),
         },
     );
+    notch(f, app, area);
     let lead = if d.running.is_some() {
         format!(" {} ", crate::glyphs::spinner(theme.glyph_tier(), app.spin_frame()))
     } else {

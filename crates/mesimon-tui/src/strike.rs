@@ -165,6 +165,9 @@ pub(crate) struct Spots {
     pub columns: Vec<(usize, u16, u16)>,
     /// Each drawn chip on the board's top row and its cells across.
     pub chips: Vec<(mesimon_core::keymap::HeaderChip, u16, u16)>,
+    /// The card a board dialog is about, whole on screen (T-817): what
+    /// the dialog hangs from.
+    pub about: Option<Rect>,
 }
 
 /// One card's title row on screen.
@@ -174,16 +177,19 @@ pub(crate) struct CardSpot {
     pub x: u16,
     pub y: u16,
     pub width: u16,
+    /// How many of its rows are on screen, from the title row down
+    /// (T-817): what a move fades.
+    pub rows: u16,
     /// The crown's mark on the holder's card, its column.
     pub mark: Option<u16>,
 }
 
 impl Spots {
-    fn card(&self, id: ulid::Ulid) -> Option<&CardSpot> {
+    pub(crate) fn card(&self, id: ulid::Ulid) -> Option<&CardSpot> {
         self.cards.iter().find(|c| c.id == id)
     }
 
-    fn trail(&self, id: ulid::Ulid) -> Option<&CardSpot> {
+    pub(crate) fn trail(&self, id: ulid::Ulid) -> Option<&CardSpot> {
         self.trails.iter().find(|c| c.id == id)
     }
 

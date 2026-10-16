@@ -1337,6 +1337,27 @@ fn mix(a: Color, b: Color, k: f32) -> Color {
     Color::Rgb(ch(ar, br), ch(ag, bg), ch(ab, bb))
 }
 
+/// How much of its lift the shimmer's crest gives `cell` of `cells`,
+/// `at_ms` into its clock (T-794, shared with a moved card's, T-817): a
+/// soft crest crosses the cells in `PR_SHIMMER_MS`, then rests for
+/// `PR_SHIMMER_REST_MS`, again. 0 off the crest, `PR_SHIMMER_PEAK` on it.
+pub(crate) fn shimmer_crest(at_ms: u64, cells: usize, cell: usize) -> f32 {
+    if cells == 0 {
+        return 0.0;
+    }
+    let at = at_ms % (PR_SHIMMER_MS + PR_SHIMMER_REST_MS);
+    if at >= PR_SHIMMER_MS {
+        return 0.0;
+    }
+    let t = at as f32 / PR_SHIMMER_MS as f32;
+    let front = -PR_SHIMMER_BAND + (cells as f32 + 2.0 * PR_SHIMMER_BAND) * ease(t);
+    let d = 1.0 - ((cell as f32 + 0.5) - front).abs() / PR_SHIMMER_BAND;
+    if d <= 0.0 {
+        return 0.0;
+    }
+    d * d * (3.0 - 2.0 * d) * PR_SHIMMER_PEAK
+}
+
 /// Sine ease-in-out over `0..=1`: starts and lands gently.
 fn ease(t: f32) -> f32 {
     0.5 - 0.5 * (std::f32::consts::PI * t.clamp(0.0, 1.0)).cos()
@@ -1381,6 +1402,12 @@ const REPLY_REVEAL_FADE: f32 = 10.0;
 /// `PR_SHIMMER_REST_MS`, again for as long as the pipeline runs.
 pub(crate) const PR_SHIMMER_MS: u64 = 2_400;
 const PR_SHIMMER_REST_MS: u64 = 1_600;
+/// How far toward the ground a moved card's shimmer takes a letter at its
+/// crest (T-817).
+const MOVE_SHADE: f32 = 0.55;
+/// How much of its own colour a cell keeps when the board recedes behind
+/// a card's dialog (T-817).
+const RECEDE: f32 = 0.4;
 /// Cells either side of the shimmer's crest that it lifts.
 const PR_SHIMMER_BAND: f32 = 5.0;
 /// How much of `lift` the crest takes over the words' own ink.
@@ -2246,6 +2273,32 @@ impl Theme {
         }
     }
 
+    /// A cell's colour with the board receded behind a card's dialog
+    /// (T-817): most of the way to the ground, so the cards the dialog is
+    /// not about step back and the one it is about stands. An ink the
+    /// terminal owns is the ramp's base first; where there is no ground to
+    /// mix toward it is the ramp's quietest step. Mono has no step to
+    /// take and keeps what it has.
+    pub fn recede(&self, c: Color) -> Color {
+        self.toward_ground(c, RECEDE)
+    }
+
+    /// A painted ground (a tag bar, a band) receded the same way; a ground
+    /// with no colour to mix keeps its own, since a band turned grey would
+    /// read as a different band.
+    pub fn recede_ground(&self, c: Color) -> Color {
+        self.recede_ground_by(c, RECEDE)
+    }
+
+    /// A painted ground with `keep` of it left over the page's ground, the
+    /// same rule (T-817): no colour to mix keeps its own.
+    pub fn recede_ground_by(&self, c: Color, keep: f32) -> Color {
+        match (c, self.bg) {
+            (Color::Rgb(..), Some(g @ Color::Rgb(..))) if self.has_colour() => mix(c, g, keep),
+            _ => c,
+        }
+    }
+
     /// One cell of a running pipeline's words (T-794) at `now_ms`: `ink`,
     /// lifted toward `lift` under a crest that crosses the `cells` slowly,
     /// grey on grey, so the line says it is moving without a colour of its
@@ -2259,21 +2312,45 @@ impl Theme {
         lift: Color,
     ) -> Style {
         let still = Style::default().fg(ink);
-        if !self.has_colour() || cells == 0 {
+        if !self.has_colour() {
             return still;
         }
-        let at = now_ms % (PR_SHIMMER_MS + PR_SHIMMER_REST_MS);
-        if at >= PR_SHIMMER_MS {
-            return still;
+        match shimmer_crest(now_ms, cells, cell) {
+            k if k > 0.0 => Style::default().fg(mix(lift, ink, k)),
+            _ => still,
         }
-        let t = at as f32 / PR_SHIMMER_MS as f32;
-        let front = -PR_SHIMMER_BAND + (cells as f32 + 2.0 * PR_SHIMMER_BAND) * ease(t);
-        let d = 1.0 - ((cell as f32 + 0.5) - front).abs() / PR_SHIMMER_BAND;
-        if d <= 0.0 {
-            return still;
+    }
+
+    /// A moved card's row under its shimmer (T-817), `at_ms` after it
+    /// landed: the pipeline's crest and clock, but a shade where the
+    /// pipeline's is a lift. A title already stands at the top of the
+    /// ramp, with no lighter grey above it to cross with, so the crest
+    /// takes the letters it passes part of the way to the ground and
+    /// gives them back. `None` off the crest, and where there is no
+    /// colour to mix.
+    pub fn move_shimmer(&self, at_ms: u64, cells: usize, cell: usize, ink: Color) -> Option<Style> {
+        let k = shimmer_crest(at_ms, cells, cell);
+        if k <= 0.0 || !self.has_colour() {
+            return None;
         }
-        let k = d * d * (3.0 - 2.0 * d) * PR_SHIMMER_PEAK;
-        Style::default().fg(mix(lift, ink, k))
+        let keep = 1.0 - MOVE_SHADE * k / PR_SHIMMER_PEAK;
+        Some(Style::default().fg(self.toward_ground(ink, keep)))
+    }
+
+    /// A colour some of the way to the ground (T-817): `keep` of it stays.
+    /// An ink the terminal owns is the ramp's base first; where there is
+    /// no ground to mix toward, it holds above the half and is the ramp's
+    /// quietest step below it. Mono keeps what it has.
+    pub fn toward_ground(&self, c: Color, keep: f32) -> Color {
+        if !self.has_colour() || keep >= 1.0 {
+            return c;
+        }
+        let c = if c == Color::Reset { self.rest.base } else { c };
+        match (c, self.bg) {
+            (Color::Rgb(..), Some(g @ Color::Rgb(..))) => mix(c, g, keep),
+            _ if keep >= 0.5 => c,
+            _ => self.rest.dim3,
+        }
     }
 
     fn reveal(&self, elapsed: u64, cells: usize, cell: usize, ink: Color) -> Option<Style> {

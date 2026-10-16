@@ -8111,6 +8111,16 @@ fn test_no_drawn_structure() {
         sweep(&arch),
         sweep(&picker),
         {
+            // A dialog hung from its card wears a notch in its edge (T-817):
+            // a frame cell, on the recorded perimeter.
+            let lines = sweep(&app_links());
+            assert!(
+                lines.iter().any(|l| l.contains('┴')),
+                "the notch must be ON SCREEN, or this law does not bite"
+            );
+            lines
+        },
+        {
             // The tour (T-763), its practice board holding a dialog of its
             // own: that board's frames are frames on this one.
             let mut tour = touring(0);
@@ -11925,4 +11935,108 @@ fn tour_dump() {
     for l in render(&app, 140, 40) {
         println!("{l}");
     }
+}
+
+/// T-817: the board mid-move — Adopt drawer import taken from IN PROGRESS
+/// to the top of REVIEW by another mover — `ms` into its glide.
+fn app_gliding(ms: u64) -> App {
+    let mut b = fixture(false);
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(4)) {
+        t.column = "review".into();
+        t.order = "0".into();
+    }
+    let mut app = app_graphite(b);
+    app.glides.push(crate::glide::Glide {
+        ticket: ulid_n(4),
+        was: ("in progress".into(), "b".into()),
+        start: mesimon_core::clock::now_ms() - ms,
+        right: true,
+    });
+    app
+}
+
+fn braille(buf: &ratatui::buffer::Buffer, x: u16, y: u16) -> bool {
+    buf[(x, y)].symbol().chars().any(|c| ('\u{2801}'..='\u{28FF}').contains(&c))
+}
+
+/// T-817: while the trail runs, the card is a ghost where it was and not
+/// yet where it went, and the trail is in the gutter between the two
+/// columns, never on a card. As it fades in, the near end comes first.
+#[test]
+fn a_moved_card_leaves_a_ghost_and_a_trail_in_the_gutter() {
+    use crate::glide::{IN_MS, OUT_MS, TRAIL_MS};
+    let app = app_gliding(OUT_MS + TRAIL_MS / 3);
+    let buf = cells(&app, 120, 30);
+    let lines = lines_of(&buf);
+    let ghost = lines.iter().position(|l| l.contains("Adopt drawer import")).expect("the ghost");
+    let at = lines[ghost].find("Adopt").expect("x");
+    assert!(at < 60, "in the column it left: {}", lines[ghost]);
+    assert_eq!(lines.iter().filter(|l| l.contains("Adopt drawer")).count(), 1, "not landed yet");
+    // The gutter between IN PROGRESS and REVIEW is x = 60.
+    let gutter: Vec<u16> = (0..30).filter(|&y| braille(&buf, 60, y)).collect();
+    assert!(!gutter.is_empty(), "the trail runs down the gutter:\n{}", lines.join("\n"));
+    // Inside REVIEW, past the cell it enters by, only a card's own spinner
+    // glyph (x = 63) is braille.
+    for y in 0..30u16 {
+        for x in 62..90u16 {
+            assert!(!braille(&buf, x, y) || x == 63, "a trail dot on a REVIEW card at {x},{y}");
+        }
+    }
+
+    let app = app_gliding(OUT_MS + TRAIL_MS + IN_MS / 2);
+    let lines = render(&app, 120, 30);
+    let review: Vec<&str> = lines.iter().filter_map(|l| l.get(61..)).collect();
+    assert!(review.iter().any(|l| l.contains("Adopt")), "the near end is in");
+    assert!(!review.iter().any(|l| l.contains("Adopt drawer import")), "the far end is not yet");
+    assert!(
+        lines.iter().any(|l| l.get(..60).is_some_and(|h| h.contains("Adopt drawer import"))),
+        "the ghost stands until it lands"
+    );
+
+    let app = app_gliding(crate::glide::GLIDE_MS + 10);
+    let lines = render(&app, 120, 30);
+    let found: Vec<&String> = lines.iter().filter(|l| l.contains("Adopt drawer import")).collect();
+    assert_eq!(found.len(), 1, "landed, and the ghost gone");
+    assert!(found[0].find("Adopt").expect("x") > 60, "in REVIEW: {}", found[0]);
+}
+
+/// T-817: a moved card the cursor has not rested on shimmers along its
+/// row, grey on grey: some of its letters are a shade off their own ink
+/// at the crest, and none is `attn`. Seen, it is still.
+#[test]
+fn an_unseen_moved_card_shimmers() {
+    let app = app_gliding(crate::glide::GLIDE_MS + 10);
+    let still = cells(&app, 120, 30);
+    let mut app = app_gliding(crate::glide::GLIDE_MS + 10);
+    let now = mesimon_core::clock::now_ms();
+    app.unseen_moves.insert(ulid_n(4), now - crate::theme::PR_SHIMMER_MS / 2);
+    let lit = cells(&app, 120, 30);
+    let y = lines_of(&lit).iter().position(|l| l.contains("Adopt drawer import")).expect("row");
+    let changed: Vec<u16> =
+        (66..88).filter(|&x| lit[(x, y as u16)].fg != still[(x, y as u16)].fg).collect();
+    assert!(!changed.is_empty(), "the crest is on the row");
+    assert!(changed.iter().all(|&x| lit[(x, y as u16)].fg != app.theme.attn), "never attn");
+    assert!(changed.iter().all(|&x| lit[(x, y as u16)].symbol() == still[(x, y as u16)].symbol()));
+}
+
+/// T-817: under a card's dialog the rest of the board recedes and the
+/// card stays as it was, lit.
+#[test]
+fn the_board_recedes_behind_a_cards_dialog() {
+    let mut plain = app_graphite(fixture(false));
+    plain.cursor_col = 1;
+    plain.cursor_row = Some(0);
+    let before = cells(&plain, 120, 30);
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 1;
+    app.cursor_row = Some(0);
+    app.mode = Mode::Summary { ticket: ulid_n(3), idx: 0 };
+    let after = cells(&app, 120, 30);
+    let row = |buf: &ratatui::buffer::Buffer, needle: &str| {
+        lines_of(buf).iter().position(|l| l.contains(needle)).expect(needle) as u16
+    };
+    let (decay, fix) = (row(&after, "Decay treatments"), row(&after, "Fix OSC-11"));
+    assert_ne!(after[(6, decay)].fg, before[(6, decay)].fg, "another card recedes");
+    assert_eq!(after[(36, fix)].fg, before[(36, fix)].fg, "the card the dialog is about stays");
+    assert_eq!(after[(36, fix)].bg, before[(36, fix)].bg, "lit, as the cursor's card");
 }

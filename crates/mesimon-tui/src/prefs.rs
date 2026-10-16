@@ -427,6 +427,11 @@ pub(crate) struct Prefs {
     /// crowned agent without opening its pane. Per machine — motion on a
     /// screen is about the person watching it, not about a repo.
     pub crown_lightning: bool,
+    /// A card moved by anything but this board's own keys plays its move
+    /// (T-817): out where it was, a trail, in where it went, then a
+    /// shimmer until the cursor rests on it. ON by default; per machine,
+    /// as the crown's lightning is — motion is about the person watching.
+    pub card_moves: bool,
     /// The board reads the mouse (T-716): clicks, the wheel and hover. ON
     /// by default; off leaves the terminal its own text selection. Per
     /// machine — it is about the terminal.
@@ -491,6 +496,7 @@ impl Default for Prefs {
             notify_via: NotifyVia::Mesimon,
             peek: PeekLevel::Off,
             crown_lightning: true,
+            card_moves: true,
             mouse: true,
             usage_line: UsageLine::Near,
             usage_5h: true,
@@ -536,6 +542,7 @@ const NOTIFY_SOUND_NEEDS_YOU_KEY: &str = PrefKey::NotifySoundNeedsYou.name();
 const NOTIFY_SOUND_DONE_KEY: &str = PrefKey::NotifySoundDone.name();
 const PEEK_KEY: &str = PrefKey::Peek.name();
 const CROWN_LIGHTNING_KEY: &str = PrefKey::CrownLightning.name();
+const CARD_MOVES_KEY: &str = PrefKey::CardMoves.name();
 const MOUSE_KEY: &str = PrefKey::Mouse.name();
 const USAGE_LINE_KEY: &str = PrefKey::UsageLine.name();
 const USAGE_5H_KEY: &str = PrefKey::UsageFiveHour.name();
@@ -695,6 +702,7 @@ impl Prefs {
             PrefKey::NotifyVia => self.notify_via.key(),
             PrefKey::Peek => self.peek.key(),
             PrefKey::CrownLightning => onoff(self.crown_lightning),
+            PrefKey::CardMoves => onoff(self.card_moves),
             PrefKey::Mouse => onoff(self.mouse),
             PrefKey::NewReplies => onoff(self.new_replies),
             PrefKey::UsageLine => self.usage_line.key(),
@@ -760,6 +768,7 @@ impl Prefs {
         doc.insert(NOTIFY_CROWN_KEY.into(), Value::from(self.notify_crown));
         doc.insert(NOTIFY_WORDS_KEY.into(), Value::from(self.notify_words));
         doc.insert(CROWN_LIGHTNING_KEY.into(), Value::from(self.crown_lightning));
+        doc.insert(CARD_MOVES_KEY.into(), Value::from(self.card_moves));
         doc.insert(MOUSE_KEY.into(), Value::from(self.mouse));
         doc.insert(NEW_REPLIES_KEY.into(), Value::from(self.new_replies));
         for (key, v) in [
@@ -1109,6 +1118,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let tab_icon = flag(TAB_ICON_KEY, true);
     let notify_dock_bounce = flag(NOTIFY_DOCK_BOUNCE_KEY, false);
     let crown_lightning = flag(CROWN_LIGHTNING_KEY, true);
+    let card_moves = flag(CARD_MOVES_KEY, true);
     let mouse = flag(MOUSE_KEY, true);
     let new_replies = flag(NEW_REPLIES_KEY, true);
     let keep_awake = doc.get(KEEP_AWAKE_KEY).and_then(Value::as_bool).unwrap_or(false);
@@ -1199,6 +1209,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         notify_via,
         peek,
         crown_lightning,
+        card_moves,
         mouse,
         new_replies,
         usage_line,
@@ -1655,6 +1666,25 @@ mod tests {
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["crown_lightning"], false);
         assert!(!PrefKey::CrownLightning.board_overridable());
+    }
+
+    /// Card moves (T-817): absent is on, an off round-trips, and a board
+    /// cannot take it, the lightning's rule.
+    #[test]
+    fn card_moves_default_on_and_round_trip() {
+        let p = scratch("card-moves");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","light":"chalk"}"#).unwrap();
+        let mut l = load(&p);
+        assert!(l.prefs.card_moves, "absent is the default: on");
+        assert_eq!(l.prefs.word(PrefKey::CardMoves), "on");
+        l.prefs.card_moves = false;
+        save(&p, &l.prefs).unwrap();
+        let l = load(&p);
+        assert!(!l.prefs.card_moves);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["card_moves"], false);
+        assert!(!PrefKey::CardMoves.board_overridable());
     }
 
     /// New replies on resting cards (T-720): absent is on, an off

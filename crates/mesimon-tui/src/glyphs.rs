@@ -1566,13 +1566,21 @@ pub(crate) struct FrameGlyphs {
     pub br: char,
     pub h: char,
     pub v: char,
+    /// The notch a dialog hung from a card (T-817) sets into its top edge
+    /// under the card, and its twin for the bottom edge of one hung over it.
+    pub up: char,
+    pub down: char,
 }
 
 pub(crate) fn frame_set(tier: Tier) -> FrameGlyphs {
     match tier {
         Tier::Unicode => {
-            FrameGlyphs { tl: '╭', tr: '╮', bl: '╰', br: '╯', h: '─', v: '│' }
+            FrameGlyphs {
+                tl: '╭', tr: '╮', bl: '╰', br: '╯', h: '─', v: '│', up: '┴', down: '┬'
+            }
         }
-        Tier::Ascii => FrameGlyphs { tl: '+', tr: '+', bl: '+', br: '+', h: '-', v: '|' },
+        Tier::Ascii => {
+            FrameGlyphs { tl: '+', tr: '+', bl: '+', br: '+', h: '-', v: '|', up: '+', down: '+' }
+        }
     }
 }

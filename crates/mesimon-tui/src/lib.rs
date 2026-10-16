@@ -15,6 +15,7 @@ pub mod client;
 mod detach_guide;
 mod detect;
 mod external;
+mod glide;
 mod glyphs;
 mod handover;
 mod layout;
