@@ -330,6 +330,7 @@ mod tier_tests {
         LaunchContext {
             paths,
             cwd: std::path::Path::new("/"),
+            managed_git_worktree: false,
             session: uuid::Uuid::from_u128(1),
             tools: AgentTools::Off,
             brief: false,

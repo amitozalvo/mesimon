@@ -187,12 +187,14 @@ asked once, run `git init` in the root, commit a README and a `.gitignore` namin
 repos, then run `claude` there once and accept. Each ticket's worktree is then a git worktree of
 the trusted root. `mesimon doctor` says the same on its `workspace` line.
 
-For Codex, a new ticket worktree can still ask for folder trust even when the main checkout
-is already trusted. Mesimon connects the native terminal to a local Codex app server using
-`--remote`; Codex 0.163.0's folder check on that connection does not resolve the main
-checkout's trust entry as an ordinary local CLI launch does. Running `codex` again in the
-main checkout does not fix this: if it is already trusted, there is no dialog to accept.
-Accept the native folder dialog in the ticket's pane to save trust for that worktree.
+For Codex, Mesimon creates an empty `.codex/` directory in its managed Git worktrees before
+starting or waking a session. This lets Codex reuse the main checkout's saved trust on its
+local app-server connection, including in older ticket worktrees. Existing `.codex` content
+is left alone; no configuration file is added, and the empty directory keeps Git clean.
+Trust the main checkout once by running `codex` there and accepting its folder dialog;
+if it is already trusted, no action is needed there. Explicit worktree trust settings still
+take precedence. Plain folder workspaces with nested repos have no main Git checkout to
+inherit from and may still ask for each ticket's folder.
 Hook review is a separate Codex decision: it remembers the exact definitions you trust;
 new or changed hooks need review again. When either trust dialog blocks startup, the card
 reads `TRUST` and asks you to open the agent's pane; `Tab` reaches sessions needing you.

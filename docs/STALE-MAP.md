@@ -27147,3 +27147,39 @@ pull request's words, its marks under the age), and last the tags and key.
   and S2 no longer count plain rows.
 
 Golden: `board_open_card_order_120x30` is the whole card in order.
+
+## Codex worktrees expose the main checkout's existing trust (T-824, 2026-10-16)
+
+Codex 0.163.0's config loader records a project layer for an existing `.codex/` directory
+even without `config.toml`. The loader resolves that layer's trust through the main Git
+checkout; the remote terminal's folder check accepts the enabled layer as trust evidence.
+An isolated native app-server/terminal probe confirmed that main-checkout trust alone still
+prompts, while an empty worktree `.codex/` reaches the composer without saving worktree
+trust. Without main-checkout trust the layer remains disabled and the folder prompt remains;
+an explicit untrusted worktree also disables its project layer. Approval and sandbox policy
+and saved trust entries were unchanged. No model turn or native trust answer was sent.
+
+The Codex adapter now attempts that single directory creation before both fresh starts and
+exact resumes. The daemon supplies eligibility from an attached binding with a root Git
+leg, matching the session cwd directly under its owned worktrees root. Shared checkouts,
+external directories and plain folder containers are excluded. A single `create_dir` leaves
+existing files, directories and symlinks alone; failure falls back to native onboarding.
+There is no trust override, user configuration edit or generated project configuration.
+Hook trust is still a separate native decision, and remaining dialogs still hold the
+queued prompt and surface `TRUST` on the board. This supersedes the preceding limitation
+for managed Git worktrees, including those provisioned before this change.
+
+Regression coverage exercises fresh starts, missing directories on exact wake, existing
+configuration and symlinks/files, clean Git status, and shared-checkout/folder exclusions
+through the real daemon and synthetic Codex runtime. The existing trust-attention test
+continues to cover folder and hook prompts that still require the person.
+
+Validation: bounded `cargo ut`, all 21 provider e2es, all 2,553 workspace nextest tests,
+and all 215 mod-road integration tests passed. The first mod pass hit an extra-wake count
+in the Claude forge/crown test; it passed both alone and in the complete mod rerun without
+code changes. That rerun reported an approval-bridge output-handle leak warning; its isolated
+rerun passed without the warning. Every fixture audit was clean. The existing timing probe,
+live-release network test and indirectly exercised subprocess helper remain excluded from
+ordinary discovery. Optional object-cache pruning was stopped after the audits to release
+the runner lock. Formatting and `git diff --check` passed. No live-model rig was run: this
+changes Codex filesystem preparation, not model instructions or turn submission.

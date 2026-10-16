@@ -143,6 +143,9 @@ pub fn read_preview_artifact(path: &Path) -> Option<AgentPreview> {
 pub struct LaunchContext<'a> {
     pub paths: &'a Paths,
     pub cwd: &'a std::path::Path,
+    /// This cwd is the root Git leg of an attached, Mesimon-owned worktree.
+    /// Shared checkouts and plain folder workspace containers are false.
+    pub managed_git_worktree: bool,
     pub session: uuid::Uuid,
     pub tools: AgentTools,
     pub brief: bool,

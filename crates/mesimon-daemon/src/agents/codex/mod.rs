@@ -134,6 +134,15 @@ fn tier_flags(tier: &mesimon_core::tier::Tier) -> Vec<String> {
 }
 
 fn prepare(context: &LaunchContext<'_>, resume: Option<String>) -> Result<LaunchSpec, String> {
+    if context.managed_git_worktree {
+        // Codex 0.163.0's remote folder check needs a project config layer to
+        // see the main checkout's existing trust. Even an empty .codex/ gives
+        // its loader that layer; native trust resolution still decides whether
+        // to enable it. Do this on resumes too, for older ticket worktrees.
+        // One mkdir never edits existing files or follows a .codex symlink.
+        // Best effort: failure leaves native onboarding to ask as before.
+        let _ = std::fs::create_dir(context.cwd.join(".codex"));
+    }
     let id = context.session;
     let generation = (uuid::Uuid::new_v4().as_u128() as u64).max(1);
     let stem = format!("cdx-{}-{:08x}", &id.simple().to_string()[..16], generation as u32);

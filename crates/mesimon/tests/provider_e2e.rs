@@ -38,12 +38,22 @@ impl Fixture {
         enable_spawn_failure: bool,
         env: &[(&str, &str)],
     ) -> Option<Self> {
+        Self::boot_layout(name, enable_spawn_failure, env, true)
+    }
+
+    fn boot_layout(
+        name: &str,
+        enable_spawn_failure: bool,
+        env: &[(&str, &str)],
+        root_repo: bool,
+    ) -> Option<Self> {
         if !require_tmux() {
             return None;
         }
         let owner = TestFixture::new(name);
         let repo = owner.dir.join("repo");
-        init_repo(&repo, "README.md", "Provider fixture.\n");
+        let git_root = if root_repo { repo.clone() } else { repo.join("child") };
+        init_repo(&git_root, "README.md", "Provider fixture.\n");
         let runtime = owner.dir.join("fake-codex-runtime.py");
         std::fs::write(&runtime, FAKE_RUNTIME).unwrap();
         std::fs::set_permissions(&runtime, std::os::unix::fs::PermissionsExt::from_mode(0o700))
@@ -186,6 +196,7 @@ fn project_switches_preserve_old_running_and_sleeping_sessions_and_scoped_tools(
     let b = ticket(&mut c, "new Codex", None);
     let codex = spawn(&mut c, b);
     h.codex_ready(&mut c, codex);
+    assert!(!h.repo.join(".codex").exists(), "shared checkout is not ours to prepare");
     let native_before = session(&mut c, codex);
     let foreign =
         json!({"session_id":claude, "transcript_path":h.owner.dir.join("foreign-claude.jsonl")})
@@ -446,6 +457,117 @@ fn a_hidden_cursor_keeps_initial_input_out_of_a_startup_dialog() {
         *s == SessionState::Running
     });
     assert_eq!(std::fs::read_to_string(h.owner.dir.join(format!("{id}.submits"))).unwrap(), "1");
+}
+
+#[test]
+fn codex_worktree_launches_expose_existing_trust_without_writing_settings() {
+    let Some(h) = Fixture::boot("provider-worktree-layer") else { return };
+    let mut c = h.client();
+    select(&mut c, AgentProvider::Codex);
+    let ticket = ticket(&mut c, "reuse repository trust", Some(WorkspaceStrategy::Worktree));
+    assert!(matches!(
+        c.request(Command::SpawnSession {
+            ticket,
+            kind: SessionKind::Codex,
+            submit_prompt: false,
+            plan: false,
+        }),
+        Response::Provisioning
+    ));
+    wait_until(Duration::from_secs(15), "Codex worktree launch", || {
+        c.board().live_agent(ticket).is_some()
+    });
+    let id = c.board().live_agent(ticket).unwrap().id;
+    h.codex_ready(&mut c, id);
+    let rec = session(&mut c, id);
+    let cwd = PathBuf::from(&rec.cwd);
+    let layer = cwd.join(".codex");
+    assert!(layer.is_dir());
+    assert_eq!(std::fs::read_dir(&layer).unwrap().count(), 0, "no config file or trust entry");
+    assert!(git(&cwd, &["status", "--porcelain"]).is_empty(), "empty directory keeps Git clean");
+    assert!(!h.repo.join(".codex").exists());
+
+    // A missing directory on wake covers worktrees provisioned by older
+    // versions too. Existing config, files and symlinks belong to the user.
+    let settings = "# User settings\napproval_policy = \"on-request\"\n";
+    let elsewhere = h.owner.dir.join("existing-codex");
+    std::fs::create_dir(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("config.toml"), settings).unwrap();
+    for existing in ["missing", "config", "symlink", "file"] {
+        assert!(matches!(c.request(Command::SleepSession { id }), Response::Ok));
+        wait_until(Duration::from_secs(10), "Codex stopped before worktree wake", || {
+            !session(&mut c, id).codex_stopping
+        });
+        match existing {
+            "missing" => std::fs::remove_dir(&layer).unwrap(),
+            "config" => std::fs::write(layer.join("config.toml"), settings).unwrap(),
+            "symlink" => {
+                std::fs::remove_file(layer.join("config.toml")).unwrap();
+                std::fs::remove_dir(&layer).unwrap();
+                std::os::unix::fs::symlink(&elsewhere, &layer).unwrap();
+            }
+            "file" => {
+                std::fs::remove_file(&layer).unwrap();
+                std::fs::write(&layer, "user file").unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert!(matches!(
+            c.request(Command::WakeSession { id }),
+            Response::Spawned { fresh: false, .. }
+        ));
+        h.codex_ready(&mut c, id);
+        assert_eq!(session(&mut c, id).codex_thread_id, rec.codex_thread_id);
+        match existing {
+            "missing" => assert_eq!(std::fs::read_dir(&layer).unwrap().count(), 0),
+            "config" => {
+                assert_eq!(std::fs::read_to_string(layer.join("config.toml")).unwrap(), settings);
+            }
+            "symlink" => {
+                assert_eq!(std::fs::read_link(&layer).unwrap(), elsewhere);
+                assert_eq!(std::fs::read_to_string(layer.join("config.toml")).unwrap(), settings);
+                assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 1);
+            }
+            "file" => assert_eq!(std::fs::read_to_string(&layer).unwrap(), "user file"),
+            _ => unreachable!(),
+        }
+    }
+    let config: Value = serde_json::from_slice(
+        &std::fs::read(h.paths.hooks_dir().join(format!("{id}.codex.json"))).unwrap(),
+    )
+    .unwrap();
+    assert!(!config["config_flags"].to_string().contains("trust_level"));
+    assert!(!h.owner.dir.join("synthetic-codex-home").exists(), "no user trust configuration");
+    assert!(!h.repo.join(".codex").exists());
+}
+
+#[test]
+fn codex_does_not_add_a_project_layer_to_a_plain_folder_workspace() {
+    let Some(h) = Fixture::boot_layout("provider-folder-layer", false, &[], false) else {
+        return;
+    };
+    let mut c = h.client();
+    select(&mut c, AgentProvider::Codex);
+    let ticket = ticket(&mut c, "folder workspace", Some(WorkspaceStrategy::Worktree));
+    assert!(matches!(
+        c.request(Command::SpawnSession {
+            ticket,
+            kind: SessionKind::Codex,
+            submit_prompt: false,
+            plan: false,
+        }),
+        Response::Provisioning
+    ));
+    wait_until(Duration::from_secs(15), "Codex folder workspace launch", || {
+        c.board().live_agent(ticket).is_some()
+    });
+    let id = c.board().live_agent(ticket).unwrap().id;
+    h.codex_ready(&mut c, id);
+    let cwd = PathBuf::from(session(&mut c, id).cwd);
+    assert!(cwd.join("child/.git").is_file(), "nested repo has its own Git worktree");
+    assert!(!cwd.join(".codex").exists(), "container has no main checkout to inherit from");
+    assert!(!cwd.join("child/.codex").exists(), "only the launch cwd is prepared");
+    assert!(!h.repo.join(".codex").exists());
 }
 
 #[test]

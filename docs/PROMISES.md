@@ -90,7 +90,7 @@ What the tools can and cannot do is in
 | `~/.local/state/mesimon/usage.json` | Your plan's quota as Claude Code and Codex last reported it: each window's percentage and reset time, and the plan's name. Shared by every board on the machine, written only while a board is open. |
 | `~/.local/state/mesimon/usage.lock` | An empty lock file, so only one board's daemon reads the quota at a time. |
 | `/tmp/mesimon-<uid>/<project key>/` | The daemon, hook and private-tmux sockets, the daemon lock, and the environment file panes are launched with. 0700, because that file holds your shell's environment. Gone on reboot. |
-| Worktrees and `msmn/*` branches | Only ones it created, only for tickets you set to worktree mode. |
+| Worktrees and `msmn/*` branches | Only ones it created, only for tickets you set to worktree mode. Codex starts and wakes create an empty `.codex/` directory in their Git worktree so Codex can resolve the main checkout's existing trust; existing contents are untouched. |
 | mesimon's own binary | Replaced in place, only if you take an update offer, only after its published checksum verifies. |
 
 Nothing else. If you ever find mesimon writing outside that list, that is a bug worth reporting

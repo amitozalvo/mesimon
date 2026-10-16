@@ -15140,6 +15140,12 @@ impl Daemon {
         LaunchContext {
             paths: &self.paths,
             cwd,
+            managed_git_worktree: self.worktrees.get(&ticket).is_some_and(|b| {
+                b.status == BindingStatus::Attached
+                    && b.path == cwd
+                    && b.path.parent() == Some(self.paths.worktrees_root().as_path())
+                    && b.has_root_leg()
+            }),
             session: id,
             tools: self.agent_tools_for(ticket),
             brief: self.board.system_prompt,
