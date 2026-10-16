@@ -61,13 +61,13 @@ fn the_brief_offer_switches_persist_and_survive_a_restart() {
     let s = status(c.request(Command::Snapshot));
     assert!(!s.present, "a fresh repo has nothing to say about MESIMON_TICKET");
     assert_eq!(s.path, md.display().to_string(), "doctor names the file");
-    // The daemon answers the offer itself (T-247): sampled, missing, tools
-    // on, brief off, never stamped — so the chip stands.
+    // The daemon answers the offer itself (T-247), and since T-816 the brief
+    // ships on, so there is nothing to offer.
     assert!(s.sampled, "the first snapshot comes after the first sample");
-    assert!(s.offer, "and the daemon offers");
+    assert!(!s.offer, "the brief is on: no offer");
     let board = board_of(c.request(Command::Snapshot));
     assert!(board.mcp_tools, "the tools ship on");
-    assert!(!board.system_prompt, "the brief ships OFF: it is opt-in");
+    assert!(board.system_prompt, "the brief ships ON (T-816)");
     assert!(!board.claude_md_ignored);
 
     // ---- Enter turns the brief on; nothing on disk but the board ----------

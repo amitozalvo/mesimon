@@ -2253,16 +2253,14 @@ pub struct Board {
     #[serde(default)]
     pub claude_md_ignored: bool,
     /// Sessions mesimon starts carry `brief::TEXT` in their system prompt
-    /// (`brief::FLAG`, T-224). OFF until a person has seen the exact text:
-    /// Setup shows it and turns it on (T-816), and on a board from before
-    /// Setup the offer's dialog does — README promise 3 says mesimon adds no
-    /// token to a conversation, and this is its one consented exception. Per REPO like
-    /// `mcp_tools`, and honoured only while the tools are on (the sentence
-    /// names a tool). A plain serde default, no schema bump: a downgrade that
-    /// drops `system_prompt = true` sends LESS to the model, which is the safe
-    /// direction — the `mcp_tools` bump exists because dropping `false` sends
-    /// more.
-    #[serde(default)]
+    /// (`brief::FLAG`, T-224). ON by default since T-816 (the author: "it
+    /// should be on by default"): Setup shows the exact text on a new board,
+    /// `doctor` prints it, and a person turns it off in Settings, which
+    /// stamps `claude_md_ignored` so the store keeps it off (`store.rs`
+    /// reads an off on a board nobody answered as on). README promise 3 names
+    /// it as the one paragraph mesimon adds. Per REPO like `mcp_tools`, and
+    /// honoured only while the tools are on (the sentence names a tool).
+    #[serde(default = "yes")]
     pub system_prompt: bool,
     /// Where a ticket lands when nobody chose a column for it (T-279): an
     /// agent's `create_ticket` with `column` omitted. A column NAME, the
@@ -2406,7 +2404,7 @@ impl Default for Board {
             tags_seeded: false,
             mcp_tools: true,
             claude_md_ignored: false,
-            system_prompt: false,
+            system_prompt: true,
             default_column: None,
             follow_up_mode: FollowUpMode::default(),
             prompts: crate::prompts::PromptSet::default(),

@@ -6481,7 +6481,6 @@ impl App {
             system_prompt: self.board.system_prompt,
             // The daemon's answer (T-247), computed once beside the switches
             // it depends on; the snapshot after Enter or `i` withdraws it.
-            brief_offer: self.claude_md.offer,
             // The Agents section offers it too since T-443: the default
             // tier and the tiers list are the machine's, and a board's.
             pref_scope_offered: matches!(self.mode, Mode::Tiers { naming: None, .. })
@@ -7559,23 +7558,8 @@ impl App {
                     self.refresh()?;
                 }
             }
-            // The offer opens the dialog and does nothing else. The switch is
-            // only ever turned from inside it, with the words on the screen.
-            Verb::BriefOffer => self.mode = Mode::Brief { from_settings: false },
             Verb::BriefCopy => {
                 self.status = crate::clipboard::copy_status("brief", mesimon_core::brief::TEXT);
-            }
-            Verb::BriefIgnore => {
-                match self.client.request(Command::IgnoreBriefOffer)? {
-                    Response::Err { message } => self.status = message,
-                    _ => {
-                        self.leave_brief();
-                        self.refresh()?;
-                        // Names the way back, because "never" is a long time.
-                        self.status = "offer put away ∙ Settings > Agent brief still turns it on"
-                            .into();
-                    }
-                }
             }
             // Notifications (T-282). The door, then its five rows — every
             // one of them through `set_pref`, the tail every preference
@@ -14862,7 +14846,8 @@ mod tests {
     fn app_offered_claude_md() -> App {
         let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let fake = super::test_support::FakeTransport {
-            board: board_three_columns(),
+            // Off, as a person left it (T-816: on by default).
+            board: Board { system_prompt: false, ..board_three_columns() },
             grace: vec![],
             external: vec![],
             resources: Resources::default(),
@@ -14889,34 +14874,6 @@ mod tests {
             .expect("fake transport snapshot")
     }
 
-    fn offered(app: &App) -> bool {
-        keymap::is_suggested(Verb::BriefOffer, &app.ctx())
-    }
-
-    /// Taking the offer turns the brief on and withdraws it, in the same
-    /// breath: the switch is board state, the Enter's refresh carries it, and
-    /// the chip comes off without a relaunch (T-217's report — "not being
-    /// dismissed after approve until mesimon restart" — was `absorb` dropping
-    /// a snapshot field; the brief rides the board, which never was dropped).
-    #[test]
-    fn taking_the_brief_offer_turns_it_on_and_withdraws_it() {
-        let mut app = app_offered_claude_md();
-        assert!(offered(&app), "a sampled file without the line is offered");
-        app.mode = Mode::Brief { from_settings: false };
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
-        assert!(app.board.system_prompt, "Enter is the switch");
-        assert!(!offered(&app), "and the chip comes off without a relaunch");
-        assert!(app.status.contains("agent brief on"), "{}", app.status);
-        // The Settings row is the way off — one press, no dialog — and a
-        // person who turned it off has answered: the chip does not return.
-        app.mode = Mode::Settings { idx: 0 };
-        app.dispatch(Verb::SystemPrompt, Key::Enter, Scope::Settings, &app.ctx()).unwrap();
-        assert!(!app.board.system_prompt);
-        assert!(app.board.claude_md_ignored, "off from Settings is an answer");
-        assert!(!offered(&app), "so the offer does not come back");
-    }
-
     /// The Settings row never turns the brief ON blind: it opens the same
     /// dialog the offer does, and every answer there returns to the row.
     #[test]
@@ -14936,25 +14893,10 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(app.board.system_prompt);
         assert_eq!(app.mode, Mode::Settings { idx: row });
-        // And `i` from the Settings road stamps and returns there too.
-        let mut again = app_offered_claude_md();
-        again.mode = Mode::Brief { from_settings: true };
-        press(&mut again, 'i');
-        assert!(again.board.claude_md_ignored);
-        assert_eq!(again.mode, Mode::Settings { idx: again.settings_row(Verb::SystemPrompt) });
-    }
-
-    /// The other answer, on the road that always worked (the stamp is board
-    /// state, and the board was never the field that got dropped) — asserted
-    /// beside it so the pair cannot drift apart again.
-    #[test]
-    fn putting_the_brief_offer_away_withdraws_it() {
-        let mut app = app_offered_claude_md();
-        app.mode = Mode::Brief { from_settings: false };
-        press(&mut app, 'i');
-        assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
-        assert!(app.board.claude_md_ignored);
-        assert!(!offered(&app));
+        // Off again is one press, and an answer.
+        app.dispatch(Verb::SystemPrompt, Key::Enter, Scope::Settings, &app.ctx()).unwrap();
+        assert!(!app.board.system_prompt);
+        assert!(app.board.claude_md_ignored, "off from Settings is an answer");
     }
 
     /// A transport with no daemon behind it, ever.
@@ -17322,6 +17264,10 @@ mod tests {
             if section == keymap::SettingsSection::Agents {
                 let brief = app.settings_row(Verb::SystemPrompt);
                 app.mode = Mode::Settings { idx: brief };
+                // On by default (T-816): the first Enter turns it off, the
+                // second shows the words before turning it back on.
+                app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+                assert_eq!(app.mode, Mode::Settings { idx: brief });
                 app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
                 assert!(matches!(app.mode, Mode::Brief { from_settings: true }));
                 app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();

@@ -3325,7 +3325,9 @@ mod tests {
     /// read as "missing" would offer on a guess.
     #[test]
     fn the_offer_stands_only_when_every_clause_holds() {
-        let mut board = Board::default();
+        // Off, as a board a person turned it off on would be (T-816: on by
+        // default); an older TUI still reads the offer.
+        let mut board = Board { system_prompt: false, ..Board::default() };
         let mut md = ClaudeMdStatus { sampled: true, ..Default::default() };
         assert!(md.offered(&board), "sampled, missing, tools on, not ignored");
         assert!(md.clone().for_board(&board).offer, "and the snapshot carries it");

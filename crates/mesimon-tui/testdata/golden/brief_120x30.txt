@@ -1,4 +1,4 @@
- BOARD   mesimon › kanban-tui   6 tickets                                        ◦ tell agents to read the ticket (esc)
+ BOARD   mesimon › kanban-tui   6 tickets
 
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
 
@@ -18,7 +18,7 @@
                            │   this ticket; a ticket filed from here is worked by a         │
                            │   session of its own, never this one.                          │
                            │                                                                │
-                           ╰───── enter turn on ∙ c copy ∙ i never ask again ∙ esc not now ─╯
+                           ╰───────────────────────── enter turn on ∙ c copy ∙ esc not now ─╯
 
 
 

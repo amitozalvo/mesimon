@@ -26751,6 +26751,19 @@ answers_in_one_command`, `setup_esc_twice_is_the_defaults`; goldens `setup_work_
 goldens reminted. `MESIMON_SETUP_DUMP=<page>[,<cursor>[,team]] cargo test -p mesimon-tui
 dump_a_page -- --nocapture` prints a page's scene beat by beat.
 
+**Addendum (T-816, same day, the author: "remove 'tell agents to read the ticket' suggestion. it
+should be on by default ∙ the dialog should be entirely full screen, and its title should be
+mesimon -> setup {folder name}").** The brief is on by default on every board, not only on one
+Setup made: `Board::system_prompt` defaults on, and since `columns.toml` always wrote the switch,
+an off reads as on unless `claude_md_ignored` says a person answered (`store::brief_on`: turning
+it off in Settings and the old offer's "never" both stamp it), doctor reading the same. The
+offer is gone from the TUI: no header chip, no menu row, no `i never ask again` in the dialog,
+which the Settings row still opens before turning it back on. The daemon still answers
+`ClaudeMdStatus.offer` and `IgnoreBriefOffer` for an older TUI. Setup takes the whole screen,
+edge to edge, titled `mesimon › setup <folder>`, its keys on its own bottom edge. Tests:
+`store::an_unanswered_off_reads_as_on_and_an_answered_one_stays`, `ui::the_brief_is_never_offered`;
+`brief_offer_e2e` and `setup_e2e` read the brief on from the first snapshot.
+
 ## An unpriced card uses one character (T-815, 2026-10-16)
 
 The card's dollar corner now uses `?`, not `unpriced`, for counted tokens with no

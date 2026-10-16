@@ -773,18 +773,11 @@ pub enum Verb {
     SendQueuedAsk,
     /// Return a waiting prompt to the composer.
     TakeBackAsk,
-    /// The menu row that opens the agent-brief dialog (T-217/T-224): the
-    /// text shown verbatim, with four ways out.
-    BriefOffer,
     /// `c` in that dialog — the text on the screen to the terminal's
     /// clipboard, for a user who would rather put the words somewhere of
     /// their own. Writes nothing and stamps nothing, so the dialog stays
     /// open behind it.
     BriefCopy,
-    /// `i` in that dialog — never offer it again. `mesimon doctor` still
-    /// prints the brief and Settings still turns it on, which is what makes
-    /// "never" affordable here.
-    BriefIgnore,
     /// Re-read the user's shell startup files, so the environment new panes
     /// get is the one their terminal would give them.
     ReloadShellEnv,
@@ -1293,10 +1286,6 @@ pub struct Ctx {
     /// prompt (T-224). Board state, per repo — the Settings row's label and
     /// the offer read it.
     pub system_prompt: bool,
-    /// The brief is off, the repo's `CLAUDE.md` does not say it either, the
-    /// tool it names is on, and the offer was not answered with "never". All
-    /// four, because each one alone would offer noise.
-    pub brief_offer: bool,
     // ---- the board's own checkout (T-124) ----
     /// There is a repository under the board at all — the checkout has been
     /// sampled. `v` on the board diffs its uncommitted work (T-221), and
@@ -1868,7 +1857,6 @@ impl MenuItem {
                 self.verb,
                 Verb::ExternalDrawer
                     | Verb::SleepAllDone
-                    | Verb::BriefOffer
                     | Verb::ReloadShellEnv
                     | Verb::RestartServer
                     | Verb::ManualMerge
@@ -4274,17 +4262,6 @@ static BRIEF: &[Binding] = &[
         prio: 20,
     },
     Binding {
-        keys: &[Key::Char('i')],
-        verb: Verb::BriefIgnore,
-        show: "i",
-        hint: |_| "never ask again",
-        avail: always,
-        class: Class::Plain,
-        group: Group::Sessions,
-        mutates: true,
-        prio: 30,
-    },
-    Binding {
         keys: &[Key::Char('q'), Key::Esc],
         verb: Verb::Back,
         show: "esc",
@@ -4696,20 +4673,6 @@ static MENU_ITEMS: &[MenuItem] = &[
             None => "the columns that offer it ∙ restore any of them later".into(),
         },
         avail: |c| c.bulk_archive > 0,
-        key: "",
-    },
-    // The agent-brief offer (T-217, re-aimed T-224). Its row is the dialog's
-    // door, so the detail says what the dialog will show rather than what it
-    // will do — nothing is switched until the text is on the screen.
-    MenuItem {
-        verb: Verb::BriefOffer,
-        // The outcome, not the mechanism: a system prompt is how, an agent
-        // reading its ticket is what. The how belongs in the detail, one
-        // line down, next to the reach (only sessions mesimon starts) and
-        // the promise that nothing is switched blind.
-        label: |_| "Tell agents to read the ticket".into(),
-        detail: |_| "one line for agents mesimon starts ∙ you see it first".into(),
-        avail: |c| c.brief_offer,
         key: "",
     },
     MenuItem {
@@ -5675,22 +5638,6 @@ static SUGGESTIONS: &[Suggestion] = &[
                 "shell env changed".into()
             }
         },
-        key: "",
-    },
-    Suggestion {
-        // Under the two above and over the two below: a one-time setup nudge
-        // is never more urgent than a running system's news, and it is worth
-        // more than a tidy-up. It has no key of its own — the dialog is the
-        // whole of it, and a dialog is not something to hang a letter off.
-        verb: Verb::BriefOffer,
-        // Says what taking it GETS you. "claude.md misses the ticket line"
-        // shipped first and was cut (author: "doesn't indicate well"): it
-        // named a file the reader has no reason to care about yet, spent its
-        // width on mesimon's own jargon — "the ticket line" means nothing
-        // until you have seen it — and "misses" reads as longing as easily as
-        // absence. The file is named on the menu row this points at, and the
-        // dialog shows it in full; the chip's one job is to be worth opening.
-        headline: |_| "tell agents to read the ticket".into(),
         key: "",
     },
     Suggestion {

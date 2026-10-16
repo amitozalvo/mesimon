@@ -1327,7 +1327,7 @@ fn the_dialog_shows_the_brief_verbatim() {
 /// Every answer is taught in the frame's own edge, so the dialog says what it
 /// can do without the footer repeating it.
 #[test]
-fn the_dialog_teaches_its_four_answers() {
+fn the_dialog_teaches_its_three_answers() {
     let mut app = app_graphite(fixture_archived());
     offer_brief(&mut app);
     app.mode = Mode::Brief { from_settings: false };
@@ -1336,7 +1336,7 @@ fn the_dialog_teaches_its_four_answers() {
         .iter()
         .find(|l| l.contains("turn on"))
         .unwrap_or_else(|| panic!("the bottom edge: {lines:#?}"));
-    for key in ["enter turn on", "c copy", "i never ask again", "esc not now"] {
+    for key in ["enter turn on", "c copy", "esc not now"] {
         assert!(edge.contains(key), "`{key}` missing from the edge: {edge}");
     }
 }
@@ -1362,46 +1362,17 @@ fn suggesting_app() -> App {
     app
 }
 
-/// The chip reads the daemon's answer and nothing else (T-247): the clauses
-/// live in `ClaudeMdStatus::offered`, tested beside it in core. Here, an
-/// unsampled snapshot — an older daemon, a first sample still in flight —
-/// offers nothing, and the answered one is taken as it comes.
+/// The brief is never offered (T-816): it is on by default, so a board the
+/// daemon would once have offered it to shows no chip and no menu row.
 #[test]
-fn the_offer_is_the_daemons_answer() {
-    let mut app = app_graphite(fixture_archived());
-    use mesimon_core::keymap::{is_suggested, Verb};
-    let offered = |a: &App| is_suggested(Verb::BriefOffer, &a.ctx());
-
-    assert!(!offered(&app), "an unsampled board offers nothing");
-    offer_brief(&mut app);
-    assert!(offered(&app), "the daemon said so");
-    // The TUI does not re-derive the answer from the switches it can see:
-    // the snapshot after Enter or `i` is what withdraws the chip.
-    app.claude_md.offer = false;
-    assert!(!offered(&app), "and the daemon's no is a no");
-}
-
-/// The offer is a chip AND the menu row it points at, and they are the same
-/// availability — the whole suggestion language in one assertion.
-#[test]
-fn the_offer_reaches_the_menu_and_the_header() {
+fn the_brief_is_never_offered() {
     let mut app = app_graphite(fixture_archived());
     offer_brief(&mut app);
-    let header = render(&app, 120, 30);
-    assert!(
-        header.iter().any(|l| l.contains("tell agents to read the ticket (esc)")),
-        "{}",
-        header.join("\n")
-    );
+    let header = render(&app, 120, 30).join("\n");
+    assert!(!header.contains("read the ticket"), "{header}");
     app.mode = Mode::Menu { idx: 0 };
-    let menu = render(&app, 120, 30);
-    assert!(menu.iter().any(|l| l.contains("Tell agents to read the ticket")), "{menu:#?}");
-    // Wearing the same mark the chip does — read from the glyph table, so
-    // the two can never be checked against a stale transcription.
-    let mark = crate::glyphs::suggest_mark(app.theme.glyph_tier());
-    let row = menu.iter().find(|l| l.contains("Tell agents to read")).expect("the row");
-    assert!(row.contains(mark), "a suggested row wears `{mark}`: {row}");
-    assert!(header.iter().any(|l| l.contains(mark)), "and so does the chip");
+    let menu = render(&app, 120, 30).join("\n");
+    assert!(!menu.contains("read the ticket"), "{menu}");
 }
 
 /// The release offer: a newer tag than this build is published, and the

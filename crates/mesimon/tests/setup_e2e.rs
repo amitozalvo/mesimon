@@ -60,7 +60,7 @@ fn setup_writes_the_board_once_and_keeps_a_ticket_s_columns() {
     // ---- a fresh board waits for Setup, on today's defaults ----------------
     let board = board_of(c.request(Command::Snapshot));
     assert!(board.setup_pending);
-    assert!(!board.system_prompt);
+    assert!(board.system_prompt, "the brief is on by default");
     assert_eq!(board.workspace, None);
     assert_eq!(names(&board), ["TODO", "IN PROGRESS", "REVIEW", "DONE"]);
 
@@ -69,7 +69,7 @@ fn setup_writes_the_board_once_and_keeps_a_ticket_s_columns() {
     assert!(matches!(r, Response::Ok), "{r:?}");
     let board = board_of(c.request(Command::Snapshot));
     assert!(!board.setup_pending);
-    assert!(board.system_prompt, "Setup showed the brief, and it is on");
+    assert!(board.system_prompt, "Setup showed the brief, and it stays on");
     assert_eq!(board.merge_into, MergeInto::PullRequests);
     assert_eq!(board.workspace, Some(WorkspaceStrategy::Worktree));
     assert_eq!(names(&board), ["TODO", "IN PROGRESS", "MR OPEN", "MERGED", "PRODUCTION"]);

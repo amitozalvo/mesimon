@@ -4,7 +4,7 @@
   │  Default tier    claude                              │
   │  Tiers           none yet ›                          │
   │  Agent tools     ● on                                │
-  │  Agent brief     ○ off                               │
+  │  Agent brief     ● on                                │
   │  Agent prompts   mesimon's words ›                   │
   │                                                      │
   │                                                      │

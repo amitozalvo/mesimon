@@ -798,6 +798,6 @@ decide, install or use the tool (T-648 took "writes it in Israel" off the site).
   the state dir, `$GIT_DIR/info/exclude`, the worktrees it cuts and the remote-tracking refs an
   opt-in fetch updates, and nowhere else. No config mutation: `doctor` prints fixes and never
   applies them. **Zero prompt injection**: mesimon adds, removes and reorders no token of the
-  conversation — the MCP tool definitions and the agent brief (Setup shows it word for word and
-  turns it on, T-816) are the two named, consented exceptions. Don't write code that violates them, and don't reword promise 1 unasked — its full text in
+  conversation — the MCP tool definitions and the agent brief (on by default; Setup shows it word
+  for word, T-816) are the two named, consented exceptions. Don't write code that violates them, and don't reword promise 1 unasked — its full text in
   `docs/PROMISES.md` or its line in the README.

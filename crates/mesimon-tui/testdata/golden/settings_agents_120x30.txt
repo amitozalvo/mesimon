@@ -5,7 +5,7 @@
     De│  Theme               Default tier    claude                                                              │
       │                      Tiers           none yet ›                                                          │
     Ke│  Appearance          Agent tools     ● on                                                                │
-      │                      Agent brief     ○ off                                                               │
+      │                      Agent brief     ● on                                                                │
       │  Notifications       Agent prompts   mesimon's words ›                                                   │
       │                                                                                                          │
       │  Behaviour                                                                                               │

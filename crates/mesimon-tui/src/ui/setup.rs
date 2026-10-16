@@ -19,20 +19,26 @@ use super::dialog;
 pub(super) fn draw(f: &mut Frame, app: &App) {
     let Some(setup) = app.setup.as_deref() else { return };
     let theme = &app.theme;
-    let area = f.area();
-    let at = Rect {
-        x: area.x + 1,
-        y: area.y + 1,
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
-    };
+    // The whole screen, edge to edge: Setup is the board's first sight, and
+    // the board behind it is not yet the person's. Its keys ride its own
+    // bottom edge, since the footer is under it.
+    let at = f.area();
+    let folder =
+        app.repo_root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let title = format!("mesimon › setup {folder}");
+    let keys = dialog::keys(
+        app,
+        mesimon_core::keymap::Scope::Setup,
+        &theme.rest,
+        usize::from(at.width).saturating_sub(6),
+    );
     let inner = dialog::frame(
         f,
         app,
         at,
         None,
         &theme.rest,
-        dialog::Edges { title: dialog::title(&theme.rest, "SETUP"), tail: Vec::new() },
+        dialog::Edges { title: dialog::title(&theme.rest, title), tail: keys },
     );
     if inner.width < 20 || inner.height < 8 {
         return;

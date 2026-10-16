@@ -186,10 +186,12 @@ struct ColumnsFile {
     /// the key keeps T-217's name so nobody is re-asked).
     #[serde(default)]
     claude_md_ignored: bool,
-    /// The agent brief is on (`Board::system_prompt`, T-224). Off by default
-    /// and a plain default with no schema bump: a build that drops it sends
-    /// LESS to the model, the safe direction — see the field on `Board`.
-    #[serde(default)]
+    /// The agent brief is on (`Board::system_prompt`, T-224). Written either
+    /// way, so it cannot tell "turned off" from "never asked": since T-816
+    /// the brief is on by default, and an off reads as on unless
+    /// `claude_md_ignored` says a person answered (`brief_on`). No bump: an
+    /// older build reads the written value.
+    #[serde(default = "yes")]
     system_prompt: bool,
     /// Where an agent's `create_ticket` lands with no column named
     /// (`Board::default_column`, T-279). A scalar, so it sits here before
@@ -607,6 +609,7 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                     }
                     Verdict::Load => match v.try_into::<ColumnsFile>() {
                         Ok(cf) => {
+                            let brief = brief_on(&cf);
                             let mut b = Board {
                                 columns: cf.columns,
                                 next_key: cf.next_key,
@@ -620,7 +623,7 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                 tags_seeded: cf.tags_seeded,
                                 mcp_tools: cf.mcp_tools,
                                 claude_md_ignored: cf.claude_md_ignored,
-                                system_prompt: cf.system_prompt,
+                                system_prompt: brief,
                                 default_column: cf.default_column,
                                 setup_pending: cf.setup_pending,
                                 workspace: cf.workspace,
@@ -854,8 +857,7 @@ impl Default for ColumnsScalars {
             crown_archives: false,
             crown_watches: true,
             mcp_tools: true,
-
-            system_prompt: false,
+            system_prompt: true,
             default_column: None,
             prompts: PromptSet::default(),
             columns: None,
@@ -863,10 +865,18 @@ impl Default for ColumnsScalars {
     }
 }
 
+/// The brief is on unless a person turned it off or put the offer away
+/// (T-816): both stamp `claude_md_ignored`, and an off without it is a board
+/// from before the brief was on by default.
+fn brief_on(cf: &ColumnsFile) -> bool {
+    cf.system_prompt || !cf.claude_md_ignored
+}
+
 pub fn read_columns_scalars(paths: &Paths) -> ColumnsScalars {
     let Some(cf) = read_columns_file(paths) else {
         return ColumnsScalars::default();
     };
+    let brief = brief_on(&cf);
     let default_column =
         cf.default_column.filter(|name| cf.columns.iter().any(|c| &c.name == name));
     let prompts = PromptSet {
@@ -889,7 +899,7 @@ pub fn read_columns_scalars(paths: &Paths) -> ColumnsScalars {
         crown_archives: cf.crown_archives,
         crown_watches: cf.crown_watches,
         mcp_tools: cf.mcp_tools,
-        system_prompt: cf.system_prompt,
+        system_prompt: brief,
         default_column,
         prompts,
         columns: Some(b.sorted_columns().into_iter().cloned().collect()),
@@ -2302,7 +2312,7 @@ order = "a0"
         let l = load(&paths).unwrap();
         assert!(l.board.mcp_tools, "an absent switch is not a switch turned off");
         assert!(!l.board.claude_md_ignored);
-        assert!(!l.board.system_prompt, "and an absent brief is a brief nobody turned on");
+        assert!(l.board.system_prompt, "and an absent brief is on (T-816)");
         assert!(!l.columns_write_barred, "a v2 file is still ours to write");
         cleanup(&dir, &paths);
     }
@@ -2315,7 +2325,29 @@ order = "a0"
         assert!(Board::default().mcp_tools);
         assert!(Board::with_default_columns().mcp_tools);
         assert!(!Board::default().claude_md_ignored);
-        assert!(!Board::default().system_prompt, "the brief is opt-in");
+        assert!(Board::default().system_prompt, "the brief is on by default (T-816)");
+    }
+
+    /// An off written by a build that wrote the switch either way reads as on
+    /// unless a person answered (T-816): turning it off and putting the offer
+    /// away both stamp `claude_md_ignored`.
+    #[test]
+    fn an_unanswered_off_reads_as_on_and_an_answered_one_stays() {
+        let (dir, paths) = scratch("t816brief");
+        let cols = dir.join(".mesimon/board/columns.toml");
+        for (ignored, want) in [(false, true), (true, false)] {
+            write(
+                &cols,
+                &format!(
+                    "schema_version = {COLUMNS_SCHEMA}\nnext_key = 4\ntags_seeded = true\n\
+                     system_prompt = false\nclaude_md_ignored = {ignored}\n\n\
+                     [[columns]]\nname = \"TODO\"\norder = \"a0\"\n"
+                ),
+            );
+            assert_eq!(load(&paths).unwrap().board.system_prompt, want, "ignored {ignored}");
+            assert_eq!(read_columns_scalars(&paths).system_prompt, want, "doctor agrees");
+        }
+        cleanup(&dir, &paths);
     }
 
     /// The stamp survives the round trip, so "never ask again" is never asked
