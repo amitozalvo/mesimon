@@ -3788,7 +3788,12 @@ impl Daemon {
             };
             if let Some(machine) = self.machines.get_mut(&id) {
                 if let Some(change) = machine.apply(&signal, now) {
-                    dirty |= self.apply_change(id, &change, None, Some("codex_startup"));
+                    let detail = matches!(
+                        change.to,
+                        SessionState::RequiresAction { reason: mesimon_core::board::Reason::Trust }
+                    )
+                    .then(|| "Codex needs your trust decision ∙ open its pane".to_string());
+                    dirty |= self.apply_change(id, &change, detail, Some("codex_startup"));
                 }
             }
         }

@@ -26914,3 +26914,44 @@ the column summary (`merge train: auto-merge`), the Columns and merge-train less
 Not renamed: the code (`train::`, `Verb::MergeTrain`, `train.json`) and what an agent is told
 (`get_ticket`'s `merge.by: "train"` and its `why`, the crown's tool text): a wire value and
 agent text, which move only with a rig run, and no agent was reported confused by it.
+
+## Codex startup trust reaches the person on the board (T-824, 2026-10-16)
+
+Codex 0.163.0's folder disclosure starts `Trust this folder? Codex can read, edit, and run
+files here…`, followed by `Trust and continue`. The production probe only knew the older
+`Do you trust` heading and `Hooks need review`; the native rig had already learned the new
+wording. The probe now recognizes the new paragraph and choice together, including a wrapped
+paragraph, while a live composer still rules out startup attention. Older folder and hook
+review dialogs remain supported.
+
+A detected trust stop carries `Codex needs your trust decision ∙ open its pane` through the
+normal authorized state transition. It enters the existing attention queue and needs-you
+notification path. No keystroke answers trust: initial title/description delivery still waits
+for both structured readiness and the native composer, and a resumed session still receives
+no fresh prefill. The integration regression covers an actual provisioned worktree, the
+notification, consecutive folder/hook dialogs with no input, and one original submission
+after the composer returns. Unit cases also reject historical text above a live composer.
+
+Repeated folder trust has a native one-time route, documented in USING.md: trust the main
+repository checkout in Codex. Codex 0.163.0's `resolve_root_git_project_for_trust` resolves a
+linked worktree to that checkout; its config loader falls back to that trust entry after a
+worktree's own entry. A non-Git folder containing several repositories cannot inherit this
+way. Hook review is separate: native trust is keyed to the hook definition, and Mesimon's
+session-flag hook source and commands are already stable across ticket worktrees. No trust
+configuration is written or overridden and no bypass flag is added. Evidence: the versioned
+upstream `codex-rs/git-utils/src/trust.rs`, `codex-rs/config/src/loader/mod.rs`,
+`codex-rs/hooks/src/engine/discovery.rs`, and `codex-rs/tui/src/onboarding/trust_directory.rs`.
+
+Validation: the focused worktree regression, `cargo ut`, `cargo nextest run --workspace`
+(2525 passed), and the mod-road integration pass (211 passed) passed. Nextest noted an
+output-handle leak in the unchanged `approve_bridge::a_wait_the_daemon_closed_ends_the_hold`
+on the mod road; the outer fixture audit was clean for all 423 owners. Intentional skips
+were the timing benchmark, the live-release network test, and the restart-skew subprocess
+helper (the mod pass skips only that helper). Formatting and `git diff --check` passed.
+An initial unit run hit the already-recorded `NO_COLOR` underline assertion; the unchanged
+isolated test and the complete rerun passed with `NO_COLOR=`. The initial sandboxed
+integration attempt could not bind its socket or inspect processes; its two retained
+fixtures were cleaned through their inspected ownership records before elevated reruns.
+No live-model rig was run: this changes board observation, not agent instructions or turn
+submission policy. Native dialog spelling and trust inheritance were checked against the
+installed CLI version's upstream source, not asserted as a new live Codex acceptance run.

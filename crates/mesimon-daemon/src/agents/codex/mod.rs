@@ -79,7 +79,12 @@ pub fn startup_attention(
         return None;
     }
     let text = screen.lines.join("\n");
-    if text.contains("Hooks need review") || text.contains("Do you trust") {
+    // Codex 0.163 changed the folder heading. This is a native startup
+    // dialog, before any thread event can tell the board it needs a person.
+    let folder_trust =
+        screen.lines.iter().any(|line| line.trim_start().starts_with("Trust this folder?"))
+            && text.contains("Trust and continue");
+    if folder_trust || text.contains("Hooks need review") || text.contains("Do you trust") {
         Some(Reason::Trust)
     } else if text.contains("Sign in with ChatGPT") || text.contains("Sign in with an API key") {
         Some(Reason::Auth)
@@ -499,6 +504,33 @@ mod input_tests {
         {
             assert!(!input_ready(&screen(&format!("› text\n{modal}\n› 1. Yes"), None)));
         }
+    }
+
+    #[test]
+    fn startup_trust_recognizes_current_and_older_native_dialogs() {
+        use mesimon_core::board::Reason;
+        for dialog in [
+            "/repo/worktree\n  Trust this folder?\n› 1. Trust and continue\n  2. Quit",
+            "  Trust this folder? Codex can read, edit, and run files here, subject to\n  your permission settings.\n› 1. Trust and continue\n  2. Quit",
+            "Do you trust the contents of this directory?\n› 1. Yes, proceed",
+            "Hooks need review\n1. Review hooks\n2. Trust all and continue",
+        ] {
+            assert_eq!(startup_attention(&screen(dialog, None)), Some(Reason::Trust));
+            let composer = format!("{dialog}\n› ");
+            assert_eq!(
+                startup_attention(&screen(&composer, Some((2, composer.lines().count() - 1)))),
+                None,
+                "a live composer wins over historical dialog text"
+            );
+        }
+        for text in [
+            "The question was: Trust this folder?",
+            "Trust this folder?\nAn explanation without the native choices",
+            "Select a model\n› 1. Continue",
+        ] {
+            assert_eq!(startup_attention(&screen(text, None)), None);
+        }
+        assert_eq!(startup_attention(&screen("Sign in with ChatGPT", None)), Some(Reason::Auth));
     }
 
     #[test]

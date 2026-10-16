@@ -187,6 +187,16 @@ asked once, run `git init` in the root, commit a README and a `.gitignore` namin
 repos, then run `claude` there once and accept. Each ticket's worktree is then a git worktree of
 the trusted root. `mesimon doctor` says the same on its `workspace` line.
 
+For Codex, run `codex` once in the main repository checkout and accept its folder-trust
+dialog to share that decision with the repository's linked worktrees. A worktree's explicit
+trust setting takes precedence. A folder holding several repositories is not itself a Git
+worktree, so trusting that folder does not give each ticket's new folder the same answer.
+Hook review is a separate Codex decision: it remembers the exact definitions you trust;
+new or changed hooks need review again. When either trust dialog blocks startup, the card
+reads `TRUST` and asks you to open the agent's pane; `Tab` reaches sessions needing you.
+The ticket's prompt waits until the native composer is ready. Mesimon neither answers the
+dialog nor edits your Codex trust settings.
+
 What you step into is the agent itself: Claude Code or Codex exactly as you run it without
 mesimon, with the same prompt, the same slash commands and the same permission dialogs. Type to
 it, answer its questions, interrupt it: mesimon never sits between you and it.

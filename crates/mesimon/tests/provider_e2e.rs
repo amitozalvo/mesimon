@@ -373,6 +373,77 @@ fn a_hidden_cursor_keeps_initial_input_out_of_a_startup_dialog() {
 }
 
 #[test]
+fn worktree_trust_calls_for_the_person_before_delivering_the_queued_prompt() {
+    use mesimon_core::board::Reason;
+    let Some(h) = Fixture::boot("providerworktreetrust") else { return };
+    std::fs::write(
+        h.owner.dir.join("initial-screen.json"),
+        json!({
+            "screen":"  Trust this folder? Codex can read, edit, and run files here, subject to\r\n  your permission settings.\r\n› 1. Trust and continue\r\n  2. Quit",
+            "cursor":null
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut c = h.client();
+    select(&mut c, AgentProvider::Codex);
+    let ticket = ticket(&mut c, "start after my trust decision", Some(WorkspaceStrategy::Worktree));
+    let mut notifications = mesimon_core::notify::Differ::default();
+    notifications.scan(&c.board(), false, Default::default());
+    assert!(matches!(
+        c.request(Command::SpawnSession {
+            ticket,
+            kind: SessionKind::Codex,
+            submit_prompt: true,
+            plan: false,
+        }),
+        Response::Provisioning
+    ));
+    wait_until(Duration::from_secs(15), "Codex starts in the provisioned worktree", || {
+        c.board().live_agent(ticket).is_some()
+    });
+    let id = c.board().live_agent(ticket).unwrap().id;
+    c.await_state(id, "folder trust is visible on the board", |state| {
+        *state == SessionState::RequiresAction { reason: Reason::Trust }
+    });
+    let board = c.board();
+    assert!(mesimon_core::attention::attention_queue(&board).iter().any(|s| s.id == id));
+    assert_eq!(
+        notifications.scan(&board, false, Default::default()),
+        vec![mesimon_core::notify::Event::needs_you(
+            ticket,
+            &board.ticket(ticket).unwrap().short_key,
+            "TRUST"
+        )]
+    );
+    let held = session(&mut c, id);
+    assert_eq!(held.detail.as_deref(), Some("Codex needs your trust decision ∙ open its pane"));
+    assert!(held.pending_prefill && held.pending_submit);
+    assert!(!h.owner.dir.join(format!("{id}.input")).exists());
+    assert_eq!(board.ticket(ticket).unwrap().column, "TODO");
+
+    // Folder trust may lead to hook review, still before the first turn.
+    h.control(id, json!({"screen":"Hooks need review\r\n1. Review hooks\r\n2. Trust all and continue", "cursor":null}));
+    std::thread::sleep(Duration::from_millis(1800));
+    assert_eq!(session(&mut c, id).state, SessionState::RequiresAction { reason: Reason::Trust });
+    assert!(
+        !h.owner.dir.join(format!("{id}.input")).exists(),
+        "no answer or prompt in either dialog"
+    );
+
+    h.control(id, json!({"screen":"Synthetic provider fixture\r\n› ","cursor":[2,1]}));
+    c.await_state(id, "composer accepts the original prompt after trust", |state| {
+        *state == SessionState::Running
+    });
+    let running = session(&mut c, id);
+    assert!(running.detail.is_none());
+    assert!(!running.pending_prefill && !running.pending_submit);
+    let input = std::fs::read_to_string(h.owner.dir.join(format!("{id}.input"))).unwrap();
+    assert_eq!(input.matches("start after my trust decision").count(), 1);
+    assert_eq!(std::fs::read_to_string(h.owner.dir.join(format!("{id}.submits"))).unwrap(), "1");
+}
+
+#[test]
 fn queued_start_keeps_first_provider_even_when_its_words_are_replaced() {
     let Some(h) = Fixture::boot("providerqueue") else { return };
     let mut c = h.client();
