@@ -3,14 +3,14 @@
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
 
     Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y     z Painted accent bar >1y
-                                    ✻ claude          ⠋ >1y
-    Keymap validator      >1y       $ bash            ◦ >1y     x Flaky e2e on runner >1y
-
+                                    ✻ claude ⠋  $ bash ◦
+    Keymap validator      >1y                                   x Flaky e2e on runner >1y
             ╭─ LINKS ∙ T-3 ∙ 3 ──────────────┴───────────────────────────────╮
             │ url  the Jira ticket ∙ https://jira.example.com/browse/ABC-123 │
             │ T-1  Decay treatments                                          │
             │ file crates/mesimon-core/src/board.rs:42                       │
             ╰────────────────── jk select ∙ enter open ∙ c copy ∙ esc close ─╯
+
 
 
 

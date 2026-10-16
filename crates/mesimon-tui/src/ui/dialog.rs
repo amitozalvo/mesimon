@@ -548,9 +548,8 @@ pub(super) fn draw_links(
     list(f, app, &format!("LINKS ∙ {key}"), true, Scope::Links, idx, &rows);
 }
 
-/// The summary dialog (T-696): one row per line of the ticket's `Summary`
-/// sections, a box before each task — the card's own marks — and nothing
-/// before a plain row. Read off the cache each frame, so a tick shows on
+/// The summary dialog (T-696): one row per box of the ticket's `Summary`
+/// sections, in the card's own marks. Read off the cache each frame, so a tick shows on
 /// the frame it lands; `idx` is clamped to the rows there are.
 pub(super) fn draw_summary(f: &mut Frame, app: &App, ticket: ulid::Ulid, idx: usize) {
     let key = app.board.ticket(ticket).map(|t| t.short_key.clone()).unwrap_or_default();
@@ -563,10 +562,7 @@ pub(super) fn draw_summary(f: &mut Frame, app: &App, ticket: ulid::Ulid, idx: us
         .iter()
         .map(|r| {
             let words = crate::text::one_line(&mesimon_core::text::scrub_cells(&r.text, false));
-            let head = match r.done {
-                Some(done) => format!("{} {words}", super::card::box_mark(tier, Some(done))),
-                None => format!(" -  {words}"),
-            };
+            let head = format!("{} {words}", super::card::box_mark(tier, Some(r.done)));
             ListRow {
                 lead: " ".into(),
                 lead_ink: None,

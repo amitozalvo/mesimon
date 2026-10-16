@@ -545,18 +545,14 @@ fn sample_card(
     use crate::app::{SummaryRow, TicketSummary};
     let p = &app.prefs;
     let shows = p.summary != crate::prefs::SummaryShow::None;
-    let row = |line: usize, text: &str, done: Option<bool>| SummaryRow {
+    let row = |line: usize, text: &str, done: bool| SummaryRow {
         note: ticket.id,
         line,
         text: text.into(),
         done,
     };
     let summary = TicketSummary {
-        rows: vec![
-            row(1, "one pass over the reply", None),
-            row(2, "read the reply", Some(true)),
-            row(3, "parse it", Some(false)),
-        ],
+        rows: vec![row(2, "read the reply", true), row(3, "parse it", false)],
         count: mesimon_core::summary::Count { done: 1, total: 2 },
     };
     let corner = if p.card_corner == crate::prefs::CardCorner::Cost { "$1.84" } else { "3h" };
@@ -585,6 +581,7 @@ fn sample_card(
         false,
         None,
         false,
+        None,
         None,
         None,
         None,

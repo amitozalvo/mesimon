@@ -318,6 +318,7 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
     let sessions: Vec<&SessionRecord> =
         app.board.sessions.iter().filter(|r| r.ticket == ticket.id && r.state.is_live()).collect();
     let painted_tags = crate::tags::painted(&app.board, &ticket.tags);
+    let (owed_row, ship_row) = app.card_owed(ticket.id);
     let mut lines = card::render(
         &ctx,
         ticket,
@@ -340,7 +341,8 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
         false,
         None,
         app.owed(ticket.id),
-        app.pending_row(ticket.id).as_deref(),
+        owed_row.as_deref(),
+        ship_row.as_deref(),
         None,
         app.remote_initials(ticket.id).as_deref(),
         // The holder's mark, never a touch: the preview is a still.

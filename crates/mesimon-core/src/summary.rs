@@ -6,8 +6,9 @@
 //! purpose — an agent's working checklist under any other heading stays the
 //! note's own, and only what it puts under `Summary` reaches the card. Inside
 //! the section a GFM task item (`- [ ] …`, `- [x] …`) is a box the card
-//! counts and the SUMMARY dialog ticks, and every other line is a plain row:
-//! the one-line summary a reader gets before the boxes.
+//! counts and the SUMMARY dialog ticks, and every other line is the note's
+//! alone: the summary is its boxes (T-829, the author: "remove non checklist
+//! items from summary, i never liked it anyway").
 //!
 //! `extract` reads a body and lists the rows in document order; `toggle`
 //! flips one box in the body's text and returns the body to write back.
@@ -23,10 +24,10 @@ pub struct Row {
     /// The body's line the row came from, zero-based. What `toggle` takes
     /// and what the ticket page scrolls to.
     pub line: usize,
-    /// The row's words: the item past its box, or the plain line, trimmed.
+    /// The row's words: the item past its box, trimmed.
     pub text: String,
-    /// `Some(ticked)` for a task item; `None` for a plain row.
-    pub done: Option<bool>,
+    /// Is the box ticked?
+    pub done: bool,
 }
 
 /// How many boxes a list of rows holds, and how many are ticked.
@@ -41,9 +42,9 @@ impl Count {
         Count::of_marks(rows.iter().map(|r| r.done))
     }
 
-    /// The count of rows by their box alone: `None` is a plain row.
-    pub fn of_marks(marks: impl IntoIterator<Item = Option<bool>>) -> Count {
-        marks.into_iter().flatten().fold(Count::default(), |c, d| Count {
+    /// The count of boxes by whether each is ticked.
+    pub fn of_marks(marks: impl IntoIterator<Item = bool>) -> Count {
+        marks.into_iter().fold(Count::default(), |c, d| Count {
             done: c.done + usize::from(d),
             total: c.total + 1,
         })
@@ -131,7 +132,7 @@ fn task_box(text: &str) -> Option<(bool, &str)> {
     None
 }
 
-/// Every row of every `Summary` section in `body`, document order. A
+/// Every box of every `Summary` section in `body`, document order. A
 /// section runs from its heading to the next heading of the same or a
 /// higher level, or the end; a fenced block inside it is skipped whole, so
 /// a box in sample code is not progress and a `#` in a shell snippet does
@@ -162,22 +163,10 @@ pub fn extract(body: &str) -> Vec<Row> {
         if open.is_none() {
             continue;
         }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+        let Some((done, text)) = item(line).and_then(task_box) else {
             continue;
-        }
-        let (done, text) = match item(line) {
-            Some(rest) => match task_box(rest) {
-                Some((done, text)) => (Some(done), text),
-                None => (None, rest),
-            },
-            None => (None, trimmed),
         };
-        let text = text.trim();
-        if text.is_empty() && done.is_none() {
-            continue;
-        }
-        out.push(Row { line: line_no, text: text.to_string(), done });
+        out.push(Row { line: line_no, text: text.trim().to_string(), done });
     }
     out
 }
@@ -227,20 +216,19 @@ mod tests {
     #[test]
     fn reads_the_summary_section_only() {
         let rows = extract(BODY);
-        let texts: Vec<(&str, Option<bool>)> =
-            rows.iter().map(|r| (r.text.as_str(), r.done)).collect();
+        let texts: Vec<(&str, bool)> = rows.iter().map(|r| (r.text.as_str(), r.done)).collect();
+        // A plain line and a bullet with no box are the note's, not the
+        // summary's (T-829).
         assert_eq!(
             texts,
             vec![
-                ("redirect fixed; e2e next", None),
-                ("rewrite the redirect", Some(true)),
-                ("add the e2e", Some(false)),
-                ("unit test", Some(true)),
-                ("release note", Some(false)),
-                ("a bullet with no box", None),
+                ("rewrite the redirect", true),
+                ("add the e2e", false),
+                ("unit test", true),
+                ("release note", false),
             ]
         );
-        assert_eq!(rows[1].line, 6);
+        assert_eq!(rows[0].line, 6);
         assert_eq!(Count::of(&rows), Count { done: 2, total: 4 });
         assert_eq!(Count::of(&rows).open(), 2);
     }
@@ -251,7 +239,7 @@ mod tests {
         assert!(extract("## Summaries\n- [ ] close but no\n").is_empty());
         // Any level, any case, trailing hashes, a little indent.
         assert_eq!(extract("# SUMMARY #\n- [ ] a\n").len(), 1);
-        assert_eq!(extract("  ### summary\n- [x] a\n")[0].done, Some(true));
+        assert!(extract("  ### summary\n- [x] a\n")[0].done);
         // `#hashtag` is not a heading.
         assert!(extract("#summary\n- [ ] a\n").is_empty());
     }
@@ -278,8 +266,8 @@ mod tests {
     fn an_empty_box_is_a_box() {
         let rows = extract("## Summary\n- [ ]\n- [x]\n");
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].done, Some(false));
-        assert_eq!(rows[1].done, Some(true));
+        assert!(!rows[0].done);
+        assert!(rows[1].done);
         assert_eq!(rows[0].text, "");
     }
 
@@ -298,13 +286,13 @@ mod tests {
     #[test]
     fn toggle_flips_one_box_and_nothing_else() {
         let rows = extract(BODY);
-        let flipped = toggle(BODY, rows[2].line).expect("a box");
+        let flipped = toggle(BODY, rows[1].line).expect("a box");
         assert!(flipped.contains("- [x] add the e2e\n"));
         assert_eq!(flipped.len(), BODY.len());
-        let back = toggle(&flipped, rows[2].line).expect("a box");
+        let back = toggle(&flipped, rows[1].line).expect("a box");
         assert_eq!(back, BODY);
         // `[X]` unticks to `[ ]`; the marker and indent stay.
-        let un = toggle(BODY, rows[3].line).expect("a box");
+        let un = toggle(BODY, rows[2].line).expect("a box");
         assert!(un.contains("* [ ] unit test\n"));
         // CRLF endings survive.
         let crlf = "## Summary\r\n- [ ] a\r\n- [ ] b\r\n";

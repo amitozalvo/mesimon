@@ -175,7 +175,8 @@ fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "# Why this, really\n\nnew");
 
     // A `Summary` section in a note is the ticket's summary on the next
-    // read (T-710): the rows as the card counts them, each with its note.
+    // read (T-710): the boxes as the card counts them, each with its note.
+    // The plain line is the note's alone (T-829).
     shim.call_ok_text(
         "write_note",
         json!({"note": second.to_string(),
@@ -183,10 +184,9 @@ fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
     );
     let t: Value = serde_json::from_str(&shim.call_ok_text("get_ticket", json!({}))).unwrap();
     let rows = t["summary"]["rows"].as_array().unwrap();
-    assert_eq!(rows.len(), 3, "{t}");
-    assert_eq!(rows[0], json!({"note": second.to_string(), "text": "half done"}));
-    assert_eq!(rows[1], json!({"note": second.to_string(), "text": "looked", "done": true}));
-    assert_eq!(rows[2], json!({"note": second.to_string(), "text": "fixed", "done": false}));
+    assert_eq!(rows.len(), 2, "{t}");
+    assert_eq!(rows[0], json!({"note": second.to_string(), "text": "looked", "done": true}));
+    assert_eq!(rows[1], json!({"note": second.to_string(), "text": "fixed", "done": false}));
 
     // Empty text deletes; the file goes with the meta; the second note is
     // now the description.

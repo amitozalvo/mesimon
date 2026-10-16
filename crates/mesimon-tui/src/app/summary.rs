@@ -40,13 +40,13 @@ pub struct SummaryPulse {
     pub from: Option<Count>,
 }
 
-/// One row of a ticket's summary: which note it is in, and the row.
+/// One box of a ticket's summary: which note it is in, and the box.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SummaryRow {
     pub note: ulid::Ulid,
     pub line: usize,
     pub text: String,
-    pub done: Option<bool>,
+    pub done: bool,
 }
 
 /// Every summary row of a ticket, description first then note order, and
@@ -58,23 +58,21 @@ pub struct TicketSummary {
 }
 
 impl TicketSummary {
-    /// The rows the open card shows (T-696): the first plain row, then up
-    /// to `n` boxes — the open ones first, in their order, and ticked ones
-    /// after when fewer than `n` are open — and how many boxes are left
-    /// behind the fold with their aggregate state.
+    /// The boxes the open card shows in `n` rows (T-696, T-829): every box
+    /// when they fit, else `n - 1` of them — the open ones first, in their
+    /// order, and ticked ones after when fewer are open — and the fold row:
+    /// how many are left behind it, with their aggregate state.
     pub fn card_rows(&self, n: usize) -> (Vec<&SummaryRow>, Option<(usize, Option<bool>)>) {
-        let mut shown: Vec<&SummaryRow> =
-            self.rows.iter().filter(|r| r.done.is_none()).take(1).collect();
-        let open = self.rows.iter().filter(|r| r.done == Some(false));
-        let ticked = self.rows.iter().filter(|r| r.done == Some(true));
-        let boxes: Vec<&SummaryRow> = open.chain(ticked).take(n).collect();
+        let take = if self.rows.len() <= n { n } else { n.saturating_sub(1) };
+        let open = self.rows.iter().filter(|r| !r.done);
+        let ticked = self.rows.iter().filter(|r| r.done);
+        let shown: Vec<&SummaryRow> = open.chain(ticked).take(take).collect();
         let hidden = Count::of_marks(
             self.rows
                 .iter()
-                .filter(|r| !boxes.iter().any(|b| std::ptr::eq(*b, *r)))
+                .filter(|r| !shown.iter().any(|b| std::ptr::eq(*b, *r)))
                 .map(|r| r.done),
         );
-        shown.extend(boxes);
         let fold = (hidden.total > 0).then(|| (hidden.total, hidden.state()));
         (shown, fold)
     }
@@ -265,9 +263,6 @@ impl App {
         let Some((ticket, row)) = self.summary_cursor() else {
             return Ok(());
         };
-        if row.done.is_none() {
-            return Ok(());
-        }
         let rev = self.board.ticket(ticket).and_then(|t| t.note(row.note)).map(|n| n.rev);
         let body = match self.req(Command::ReadNote { ticket, note: row.note }) {
             Response::Note { text, .. } => text,
@@ -293,7 +288,7 @@ impl App {
                     rev.unwrap_or(0) + 1,
                     Some(crate::peek::sanitize(&text)),
                 );
-                self.status = if row.done == Some(true) { "unticked" } else { "ticked" }.into();
+                self.status = if row.done { "unticked" } else { "ticked" }.into();
                 self.refresh()
             }
             Response::Err { message } => {

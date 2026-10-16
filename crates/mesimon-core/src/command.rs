@@ -2447,14 +2447,14 @@ pub struct AgentSummaryView {
 }
 
 /// One row of the summary: the note it is in (what `read_note` and
-/// `write_note` take to change it), its words, and for a box whether it is
-/// ticked; a plain row carries no `done`.
+/// `write_note` take to change it), its words, and whether its box is
+/// ticked. Every row is a box (T-829).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSummaryRow {
     pub note: ulid::Ulid,
     pub text: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub done: Option<bool>,
+    #[serde(default)]
+    pub done: bool,
 }
 
 /// One note as an agent lists it. No body: that is `read_note`'s answer.

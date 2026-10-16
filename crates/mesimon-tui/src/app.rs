@@ -5633,6 +5633,29 @@ impl App {
         self.pending_of(ticket).is_some()
     }
 
+    /// The owed row split by where the open card says it (T-829): what
+    /// waits on the agent or the person goes first, under the title, and
+    /// what the merge train owes the branch — `auto-merge ∙ …`, `rebase ask
+    /// ∙ …` — rides the pull requests' row, where the work goes. The words
+    /// are `pending_row`'s either way; the ticket page reads them whole.
+    pub(crate) fn card_owed(&self, ticket: ulid::Ulid) -> (Option<String>, Option<String>) {
+        let row = self.pending_row(ticket);
+        let ships = self.unsent_of(ticket).is_none()
+            && self.tier_owed_row(ticket).is_none()
+            && match self.pending_of(ticket) {
+                Some(p) => {
+                    use mesimon_core::command::PendingAction as A;
+                    matches!(p.action, A::Merge | A::Rebase)
+                }
+                None => self.tasks_row(ticket).is_none(),
+            };
+        if ships {
+            (None, row)
+        } else {
+            (row, None)
+        }
+    }
+
     /// The owed row's words (2026-09-04): what mesimon will do to this card
     /// next and what it waits on — `queued ∙ after T-12`, `auto-merge ∙
     /// after T-3 +1`, `auto-merge ∙ blocked`. Names the first ticket still
@@ -6360,7 +6383,7 @@ impl App {
             ticket_linkable: subject.is_some_and(|t| self.ticket_linkable(t)),
             ticket_summarised: subject.is_some_and(|t| self.ticket_summarised(t)),
             has_prs: subject.is_some_and(|t| self.prs.iter().any(|p| p.ticket == t)),
-            summary_on_task: self.summary_cursor().is_some_and(|(_, r)| r.done.is_some()),
+            summary_on_task: self.summary_cursor().is_some(),
             summary_on_link: self
                 .summary_cursor()
                 .is_some_and(|(t, r)| self.summary_link(t, &r.text).is_some()),
@@ -16348,7 +16371,7 @@ mod tests {
         assert!(write.contains("- [x] a"), "{write}");
         assert!(matches!(app.mode, Mode::Summary { .. }), "{:?}", app.mode);
         let s = app.ticket_summary(ulid::Ulid(1)).expect("still listed");
-        assert_eq!(s.rows[0].done, Some(true));
+        assert!(s.rows[0].done);
         assert_eq!(app.status, "ticked");
         app.handle_key(KeyCode::Char('j'), KeyModifiers::CONTROL).unwrap();
         assert!(matches!(app.mode, Mode::Normal));

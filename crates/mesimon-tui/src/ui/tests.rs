@@ -3597,7 +3597,7 @@ fn test_tag_count_keeps_the_title_editor_aligned() {
 }
 
 /// The peek names the tags: colour says how many, words say which. The row
-/// sits under the title and above the reply.
+/// sits at the card's foot, under the reply (T-829).
 #[test]
 fn test_the_peek_names_the_tags() {
     let path = write_transcript("tags-peek", &reply_record("Rebased and green."));
@@ -3609,14 +3609,15 @@ fn test_the_peek_names_the_tags() {
     app.peek = true;
     let lines = render(&app, 120, 30);
     let title = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card");
-    let names = &lines[title + 1];
-    assert!(names.contains("BUG") && names.contains("STAGING"), "tag row missing: {names:?}");
+    let at = meta_row(&lines, title, "BUG");
+    let names = &lines[at];
+    assert!(names.contains("STAGING"), "tag row missing: {names:?}");
     let reply = lines.iter().position(|l| l.contains("Rebased and green")).expect("reply");
-    assert!(reply > title + 1, "the tags must sit above the reply");
+    assert!(reply < at, "the tags sit under the reply");
     // Painted in their own tints, the same ones the mark under the card uses.
     let buf = cells(&app, 120, 30);
     let tint = app.theme.pip(app.board.tag_def(1, "BUG").expect("registered").tint() as usize);
-    let y = (title + 1) as u16;
+    let y = at as u16;
     assert!((30..58u16).any(|x| buf[(x, y)].bg == tint), "the chips are not wearing the tag tint");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
@@ -3672,7 +3673,7 @@ fn test_a_crowded_peek_row_names_them_all() {
     app.peek = true;
     let lines = render(&app, 120, 30);
     let title = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card");
-    let names = &lines[title + 1];
+    let names = &lines[meta_row(&lines, title, "BUG")];
     // Four tags on a 28-cell card, with the key holding the row's last
     // cells (T-410): the long one gives up cells, the short ones keep
     // theirs, and the one that will not go drops from the tail — the mark
@@ -3704,8 +3705,8 @@ fn test_the_peek_names_the_ticket() {
     app.peek = true;
     let lines = render(&app, 120, 30);
     let title = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card");
-    let row = &lines[title + 1];
-    assert!(row.contains("BUG") && row.trim_end().ends_with("T-3"), "key after the chips: {row:?}");
+    let row = &lines[meta_row(&lines, title, "BUG")];
+    assert!(row.find("T-3") > row.find("STAGING"), "key after the chips: {row:?}");
     // Cells, not bytes: the glyph before the title is one cell of three bytes.
     let cells_to = |l: &str, end: usize| UnicodeWidthStr::width(&l[..end]);
     let at = lines[title].find("Fix OSC-11").expect("title");
@@ -3716,10 +3717,9 @@ fn test_the_peek_names_the_ticket() {
     app.peek_all = true;
     let lines = render(&app, 120, 30);
     let t2 = lines.iter().position(|l| l.contains("Keymap validator")).expect("untagged card");
-    let row2 = &lines[t2 + 1];
-    assert!(row2.contains("T-2"), "an untagged card still names itself: {row2:?}");
+    let row2 = &lines[meta_row(&lines, t2, "T-2")];
     let t1 = lines.iter().position(|l| l.contains("Decay treatments")).expect("card 1");
-    let k1 = lines[t1 + 1].find("T-1").expect("key 1");
+    let k1 = lines[meta_row(&lines, t1, "T-1")].find("T-1").expect("key 1");
     let k2 = row2.find("T-2").expect("key 2");
     assert_eq!(k1, k2, "keys in one column under P");
 }
@@ -3822,8 +3822,8 @@ fn golden_board_tags_peek_120() {
 
 /// `P` opens every card (T-237): the cursor is on the first column, and the
 /// reply still shows under the card in the second — on the resting ramp, no
-/// surface, the chips row above it — while the cursor card keeps its own
-/// accordion. The session list stays the cursor card's.
+/// surface, the chips row under it (T-829) — while the cursor card keeps its
+/// own accordion. The session list stays the cursor card's.
 #[test]
 fn golden_board_peek_all_120() {
     let path = write_transcript(
@@ -3839,8 +3839,9 @@ fn golden_board_peek_all_120() {
     app.peek_all = true;
     let lines = render(&app, 120, 30);
     let y = lines.iter().position(|l| l.contains("Rebased onto main")).expect("a reply row");
+    let cell = |line: &str, word: &str| line[..line.find(word).expect(word)].width();
     assert!(
-        !lines[y - 1].contains("Decay treatments"),
+        cell(&lines[y], "Rebased") >= cell(&lines[y - 1], "Fix OSC-11"),
         "the reply hangs under its own card, not the cursor card"
     );
     let buf = cells(&app, 120, 30);
@@ -4321,8 +4322,8 @@ fn golden_ticket_queued_120() {
 /// A HELD ask (T-551, user on T-544: "it's not obvious that user needs to
 /// press ^y to accept or that the message is pending on user decision.
 /// should be next to the queued message"): the cursor card's row says whose
-/// words they are and that the send is yours, and the keys sit on the row
-/// directly under it, in the keymap's words. The footer agrees: `^y send`.
+/// words they are, and the send key closes the same row (T-829), in the
+/// keymap's words — which say the send is yours. The footer agrees.
 #[test]
 fn golden_held_open_120() {
     let mut app = app_graphite(fixture(false));
@@ -4333,12 +4334,13 @@ fn golden_held_open_120() {
     app.cursor_col = 2;
     app.cursor_row = Some(0);
     let lines = render(&app, 120, 30);
-    let at = lines.iter().position(|l| l.contains("T-544 asks ∙ you send")).unwrap_or_else(|| {
-        panic!("the row says whose words and that the send is yours:\n{}", lines.join("\n"))
-    });
+    let at = lines
+        .iter()
+        .position(|l| l.contains("T-544 asks"))
+        .unwrap_or_else(|| panic!("the row says whose words they are:\n{}", lines.join("\n")));
     assert!(
-        lines[at + 1].contains("^y send ∙ ^u take back"),
-        "the keys beside the words, not only in the footer:\n{}",
+        lines[at].contains("^y send") && !lines[at].contains("you send"),
+        "the key beside the words, not only in the footer:\n{}",
         lines.join("\n")
     );
     assert!(
@@ -4412,14 +4414,14 @@ fn the_held_keys_row_is_gated_as_the_keys_are() {
 
     app.pending[0].held = Some("agent asked".into());
     let lines = render(&app, 120, 30);
-    let at = lines.iter().position(|l| l.contains("agent asked ∙ you send")).expect("held row");
-    assert!(lines[at + 1].contains(keys), "{}", lines.join("\n"));
+    let at = lines.iter().position(|l| l.contains("agent asked")).expect("held row");
+    assert!(lines[at].contains("^y send"), "{}", lines.join("\n"));
 
     // The cursor elsewhere: the card wears the owed mark and no row.
     app.cursor_col = 0;
     let lines = render(&app, 120, 30);
     assert!(
-        !lines.iter().any(|l| l.contains("you send") || l.contains(keys)),
+        !lines.iter().any(|l| l.contains("agent asked") || l.contains(keys)),
         "{}",
         lines.join("\n")
     );
@@ -6321,8 +6323,16 @@ const SUMMARY_NOTE: &str = "# Fix OSC-11\n\nThe query raced the attach.\n\n## Su
     ## Notes\n\nOne line of notes.\n\nAnother.\n\nAnother.\n\nAnother.\n\nAnother.\n\nAnother.\n\n\
     Another.\n\nAnother.\n\nAnother.\n\nAnother.\n\nAnother.\n\nAnother.\n\nAnother.\n\nThe end.\n";
 
-/// T-3 with a summary in its description (T-696): one plain row, two of
-/// five boxes ticked. The cursor is on it.
+/// The row under `title` that holds `needle`: an open card's meta row,
+/// which closes the card (T-829), within the few rows a card is.
+fn meta_row(lines: &[String], title: usize, needle: &str) -> usize {
+    (title + 1..lines.len().min(title + 12))
+        .find(|&y| lines[y].contains(needle))
+        .unwrap_or_else(|| panic!("no {needle} row under line {title}:\n{}", lines.join("\n")))
+}
+
+/// T-3 with a summary in its description (T-696): two of five boxes ticked,
+/// and one plain line, which is the note's alone (T-829). The cursor is on it.
 fn app_summary() -> App {
     let mut b = fixture(false);
     if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
@@ -6340,8 +6350,8 @@ fn app_summary() -> App {
     app
 }
 
-/// The open cursor card lists the plain row, the three open boxes and a
-/// fold row with the two ticked ones behind it and the key that lists all.
+/// The open cursor card lists two open boxes and a fold row with the other
+/// three behind it and the key that lists all — and no plain line (T-829).
 #[test]
 fn golden_board_summary_120() {
     let mut app = app_summary();
@@ -6353,7 +6363,7 @@ fn golden_board_summary_120() {
 #[test]
 fn golden_summary_dialog_120() {
     let mut app = app_summary();
-    app.mode = Mode::Summary { ticket: ulid_n(3), idx: 3 };
+    app.mode = Mode::Summary { ticket: ulid_n(3), idx: 2 };
     golden("summary_dialog_120x30", &render(&app, 120, 30));
 }
 
@@ -6419,7 +6429,7 @@ fn test_summary_show_gates_the_card() {
         let y = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card") as u16;
         (0..120u16).any(|x| buf[(x, y)].modifier.contains(Modifier::UNDERLINED))
     };
-    let lists = |app: &App| render(app, 120, 30).iter().any(|l| l.contains("2 more"));
+    let lists = |app: &App| render(app, 120, 30).iter().any(|l| l.contains("3 more"));
     let mut app = app_summary();
     assert!(underlined(&app) && !lists(&app), "full at rest: the underline");
     app.peek = true;
@@ -8814,11 +8824,62 @@ fn a_cards_passed_is_news_for_a_beat_and_deployed_reads_in_env() {
     assert!(page.contains("pipeline passed ∙ in staging, production"), "{page}");
 }
 
-/// T-789: an open card draws its pull-request line last, under the reply
-/// and the summary, which each give up a row for it; and it still opens
-/// the dialog on a click there.
+/// T-829: an open card with everything to say reads in the order a person
+/// asks of it, one place per kind: what the agent said, how far along it
+/// is, what it is doing now and beside whom, where the work goes — the
+/// merge train's ask before the pull request's words, its marks under the
+/// age — and last what the ticket is, its tags and key.
 #[test]
-fn an_open_cards_pr_line_comes_last_and_the_rows_above_give_way() {
+fn golden_open_card_reads_in_order_120() {
+    let dir = std::env::temp_dir().join(format!("msmn-order-golden-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("transcript dir");
+    let path = dir.join("t.jsonl");
+    std::fs::write(
+        &path,
+        "{\"uuid\":\"u1\",\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\
+         \"text\":\"Fixed the OSC-11 race: the query now runs once before raw mode.\"}]}}\n\
+         {\"uuid\":\"u2\",\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\
+         \"input\":{\"command\":\"cargo test -p mesimon-tui\",\"description\":\"Run the golden tests\"}}]}}\n",
+    )
+    .expect("transcript");
+    let mut b = fixture_tagged();
+    b.sessions.iter_mut().find(|s| s.id == uuid_n(31)).expect("session 31").transcript_path =
+        Some(path.to_string_lossy().into_owned());
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
+        t.notes.push(note_meta(90, "Fix OSC-11", "local"));
+    }
+    let mut app = app_graphite(b);
+    app.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(SUMMARY_NOTE)));
+    app.summary_pulses.clear();
+    app.prs = vec![pr_on(ulid_n(3))];
+    app.pending = vec![mesimon_core::command::Pending {
+        action: mesimon_core::command::PendingAction::Rebase,
+        ..pending_ask(3, &["T-4"])
+    }];
+    app.cursor_col = 1;
+    app.cursor_row = Some(0);
+    app.peek = true;
+    let lines = render(&app, 120, 30);
+    let title = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("T-3");
+    let order: Vec<usize> =
+        ["Fixed the OSC-11", "[ ] add the e2e", "Run the golden tests", "$ bash", "!7", "BUG"]
+            .iter()
+            .map(|n| meta_row(&lines, title, n))
+            .collect();
+    assert!(order.windows(2).all(|w| w[0] < w[1]), "{order:?}:\n{}", lines.join("\n"));
+    let ship = &lines[order[4]];
+    assert!(ship.contains("rebase ask ∙"), "the train's ask leads the PR row: {ship:?}");
+    assert!(!lines[title + 1..order[0]].iter().any(|l| l.contains("rebase")), "not at the top");
+    golden("board_open_card_order_120x30", &lines);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// T-789, T-829: an open card draws its pull-request line under the reply,
+/// the boxes and the sessions and over the ticket's key, without taking a
+/// row from any of them; and it still opens the dialog on a click there.
+#[test]
+fn an_open_cards_pr_line_sits_over_the_key() {
     let card_rows = |app: &App| {
         let lines = render(app, 120, 30);
         let y = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("T-3");
@@ -8828,7 +8889,7 @@ fn an_open_cards_pr_line_comes_last_and_the_rows_above_give_way() {
             lines[y..].iter().map(col).take_while(|r| !r.trim().is_empty()).collect();
         (y, rows)
     };
-    // The reply: four rows bare, three over the line.
+    // The reply: two rows, the line or not.
     let path = write_transcript(
         "pr-last",
         &reply_record("one one one one one\ntwo two two two two\nthree three three\nfour four four\nfive five"),
@@ -8842,12 +8903,14 @@ fn an_open_cards_pr_line_comes_last_and_the_rows_above_give_way() {
             .filter(|r| ["one", "two", "three", "four", "five"].iter().any(|w| r.contains(w)))
             .count()
     };
-    assert_eq!(words(&card_rows(&app).1), 4, "four reply rows: {:?}", card_rows(&app).1);
+    assert_eq!(words(&card_rows(&app).1), 2, "two reply rows: {:?}", card_rows(&app).1);
     app.prs = vec![pr_on(ulid_n(3))];
     let (y, rows) = card_rows(&app);
-    assert_eq!(words(&rows), 3, "the reply gives up a row: {rows:?}");
+    assert_eq!(words(&rows), 2, "the reply keeps its rows: {rows:?}");
     assert!(!rows[1].contains("!7"), "not on line 2 while open: {rows:?}");
-    assert!(rows.last().is_some_and(|r| r.contains("!7")), "the line is last: {rows:?}");
+    let n = rows.len();
+    assert!(rows[n - 2].contains("!7"), "the line, then the key: {rows:?}");
+    assert!(rows[n - 1].trim_end().ends_with("T-3"), "the key is last: {rows:?}");
     // Its click is the dialog's, on the row it moved to.
     let at = spot_of(&render(&app, 120, 30)[y..], "!7");
     click(&mut app, (at.0, at.1 + y as u16));
@@ -8858,16 +8921,17 @@ fn an_open_cards_pr_line_comes_last_and_the_rows_above_give_way() {
     assert!(rows[1].contains("!7"), "line 2 at rest: {rows:?}");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 
-    // The summary: three boxes bare, two over the line, the fold after.
+    // The summary: two boxes and the fold, the line or not.
     let mut app = app_summary();
     app.peek = true;
     let boxes = |rows: &[String]| rows.iter().filter(|r| r.contains("[ ]")).count();
-    assert_eq!(boxes(&card_rows(&app).1), 3);
+    assert_eq!(boxes(&card_rows(&app).1), 2);
     app.prs = vec![pr_on(ulid_n(3))];
     let (_, rows) = card_rows(&app);
-    assert_eq!(boxes(&rows), 2, "the summary gives up a row: {rows:?}");
-    assert!(rows[rows.len() - 2].contains("more"), "the fold, then the line: {rows:?}");
-    assert!(rows.last().is_some_and(|r| r.contains("!7")), "the line is last: {rows:?}");
+    assert_eq!(boxes(&rows), 2, "the summary keeps its rows: {rows:?}");
+    let fold = rows.iter().position(|r| r.contains("more")).expect("the fold");
+    let line = rows.iter().position(|r| r.contains("!7")).expect("the line");
+    assert!(fold < line, "the fold, then the line: {rows:?}");
 }
 
 /// T-720: a resting card whose agent said something the person has not
@@ -11516,8 +11580,8 @@ fn the_summary_folds_key_alone_clicks() {
     app.peek = true;
     let rows = render(&app, 120, 30);
     let text = rows.join("\n");
-    let fold = rows.iter().find(|r| r.contains("2 more")).map(|r| r.trim_end());
-    assert!(fold.is_some_and(|r| r.ends_with("2 more ∙ ^j")), "the key after the count:\n{text}");
+    let fold = rows.iter().find(|r| r.contains("3 more")).map(|r| r.trim_end());
+    assert!(fold.is_some_and(|r| r.ends_with("3 more ∙ ^j")), "the key after the count:\n{text}");
     assert!(!text.contains("^j summary"), "and no word of its own:\n{text}");
     let at = spot_of(&rows, "more ∙ ^j");
     click(&mut app, (at.0 + 7, at.1));
@@ -12195,8 +12259,9 @@ fn a_moving_cards_ghost_shrinks_a_row_at_a_time() {
 }
 
 /// T-817: the card the cursor rode away leaves a ghost that is the card
-/// as the cursor showed it — its agent and its shell listed — without the
-/// cursor's band, and it gives those rows up one at a time.
+/// as the cursor showed it — its queued ask, its agent and its shell
+/// listed — without the cursor's band, and it gives those rows up one at a
+/// time.
 #[test]
 fn the_cursors_card_leaves_an_open_ghost_that_shrinks() {
     use crate::glide::ROW_MS;
@@ -12209,6 +12274,7 @@ fn the_cursors_card_leaves_an_open_ghost_that_shrinks() {
             SessionState::Running,
         ));
         app.glides[0].was_cursor = true;
+        app.pending = vec![pending_ask(4, &[])];
         app.cursor_col = 2;
         app.cursor_row = Some(0);
         let buf = cells(&app, 120, 30);
@@ -12220,7 +12286,7 @@ fn the_cursors_card_leaves_an_open_ghost_that_shrinks() {
         (rows, buf[(36, title as u16)].bg, buf[(36, 0)].bg)
     };
     let (whole, band, ground) = ghost(1);
-    assert!(whole >= 2, "its agent and its shell are listed: {whole} rows");
+    assert!(whole >= 2, "its ask and its sessions are listed: {whole} rows");
     assert_eq!(band, ground, "without the cursor's band");
     assert_eq!(ghost(ROW_MS + 10).0, whole - 1, "one row given up");
     assert_eq!(ghost(ROW_MS * (whole as u64 + 1)).0, 0, "down to its title row");

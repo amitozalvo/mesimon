@@ -3,16 +3,16 @@
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
 
     Decay treatments      >1y     ⠋ Fix OSC-11          >1y     ✓ Grapheme truncation >1y     z Painted accent bar >1y
-                                                        T-3
-    Keymap validator      >1y       ✻ claude          ⠋ >1y     x Flaky e2e on runner >1y
-                                    $ bash            ◦ >1y
-                                   -  query fixed; e2e next
                                   [ ] add the e2e for the ~
-                                  [ ] write the STALE-MAP ~
-                                  [ ] release note
-                                  [✓] 2 more ∙ ^j
+    Keymap validator      >1y     [ ] write the STALE-MAP ~     x Flaky e2e on runner >1y
+                                  [-] 3 more ∙ ^j
+                                    ✻ claude ⠋  $ bash ◦
+                                                        T-3
 
                                   ⠋ Adopt drawer import >1y
+
+
+
 
 
 

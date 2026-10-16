@@ -263,12 +263,15 @@ pub const WORKTREE_INIT_ABOUT: &str = "A script at the repository's root, run on
 /// as an ask: workers wrote one on every ticket, and the author found it a
 /// card line spent on little. The boxes are what the person reads the card
 /// for; a plain line is said to cost that line and to wait for a person's ask.
+/// Then it cost nothing (T-829): the author took plain lines off the card
+/// ("i never liked it anyway"), so the summary is its boxes and a plain line
+/// is said to stay the note's.
 pub const SUMMARY_ABOUT: &str = "A note section headed `Summary` is what the ticket's card \
      shows: a `- [ ] …` item is a box the person ticks on the board, counted as progress. A \
      box is one stage of the job as the person would watch for it from the board, or a step \
      only a person can take (run the pipeline, ship it); a job without such stages needs no \
-     `Summary`. A plain line there takes a card line of its own, so it waits for a person's \
-     ask. Nothing the board does or shows by itself is a box: the merge, the rebase, the \
+     `Summary`. Only the boxes reach the card; any other line there stays the note's. \
+     Nothing the board does or shows by itself is a box: the merge, the rebase, the \
      card's move. An open box reads as work left, so a stage's box is ticked as the stage \
      lands and a finished job leaves none open. A working list stays under another heading.";
 
@@ -2600,9 +2603,10 @@ mod tests {
             assert!(SUMMARY_ABOUT.contains(words), "summary.about says {words:?}");
         }
         assert!(!SUMMARY_ABOUT.contains("progress worth seeing"), "the vague criterion is gone");
-        // T-743: the plain line is no longer offered as the summary; it waits for an ask.
+        // T-743: the plain line is no longer offered as the summary; T-829:
+        // the card shows the boxes alone.
         assert!(SUMMARY_ABOUT.contains("needs no `Summary`"), "{SUMMARY_ABOUT}");
-        assert!(SUMMARY_ABOUT.contains("waits for a person's ask"), "{SUMMARY_ABOUT}");
+        assert!(SUMMARY_ABOUT.contains("Only the boxes reach the card"), "{SUMMARY_ABOUT}");
         assert!(!SUMMARY_ABOUT.contains("one-line summary"), "{SUMMARY_ABOUT}");
         assert!(!SUMMARY_ABOUT.contains("plain line alone"), "{SUMMARY_ABOUT}");
     }

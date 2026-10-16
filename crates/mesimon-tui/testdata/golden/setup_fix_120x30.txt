@@ -14,12 +14,12 @@
 │  │    TODO                0 →     IN PROGRESS         0 →     REVIEW              2 →     DONE                 0  │  │
 │  │                                                                                                                │  │
 │  │   o  new ticket                                            ✓ Fix the login~ ⎇↑ now                             │  │
-│  │                                                                                T-1                             │  │
 │  │                                                              approved        ◉#412                             │  │
+│  │                                                                                T-1                             │  │
 │  │                                                                                                                │  │
 │  │                                                            ✓ Dark mode tog~ ⎇↑ now                             │  │
-│  │                                                                                T-2                             │  │
 │  │                                                              approved        ◉#411                             │  │
+│  │                                                                                T-2                             │  │
 │  │                                                                                                                │  │
 │  │                                                                                                                │  │
 │  │                                                                                                                │  │

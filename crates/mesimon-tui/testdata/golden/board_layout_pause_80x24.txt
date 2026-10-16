@@ -3,10 +3,10 @@
     TODO                          2     IN PROGRESS                  2   2   1
 
     Decay treatments            >1y     ⠋ Fix OSC-11 detection     >1y   R   D
-                                          ✻ claude               ⠋ >1y   E   O
-    Keymap validator            >1y       $ bash                 ◦ >1y   V   N
-                                                                         I   E
-                                        ⠋ Adopt drawer import      >1y   E
+                                          ✻ claude ⠋  $ bash ◦           E   O
+    Keymap validator            >1y                                      V   N
+                                        ⠋ Adopt drawer import      >1y   I   E
+                                                                         E
                                                                          W
 
 

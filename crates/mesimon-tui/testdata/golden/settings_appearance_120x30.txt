@@ -5,9 +5,9 @@
     De│  Theme              the cursor's card           another card                                             │
       │                                                                              ╭─ an agent's pane ───────╮ │
     Ke│▎ Appearance            Plan the beta       3h      Fix the parser      3h    │ ⏺ Reading src/osc.rs    │ │
-      │                         -  one pass over the~      Parser fixed, tests g~    │ T-2 Fix the parser      │ │
-      │  Notifications         [ ] parse it                                          ╰─────────────────────────╯ │
-      │                        [✓] read the reply                                                                │
+      │                        [ ] parse it                Parser fixed, tests g~    │ T-2 Fix the parser      │ │
+      │  Notifications         [✓] read the reply                                    ╰─────────────────────────╯ │
+      │                                                                                                          │
       │  Behaviour                                                                                               │
       │                      Status line              ○ top         ● bottom                                     │
       │  Agents              Crown's actions          ● lightning   ○ still                                      │

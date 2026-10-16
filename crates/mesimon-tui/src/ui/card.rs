@@ -475,6 +475,7 @@ pub(super) fn render(
     snooze: Option<&str>,
     owed: bool,
     owed_row: Option<&str>,
+    ship_row: Option<&str>,
     owed_keys: Option<(&[&'static mesimon_core::keymap::Binding], &mesimon_core::keymap::Ctx)>,
     editor: Option<&str>,
     crown: CrownMark<'_>,
@@ -900,23 +901,40 @@ pub(super) fn render(
         if trail || doomed { Vec::new() } else { brief_spans(theme, prs, t_cells) };
     let brief_w = super::spans_width(&brief);
     let brief_room = if brief_w > 0 { brief_w + 1 } else { 0 };
-    // An open card draws the brief as its LAST line instead (T-789), under
-    // the reply and the summary, which each give up a row for it: the card
-    // reads title, then what the agent said, then where the work went.
+    // An open card draws the brief on its own row instead (T-789), under
+    // the reply, the boxes and the running step and over the tags (T-829):
+    // the card reads title, then what the agent said, then where the work
+    // went.
     let brief_last = open && !held && brief_w > 0;
     // Where no reply holds the line (T-794), the room left of the marks
     // says what the newest PR is at — the running job, the failing one, a
     // conflict, a review — in the marks' quiet ink, a running pipeline's
     // words under a slow shimmer. Cut against the marks like a reply.
-    let words_row = |row: &mut Vec<Span<'static>>| {
-        let Some((words, running)) = pr_words else { return };
-        let room = t_cells.saturating_sub(glyph_cells + brief_room + 1);
+    // `lead` is what the merge train owes the card (T-829), said first and
+    // a step brighter: it is the next thing to happen to the branch.
+    let words_row = |row: &mut Vec<Span<'static>>, lead: Option<&str>| {
+        if lead.is_none() && pr_words.is_none() {
+            return;
+        }
+        let gap = if brief_room > 0 { brief_room + 1 } else { 0 };
+        let mut room = t_cells.saturating_sub(glyph_cells + gap);
         if room < PR_WORDS_MIN {
             return;
         }
-        let words = truncate(words, room);
-        row.push(Span::raw(" ".repeat(1 + glyph_cells)));
+        row.push(Span::raw(" ".repeat(glyph_cells)));
         let ramp = if cursorish { &theme.sel } else { &theme.rest };
+        if let Some(lead) = lead {
+            let lead = truncate(lead, room);
+            room = room.saturating_sub(lead.width());
+            row.push(Span::styled(lead, Style::default().fg(ramp.dim1)));
+            if pr_words.is_none() || room < 3 + PR_WORDS_MIN {
+                return;
+            }
+            row.push(Span::styled(" ∙ ", Style::default().fg(ramp.dim2)));
+            room -= 3;
+        }
+        let Some((words, running)) = pr_words else { return };
+        let words = truncate(words, room);
         if !running {
             row.push(Span::styled(words, Style::default().fg(ramp.dim2)));
             return;
@@ -934,7 +952,8 @@ pub(super) fn render(
     };
     let brief_row = |brief: Vec<Span<'static>>| {
         let mut row = bar_spans();
-        words_row(&mut row);
+        row.push(Span::raw(" "));
+        words_row(&mut row, None);
         let used = super::spans_width(&row);
         row.push(Span::raw(" ".repeat((ctx.width as usize).saturating_sub(used + brief_w + 1))));
         row.extend(brief);
@@ -1010,15 +1029,20 @@ pub(super) fn render(
         .filter(|s| s.kind == SessionKind::Claude)
         .filter(|s| matches!(s.state, SessionState::Running | SessionState::Idle { .. }))
         .find_map(|s| s.detail.as_deref());
+    // What the merge train owes the card (T-829): the cursor card's, like
+    // the owed row, and said on the pull requests' row.
+    let ship_words = ship_row.filter(|_| selected);
     let accordion = selected
         && (!sessions.is_empty()
             || meta_row
             || snooze.is_some()
             || owed_row.is_some()
+            || ship_words.is_some()
             || raised_row.is_some()
             || answered_row.is_some()
             || rows_shown);
     let opened = !selected && meta_row;
+    let mut ship_drawn = false;
     if accordion || opened {
         let ramp = if cursorish { &theme.sel } else { &theme.rest };
         // A trail is semi-transparent everything, its open rows included.
@@ -1041,22 +1065,13 @@ pub(super) fn render(
             lines.push(Line::from(all).style(acc_style));
         };
 
-        // The peek names the tags. The mark under the card says how many and
-        // in which colours; only words say WHICH, and a card open far enough
-        // to show a sentence can afford the row. It sits directly under the
-        // title, above the reply — the ticket's own metadata before the
-        // agent's. It sits under the title's FIRST CHARACTER: two cells in
-        // where a glyph precedes the title, flush where none does — a
-        // session-less card has no glyph column, and indenting its chips
-        // past a title that starts at the bar hung them in the air.
-        //
-        // The short key closes the row, right-aligned under the age slot
-        // (T-410). On the right rather than before the chips because the
-        // chips are indented by the glyph column and the key is not about
-        // the glyph: under `P` every card's key then lands in ONE column, the
-        // way the ages do, and a reader holding "T-410" from a session scans
-        // that column instead of every row. The key is never cut; the chips
-        // get what it leaves and drop from the tail as they always did.
+        // The rows read in the order a person asks of a card (T-829, the
+        // author: "make sure everything is in the RIGHT place"): what it
+        // needs from you, what the agent said, how far along it is, what it
+        // is doing now, where the work goes, and last what the ticket is.
+        // Each kind has one place, so a card that grows a row grows it where
+        // that kind always stands.
+
         // The armed snooze names its preset first: it is what the next key
         // does to this card, before what the card is.
         if let Some(words) = snooze.filter(|_| selected) {
@@ -1082,33 +1097,159 @@ pub(super) fn render(
         // What mesimon will do to this card next, and what it waits on —
         // the same slot, the same voice: `queued ∙ after T-12`.
         if let Some(words) = owed_row.filter(|_| selected) {
-            let words = truncate(words, t_cells.saturating_sub(glyph_cells));
-            push(vec![Span::raw(" ".repeat(glyph_cells)), Span::styled(words, faint)]);
-            // A held ask's keys, under its words (T-551, user: "it's not
-            // obvious that user needs to press ^y … should be next to the
-            // queued message"): the send is the person's, so the card names
-            // the key — the keymap's words through the footer's own span
-            // builder, so a key drawn here is a key that works, and a key
-            // that does not fit is dropped whole rather than cut.
-            if let Some((keys, kctx)) = owed_keys {
-                let mut spans = super::chrome::hint_spans(
-                    keys,
-                    kctx,
-                    ramp,
-                    t_cells.saturating_sub(glyph_cells),
-                );
-                if trail {
-                    for s in &mut spans {
-                        s.style = faint;
+            let inner = t_cells.saturating_sub(glyph_cells);
+            // A held ask's keys ride the same row, right-aligned under the
+            // age (T-551, user: "it's not obvious that user needs to press
+            // ^y … should be next to the queued message"; T-829: one row):
+            // the keymap's words through the footer's own span builder, so a
+            // key drawn here is a key that works, and a key that does not
+            // fit is dropped whole rather than cut. One too wide for the
+            // words' row (`shift+enter resend`) takes the row under them.
+            let keys_in = |budget: usize| match owed_keys {
+                Some((keys, kctx)) => {
+                    let mut spans = super::chrome::hint_spans(keys, kctx, ramp, budget);
+                    if trail {
+                        for s in &mut spans {
+                            s.style = faint;
+                        }
                     }
+                    spans
                 }
-                if !spans.is_empty() {
-                    let mut row = vec![Span::raw(" ".repeat(glyph_cells))];
-                    row.extend(spans);
-                    push(row);
-                }
+                None => Vec::new(),
+            };
+            let keys = keys_in(inner.saturating_sub(words.width().min(OWED_WORDS_MIN) + 1));
+            let under = if keys.is_empty() { keys_in(inner) } else { Vec::new() };
+            let keys_w = super::spans_width(&keys);
+            // `^y send` beside the words says whose the send is, so their
+            // own `∙ you send` would say it twice in the cells the key needs.
+            let words = if keys_w > 0 {
+                words.strip_suffix(" ∙ you send").unwrap_or(words)
+            } else {
+                words
+            };
+            let words =
+                truncate(words, inner.saturating_sub(if keys_w > 0 { keys_w + 1 } else { 0 }));
+            let fill = inner.saturating_sub(words.width() + keys_w);
+            let mut row = vec![Span::raw(" ".repeat(glyph_cells)), Span::styled(words, faint)];
+            if keys_w > 0 {
+                row.push(Span::raw(" ".repeat(fill)));
+                row.extend(keys);
+            }
+            push(row);
+            if !under.is_empty() {
+                let mut row = vec![Span::raw(" ".repeat(glyph_cells))];
+                row.extend(under);
+                push(row);
             }
         }
+
+        // Peek rows: the latest assistant reply, wrapped inside the card's
+        // interior. Two rows (T-829): the gist, with the transcript one
+        // focus away.
+        if let Some(text) = peek.and_then(|pk| pk.text.as_deref()) {
+            for row in crate::peek::wrap(text, t_cells.saturating_sub(2), PEEK_ROWS) {
+                push(vec![Span::styled(format!("  {row}"), dim)]);
+            }
+        }
+        // The summary rows (T-696), under the reply: the open boxes in
+        // their order (ticked ones after, when few are open), then a fold
+        // row counting the rest with their state — every box ticked, none,
+        // or some — and, right after the count, the key that lists them all
+        // (T-819: `∙ ^j` in the count's ink, its word the count's), through
+        // the keymap so a key drawn here is a key that works. Boxes alone
+        // (T-829): a plain line is the note's. The rows start on the glyph
+        // column, two cells before the reply's words (author: "to indicate
+        // it's not the transcript").
+        if let Some(s) = summary.filter(|_| rows_shown) {
+            let (shown, fold) = s.card_rows(SUMMARY_ROWS);
+            for r in shown {
+                let words = mesimon_core::text::scrub_cells(&r.text, false);
+                let row = format!("{} {words}", box_mark(tier, Some(r.done)));
+                push(vec![Span::styled(truncate(&row, t_cells), if r.done { faint } else { dim })]);
+            }
+            if let Some((n, state)) = fold {
+                let words = format!("{} {n} more", box_mark(tier, state));
+                let mut row = vec![Span::styled(words.clone(), faint)];
+                if let Some(keys) = summary_keys {
+                    let budget = t_cells.saturating_sub(words.width());
+                    row.extend(super::chrome::key_spans(keys, faint, budget));
+                }
+                push(row);
+            }
+        }
+        // The step running now, under the boxes (author: "put the
+        // checklists above the command line") — the spinner marks it as
+        // now, and quiet keeps the reply the loudest thing in the accordion.
+        if let Some(act) = peek.and_then(|pk| pk.activity.as_ref()) {
+            let word = match act {
+                crate::peek::Doing::Tool(t) => t.as_str(),
+                crate::peek::Doing::Thinking => "thinking",
+            };
+            let row = crate::text::truncate(word, t_cells.saturating_sub(4));
+            let mark = if glyphs::pulse_lit(ctx.spin) { quiet } else { faint };
+            push(vec![
+                Span::styled(format!("  {} ", glyphs::pulse(tier)), mark),
+                Span::styled(row, quiet),
+            ]);
+        }
+        // The ticket's sessions, beside what is running (T-829: one row). A
+        // single session duplicates line 1 — the aggregate glyph IS that
+        // session — so only a card with more lists them: each its mark, its
+        // name (the OSC-0 title, else the kind word) and its glyph, in rank
+        // order, and what does not fit counted. Their ages are the page's.
+        let mut ranked: Vec<&&SessionRecord> = sessions.iter().collect();
+        ranked.sort_by_key(|s| (rank(&s.state), s.id));
+        if selected && ranked.len() > 1 {
+            let mut row = vec![Span::raw("  ")];
+            let mut used = 2;
+            for (i, s) in ranked.iter().enumerate() {
+                let mark = glyphs::kind_mark(s.kind, tier);
+                let word = truncate(s.title.as_deref().unwrap_or(s.kind.word()), SESSION_WORD);
+                let entry = format!("{mark} {word} ");
+                let (g, reg) = glyphs::session_glyph(s, tier, ctx.spin);
+                let gap = if i == 0 { 0 } else { 2 };
+                let w = gap + entry.width() + 1;
+                let left = ranked.len() - i - 1;
+                let more = if left > 0 { format!(" +{left}").width() } else { 0 };
+                if i > 0 && used + w + more > t_cells {
+                    row.push(Span::styled(format!(" +{}", ranked.len() - i), quiet));
+                    break;
+                }
+                if gap > 0 {
+                    row.push(Span::raw(" ".repeat(gap)));
+                }
+                row.push(Span::styled(entry, dim));
+                row.push(Span::styled(
+                    g.to_string(),
+                    if trail { faint } else { register_style(theme, reg) },
+                ));
+                used += w;
+            }
+            push(row);
+        }
+        // Where the work goes (T-829): the pull requests' marks under the
+        // age and their words, after what the merge train owes the branch.
+        // On the closed card the marks hold line 2 instead.
+        if brief_last || ship_words.is_some() {
+            let brief = if brief_last { brief.clone() } else { Vec::new() };
+            let mut row = Vec::new();
+            words_row(&mut row, ship_words);
+            let used = BAR_WIDTH + 1 + super::spans_width(&row);
+            let bw = super::spans_width(&brief);
+            row.push(Span::raw(" ".repeat((ctx.width as usize).saturating_sub(used + bw + 1))));
+            row.extend(brief);
+            push(row);
+            ship_drawn = true;
+        }
+
+        // The meta row, last (T-829): the bar already wears the tags'
+        // colours, and what the ticket is reads after what is happening to
+        // it. The chips sit under the title's FIRST CHARACTER: two cells in
+        // where a glyph precedes the title, flush where none does. The
+        // short key closes the row, right-aligned under the age slot, so
+        // under `P` every card's key lands in ONE column, the way the ages
+        // do. The key is never cut; the chips get what it leaves and drop
+        // from the tail as they always did.
         if meta_row {
             let inner = t_cells.saturating_sub(glyph_cells);
             let key = if ctx.names_key { ticket.short_key.clone() } else { String::new() };
@@ -1140,116 +1281,8 @@ pub(super) fn render(
             row.push(Span::styled(key, dim));
             push(row);
         }
-
-        let mut ranked: Vec<&&SessionRecord> = sessions.iter().collect();
-        ranked.sort_by_key(|s| (rank(&s.state), s.id));
-        // A single session duplicates line 1 (the aggregate glyph IS that
-        // session, and its own age is the ticket page's) — its row adds
-        // nothing, so only multi-session cards list.
-        let listed: &[&&SessionRecord] = if selected && ranked.len() > 1 { &ranked } else { &[] };
-        for s in listed.iter().take(2) {
-            let mark = glyphs::kind_mark(s.kind, tier);
-            // The session's own name (OSC-0 title, same as the tmux status
-            // bar's breadcrumb leaf) when it set one, else the kind word.
-            let word = s.title.as_deref().unwrap_or(s.kind.word());
-            // Row budget: "  {mark} {word}" + ≥1 fill + glyph + " {age:>3}".
-            // An overflowing name reveals itself marquee-style on the same
-            // clock as the card title (accordion rows exist on the cursor
-            // card only, so the clock is always live here).
-            let budget = t_cells.saturating_sub(10);
-            let overflow = word.width().saturating_sub(budget);
-            let scroll = match (marquee_ms, overflow) {
-                (Some(ms), o) if o > 0 => marquee_offset(ms, o),
-                _ => 0,
-            };
-            let word = if scroll > 0 {
-                marquee_window(word, budget, scroll)
-            } else {
-                truncate(word, budget)
-            };
-            let (g, reg) = glyphs::session_glyph(s, tier, ctx.spin);
-            let a = s
-                .state_changed_at
-                .map(|ms| age_slot(ctx.now_ms, ms, glyphs::is_working(s)))
-                .unwrap_or_default();
-            // Right-align glyph + age into the same columns the resting
-            // card uses (dots under the age slot) — selection must not make
-            // the state glyph or the time jump sideways.
-            let left = format!("  {mark} {word}");
-            let fill = t_cells.saturating_sub(left.width() + 1 + 4);
-            push(vec![
-                Span::styled(left, dim),
-                Span::raw(" ".repeat(fill)),
-                Span::styled(g.to_string(), if trail { faint } else { register_style(theme, reg) }),
-                Span::styled(format!(" {a:>3}"), quiet),
-            ]);
-        }
-        if selected && ranked.len() > 2 {
-            push(vec![Span::styled(format!("  +{} more", ranked.len() - 2), quiet)]);
-        }
-        // Peek rows: the latest assistant reply, wrapped inside the card's
-        // interior. Capped at 4 rows, 3 above a brief — the transcript
-        // itself is one focus away.
-        if let Some(pk) = peek {
-            if let Some(text) = pk.text.as_deref() {
-                let cap = if brief_last { PEEK_ROWS - 1 } else { PEEK_ROWS };
-                for row in crate::peek::wrap(text, t_cells.saturating_sub(2), cap) {
-                    push(vec![Span::styled(format!("  {row}"), dim)]);
-                }
-            }
-            // One more row for the step running under those words — the
-            // spinner marks it as now, and quiet keeps the reply the loudest
-            // thing in the accordion.
-            if let Some(act) = pk.activity.as_ref() {
-                let word = match act {
-                    crate::peek::Doing::Tool(t) => t.as_str(),
-                    crate::peek::Doing::Thinking => "thinking",
-                };
-                let row = crate::text::truncate(word, t_cells.saturating_sub(4));
-                let mark = if glyphs::pulse_lit(ctx.spin) { quiet } else { faint };
-                push(vec![
-                    Span::styled(format!("  {} ", glyphs::pulse(tier)), mark),
-                    Span::styled(row, quiet),
-                ]);
-            }
-        }
-        // The summary rows (T-696), under the reply: the first plain row,
-        // then the open boxes in their order (ticked ones after, when few
-        // are open), then a fold row counting the rest with their state —
-        // every box ticked, none, or some — and, right after the count, the
-        // key that lists them all (T-819: `∙ ^j` in the count's ink, its word
-        // the count's), through the keymap so a key drawn here is a key that works.
-        // The rows start on the glyph column, two cells before the reply's
-        // words (author: "to indicate it's not the transcript"): a box
-        // heads a task, a dash a plain row — centred in the box's three
-        // cells, so every row's words start in one column.
-        if let Some(s) = summary.filter(|_| rows_shown) {
-            let inner = t_cells;
-            let cap = if brief_last { SUMMARY_ROWS - 1 } else { SUMMARY_ROWS };
-            let (shown, fold) = s.card_rows(cap);
-            for r in shown {
-                let words = mesimon_core::text::scrub_cells(&r.text, false);
-                let (row, style) = match r.done {
-                    None => (format!(" -  {words}"), dim),
-                    Some(done) => (
-                        format!("{} {words}", box_mark(tier, Some(done))),
-                        if done { faint } else { dim },
-                    ),
-                };
-                push(vec![Span::styled(truncate(&row, inner), style)]);
-            }
-            if let Some((n, state)) = fold {
-                let words = format!("{} {n} more", box_mark(tier, state));
-                let mut row = vec![Span::styled(words.clone(), faint)];
-                if let Some(keys) = summary_keys {
-                    let budget = t_cells.saturating_sub(words.width());
-                    row.extend(super::chrome::key_spans(keys, faint, budget));
-                }
-                push(row);
-            }
-        }
     }
-    if brief_last {
+    if brief_last && !ship_drawn {
         lines.push(brief_row(brief));
     }
 
@@ -1259,11 +1292,19 @@ pub(super) fn render(
     lines
 }
 
-/// How many summary boxes the open card lists before the fold (T-696).
+/// How many rows the open card gives the summary's boxes, the fold row
+/// included (T-696, T-829).
 const SUMMARY_ROWS: usize = 3;
 
-/// How many rows of the agent's reply an open card shows.
-const PEEK_ROWS: usize = 4;
+/// How many rows of the agent's reply an open card shows (T-829: two, the
+/// author's pick).
+const PEEK_ROWS: usize = 2;
+
+/// The fewest cells a held ask's words keep beside its keys (T-829).
+const OWED_WORDS_MIN: usize = 10;
+
+/// The most cells a session's name takes on the card's sessions row.
+const SESSION_WORD: usize = 10;
 
 /// A box as the card and the dialog draw it: ticked wears the board's own
 /// check (the note draws it the same, `rich.rs`), open is empty, and the

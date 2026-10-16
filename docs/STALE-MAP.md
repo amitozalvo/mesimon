@@ -27110,3 +27110,40 @@ followed a person's prompt and a new commit, not the train; the merged notice be
 
 Test: `provider_e2e::daemon_handover_restores_a_codex_turn_held_by_its_own_work` (fails without
 the restore: `Unknown` past 15 s).
+
+## The open card reads in one order, and its summary is the boxes (T-829, 2026-10-16, the author: "it's a mess right now … make sure everything is in the RIGHT place")
+
+The open card grew a row per feature, each where its ticket put it: the tags and key under the
+title (T-410), a held ask's keys on a row of their own under its words (T-551), the sessions
+listed two rows deep above the reply, the reply four rows, the step running now, the summary's
+plain line and boxes, and the pull requests last (T-789). The merge train's ask shared the owed
+row with a queued message at the top, so a ticket held one or the other, never both, and a
+shipping fact sat at the opposite end of the card from the pull request it was about.
+
+The author picked layout A of a proposal (an artifact with "today", A "sorted" and B "compact",
+toggles for what is going on), with two reply rows and the tags at the bottom, after two changes
+on the way: the checklist above the step running now, and plain summary lines gone. The order is
+now one place per kind, top to bottom: what waits on the person (snooze preset, raised hand, the
+crown's answer, the owed row with its keys right-aligned on the same row), the reply (two rows),
+the boxes (three rows, the fold row included), the step running now, every other session on one
+row (`✻ claude ⠋  $ bash ◦`, each name capped at 10 cells, the rest counted, ages left to the
+page), where the work goes (the merge train's `rebase ask ∙ …` / `auto-merge ∙ …` before the
+pull request's words, its marks under the age), and last the tags and key.
+
+- `App::card_owed` splits `pending_row`'s words by kind: a merge or rebase action (or
+  `auto-merge ∙ off`) goes to the pull-request row, everything else stays at the top. The ticket
+  page reads `pending_row` whole, unchanged.
+- A held ask's row drops its own `∙ you send` when `^y send` fits beside it; a key too wide for
+  the words' row (`shift+enter resend`) takes the row under them, as every key did before.
+- The pull-request row is no longer last, so `board.rs` finds its click by scanning the card's
+  rows for the brief instead of reading line 2 and the last line.
+- The summary is the boxes everywhere: `summary::extract` drops every non-box line, `Row.done`
+  is a `bool`, and so is the wire's `AgentSummaryRow.done` (a reader of the old optional field
+  reads the same JSON). The note keeps its plain lines; the page draws them as markdown. The
+  `^j` dialog lists boxes only. `card_rows(n)` shows every box when they fit in `n` rows, else
+  `n - 1` and the fold.
+- `mcp::SUMMARY_ABOUT` now says "Only the boxes reach the card; any other line there stays the
+  note's" in place of T-743's "a plain line takes a card line … waits for a person's ask". Rig S1
+  and S2 no longer count plain rows.
+
+Golden: `board_open_card_order_120x30` is the whole card in order.

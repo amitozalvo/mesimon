@@ -277,6 +277,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         } else {
             Vec::new()
         };
+        let (owed_row, ship_row) = app.card_owed(t.id);
         let render = |open: bool, peek: Option<&crate::peek::Peek>| {
             card::render(
                 &ctx,
@@ -296,7 +297,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 unseen,
                 app.snooze_row(t.id).as_deref(),
                 app.owed(t.id),
-                app.pending_row(t.id).as_deref(),
+                owed_row.as_deref(),
+                ship_row.as_deref(),
                 (!owed_keys.is_empty()).then_some((owed_keys.as_slice(), &*keys_ctx)),
                 app.remote_initials(t.id).as_deref(),
                 if left { crate::ui::CrownMark::None } else { app.crown_mark(t.id) },
@@ -330,13 +332,14 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             lines.truncate(n.max(1));
         }
         let t_cells = usize::from(ctx.width).saturating_sub(crate::tags::BAR_WIDTH + 2);
-        // Line 2, or an open card's last line (T-789).
+        // Line 2, or an open card's pull-request row (T-789, T-829).
         let spans = card::brief_spans(ctx.theme, &brief, t_cells);
         // The words beside the marks (T-794) are the same click, where they
         // hold the line: a resting card's new reply does otherwise.
         let words = pr_words.as_ref().filter(|_| open || fresh.is_none()).map(|(w, _)| w.as_str());
-        let prs_at = [1, lines.len().saturating_sub(1)]
-            .into_iter()
+        // Line 2 on a closed card; on an open one, the row over the tags
+        // (T-829).
+        let prs_at = (1..lines.len())
             .find_map(|row| brief_at(lines.get(row), &spans, words).map(|at| (row, at)));
         // The card is drawn WHOLE first — glyph, title, sessions, peek — and
         // the field is added under it. That order is the point: what you are
