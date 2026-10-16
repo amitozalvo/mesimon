@@ -20212,6 +20212,10 @@ mod tests {
         assert_eq!(row(&mut app, vec!["T-3"], false, Merge), "auto-merge ∙ after T-3");
         assert_eq!(row(&mut app, vec![], false, Rebase), "rebase ask ∙ next");
         assert_eq!(row(&mut app, vec!["T-3", "T-4"], false, Rebase), "rebase ask ∙ after T-3 +1");
+        // The train waits on the ticket's own turn (T-822): the daemon
+        // lists the ticket itself first, and the row says so.
+        assert_eq!(row(&mut app, vec![&own], false, Merge), "auto-merge ∙ after its turn");
+        assert_eq!(row(&mut app, vec![&own], false, Rebase), "rebase ask ∙ after its turn");
         // A merge the checkout refused (T-289): the reason travels on `text`
         // and outranks what the row waits on — quiet is not what it needs.
         // The ask's own `text` is its words, and must not read as a refusal.

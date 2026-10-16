@@ -26867,3 +26867,27 @@ it) and an archived ticket flash nothing.
 
 Tests: `a_ticket_links_row_flashes_its_card_on_the_board`; goldens `links_120x30`,
 `picture_link_unavailable_120x30`.
+
+## A worker mid-turn says what the train does after it (T-822, 2026-10-16, "no train pending merge / rebase indication")
+
+The ask: T-816's card showed no train mark or row, where it "used to be". It had shown them
+that morning, idle in REVIEW behind main (`rebase ask ∙ after T-815`). In the evening its agent
+worked 22 minutes while main moved twice, and the card showed nothing until the train merged it
+0.6 s after the turn ended. `train::lane` needs a free seat for either list, and a ticket whose
+own agent is mid-turn is on neither, so the snapshot had no row for it. That has been so since
+the train shipped.
+
+`train::Plan` now has a third list, `after_turn`. A ticket the two lists skip because its own
+turn is in flight (`quiet::is_working`, or words owed, read as `Spawning`) is read again in the
+column that turn delivers in (`automove::delivers_in`, T-795), with its agent at the composer:
+the same `lane`, so a raised hand, `manual_merge`, the fuse and the once-per-tip rebase memo
+all still hold. Only `pending_items` reads the list. It emits the usual Merge/Rebase rows with
+the ticket's own key first in `waits_on`, so `after_words` reads `auto-merge ∙ after its turn` /
+`rebase ask ∙ after its turn`, a grammar the queued ask already had. `train_pass` never reads
+it. The glyph keeps the spinner (`queued_over` never covers a moving mark), so the row shows on
+the cursor's card and the ticket page. A dialog the turn holds open is still that turn; a parked
+agent and an interrupted one have none in flight.
+
+Tests: `train::a_worker_mid_turn_is_read_where_its_turn_ends`,
+`merge_train_e2e::a_worker_mid_turn_says_what_the_train_does_after_it`, and the row assertions in
+`the_owed_row_names_what_it_waits_on`.

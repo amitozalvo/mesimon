@@ -76,6 +76,11 @@ pub struct Input<'a> {
 pub struct Plan {
     pub merge: Vec<ulid::Ulid>,
     pub rebase: Vec<ulid::Ulid>,
+    /// What the train will do once the ticket's own turn ends (T-822): a
+    /// ticket whose agent is mid-turn, or owed words a turn starts on, read
+    /// in the column that turn delivers in with its agent at its composer.
+    /// The card's row only; the pass never acts on it.
+    pub after_turn: Vec<(ulid::Ulid, Lane)>,
 }
 
 /// The ticket's claude seat, as the train reads it.
@@ -221,11 +226,12 @@ pub fn plan(input: &Input) -> Plan {
     for col in input.board.sorted_columns() {
         for t in input.board.column_tickets(&col.name) {
             let Some(flags) = input.flags.get(&t.id) else { continue };
-            let reading = Reading {
+            let words_owed = input.owed.contains(&t.id);
+            let mut reading = Reading {
                 merge_into: input.board.merge_into,
                 reach: col.settings.train,
                 flags,
-                seat: seat(input.board, t.id, input.owed.contains(&t.id)),
+                seat: seat(input.board, t.id, words_owed),
                 base_tip: input.base_tip.get(&t.id).map(String::as_str).unwrap_or(""),
                 asked: input.asked.get(&t.id).map(String::as_str),
                 conflict_asked: input.conflict_asked.contains(&t.id),
@@ -234,17 +240,43 @@ pub fn plan(input: &Input) -> Plan {
             match lane(t, &reading) {
                 Some(Lane::Merge) => plan.merge.push(t.id),
                 Some(Lane::Rebase) => plan.rebase.push(t.id),
-                None => {}
+                None => {
+                    if let Some(reach) = turn_ends_in(input.board, t, words_owed) {
+                        reading.reach = reach;
+                        reading.seat = Seat::Idle;
+                        if let Some(l) = lane(t, &reading) {
+                            plan.after_turn.push((t.id, l));
+                        }
+                    }
+                }
             }
         }
     }
     plan
 }
 
+/// The train's reach in the column `t`'s turn in flight delivers in
+/// (`automove::delivers_in`, T-795), or `None` when no turn of its own
+/// agent is in flight or owed: then the seat is free, parked, or held by a
+/// person, and what the train does next is `lane`'s plain reading. Words
+/// owed to an agent at its composer are a turn not yet begun, read as
+/// `Spawning` is: `on_working`, then `on_done`.
+fn turn_ends_in(board: &Board, t: &Ticket, words_owed: bool) -> Option<TrainReach> {
+    let agent = board.live_agent(t.id).filter(|s| s.state != SessionState::Sleeping)?;
+    let working = board.sessions.iter().any(|s| s.ticket == t.id && crate::quiet::is_working(s));
+    let state = match (working, words_owed) {
+        (true, _) => &agent.state,
+        (false, true) => &SessionState::Spawning,
+        (false, false) => return None,
+    };
+    let column = crate::automove::delivers_in(board, &t.column, state);
+    Some(board.column(column).map(|c| c.settings.train).unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{Column, SessionKind, SessionRecord, Ticket};
+    use crate::board::{Column, Reason, SessionKind, SessionRecord, Ticket};
     use serde_json::json;
 
     fn ticket(n: u128, column: &str, order: &str) -> Ticket {
@@ -431,6 +463,69 @@ mod tests {
         assert_eq!(run(&b, &plain), Plan::default(), "no PR yet: the forge's all the same");
         b.merge_into = MergeInto::Main;
         assert_eq!(run(&b, &plain).merge, vec![ulid::Ulid(1)], "into main: the train's");
+    }
+
+    /// T-822: a worker mid-turn is on neither list, so nothing said what
+    /// the train would do; it merged the moment the turn ended. Its own
+    /// turn's end is now read where that turn delivers it: a branch ahead
+    /// merges there, one behind is asked its rebase, once per base tip as
+    /// ever. Words owed are a turn about to start, and a dialog a turn holds
+    /// open is still that turn; a parked agent and an interrupted one have
+    /// none in flight.
+    #[test]
+    fn a_worker_mid_turn_is_read_where_its_turn_ends() {
+        let ahead = HashMap::from([(ulid::Ulid(1), flags(2, false))]);
+        let behind = HashMap::from([(ulid::Ulid(1), flags(2, true))]);
+        let at = |column: &str, state: SessionState| {
+            let mut b = board();
+            b.tickets.push(ticket(1, column, "a"));
+            b.sessions.push(claude(1, state, Confidence::High));
+            b
+        };
+        let working = at(IN_PROGRESS, SessionState::Running);
+        let p = run(&working, &ahead);
+        assert_eq!((p.merge.len(), p.rebase.len()), (0, 0), "the pass waits for the turn");
+        assert_eq!(p.after_turn, vec![(ulid::Ulid(1), Lane::Merge)], "it lands in REVIEW");
+        assert_eq!(run(&working, &behind).after_turn, vec![(ulid::Ulid(1), Lane::Rebase)]);
+        // In REVIEW the turn ends where it is, and the reading is the same.
+        let review = at(REVIEW, SessionState::Running);
+        assert_eq!(run(&review, &ahead).after_turn, vec![(ulid::Ulid(1), Lane::Merge)]);
+        // Asked at this base tip already: the train's own rebase turn.
+        let asked = plan(&Input {
+            board: &working,
+            flags: &behind,
+            base_tip: &tips("tip1"),
+            asked: &HashMap::from([(ulid::Ulid(1), "tip1".to_string())]),
+            conflict_asked: &HashSet::new(),
+            fused: &HashSet::new(),
+            owed: &HashSet::new(),
+        });
+        assert_eq!(asked, Plan::default(), "a rebase asked at this tip is not asked twice");
+        // Words owed to an agent at its composer: a turn is about to start.
+        let idle_owed = at(IN_PROGRESS, idle());
+        let owed = plan(&Input {
+            board: &idle_owed,
+            flags: &ahead,
+            base_tip: &tips("tip1"),
+            asked: &HashMap::new(),
+            conflict_asked: &HashSet::new(),
+            fused: &HashSet::new(),
+            owed: &HashSet::from([ulid::Ulid(1)]),
+        });
+        assert_eq!(owed.after_turn, vec![(ulid::Ulid(1), Lane::Merge)]);
+        let asking = at(IN_PROGRESS, SessionState::RequiresAction { reason: Reason::Question });
+        assert_eq!(run(&asking, &ahead).after_turn, vec![(ulid::Ulid(1), Lane::Merge)]);
+        // No turn of its own in flight: nothing after it.
+        let still =
+            [SessionState::Sleeping, SessionState::Idle { stop_reason: StopReason::Interrupted }];
+        for state in still {
+            let p = run(&at(IN_PROGRESS, state.clone()), &ahead);
+            assert_eq!(p, Plan::default(), "{state:?}");
+        }
+        // The lane's own refusals hold: a ticket off the train.
+        let mut hand = working.clone();
+        hand.tickets[0].manual_merge = true;
+        assert_eq!(run(&hand, &ahead), Plan::default(), "off the train (t)");
     }
 
     /// Every ticket 1..=4 stands on the same base tip.

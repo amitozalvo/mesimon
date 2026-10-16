@@ -8420,6 +8420,34 @@ impl Daemon {
                     deliver: Deliver::Idle,
                 });
             }
+            // What the train does once a worker's own turn ends (T-822):
+            // the same rows, waiting on the ticket itself first, so a card
+            // mid-turn says `after its turn` rather than nothing until it
+            // merges.
+            for (t, lane) in plan.after_turn {
+                let (action, rest) = match lane {
+                    mesimon_core::train::Lane::Merge => (PendingAction::Merge, &waits_on),
+                    mesimon_core::train::Lane::Rebase => (PendingAction::Rebase, &rebase_waits_on),
+                };
+                let mut waits = self.keys_of(&[t]);
+                waits.extend(
+                    rest.iter().filter(|k| !waits.contains(k)).cloned().collect::<Vec<_>>(),
+                );
+                out.push(Pending {
+                    ticket: t,
+                    action,
+                    waits_on: waits,
+                    asking: Vec::new(),
+                    text: None,
+                    in_flight: false,
+                    by: None,
+                    sends: false,
+                    accept_plan: false,
+                    held: None,
+                    plan: false,
+                    deliver: Deliver::Idle,
+                });
+            }
         }
         out
     }
