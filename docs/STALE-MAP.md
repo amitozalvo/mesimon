@@ -26681,3 +26681,72 @@ counted as a pass; its retained `runner-lost` owner had no fixture sockets or
 repositories, and its processes and temporary directory were confirmed gone.
 Linux, live-phone and paid-model checks were not repeated for this read-only host
 change; live-phone verification awaits the rebuilt daemon's normal handover.
+
+## Setup asks a new board how its person works (T-816, 2026-10-16, the author: "quick-start first time opening mesimon ∙ ask important questions, let to skip. propose first with an artifact ∙ auto accept the system prompt ∙ worktree default by default, remove the board default")
+
+**Proposed first, as a clickable simulation, three rounds.** The first draft's questions were
+mesimon's own words (train, worktree, forge) and its previews were prose; the author asked for
+plain questions ("how do you usually work?"), the technical choice as a follow-up step of the
+plain answer, and a preview that is the board and grows with the answers rather than changing
+under them. The author's answers: the brief on for new boards with promise 3 reworded; a
+multi-repository folder asks, worktree preselected; three templates; no re-run from the menu
+(Settings is the way back); named Setup, since the tour already has a Quick start lesson; and no
+"Nothing" for an agent's tools, which breaks mesimon.
+
+**When.** `Board::setup_pending`, set by the store on a repository with no `columns.toml` and
+nowhere else, so every older board and every board a test builds reads as set up (absent key,
+skipped when false, no bump). The TUI opens Setup on a snapshot that says so, once
+(`App::setup_applied` until the next snapshot), armed in `lib.rs::run` after the prefs and the key
+probe, never on a practice board or a board joined from someone else. Quitting mid-way applies
+nothing, and the next open asks again.
+
+**The pages** (`tui/src/setup.rs`): how you work (on my own · with pull requests, in the forge's
+words, GitHub's or GitLab's from `forge::setup_probe`, which reads `origin` and asks `gh`/`glab`
+off the draw thread), then merging into main (auto merge on or off) or bringing a PR that fell
+behind main up to date (the same switch under pull requests, with the sign-in's state under the
+question), the board (`board::Template`: Kanban; Pull requests: TODO, IN PROGRESS, PR/MR OPEN on
+`arrives_on: PR opened`, MERGED on `merged`; and that plus PRODUCTION on `deployed to production`,
+a person widening to more environments from the column's settings), a worktree per ticket on a
+folder of two or more repositories, what an agent may do on its card (Everything · Write notes and
+ask you · Only read it, written to every column's `agent_tools`), and the brief, `brief::TEXT`
+verbatim on its own lines. `s` keeps a page's default, Esc all the rest's, `h` goes back; the last
+page opens the board or the tour. `Scope::Setup` is a child of Global: `q`/Esc are `Back`, `?`
+works.
+
+**The preview is the tour's practice board** (`tour::toy`), a scene per page laid from the
+answers given and the one under the cursor: the ticket's journey, a PR's marks, a sibling's merge
+leaving this PR conflicting and its agent rebasing, two agents in their own worktrees, an agent
+finding a bug and the person's Shift+Enter ask filed, refused with a raised hand or refused, and
+the brief's first words. Two seams made it possible: the toy answers `PromptSession`, and a card's
+peek reads a practice agent's words from `PeekCache::stage` (`World::says`), since a practice
+board has no transcript. `ui::tour::lay_board` is the blit both use.
+
+**Applying.** `Command::ApplySetup` (local only, `agent_allows` no): the template's columns while
+the board has no ticket, `merge_into`, every column's tools, `Board::workspace`, the brief on,
+`setup_pending` off, in one writer turn (`set_merge_into`'s own road where the workflow changes,
+so the forge state follows). Auto merge off is this board's `merge_train` override, written by
+the TUI.
+
+**Worktree by default.** `Board::workspace` stamps a ticket at mint when its composer and its
+column left it alone (`create_ticket`), `None` the shared checkout as before, so a board before
+Setup and every test board mint as they did. Setup writes a worktree unless the person chose the
+shared checkout or the folder has no repository (`Daemon::has_repo`: `.git` at the root, or the
+census). Settings › Behaviour › Worktrees (`Command::SetBoardWorkspace`, under a TICKETS heading;
+a switch, since two long choice words widened the page's value column past the fetch row) changes
+it after; a column's Workspace row lost `board default` and shows the board's answer where the
+column says nothing.
+
+**Promise 3** now says Setup shows the brief and turns it on; a board from before Setup keeps it
+off. `rig` B1 (`brief_on`, `first_tool:get_ticket`, `brief_argv`): on the real Sonnet the worker's
+first call past Claude Code's `ToolSearch` is `get_ticket`. Measured on the way: a ticket whose
+description says "read no file and run no command" is obeyed over the brief, and the worker makes
+no call at all.
+
+Tests: `board::every_template_is_a_valid_board`, `a_template_is_refused_once_a_ticket_exists`;
+`setup_e2e` (both); `setup::every_page_plays_to_its_end` (both workflows, both forges, a folder of
+projects, every answer: the toy refused nothing), `the_pages_follow_how_you_work`,
+`skipping_everything_is_the_defaults`, `the_answers_become_the_outcome`; `app::setup_applies_its_
+answers_in_one_command`, `setup_esc_twice_is_the_defaults`; goldens `setup_work_120x30`,
+`setup_fix_120x30`, `setup_brief_120x36`, `setup_ready_80x24`, and the Behaviour and column
+goldens reminted. `MESIMON_SETUP_DUMP=<page>[,<cursor>[,team]] cargo test -p mesimon-tui
+dump_a_page -- --nocapture` prints a page's scene beat by beat.

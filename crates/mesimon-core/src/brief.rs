@@ -6,10 +6,11 @@
 //! home — it reaches ONLY sessions mesimon starts (a CLAUDE.md speaks to every
 //! session in the repo, mesimon's or not), it writes no file the user tracks
 //! in git, it cannot drift from the binary that spawned it, and turning it off
-//! is one Settings row. The flag is opt-in, off by default, and the dialog that
-//! offers it shows [`TEXT`] verbatim, because README promise 3 says mesimon
-//! adds no token to a conversation and this is the one named, consented
-//! exception.
+//! is one Settings row. Setup (T-816) shows [`TEXT`] verbatim the first time a
+//! board opens and turns it on; a board from before Setup keeps it off until a
+//! dialog that shows the same text turns it on, because README promise 3 says
+//! mesimon adds no token to a conversation and this is the one named,
+//! consented exception.
 //!
 //! `claudemd::SNIPPET` stays as the CLAUDE.md FORM of the same instruction:
 //! `c` in the dialog copies it for a user who would rather keep the words in

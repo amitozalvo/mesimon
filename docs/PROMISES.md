@@ -65,11 +65,12 @@ question or plan from an agent you started, still waits for you. Only you can
 crown a ticket; an agent that asks for it is told to ask you.
 `mesimon doctor --mcp` prints the current tool registry verbatim.
 
-And there is one line you can choose to add. The *agent brief* is off until you turn it on:
-a seven-line paragraph in the system prompt of the agent sessions mesimon starts in this repo
-— only those, never a session you started yourself — telling the agent to read its ticket
-before it starts work. The dialog that offers it shows the exact text first, `mesimon doctor`
-prints it, and *Settings › Agents › Agent brief* turns it off again. Together with the tool registry
+And there is one paragraph mesimon adds. The *agent brief* is a seven-line paragraph in the
+system prompt of the agent sessions mesimon starts in this repo — only those, never a session
+you started yourself — telling the agent to read its ticket before it starts work. Setup, the
+first time mesimon opens a folder, shows the exact text and turns it on; a board set up before
+Setup keeps it off until you turn it on. `mesimon doctor` prints it, and
+*Settings › Agents › Agent brief* turns it off. Together with the tool registry
 it is everything mesimon adds to model input.
 
 What the tools can and cannot do is in

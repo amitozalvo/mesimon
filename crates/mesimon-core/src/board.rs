@@ -2253,9 +2253,10 @@ pub struct Board {
     #[serde(default)]
     pub claude_md_ignored: bool,
     /// Sessions mesimon starts carry `brief::TEXT` in their system prompt
-    /// (`brief::FLAG`, T-224). OFF by default — README promise 3 says mesimon
-    /// adds no token to a conversation, and this is the one exception a person
-    /// turns on, after a dialog has shown them the exact text. Per REPO like
+    /// (`brief::FLAG`, T-224). OFF until a person has seen the exact text:
+    /// Setup shows it and turns it on (T-816), and on a board from before
+    /// Setup the offer's dialog does — README promise 3 says mesimon adds no
+    /// token to a conversation, and this is its one consented exception. Per REPO like
     /// `mcp_tools`, and honoured only while the tools are on (the sentence
     /// names a tool). A plain serde default, no schema bump: a downgrade that
     /// drops `system_prompt = true` sends LESS to the model, which is the safe

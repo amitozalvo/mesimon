@@ -126,7 +126,7 @@ up](https://mesimon.dev/relay/) is on mesimon.dev. Sharing a board with teammate
 2. **No config mutation.** `mesimon doctor` prints fixes for you to apply; it never applies one
    itself.
 3. **Zero prompt injection.** mesimon adds, removes and reorders no token of your conversation.
-   The board tools it gives its agents, and a brief you can switch on, are shown in full.
+   The board tools it gives its agents, and the brief Setup shows you, are shown in full.
 
 [The promises in full](docs/PROMISES.md), with every path mesimon writes. If you find mesimon
 breaking one, [report it](SECURITY.md).

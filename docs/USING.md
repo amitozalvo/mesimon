@@ -109,6 +109,17 @@ cd <a git repo>
 mesimon
 ```
 
+The first time mesimon opens a folder, **Setup** asks a few things, one page each, with a
+practice board under the question playing what the answer does: how you work (on your own, where
+finished work is merged into main, or with pull requests on GitHub or GitLab), whether mesimon
+merges for you or an agent brings a pull request that fell behind main up to date, the board's
+columns (to do, in progress, review and done, or columns that follow a pull request to merged and,
+if you like, to production), a worktree for each ticket where the folder holds several
+repositories, and what an agent may do on its own card. Its last page shows the agent brief word
+for word. `s` leaves a question on its default and `esc` leaves all the rest on theirs. Each answer
+is a setting afterwards: *Behaviour › Worktrees*, *Merge into* and *Auto merge*, each column's
+*Tools*, and *Agents › Agent brief*.
+
 On the board: `o` adds a ticket, `space` opens its page, `enter` goes to its agent (or opens the
 page when it has none), `HJKL` moves the card (`>` or `<` twice does too), `p` shows each agent's
 latest reply under its card, `,` opens Settings, `q` quits.
@@ -122,8 +133,9 @@ marked; `tab` takes them out again.
 
 <sub>Three letters narrow fifteen tickets to one, and `enter` scrolls the board to its card.</sub>
 
-In the new-ticket composer, `shift-tab` cycles between the shared checkout and a dedicated
-worktree; that choice locks once a session exists. On the board or a ticket page, `c` copies the
+A new ticket works in its own worktree, unless Setup or *Behaviour › Worktrees* says otherwise
+or its column's *Workspace* row chose for it. In the new-ticket composer, `shift-tab` cycles
+between the shared checkout and a dedicated worktree; that choice locks once a session exists. On the board or a ticket page, `c` copies the
 ticket's id; press it again for the title, and a third time for the id and title together. On a
 ticket page: `enter` on `+ agent session` starts an agent session and on a sleeping one wakes it,
 `!` opens a terminal in the ticket's worktree or checkout, and `enter` steps into a live session:
