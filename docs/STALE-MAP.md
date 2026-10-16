@@ -26604,3 +26604,40 @@ helper was skipped. The cost integration tests passed on both roads and fixture
 cleanup was clean. This does not fix or claim a pass for that unrelated timing
 assertion. Linux, manual TUI and paid model runs were not repeated for this
 pricing/rendering change.
+
+## Integration checks observe outcomes, not scheduler speed (T-815, 2026-10-16)
+
+The pre-merge workspace run exposed an existing worktree-init assertion that
+required a failing shell to finish in less than half a second (`0 s` after
+rounding). Under suite load the same exit-2 result correctly reported `1 s`.
+The integration test now parses the single init feed row for each ticket,
+checks its exact success/failure/timeout status and whole-second duration,
+and requires the journal and agent's ticket view to report that same outcome.
+The 1500 ms timeout still requires at least two rounded seconds, but not exactly
+two; the existing core unit test checks deterministic duration formatting.
+Script ordering, exit codes, timeout reporting and agent startup remain checked.
+No production timing or timeout policy changes.
+
+The rebased full suite also caught the restart board-tool test taking a snapshot
+before its prompt hook reached the daemon's state writer. Hook subprocess exit
+is not an acknowledgement that the state transition has been applied. Both
+remaining immediate pre-restart checks now use the existing bounded `await_state`
+helper, like the other restart scenarios. The post-restart unknown-state and
+board-call recovery assertions stay unchanged; no production ordering changes.
+
+The mod-road rerun then caught a permission-hold plugin test calling its initial
+no-op `release` after a fixed 20 ms sleep, before the mocked approve process had
+installed the actual resolver. It now awaits an explicit start signal from that
+mock before releasing it. The pending-dialog and final personal-decision checks
+are unchanged; neither the plugin nor its permission behavior changes.
+
+Validation after rebasing onto main: `cargo ut`, `cargo build --workspace`,
+formatting and `git diff --check` passed, as did the focused init, restart and
+plugin tests. The final bounded six-worker workspace run passed all 2500 tests;
+its mod-road pass passed all 208 integrations, with a clean 411-owner fixture
+audit. The existing live-network check, timing benchmark and subprocess helper
+remain intentionally skipped (the helper is exercised by its parent tests).
+One earlier default-concurrency run timed out waiting for the provider test's
+provisioning hook. It passed five isolated repetitions and both final suite
+passes without a code change; that timeout was not reproduced or claimed fixed.
+Linux, manual TUI and paid-agent runs were not repeated for these test-only fixes.

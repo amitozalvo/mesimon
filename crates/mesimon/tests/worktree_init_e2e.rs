@@ -61,6 +61,30 @@ fn session_of(c: &mut TestClient, ticket: ulid::Ulid) -> uuid::Uuid {
     }
 }
 
+fn init_outcome(harness: &Harness, ticket: ulid::Ulid, expected: &str, min_secs: u64) -> String {
+    let feed = std::fs::read_to_string(harness.paths.state_dir.join("activity.jsonl")).unwrap();
+    let ticket_id = ticket.to_string();
+    let rows: Vec<serde_json::Value> = feed
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .filter(|row: &serde_json::Value| {
+            row["cmd"] == "worktree_init" && row["ticket"] == ticket_id
+        })
+        .collect();
+    assert_eq!(rows.len(), 1, "one init outcome for {ticket}: {feed}");
+    let outcome = rows[0]["outcome"].as_str().expect("init outcome is text");
+    let (status, duration) = outcome.rsplit_once(" ∙ ").expect("init outcome has a duration");
+    assert_eq!(status, expected);
+    let seconds: u64 = duration
+        .strip_suffix(" s")
+        .expect("init duration is in seconds")
+        .parse()
+        .expect("init duration is a nonnegative integer");
+    assert_eq!(duration, format!("{seconds} s"));
+    assert!(seconds >= min_secs, "init finished too early: {outcome}");
+    outcome.to_owned()
+}
+
 #[test]
 fn the_init_script_runs_before_the_agent_and_never_holds_it_back() {
     let Some(h) =
@@ -105,10 +129,9 @@ fn the_init_script_runs_before_the_agent_and_never_holds_it_back() {
     wait_until(Duration::from_secs(5), "the feed line", || {
         feed_count(&h, "worktree_init", t1) == 1
     });
-    let feed = std::fs::read_to_string(h.paths.state_dir.join("activity.jsonl")).unwrap();
-    assert!(feed.contains("\"outcome\":\"ok ∙ 0 s\""), "{feed}");
+    let success_outcome = init_outcome(&h, t1, "ok", 0);
     let journal = std::fs::read_to_string(h.paths.state_dir.join("daemon.log")).unwrap();
-    assert!(journal.contains("init T-1: ok ∙ 0 s"), "{journal}");
+    assert!(journal.contains(&format!("init T-1: {success_outcome} ({INIT_SCRIPT})")), "{journal}");
     assert!(journal.contains("T-1 | seeded the cache"), "the output is in the journal: {journal}");
     // The agent reads the script on its own ticket: present, and how its
     // last run went.
@@ -117,7 +140,7 @@ fn the_init_script_runs_before_the_agent_and_never_holds_it_back() {
             let init = ticket.worktree_init.expect("worktree_init on every read");
             assert_eq!(init.script, INIT_SCRIPT);
             assert!(init.present);
-            assert_eq!(init.last.as_deref(), Some("ok ∙ 0 s"));
+            assert_eq!(init.last.as_deref(), Some(success_outcome.as_str()));
             assert!(init.about.contains("before its agent starts"), "{}", init.about);
         }
         other => panic!("get_ticket: {other:?}"),
@@ -136,13 +159,14 @@ fn the_init_script_runs_before_the_agent_and_never_holds_it_back() {
     wait_until(Duration::from_secs(5), "the feed line", || {
         feed_count(&h, "worktree_init", t2) == 1
     });
+    let failure_outcome = init_outcome(&h, t2, "failed ∙ exit 2", 0);
     let journal = std::fs::read_to_string(h.paths.state_dir.join("daemon.log")).unwrap();
-    assert!(journal.contains("init T-2: failed ∙ exit 2"), "{journal}");
+    assert!(journal.contains(&format!("init T-2: {failure_outcome} ({INIT_SCRIPT})")), "{journal}");
     assert!(journal.contains("T-2 | no cache here"), "stderr is in the journal too: {journal}");
     match c.send(Principal::Agent { session: s2 }, Command::AgentGetTicket) {
         Response::AgentTicket { ticket } => {
             let init = ticket.worktree_init.unwrap();
-            assert_eq!(init.last.as_deref(), Some("failed ∙ exit 2 ∙ 0 s"));
+            assert_eq!(init.last.as_deref(), Some(failure_outcome.as_str()));
         }
         other => panic!("get_ticket: {other:?}"),
     }
@@ -170,12 +194,20 @@ fn the_init_script_runs_before_the_agent_and_never_holds_it_back() {
     };
     assert!(seen_running, "the page never said the script was running");
     assert_eq!(wt.detail.as_deref(), Some("init timed out"));
-    let _ = session_of(&mut c, t3);
+    let timeout_session = session_of(&mut c, t3);
     wait_until(Duration::from_secs(5), "the feed line", || {
         feed_count(&h, "worktree_init", t3) == 1
     });
-    let feed = std::fs::read_to_string(h.paths.state_dir.join("activity.jsonl")).unwrap();
-    assert!(feed.contains("\"outcome\":\"timed out ∙ 2 s\""), "{feed}");
+    let timeout_outcome = init_outcome(&h, t3, "timed out", 2);
+    let journal = std::fs::read_to_string(h.paths.state_dir.join("daemon.log")).unwrap();
+    assert!(journal.contains(&format!("init T-3: {timeout_outcome} ({INIT_SCRIPT})")), "{journal}");
+    match c.send(Principal::Agent { session: timeout_session }, Command::AgentGetTicket) {
+        Response::AgentTicket { ticket } => {
+            let init = ticket.worktree_init.unwrap();
+            assert_eq!(init.last.as_deref(), Some(timeout_outcome.as_str()));
+        }
+        other => panic!("get_ticket: {other:?}"),
+    }
 
     // ---- no script: nothing runs, and the agent is told there is none --
     std::fs::remove_file(&script).unwrap();

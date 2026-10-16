@@ -93,7 +93,7 @@ fn restart_recovers_state_from_the_transcript() {
             .expect("session")
             .clone()
     };
-    assert_eq!(rec(&mut c).state, SessionState::Running);
+    c.await_state(sid, "running before restart", |state| *state == SessionState::Running);
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
     daemon1.join().unwrap();
 
@@ -479,7 +479,7 @@ fn restart_recovers_working_from_a_board_tool_call() {
             .expect("session")
             .clone()
     };
-    assert_eq!(rec(&mut c).state, SessionState::Running);
+    c.await_state(sid, "running before restart", |state| *state == SessionState::Running);
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
     daemon1.join().unwrap();
 

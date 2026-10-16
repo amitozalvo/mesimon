@@ -834,18 +834,21 @@ test('a permission hold the daemon released with no decision leaves the dialog t
   // `mesimon approve` waits on the daemon; a person answering the dialog is
   // the PostToolUse edge, on which the daemon closes the wait unanswered
   // (T-581): empty stdout, and the hook returns what answered beneath it.
-  let release: () => void = () => undefined
+  let release!: () => void
+  let started!: () => void
+  const waiting = new Promise<void>(resolve => { started = resolve })
   on('process.run', ($: any, e: any) => {
     if (e.argv[1] !== 'approve') return { value: { exitCode: 0, stdout: '', stderr: '' } }
     return new Promise(resolve => {
       release = () => resolve({ value: { exitCode: 0, stdout: '', stderr: '' } })
+      started()
     }) as any
   })
   on('classic.PermissionRequest', () => ({ decision: { behavior: 'deny', message: 'the person said no' } }) as any)
   const body = { hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'touch x' } }
   let done: any
   const held = $.classic.PermissionRequest(body as any).then(r => (done = r))
-  await settle()
+  await waiting
   expect(done).toBe(undefined)
   release()
   await held
