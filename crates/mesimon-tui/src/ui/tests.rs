@@ -11497,8 +11497,8 @@ fn a_click_on_a_drawn_hint_presses_its_key() {
     assert!(!app.help);
 }
 
-/// The summary fold spells its key alone after the count (T-819), and the
-/// key alone still clicks: `^j` opens the summary.
+/// The summary fold spells its key after the count, a bullet between, in
+/// the count's ink (T-819), and it still clicks: `^j` opens the summary.
 #[test]
 fn the_summary_folds_key_alone_clicks() {
     let mut app = app_summary();
@@ -11506,10 +11506,10 @@ fn the_summary_folds_key_alone_clicks() {
     let rows = render(&app, 120, 30);
     let text = rows.join("\n");
     let fold = rows.iter().find(|r| r.contains("2 more")).map(|r| r.trim_end());
-    assert!(fold.is_some_and(|r| r.ends_with("2 more ^j")), "the key after the count:\n{text}");
+    assert!(fold.is_some_and(|r| r.ends_with("2 more ∙ ^j")), "the key after the count:\n{text}");
     assert!(!text.contains("^j summary"), "and no word of its own:\n{text}");
-    let at = spot_of(&rows, "more ^j");
-    click(&mut app, (at.0 + 5, at.1));
+    let at = spot_of(&rows, "more ∙ ^j");
+    click(&mut app, (at.0 + 7, at.1));
     assert!(matches!(app.mode, Mode::Summary { .. }), "{:?}", app.mode);
 }
 

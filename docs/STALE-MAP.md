@@ -26821,3 +26821,8 @@ the card. It now reads `[✓] 2 more ^j`: the count already says what the key op
 stands alone, bold, one space after it. `chrome::key_spans` draws a binding's key without its
 word and notes it with `mouse::note_key`, so the lone `^j` is clickable as a spelled hint is
 (T-716). Tests: the `board_summary_120x30` golden, `ui::the_summary_folds_key_alone_clicks`.
+
+Addendum (2026-10-16, the author: "it's too white, add bullet before it and keep same color as the
+rest of the text before it"): the row reads `[✓] 2 more ∙ ^j`, the bullet and the key in the
+count's faint ink, not bold. A scraped hint needs a bold first cell to tell it from running text;
+`note_key` records `∙ ^j` with that check off, the bullet doing the telling.

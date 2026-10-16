@@ -10,7 +10,7 @@
                                   [ ] add the e2e for the ~
                                   [ ] write the STALE-MAP ~
                                   [ ] release note
-                                  [✓] 2 more ^j
+                                  [✓] 2 more ∙ ^j
 
                                   ⠋ Adopt drawer import >1y
 

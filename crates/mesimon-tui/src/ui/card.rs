@@ -1217,8 +1217,8 @@ pub(super) fn render(
         // then the open boxes in their order (ticked ones after, when few
         // are open), then a fold row counting the rest with their state —
         // every box ticked, none, or some — and, right after the count, the
-        // key that lists them all (T-819: the key alone, its word is the
-        // count's), through the keymap so a key drawn here is a key that works.
+        // key that lists them all (T-819: `∙ ^j` in the count's ink, its word
+        // the count's), through the keymap so a key drawn here is a key that works.
         // The rows start on the glyph column, two cells before the reply's
         // words (author: "to indicate it's not the transcript"): a box
         // heads a task, a dash a plain row — centred in the box's three
@@ -1242,17 +1242,8 @@ pub(super) fn render(
                 let words = format!("{} {n} more", box_mark(tier, state));
                 let mut row = vec![Span::styled(words.clone(), faint)];
                 if let Some(keys) = summary_keys {
-                    let budget = t_cells.saturating_sub(words.width() + 1);
-                    let mut key = super::chrome::key_spans(keys, ramp, budget);
-                    if trail {
-                        for s in &mut key {
-                            s.style = faint;
-                        }
-                    }
-                    if !key.is_empty() {
-                        row.push(Span::raw(" "));
-                        row.extend(key);
-                    }
+                    let budget = t_cells.saturating_sub(words.width());
+                    row.extend(super::chrome::key_spans(keys, faint, budget));
                 }
                 push(row);
             }

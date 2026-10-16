@@ -174,20 +174,23 @@ impl Map {
 
 thread_local! {
     /// The hints this frame's draw spelled (`note_hint`), each as the text
-    /// it put on screen and the key a click on it presses.
-    static HINTS: RefCell<Vec<(String, Key)>> = const { RefCell::new(Vec::new()) };
+    /// it put on screen, the key a click on it presses, and whether that
+    /// text starts bold.
+    static HINTS: RefCell<Vec<(String, Key, bool)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// A hint was spelled: `show` in bold, then ` word`. `chrome::hint_spans`
 /// calls this for every binding whose hint a click can press.
 pub(crate) fn note_hint(show: &str, word: &str, key: Key) {
-    HINTS.with(|h| h.borrow_mut().push((format!("{show} {word}"), key)));
+    HINTS.with(|h| h.borrow_mut().push((format!("{show} {word}"), key, true)));
 }
 
-/// A key was spelled alone, bold, its word already said beside it
-/// (`chrome::key_spans`): a spot over the key.
+/// A key was spelled alone in the ink of the words before it, after a
+/// bullet (`∙ ^j`, the summary fold, T-819): those words say what it does,
+/// and the bullet is what tells it from running text, as bold does a hint.
+/// A spot over the bullet and the key.
 pub(crate) fn note_key(show: &str, key: Key) {
-    HINTS.with(|h| h.borrow_mut().push((show.to_string(), key)));
+    HINTS.with(|h| h.borrow_mut().push((format!("∙ {show}"), key, false)));
 }
 
 /// Forget the hints of the frame before.
@@ -198,11 +201,11 @@ pub(crate) fn forget_hints() {
 /// The hints spelled so far, taken: a board drawn inside this frame (the
 /// tour's practice board, T-763) spells and scrapes its own in between,
 /// and [`restore_hints`] puts these back.
-pub(crate) fn stash_hints() -> Vec<(String, Key)> {
+pub(crate) fn stash_hints() -> Vec<(String, Key, bool)> {
     HINTS.with(|h| std::mem::take(&mut *h.borrow_mut()))
 }
 
-pub(crate) fn restore_hints(hints: Vec<(String, Key)>) {
+pub(crate) fn restore_hints(hints: Vec<(String, Key, bool)>) {
     HINTS.with(|h| *h.borrow_mut() = hints);
 }
 
@@ -231,7 +234,7 @@ pub(crate) fn scrape_hints(buf: &Buffer, map: &mut Map) {
             text.push_str(sym);
         }
         let cell_at = |byte: usize| cells.iter().find(|(b, _)| *b == byte).map(|(_, x)| *x);
-        for (words, key) in &hints {
+        for (words, key, bold) in &hints {
             let mut from = 0;
             while let Some(i) = text[from..].find(words.as_str()) {
                 let start = from + i;
@@ -246,7 +249,7 @@ pub(crate) fn scrape_hints(buf: &Buffer, map: &mut Map) {
                     continue;
                 }
                 let Some(x) = cell_at(start) else { continue };
-                if !buf[(x, y)].modifier.contains(Modifier::BOLD) {
+                if *bold && !buf[(x, y)].modifier.contains(Modifier::BOLD) {
                     continue;
                 }
                 let width = u16::try_from(words.width()).unwrap_or(u16::MAX);
