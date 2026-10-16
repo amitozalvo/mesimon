@@ -27079,3 +27079,34 @@ nested run does not wait on its parent; `prune-deps` steps aside under a held
 
 An older runner in a not-yet-rebased worktree still takes the per-user lock among its own kind;
 the new runner ignores that file.
+
+## A Codex turn survives a `U`; the rebase turn keeps holding ready merges (T-827, 2026-10-16, the author: "turn end didn't register until I opened it" ∙ "it was asked to rebase \"after its turn\" while mid turn" ∙ "T-816 is waiting until T-824 is merged even though T-816 could have been merged already" ∙ "it means that train can cause redundant rebases, no?")
+
+**The Codex card.** T-824's record read `Unknown{DaemonRestarted}` (grey, "unavailable") from the
+18:15:16 handover to the end of its turn at 18:22:38, while its row said `rebase ask ∙ after its
+turn`: the card looked finished and the train looked stuck. `on_codex_snapshots` restored a
+handed-over record only from a snapshot without `observation_hold`, and a turn's own pending work
+(a long `exec`) is a hold, with no state change to move the sequence. A snapshot at `Running` or
+`RequiresAction` is now restored under a hold too; an `Idle` behind a hold stays as it was, which
+is what the guard was for. The turn's end was heard 2 s after Codex wrote it: the "until I opened
+it" was the grey card, not a missed end. T-823, named in the title, had every turn heard in 2 s.
+
+**The hold, tried and refuted.** T-816 sat in REVIEW from 18:28:54, one commit ahead of main and
+none behind, while T-824's rebase turn (asked 18:22:38) ran its tests; T-824 merged at 18:39:00
+and T-816 then owed a rebase. `train_pass` returns while `train_busy` holds, and `train_busy`
+holds T-435's rebase turn for merges as well as asks. Splitting the gates (a merge waiting only on
+the root checkout's workers) was built, tested, and reverted on the author's question. With
+ff-only merges the second of two tickets rebases either way, so the count does not move, but
+merging past the rebase turn throws away the turn in flight: its tests ran on a base that just
+moved, and the same agent is asked again. A slow rebaser can be passed by one ready ticket after
+another, asked again each time, until its fuse (6 asks in 2 h) trips. Under the hold every ask
+ends in a merge and no agent is asked twice for one base; the waiting ticket's row already says
+`auto-merge ∙ after T-824`. The wait is the price, not a bug.
+
+The day's feed was also read for wasted rebases: from 18:22, four tickets (T-826, T-824, T-816,
+T-823) for three asks, the ff-only floor of N−1. T-817's four merges and T-822's three each
+followed a person's prompt and a new commit, not the train; the merged notice between them was a
+13–25 s turn.
+
+Test: `provider_e2e::daemon_handover_restores_a_codex_turn_held_by_its_own_work` (fails without
+the restore: `Unknown` past 15 s).

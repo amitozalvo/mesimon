@@ -3616,7 +3616,16 @@ impl Daemon {
             if !newer {
                 // Restore the current projection after handover without
                 // replaying an already observed completion as a new automove.
-                if matches!(rec.state, SessionState::Unknown { .. }) && !snapshot.observation_hold {
+                // A turn in flight is held by its own work, so a hold alone
+                // never kept back a `Running` or a dialog (T-827): T-824 read
+                // `Unknown` for seven minutes of a test run after a `U`.
+                let in_turn = matches!(
+                    snapshot.state,
+                    SessionState::Running | SessionState::RequiresAction { .. }
+                );
+                if matches!(rec.state, SessionState::Unknown { .. })
+                    && (!snapshot.observation_hold || in_turn)
+                {
                     rec.state = snapshot.state.clone();
                     rec.confidence = Confidence::High;
                     self.machines

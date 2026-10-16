@@ -968,6 +968,28 @@ fn daemon_handover_keeps_sent_codex_prompt_held_without_pressing_enter_again() {
     });
 }
 
+/// A turn in flight across a `U` handover reads `Running` at once, never
+/// `Unknown` until its next change (T-827): T-824 sat grey and "unavailable"
+/// on the board through seven minutes of a test run, its own work holding
+/// the observation. Its end then lands as any end does.
+#[test]
+fn daemon_handover_restores_a_codex_turn_held_by_its_own_work() {
+    let Some(h) = Fixture::boot("providerturnheld") else { return };
+    let mut c = h.client();
+    select(&mut c, AgentProvider::Codex);
+    let ticket = ticket(&mut c, "a long test run", None);
+    let id = spawn(&mut c, ticket);
+    h.codex_ready(&mut c, id);
+    h.control(id, json!({"state":{"state":"running"},"turn_id":"long-turn","hold":true}));
+    c.await_state(id, "the turn running", |s| *s == SessionState::Running);
+    c = h.restart(&mut c);
+    c.await_state(id, "the same turn after the handover", |s| *s == SessionState::Running);
+    h.control(id, json!({"state":{"state":"idle","stop_reason":"end_turn"},"turn_id":"long-turn"}));
+    c.await_state(id, "its end", |s| {
+        *s == (SessionState::Idle { stop_reason: StopReason::EndTurn })
+    });
+}
+
 #[test]
 fn daemon_handover_abandons_unpasted_volatile_words_without_submitting_partial_input() {
     let Some(h) = Fixture::boot("providerunsent") else { return };
