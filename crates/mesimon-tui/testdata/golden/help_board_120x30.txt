@@ -3,7 +3,6 @@
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
 
     Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y     z Painted accent bar >1y
-                                    ✻ claude          ⠋ >1y
    ╭─ KEYS ∙ board ─────────────────────────────────────────────────────────────────────────────────────────────────╮
    │ MOVE AROUND                     TICKETS                                           SESSIONS                     │
    │   hjkl      move around           o         new ticket                              x         sleep sessions   │
@@ -15,10 +14,11 @@
    │                                   ^o        crown                                   $         show costs       │
    │                                   tab       describe                                                           │
    │                                   n         note                                  APP                          │
-   │                                   ^t        tags                                    ,         settings         │
-   │                                   a         archive                                 esc       menu             │
-   │                                   z         snooze                                  q         quit             │
-   │                                   d         delete                                  ?         keys             │
+   │                                   ^t        tags                                    ^g        games            │
+   │                                   a         archive                                 ,         settings         │
+   │                                   z         snooze                                  esc       menu             │
+   │                                   d         delete                                  q         quit             │
+   │                                                                                     ?         keys             │
    │                                                                                     ^L        redraw           │
    │                                                                                     ^Z        suspend mesimon  │
    ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

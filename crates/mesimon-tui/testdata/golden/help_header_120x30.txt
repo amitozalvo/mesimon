@@ -8,13 +8,13 @@
 
              ╭─ KEYS ∙ board ─────────────────────────────────────────────────────────────────────────────╮
              │ MOVE AROUND                    VIEW                            APP                         │
-             │   hjkl      move around          !         terminal              ,         settings        │
-             │   enter     column settings      p         show replies          esc       menu            │
-             │   /         search               P         show every reply      q         quit            │
-             │                                  $         show costs            ?         keys            │
-             │ TICKETS                                                          ^L        redraw          │
-             │   o         new ticket                                           ^Z        suspend mesimon │
-             │   HJKL      move column                                                                    │
+             │   hjkl      move around          !         terminal              ^g        games           │
+             │   enter     column settings      p         show replies          ,         settings        │
+             │   /         search               P         show every reply      esc       menu            │
+             │                                  $         show costs            q         quit            │
+             │ TICKETS                                                          ?         keys            │
+             │   o         new ticket                                           ^L        redraw          │
+             │   HJKL      move column                                          ^Z        suspend mesimon │
              │   O         new column                                                                     │
              │   r         rename column                                                                  │
              │   d         delete column                                                                  │

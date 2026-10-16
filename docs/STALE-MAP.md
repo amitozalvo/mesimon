@@ -26955,3 +26955,30 @@ fixtures were cleaned through their inspected ownership records before elevated 
 No live-model rig was run: this changes board observation, not agent instructions or turn
 submission policy. Native dialog spelling and trust inheritance were checked against the
 installed CLI version's upstream source, not asserted as a new live Codex acceptance run.
+
+## Games share the live board's empty space (T-823, 2026-10-16)
+
+Board Breaker and Ticket Snake are opt-in TUI state, opened by `ctrl-g` or
+Games in the menu. They share the existing snapshot and event loop; no game
+sends commands, changes tickets or persists scores. `Scope::Arcade` owns its
+keys without inheriting board/global mutations; Esc returns to navigation.
+Mouse hints use the same bindings, and a card click or wheel exits first.
+
+The original disappearing-card Breakout proposal was changed to preserve
+readability: cards remain solid, readable bumpers, with small removable bricks
+in unused cells. Snake travels between cards. The renderer protects the whole
+card footprint and every other nonblank cell, leaves the header and advisory
+alone, and uses neutral ink. A layout change re-seats pieces and pauses,
+preserving score and Breaker's lives. New attention is detected by ticket
+identity, not a count; it pauses even if another attention item vanished in
+the same snapshot. Focus loss and disconnection also pause. Slow ticks never
+catch up a backlog of game steps. A board without enough room offers a resize
+instead of hiding work or launching an impossible round.
+
+The engines cover buffered Snake turns, reachable food, growth and collision;
+Breaker covers aimable paddle rebounds, three lives, card bonuses, combos and
+waves. Tests exercise the games through board rendering and key dispatch,
+including all themes and terminal profiles, unchanged card cells, live updates,
+input isolation, help and clickable exit. Shin's Garden is a separate planning
+and design ticket, T-825; seeds and a persistent personal world are outside this
+arcade's scope.

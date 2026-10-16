@@ -275,13 +275,15 @@ pub enum Scope {
     /// Setup (T-816), over a board that was just made: one question at a
     /// time, the practice board under it playing the answer.
     Setup,
+    /// Games over the live board; no global or board mutations fall through.
+    Arcade,
 }
 
 impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 35] = [
+    pub const ALL: [Scope; 36] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -317,6 +319,7 @@ impl Scope {
         Scope::PullRequests,
         Scope::Tour,
         Scope::Setup,
+        Scope::Arcade,
     ];
 
     /// The scope a key falls through to when this one does not bind it.
@@ -346,6 +349,7 @@ impl Scope {
             | Scope::Tour
             | Scope::Setup => Some(Scope::Global),
             Scope::Global
+            | Scope::Arcade
             | Scope::Move
             | Scope::DiffView
             | Scope::DuplicateChord
@@ -396,6 +400,7 @@ impl Scope {
             Scope::Editor => "EDIT",
             Scope::Tour => "TOUR",
             Scope::Setup => "SETUP",
+            Scope::Arcade => "PLAY",
         }
     }
 }
@@ -404,6 +409,11 @@ impl Scope {
 /// is what proves the table and the handler agree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
+    Games,
+    GameBreaker,
+    GameSnake,
+    GamePause,
+    GameRestart,
     // ---- board sharing (T-334, T-335) ----
     /// The menu row that opens the sharing dialog: identity, this board,
     /// the boards this device belongs to.
@@ -2036,7 +2046,107 @@ static GLOBAL: &[Binding] = &[
     },
 ];
 
+static ARCADE: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('?')],
+        verb: Verb::Help,
+        show: "?",
+        hint: |_| "keys",
+        avail: always,
+        class: Class::Plain,
+        group: Group::App,
+        mutates: false,
+        prio: 255,
+    },
+    Binding {
+        keys: &[Key::Esc, Key::Char('q')],
+        verb: Verb::Back,
+        show: "esc",
+        hint: |_| "board",
+        avail: always,
+        class: Class::Plain,
+        group: Group::App,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Space],
+        verb: Verb::GamePause,
+        show: "space",
+        hint: |_| "play/pause",
+        avail: always,
+        class: Class::Plain,
+        group: Group::View,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Char('r')],
+        verb: Verb::GameRestart,
+        show: "r",
+        hint: |_| "restart",
+        avail: always,
+        class: Class::Plain,
+        group: Group::View,
+        mutates: false,
+        prio: 20,
+    },
+    Binding {
+        keys: &[Key::Char('1')],
+        verb: Verb::GameBreaker,
+        show: "1",
+        hint: |_| "breaker",
+        avail: always,
+        class: Class::Plain,
+        group: Group::View,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Char('2')],
+        verb: Verb::GameSnake,
+        show: "2",
+        hint: |_| "snake",
+        avail: always,
+        class: Class::Plain,
+        group: Group::View,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[
+            Key::Left,
+            Key::Char('h'),
+            Key::Right,
+            Key::Char('l'),
+            Key::Up,
+            Key::Char('k'),
+            Key::Down,
+            Key::Char('j'),
+        ],
+        verb: Verb::CursorLeft,
+        show: "hjkl",
+        hint: |_| "steer",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 9,
+    },
+];
+
 static BOARD: &[Binding] = &[
+    Binding {
+        keys: &[Key::Ctrl('g')],
+        verb: Verb::Games,
+        show: "^g",
+        hint: |_| "games",
+        avail: |c| !c.practice,
+        class: Class::Plain,
+        group: Group::App,
+        mutates: false,
+        prio: 0,
+    },
     // `,` opens Settings (T-717), the shortcut many apps give their
     // preferences; overlay-only, since the menu's row names it already.
     Binding {
@@ -4757,6 +4867,13 @@ static MENU_ITEMS: &[MenuItem] = &[
         // Not from inside the tour's own practice board.
         avail: |c| !c.practice,
         key: "",
+    },
+    MenuItem {
+        verb: Verb::Games,
+        label: |_| "Games".into(),
+        detail: |_| "Breaker and Snake over the live board".into(),
+        avail: |c| !c.practice,
+        key: "^g",
     },
     // What this build is, in its own words. Never a
     // suggestion either — the header's update chip is the one that says a
@@ -7742,6 +7859,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::Editor => EDITOR,
         Scope::Tour => TOUR,
         Scope::Setup => SETUP,
+        Scope::Arcade => ARCADE,
     }
 }
 
@@ -7934,6 +8052,30 @@ pub fn overlay(scope: Scope, ctx: &Ctx) -> Vec<(Group, Vec<(&'static str, &'stat
 mod tests {
     use super::*;
 
+    #[test]
+    fn arcade_keys_are_local_and_do_not_replace_board_navigation() {
+        let ctx = Ctx { has_ticket: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Board, Key::Ctrl('g'), &ctx), Some(Verb::Games));
+        assert_eq!(resolve(Scope::Board, Key::Char('g'), &ctx), Some(Verb::First));
+        assert_eq!(resolve(Scope::Board, Key::Char('G'), &ctx), Some(Verb::Last));
+        assert_eq!(Scope::Arcade.parent(), None);
+        for key in [
+            Key::Char('c'),
+            Key::Char('d'),
+            Key::Char('o'),
+            Key::Char('>'),
+            Key::Enter,
+            Key::Ctrl('o'),
+        ] {
+            assert_eq!(resolve(Scope::Arcade, key, &ctx), None);
+        }
+        assert!(bindings(Scope::Arcade).iter().all(|b| !b.mutates));
+        assert_eq!(resolve(Scope::Arcade, Key::Left, &ctx), Some(Verb::CursorLeft));
+        assert_eq!(resolve(Scope::Arcade, Key::Up, &ctx), Some(Verb::CursorUp));
+        assert_eq!(resolve(Scope::Arcade, Key::Space, &ctx), Some(Verb::GamePause));
+        assert_eq!(resolve(Scope::Arcade, Key::Esc, &ctx), Some(Verb::Back));
+    }
+
     /// T-674: `c` copies, on the board and on the ticket page alike, and
     /// its word follows the cycle — id, title, both. It starts no session.
     #[test]
@@ -8097,6 +8239,7 @@ mod tests {
                 Scope::PullRequests => 32,
                 Scope::Tour => 33,
                 Scope::Setup => 34,
+                Scope::Arcade => 35,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {

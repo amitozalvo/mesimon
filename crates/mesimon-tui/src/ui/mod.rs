@@ -113,6 +113,9 @@ fn draw_screen(f: &mut Frame, app: &App) {
     // Live-resize floor (07 §2.4): a notice, never a broken layout.
     let area = f.area();
     if !app.is_practice() && (area.width < MIN_W || area.height < MIN_H) {
+        if let Some(game) = app.arcade.borrow_mut().as_mut() {
+            game.pause("terminal too small");
+        }
         let msg = format!(
             "mesimon needs {MIN_W}x{MIN_H}; this terminal is {}x{}",
             area.width, area.height
@@ -214,6 +217,7 @@ fn draw_screen(f: &mut Frame, app: &App) {
 
     chrome::draw_header(f, outer[0], app, None);
     board::draw_columns(f, outer[2], app);
+    crate::arcade::draw(f, app, outer[2], outer[1]);
     // The crown's bolts (T-544), over the cards and under every dialog.
     crate::strike::draw(f, app, outer[2]);
     // A card another mover took plays its move (T-817).

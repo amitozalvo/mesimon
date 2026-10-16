@@ -12232,3 +12232,135 @@ fn the_board_recedes_behind_a_cards_dialog() {
     assert_eq!(after[(36, fix)].fg, before[(36, fix)].fg, "the card the dialog is about stays");
     assert_eq!(after[(36, fix)].bg, before[(36, fix)].bg, "lit, as the cursor's card");
 }
+
+// T-823: the games share the board, not a frozen picture of it.
+fn open_arcade(app: &mut App) {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    app.handle_key(KeyCode::Char('g'), KeyModifiers::CONTROL).unwrap();
+}
+
+#[test]
+fn golden_arcade_breaker_and_snake() {
+    let mut app = app_graphite(fixture(true));
+    open_arcade(&mut app);
+    golden("arcade_breaker_120x30", &render(&app, 120, 30));
+    press(&mut app, '2');
+    app.arcade.borrow_mut().as_mut().unwrap().seed_for_test(42);
+    golden("arcade_snake_120x30", &render(&app, 120, 30));
+    golden("arcade_snake_80x24", &render(&app, 80, 24));
+}
+
+#[test]
+fn arcade_preserves_every_card_cell_and_the_header_in_every_profile() {
+    for flavor in Flavor::ALL {
+        for profile in
+            [Profile::TrueColor, Profile::Ansi256, Profile::Ansi16, Profile::Ansi8, Profile::Mono]
+        {
+            for (w, h) in [(80, 24), (120, 30)] {
+                let mut app = App::for_test(fixture(true), Theme::new(flavor, profile));
+                // Hold the working spinner still while comparing layers;
+                // real-time spinner progress is deliberately independent.
+                app.spin_epoch
+                    .set(Some(std::time::Instant::now() + std::time::Duration::from_secs(60)));
+                let before = cells(&app, w, h);
+                let cards = app.spots.borrow().cards.clone();
+                open_arcade(&mut app);
+                for kind in ['1', '2'] {
+                    press(&mut app, kind);
+                    let after = cells(&app, w, h);
+                    for card in &cards {
+                        for y in card.y..card.y + card.rows {
+                            for x in card.x..card.x + card.width {
+                                assert_eq!(
+                                    before[(x, y)],
+                                    after[(x, y)],
+                                    "{flavor:?} {profile:?} {kind} card at {x},{y}"
+                                );
+                            }
+                        }
+                    }
+                    for x in 0..w {
+                        assert_eq!(before[(x, 0)], after[(x, 0)]);
+                    }
+                    for y in 2..h - 2 {
+                        for x in 0..w {
+                            if before[(x, y)].symbol() != " " {
+                                assert_eq!(
+                                    before[(x, y)],
+                                    after[(x, y)],
+                                    "existing ink at {x},{y}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn arcade_input_cannot_mutate_tickets_or_start_agents_and_escape_restores_navigation() {
+    use mesimon_core::keymap::Scope;
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    let (mut app, sent) = App::for_test_logged(
+        fixture(false),
+        Theme::new(Flavor::Graphite, Profile::TrueColor),
+        false,
+    );
+    open_arcade(&mut app);
+    render(&app, 120, 30);
+    let cursor = (app.cursor_col, app.cursor_row);
+    sent.borrow_mut().clear();
+    for c in ['1', '2', ' ', 'h', 'j', 'k', 'l', 'r', 'c', 'x', 'd', '>', '<', 'm', 'a', 'n'] {
+        press(&mut app, c);
+    }
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    assert_eq!(app.scope(), Scope::Arcade);
+    assert_eq!((app.cursor_col, app.cursor_row), cursor);
+    assert!(sent.borrow().is_empty(), "games sent requests: {:?}", sent.borrow());
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    assert_eq!(app.scope(), Scope::Board);
+    press(&mut app, 'l');
+    assert_ne!(app.cursor_col, cursor.0);
+}
+
+#[test]
+fn arcade_shows_live_board_changes_and_pauses_for_new_geometry() {
+    use mesimon_core::keymap::Verb;
+    let mut app = app_graphite(fixture(false));
+    open_arcade(&mut app);
+    render(&app, 120, 30);
+    app.arcade.borrow_mut().as_mut().unwrap().key(Verb::GamePause);
+    assert!(app.arcade.borrow().as_ref().unwrap().playing());
+    app.board_mut().tickets[0].title = "A fresh title while playing".into();
+    let live = render(&app, 120, 30).join("\n");
+    assert!(live.contains("A fresh title while playing"));
+    app.board_mut().tickets.push(ticket(99, "T-99", "New live ticket", "done", "z"));
+    let live = render(&app, 120, 30).join("\n");
+    assert!(live.contains("New live ticket"));
+    assert!(!app.arcade.borrow().as_ref().unwrap().playing());
+    assert!(live.contains("board changed"));
+}
+
+#[test]
+fn arcade_help_and_mouse_exit_use_the_same_keys() {
+    use mesimon_core::keymap::{Scope, Verb};
+    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    let mut app = app_graphite(fixture(false));
+    open_arcade(&mut app);
+    render(&app, 120, 30);
+    app.arcade.borrow_mut().as_mut().unwrap().key(Verb::GamePause);
+    press(&mut app, '?');
+    assert!(app.help);
+    assert!(!app.arcade.borrow().as_ref().unwrap().playing());
+    press(&mut app, '?');
+    let lines = render(&app, 120, 30);
+    let x = lines[29].find("esc board").expect("exit hint") as u16;
+    app.prefs.mouse = true;
+    for kind in [MouseEventKind::Down(MouseButton::Left), MouseEventKind::Up(MouseButton::Left)] {
+        app.on_mouse(MouseEvent { kind, column: x, row: 29, modifiers: KeyModifiers::NONE })
+            .unwrap();
+    }
+    assert_eq!(app.scope(), Scope::Board);
+}

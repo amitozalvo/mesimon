@@ -223,6 +223,26 @@ does not stop your agents** — that is the point of the daemon.
 The footer names the main keys for whatever you are looking at; `?` opens the complete key
 reference for the current screen.
 
+## Games while agents work
+
+`ctrl-g` on the board, or **Games** in the `esc` menu, opens Board Breaker.
+`1` chooses Breaker and `2` chooses Ticket Snake. `space` starts or pauses,
+`r` restarts, and `esc` returns to the board. Use the arrow keys or `hjkl`
+to steer; Breaker uses left and right. `?` pauses and shows the controls.
+
+Breaker has three balls: aim rebounds with the edge of the paddle, hit cards
+for bonus points, and clear the small bricks to advance a wave. Consecutive
+hits build a multiplier up to five. Snake eats `*` snacks, grows and gradually
+speeds up; avoid its tail, the cards and the screen edges. Scores and bests
+last while the games are open.
+
+The games occupy empty space around the cards. Tickets, agent states and the
+header keep updating. A change to the playing field pauses and repositions
+the pieces without taking a life or score; a newly raised attention item,
+lost terminal focus or disconnected board pauses too. A crowded board may
+need a larger terminal. Click a card or scroll to leave the game, then use
+the board normally.
+
 ## Descriptions, notes and links
 
 ![Writing a ticket's description with tab, opening its page, and opening a link from its agent's note with ctrl-k](../assets/demo/ticket-page.gif)

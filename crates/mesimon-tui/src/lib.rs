@@ -11,6 +11,7 @@ mod image_paste;
 mod keys;
 // Public so an integration test can drive the real connect path (the
 // build-skew daemon restart lives in it); the TUI itself uses it internally.
+mod arcade;
 pub mod client;
 mod detach_guide;
 mod detect;

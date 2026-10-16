@@ -1440,6 +1440,7 @@ pub enum Doomed {
 }
 
 pub struct App {
+    pub(crate) arcade: std::cell::RefCell<Option<crate::arcade::Arcade>>,
     pending_paste: Option<crate::image_paste::Pending>,
     pub client: Box<dyn Transport>,
     pub repo_root: PathBuf,
@@ -2070,6 +2071,7 @@ impl App {
             team_name_draft: String::new(),
             team_code_draft: String::new(),
             team_drafts_seeded: false,
+            arcade: std::cell::RefCell::new(None),
             pending_paste: None,
             join_watch: None,
             pending_switch: None,
@@ -3424,7 +3426,12 @@ impl App {
         // The loop redraws once per tick, so the poll timeout is the frame
         // rate: 100 ms paces the spinner, and a panel in motion gets a
         // shorter one for the few frames it takes to settle.
-        let frame = if self.animating() { 16 } else { 100 };
+        if let Some(game) = self.arcade.borrow_mut().as_mut() {
+            game.observe(self.board.needs_you_tickets(), self.daemon_down);
+            game.tick(Instant::now());
+        }
+        let playing = self.arcade.borrow().as_ref().is_some_and(|g| g.playing());
+        let frame = if playing || self.animating() { 16 } else { 100 };
         if !event::poll(Duration::from_millis(frame))? {
             return Ok(dirty);
         }
@@ -3443,6 +3450,9 @@ impl App {
                 return Ok(dirty);
             }
             TermEvent::FocusLost => {
+                if let Some(game) = self.arcade.borrow_mut().as_mut() {
+                    game.pause("paused while away");
+                }
                 self.saw_focus(false);
                 // The pointer went with the focus: no hover on a board
                 // nobody is pointing at.
@@ -3633,6 +3643,11 @@ impl App {
         if !self.prefs.mouse {
             return Ok(false);
         }
+        if self.arcade.borrow().is_some()
+            && matches!(ev.kind, MouseEventKind::ScrollDown | MouseEventKind::ScrollUp)
+        {
+            return self.press(&[Key::Esc]);
+        }
         let at = (ev.column, ev.row);
         match ev.kind {
             MouseEventKind::Drag(MouseButton::Left) => {
@@ -3640,6 +3655,10 @@ impl App {
                 let Some(from) = self.press_at.get() else { return Ok(false) };
                 self.selection.set((from != at).then_some((from, at)));
                 Ok(true)
+            }
+            MouseEventKind::Moved | MouseEventKind::Drag(_) if self.arcade.borrow().is_some() => {
+                self.hover.set(None);
+                Ok(self.pointer.replace(Some(at)) != Some(at))
             }
             MouseEventKind::Moved | MouseEventKind::Drag(_) => {
                 let target = match self.hits.borrow().at(at.0, at.1) {
@@ -3688,6 +3707,11 @@ impl App {
             return self.press(&[Key::Esc]);
         }
         let hit = self.hits.borrow().at(at.0, at.1);
+        if self.arcade.borrow().is_some()
+            && !matches!(hit, Hit::Spot(s) if matches!(s.target, Target::Key(_)))
+        {
+            return self.press(&[Key::Esc]);
+        }
         let Hit::Spot(spot) = hit else {
             // A field typed in place (a relay, a column's name, a tag's)
             // drops its words on Esc without asking, so a stray click off
@@ -6068,6 +6092,9 @@ impl App {
     /// tails (`d`, `z`) are scopes too, which is what makes a stray key inside
     /// a chord resolve to nothing and cancel instead of acting.
     pub fn scope(&self) -> Scope {
+        if self.arcade.borrow().is_some() {
+            return Scope::Arcade;
+        }
         // Before the input barrier on purpose: `^t` works while a title is
         // being typed, and the tail must own the digits until it closes.
         if let Some(arm) = self.tag_armed.as_ref() {
@@ -6865,8 +6892,26 @@ impl App {
             self.copy_cycle = None;
         }
         match verb {
+            Verb::Games => {
+                self.to_board();
+                self.mode = Mode::Normal;
+                self.hover.set(None);
+                self.peeked.set(None);
+                *self.arcade.borrow_mut() =
+                    Some(crate::arcade::Arcade::new(self.board.needs_you_tickets()));
+            }
+            Verb::GameBreaker | Verb::GameSnake | Verb::GamePause | Verb::GameRestart => {
+                if let Some(game) = self.arcade.borrow_mut().as_mut() {
+                    game.key(verb);
+                }
+            }
             // ---- global ----------------------------------------------------
-            Verb::Help => self.help = true,
+            Verb::Help => {
+                if let Some(game) = self.arcade.borrow_mut().as_mut() {
+                    game.pause("paused for help");
+                }
+                self.help = true;
+            }
             Verb::Reload => {
                 let _ = self.client.request(Command::Shutdown);
                 self.pending_reexec = true;
@@ -6903,6 +6948,16 @@ impl App {
                 None => {}
             },
             // ---- navigation ------------------------------------------------
+            Verb::CursorLeft | Verb::CursorRight | Verb::CursorUp | Verb::CursorDown
+                if scope == Scope::Arcade =>
+            {
+                if let Some(game) = self.arcade.borrow_mut().as_mut() {
+                    game.key(verb);
+                }
+            }
+            Verb::Back if scope == Scope::Arcade => {
+                self.arcade.borrow_mut().take();
+            }
             Verb::CursorLeft | Verb::CursorRight | Verb::CursorUp | Verb::CursorDown => {
                 self.nav(verb, scope)
             }
