@@ -103,6 +103,9 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
             &theme.rest,
             dialog::Edges { title: dialog::title(&theme.rest, "preview"), tail: Vec::new() },
         );
+        // The preview is part of Setup's layer, not a dialog over it: a
+        // click on Setup's own keys, on its bottom edge, still lands.
+        app.hits.borrow_mut().join_top();
         super::tour::lay_board(f, app, &setup.canvas, &setup.sandbox, board, false);
     }
 }

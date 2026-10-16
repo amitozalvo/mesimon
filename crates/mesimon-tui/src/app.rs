@@ -3707,6 +3707,18 @@ impl App {
             return self.press(&[Key::Esc]);
         }
         let hit = self.hits.borrow().at(at.0, at.1);
+        // Setup is a barrier (T-816): the board drawn under it records its
+        // cards and chips, and none of them may answer. Its own key hints
+        // press as keys, through its keymap.
+        if matches!(self.mode, Mode::Setup) {
+            return match hit {
+                Hit::Spot(spot) => match spot.target {
+                    Target::Key(k) => self.press(&[k]),
+                    _ => Ok(false),
+                },
+                _ => Ok(false),
+            };
+        }
         if self.arcade.borrow().is_some()
             && !matches!(hit, Hit::Spot(s) if matches!(s.target, Target::Key(_)))
         {
@@ -9123,17 +9135,13 @@ impl App {
                 self.tour = None;
                 self.mode = Mode::Normal;
             }
-            // Setup's Esc: the rest on their defaults, then the last page;
-            // there, the board.
+            // Setup's Esc: the rest on their defaults, then the last page,
+            // where it is not bound: Enter there is the only way out.
             Scope::Setup => {
                 let now = mesimon_core::clock::now_ms();
                 let done = match self.setup.as_mut() {
-                    Some(s) if s.ready() => {
-                        s.cursor = 0;
-                        self.finish_setup()
-                    }
-                    Some(s) => s.skip_rest(now),
-                    None => Ok(()),
+                    Some(s) if !s.ready() => s.skip_rest(now),
+                    _ => Ok(()),
                 };
                 if let Err(e) = done {
                     self.status = format!("{e:#}");
@@ -24769,8 +24777,10 @@ mod tests {
         assert_eq!(app.mode, Mode::Normal, "applied here: not opened again");
     }
 
-    /// Esc leaves the rest on their defaults and shows the last page; Esc
-    /// there opens the board on today's defaults, the tour not asked for.
+    /// Esc leaves the rest on their defaults and shows the last page, and
+    /// nothing leaves Setup but that page's Enter: not Esc or q there, not
+    /// Settings, ctrl-c or a reload anywhere. The board opens on today's
+    /// defaults, the tour not asked for.
     #[test]
     fn setup_esc_twice_is_the_defaults() {
         let mut board = board_three_columns();
@@ -24778,9 +24788,23 @@ mod tests {
         let (mut app, sent) = App::for_test_logged(board, theme(), false);
         app.setup_armed = true;
         app.open_setup();
+        for (code, mods) in [
+            (KeyCode::Char(','), KeyModifiers::NONE),
+            (KeyCode::Char('c'), KeyModifiers::CONTROL),
+            (KeyCode::Char('U'), KeyModifiers::SHIFT),
+        ] {
+            app.handle_key(code, mods).unwrap();
+            assert_eq!(app.mode, Mode::Setup, "{code:?} leaves nothing");
+        }
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(app.setup.as_ref().is_some_and(|s| s.ready()));
-        app.handle_key(KeyCode::Char('q'), KeyModifiers::NONE).unwrap();
+        for code in [KeyCode::Esc, KeyCode::Char('q')] {
+            app.handle_key(code, KeyModifiers::NONE).unwrap();
+            assert_eq!(app.mode, Mode::Setup, "{code:?} on the last page leaves nothing");
+        }
+        assert!(!app.quit);
+        assert!(!sent.borrow().iter().any(|s| s.contains("ApplySetup")));
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Normal);
         let applied: Vec<String> =
             sent.borrow().iter().filter(|s| s.contains("ApplySetup")).cloned().collect();

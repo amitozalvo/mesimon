@@ -26710,8 +26710,9 @@ a person widening to more environments from the column's settings), a worktree p
 folder of two or more repositories, what an agent may do on its card (Everything · Write notes and
 ask you · Only read it, written to every column's `agent_tools`), and the brief, `brief::TEXT`
 verbatim on its own lines. `s` keeps a page's default, Esc all the rest's, `h` goes back; the last
-page opens the board or the tour. `Scope::Setup` is a child of Global: `q`/Esc are `Back`, `?`
-works.
+page opens the board or the tour, and its Enter is the only way out: `Scope::Setup` is a barrier
+(no parent, so no Settings, reload or suspend reaches past it), with its own `?`; `q`/Esc are
+`Back` before the last page and unbound on it (the author: "don't allow to exit the setup").
 
 **The preview is the tour's practice board** (`tour::toy`), a scene per page laid from the
 answers given and the one under the cursor: the ticket's journey, a PR's marks, a sibling's merge

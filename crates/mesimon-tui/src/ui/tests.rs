@@ -11919,6 +11919,21 @@ fn setting_up(keys: &str) -> App {
     app
 }
 
+/// A click under Setup reaches nothing of the board's (T-816): only its own
+/// key hints press, as keys through its keymap.
+#[test]
+fn a_click_under_setup_reaches_only_its_keys() {
+    let card = spot_of(&render(&app_graphite(fixture(false)), 120, 30), "Decay treatments");
+    let mut app = setting_up("");
+    let frame = render(&app, 120, 30);
+    click(&mut app, card);
+    assert!(matches!(app.mode, Mode::Setup), "{:?}", app.mode);
+    let skip = spot_of(&frame, "esc skip the rest");
+    click(&mut app, (skip.0 + 1, skip.1));
+    assert!(matches!(app.mode, Mode::Setup));
+    assert!(app.setup.as_ref().is_some_and(|s| s.ready()), "the hint pressed its key");
+}
+
 #[test]
 fn golden_setup_first_page() {
     golden("setup_work_120x30", &render(&setting_up(""), 120, 30));

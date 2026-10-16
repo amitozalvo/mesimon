@@ -21,4 +21,4 @@
 │  │ T-1 Fix the login redirect ∙ created just now                          │  │
 │  │ enter ticket page ∙ shift+enter start + ask agent    esc menu ∙ ? keys │  │
 │  ╰────────────────────────────────────────────────────────────────────────╯  │
-╰─────────────────────── jk choose ∙ enter done ∙ h back ∙ esc open the board ─╯
+╰──────────────────────────────────────────── jk choose ∙ enter done ∙ h back ─╯

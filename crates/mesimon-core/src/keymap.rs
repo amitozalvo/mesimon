@@ -346,8 +346,7 @@ impl Scope {
             | Scope::Usage
             | Scope::Summary
             | Scope::PullRequests
-            | Scope::Tour
-            | Scope::Setup => Some(Scope::Global),
+            | Scope::Tour => Some(Scope::Global),
             Scope::Global
             | Scope::Arcade
             | Scope::Move
@@ -360,7 +359,11 @@ impl Scope {
             | Scope::Input
             | Scope::Editor
             | Scope::Search
-            | Scope::MergeChord => None,
+            | Scope::MergeChord
+            // Setup (T-816) is not left but by its last page's Enter: no
+            // Settings, reload or suspend reaches past it, only its own keys
+            // and `?`.
+            | Scope::Setup => None,
         }
     }
 
@@ -3728,9 +3731,10 @@ static TOUR: &[Binding] = &[
     },
 ];
 
-/// Setup (T-816): one question at a time. Esc and q leave the rest on
-/// their defaults and go to the last page, never out without answers: the
-/// board is applied from there.
+/// Setup (T-816): one question at a time, and a barrier: the last page's
+/// Enter is the only way out (the author: "don't allow to exit the setup").
+/// Esc and q leave the rest on their defaults and go to that page, and do
+/// nothing there.
 static SETUP: &[Binding] = &[
     Binding {
         keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
@@ -3788,12 +3792,24 @@ static SETUP: &[Binding] = &[
         keys: &[Key::Char('q'), Key::Esc],
         verb: Verb::Back,
         show: "esc",
-        hint: |c| if c.setup_ready { "open the board" } else { "skip the rest" },
-        avail: always,
+        hint: |_| "skip the rest",
+        avail: |c| !c.setup_ready,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
         prio: 250,
+    },
+    // A barrier inherits no `?`: Setup carries its own.
+    Binding {
+        keys: &[Key::Char('?')],
+        verb: Verb::Help,
+        show: "?",
+        hint: |_| "keys",
+        avail: always,
+        class: Class::Plain,
+        group: Group::App,
+        mutates: false,
+        prio: 255,
     },
 ];
 
