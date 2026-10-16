@@ -63,6 +63,10 @@ const EDGE: f32 = 6.0;
 const GHOST: f32 = 0.3;
 /// The trail's lit length, against its whole path: it travels.
 const TAIL: f32 = 0.4;
+/// How much of its colour a landing card's tag bar keeps before the fade
+/// reaches it: the bar is there from the start, a little muted, never a
+/// hole.
+const BAR_KEEP: f32 = 0.75;
 
 /// One move this board is playing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -213,23 +217,28 @@ fn paint_trail(buf: &mut Buffer, area: Rect, theme: &Theme, dots: &[(i32, i32)])
 /// Fade the cells of `rect` along the move at progress `p`. Going `out`, a
 /// cell the front has passed is taken down to the ghost's ink; coming in,
 /// a cell it has not reached is not there yet and one it has comes in
-/// from the ground.
+/// from the ground — except the tag bar, which is there from the start,
+/// a little muted, and comes up to its own colour as the front passes.
 fn fade(buf: &mut Buffer, rect: Rect, theme: &Theme, p: f32, right: bool, out: bool) {
     let w = usize::from(rect.width);
+    let bar = rect.x..rect.x + crate::tags::BAR_WIDTH as u16;
     for y in rect.y..rect.bottom() {
         for i in 0..w {
             let x = if right { rect.x + i as u16 } else { rect.right() - 1 - i as u16 };
             let k = reached(p, i, w);
-            let keep = if out { 1.0 - k * (1.0 - GHOST) } else { k };
+            let mut keep = if out { 1.0 - k * (1.0 - GHOST) } else { k };
             if keep >= 1.0 {
                 continue;
             }
             let painted = !on_ground(buf, theme, x, y);
+            if painted && !out && bar.contains(&x) {
+                keep = keep.max(BAR_KEEP);
+            }
             let cell = &mut buf[(x, y)];
             if keep <= 0.0 {
                 cell.set_char(' ');
                 if painted {
-                    cell.bg = Color::Reset;
+                    cell.bg = theme.bg.unwrap_or(Color::Reset);
                 }
                 continue;
             }
@@ -371,6 +380,36 @@ mod tests {
         assert_eq!(buf[(20, 6)].symbol(), " ", "a painted cell stays");
         assert_eq!(buf[(21, 6)].symbol(), "⠒", "a blank one takes the dots");
         assert_ne!(buf[(21, 6)].fg, theme.attn, "never attn");
+    }
+
+    /// A landing card's tag bar is there before the fade reaches it, a
+    /// little muted, never the ground; the rest of the card is not there
+    /// yet.
+    #[test]
+    fn a_landing_cards_tag_bar_comes_muted_not_missing() {
+        use crate::theme::{Flavor, Profile};
+        let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+        let ground = theme.bg.expect("graphite paints its ground");
+        let tag = Color::Rgb(90, 140, 200);
+        let rect = Rect::new(0, 0, 29, 1);
+        let mut buf = Buffer::empty(rect);
+        for x in 0..29 {
+            buf[(x, 0)].set_bg(ground);
+        }
+        buf.set_string(3, 0, "Adopt drawer import", Style::default().bg(ground));
+        for x in 0..crate::tags::BAR_WIDTH as u16 {
+            buf[(x, 0)].set_bg(tag);
+        }
+        fade(&mut buf, rect, &theme, 0.0, true, false);
+        let bar = buf[(0, 0)].bg;
+        assert!(bar != tag && bar != ground && bar != Color::Reset, "muted: {bar:?}");
+        let Color::Rgb(r, g, b) = bar else { panic!("{bar:?}") };
+        let Color::Rgb(gr, gg, gb) = ground else { panic!() };
+        let near = |c: u8, t: u8, g: u8| {
+            (i32::from(c) - i32::from(t)).abs() < (i32::from(c) - i32::from(g)).abs()
+        };
+        assert!(near(r, 90, gr) && near(g, 140, gg) && near(b, 200, gb), "nearer the tag: {bar:?}");
+        assert_eq!(buf[(3, 0)].symbol(), " ", "the title is not there yet");
     }
 
     /// A glide's ghost stands from the snapshot to the landing, a staggered

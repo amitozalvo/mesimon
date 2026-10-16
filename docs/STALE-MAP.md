@@ -26784,3 +26784,12 @@ the fast frames); past that the card is whole whatever its height.
 Tests: `ui::an_unseen_moved_card_wears_a_bold_glyph` (glyph, title fallback, still frame to frame),
 `ui::a_moving_card_is_one_row_and_opens_once_landed`; `app::a_move_from_elsewhere_plays_and_is_marked_until_seen`
 renamed from the shimmer's.
+
+## A landing card's tag bar comes in muted, not missing (T-817 addendum, 2026-10-16, the author: "the target ticket tag box looks black until filled. it should be just slightly muted original colored tag")
+
+`glide::fade` cleared every cell the fade-in had not reached, a painted one to `Color::Reset`: the
+landing card's tag bar sat as a black hole in its column until the front came. The bar's cells
+(the card's first `BAR_WIDTH`) now keep at least `BAR_KEEP` (75 %) of their colour from the start
+and come up to their own as the front passes; the rest of the card still arrives with the front,
+and a cleared painted cell takes the theme's ground rather than the terminal's. The ghost's bar
+still fades with its card. Test: `glide::tests::a_landing_cards_tag_bar_comes_muted_not_missing`.
