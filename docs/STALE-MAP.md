@@ -26897,4 +26897,6 @@ afternoon spell, T-816 idle in REVIEW from 14:12 to 15:11 local, behind main sin
 T-815's rebase turn held the train. Read against the feed and the code, that spell met every
 condition for a Rebase row waiting on T-815: train armed, one session idle at High, no restart,
 no fuse, no hand, never asked before, and the train asked it six seconds after T-815 merged. No
-code path that hides the row was found; the author is re-checking on the terminal board.
+code path that hides the row was found; the author is re-checking on the terminal board. The
+after-turn row itself was confirmed live on this ticket mid-turn: the snapshot read `merge`
+waiting on `T-822`.
