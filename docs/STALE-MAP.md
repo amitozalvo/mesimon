@@ -26998,3 +26998,25 @@ The core timer test now runs its state and clock cases for both providers and co
 Codex hold. `provider_e2e::column_autosleep_parks_codex_only_when_observed_quiet_and_resumes_its_thread`
 uses the synthetic runtime through the real daemon and tmux to check opt-in, held and working
 sessions, automatic cleanup, the automation feed, exact-thread wake and sleeping again.
+
+## Correction: main-checkout trust does not settle Codex's remote folder check (T-824, 2026-10-16)
+
+The one-time route described above was incomplete. Codex 0.163.0's ordinary config loader
+resolves linked worktrees to their main checkout, but Mesimon launches the native terminal
+with `--remote unix://…`. Codex classifies an explicit remote endpoint as a remote workspace,
+including a Unix socket on the same machine. Its startup `check_directory_trust` therefore
+calls `read_remote_project_trust` with `ProjectTrustHost::Remote`. That lookup does not resolve
+local Git roots. With no project config layers supplying trust evidence and no saved entry
+for the worktree itself, it asks for that folder even if the main checkout is trusted.
+
+The user's main checkout already had `trust_level = "trusted"`, explaining why an ordinary
+`codex` launch there offered no dialog. Repeating that launch cannot settle the separate
+worktree check. USING.md now describes this limitation and directs the person to the native
+dialog in the ticket's pane. The shipped board-attention fix remains valid; repeated trust
+for new worktrees is not solved by it. No trust setting or launch behavior is changed here.
+
+Evidence: the installed CLI version and its versioned upstream `codex-rs/tui/src/lib.rs`
+(`AppServerTarget`), `codex-rs/tui/src/onboarding/directory_trust.rs`, and
+`codex-rs/tui/src/config_update.rs` (`read_remote_project_trust`), compared with Mesimon's
+`agents/codex/runtime.rs` launch arguments. This corrects documentation only; `git diff
+--check` passed. Runtime tests were not rerun and no native trust decision was submitted.
