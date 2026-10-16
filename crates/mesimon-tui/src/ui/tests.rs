@@ -12021,6 +12021,7 @@ fn app_gliding(ms: u64) -> App {
         was: ("in progress".into(), "b".into()),
         start: mesimon_core::clock::now_ms() - ms,
         right: true,
+        was_cursor: false,
     });
     app
 }
@@ -12149,6 +12150,38 @@ fn a_moving_cards_ghost_shrinks_a_row_at_a_time() {
     assert!(whole >= 1, "the ghost starts as the open card it was");
     assert_eq!(ghost_rows(ROW_MS + 10), whole - 1, "one row given up");
     assert_eq!(ghost_rows(ROW_MS * (whole as u64 + 1)), 0, "down to its title row");
+}
+
+/// T-817: the card the cursor rode away leaves a ghost that is the card
+/// as the cursor showed it — its agent and its shell listed — without the
+/// cursor's band, and it gives those rows up one at a time.
+#[test]
+fn the_cursors_card_leaves_an_open_ghost_that_shrinks() {
+    use crate::glide::ROW_MS;
+    let ghost = |ms: u64| {
+        let mut app = app_gliding(ms);
+        app.board_mut().sessions.push(session(
+            42,
+            ulid_n(4),
+            SessionKind::Bash,
+            SessionState::Running,
+        ));
+        app.glides[0].was_cursor = true;
+        app.cursor_col = 2;
+        app.cursor_row = Some(0);
+        let buf = cells(&app, 120, 30);
+        let lines = lines_of(&buf);
+        let column: Vec<String> =
+            lines.iter().map(|l| l.chars().skip(31).take(29).collect()).collect();
+        let title = column.iter().position(|l| l.contains("Adopt drawer")).expect("the ghost");
+        let rows = column[title + 1..].iter().take_while(|l| !l.trim().is_empty()).count();
+        (rows, buf[(36, title as u16)].bg, buf[(36, 0)].bg)
+    };
+    let (whole, band, ground) = ghost(1);
+    assert!(whole >= 2, "its agent and its shell are listed: {whole} rows");
+    assert_eq!(band, ground, "without the cursor's band");
+    assert_eq!(ghost(ROW_MS + 10).0, whole - 1, "one row given up");
+    assert_eq!(ghost(ROW_MS * (whole as u64 + 1)).0, 0, "down to its title row");
 }
 
 /// T-817: under a card's dialog the rest of the board recedes and the

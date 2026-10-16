@@ -2532,6 +2532,13 @@ impl App {
         Some(1 + usize::from(landed) * (since / crate::glide::ROW_MS) as usize)
     }
 
+    /// Was the cursor on a moving card when it left (T-817)? Its ghost is
+    /// then the card as the cursor showed it.
+    pub(crate) fn glide_was_cursor(&self, id: ulid::Ulid) -> bool {
+        let now = mesimon_core::clock::now_ms();
+        self.glides.iter().any(|g| g.ticket == id && g.ghost(now) && g.was_cursor)
+    }
+
     /// How many rows a moving card's ghost has given up (T-817): one every
     /// `glide::ROW_MS` from the move's start, so it shrinks where it was as
     /// the card opens where it went.
@@ -5813,7 +5820,13 @@ impl App {
             let start = now + played * crate::glide::STAGGER_MS;
             played += 1;
             self.glides.retain(|g| g.ticket != id);
-            let glide = crate::glide::Glide { ticket: id, was: (from, order), start, right: b > a };
+            let glide = crate::glide::Glide {
+                ticket: id,
+                was: (from, order),
+                start,
+                right: b > a,
+                was_cursor: followed == Some(id),
+            };
             if followed == Some(id) {
                 self.unseen_moves.remove(&id);
             } else {

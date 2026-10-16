@@ -204,7 +204,10 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         // open rows, reply and pull requests included, and shrinks from
         // there; a crown trail is the card's title alone.
         let bare = left && !glide;
-        let open = !bare && (app.peek_all || (selected && app.peek_showing(t.id)));
+        // The card the cursor rode away leaves a ghost that is open as it
+        // was under the cursor, its rows listed, without the cursor's look.
+        let shown = selected || (glide && app.glide_was_cursor(t.id));
+        let open = !bare && (app.peek_all || (shown && app.peek_showing(t.id)));
         // Transcript peek: the cursor card's highest-precedence session that
         // has a transcript (bash never does) — read through the draw cache.
         let peek_of = || {
@@ -281,7 +284,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 &sessions,
                 app.terminal_busy(t.id),
                 wt,
-                selected,
+                shown,
                 held,
                 trail,
                 mq,
@@ -307,6 +310,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 &brief,
                 pr_words.as_ref().map(|(w, running)| (w.as_str(), *running)),
                 !left && app.moved_unseen(t.id),
+                glide,
             )
         };
         let mut lines = render(open, peek.as_deref());

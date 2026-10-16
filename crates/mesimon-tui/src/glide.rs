@@ -81,6 +81,9 @@ pub(crate) struct Glide {
     pub start: u64,
     /// It went to a column on the right.
     pub right: bool,
+    /// The cursor was on it and rode it away: its ghost is the card as the
+    /// cursor showed it, open.
+    pub was_cursor: bool,
 }
 
 impl Glide {
@@ -423,6 +426,7 @@ mod tests {
             was: ("IN PROGRESS".into(), "a".into()),
             start: 1_000,
             right: true,
+            was_cursor: false,
         };
         assert!(g.ghost(900), "waiting its turn");
         assert!(g.ghost(1_000 + GLIDE_MS - 1));

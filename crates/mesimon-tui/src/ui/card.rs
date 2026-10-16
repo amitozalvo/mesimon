@@ -488,6 +488,7 @@ pub(super) fn render(
     prs: &[(String, Register)],
     pr_words: Option<(&str, bool)>,
     moved: bool,
+    ghost: bool,
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
     let t_cells = (ctx.width as usize).saturating_sub(BAR_WIDTH + 2);
@@ -554,7 +555,9 @@ pub(super) fn render(
     // A pending move's trail is semi-transparent everything — even an attn
     // card demotes while its ghost is in hand (the ghost carries the weight).
     let attn_card = !trail && matches!(glyph, Some((_, Register::Attn)));
-    let cursorish = (selected || held) && !fading;
+    // A moving card's ghost (T-817) keeps the accordion `selected` gave it
+    // under the cursor, which rode the card away: the rows, not the cursor.
+    let cursorish = (selected || held) && !fading && !ghost;
 
     // Age: time in COLUMN (author 2026-09-01) — it counts from the ticket's
     // `entered_at`, so only a column move restarts it; a session changing

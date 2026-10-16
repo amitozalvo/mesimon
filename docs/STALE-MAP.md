@@ -26802,3 +26802,14 @@ glide's ghost as the card looked (`bare` is the crown trail alone: the ghost kee
 and `brief`), and truncates it by `App::ghost_dropped`: one row every `glide::ROW_MS` from the
 move's start, down to its title row, while it fades out. The landing side is unchanged. Test:
 `ui::a_moving_cards_ghost_shrinks_a_row_at_a_time`.
+
+## The card the cursor rode away shrinks from what was on screen (T-817 addendum, 2026-10-16, the author: "it doesn't shrink gradually")
+
+The shrink above was right for a `P` card and wrong for the common case: an agent's card moves on
+its turn's edge while the cursor sits on it, the cursor rides it away (`follow_ticket`), and its
+ghost was drawn unselected — the accordion that listed its agent, its shell and the peek gone in
+the first frame, nothing left to shrink. A glide now records `was_cursor` (the card the snapshot's
+cursor held), and its ghost renders with `selected` (the accordion, the peek rule) while
+`card::render`'s new `ghost` keeps it from looking like the cursor (`cursorish` off: no band, no
+cursor bar, rest ink). It then gives up its rows at `glide::ROW_MS` as before. Test:
+`ui::the_cursors_card_leaves_an_open_ghost_that_shrinks`.
