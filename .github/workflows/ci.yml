@@ -82,5 +82,5 @@ jobs:
       - name: Test
         run: python3 -B ci/test-run.py -- cargo test --workspace
 
-      - name: Test cleanup failure paths
-        run: python3 -B ci/test-run.py -- python3 -B -m unittest discover -s ci -p test_guard_test.py -v
+      - name: Test cleanup failure paths and runner concurrency
+        run: python3 -B ci/test-run.py -- python3 -B -m unittest discover -s ci -p 'test_*_test.py' -v

@@ -124,8 +124,9 @@ their text descriptive, bounded, and non-instructional.
 Process-owning tests (the e2es and the tmux backend's) need Python 3 and tmux: each runs
 its daemon as a subprocess under `ci/test_guard.py`, which reaps it, its private tmux server
 and its dirs even when the test panics or is killed. `python3 -B ci/test-run.py [-- cargo test
-...]` is the bounded entry point (20-minute deadline, overlap lock, fixture audit; `--jobs N`
-caps concurrency, unbounded by default); after a full-workspace suite it runs the `mesimon`
+...]` is the bounded entry point (20-minute deadline, a lock per Cargo build directory so runs
+in independent worktrees overlap and runs sharing build output take turns, `--exclusive` for
+the release gate, fixture audit; `--jobs N` caps concurrency, unbounded by default); after a full-workspace suite it runs the `mesimon`
 crate's integration tests again under `MESIMON_TEST_ROAD=mod`, Claude's mod road (T-574),
 and `--one-road` skips that pass. Seams reach the daemon only through
 `Harness::boot_with_env` / `TestFixture::set_env`, never `std::env::set_var`. Report a

@@ -27020,3 +27020,62 @@ Evidence: the installed CLI version and its versioned upstream `codex-rs/tui/src
 `codex-rs/tui/src/config_update.rs` (`read_remote_project_trust`), compared with Mesimon's
 `agents/codex/runtime.rs` launch arguments. This corrects documentation only; `git diff
 --check` passed. Runtime tests were not rerun and no native trust decision was submitted.
+
+## Bounded runs in independent worktrees overlap (T-830, 2026-10-16)
+
+`ci/test-run.py` held one lock per OS user (`/tmp/msmn-test-command-<uid>.lock`, from T-235)
+for the whole run, pruning included, so a ticket's `cargo ut` waited behind another ticket's
+full suite, its mod-road pass and minutes of `prune-deps`. The lock now follows what actually
+conflicts.
+
+**What is shared, checked before narrowing.** Fixture roots (`mkdtemp`), the runtime and state
+dirs (keyed on a fixture's unique repo path), tmux sockets, the audit registry
+(`/tmp/msmn-test-run-*`, one per run) and the command supervisor (it reaps only its own
+children's trees and leaves nested fixture supervisors to theirs) are all per run. The Rust
+tests' fixed `/tmp/…` names are uuid-suffixed or never written. What two runs can genuinely
+share is **build output**: one Cargo target or `build-dir`, by `CARGO_TARGET_DIR`, `build.
+target-dir`, `build.build-dir` or `--target-dir`. A rebuild there swaps binaries under a
+running suite, and the `suite-passed.json` stamp lives there. The rest is machine load, which
+only the release gate is timed against. Not covered by this lock: the Claude rig's fixed
+`/tmp/msmn-rig-phone.sock` (`ci/rig.py` never enters the runner, and never did).
+
+**The model.** Locks live in `/tmp/msmn-test-locks-<uid>/` (private, owned, checked like the
+audit root; `MESIMON_TEST_LOCK_DIR` moves it for the runner's own tests). Each run resolves its
+build directories the way cargo does (`cargo metadata`, resolved paths; a non-cargo command
+gets its checkout's, since a script may build) and takes one exclusive flock per directory, in
+sorted order. Every run holds `machine.lock` shared; `--exclusive`, which `ci/release.sh` now
+passes, takes it exclusively behind a `machine.gate` turnstile so new runs cannot starve it.
+Waiting is bounded by the run's `--timeout` and spends none of the supervisor's deadline; past
+it the run is "not started" (exit 2). A run inside a run inherits `MESIMON_TEST_HELD` and does
+not wait on its parent. Lock fds are close-on-exec, so a leaked child never holds one.
+
+**Saying whose turn it is.** Each held lock has a JSON note (pid, checkout, command, phase,
+since), rewritten at every phase and removed before the lock is let go. A waiting run prints
+`== waiting (not testing yet): build output <dir> is in use by pid N in <checkout> (running
+tests since 22:07:05): <command>` once per change of holder or phase; the phases are `running
+tests`, `running the mod road's pass`, `auditing its fixtures` and `pruning the build cache`.
+The run itself prints `== tests:` and `== pruning the build cache in …`.
+
+**Pruning.** Still after the audit and still under the run's lock on that build directory,
+which holds off only runs sharing it: they would wait on cargo's lock anyway and now say why.
+`prune-deps.py` gets the build directory the run used (`--target-dir <build-dir>/debug`), not
+the cwd's `target/`. It takes every `.cargo*lock` in the profile dir, all or none per attempt:
+Cargo 1.98 holds `.cargo-build-lock` and `.cargo-artifact-lock` exclusively for a whole build
+and `.cargo-lock` only shared, and a separate `build-dir` keeps its own `.cargo-build-lock`
+(measured with a sleeping `build.rs`). It says when it waits (`--wait`, default 30 s), and
+skips the `nm` scan when `deps/`'s mtime equals the one stamped in `debug/.msmn-pruned` after
+its last prune: a run that linked nothing no longer pays minutes of scan (211 s on a 42k-entry
+worktree `deps/`).
+
+**Tests** (`ci/test_run_test.py`, real runs over throwaway Cargo packages): two independent runs
+each wait for the other's start marker; shared output by `CARGO_TARGET_DIR`, `build.target-dir`
+and `build.build-dir` takes turns with the holder named; a run cancelled with SIGINT or failing
+while another holds a nested fixture leaves the other's sleep alive and both audits exact (the
+cancelled run's two owners `runner-lost`, none of them the other's); a pruning holder blocks
+only its own build output; `--exclusive` waits for a running run and holds a new one off; a
+nested run does not wait on its parent; `prune-deps` steps aside under a held
+`.cargo-build-lock` and skips an unchanged `deps/`. CI's Python step now discovers
+`test_*_test.py`, so the runner's tests run beside the supervisor's.
+
+An older runner in a not-yet-rebased worktree still takes the per-user lock among its own kind;
+the new runner ignores that file.

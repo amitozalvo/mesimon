@@ -161,7 +161,9 @@ the daemon, its private tmux server and the registered dirs — so nothing is le
 If one ever is, `tmux -S /tmp/mesimon-501/<proj16>/tmux.sock kill-server` still cleans it and its
 `owner.json` says what it owned; never sweep every mesimon socket or `pkill` by name, since a
 dogfooding session's own board is among them. `python3 -B ci/test-run.py [-- cargo test ...]` is
-the bounded entry point CI and the release gate use: a 20-minute deadline, an overlap lock, and an
+the bounded entry point CI and the release gate use: a 20-minute deadline, a lock per Cargo build
+directory (runs in independent worktrees overlap; runs sharing build output take turns and say
+whose turn it is; the release gate's `--exclusive` waits for all of them, T-830), and an
 audit that every fixture reported `cleaned` (a failed audit keeps its `/tmp/msmn-test-run-*`
 registry; a clean one removes it). `--jobs N` caps build jobs and test threads; unbounded by
 default, so the plain cargo commands above stay the inner loop at their usual speed. The daemon's

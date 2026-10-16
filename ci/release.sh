@@ -183,7 +183,11 @@ step "tests (driven by the bundled tmux)"
 # exec on the machine and hung both live boards). ci/prune-deps.py keeps
 # deps/ small now and the stamp above usually makes this step moot; the
 # room stays because a regrown deps/ would otherwise fail a green gate.
-MESIMON_TMUX_BIN="$PWD/vendor/tmux/tmux" MESIMON_REQUIRE_TMUX=1 python3 -B ci/test-run.py --timeout 2400 -- cargo test --workspace
+#
+# --exclusive: ticket worktrees' bounded runs overlap one another (T-830),
+# but this one waits for them to end and holds new ones off, so the gate is
+# timed on a quiet machine.
+MESIMON_TMUX_BIN="$PWD/vendor/tmux/tmux" MESIMON_REQUIRE_TMUX=1 python3 -B ci/test-run.py --exclusive --timeout 2400 -- cargo test --workspace
 fi
 
 step "the mod against this machine's Claude Code"

@@ -15,13 +15,18 @@ What is safe to delete is decidable: a linked executable or dylib lists the
 objects its debuginfo lives in as `OSO` stab entries (`nm -ap`), so a loose
 `.o` named by no current binary is an orphan. Everything referenced stays,
 which is what keeps file:line in a panic's backtrace. Runs under cargo's own
-build lock (`target/debug/.cargo-lock`), so it cannot delete an object a
-link in progress is about to read.
+build locks (every `.cargo*lock` in the profile dir: Cargo 1.98 holds
+`.cargo-build-lock` and `.cargo-artifact-lock` exclusively for a whole build
+and `.cargo-lock` shared, and a separate `build.build-dir` keeps its own
+`.cargo-build-lock`), so it cannot delete an object a link in progress is
+about to read. Taken all at once or not at all, so it never holds one while
+a build holds another.
 
     python3 ci/prune-deps.py            # prune, print what went
     python3 ci/prune-deps.py --dry-run  # count only
 
-ci/test-run.py runs it after every bounded check. Python 3 is a test
+ci/test-run.py runs it after every bounded check, on the profile dir of the
+Cargo build directory that check used (T-830). Python 3 is a test
 dependency only; nothing shipped uses it.
 """
 import argparse
@@ -76,11 +81,39 @@ def referenced_objects(debug: Path) -> set:
     return refs
 
 
+def take_build_locks(debug: Path, wait: float):
+    """Every cargo lock in the profile dir, exclusively, or None after `wait`
+    seconds. One attempt takes all of them or none, so a build that holds
+    one is never kept waiting on another this holds. Saying it waits is what
+    tells cache maintenance from a test that is running (T-830)."""
+    paths = sorted(debug.glob(".cargo*lock")) or [debug / ".cargo-lock"]
+    deadline = time.monotonic() + wait
+    said = False
+    while True:
+        held = []
+        try:
+            for path in paths:
+                fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+                held.append(fd)
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return held
+        except BlockingIOError:
+            for fd in held:
+                os.close(fd)
+        if time.monotonic() >= deadline:
+            return None
+        if not said:
+            print(f"prune-deps: waiting up to {wait:g} s for cargo's build lock on {debug}", flush=True)
+            said = True
+        time.sleep(0.5)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--target-dir", default="target/debug", help="the profile dir holding deps/ (default: target/debug)")
     parser.add_argument("--dry-run", action="store_true", help="count, delete nothing")
     parser.add_argument("--quiet", action="store_true", help="print only when something was pruned or is worth advising")
+    parser.add_argument("--wait", type=float, default=30, help="seconds to wait for cargo's build locks before stepping aside (default: 30)")
     args = parser.parse_args()
     debug = Path(args.target_dir).resolve()
     deps = debug / "deps"
@@ -88,22 +121,25 @@ def main() -> int:
         if not args.quiet:
             print(f"prune-deps: no {deps}; nothing to do")
         return 0
-    # Cargo's build lock: a link in progress reads its objects from deps/,
+    # Cargo's build locks: a link in progress reads its objects from deps/,
     # and this must not run under it. Wait a little, then step aside.
-    lock_path = debug / ".cargo-lock"
-    lock = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
-    deadline = time.monotonic() + 30
-    while True:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            break
-        except BlockingIOError:
-            if time.monotonic() >= deadline:
-                print("prune-deps: cargo holds the build lock; not pruning this time", file=sys.stderr)
-                os.close(lock)
-                return 0
-            time.sleep(0.5)
+    locks = take_build_locks(debug, args.wait)
+    if locks is None:
+        print(f"prune-deps: cargo holds the build lock on {debug}; not pruning this time", file=sys.stderr)
+        return 0
     try:
+        # deps/'s own mtime moves with every entry added or removed, so one
+        # that has not moved since the last prune has nothing new to scan:
+        # a run that linked nothing skips minutes of `nm` (T-830).
+        stamp = debug / ".msmn-pruned"
+        mark = str(deps.stat().st_mtime_ns)
+        try:
+            if stamp.read_text().strip() == mark:
+                if not args.quiet:
+                    print("prune-deps: deps/ unchanged since the last prune; nothing to do")
+                return 0
+        except OSError:
+            pass
         refs = referenced_objects(debug)
         loose = [f for f in deps.iterdir() if f.suffix == ".o" and f.is_file()]
         orphans = [f for f in loose if os.path.realpath(f) not in refs]
@@ -116,6 +152,8 @@ def main() -> int:
             except OSError:
                 pass
         entries = sum(1 for _ in deps.iterdir())
+        if not args.dry_run:
+            stamp.write_text(str(deps.stat().st_mtime_ns) + "\n")
         verb = "would prune" if args.dry_run else "pruned"
         if orphans or not args.quiet:
             print(
@@ -131,8 +169,9 @@ def main() -> int:
                 flush=True,
             )
     finally:
-        fcntl.flock(lock, fcntl.LOCK_UN)
-        os.close(lock)
+        for lock in locks:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            os.close(lock)
     return 0
 
 

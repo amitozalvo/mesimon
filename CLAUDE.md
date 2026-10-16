@@ -89,7 +89,7 @@ cargo nextest run --workspace                         # everything, e2es in PARA
 cargo clippy --workspace --all-targets -- -D warnings # the release gate's exact clippy
 cargo run                                             # TUI for cwd; `-- daemon --repo <p>` runs the daemon
 MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui     # remint goldens after a deliberate visual change
-python3 -B ci/test-run.py                             # bounded runner: 20-min deadline, lock, fixture audit, + the mod road pass
+python3 -B ci/test-run.py                             # bounded runner: 20-min deadline, build-output lock, fixture audit, + the mod road pass
 python3 -B ci/rig.py [--lay|--only R3|--failed|--reset|--stale] # in a ticket worktree: a board there drives the real claude (Sonnet) through its crown, tests in ci/rig/tests.toml; each run clears dead rig boards
 ci/test-linux.sh                                      # whole suite on Debian 12 in Docker (~90 s warm)
 ci/sandbox.sh [up|tui|pair|build|relay]               # Docker sandbox: this tree's daemon + relay + Remote Control page
@@ -129,7 +129,8 @@ keeps its pairing and outbox per origin, so any change re-pairs every phone. **T
 updater never replaces a binary brew installed (`release.rs::by_homebrew`).
 
 `ci/prune-deps.py` deletes split-debuginfo objects no current binary references (the runner
-calls it after every run). It is what keeps the first-exec Gatekeeper hold down: syspolicyd's
+calls it after every run, on the build dir that run used, and it skips a `deps/` unchanged since
+its last prune). It is what keeps the first-exec Gatekeeper hold down: syspolicyd's
 scan is slow in proportion to the *directory*, and one edit to a core crate mints ~6,500 `.o`
 files that cargo never collects. Past 50k entries it advises `cargo clean`.
 
@@ -732,9 +733,14 @@ teardown. A timeout, a cleanup failure or a skipped test is reported as what it 
 pass**.
 
 `python3 -B ci/test-run.py [-- cargo test ...]` is the bounded entry point CI and the release
-gate use: a 20-minute deadline, an overlap lock, and an audit that every fixture reported
+gate use: a 20-minute deadline, a lock per build output, and an audit that every fixture reported
 `cleaned`. `--jobs N` caps build jobs and test threads; unbounded by default, so the plain cargo
 commands stay the inner loop at their usual speed.
+**Bounded runs in different worktrees overlap** (T-830): a run locks each Cargo target/build
+directory it writes (as cargo resolves them, config included), so only runs sharing build output
+take turns, and the waiting one prints `== waiting (not testing yet)` with the holder's pid,
+checkout and phase (`running tests`, `pruning the build cache`, …). `--exclusive` (the release
+gate) waits for every run and holds new ones off. The locks live in `/tmp/msmn-test-locks-<uid>/`.
 
 If a fixture is ever left behind, `tmux -S /tmp/mesimon-501/<proj16>/tmux.sock kill-server`
 cleans it and its `owner.json` says what it owned. **Never sweep every mesimon socket or `pkill`
