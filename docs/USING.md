@@ -499,7 +499,7 @@ A new worktree starts at your fetched `origin/main` when your local main is behi
 its commits against it. Tickets on the shared checkout are the same under either setting: their
 commits are on main as they are made.
 
-The board's top row names the workflow: `∙ train` while the merge train is on (a main board with
+The board's top row names the workflow: `∙ merge train` while the merge train is on (a main board with
 the train off says nothing), `∙ pull requests` (`∙ PRs` on a narrow terminal), or `∙ pull requests
 offline` while the forge cannot be read, with the reason and the fix on the advisory row. It
 brightens for a few seconds whenever its workflow acts: the train merges, asks for a rebase or

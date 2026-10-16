@@ -26900,3 +26900,17 @@ no fuse, no hand, never asked before, and the train asked it six seconds after T
 code path that hides the row was found; the author is re-checking on the terminal board. The
 after-turn row itself was confirmed live on this ticket mid-turn: the snapshot read `merge`
 waiting on `T-822`.
+
+## The person reads "merge train", never "train" alone (T-826, 2026-10-16)
+
+The ask: "rename train to \"merge train\" — users won't be able to recognize it". The board's
+top-row workflow mark (T-811) said `∙ train`, and a toast, two Settings details, a column's
+settings summary, the tour and `doctor` called it "the train" with nothing to say what it moves.
+Each now says `merge train`: the header mark (wide and narrow alike; the narrow row shortens only
+the pull-request word), `t`'s toasts, the merged-notice toggle's toast, the Merge into details,
+the column summary (`merge train: auto-merge`), the Columns and merge-train lessons, and doctor's
+`merge into` line. The Settings row keeps its label `Auto merge`.
+
+Not renamed: the code (`train::`, `Verb::MergeTrain`, `train.json`) and what an agent is told
+(`get_ticket`'s `merge.by: "train"` and its `why`, the crown's tool text): a wire value and
+agent text, which move only with a rig run, and no agent was reported confused by it.

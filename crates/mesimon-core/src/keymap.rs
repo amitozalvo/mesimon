@@ -5179,7 +5179,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
                  GitLab"
                     .into()
             } else {
-                "a branch lands by the train or m ∙ no forge is read".into()
+                "a branch lands by the merge train or m ∙ no forge is read".into()
             }
         },
         avail: always,

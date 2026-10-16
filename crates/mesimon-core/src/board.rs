@@ -1428,7 +1428,7 @@ impl ColumnSettings {
             out.push(format!("offers {}", self.offers().word()));
         }
         if self.train != TrainReach::Off {
-            out.push(format!("train: {}", self.train.word()));
+            out.push(format!("merge train: {}", self.train.word()));
         }
         if self.sleep_after_minutes > 0 {
             out.push(format!("sleeps idle agents after {} min", self.sleep_after_minutes));
@@ -4971,7 +4971,7 @@ mod tests {
         let s = template_settings("REVIEW").unwrap();
         assert_eq!(
             s.summary(),
-            ["takes no new tickets", "working → IN PROGRESS", "train: auto-merge"]
+            ["takes no new tickets", "working → IN PROGRESS", "merge train: auto-merge"]
         );
         assert!(s.automated());
         assert!(!template_settings("DONE").unwrap().automated());

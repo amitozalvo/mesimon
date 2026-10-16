@@ -1,4 +1,4 @@
- BOARD   mesimon › kanban-tui   7 tickets ∙ train
+ BOARD   mesimon › kanban-tui   7 tickets ∙ merge train
 
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
 

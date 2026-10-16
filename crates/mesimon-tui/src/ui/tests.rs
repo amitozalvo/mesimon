@@ -4560,7 +4560,7 @@ fn golden_train_120() {
     // An armed train on a main board is the header's workflow mark (T-811),
     // which reversed the 2026-09-04 silence.
     assert!(
-        lines[0].contains(" ∙ train") && !lines[0].contains("merge"),
+        lines[0].contains(" ∙ merge train") && !lines[0].contains("auto-merge"),
         "an armed train names itself on the header:\n{}",
         lines[0]
     );
@@ -9393,7 +9393,7 @@ fn remote_control_chip_focus_is_visible_and_never_attn() {
     }
 }
 
-/// The board's merge workflow (T-811): ` ∙ train` while the train is armed
+/// The board's merge workflow (T-811): ` ∙ merge train` while the train is armed
 /// on a main board, nothing with it off, ` ∙ pull requests` on a board that
 /// merges through them and ` ∙ pull requests offline` while the forge is
 /// not read. On the board alone.
@@ -9402,10 +9402,10 @@ fn golden_workflow_mark_120() {
     use mesimon_core::board::MergeInto;
     let mut app = app_graphite(fixture(false));
     app.git = git_state("main", 2, 1, 3);
-    assert!(!render(&app, 120, 30)[0].contains(" ∙ train"), "main, train off: nothing");
+    assert!(!render(&app, 120, 30)[0].contains(" ∙ merge train"), "main, train off: nothing");
     app.automation.merge_train = true;
     let train = render(&app, 120, 30);
-    assert!(train[0].contains("tickets ∙ train"), "{}", train[0]);
+    assert!(train[0].contains("tickets ∙ merge train"), "{}", train[0]);
     golden("board_workflow_train_120x30", &train);
     app.board_mut().merge_into = MergeInto::PullRequests;
     let prs = render(&app, 120, 30);
@@ -9449,7 +9449,7 @@ fn workflow_mark_lights_after_an_act_and_settles() {
         let mut app = App::for_test(fixture(false), Theme::new(flavor, Profile::TrueColor));
         app.now = || 1_000_000;
         app.automation.merge_train = true;
-        let x = x_of(&app, "∙ train") + 2;
+        let x = x_of(&app, "∙ merge train") + 2;
         let rest = app.theme.rest;
         assert_eq!(cells(&app, 120, 30)[(x, 0)].fg, rest.dim2, "{flavor:?}: at rest");
         // The train merged a second ago: lit.
@@ -9486,7 +9486,7 @@ fn golden_workflow_mark_focused_120() {
     app.automation.merge_train = true;
     let plain = cells(&app, 120, 30);
     let line = &render(&app, 120, 30)[0];
-    let x = line[..line.find("∙ train").unwrap()].chars().count() as u16;
+    let x = line[..line.find("∙ merge train").unwrap()].chars().count() as u16;
     app.cursor_row = None;
     app.header_focus = true;
     app.header_chip = HeaderChip::Workflow;
@@ -11481,7 +11481,7 @@ fn a_click_selects_a_card_and_a_second_opens_its_page() {
 fn a_click_on_the_workflow_mark_opens_merge_into() {
     let mut app = app_graphite(fixture(false));
     app.automation.merge_train = true;
-    let at = spot_of(&render(&app, 120, 30), "∙ train");
+    let at = spot_of(&render(&app, 120, 30), "∙ merge train");
     let at = (at.0 + 2, at.1);
     click(&mut app, at);
     assert_eq!((app.header_focus, app.header_chip), (true, HeaderChip::Workflow));

@@ -1048,9 +1048,9 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
         records.push(rec(Level::Ok, "merge base", word).advice(advice));
         records.push(if prs {
             rec(Level::Ok, "merge into", "pull requests - a worktree branch lands through its PR, merged on the forge")
-                .advice("The board reads each ticket's pull requests through the forge's CLI, and the train and m fast-forward no worktree branch: the train asks a rebase only where the forge reports a conflict. Settings > Behaviour > Merge into sets main.")
+                .advice("The board reads each ticket's pull requests through the forge's CLI, and the merge train and m fast-forward no worktree branch: the merge train asks a rebase only where the forge reports a conflict. Settings > Behaviour > Merge into sets main.")
         } else {
-            rec(Level::Ok, "merge into", format!("main - the train and m fast-forward a worktree branch into {base}"))
+            rec(Level::Ok, "merge into", format!("main - the merge train and m fast-forward a worktree branch into {base}"))
                 .advice("No forge is read on this board. Settings > Behaviour > Merge into sets pull requests, where a branch lands through its PR and the board reads GitHub or GitLab.")
         });
         // Which CLI would read this repository's pull requests (T-739): a

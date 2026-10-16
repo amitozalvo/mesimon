@@ -289,7 +289,7 @@ fn workflow_mark(app: &App, short: bool) -> Vec<Span<'static>> {
     };
     let theme = &app.theme;
     let word = match (mark, short) {
-        (WorkflowMark::Train, _) => "train",
+        (WorkflowMark::Train, _) => "merge train",
         (WorkflowMark::PullRequests, false) => "pull requests",
         (WorkflowMark::PullRequests, true) => "PRs",
         (WorkflowMark::Offline, false) => "pull requests offline",

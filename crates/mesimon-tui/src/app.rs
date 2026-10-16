@@ -7368,9 +7368,9 @@ impl App {
                         _ => {
                             self.refresh()?;
                             self.status = if on {
-                                format!("{key} merges by hand ∙ t puts it back on the train")
+                                format!("{key} merges by hand ∙ t puts it back on the merge train")
                             } else {
-                                format!("{key} is back on the train")
+                                format!("{key} is back on the merge train")
                             };
                         }
                     }
@@ -7415,9 +7415,9 @@ impl App {
             Verb::MergeTrainNotice => {
                 let on = !self.prefs.merge_train_notice;
                 let word = if on {
-                    "the train tells the agent after a merge"
+                    "the merge train tells the agent after a merge"
                 } else {
-                    "the train stays silent after a merge"
+                    "the merge train stays silent after a merge"
                 };
                 self.set_pref(word, |p| p.merge_train_notice = on);
                 self.push_automation();
@@ -7480,7 +7480,7 @@ impl App {
                             "merge into pull requests ∙ branches land on the forge, which the board now reads"
                                 .into()
                         } else {
-                            "merge into main ∙ the train and m land branches, and no forge is read"
+                            "merge into main ∙ the merge train and m land branches, and no forge is read"
                                 .into()
                         };
                     }

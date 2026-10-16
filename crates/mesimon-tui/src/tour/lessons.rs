@@ -500,7 +500,7 @@ pub(crate) static LESSONS: &[Lesson] = &[
     Lesson {
         group: "Agents",
         title: "The merge train",
-        about: "With the train on, a finished branch merges by itself: a column's settings \
+        about: "With the merge train on, a finished branch merges by itself: a column's settings \
                 say whether the train asks its agent to rebase there, or merges there too. \
                 On a new board it merges from REVIEW. Settings turns it on.",
         seed: working,
@@ -514,7 +514,7 @@ pub(crate) static LESSONS: &[Lesson] = &[
                     w.merged(id);
                 }
             }),
-            Say("the train merges it"),
+            Say("the merge train merges it"),
             Wait(1_200),
             Do(|w| {
                 if let Some(id) = w.find(LIMITS) {
@@ -628,7 +628,7 @@ pub(crate) static LESSONS: &[Lesson] = &[
         title: "Columns",
         about: "O adds a column beside the cursor's. enter on a column's name opens its \
                 settings: where its cards go when an agent starts or finishes, whether new \
-                tickets may be filed there, the train's reach.",
+                tickets may be filed there, the merge train's reach.",
         seed: board,
         show: &[
             Say("O adds a column beside this one"),
