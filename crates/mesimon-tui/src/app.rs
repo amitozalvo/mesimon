@@ -2532,6 +2532,17 @@ impl App {
         Some(1 + usize::from(landed) * (since / crate::glide::ROW_MS) as usize)
     }
 
+    /// How many rows a moving card's ghost has given up (T-817): one every
+    /// `glide::ROW_MS` from the move's start, so it shrinks where it was as
+    /// the card opens where it went.
+    pub(crate) fn ghost_dropped(&self, id: ulid::Ulid) -> usize {
+        let now = mesimon_core::clock::now_ms();
+        self.glides
+            .iter()
+            .find(|g| g.ticket == id && g.ghost(now))
+            .map_or(0, |g| (now.saturating_sub(g.start) / crate::glide::ROW_MS) as usize)
+    }
+
     /// Has a card moved since the cursor last rested on it, and landed
     /// (T-817)? Its glyph is bold.
     pub(crate) fn moved_unseen(&self, id: ulid::Ulid) -> bool {

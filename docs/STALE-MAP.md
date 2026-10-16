@@ -26793,3 +26793,12 @@ landing card's tag bar sat as a black hole in its column until the front came. T
 and come up to their own as the front passes; the rest of the card still arrives with the front,
 and a cleared painted cell takes the theme's ground rather than the terminal's. The ghost's bar
 still fades with its card. Test: `glide::tests::a_landing_cards_tag_bar_comes_muted_not_missing`.
+
+## A moving card's ghost shrinks as the card grows (T-817 addendum, 2026-10-16, the author: "just like the target card is growing gradually, the source should shrink gradually")
+
+The ghost was drawn as a crown trail is, title alone, so an open card (`P`, a reply line, its
+pull requests) lost its rows in one frame and the column under it jumped. `push_card` now draws a
+glide's ghost as the card looked (`bare` is the crown trail alone: the ghost keeps `open`, `fresh`
+and `brief`), and truncates it by `App::ghost_dropped`: one row every `glide::ROW_MS` from the
+move's start, down to its title row, while it fades out. The landing side is unchanged. Test:
+`ui::a_moving_cards_ghost_shrinks_a_row_at_a_time`.

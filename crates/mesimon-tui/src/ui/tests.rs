@@ -12129,6 +12129,28 @@ fn a_moving_card_is_one_row_and_opens_once_landed() {
     assert_eq!(agent_rows(GLIDE_MS + ROW_MS + 10), 1, "then the next row");
 }
 
+/// T-817: a moving card's ghost is drawn as the card looked — open, with
+/// every `P` card — and gives up its rows one at a time, down to its title
+/// row.
+#[test]
+fn a_moving_cards_ghost_shrinks_a_row_at_a_time() {
+    use crate::glide::ROW_MS;
+    // The rows under the ghost's title in IN PROGRESS, by cells.
+    let ghost_rows = |ms: u64| {
+        let mut app = app_gliding(ms);
+        app.peek_all = true;
+        let lines = render(&app, 120, 30);
+        let column: Vec<String> =
+            lines.iter().map(|l| l.chars().skip(31).take(29).collect()).collect();
+        let title = column.iter().position(|l| l.contains("Adopt drawer")).expect("the ghost");
+        column[title + 1..].iter().take_while(|l| !l.trim().is_empty()).count()
+    };
+    let whole = ghost_rows(1);
+    assert!(whole >= 1, "the ghost starts as the open card it was");
+    assert_eq!(ghost_rows(ROW_MS + 10), whole - 1, "one row given up");
+    assert_eq!(ghost_rows(ROW_MS * (whole as u64 + 1)), 0, "down to its title row");
+}
+
 /// T-817: under a card's dialog the rest of the board recedes and the
 /// card stays as it was, lit.
 #[test]

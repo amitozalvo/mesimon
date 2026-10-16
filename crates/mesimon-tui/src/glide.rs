@@ -6,7 +6,8 @@
 //!
 //! - **out**: the card fades from where it was, along the move (left to
 //!   right for a move right, right to left for a move left), down to a
-//!   ghost that holds its old place;
+//!   ghost that holds its old place, giving up its rows one at a time as
+//!   it goes until it is its title row alone;
 //! - **trail**: a thin grey trail runs from there to where it went in
 //!   straight lines through the gaps alone — out of the card's end into the
 //!   gutter beside its column, along the gutter, along the empty row under
@@ -43,7 +44,8 @@ pub(crate) const TRAIL_MS: u64 = 600;
 pub(crate) const IN_MS: u64 = 450;
 /// The whole move, start to landing.
 pub(crate) const GLIDE_MS: u64 = OUT_MS + TRAIL_MS + IN_MS;
-/// A card that lands open shows one more of its rows every this long.
+/// A card that lands open shows one more of its rows every this long, and
+/// its ghost gives one up as often.
 pub(crate) const ROW_MS: u64 = 60;
 /// How long after its landing a move is kept, for the opening: past this
 /// the card is whole whatever its height.

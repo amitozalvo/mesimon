@@ -200,7 +200,11 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         // inside its reveal — on the cursor card; `P` opens every card
         // (T-237). The card is open on this alone — the transcript below may
         // or may not exist, and the tag row does not depend on it.
-        let open = !left && (app.peek_all || (selected && app.peek_showing(t.id)));
+        // A moving card's ghost (T-817) is drawn as the card looked, its
+        // open rows, reply and pull requests included, and shrinks from
+        // there; a crown trail is the card's title alone.
+        let bare = left && !glide;
+        let open = !bare && (app.peek_all || (selected && app.peek_showing(t.id)));
         // Transcript peek: the cursor card's highest-precedence session that
         // has a transcript (bash never does) — read through the draw cache.
         let peek_of = || {
@@ -237,9 +241,9 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         let unseen = !(selected || held) && app.spoke_unseen(t.id);
         // What that agent said, for a resting card's new-reply row (T-720),
         // or what went between it and the crown since (T-783).
-        let fresh = if !(selected || held || left) { app.card_news(t.id) } else { None };
+        let fresh = if !(selected || held || bare) { app.card_news(t.id) } else { None };
         // Its pull requests, for the line under the title (T-739).
-        let brief = if left { Vec::new() } else { app.pr_brief(t.id) };
+        let brief = if bare { Vec::new() } else { app.pr_brief(t.id) };
         // And what the newest of them is at, beside its mark (T-794).
         let pr_words = if brief.is_empty() {
             None
@@ -306,12 +310,13 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             )
         };
         let mut lines = render(open, peek.as_deref());
-        // A card on the move is one row (T-817): its ghost, and the card
-        // where it goes until it has landed, which then opens a row at a
-        // time. An open card's rows held blank while the trail ran were a
-        // block in its column.
+        // A card on the move gives up its rows where it was and takes them
+        // back where it went (T-817): its ghost shrinks a row at a time from
+        // the move's start, and the card where it goes is one row until it
+        // has landed, then opens a row at a time. An open card's rows held
+        // blank while the trail ran were a block in its column.
         let rows = if glide {
-            Some(1)
+            Some(lines.len().saturating_sub(app.ghost_dropped(t.id)))
         } else if left {
             None
         } else {
