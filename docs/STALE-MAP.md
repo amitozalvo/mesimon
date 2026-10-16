@@ -26891,3 +26891,10 @@ agent and an interrupted one have none in flight.
 Tests: `train::a_worker_mid_turn_is_read_where_its_turn_ends`,
 `merge_train_e2e::a_worker_mid_turn_says_what_the_train_does_after_it`, and the row assertions in
 `the_owed_row_names_what_it_waits_on`.
+
+Addendum (2026-10-16, the author: "not now, originally"): the miss the author first saw was the
+afternoon spell, T-816 idle in REVIEW from 14:12 to 15:11 local, behind main since T-817, while
+T-815's rebase turn held the train. Read against the feed and the code, that spell met every
+condition for a Rebase row waiting on T-815: train armed, one session idle at High, no restart,
+no fuse, no hand, never asked before, and the train asked it six seconds after T-815 merged. No
+code path that hides the row was found; the author is re-checking on the terminal board.
