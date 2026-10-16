@@ -11219,11 +11219,37 @@ fn golden_cards_show_their_cost() {
     let all = rows.join("\n");
     assert!(all.contains("Fix OSC-11 detecti~ $12"), "{all}");
     assert!(all.contains("Decay treatments      <$1"), "{all}");
+    assert_eq!(app.card_corner(ulid_n(5)).as_deref(), Some("unpriced"));
+    assert!(all.contains("unpriced"), "{all}");
     assert!(!rows[4].contains(">1y"), "no card wears its age: {:?}", rows[4]);
     golden("board_cost_corner_120x30", &rows);
     press(&mut app, '$');
     assert_eq!(app.prefs.card_corner, crate::prefs::CardCorner::Age);
     assert!(render(&app, 120, 30).join("\n").contains(">1y"));
+}
+
+#[test]
+fn codex_costs_reach_the_dollar_corner_and_ticket_page() {
+    use mesimon_core::cost::{TicketCost, Tokens};
+    let mut board = fixture(false);
+    let ticket = ulid_n(5);
+    board.sessions.iter_mut().filter(|session| session.ticket == ticket).for_each(|session| {
+        session.kind = mesimon_core::board::SessionKind::Codex;
+    });
+    let mut app = app_graphite(board);
+    let mut cost = TicketCost { ticket, ..TicketCost::default() };
+    cost.fold("gpt-6-astra", &Tokens { output: 100_000, ..Tokens::default() }, 0, 0);
+    app.costs = vec![cost];
+    assert_eq!(app.card_corner(ticket), None);
+    press(&mut app, '$');
+    assert_eq!(app.card_corner(ticket).as_deref(), Some("$5"));
+    assert_eq!(app.card_corner(ulid_n(2)).as_deref(), Some(""));
+    assert!(render(&app, 120, 30).join("\n").contains("$5"));
+    app.screen = Screen::Ticket { ticket, rail_idx: 0 };
+    assert!(render(&app, 120, 30)[3].contains("∙ $5.00"));
+    app.screen = Screen::Board;
+    press(&mut app, '$');
+    assert_eq!(app.card_corner(ticket), None);
 }
 
 /// The ticket page says what its agents cost while the cards wear their

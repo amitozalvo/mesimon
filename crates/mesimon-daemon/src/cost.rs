@@ -1007,7 +1007,8 @@ mod tests {
         let of = |t| view.iter().find(|c| c.ticket == t).unwrap();
         assert_eq!(of(a).tokens, 2 + 30, "the subagent's tokens are the ticket's");
         assert_eq!(ledger.tickets[&a].conversations.len(), 2, "and its transcript is learned");
-        assert_eq!((of(b).tokens, of(b).unpriced, of(b).usd), (170, 170, 0.0), "counted, unpriced");
+        assert_eq!((of(b).tokens, of(b).unpriced), (170, 0));
+        assert!((of(b).usd - 0.00169).abs() < 1e-12, "cached input is priced only once");
         // The ledger round-trips, and a board without the ticket drops it.
         let paths = {
             let repo = dir.path().join("repo");

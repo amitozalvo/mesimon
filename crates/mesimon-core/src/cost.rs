@@ -5,11 +5,12 @@
 //! usage, so a message is counted once by its id), and a Codex rollout's
 //! running `token_count` totals. The dollars are arithmetic: those tokens at
 //! the model's published API list price, fetched from Anthropic's pricing
-//! page on 2026-10-01. A plan subscriber pays a flat fee, so for them the
+//! page on 2026-10-01 and OpenAI's standard short-context rates verified
+//! on 2026-10-16. A plan subscriber pays a flat fee, so for them the
 //! figure says what the work would have cost on the API — the words beside
 //! it say so. A model this table does not know is counted and left unpriced
-//! rather than guessed (every Codex model, today: no published price was
-//! verified for this build).
+//! rather than guessed. OpenAI estimates do not reconstruct per-request
+//! long-context, service-tier or regional surcharges from hourly totals.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -91,6 +92,16 @@ const PRICES: &[(&str, Price)] = &[
     ("claude-3-5-haiku", priced(0.80, 0.08, 4.0)),
 ];
 
+const OPENAI_PRICES: &[(&str, f64, f64, f64)] = &[
+    ("gpt-6-astra", 10.0, 1.0, 50.0),
+    ("gpt-6.1-sol", 2.0, 0.10, 10.0),
+    ("gpt-6-sol", 2.0, 0.20, 10.0),
+    ("gpt-6-luna", 0.10, 0.01, 0.50),
+    ("gpt-5.6-sol", 4.0, 0.40, 20.0),
+    ("gpt-5.6-terra", 2.0, 0.20, 12.0),
+    ("gpt-5.6-luna", 0.20, 0.02, 1.20),
+];
+
 /// The fast-mode suffix a model key wears: fast mode bills every token class
 /// at twice the standard rate.
 pub const FAST: &str = ":fast";
@@ -103,9 +114,15 @@ pub fn price(model: &str) -> Option<Price> {
         Some(b) => (b, true),
         None => (model, false),
     };
-    let base = base.strip_prefix("anthropic.").unwrap_or(base);
-    let base = base.split('@').next().unwrap_or(base);
-    let p = PRICES.iter().find(|(id, _)| matches_id(base, id)).map(|(_, p)| *p)?;
+    let p = if let Some(&(_, input, read, output)) =
+        OPENAI_PRICES.iter().find(|(id, ..)| matches_openai_id(base, id))
+    {
+        Price { input, read, output, write_5m: input * 1.25, write_1h: input * 1.25 }
+    } else {
+        let base = base.strip_prefix("anthropic.").unwrap_or(base);
+        let base = base.split('@').next().unwrap_or(base);
+        PRICES.iter().find(|(id, _)| matches_id(base, id)).map(|(_, price)| *price)?
+    };
     let k = if fast { 2.0 } else { 1.0 };
     Some(Price {
         input: p.input * k,
@@ -121,6 +138,20 @@ pub fn price(model: &str) -> Option<Price> {
 /// does not match `claude-opus-5-5` (the longer id sorts first and wins).
 fn matches_id(model: &str, id: &str) -> bool {
     model == id || model.strip_prefix(id).is_some_and(|rest| rest.starts_with('-'))
+}
+
+fn matches_openai_id(model: &str, id: &str) -> bool {
+    model == id
+        || model.strip_prefix(id).and_then(|suffix| suffix.strip_prefix('-')).is_some_and(|date| {
+            date.len() == 10
+                && date.bytes().enumerate().all(|(index, byte)| {
+                    if index == 4 || index == 7 {
+                        byte == b'-'
+                    } else {
+                        byte.is_ascii_digit()
+                    }
+                })
+        })
 }
 
 /// USD for `tokens` of `model`, or `None` where it is unpriced.
@@ -401,8 +432,51 @@ mod tests {
         assert_eq!(price("anthropic.claude-opus-5-5").unwrap().input, 4.0);
         assert_eq!(price("claude-opus-4-5@20251101").unwrap().input, 5.0);
         assert_eq!(price("claude-opus-5-5:fast").unwrap().output, 40.0, "fast bills double");
-        assert_eq!(price("gpt-6-astra"), None);
+        assert_eq!(price("unknown-model"), None);
         assert_eq!(price("claude-opus-55"), None, "a prefix is not an id");
+    }
+
+    #[test]
+    fn codex_models_use_verified_standard_prices_without_pricing_unknown_variants() {
+        for (model, input, read, output) in [
+            ("gpt-6-astra", 10.0, 1.0, 50.0),
+            ("gpt-6.1-sol", 2.0, 0.10, 10.0),
+            ("gpt-6-sol", 2.0, 0.20, 10.0),
+            ("gpt-6-luna", 0.10, 0.01, 0.50),
+            ("gpt-5.6-sol", 4.0, 0.40, 20.0),
+            ("gpt-5.6-terra", 2.0, 0.20, 12.0),
+            ("gpt-5.6-luna", 0.20, 0.02, 1.20),
+        ] {
+            let actual = price(model).unwrap();
+            assert_eq!(
+                (actual.input, actual.read, actual.output),
+                (input, read, output),
+                "{model}"
+            );
+            assert_eq!(price(&format!("{model}-2026-10-01")), Some(actual));
+        }
+        assert_eq!(price("gpt-6-astra:fast").unwrap().output, 100.0);
+        for unknown in [
+            "gpt-6-astra-pro",
+            "gpt-6-luna-new",
+            "gpt-6-astra-20261001",
+            "gpt-5.3-codex-spark",
+            "astra",
+            "anthropic.gpt-6-astra",
+        ] {
+            assert_eq!(price(unknown), None, "{unknown}");
+        }
+    }
+
+    #[test]
+    fn codex_cached_input_is_priced_once_and_reasoning_is_already_in_output() {
+        let line = r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000000,"cached_input_tokens":800000,"output_tokens":100000,"reasoning_output_tokens":60000}}}}"#;
+        let Some(CodexLine::Totals { tokens, .. }) = codex_line(line) else { panic!() };
+        let mut cost = TicketCost::default();
+        cost.fold("gpt-6-astra", &tokens, 0, 0);
+        assert!((cost.usd - 7.8).abs() < 1e-12);
+        assert_eq!((cost.tokens, cost.unpriced), (1_100_000, 0));
+        assert_eq!((cost.day, cost.week, cost.month), (cost.usd, cost.usd, cost.usd));
     }
 
     #[test]
@@ -455,7 +529,7 @@ mod tests {
         let t = Tokens { output: 1_000_000, ..Tokens::default() };
         c.fold("claude-opus-5-5", &t, hour, now);
         c.fold("claude-opus-5-5", &t, hour - 30, now);
-        c.fold("gpt-6-astra", &t, hour, now);
+        c.fold("unknown-model", &t, hour, now);
         assert_eq!((c.usd, c.day, c.week, c.month), (40.0, 20.0, 40.0, 40.0));
         assert_eq!((c.tokens, c.unpriced), (3_000_000, 1_000_000));
     }

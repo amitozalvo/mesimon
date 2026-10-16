@@ -26560,3 +26560,47 @@ never covers a letter or a painted cell, the ghost's life),
 `ui::the_board_recedes_behind_a_cards_dialog`, `prefs::card_moves_default_on_and_round_trip`; the
 links, summary and picture-link goldens hang from T-3 now, and the Appearance goldens carry the
 row.
+
+## Codex tickets have an API-price estimate in the dollar view (T-815, 2026-10-16)
+
+The ledger already counted Codex rollout tokens, but the price table contained
+only Claude models, and a card with no priced tokens left its `$` corner blank.
+Verified OpenAI model rates now price GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, GPT-6
+Luna, and GPT-5.6 Sol/Terra/Luna. Exact model IDs and dated snapshots match;
+unverified aliases, Spark and unknown model variants remain unpriced instead of
+inheriting a different model's rate. An unpriced card now says `unpriced`, matching
+the Usage dialog, rather than silently disappearing from the cost view. A ticket
+with nothing counted still has a blank cost corner.
+
+Rates are standard, short-context API USD per million tokens, verified on
+2026-10-16 against [OpenAI's pricing table](https://developers.openai.com/api/docs/pricing)
+and the model pages for
+[GPT-6 Sol](https://developers.openai.com/api/docs/models/gpt-6-sol),
+[GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol),
+[GPT-5.6 Terra](https://developers.openai.com/api/docs/models/gpt-5.6-terra) and
+[GPT-5.6 Luna](https://developers.openai.com/api/docs/models/gpt-5.6-luna).
+GPT-6.1 Sol's cached-input rate differs from GPT-6 Sol's; they are separate entries.
+Codex's cached input is subtracted from input before pricing, and reasoning tokens
+are already part of output, so neither is charged twice. OpenAI's single cache-write
+rate is shared by the ledger's two write-lifetime fields; Codex's existing rollout
+reader does not infer cache writes absent from its token counters.
+
+This remains a standard-rate estimate, not a subscription bill or an exact API
+invoice: hourly totals cannot reconstruct request-level long-context thresholds,
+service-tier changes or regional surcharges. The stored token buckets are priced
+when the snapshot is built, so existing histories gain estimates without a schema
+change, migration or another model call after the rebuilt daemon is handed over.
+Regression tests cover verified rates, unknown variants, cached-input arithmetic,
+ledger growth and the `$` card/ticket views. The cost-corner golden deliberately
+adds the `unpriced` label; no other layout is intended to change.
+
+Validation: focused core/ledger checks, `cargo ut`, the full TUI suite (1028
+passed, one existing ignored test), formatting and the rebuilt binary passed;
+the single changed golden was inspected. The bounded four-worker workspace run
+passed all 2488 tests with three intentional skips. Its automatic mod-road pass
+ran all 208 tests: 207 passed and the unchanged worktree-init elapsed-time
+assertion again observed `1 s` where it requires `0 s`; its standalone subprocess
+helper was skipped. The cost integration tests passed on both roads and fixture
+cleanup was clean. This does not fix or claim a pass for that unrelated timing
+assertion. Linux, manual TUI and paid model runs were not repeated for this
+pricing/rendering change.
