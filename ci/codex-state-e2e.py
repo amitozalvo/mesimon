@@ -789,6 +789,9 @@ class Verification:
         terminal_child = False
         saw_late_child = False
         child_turns = None
+        saw_named_child = False
+        runtime_hold = None
+        config_path = self.state / "hooks" / (sid + ".codex.json")
         while time.monotonic() - self.started < min(self.args.timeout, 120):
             session, ticket, screen = self.observe(sid)
             self.startup_consent(sid, screen)
@@ -843,7 +846,14 @@ class Verification:
                 if status.get("type") in ("idle", "notLoaded"):
                     child_turns = self.native_read(sid, "thread/turns/list", {"threadId": child_id, "limit": 3, "itemsView": "full"})
                     terminal_child |= any(turn.get("status") == "completed" for turn in child_turns.get("data", []))
-                saw_late_child |= active and any(turn.get("status") == "completed" for turn in parent.get("data", []))
+                parent_closed = any(turn.get("status") == "completed" for turn in parent.get("data", []))
+                saw_late_child |= active and parent_closed
+                # Why the runtime holds (T-848): a seat held only by leftover
+                # bookkeeping passes by luck; the child itself must be named.
+                try:
+                    runtime_hold = json.loads(Path(json.loads(config_path.read_text())["snapshot_path"]).read_text()).get("hold")
+                except (OSError, ValueError, KeyError):
+                    runtime_hold = None
                 # A completed spawn RPC still leaves the child's work outstanding.
                 # Observe this exact window; seeing only a busy parent is insufficient.
                 if active and any(item.get("status") == "completed" for item in spawns):
@@ -851,9 +861,13 @@ class Verification:
                     if session["state"] == {"state":"idle", "stop_reason":"end_turn"} or ticket["column"] == "REVIEW":
                         raise AssertionError("active native child released the parent's checkout or completed it")
                     saw_held_child |= session.get("observation_hold", True)
+                    if parent_closed and runtime_hold is not None:
+                        if not runtime_hold.get("children"):
+                            raise AssertionError("live child held the checkout only by bookkeeping; the runtime's hold does not name it")
+                        saw_named_child = True
                 with (self.out / "child-observations.jsonl").open("a") as log:
                     log.write(json.dumps(dict(at_ms=int((time.monotonic()-self.started)*1000),
-                        parent=parent, child=child, child_turns=child_turns, board=dict(state=session["state"],
+                        parent=parent, child=child, child_turns=child_turns, runtime_hold=runtime_hold, board=dict(state=session["state"],
                         observation_hold=session.get("observation_hold"), column=ticket["column"]))) + "\n")
             if session["state"] == {"state":"idle", "stop_reason":"end_turn"}:
                 break
@@ -864,6 +878,8 @@ class Verification:
             raise Inconclusive("child acceptance exceeded its 120-second deadline")
         if not child_id or not saw_held_child:
             raise Inconclusive("no completed-spawn / live-child hold window was captured; no retry attempted")
+        if saw_late_child and not saw_named_child:
+            raise Inconclusive("the parent closed under a live child but the runtime's hold was never read there")
         if not terminal_child:
             raise AssertionError("parent completed without native child terminal evidence")
         child_turns = self.native_read(sid, "thread/turns/list", {"threadId": child_id, "limit": 3, "itemsView": "full"})
@@ -883,7 +899,7 @@ class Verification:
         self.completed(sid, "MESIMON_PARENT_DONE")
         self.mark(assertion="completed native spawn keeps checkout held through live child; only terminal child permits parent completion", passed=True,
                   parent_thread=thread, child_thread=child_id, parent_turns=1, child_turns=1, child_model=self.args.model,
-                  parent_terminal_before_child_observed=saw_late_child)
+                  parent_terminal_before_child_observed=saw_late_child, hold_named_child=saw_named_child)
 
     def brief(self):
         # Preflight fixture fields and actual runtime configuration before the

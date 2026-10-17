@@ -27621,3 +27621,39 @@ composer painted, `SessionStart`, the brief pasted, `trust_accept ∙ answered` 
 the new Codex words; the phone's `ux.test.js` trust case (chromium). Tests:
 `trust_dialog::tests::*`, `mesophon::tests::a_trust_dialog_walks_to_yes_and_takes_no_refusal`,
 `keymap::tests::w_trusts_the_workspace_only_while_the_dialog_stands`.
+
+## A Codex 0.163 sub-agent holds the seat until the audit reads it idle (T-848, 2026-10-17, from T-843's "Not done")
+
+**What was wrong.** The ledger learned a child thread only from a `collabAgentToolCall` item's
+`receiverThreadIds` (Codex 0.153). Codex 0.163 names one in a `subAgentActivity` item
+(`{type, id, kind: started|interacted|interrupted|completed, agentThreadId, agentPath, model?,
+reasoningEffort?}`, camelCase, from `codex app-server generate-json-schema` and the rig's own
+parent turns; the activity's `completed` lands on the parent's turn as a second item). So
+`children` stayed empty and a child outliving its parent's turn was never named in the hold.
+
+**What shipped.** `observation::child_ids` reads either shape, and both the parent's
+`observe_item` and a child's own `ChildWork::item` (a grandchild) go through it, so a 0.163
+child is known, `discover_descendants` walks it, `needs_work_audit` asks for the audit, the
+audit must read it (`apply_audit`'s coverage), and `Snapshot.hold.children` says so. Any `kind`
+names the child; an activity's `completed` is a hint like `agentsStates`, never a release.
+A child-only hold released by a clean audit is the ordinary road, not counted in `releases`
+(that count is T-843's bookkeeping releases).
+
+**The rig did not bite, and now does.** The child case passed on the old code: on 0.163 the
+seat was held by luck (the TUI's open `native_requests`, below, outlast a four-second child), and
+the case checked only that the seat was held. It now reads the runtime's own `hold` beside each observation and fails
+when the parent's turn has closed under a live child and the hold does not name it — measured:
+the old reading fails in those words, this branch passes (`gpt-6-luna` low, Codex 0.163.0).
+
+**The audit's cadence, measured.** No backoff: with the child running, the audit was not even
+attempted (one audit in the whole run, passing), and the isolated app-server's log stayed empty.
+
+**Not done, measured.** The release comes 15–27 s after the child goes idle, on the old code
+too: Codex 0.163's TUI sends `plugin/list` four times at startup and each stays open ~27 s, and
+`poll_audit` waits for `native_requests` to empty — any request, read-only included. That is
+T-843's gate, visible as `Hold.native_requests`; loosening it to mutations is a ticket of its own.
+
+Tests: `observation::tests::{a_sub_agent_activity_names_a_child_that_holds_the_closed_turn_until_audited,
+a_childs_own_sub_agent_activity_names_a_grandchild}`,
+`runtime::tests::a_sub_agent_outliving_its_parents_turn_holds_until_the_audit_reads_it_idle`,
+the Codex rig's `child` case.
