@@ -18,7 +18,7 @@
       │                        rose            dark                                                              │
       │  Usage                 gruvbox         dark                                                              │
       │                        latte          light                                                              │
-      │                        gruvbox-light  light                                                              │
+      │  About                 gruvbox-light  light                                                              │
       │                        ice             dark                                                              │
       │                                                                                                          │
       │                                                                                                          │

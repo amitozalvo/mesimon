@@ -18,7 +18,7 @@
       │                      Colour when needs you      ○ off   ○ dot       ● whole tab                          │
       │  Usage               Subtitle                   ● on                                                     │
       │                      Icon                       ● on                                                     │
-      │                                                                                                          │
+      │  About                                                                                                   │
       │                                                                                                          │
       │                                                                                                          │
       │                                                                                                          │

@@ -2317,7 +2317,7 @@ pub struct Board {
     pub claude_md_ignored: bool,
     /// Sessions mesimon starts carry `brief::TEXT` in their system prompt
     /// (`brief::FLAG`, T-224). ON by default since T-816 (the author: "it
-    /// should be on by default"): Setup shows the exact text on a new board,
+    /// should be on by default"): the README shows the exact text (T-850),
     /// `doctor` prints it, and a person turns it off in Settings, which
     /// stamps `claude_md_ignored` so the store keeps it off (`store.rs`
     /// reads an off on a board nobody answered as on). README promise 3 names

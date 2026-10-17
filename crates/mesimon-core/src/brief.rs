@@ -6,10 +6,10 @@
 //! home — it reaches ONLY sessions mesimon starts (a CLAUDE.md speaks to every
 //! session in the repo, mesimon's or not), it writes no file the user tracks
 //! in git, it cannot drift from the binary that spawned it, and turning it off
-//! is one Settings row. On by default since T-816: Setup shows [`TEXT`]
-//! verbatim the first time a board opens, the Settings row shows it again
-//! before turning it back on, and README promise 3 names it as the one
-//! paragraph mesimon adds to a conversation.
+//! is one Settings row. On by default since T-816: the README shows [`TEXT`]
+//! verbatim under promise 3, which names it as the one paragraph mesimon adds
+//! to a conversation (T-850: Setup no longer reads it out), and the Settings
+//! row shows it again before turning it back on.
 //!
 //! `claudemd::SNIPPET` stays as the CLAUDE.md FORM of the same instruction:
 //! `c` in the dialog copies it for a user who would rather keep the words in
@@ -50,6 +50,14 @@ mod tests {
             let cells = line.chars().count();
             assert!(cells <= WRAP, "`{line}` is {cells} cells; the dialog measures {WRAP}");
         }
+    }
+
+    /// The README shows the brief word for word (T-850): promise 3 points
+    /// at it, and Setup sends a person there instead of reading it out.
+    #[test]
+    fn the_readme_shows_the_text() {
+        let readme = include_str!("../../../README.md");
+        assert!(readme.contains(&format!("```text\n{TEXT}\n```")), "README lost the brief");
     }
 
     /// It names the tool and who started the session, or it teaches nothing.

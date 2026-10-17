@@ -18,7 +18,7 @@
       │                      Reset times         ● near a limit   ○ always   ○ never                             │
       │▎ Usage                                                                                                   │
       │                     PROVIDERS                                                                            │
-      │                      Claude              ● on                                                            │
+      │  About               Claude              ● on                                                            │
       │                      Codex               ● on                                                            │
       │                                                                                                          │
       │                                                                                                          │

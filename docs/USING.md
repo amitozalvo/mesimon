@@ -112,15 +112,16 @@ mesimon
 ```
 
 The first time mesimon opens a folder, **Setup** asks a few things, one page each, with a
-practice board under the question playing what the answer does: how you work (on your own, where
-finished work is merged into main, or with pull requests on GitHub or GitLab), whether mesimon
-merges for you or an agent brings a pull request that fell behind main up to date, the board's
-columns (to do, in progress, review and done, or columns that follow a pull request to merged and,
-if you like, to production), a worktree for each ticket where the folder holds several
-repositories, and what an agent may do on its own card. Its last page shows the agent brief word
-for word. `s` leaves a question on its default and `esc` leaves all the rest on theirs. Each answer
-is a setting afterwards: *Behaviour › Worktrees*, *Merge into* and *Auto merge*, each column's
-*Tools*, and *Agents › Agent brief*.
+practice board under the question showing what the answer does: how you work (on your own, where
+finished work is merged into main, with pull requests on GitHub or GitLab, or not sure yet, which
+starts on your own), whether mesimon merges for you or an agent brings a pull request that fell
+behind main up to date, with pull requests the board's columns (to merged, or on to production),
+and a worktree for each ticket where the folder holds several repositories. The recommended
+answer is marked and is the default: `s` leaves a question on it and `esc` leaves all the rest on
+theirs. Each answer is a setting afterwards: *Behaviour › Worktrees*, *Merge into* and *Auto
+merge*. Agents get every board tool and the [agent brief](../README.md#three-promises); each
+column's *Tools* and *Agents › Agent brief* change that. *Settings › About* opens mesimon's
+project page.
 
 On the board: `o` adds a ticket, `space` opens its page, `enter` goes to its agent (or opens the
 page when it has none), `HJKL` moves the card (`>` or `<` twice does too), `p` shows each agent's

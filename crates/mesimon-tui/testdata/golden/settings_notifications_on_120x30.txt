@@ -18,7 +18,7 @@
       │                     BANNER                                                                               │
       │  Usage               The agent's words             ● quoted    ○ withheld                                │
       │                      Dock bounce                   ○ off                                                 │
-      │                                                                                                          │
+      │  About                                                                                                   │
       │                     SOUND                                                                                │
       │                      Needs you                     Glass                                                 │
       │                      Turn finishes                 Tink                                                  │

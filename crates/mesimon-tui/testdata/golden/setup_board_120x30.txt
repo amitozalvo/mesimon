@@ -1,36 +1,30 @@
 ╭─ mesimon › setup kanban-tui ─────────────────────────────────────────────────────────────────────────────────────────╮
 │                                                                                                                      │
-│   How you work ✓   Merging ✓   Board ✓   Agents ✓   Brief   Ready                                                    │
+│   How you work ✓   PRs ✓   Board   Ready                                                                             │
 │                                                                                                                      │
-│  Every agent mesimon starts here gets these lines first:                                                             │
+│  Pick your board                                                                                                     │
 │                                                                                                                      │
-│    This session was started by mesimon on a ticket. FIRST,                                                           │
-│    before reading code or planning, call the get_ticket                                                              │
-│    tool and read the ticket's description and notes: they                                                            │
-│    are the brief, and the prompt is often only the ticket's                                                          │
-│    title. Do not start work without them. Work stays on                                                              │
-│    this ticket; a ticket filed from here is worked by a                                                              │
-│    session of its own, never this one.                                                                               │
-│                                                                                                                      │
-│  › Continue                                                                                                          │
+│  › To do → In progress → PR open → Merged (recommended)                                                              │
+│    To do → In progress → PR open → Merged → Production                                                               │
 │                                                                                                                      │
 │  ╭─ preview ──────────────────────────────────────────────────────────────────────────────────────────────────────╮  │
-│  │ BOARD   mesimon › practice   1 ticket                                                                          │  │
+│  │ BOARD   mesimon › practice   2 tickets ∙ pull requests                                                         │  │
 │  │                                                                                                                │  │
-│  │   TODO                 1 →    IN PROGRESS          0 →    REVIEW               0 →    DONE                  0  │  │
+│  │   TODO                 0 →    IN PROGRESS          0 →    PR OPEN              1 →    MERGED              1 →  │  │
 │  │                                                                                                                │  │
-│  │   Fix the login redir~ now                                                                                     │  │
-│  │                        T-1                                                                                     │  │
-│  │                                                                                                                │  │
-│  │                                                                                                                │  │
-│  │                                                                                                                │  │
-│  │                                                                                                                │  │
-│  │                                                                                                                │  │
+│  │   o  new ticket                                           ✓ Fix the login ~ ⎇↑ now    Dark mode toggle    now  │  │
+│  │                                                             PR #412 is open;          approved          ●#411  │  │
+│  │                                                             checks pass.                                  T-1  │  │
+│  │                                                             approved         ◉#412                             │  │
+│  │                                                                                T-2                             │  │
 │  │                                                                                                                │  │
 │  │                                                                                                                │  │
 │  │                                                                                                                │  │
 │  │                                                                                                                │  │
-│  │ T-1 Fix the login redirect ∙ created just now                                                                  │  │
-│  │ enter ticket page ∙ shift+enter start + ask agent ∙ o new ticket ∙ HJKL move card            esc menu ∙ ? keys │  │
+│  │                                                                                                                │  │
+│  │                                                                                                                │  │
+│  │                                                                                                                │  │
+│  │                                                                                                                │  │
+│  │                                                                                                                │  │
 │  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  │
-╰──────────────────────────────────────────────────────────────────────── enter continue ∙ h back ∙ esc skip the rest ─╯
+╰─────────────────────────────────────────────────────── jk choose ∙ enter next ∙ s skip ∙ h back ∙ esc skip the rest ─╯

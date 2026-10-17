@@ -175,7 +175,7 @@ fn draw_lesson(f: &mut Frame, app: &App, tour: &Tour, area: Rect) {
 
 /// The practice board, drawn whole on its own canvas and laid into `at`.
 fn draw_board(f: &mut Frame, app: &App, tour: &Tour, at: Rect) {
-    lay_board(f, app, &tour.canvas, &tour.sandbox, at, tour.trying);
+    lay_board(f, app, &tour.canvas, &tour.sandbox, at, tour.trying, 0);
 }
 
 /// A practice board (`sandbox`), drawn whole on `canvas` at `at`'s size by
@@ -189,17 +189,21 @@ pub(super) fn lay_board(
     sandbox: &App,
     at: Rect,
     typing: bool,
+    crop: u16,
 ) {
     if at.width == 0 || at.height == 0 {
         return;
     }
     let mut canvas = canvas.borrow_mut();
+    // `crop` rows more are drawn than shown: the board's bottom ones, its
+    // footer, fall off the edge.
+    let tall = at.height + crop;
     let fits = canvas.as_ref().is_some_and(|t| {
         let b = t.backend().buffer().area;
-        b.width == at.width && b.height == at.height
+        b.width == at.width && b.height == tall
     });
     if !fits {
-        let backend = ratatui::backend::TestBackend::new(at.width, at.height);
+        let backend = ratatui::backend::TestBackend::new(at.width, tall);
         *canvas = ratatui::Terminal::new(backend).ok();
     }
     let Some(term) = canvas.as_mut() else { return };

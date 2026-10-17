@@ -573,6 +573,8 @@ pub enum Verb {
     ReleaseNotes,
     /// Open the guided tour from the menu (T-763).
     Tour,
+    /// Settings › About (T-850): open mesimon's repository in the browser.
+    ProjectPage,
     /// Setup's `s` (T-816): leave this question on its default and go on.
     SetupSkip,
     /// Settings › Behaviour › Workspace (T-816): where a new ticket works
@@ -1043,10 +1045,12 @@ pub enum SettingsSection {
     Terminal,
     /// The subscription quota line above the board's keys (T-327).
     Usage,
+    /// What this build is, and where its project lives (T-850).
+    About,
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Theme,
         Self::Appearance,
         Self::Notifications,
@@ -1055,6 +1059,7 @@ impl SettingsSection {
         Self::Crown,
         Self::Terminal,
         Self::Usage,
+        Self::About,
     ];
 
     /// Its name in the section list.
@@ -1068,6 +1073,7 @@ impl SettingsSection {
             Self::Crown => "Crown",
             Self::Terminal => "Terminal",
             Self::Usage => "Usage",
+            Self::About => "About",
         }
     }
 
@@ -1138,6 +1144,7 @@ impl SettingsSection {
             Verb::CrownBudget | Verb::CrownMode | Verb::CrownArchives | Verb::CrownWatches => {
                 Self::Crown
             }
+            Verb::ProjectPage => Self::About,
             _ => Self::Theme,
         }
     }
@@ -1156,9 +1163,6 @@ pub struct Ctx {
     pub practice: bool,
     /// Setup is past its first question (T-816): `h` goes back one.
     pub setup_back: bool,
-    /// Setup's page has one answer only (the brief, the last page): Enter
-    /// goes on and there is nothing to choose or skip.
-    pub setup_single: bool,
     /// Setup is on its last page.
     pub setup_ready: bool,
     /// A ticket nothing else stamped works in a worktree on this board
@@ -3786,7 +3790,7 @@ static SETUP: &[Binding] = &[
         verb: Verb::CursorDown,
         show: "jk",
         hint: |_| "choose",
-        avail: |c| !c.setup_single,
+        avail: always,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
@@ -3796,15 +3800,7 @@ static SETUP: &[Binding] = &[
         keys: &[Key::Enter],
         verb: Verb::Act,
         show: "enter",
-        hint: |c| {
-            if c.setup_ready {
-                "done"
-            } else if c.setup_single {
-                "continue"
-            } else {
-                "next"
-            }
-        },
+        hint: |c| if c.setup_ready { "done" } else { "next" },
         avail: always,
         class: Class::Plain,
         group: Group::Navigate,
@@ -3816,7 +3812,7 @@ static SETUP: &[Binding] = &[
         verb: Verb::SetupSkip,
         show: "s",
         hint: |_| "skip",
-        avail: |c| !c.setup_single && !c.setup_ready,
+        avail: |c| !c.setup_ready,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
@@ -5229,6 +5225,16 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // Where the README is (T-850): what mesimon does, the agent brief word
+    // for word, and where to report a problem. Setup sends a person here
+    // rather than reading them any of it.
+    MenuItem {
+        verb: Verb::ProjectPage,
+        label: |_| "Project page".into(),
+        detail: |_| "the README, the docs and where to report a problem".into(),
+        avail: always,
+        key: "",
+    },
     // A ticket's summary on its card (T-696): what the `Summary` section
     // shows there — everything, the rows alone, or nothing.
     MenuItem {
@@ -5926,6 +5932,7 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::UsageClaude,
             Verb::UsageCodex,
         ],
+        SettingsSection::About => &[Verb::ProjectPage],
     };
     verbs
         .iter()
@@ -5975,6 +5982,9 @@ pub enum Value {
     Door(String),
 }
 
+/// mesimon's repository, as its manifests name it.
+pub const PROJECT_PAGE: &str = env!("CARGO_PKG_REPOSITORY");
+
 /// The value a Settings row shows (T-717), from the same `Ctx` its detail
 /// reads; `None` for a verb that is not a Settings row.
 pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
@@ -6020,6 +6030,7 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
         Verb::DefaultTier => Value::Word(or(&c.tier_default, crate::tier::CLAUDE).into()),
         Verb::Tiers => Value::Door(or(&c.tier_names, "none yet").into()),
         Verb::McpTools => Value::Switch(c.mcp_tools),
+        Verb::ProjectPage => Value::Door(PROJECT_PAGE.trim_start_matches("https://").into()),
         Verb::SystemPrompt => Value::Switch(c.system_prompt),
         Verb::AgentPrompts => Value::Door(match c.prompts.custom_count() {
             0 => "mesimon's words".into(),

@@ -18,7 +18,7 @@
       │                     BANNER                                                                               │
       │  Usage               The agent's words             ● quoted    ○ withheld                     inherited  │
       │                      Dock bounce                   ○ off                                      inherited  │
-      │                                                                                                          │
+      │  About                                                                                                   │
       │                     SOUND                                                                                │
       │                      Needs you                     Glass                                      inherited  │
       │                      Turn finishes                 Tink                                       inherited  │

@@ -1,0 +1,30 @@
+╭─ mesimon › setup kanban-tui ─────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                      │
+│   How you work ✓   Merging   Ready                                                                                   │
+│                                                                                                                      │
+│  When an agent's work is ready, should mesimon merge it into main?                                                   │
+│                                                                                                                      │
+│    Yes, once it reaches Review (recommended)                                                                         │
+│  › No, I'll press m on the card                                                                                      │
+│                                                                                                                      │
+│  ╭─ preview ──────────────────────────────────────────────────────────────────────────────────────────────────────╮  │
+│  │ BOARD   mesimon › practice   1 ticket                                                                          │  │
+│  │                                                                                                                │  │
+│  │   TODO                 0 →    IN PROGRESS          0 →    REVIEW               1 →    DONE                  0  │  │
+│  │                                                                                                                │  │
+│  │   o  new ticket                                           ✓ Fix the login ~ ⎇↑ now                             │  │
+│  │                                                             Done, tests pass. Over                             │  │
+│  │                                                             to you.                                            │  │
+│  │                                                                                T-1                             │  │
+│  │                                                                                                                │  │
+│  │                                                                                                                │  │
+│  │                                                                                                                │  │
+│  │                                                                                                                │  │
+│  │                                                                                                                │  │
+│  │                                                                                                                │  │
+│  │                                                                                                                │  │
+│  │                                                                                                                │  │
+│  │                                                                                                                │  │
+│  │                                                                                                                │  │
+│  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  │
+╰─────────────────────────────────────────────────────── jk choose ∙ enter next ∙ s skip ∙ h back ∙ esc skip the rest ─╯

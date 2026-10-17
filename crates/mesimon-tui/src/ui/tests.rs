@@ -868,7 +868,12 @@ fn golden_settings_groups_fit_short_and_wide_terminals() {
         let count = mesimon_core::keymap::settings_items(&app.ctx()).len();
         for (w, h) in [(60, 20), (120, 30)] {
             app.mode = Mode::Settings { idx: 0 };
-            let rows = render(&app, w, h);
+            // About's version, masked in its own width, or every release
+            // bump drifts it.
+            let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+            let mask = format!("{:<1$}", "vX.Y.Z", version.len());
+            let rows: Vec<String> =
+                render(&app, w, h).into_iter().map(|r| r.replace(&version, &mask)).collect();
             assert!(!rows.iter().any(|r| r.contains("agent replies")));
             app.mode = Mode::Settings { idx: count - 1 };
             let end = render(&app, w, h);
@@ -11487,6 +11492,19 @@ fn a_fresh_reading_is_read_just_now() {
 /// Settings › Usage (T-717, where the menu's Usage row went): each
 /// provider's windows or why it has none, this board's estimate, then the
 /// door to the detail dialog and the line's rows. The dialog's Esc comes
+/// Settings › About (T-850): the version, and the row to the project.
+/// Its golden is `golden_settings_groups_fit_short_and_wide_terminals`'.
+#[test]
+fn settings_about_shows_the_version_and_the_project() {
+    let mut app = app_graphite(fixture(false));
+    app.settings_section = mesimon_core::keymap::SettingsSection::About;
+    app.mode = Mode::Settings { idx: 0 };
+    let rows = render(&app, 120, 30);
+    let all = rows.join("\n");
+    assert!(all.contains("github.com/amitozalvo/mesimon"), "{all}");
+    assert!(all.contains(&format!("mesimon v{}", env!("CARGO_PKG_VERSION"))), "{all}");
+}
+
 /// back to its row.
 #[test]
 fn golden_usage_settings() {
@@ -12143,9 +12161,18 @@ fn golden_setup_pull_requests() {
     golden("setup_fix_120x30", &render(&setting_up("j\n"), 120, 30));
 }
 
+/// The pull request board's page: only the boards that follow one, the
+/// first recommended (T-850).
 #[test]
-fn golden_setup_brief() {
-    golden("setup_brief_120x36", &render(&setting_up("\n\n\n\n"), 120, 36));
+fn golden_setup_board() {
+    golden("setup_board_120x30", &render(&setting_up("j\n\n"), 120, 30));
+}
+
+/// The merging page on your own: the card waits in Review, its agent
+/// saying so, and nothing moves (T-850).
+#[test]
+fn golden_setup_merging() {
+    golden("setup_merge_120x30", &render(&setting_up("\nj"), 120, 30));
 }
 
 #[test]

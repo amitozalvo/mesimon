@@ -27915,3 +27915,43 @@ cut, the pane exception and the count), `archive_e2e` (off the snapshot, listed,
 `TestClient::{archived, ticket_any, is_archived}` for every e2e that read an archived ticket
 off the snapshot, `app::tests::{archived_tickets, archived_ticket}` for the TUI's; the goldens
 with an archived ticket on screen call `poll_archive` as the loop does.
+
+## Setup holds still, and asks only what a newcomer can answer (T-850, 2026-10-18, the author: "no moving cards on preview … the current is overwhelming and user won't be able to understand what the heck is going on" ∙ "remove brief section … it's in the README" ∙ "add (recommended) next to recommended things" ∙ "remove agents section, they should do everything anyway")
+
+**The preview is a still board.** T-816's scenes (beats, keys pressed on the practice board,
+cards arriving, a typed Shift+Enter ask) are gone with their player: each page lays a fresh toy
+world from the answers (`Setup::lay`) and nothing moves. A page shows the card or two its
+question is about, where the answer under the cursor puts them, with the agent at work or done
+and its peek saying one short line an agent would say there ("main moved on; updating PR #412.").
+Sessions are pushed by hand (`setup::agent`), never through `World::session`, whose automove
+would move the card. The lines are short enough for a card's two peek rows at 110 columns. The
+preview is drawn one row taller than shown (`tour::lay_board`'s `crop`), so the practice board's
+key footer falls off: its keys are not Setup's.
+
+**The pages.** How you work has a third answer, I'm not sure, which is on your own (straight into
+main, no PRs). On your own asks about merging and stops; with pull requests asks about falling
+behind, then the board, which offers only the two pull request templates (Kanban is what on your
+own gets, unasked). A folder of projects still asks about worktrees. The Agents page is gone:
+every board Setup makes gets `AgentTools::Full`, sent by `finish_setup` (`Outcome` lost the
+field; the wire's `ApplySetup.agent_tools` is unchanged). The Brief page is gone, and with it
+`Ctx::setup_single`. Each question's default is its recommended answer and is marked
+`(recommended)` (`Opt::recommended`); how you work and the last page recommend nothing.
+
+**The brief lives in the README.** Promise 3 now points at the brief below it, shown in a
+`text` block, and `brief::the_readme_shows_the_text` holds the README to `brief::TEXT`. PROMISES,
+USING, the site and the CLAUDE.md boundary line say the README shows it.
+
+**Settings › About** (`SettingsSection::About`, not board-scoped): the version over one row,
+Project page, whose value is the repository (`keymap::PROJECT_PAGE`, `CARGO_PKG_REPOSITORY`) and
+whose Enter opens it (`open_outside`). The section sweep's goldens mask the version in its own
+width so a release bump drifts nothing.
+
+Tests: `setup::every_page_holds_still_and_speaks` (no card arrived from anywhere, every agent
+says something, nothing refused, every page, answer, workflow and forge),
+`the_pages_follow_how_you_work`, `the_default_is_the_recommended_answer`,
+`not_sure_goes_straight_into_main`, `skipping_everything_is_the_defaults`,
+`the_answers_become_the_outcome`; `app::about_opens_the_project_page`,
+`ui::settings_about_shows_the_version_and_the_project`; goldens `setup_board_120x30`,
+`setup_merge_120x30`, `settings_about_*` new, `setup_brief_120x36` removed, the other setup and
+Settings goldens reminted (one row, About, in the section list). `setup_e2e` green. No rig test:
+nothing an agent is told changed.

@@ -18,7 +18,7 @@
       │                        gruvbox         dark                                                              │
       │  Usage                 latte          light                                                              │
       │                        gruvbox-light  light                                                              │
-      │                        ice             dark                                                              │
+      │  About                 ice             dark                                                              │
       │                                                                                                          │
       │                                                                                                          │
       │                                                                                                          │

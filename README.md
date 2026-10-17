@@ -126,7 +126,20 @@ up](https://mesimon.dev/relay/) is on mesimon.dev. Sharing a board with teammate
 2. **No config mutation.** `mesimon doctor` prints fixes for you to apply; it never applies one
    itself.
 3. **Zero prompt injection.** mesimon adds, removes and reorders no token of your conversation.
-   The board tools it gives its agents, and the brief Setup shows you, are shown in full.
+   The board tools it gives its agents, and the agent brief below, are shown in full.
+
+The agent brief is the one paragraph mesimon adds to the system prompt of the agents it starts,
+word for word (*Settings › Agents › Agent brief* turns it off):
+
+```text
+This session was started by mesimon on a ticket. FIRST,
+before reading code or planning, call the get_ticket
+tool and read the ticket's description and notes: they
+are the brief, and the prompt is often only the ticket's
+title. Do not start work without them. Work stays on
+this ticket; a ticket filed from here is worked by a
+session of its own, never this one.
+```
 
 [The promises in full](docs/PROMISES.md), with every path mesimon writes. If you find mesimon
 breaking one, [report it](SECURITY.md).

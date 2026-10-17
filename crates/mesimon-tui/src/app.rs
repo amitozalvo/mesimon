@@ -2324,17 +2324,17 @@ impl App {
 
     /// Setup's clock: its practice board, the forge probe, and the
     /// folder's repositories as the git sample learns them.
-    fn tick_setup(&mut self, now: u64) -> Result<bool> {
+    fn tick_setup(&mut self) -> Result<bool> {
         let repos = self.git.repos.len();
         let Some(s) = self.setup.as_mut() else { return Ok(false) };
         let mut dirty = false;
         if s.facts.repos != repos {
             s.facts.repos = repos;
             let at = s.at;
-            s.go(at, now)?;
+            s.go(at)?;
             dirty = true;
         }
-        Ok(s.tick(now)? || dirty)
+        Ok(s.tick()? || dirty)
     }
 
     /// Setup's last page left (T-816): the answers to the daemon in one
@@ -2350,7 +2350,10 @@ impl App {
             noun: o.noun.into(),
             merge_into: o.merge_into,
             workspace: o.workspace,
-            agent_tools: o.agent_tools,
+            // Every tool, always (T-850): a board with fewer is a choice
+            // for Settings, not a question for someone who has not yet
+            // seen an agent work.
+            agent_tools: mesimon_core::board::AgentTools::Full,
         })?;
         if let Response::Err { message } = sent {
             self.status = message;
@@ -3500,7 +3503,7 @@ impl App {
             dirty |= tour.tick(mesimon_core::clock::now_ms())?;
         }
         // Setup's practice board and its probe (T-816).
-        dirty |= self.tick_setup(mesimon_core::clock::now_ms())?;
+        dirty |= self.tick_setup()?;
         // The loop redraws once per tick, so the poll timeout is the frame
         // rate: 100 ms paces the spinner, and a panel in motion gets a
         // shorter one for the few frames it takes to settle.
@@ -6821,7 +6824,6 @@ impl App {
             practice: self.practice,
             tour_tryable: self.tour.as_ref().is_some_and(|t| !t.trying && t.lesson().ask.is_some()),
             setup_back: self.setup.as_ref().is_some_and(|s| s.at > 0),
-            setup_single: self.setup.as_ref().is_some_and(|s| s.options().len() < 2),
             setup_ready: self.setup.as_ref().is_some_and(|s| s.ready()),
             board_worktree: self.board.workspace == Some(WorkspaceStrategy::Worktree),
             prompts: self.board.prompts.clone(),
@@ -8650,10 +8652,11 @@ impl App {
             Verb::ColumnReclaim => self.set_column(|s| s.offers = Some(s.offers().next()))?,
             Verb::ColumnTrain => self.set_column(|s| s.train = s.train.next())?,
             Verb::ReleaseNotes => self.open_releases(),
+            Verb::ProjectPage => self.open_outside(keymap::PROJECT_PAGE.into()),
             Verb::Tour => self.open_tour(),
             Verb::SetupSkip => {
                 if let Some(s) = self.setup.as_mut() {
-                    s.skip(mesimon_core::clock::now_ms())?;
+                    s.skip()?;
                 }
             }
             // Where a ticket nothing else chose works (T-816): board state,
@@ -8903,10 +8906,9 @@ impl App {
             }
             Scope::Setup => {
                 if let Some(s) = self.setup.as_mut() {
-                    let now = mesimon_core::clock::now_ms();
                     let done = match verb {
-                        Verb::CursorLeft => s.back(now),
-                        Verb::CursorUp | Verb::CursorDown => s.cursor_step(down, now),
+                        Verb::CursorLeft => s.back(),
+                        Verb::CursorUp | Verb::CursorDown => s.cursor_step(down),
                         _ => Ok(()),
                     };
                     if let Err(e) = done {
@@ -9247,7 +9249,7 @@ impl App {
                     return self.finish_setup();
                 }
                 if let Some(s) = self.setup.as_mut() {
-                    s.next(mesimon_core::clock::now_ms())?;
+                    s.next()?;
                 }
                 Ok(())
             }
@@ -9388,9 +9390,8 @@ impl App {
             // Setup's Esc: the rest on their defaults, then the last page,
             // where it is not bound: Enter there is the only way out.
             Scope::Setup => {
-                let now = mesimon_core::clock::now_ms();
                 let done = match self.setup.as_mut() {
-                    Some(s) if !s.ready() => s.skip_rest(now),
+                    Some(s) if !s.ready() => s.skip_rest(),
                     _ => Ok(()),
                 };
                 if let Err(e) = done {
@@ -25145,9 +25146,7 @@ mod tests {
         enter(&mut app);
         press(&mut app, 'j'); // no, I'll bring it up to date myself
         enter(&mut app);
-        for _ in 0..3 {
-            enter(&mut app); // the board, the agents, the brief
-        }
+        enter(&mut app); // the board
         assert!(app.setup.as_ref().is_some_and(|s| s.ready()));
         assert!(!sent.borrow().iter().any(|s| s.contains("ApplySetup")), "nothing before the end");
         enter(&mut app);
@@ -25200,5 +25199,20 @@ mod tests {
         );
         assert_eq!(app.board_prefs.bool(PrefKey::MergeTrain), None, "auto merge left alone");
         assert!(app.tour.is_none());
+    }
+
+    /// Settings › About (T-850): its one row opens mesimon's repository,
+    /// where the README says what Setup no longer reads out.
+    #[test]
+    fn about_opens_the_project_page() {
+        let (mut app, _sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        app.opener = Some("open".into());
+        app.settings_section = keymap::SettingsSection::About;
+        app.mode = Mode::Settings { idx: app.settings_row(Verb::ProjectPage) };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(
+            app.pending_open,
+            Some(vec!["open".into(), "https://github.com/amitozalvo/mesimon".into()])
+        );
     }
 }

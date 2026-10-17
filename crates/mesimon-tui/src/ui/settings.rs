@@ -366,7 +366,7 @@ struct Preview<'a> {
 
 /// What the section's rows do, drawn at the top of its page: two cards and
 /// an agent's pane (Appearance), the banner (Notifications), the tab
-/// (Terminal), the quota itself (Usage). `None` for a section with nothing
+/// (Terminal), the quota itself (Usage), the version (About). `None` for a section with nothing
 /// to picture.
 fn preview(app: &App, width: usize) -> Option<Preview<'_>> {
     match app.settings_section {
@@ -374,8 +374,17 @@ fn preview(app: &App, width: usize) -> Option<Preview<'_>> {
         SettingsSection::Notifications => Some(lines_preview(banner(app, width))),
         SettingsSection::Terminal => tab(app, width),
         SettingsSection::Usage => Some(lines_preview(super::usage::readout(app, width))),
+        SettingsSection::About => Some(lines_preview(about(app))),
         _ => None,
     }
+}
+
+/// About's head: which mesimon this is.
+fn about(app: &App) -> Vec<Line<'static>> {
+    vec![Line::from(vec![
+        Span::styled("mesimon ", app.theme.base().add_modifier(Modifier::BOLD)),
+        Span::styled(format!("v{}", env!("CARGO_PKG_VERSION")), app.theme.dim1()),
+    ])]
 }
 
 /// A preview that is lines of text.

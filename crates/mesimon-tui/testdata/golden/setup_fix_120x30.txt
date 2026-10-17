@@ -1,30 +1,30 @@
 ╭─ mesimon › setup kanban-tui ─────────────────────────────────────────────────────────────────────────────────────────╮
 │                                                                                                                      │
-│   How you work ✓   PRs   Board   Agents   Brief   Ready                                                              │
+│   How you work ✓   PRs   Board   Ready                                                                               │
 │                                                                                                                      │
 │  If a pull request falls behind main, should its agent bring it up to date?                                          │
 │  no GitHub or GitLab remote here yet                                                                                 │
 │                                                                                                                      │
-│  › Yes                                                                                                               │
+│  › Yes (recommended)                                                                                                 │
 │    No, I'll do it myself                                                                                             │
 │                                                                                                                      │
 │  ╭─ preview ──────────────────────────────────────────────────────────────────────────────────────────────────────╮  │
 │  │ BOARD   mesimon › practice   2 tickets ∙ pull requests                                                         │  │
 │  │                                                                                                                │  │
-│  │   TODO                 0 →    IN PROGRESS          0 →    REVIEW               2 →    DONE                  0  │  │
+│  │   TODO                 0 →    IN PROGRESS          0 →    PR OPEN              1 →    MERGED              1 →  │  │
 │  │                                                                                                                │  │
-│  │   o  new ticket                                           ✓ Fix the login ~ ⎇↑ now                             │  │
-│  │                                                             approved         ◉#412                             │  │
-│  │                                                                                T-1                             │  │
-│  │                                                                                                                │  │
-│  │                                                           ✓ Dark mode togg~ ⎇↑ now                             │  │
-│  │                                                             approved         ◉#411                             │  │
+│  │   o  new ticket                                           ⠋ Fix the login ~ ⎇! now    Dark mode toggle ⎇✓ now  │  │
+│  │                                                             main moved on;            approved          ●#411  │  │
+│  │                                                             updating PR #412.                             T-1  │  │
+│  │                                                             conflicts ∙ ap~  ◉#412                             │  │
 │  │                                                                                T-2                             │  │
 │  │                                                                                                                │  │
 │  │                                                                                                                │  │
 │  │                                                                                                                │  │
 │  │                                                                                                                │  │
 │  │                                                                                                                │  │
-│  │ enter column settings ∙ o new ticket ∙ O new column ∙ HJKL move column ∙ r rename column     esc menu ∙ ? keys │  │
+│  │                                                                                                                │  │
+│  │                                                                                                                │  │
+│  │                                                                                                                │  │
 │  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  │
 ╰─────────────────────────────────────────────────────── jk choose ∙ enter next ∙ s skip ∙ h back ∙ esc skip the rest ─╯

@@ -1,6 +1,6 @@
 //! Setup's page (T-816): nearly the whole screen, the steps across the top,
 //! the question and its answers, and the practice board under them at the
-//! full width, playing the answer under the cursor.
+//! full width, showing the answer under the cursor.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -55,15 +55,6 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
         lines.push(Line::from(Span::styled(truncate(&words, w), theme.dim2())));
     }
     lines.push(Line::default());
-    if let Some(text) = setup.text() {
-        // The brief exactly as it reaches the agent: its own lines, never
-        // re-wrapped, so the bytes on screen are the bytes on the argv.
-        for l in text.lines() {
-            lines
-                .push(Line::from(vec![Span::raw("  "), Span::styled(l.to_string(), theme.dim1())]));
-        }
-        lines.push(Line::default());
-    }
     for (i, o) in setup.options().iter().enumerate() {
         let on = i == setup.cursor;
         let ramp = if on { &theme.sel } else { &theme.rest };
@@ -78,7 +69,12 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
             Span::styled(mark, Style::default().fg(ramp.dim2)),
             Span::styled(label.clone(), label_style),
         ];
-        let room = w.saturating_sub(2 + label.width() + 2);
+        let mut used = 2 + label.width();
+        if o.recommended && used + RECOMMENDED.len() <= w {
+            spans.push(Span::styled(RECOMMENDED, Style::default().fg(ramp.dim1)));
+            used += RECOMMENDED.len();
+        }
+        let room = w.saturating_sub(used + 2);
         if !o.detail.is_empty() && room > 8 {
             spans.push(Span::raw("  "));
             spans.push(Span::styled(truncate(&o.detail, room), Style::default().fg(ramp.dim2)));
@@ -106,9 +102,14 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
         // The preview is part of Setup's layer, not a dialog over it: a
         // click on Setup's own keys, on its bottom edge, still lands.
         app.hits.borrow_mut().join_top();
-        super::tour::lay_board(f, app, &setup.canvas, &setup.sandbox, board, false);
+        // Without its footer: the practice board's keys are not Setup's,
+        // and a person who has not seen a board yet has no use for them.
+        super::tour::lay_board(f, app, &setup.canvas, &setup.sandbox, board, false, 1);
     }
 }
+
+/// Beside the answer a question's default is.
+const RECOMMENDED: &str = " (recommended)";
 
 /// The steps across the top: the one on screen lit, a tick on each
 /// answered, a dash on each left on its default.

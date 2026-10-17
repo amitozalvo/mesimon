@@ -68,7 +68,7 @@ crown a ticket; an agent that asks for it is told to ask you.
 And there is one paragraph mesimon adds. The *agent brief* is a seven-line paragraph in the
 system prompt of the agent sessions mesimon starts in this repo — only those, never a session
 you started yourself — telling the agent to read its ticket before it starts work. It is on
-unless you turn it off: Setup shows the exact text the first time mesimon opens a folder,
+unless you turn it off: the [README](../README.md#three-promises) shows the exact text,
 `mesimon doctor` prints it, and *Settings › Agents › Agent brief* turns it off, for good on that
 board. Together with the tool registry
 it is everything mesimon adds to model input.
