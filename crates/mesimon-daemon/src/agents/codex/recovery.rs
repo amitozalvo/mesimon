@@ -508,6 +508,9 @@ mod tests {
             stopped: false,
             rate_limits: None,
             rate_limits_at_ms: 0,
+            hold: None,
+            releases: 0,
+            last_release: None,
         };
         (paths, record, config, snapshot)
     }

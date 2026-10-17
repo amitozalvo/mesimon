@@ -27449,3 +27449,60 @@ one record still pays the serialisation and `write_atomic`'s fsync (30 ms debug,
 
 **Left as it was:** a parked seat keeps its `argv` (T-838's separate decision); a real record change
 still writes the whole file.
+
+## A Codex seat held past its turn says why, and the idle audit lets it go (T-843, 2026-10-17, the author: "Codex remote control is bug … It's reported as running, and in remote control it looks like it's 'replying' indefinitely")
+
+**What was found.** T-34 on the axiom board (Codex 0.163.0, `gpt-6-astra`, guardian auto-review
+on, Playwright MCP, two sub-agents, a mid-turn compaction, two dev servers left running) ran one
+turn from 17:22:23Z. Codex's own rollout wrote `task_complete` for that turn at 17:53:12Z, and
+Codex's log shows the app-server sent `turn/completed` to the runtime's one connection at that
+second. An hour later the record still read `running` with the same `codex_turn_id`, the runtime's
+snapshot sat at sequence 15 with `observation_hold: true`, the preview's activity was the last
+`item/agentMessage/delta`'s "replying" (what Remote Control shows while the state is Running), and
+a prompt sent from the phone at 17:29Z was still `pending_submit` — nothing presses Enter into a
+seat the snapshot calls held. Replaying the runtime's own idle audit read-only against the same
+socket (`thread/loaded/list`, `thread/list ancestorThreadId`, `thread/read` each) found the
+parent and both sub-agent threads idle and every item of the turn terminal: the audit would have
+passed. It never ran, because `poll_audit` runs it only while the ledger is clean
+(`can_reconcile_work`: no started-and-uncompleted item, no hook run, no unknown request id), and
+the hold was exactly such bookkeeping. Which bucket held is not on disk: Codex's log keeps event
+names without payloads in a bounded ring (the first 19 minutes of the turn were gone), the rollout
+records no `item_started`, and the ledger lives in the runtime's memory. The state was `Running`,
+not `RequiresAction`, so no approval request or active flag held it; `turn/completed` was
+delivered, so the terminal outcome was set; what remained was an item, a hook run or a request id
+the ledger never saw close. The same shape, for a compaction, was T-398.
+
+**What shipped.**
+- `Snapshot.hold` (`codex::Hold`): the ledger's buckets by count and the pending items' kinds
+  (up to eight), `turn_closed`, the native requests the audit waits on, `since_ms` and
+  `closed_since_ms`. Written on every heartbeat, never a sequence bump. The next such seat is
+  read off `cdx-<sid16>.json`.
+- `Ledger::closed_but_held`: the turn closed (`turn/completed` seen), nothing asks a person on
+  this thread or a known descendant, no capacity loss, and bookkeeping or late work still holds.
+  It asks for the audit (`needs_work_audit`), and a passing audit (`reconcile_work`: the parent
+  idle, every loaded and descendant thread idle, nothing changed during the walk) clears the
+  items, hooks, unknown request ids and the known children's same, then projects the turn's end
+  as it would have — `TurnEnded{Completed}` once, `published_completions` as before. Requests and
+  flags are never cleared: `closed_but_held` is false while one stands. A running turn is never
+  "closed", so the audit's cadence during a turn is unchanged.
+- `Snapshot.releases` / `last_release`: counted and worded by the runtime; the daemon's journal
+  says `codex <sid16>: released a turn held past its close — <reasons>` once per release, and
+  `codex <sid16>: held N s past its turn's close — <reasons>` once per turn after a minute. The
+  count is seeded on first sight, so a daemon restart repeats nothing.
+
+**Not done, on purpose.** The ledger learns a child only from a `collabAgentToolCall` item's
+`receiverThreadIds`; Codex 0.163 names a child in a `subAgentActivity` item's `agentThreadId`
+(T-815 saw the rename), so a 0.163 child is never in `children` and a child outliving its
+parent's turn does not hold the seat. Teaching it is one line in `observe_item`, but it adds a
+hold source and the audit's cadence during every child turn, and the rig's child case is the
+test — a ticket of its own. The audit's gate on *any* in-flight native request
+(`native_requests.is_empty()`) is unchanged and now visible in `Hold.native_requests`; if a
+TUI request ever stays open, the held line will say so.
+
+**The live seat.** The running runtime keeps the old ledger; a sleep and wake of the agent builds
+a fresh one from an audit and is the workaround until main carries this and the daemon restarts.
+
+Tests: `observation::tests::{a_closed_turn_held_by_stale_bookkeeping_releases_only_through_the_audit,
+the_audit_never_releases_a_closed_turn_that_asks_a_person, a_running_turn_is_never_a_closed_one}`,
+`runtime::tests::a_closed_turn_held_by_a_stale_item_is_released_by_the_idle_audit_and_counted`,
+`provider_e2e::a_codex_seat_held_past_its_turn_and_its_release_reach_the_journal`.

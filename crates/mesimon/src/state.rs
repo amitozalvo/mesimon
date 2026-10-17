@@ -399,6 +399,9 @@ mod tests {
             stopped: false,
             rate_limits: None,
             rate_limits_at_ms: 0,
+            hold: None,
+            releases: 0,
+            last_release: None,
         };
         assert_eq!(codex_runtime(&path, &record, 1_200)["status"], "missing");
         let save = |snapshot: &mesimon_daemon::agents::codex::Snapshot| {

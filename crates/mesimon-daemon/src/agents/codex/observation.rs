@@ -15,18 +15,21 @@ use serde_json::Value;
 const MAX_IDENTITIES: usize = 1024;
 const MAX_PREVIEW_CHARS: usize = 32_768;
 
+/// An item started and not yet completed: its kind, for the snapshot's
+/// `Hold` (T-843), and the turn it compacts when it is a compaction (T-398).
 #[derive(Debug)]
-enum PendingItem {
-    Independent,
-    Compaction { turn_id: Option<String> },
+struct PendingItem {
+    kind: String,
+    compaction_turn: Option<String>,
 }
 
 impl PendingItem {
     fn new(kind: &str, turn_id: Option<&str>) -> Self {
-        if kind == "contextCompaction" {
-            Self::Compaction { turn_id: turn_id.map(str::to_owned) }
-        } else {
-            Self::Independent
+        Self {
+            kind: kind.chars().take(64).collect(),
+            compaction_turn: (kind == "contextCompaction")
+                .then(|| turn_id.map(str::to_owned))
+                .flatten(),
         }
     }
 }
@@ -39,9 +42,7 @@ fn retire_cancelled_compaction(items: &mut BTreeMap<String, PendingItem>, turn: 
     // Codex cancels the turn's compaction future without item/completed.
     // Unlike tools, hooks, requests and descendants, that work cannot outlive
     // its terminal turn. Require its identity; an idle snapshot is not proof.
-    items.retain(|_, item| {
-        !matches!(item, PendingItem::Compaction { turn_id: Some(turn_id) } if turn_id == id)
-    });
+    items.retain(|_, item| item.compaction_turn.as_deref() != Some(id));
 }
 
 /// Normalized work captured before or after a parent identifies a descendant.
@@ -197,6 +198,9 @@ pub struct Update {
     /// Only a completed `plan` item supplies authoritative plan text.
     pub plan: Option<String>,
     pub activity: Option<String>,
+    /// The bookkeeping a closed turn's audit dropped (T-843), in the words
+    /// of its `Hold`, so the snapshot and the journal can say so.
+    pub released: Option<String>,
 }
 
 #[derive(Debug)]
@@ -265,6 +269,51 @@ impl Ledger {
         self.completed_plan && self.terminal == Some(TurnOutcome::Completed)
     }
 
+    /// A server request or an active flag that waits on a person, on this
+    /// thread or a known descendant. Never dropped by an audit.
+    fn asks_a_person(&self) -> bool {
+        !self.requests.is_empty()
+            || !self.flags.is_empty()
+            || self
+                .child_work
+                .values()
+                .any(|work| work.known && (!work.requests.is_empty() || !work.flags.is_empty()))
+    }
+
+    /// The server closed the turn and nothing asks a person, yet local
+    /// bookkeeping still holds: an item started and never completed, a hook
+    /// run or a request id never resolved, a child never audited. T-843: a
+    /// Codex 0.163 session sat `Running` for an hour after its own rollout
+    /// wrote `task_complete`, the board spinning and the phone "replying",
+    /// and the daemon could neither see why nor end it. The idle audit alone
+    /// may release this — the server's word that the parent and every loaded
+    /// and descendant thread is idle, with nothing changing during the walk.
+    pub fn closed_but_held(&self) -> bool {
+        self.terminal.is_some()
+            && !self.capacity_lost
+            && !self.asks_a_person()
+            && (self.has_pending_work() || self.late_work)
+    }
+
+    /// Why the ledger holds, for the snapshot (T-843). `since_ms` is the
+    /// runtime's to fill.
+    pub fn hold(&self, native_requests: usize) -> super::Hold {
+        super::Hold {
+            items: self.items.values().take(8).map(|item| item.kind.clone()).collect(),
+            hooks: self.hooks.len(),
+            requests: self.requests.len(),
+            work_requests: self.work_requests.len(),
+            children: self.children.len(),
+            flags: self.flags.len(),
+            late_work: self.late_work,
+            discontinuous: !self.continuous || self.capacity_lost,
+            turn_closed: self.terminal.is_some(),
+            native_requests,
+            since_ms: 0,
+            closed_since_ms: 0,
+        }
+    }
+
     fn has_pending_work(&self) -> bool {
         !self.requests.is_empty()
             || !self.work_requests.is_empty()
@@ -284,6 +333,7 @@ impl Ledger {
             reply_key: None,
             plan: None,
             activity: None,
+            released: None,
         }
     }
 
@@ -336,7 +386,13 @@ impl Ledger {
     }
 
     pub fn needs_work_audit(&self) -> bool {
-        !self.continuous || !self.children.is_empty() || self.late_work
+        !self.continuous || !self.children.is_empty() || self.late_work || self.closed_but_held()
+    }
+
+    /// Whether a passing audit would change anything: the ledger is clean
+    /// (`can_reconcile_work`) or holds a closed turn on bookkeeping alone.
+    pub fn audit_may_release(&self) -> bool {
+        self.can_reconcile_work() || self.closed_but_held()
     }
 
     /// Caller proves the parent and every known/loaded descendant quiescent
@@ -347,9 +403,25 @@ impl Ledger {
         if generation != self.generation
             || string(thread, "id") != Some(&self.thread_id)
             || string(&thread["status"], "type") != Some("idle")
-            || !self.can_reconcile_work()
+            || !self.audit_may_release()
         {
             return update;
+        }
+        if !self.can_reconcile_work() {
+            // A closed turn held on bookkeeping alone (T-843): the audit just
+            // proved every thread idle, so what was started has ended, on
+            // this thread and its known descendants. Requests and flags are
+            // untouched — `closed_but_held` found none.
+            update.released = Some(self.hold(0).summary());
+            self.items.clear();
+            self.hooks.clear();
+            self.work_requests.clear();
+            for work in self.child_work.values_mut() {
+                work.items.clear();
+                work.hooks.clear();
+                work.work_requests.clear();
+                work.uncertain = false;
+            }
         }
         self.continuous = true;
         self.runtime_active = false;
@@ -1851,5 +1923,87 @@ mod tests {
                 ));
             }
         }
+    }
+
+    fn started_item(ledger: &mut Ledger, id: &str, kind: &str) -> Update {
+        ledger.observe(
+            7,
+            &frame(
+                "item/started",
+                json!({"turnId":"turn-1","item":{"id":id,"type":kind,"status":"inProgress"}}),
+            ),
+        )
+    }
+
+    /// T-843: a Codex session sat `Running` for an hour after its own rollout
+    /// wrote `task_complete`. The server closed the turn; one started item was
+    /// never completed on this connection. Only the idle audit releases it,
+    /// as the turn's end, once, and the hold says what held.
+    #[test]
+    fn a_closed_turn_held_by_stale_bookkeeping_releases_only_through_the_audit() {
+        let mut ledger = ready();
+        start(&mut ledger, "turn-1");
+        assert!(started_item(&mut ledger, "exec-1", "commandExecution").observation_hold);
+        let closed = complete(&mut ledger, "turn-1", "completed");
+        assert!(closed.observation_hold, "a started item is work until the audit says otherwise");
+        assert_eq!(closed.state, SessionState::Running);
+        assert!(closed.signals.is_empty());
+        assert!(ledger.closed_but_held());
+        assert!(ledger.needs_work_audit() && ledger.audit_may_release());
+        assert!(!ledger.can_reconcile_work(), "the clean road stays what it was");
+        let hold = ledger.hold(2);
+        assert_eq!(hold.items, vec!["commandExecution".to_string()]);
+        assert!(hold.turn_closed && !hold.discontinuous);
+        assert_eq!(hold.native_requests, 2);
+        assert_eq!(hold.summary(), "items commandExecution ∙ native requests 2");
+        // The audit's word that the parent is busy releases nothing.
+        let busy = ledger.reconcile_work(7, &snapshot(json!({"type":"active","activeFlags":[]})));
+        assert!(busy.observation_hold && busy.released.is_none());
+        let released = ledger.reconcile_work(7, &snapshot(json!({"type":"idle"})));
+        assert!(!released.observation_hold);
+        assert_eq!(released.signals, vec![Signal::TurnEnded { outcome: TurnOutcome::Completed }]);
+        assert_eq!(released.released.as_deref(), Some("items commandExecution"));
+        assert!(!ledger.closed_but_held());
+        // Once: the next audit is a plain reconcile, nothing to release.
+        let again = ledger.reconcile_work(7, &snapshot(json!({"type":"idle"})));
+        assert!(again.released.is_none() && again.signals.is_empty());
+        // And the next turn starts clean.
+        assert_eq!(start(&mut ledger, "turn-2").signals, vec![Signal::TurnStarted]);
+        assert_eq!(
+            complete(&mut ledger, "turn-2", "completed").signals,
+            vec![Signal::TurnEnded { outcome: TurnOutcome::Completed }]
+        );
+    }
+
+    #[test]
+    fn the_audit_never_releases_a_closed_turn_that_asks_a_person() {
+        let mut ledger = ready();
+        start(&mut ledger, "turn-1");
+        started_item(&mut ledger, "exec-1", "commandExecution");
+        request(&mut ledger, json!(9), "item/commandExecution/requestApproval");
+        let closed = complete(&mut ledger, "turn-1", "completed");
+        assert_eq!(closed.state, SessionState::RequiresAction { reason: Reason::Permission });
+        assert!(!ledger.closed_but_held(), "an open approval is the person's, never bookkeeping");
+        assert!(!ledger.audit_may_release());
+        let held = ledger.reconcile_work(7, &snapshot(json!({"type":"idle"})));
+        assert!(held.observation_hold && held.released.is_none());
+        assert_eq!(ledger.hold(0).requests, 1);
+        // Answered, the stale item is what is left, and the audit may take it.
+        resolve(&mut ledger, json!(9));
+        assert!(ledger.closed_but_held());
+        let released = ledger.reconcile_work(7, &snapshot(json!({"type":"idle"})));
+        assert_eq!(released.signals, vec![Signal::TurnEnded { outcome: TurnOutcome::Completed }]);
+    }
+
+    #[test]
+    fn a_running_turn_is_never_a_closed_one() {
+        let mut ledger = ready();
+        start(&mut ledger, "turn-1");
+        started_item(&mut ledger, "exec-1", "commandExecution");
+        assert!(!ledger.closed_but_held());
+        assert!(!ledger.needs_work_audit(), "a turn in flight asks for no audit");
+        let hold = ledger.hold(0);
+        assert!(!hold.turn_closed);
+        assert_eq!(hold.items, vec!["commandExecution".to_string()]);
     }
 }

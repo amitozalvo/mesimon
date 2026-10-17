@@ -356,6 +356,91 @@ pub struct Snapshot {
     pub rate_limits: Option<serde_json::Value>,
     #[serde(default)]
     pub rate_limits_at_ms: u64,
+    /// Why the hold stands, while it does (T-843): read off the file, never
+    /// guessed at, when a seat stays `Running` after its turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold: Option<Hold>,
+    /// How many times the ledger dropped stale bookkeeping after the server
+    /// closed a turn and the idle audit found every thread quiet (T-843),
+    /// and the last such release's reasons.
+    #[serde(default)]
+    pub releases: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_release: Option<String>,
+}
+
+/// Why the runtime's ledger holds the seat, as the snapshot carries it
+/// (T-843). A Codex session sat `Running` for an hour after Codex's own
+/// rollout said `task_complete`, its phone reading "replying", and nothing on
+/// disk said which of the ledger's six buckets held it. Counts and kinds only:
+/// never an identity, never model text.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hold {
+    /// The kinds of the items started and never completed, up to eight.
+    #[serde(default)]
+    pub items: Vec<String>,
+    #[serde(default)]
+    pub hooks: usize,
+    /// Server requests that ask a person (an approval, a question).
+    #[serde(default)]
+    pub requests: usize,
+    /// Server requests of a kind the ledger does not know, held as work.
+    #[serde(default)]
+    pub work_requests: usize,
+    #[serde(default)]
+    pub children: usize,
+    #[serde(default)]
+    pub flags: usize,
+    #[serde(default)]
+    pub late_work: bool,
+    /// The capture is not continuous (a reconnect, a lost frame, capacity).
+    #[serde(default)]
+    pub discontinuous: bool,
+    /// The server closed the turn (`turn/completed`) while the hold stayed.
+    #[serde(default)]
+    pub turn_closed: bool,
+    /// Native requests still in flight; the audit waits for them.
+    #[serde(default)]
+    pub native_requests: usize,
+    /// When this hold began, so a reader can tell a stall from a moment.
+    #[serde(default)]
+    pub since_ms: u64,
+    /// When the turn closed under this hold; 0 while it runs.
+    #[serde(default)]
+    pub closed_since_ms: u64,
+}
+
+impl Hold {
+    /// One line for the journal: the buckets that are not empty.
+    pub fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.items.is_empty() {
+            parts.push(format!("items {}", self.items.join(",")));
+        }
+        for (name, count) in [
+            ("hooks", self.hooks),
+            ("requests", self.requests),
+            ("work requests", self.work_requests),
+            ("children", self.children),
+            ("flags", self.flags),
+            ("native requests", self.native_requests),
+        ] {
+            if count > 0 {
+                parts.push(format!("{name} {count}"));
+            }
+        }
+        if self.late_work {
+            parts.push("late work".into());
+        }
+        if self.discontinuous {
+            parts.push("discontinuous".into());
+        }
+        if parts.is_empty() {
+            "nothing pending".into()
+        } else {
+            parts.join(" ∙ ")
+        }
+    }
 }
 
 /// What a snapshot file looked like when it was last parsed: length, mtime
@@ -632,6 +717,9 @@ mod tests {
             stopped: false,
             rate_limits: None,
             rate_limits_at_ms: 0,
+            hold: None,
+            releases: 0,
+            last_release: None,
         }
     }
 

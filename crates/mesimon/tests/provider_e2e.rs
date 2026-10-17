@@ -1112,6 +1112,51 @@ fn daemon_handover_restores_a_codex_turn_held_by_its_own_work() {
     });
 }
 
+/// T-843: a Codex seat held a minute past its turn's close is written to the
+/// journal once, with the runtime's reasons, and its release once more.
+#[test]
+fn a_codex_seat_held_past_its_turn_and_its_release_reach_the_journal() {
+    let Some(h) = Fixture::boot("providerheldturn") else { return };
+    let mut c = h.client();
+    select(&mut c, AgentProvider::Codex);
+    let ticket = ticket(&mut c, "a turn that ended", None);
+    let id = spawn(&mut c, ticket);
+    h.codex_ready(&mut c, id);
+    let since = mesimon_core::clock::now_ms() - 61_000;
+    h.control(
+        id,
+        json!({"state":{"state":"running"},"turn_id":"closed-turn","hold":true,
+            "hold_reasons":{"items":["commandExecution"],"turn_closed":true,"since_ms":since,"closed_since_ms":since}}),
+    );
+    c.await_state(id, "the turn running", |s| *s == SessionState::Running);
+    let log = h.paths.daemon_log();
+    let journal = || std::fs::read_to_string(&log).unwrap_or_default();
+    wait_until(Duration::from_secs(10), "the held line", || journal().contains("held "));
+    let line = journal();
+    assert!(line.contains("past its turn's close — items commandExecution"), "{line}");
+    // The same turn, still held: said once.
+    h.control(
+        id,
+        json!({"state":{"state":"running"},"turn_id":"closed-turn","hold":true,
+            "hold_reasons":{"items":["commandExecution"],"turn_closed":true,"since_ms":since,"closed_since_ms":since},
+            "screen":"Synthetic provider fixture\r\n› still"}),
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(journal().matches("past its turn's close").count(), 1);
+    h.control(
+        id,
+        json!({"state":{"state":"idle","stop_reason":"end_turn"},"turn_id":"closed-turn",
+            "hold":false,"releases":1,"last_release":"items commandExecution"}),
+    );
+    c.await_state(id, "its end", |s| {
+        *s == (SessionState::Idle { stop_reason: StopReason::EndTurn })
+    });
+    wait_until(Duration::from_secs(10), "the release line", || {
+        journal().contains("released a turn held past its close — items commandExecution")
+    });
+    assert_eq!(journal().matches("released a turn").count(), 1);
+}
+
 #[test]
 fn daemon_handover_abandons_unpasted_volatile_words_without_submitting_partial_input() {
     let Some(h) = Fixture::boot("providerunsent") else { return };

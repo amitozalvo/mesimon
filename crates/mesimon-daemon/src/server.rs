@@ -718,6 +718,10 @@ pub struct Daemon {
     /// generation. Idle sessions then need no repeated terminal subprocess.
     codex_native_ready: HashMap<uuid::Uuid, Option<u64>>,
     codex_input_due: HashMap<uuid::Uuid, u64>,
+    /// T-843: the journal says once per turn that a Codex seat is held after
+    /// its turn closed, and once per release that the runtime let it go.
+    codex_held_logged: HashMap<uuid::Uuid, String>,
+    codex_releases: HashMap<uuid::Uuid, u32>,
     /// Orphaned Codex cleanup records (T-357): when each is next due a
     /// known-owner check, and the reason the last check refused, so the
     /// journal says it once rather than every retry.
@@ -1304,6 +1308,8 @@ pub fn run(paths: Paths) -> Result<()> {
         codex_ready: std::collections::HashSet::new(),
         codex_native_ready: HashMap::new(),
         codex_input_due: HashMap::new(),
+        codex_held_logged: HashMap::new(),
+        codex_releases: HashMap::new(),
         codex_orphan_due: HashMap::new(),
         codex_orphan_checking: false,
         moves: MoveGate::new(),
@@ -3608,6 +3614,41 @@ impl Daemon {
             };
             if snapshot.sequence < rec.codex_observed_seq {
                 continue;
+            }
+            // T-843: a seat held a minute past its turn's close goes to the
+            // journal with the runtime's reasons, once per turn; a release
+            // too. The feed is what the board did; this is what Codex did.
+            match self.codex_releases.get(&id).copied() {
+                // First sight seeds the count: a release before this daemon
+                // was written to the last one's journal.
+                None => {
+                    self.codex_releases.insert(id, snapshot.releases);
+                }
+                Some(seen) if snapshot.releases > seen => {
+                    self.codex_releases.insert(id, snapshot.releases);
+                    self.journal.line(&format!(
+                        "codex {}: released a turn held past its close — {}",
+                        rec.sid16(),
+                        snapshot.last_release.as_deref().unwrap_or("?")
+                    ));
+                }
+                Some(_) => {}
+            }
+            if let Some(hold) = snapshot.hold.as_ref().filter(|hold| {
+                snapshot.observation_hold
+                    && hold.closed_since_ms > 0
+                    && now.saturating_sub(hold.closed_since_ms) >= 60_000
+            }) {
+                let turn = snapshot.turn_id.clone().unwrap_or_default();
+                if self.codex_held_logged.get(&id) != Some(&turn) {
+                    self.codex_held_logged.insert(id, turn);
+                    self.journal.line(&format!(
+                        "codex {}: held {} s past its turn's close — {}",
+                        rec.sid16(),
+                        now.saturating_sub(hold.closed_since_ms) / 1000,
+                        hold.summary()
+                    ));
+                }
             }
             // The session's own quota report (T-327), taken after the loop.
             if let Some(limits) = snapshot.rate_limits.take() {

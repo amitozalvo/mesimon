@@ -35,7 +35,8 @@ while not stopping:
     if instruction.get('publish',True):
         value={'session':config['session'],'generation':config['generation'],'sequence':sequence,
                'heartbeat_ms':time.time_ns()//1000000,'thread_id':thread,'turn_id':turn,
-               'state':state,'observation_hold':instruction.get('hold',False),'history_path':None,'stopped':False}
+               'state':state,'observation_hold':instruction.get('hold',False),'history_path':None,'stopped':False,
+               'hold':instruction.get('hold_reasons'),'releases':instruction.get('releases',0),'last_release':instruction.get('last_release')}
         temporary=path.with_suffix('.tmp')
         temporary.write_text(json.dumps(value));temporary.replace(path)
     if select.select([sys.stdin],[],[],0.1)[0]:

@@ -753,6 +753,10 @@ struct Observation {
     needs_audit: bool,
     audit: Option<Receiver<Result<Audit>>>,
     next_audit: Instant,
+    /// When the published hold began, and when its turn closed under it
+    /// (T-843); 0 while nothing holds, or while the turn runs.
+    hold_since_ms: u64,
+    closed_since_ms: u64,
 }
 impl Observation {
     fn new(config: &RuntimeConfig) -> Self {
@@ -781,6 +785,9 @@ impl Observation {
                 stopped: false,
                 rate_limits: None,
                 rate_limits_at_ms: 0,
+                hold: None,
+                releases: 0,
+                last_release: None,
             },
             ledger: None,
             retired: BTreeMap::new(),
@@ -797,6 +804,8 @@ impl Observation {
             needs_audit: false,
             audit: None,
             next_audit: Instant::now(),
+            hold_since_ms: 0,
+            closed_since_ms: 0,
         }
     }
 
@@ -1044,6 +1053,10 @@ impl Observation {
                 u64::from_be_bytes(hash[..8].try_into().expect("eight hash bytes"))
             });
         }
+        if let Some(released) = update.released {
+            self.snapshot.releases = self.snapshot.releases.saturating_add(1);
+            self.snapshot.last_release = Some(bound_text(released, 512));
+        }
         if let Some(activity) = update.activity {
             self.preview.activity = Some(AgentActivity::Tool(bound_text(activity, 512)));
         } else if !matches!(self.snapshot.state, SessionState::Running) {
@@ -1119,7 +1132,7 @@ impl Observation {
             || self.audit.is_some()
             || Instant::now() < self.next_audit
             || !self.native_requests.is_empty()
-            || !ledger.can_reconcile_work()
+            || !ledger.audit_may_release()
             || !self.retired.values().all(Ledger::can_reconcile_work)
         {
             return;
@@ -1147,7 +1160,7 @@ impl Observation {
             return false;
         }
         let Some(ledger) = &mut self.ledger else { return false };
-        if !ledger.can_reconcile_work() {
+        if !ledger.audit_may_release() {
             return false;
         }
         let Some(thread) = self.snapshot.thread_id.as_ref().and_then(|id| audit.threads.get(id))
@@ -1196,6 +1209,30 @@ impl Observation {
         }
     }
 
+    /// The hold's reasons for the snapshot (T-843): the ledger's buckets
+    /// plus the native requests the audit waits on, dated from the hold's
+    /// first publish. `None` while nothing holds.
+    fn current_hold(&mut self) -> Option<super::Hold> {
+        if !self.snapshot.observation_hold {
+            self.hold_since_ms = 0;
+            self.closed_since_ms = 0;
+            return None;
+        }
+        let now = mesimon_core::clock::now_ms();
+        if self.hold_since_ms == 0 {
+            self.hold_since_ms = now;
+        }
+        let mut hold = self.ledger.as_ref()?.hold(self.native_requests.len());
+        if !hold.turn_closed {
+            self.closed_since_ms = 0;
+        } else if self.closed_since_ms == 0 {
+            self.closed_since_ms = now;
+        }
+        hold.since_ms = self.hold_since_ms;
+        hold.closed_since_ms = self.closed_since_ms;
+        Some(hold)
+    }
+
     fn publish(&mut self, config: &RuntimeConfig) -> Result<()> {
         if self.owned_threads.len() > 1024
             || self.retired.len() > 1024
@@ -1205,6 +1242,7 @@ impl Observation {
         }
         self.apply_transport_hold();
         self.advance_evidence();
+        self.snapshot.hold = self.current_hold();
         self.snapshot.heartbeat_ms = mesimon_core::clock::now_ms();
         write_json(&config.snapshot_path, &self.snapshot)?;
         if self.published_preview.as_ref() != Some(&self.preview) {
@@ -2302,5 +2340,44 @@ mod tests {
         assert_eq!(observation.preview.reply_key, reply_key);
         assert_eq!(observation.snapshot.plan_key, plan_key);
         assert_eq!(observation.snapshot.plan.as_deref(), Some(plan));
+    }
+
+    /// T-843: the runtime's audit releases a closed turn that stale
+    /// bookkeeping holds, publishes the turn's end, and counts the release
+    /// with its reasons for the daemon's journal.
+    #[test]
+    fn a_closed_turn_held_by_a_stale_item_is_released_by_the_idle_audit_and_counted() {
+        let mut observer = selected();
+        event(&mut observer, "main", "turn/started", json!({"turn":{"id":"turn"}}));
+        event(
+            &mut observer,
+            "main",
+            "item/started",
+            json!({"turnId":"turn","item":{"id":"exec-1","type":"commandExecution","status":"inProgress"}}),
+        );
+        event(
+            &mut observer,
+            "main",
+            "turn/completed",
+            json!({"turn":{"id":"turn","status":"completed","items":[]}}),
+        );
+        assert!(observer.snapshot.observation_hold);
+        assert_eq!(observer.snapshot.state, SessionState::Running);
+        let hold = observer.current_hold().expect("a held seat says why");
+        assert_eq!(hold.items, vec!["commandExecution".to_string()]);
+        assert!(hold.turn_closed && hold.since_ms > 0 && hold.closed_since_ms >= hold.since_ms);
+        assert_eq!(observer.snapshot.releases, 0);
+        assert!(observer.apply_audit(&config(), idle_audit(&observer, &["main"])));
+        assert!(!observer.snapshot.observation_hold);
+        assert_eq!(
+            observer.snapshot.state,
+            SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn }
+        );
+        assert_eq!(observer.snapshot.releases, 1);
+        assert_eq!(observer.snapshot.last_release.as_deref(), Some("items commandExecution"));
+        assert!(observer.current_hold().is_none());
+        assert_eq!((observer.hold_since_ms, observer.closed_since_ms), (0, 0));
+        observer.advance_evidence();
+        assert!(observer.published_completions.contains(&("main".into(), "turn".into())));
     }
 }
