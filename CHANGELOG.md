@@ -6,6 +6,60 @@ notes, and the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-beta.7 — 2026-10-17
+
+### Added
+
+- **Setup asks a new board how you work.** The first time mesimon opens a
+  folder, a few pages ask whether you merge into main or use pull requests,
+  which columns the board starts with, whether each ticket gets a worktree
+  and what an agent may do on its card; a practice board shows each answer.
+  `s` keeps a page's default, `Esc` keeps the defaults for the rest, and
+  every answer is a setting afterwards.
+- **Cards moved by an agent or a rule play their move.** The card fades out,
+  a grey trail runs to its new place, and its glyph stays bold until the
+  cursor rests on it. Your own moves do not play. **Settings › Appearance ›
+  Card moves** turns it off.
+- **Games while agents work.** `Ctrl+G` on the board, or **Games** in the Esc
+  menu, opens Board Breaker (`1`) or Ticket Snake (`2`) in the empty space
+  around the cards. The board keeps updating underneath, and `Esc` returns
+  to it.
+- **A card says what the merge train does after the agent's turn.** While
+  the agent is still working, the card reads `rebase ask ∙ after its turn`
+  or `auto-merge ∙ after its turn`.
+
+### Changed
+
+- **The agent brief is on by default.** Boards that never chose now send it
+  too; turning it off in **Settings › Agents › Agent brief** keeps it off.
+  The header chip that offered it is gone.
+- **An open card reads top to bottom in one order:** what waits on you, the
+  agent's reply, the checklist, the current step, other sessions, then the
+  merge train or pull request, then tags and key. The merge train's request
+  no longer sits on the top row, where a queued message could hide it.
+- **A Summary note reaches the card as its checkboxes only.** Plain lines
+  under a `Summary` heading stay in the note.
+- **The links list (`Ctrl+K`) shows the newest first**, the agent's latest
+  words at the top, with each linked ticket's key in its own column; picking
+  one flashes its card.
+- **The board says "merge train" wherever it said "train".**
+- **The tag bar is one cell wide** unless some ticket on the board has two
+  tags.
+- **A card whose cost cannot be priced shows `?`** instead of `unpriced`.
+
+### Fixed
+
+- **A Codex session that stops at a trust dialog now says so.** Its card
+  reads `TRUST` and asks you to open the pane. Ticket worktrees now reuse
+  the trust you gave the main checkout, so most never ask; mesimon neither
+  answers the dialog nor edits your Codex settings.
+- **Codex tickets show cost estimates**, and columns that put idle agents to
+  sleep now include Codex sessions.
+- **Remote Control keeps following a Codex conversation** after it is
+  continued.
+- **A Codex agent working through an update (`U`) stays marked as working**
+  instead of turning grey until its next change.
+
 ## v0.1.0-beta.6 — 2026-10-15
 
 ### Compatibility
