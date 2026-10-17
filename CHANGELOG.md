@@ -6,6 +6,58 @@ notes, and the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-beta.8 — 2026-10-18
+
+### Added
+
+- **Pictures can go with the words you send an agent.** In the ask field
+  (`Shift+Enter` on a ticket), `Ctrl+V` pastes a picture from the clipboard
+  as `[Image #N]`; on Remote Control, the composer's picture button or a
+  pasted image does the same. The picture is kept with the ticket like a
+  note's. A column's ask takes no picture.
+- **Claude Code's "trust this folder?" question can be answered from the
+  board and from Remote Control.** The card reads `trust folder? ∙ w
+  confirm`, and the ticket's first prompt waits until the folder is
+  trusted instead of being dropped.
+- **Codex questions and approvals show on Remote Control**, where you can
+  answer them. The crown can answer a Codex question or accept its plan;
+  a permission stays yours.
+- **Plan mode works on a Codex start.** `Ctrl+P` starts or wakes a Codex
+  agent in plan mode, and your words are sent once Codex is planning.
+- **A column can collapse only while it is empty.** The column dialog's
+  **Collapsed** row cycles `off`, `always` and `when empty`.
+- **Settings › About** shows the version and opens the project page.
+
+### Changed
+
+- **Setup is shorter.** Each page shows a still preview of one card instead
+  of a moving board, and recommended answers are marked `(recommended)`.
+  "How you work" adds **I'm not sure**, which merges straight into main.
+  The board page appears only for pull requests, and the Agents and Brief
+  pages are gone: every new board gives its agents every board tool, and
+  the README shows the agent brief word for word. `q` or `Esc` leaves Setup
+  on any page with nothing applied (it asks again the next time), `s` skips
+  a page, and `Ctrl+C` quits.
+- **The board loads faster on boards with many archived tickets.** Archived
+  tickets are fetched only when the Archived tickets list, the picker or an
+  archived ticket's page needs them.
+- **Words sent to a running Codex agent go into its current turn**, as
+  Codex's own steer does, instead of waiting for the turn to end.
+- **Sleep after works on Codex columns**, and words not yet pasted into a
+  Codex agent survive a mesimon restart.
+
+### Fixed
+
+- **Pairing no longer hangs on "Pairing…" in a browser that was paired
+  before.** When Remote Control no longer knows the browser's saved
+  pairing, the page drops it and pairs with the new code. A browser whose
+  board is only offline keeps its pairing.
+- **A Codex agent no longer stays "working" after its turn ended.** A card
+  that spun and read "replying" for an hour now goes idle, and a phone
+  prompt waiting for it is sent.
+- **A Codex sub-agent keeps its ticket's agent busy until it is idle.**
+- **Moving the mouse across the board no longer redraws it once per cell.**
+
 ## v0.1.0-beta.7 — 2026-10-17
 
 ### Added
