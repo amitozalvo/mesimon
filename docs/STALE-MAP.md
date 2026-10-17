@@ -27354,3 +27354,22 @@ it does an `always` column, and the launch and a refresh skip it while it is fol
 
 `collapse_modes_round_trip_and_when_empty_follows_the_tickets` and
 `a_when_empty_column_folds_only_while_empty` pin it; `column_settings_120x30` shows the three.
+
+## A pointer sweep is one frame (T-841, 2026-10-17, from the T-838 simplify pass)
+
+`lib.rs::event_loop` draws once per `App::tick`, and a tick took one terminal event, so with the
+mouse on a trackpad sweep across a 200-column board (a `Moved` per cell crossed) was ~200
+complete `ui::draw`s for a hover that only wanted its last spot. `App::next_event` now takes the
+`Moved` reports already queued (`poll(Duration::ZERO)`) as one, at the last position. The first
+other event ends the run and waits in `App::queued_event` as the next tick's, ahead of the poll,
+so every key, click, paste and focus report keeps its own tick and frame in arrival order — the
+handovers after a tick rest on that, and a click hit-tests against the frame its moves drew.
+
+- Only `Moved` coalesces. A `Drag` stays one event per frame (the selection it paints is read
+  back by the draw), and a held key is never merged: each repeat is a press that acts.
+- The hover targets a queued sweep crossed on the way are skipped, so a card crossed and left
+  inside one burst of reports does not restart the peek clock. Nothing on screen differs: the
+  goldens are unchanged.
+- `tick` is `next_event` + `on_event`; `next_event` takes the terminal as a `read(timeout)`
+  closure, which is how `a_pointer_sweep_draws_one_frame_and_a_click_inside_it_lands_in_place`
+  drives it with a queue: forty moves are one frame, and a click inside a sweep is its own two.

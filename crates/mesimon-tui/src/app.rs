@@ -1771,6 +1771,9 @@ pub struct App {
     /// card the pointer has stayed on for `HOVER_PEEK` floats its latest
     /// reply. A key clears it — the keyboard has the board again.
     pub hover: Cell<Option<(crate::mouse::Target, Instant)>>,
+    /// The event a burst of pointer motion ran into (`next_event`, T-841):
+    /// read off the terminal, not yet handled, and the next tick's first.
+    queued_event: Option<TermEvent>,
     /// When the Appearance page's `Crown's actions` row was last turned to
     /// lightning, on `App::now` (T-717): the preview strikes once from then.
     pub preview_strike: Option<u64>,
@@ -2128,6 +2131,7 @@ impl App {
             hits: std::cell::RefCell::new(crate::mouse::Map::default()),
             pointer: Cell::new(None),
             hover: Cell::new(None),
+            queued_event: None,
             preview_strike: None,
             peeked: Cell::new(None),
             press_at: Cell::new(None),
@@ -3443,7 +3447,8 @@ impl App {
         }
     }
 
-    /// Poll one terminal event; returns whether a redraw is needed.
+    /// Poll one terminal event (a queued pointer sweep counts as one);
+    /// returns whether a redraw is needed.
     pub fn tick(&mut self) -> Result<bool> {
         let mut dirty = self.pump()?;
         // The tour's practice board, on its own clock (T-763).
@@ -3461,22 +3466,62 @@ impl App {
         }
         let playing = self.arcade.borrow().as_ref().is_some_and(|g| g.playing());
         let frame = if playing || self.animating() { 16 } else { 100 };
-        if !event::poll(Duration::from_millis(frame))? {
-            return Ok(dirty);
+        let read = |wait: Duration| -> Result<Option<TermEvent>> {
+            Ok(if event::poll(wait)? { Some(event::read()?) } else { None })
+        };
+        match self.next_event(Duration::from_millis(frame), read)? {
+            Some(ev) => Ok(self.on_event(ev)? || dirty),
+            None => Ok(dirty),
         }
-        let key = match event::read()? {
+    }
+
+    /// The terminal event this tick handles, waiting up to `wait` for one.
+    /// A pointer sweep reports a `Moved` per cell crossed, and a move only
+    /// moves the hover, so a run of them already queued is taken whole and
+    /// handled once, at its last spot: one frame, not one per cell (T-841).
+    /// Any other event ends the run and is the next tick's, so every key,
+    /// click and paste still gets its own tick and its own frame, in the
+    /// order it came — the handovers `lib.rs::event_loop` runs after a tick
+    /// rest on that. `read` is the terminal: its event within the timeout.
+    pub(crate) fn next_event(
+        &mut self,
+        wait: Duration,
+        mut read: impl FnMut(Duration) -> Result<Option<TermEvent>>,
+    ) -> Result<Option<TermEvent>> {
+        if let Some(ev) = self.queued_event.take() {
+            return Ok(Some(ev));
+        }
+        let moved = |ev: &TermEvent| {
+            matches!(ev, TermEvent::Mouse(m) if m.kind == MouseEventKind::Moved)
+        };
+        let Some(mut ev) = read(wait)? else { return Ok(None) };
+        while moved(&ev) {
+            match read(Duration::ZERO)? {
+                Some(next) if moved(&next) => ev = next,
+                next => {
+                    self.queued_event = next;
+                    break;
+                }
+            }
+        }
+        Ok(Some(ev))
+    }
+
+    /// One terminal event; returns whether the screen changed.
+    pub(crate) fn on_event(&mut self, ev: TermEvent) -> Result<bool> {
+        let key = match ev {
             TermEvent::Key(key) => key,
             // Bracketed paste (armed by `lib.rs::init_terminal`): the whole
             // clipboard as one event, never as keystrokes.
-            TermEvent::Paste(text) => return Ok(self.on_paste(&text)? || dirty),
+            TermEvent::Paste(text) => return self.on_paste(&text),
             // The mouse (T-716, armed by `lib.rs` while the setting is on).
-            TermEvent::Mouse(m) => return Ok(self.on_mouse(m)? || dirty),
+            TermEvent::Mouse(m) => return self.on_mouse(m),
             // The terminal saying whether anybody is looking (T-282, armed by
             // `lib.rs::init_terminal`). From the first one of these on, it is
             // the only source the presence rule consults.
             TermEvent::FocusGained => {
                 self.saw_focus(true);
-                return Ok(dirty);
+                return Ok(false);
             }
             TermEvent::FocusLost => {
                 if let Some(game) = self.arcade.borrow_mut().as_mut() {
@@ -3487,11 +3532,11 @@ impl App {
                 // nobody is pointing at.
                 self.hover.set(None);
                 self.peeked.set(None);
-                return Ok(self.pointer.take().is_some() || dirty);
+                return Ok(self.pointer.take().is_some());
             }
-            _ => return Ok(dirty),
+            _ => return Ok(false),
         };
-        Ok(self.on_terminal_key(key)? || dirty)
+        self.on_terminal_key(key)
     }
 
     /// Everything a tick does but wait for the terminal: the wire, the

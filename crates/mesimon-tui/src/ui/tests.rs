@@ -11553,6 +11553,51 @@ fn click(app: &mut App, at: (u16, u16)) {
     mouse(app, MouseEventKind::Up(MouseButton::Left), at);
 }
 
+/// A pointer sweep is one frame (T-841): the moves already queued are
+/// taken whole, at their last spot, while a click inside the sweep still
+/// lands where it came, on a tick and a frame of its own.
+#[test]
+fn a_pointer_sweep_draws_one_frame_and_a_click_inside_it_lands_in_place() {
+    use ratatui::crossterm::event::{Event, MouseButton, MouseEvent, MouseEventKind};
+    use std::collections::VecDeque;
+    let ev = |kind, at: (u16, u16)| {
+        Event::Mouse(MouseEvent {
+            kind,
+            column: at.0,
+            row: at.1,
+            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+        })
+    };
+    // The loop's shape: a frame, then a tick takes one event.
+    let run = |app: &mut App, events: Vec<Event>| -> usize {
+        let mut queue = VecDeque::from(events);
+        let mut frames = 0;
+        loop {
+            let read = |_| Ok(queue.pop_front());
+            let Some(ev) = app.next_event(std::time::Duration::ZERO, read).expect("read") else {
+                return frames;
+            };
+            app.on_event(ev).expect("event");
+            render(app, 120, 30);
+            frames += 1;
+        }
+    };
+    let mut app = app_graphite(fixture(false));
+    let at = spot_of(&render(&app, 120, 30), "Grapheme truncation");
+    let sweep: Vec<Event> = (0..40).map(|x| ev(MouseEventKind::Moved, (x, 3))).collect();
+    assert_eq!(run(&mut app, sweep.clone()), 1, "forty moves, one frame");
+    assert_eq!(app.pointer.get(), Some((39, 3)), "at the sweep's last spot");
+
+    assert_ne!(app.selected_ticket().map(|t| t.id), Some(ulid_n(5)));
+    let mut events = sweep.clone();
+    events.push(ev(MouseEventKind::Down(MouseButton::Left), at));
+    events.push(ev(MouseEventKind::Up(MouseButton::Left), at));
+    events.extend(sweep);
+    assert_eq!(run(&mut app, events), 4, "the sweep, the press, the release, the sweep");
+    assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid_n(5)), "the click landed");
+    assert_eq!(app.pointer.get(), Some((39, 3)));
+}
+
 /// A click lands the cursor on a card; a click on the cursor's card opens
 /// its page — so a double-click opens it.
 #[test]
