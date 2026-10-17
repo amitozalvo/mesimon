@@ -2420,4 +2420,42 @@ mod tests {
         observer.advance_evidence();
         assert!(observer.published_completions.contains(&("main".into(), "turn".into())));
     }
+
+    /// A Codex 0.163 child (`subAgentActivity`, T-848) outliving the turn
+    /// holds the seat, says so, and only an audit that read it idle frees it.
+    #[test]
+    fn a_sub_agent_outliving_its_parents_turn_holds_until_the_audit_reads_it_idle() {
+        let mut observer = selected();
+        event(&mut observer, "main", "turn/started", json!({"turn":{"id":"turn"}}));
+        event(
+            &mut observer,
+            "main",
+            "item/completed",
+            json!({"turnId":"turn","item":{"id":"call_1","type":"subAgentActivity",
+                "kind":"started","agentThreadId":"child","agentPath":"/root/child"}}),
+        );
+        event(&mut observer, "child", "turn/started", json!({"turn":{"id":"child-turn"}}));
+        event(
+            &mut observer,
+            "main",
+            "turn/completed",
+            json!({"turn":{"id":"turn","status":"completed","items":[]}}),
+        );
+        assert!(observer.snapshot.observation_hold);
+        assert_eq!(observer.snapshot.state, SessionState::Running);
+        let hold = observer.current_hold().expect("a held seat says why");
+        assert_eq!((hold.children, hold.turn_closed), (1, true));
+        assert!(observer.ledger.as_ref().is_some_and(Ledger::needs_work_audit));
+        assert!(
+            !observer.apply_audit(&config(), idle_audit(&observer, &["main"])),
+            "an audit that never read the child cannot release it"
+        );
+        assert!(observer.snapshot.observation_hold);
+        assert!(observer.apply_audit(&config(), idle_audit(&observer, &["main", "child"])));
+        assert!(!observer.snapshot.observation_hold);
+        assert_eq!(
+            observer.snapshot.state,
+            SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn }
+        );
+    }
 }

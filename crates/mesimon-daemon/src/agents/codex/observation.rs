@@ -97,9 +97,7 @@ impl ChildWork {
                 self.items.insert(id.into(), PendingItem::new(kind, turn_id));
             }
         }
-        if kind == "collabAgentToolCall" {
-            self.descendants.extend(receiver_ids(item));
-        }
+        self.descendants.extend(child_ids(item));
     }
 
     fn observe(&mut self, method: &str, frame: &Value) -> bool {
@@ -840,17 +838,16 @@ impl Ledger {
                 update.activity = Some(kind.chars().take(80).collect());
             }
         }
-        if kind == "collabAgentToolCall" {
-            for child in receiver_ids(item) {
-                if child == self.thread_id {
-                    continue;
-                }
-                self.child_work.entry(child.clone()).or_default().known = true;
-                // Even agentsStates=completed is only a hint. Independent
-                // runtime metadata plus an empty local ledger releases work.
-                self.children.insert(child.clone());
-                self.discover_descendants(&child);
+        for child in child_ids(item) {
+            if child == self.thread_id {
+                continue;
             }
+            self.child_work.entry(child.clone()).or_default().known = true;
+            // Even agentsStates=completed (or an activity's `completed`) is
+            // only a hint. Independent runtime metadata plus an empty local
+            // ledger releases work.
+            self.children.insert(child.clone());
+            self.discover_descendants(&child);
         }
     }
 
@@ -884,12 +881,20 @@ fn item_terminal(item: &Value, completed: bool) -> bool {
     }
 }
 
-fn receiver_ids(item: &Value) -> impl Iterator<Item = String> + '_ {
-    item["receiverThreadIds"]
-        .as_array()
+/// The child threads an item names: a `collabAgentToolCall`'s
+/// `receiverThreadIds` (Codex 0.153) or a `subAgentActivity`'s
+/// `agentThreadId`, any `kind` (0.163, T-848). Any other item names none.
+fn child_ids(item: &Value) -> impl Iterator<Item = String> + '_ {
+    let (receivers, activity) = match string(item, "type") {
+        Some("collabAgentToolCall") => (item["receiverThreadIds"].as_array(), None),
+        Some("subAgentActivity") => (None, string(item, "agentThreadId")),
+        _ => (None, None),
+    };
+    receivers
         .into_iter()
         .flatten()
         .filter_map(Value::as_str)
+        .chain(activity)
         .take(MAX_IDENTITIES + 1)
         .map(str::to_owned)
 }
@@ -1107,6 +1112,56 @@ mod tests {
             ledger.reconcile_work(7, &snapshot(json!({"type":"idle"}))).signals,
             vec![Signal::TurnEnded { outcome: TurnOutcome::Completed }]
         );
+    }
+
+    /// Codex 0.163 names a child in a `subAgentActivity` item, not a
+    /// `collabAgentToolCall` (T-848): a child spawned without `wait` outlives
+    /// the parent's turn, and the seat stays held until the audit says idle.
+    #[test]
+    fn a_sub_agent_activity_names_a_child_that_holds_the_closed_turn_until_audited() {
+        let mut ledger = ready();
+        start(&mut ledger, "turn-1");
+        let activity = json!({"type":"subAgentActivity","id":"call_spawn","kind":"started",
+            "agentThreadId":"child","agentPath":"/root/child"});
+        ledger.observe(7, &frame("item/started", json!({"turnId":"turn-1","item":activity})));
+        let spawned =
+            ledger.observe(7, &frame("item/completed", json!({"turnId":"turn-1","item":activity})));
+        assert!(spawned.observation_hold);
+        assert_eq!(ledger.known_children(), vec!["child"]);
+        assert!(
+            ledger
+                .observe(
+                    7,
+                    &child_frame(
+                        "turn/started",
+                        json!({"turn":{"id":"child-turn","status":"inProgress"}})
+                    )
+                )
+                .observation_hold
+        );
+        let closed = complete(&mut ledger, "turn-1", "completed");
+        assert!(closed.observation_hold, "an active child keeps the seat");
+        assert!(closed.signals.is_empty());
+        assert_eq!(ledger.state(), &SessionState::Running);
+        assert!(ledger.closed_but_held() && ledger.needs_work_audit());
+        assert_eq!(ledger.hold(0).children, 1);
+        let audited = ledger.reconcile_work(7, &snapshot(json!({"type":"idle"})));
+        assert_eq!(audited.signals, vec![Signal::TurnEnded { outcome: TurnOutcome::Completed }]);
+        assert!(!audited.observation_hold);
+        assert_eq!(ledger.known_children(), vec!["child"], "retain identity for late work");
+    }
+
+    #[test]
+    fn a_childs_own_sub_agent_activity_names_a_grandchild() {
+        let mut ledger = ready();
+        start(&mut ledger, "turn-1");
+        ledger.observe(7, &child_frame("item/completed", json!({"item":{"type":"subAgentActivity",
+            "id":"call_grand","kind":"started","agentThreadId":"grandchild","agentPath":"/root/a/b"}})));
+        discover_child(&mut ledger);
+        assert_eq!(ledger.known_children(), vec!["child", "grandchild"]);
+        let other = json!({"type":"agentMessage","id":"m","agentThreadId":"stranger","text":"hi"});
+        ledger.observe(7, &frame("item/completed", json!({"turnId":"turn-1","item":other})));
+        assert_eq!(ledger.known_children(), vec!["child", "grandchild"], "only a spawn names one");
     }
 
     fn child_frame(method: &str, params: Value) -> Value {
