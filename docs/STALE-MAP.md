@@ -27657,3 +27657,109 @@ Tests: `observation::tests::{a_sub_agent_activity_names_a_child_that_holds_the_c
 a_childs_own_sub_agent_activity_names_a_grandchild}`,
 `runtime::tests::a_sub_agent_outliving_its_parents_turn_holds_until_the_audit_reads_it_idle`,
 the Codex rig's `child` case.
+## Codex questions and approvals answerable from the phone and the crown (T-846, 2026-10-17)
+
+**What was wrong.** A Codex approval (`item/commandExecution/requestApproval`,
+`item/fileChange/requestApproval`, `item/permissions/requestApproval`, an MCP elicitation with
+`codex_approval_kind: mcp_tool_call`) or question (`item/tool/requestUserInput`) reached the
+board as `needs you` with the right reason, and nothing but the terminal could answer it. Remote
+Control's cards were filled from Claude's hook stream alone (`control_observe_dialog` off the
+`AskUserQuestion` payload, `control_permission_wait` off the `PermissionRequest` hook); a Codex
+stop drew no card. The crown's one rule, `CrownMode::takes_stop`, said a codex has no dialog the
+board answers, so `asks_the_crown` never woke the crown for one and `answer_agent` refused it.
+The runtime saw the whole request on the WebSocket and threw its content away, keeping only the
+id and the reason.
+
+**What shipped.**
+- `codex::Ask` on the runtime's snapshot (`Snapshot.request`): the open request's content, by its
+  id — a question's words, header and options (`AskKind::Question`), or an approval's kind in a
+  word (`command`, `edit`, `permissions`, `mcp_tool`), its command, folder, reason and the
+  decisions Codex offered (`AskKind::Approval`). The command comes off the request where it
+  carries one, else off the started `commandExecution` item the request names by `itemId`
+  (`PendingItem.command`). Bounded (four questions, eight options, a thousand chars a field,
+  sixteen asks), never a reply's text; a secret question is carried marked `secret`; a form
+  that is not Codex's one-tool approval carries nothing. The ledger keeps the asks beside its
+  `requests` (`Ledger.asks`, a known child's too) and `serverRequest/resolved` drops the one it
+  names; an idle reconcile drops them all. `Update.ask` reports the oldest open one on every
+  update, so the snapshot mirrors the ledger.
+- The daemon projects it (`control_codex_ask`, after each snapshot pass): a question into
+  `control.dialogs` as the hook stream's `AskUserQuestion` lands there, so the phone's card,
+  `get_ticket`'s `needs_you` and the crown read the same thing; an approval into
+  `control.permissions` as `api::Permission { tool: <what>, input: {command, cwd, reason} }`,
+  where a phone is paired to answer it; the plan a Codex seat stopped on into `control.dialogs`
+  as a `Plan`, off `Snapshot.plan`. The request id changing is its resolution: the projection
+  goes and the dialog's edge reads `Answered` — the confirmation a walked answer's receipt waits
+  for, where Claude's waits for the `PostToolUse` (T-567). A secret or a form projects nothing.
+- `PermissionWait.road`: `Hook { stream, renews, closed }` (Claude's `mesimon approve`) or
+  `Codex`. A phone's allow or deny on a Codex approval is an `ApprovalDelivery`, walked one key a
+  tick (`control_deliver_approvals`) to the first `Yes` row or the one `No` row and Enter
+  (`codex_approval_step`), the receipt `awaiting_delivery` → `answered` on the request's
+  resolution, `input_sent` past `DIALOG_CONFIRM`, `unknown` with its reason. Each key is bound
+  to the request the phone answered, not to the rows alone: the screen must show the request's
+  reason, or without one the end of its command (the item spells `/bin/zsh -lc '…'`, the dialog
+  the words inside), and the wait's standing is re-read from the projection each key — a dialog
+  that replaced the answered one between the tap and the key gets nothing (`label_not_found`).
+- The dialog walk knows the harness (`dialog_step_for`, `dialog_shape_for`, by the record's
+  `kind`): Codex's question dialog as measured on 0.163.0 (`codex_dialog_step`), rows `N. label
+  description` with the cursor `›`, a `None of the above` row Codex adds, the footer `tab to add
+  notes | enter to submit answer | esc to interrupt`; its approval dialog (`codex_approval_step`):
+  `1. Yes, proceed (y)`, `2. Yes, and don't ask again …(p)`, `3. No, and tell Codex what to do
+  differently (esc)`, the footer `Press enter to confirm or esc to cancel`, the heading not read
+  so an edit's and a permission's dialogs are covered by their rows; its plan dialog the T-420
+  press (`codex_at_default`). `numbered` and `dialog_rows_to` take `›` beside `❯`.
+- What a Codex dialog takes from the board (`codex_takes`): one question's one choice, a refusal
+  (Esc, which Codex reads as an interrupt) and a plan's accept. Words typed into its notes row,
+  several questions, several choices and a plan sent back are unmeasured and refused in words
+  — the phone's "this dialog shape is not verified", the crown's "a codex, whose dialog takes one
+  choice of one question". `dialog_answerable_for` says so in `needs_you.answerable`.
+- `CrownMode::takes_stop` admits an agent's question or plan (`kind.is_agent()`): a codex's wakes
+  the crown as a claude's (`asks_the_crown`, `notify::scan`), and `answer_agent` and
+  `accept_plan` reach it through the same road (`crown_accept_plan` and `crown_plan_allowed` take
+  any agent). A permission stays the person's for both.
+
+**Measured on Codex 0.163.0 (2026-10-17), the real rig.** A deny on the command dialog
+("No, and tell Codex what to do differently") interrupts the conversation: `turn/completed`
+`interrupted`, the composer back — so a phone's deny is an interrupt, as the terminal's would be.
+Codex's `requestUserInput` dialog numbers its rows and adds `None of the above`; the first row is
+the cursor's. The approval dialog's second row wraps across three lines at 80 columns, which
+`dialog_rows_to` joins as it joins Claude's descriptions. Two more things the runs found:
+- Asked to "use request_user_input once", Luna in plan mode sometimes calls
+  `request_user_input_async` instead: the question arrives with `isBlocking: false`, the pane
+  shows it under `Queued follow-up inputs … ⇧← to answer` while the turn keeps working, and the
+  ledger leaves it as no stop, as it did before (the board shows `working`, not `needs you`). The
+  rig's prompt now names the blocking tool and forbids the async one. Whether a non-blocking
+  question should reach the board is a question of its own, not decided here.
+- A crowned Codex seat launched with the board's tools on called `merge_ticket` instead of
+  running the `sleep` it was asked for, and stopped on the one-tool MCP approval — which the
+  snapshot carried as `what: mcp_tool`, `command: mesimon`, the reason naming the tool, so the
+  projection held up on a real one. The rig launches the crown's seat before the tools go on.
+
+**Not done, on purpose.** The phone's approval road is proven by unit tests on the captured
+screens and by the fake runtime, not on the real rig: no Local principal walks a dialog, and the
+rig has no relay. The rig's question case goes through the crown's road instead (below). A Codex
+plan's reject from the phone, free words into a question and several questions at once stay the
+terminal's until measured. A form (`Reason::Elicitation`) stays the terminal's.
+
+**The rig.** `python3 -B ci/rig.py --provider codex --live --only question` is three turns now:
+a crowned Codex seat kept busy on a `sleep` turn (so the question's wake queues behind it and no
+model turn answers the board's words), the worker it starts in a worktree (`agent_start_ticket`
+over the lab's new agent road, `lab.Client.agent`), `/plan` and the question; `get_ticket`
+lists the carried question as answerable, `answer_agent` presses Enter on the chosen row and
+reads `answered` on the request's resolution, the turn completes on the chosen colour, and the
+snapshot has dropped the request. `ci/codex-approval-e2e.py` asserts the snapshot carries the
+approval's command, reason and decisions and drops it on the native refusal.
+
+Tests: `board::tests::takes_stop_admits_a_claude_s_and_a_codex_s_question_or_plan_alone`,
+`observation::tests::{a_question_s_words_and_options_ride_the_update_until_it_is_resolved,
+a_secret_question_is_carried_as_secret_and_an_unidentified_one_not_at_all,
+an_approval_carries_its_item_s_command_and_the_decisions_on_offer,
+a_known_child_s_question_is_carried_and_a_reconcile_clears_asks}`,
+`runtime::tests::the_snapshot_carries_the_open_request_and_clears_it_when_resolved`,
+`mesophon::tests::{a_codex_question_walks_its_rows_by_label_and_description,
+a_codex_approval_walks_to_yes_or_no_and_confirms, a_codex_plan_takes_the_accept_at_its_yes_row_alone,
+a_codex_question_is_projected_within_the_phone_s_bounds,
+a_codex_approval_s_wait_has_no_run_and_is_never_renewed}`, `crownwake::tests`,
+`provider_e2e::a_codex_question_is_carried_to_the_board_and_answered_by_keys_until_resolved`,
+`crown_e2e::the_crown_answers_a_codex_worker_s_question`, and the two real-Codex runs recorded in
+`docs/codex-compatibility.json` under `0.163.0` (`crown_answers_native_question`,
+`native_approval_carried`; the approval's `availableDecisions` there read `accept, cancel`).

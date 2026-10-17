@@ -505,6 +505,7 @@ mod tests {
             title: None,
             plan: None,
             plan_key: None,
+            request: None,
             stopped: false,
             rate_limits: None,
             rate_limits_at_ms: 0,

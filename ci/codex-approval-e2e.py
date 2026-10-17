@@ -68,6 +68,14 @@ def wrapper_provenance(records, command, turn):
 
 
 class Verification(state.Verification):
+    def carried(self, sid):
+        """The request the runtime's snapshot carries for `sid` (T-846), or None."""
+        path = self.runtime / ("cdx-" + sid.replace("-", "")[:16] + ".json")
+        try:
+            return json.loads(path.read_text()).get("request")
+        except (OSError, ValueError):
+            return None
+
     def ask(self, sid, prompt):
         if self.calls != 0:
             raise AssertionError("approval fixture permits only one native prompt")
@@ -125,6 +133,17 @@ class Verification(state.Verification):
             and s.get("observation_hold") and t["column"] == "IN PROGRESS"
             and refusal_choice(p) is not None and "".join(command.split()) in "".join(p.split()))
         thread, turn = approved["codex_thread_id"], approved["codex_turn_id"]
+        # T-846: the runtime's snapshot carries the approval the phone's card
+        # draws: its kind, the command as the item spelled it, the reason,
+        # and the decisions Codex offered.
+        carried = self.carried(sid) or {}
+        if (carried.get("kind") != "approval" or carried.get("what") != "command"
+                or "".join(command.split()) not in "".join((carried.get("command") or "").split())
+                or "disposable fixture file" not in (carried.get("reason") or "")):
+            raise AssertionError("the snapshot did not carry the native approval: " + json.dumps(carried))
+        state.write(self.out / "carried-approval.json", carried)
+        self.mark(assertion="the runtime snapshot carries the approval's command, reason and decisions", passed=True,
+                  decisions=carried.get("decisions"))
         before = self.turns(sid, thread)
         state.write(self.out / "before-native-refusal.json", dict(turns=before, screen=screen, board=approved))
         history_before = self.history(approved, "before-native-refusal.history.jsonl")
@@ -182,6 +201,12 @@ class Verification(state.Verification):
         rows = final["data"]
         state.write(self.out / "native-refusal-terminal.json", dict(turns=final, board=s, screen=screen,
                     saw_native_cancel=saw_native_cancel, outside_file_exists=outside.exists()))
+        deadline = time.monotonic() + 5
+        while self.carried(sid) is not None:
+            if time.monotonic() > deadline:
+                raise AssertionError("the refused approval is still carried by the snapshot")
+            time.sleep(0.1)
+        self.mark(assertion="the snapshot drops the approval on its native resolution", passed=True)
         history_after = self.history(s, "after-native-refusal.history.jsonl")
         if wrapper is not None and wrapper_provenance(history_after, command, turn)["call_id"] != wrapper["call_id"]:
             raise AssertionError("native model substituted a different command wrapper")

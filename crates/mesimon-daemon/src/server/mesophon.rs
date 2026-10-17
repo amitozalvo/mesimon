@@ -182,7 +182,7 @@ pub(super) enum DialogEdge {
 }
 struct PermissionWait {
     projection: api::Permission,
-    stream: UnixStream,
+    road: PermissionRoad,
     /// When it was offered; a renewal keeps it.
     offered: Instant,
     deadline: Instant,
@@ -190,11 +190,40 @@ struct PermissionWait {
     /// any connection: a phone that slept and came back is the same phone
     /// (T-632).
     grants: Vec<BoardId>,
-    /// The mod's `mesimon approve --renew`: its run ends every round, and
-    /// the next run takes the wait over (`PERMISSION_RENEW_GRACE`).
-    renews: bool,
-    /// When a renewing run's stream closed.
-    closed: Option<Instant>,
+}
+/// How a permission's answer reaches its agent.
+enum PermissionRoad {
+    /// Claude's `PermissionRequest` hook: `mesimon approve` holds its stdout
+    /// open on `stream`, and the decision is written there.
+    Hook {
+        stream: UnixStream,
+        /// The mod's `mesimon approve --renew`: its run ends every round,
+        /// and the next run takes the wait over (`PERMISSION_RENEW_GRACE`).
+        renews: bool,
+        /// When a renewing run's stream closed.
+        closed: Option<Instant>,
+    },
+    /// A Codex approval (T-846), projected off the runtime's snapshot: the
+    /// answer walks the pane's dialog to its `Yes` or `No` row and presses
+    /// Enter, and `serverRequest/resolved` on the ledger confirms it.
+    Codex,
+}
+/// A phone's answer to a Codex approval on its way down the pane (T-846):
+/// the same walk a dialog answer takes (`DialogDelivery`), to one of two
+/// rows, confirmed by the request leaving the runtime's snapshot.
+struct ApprovalDelivery {
+    grant: BoardId,
+    device: DeviceId,
+    command: u64,
+    ticket: ulid::Ulid,
+    request: String,
+    allow: bool,
+    deadline: Instant,
+    next: Instant,
+    steps: u8,
+    /// Set once Enter went in: the request's resolution confirms it, and
+    /// past this the keys were sent and not confirmed.
+    confirm: Option<Instant>,
 }
 /// How long a renewing wait outlives its run for the next one to take it
 /// over (T-632): the mod starts it at once, so this is slack for a loaded
@@ -252,6 +281,12 @@ pub(super) struct Control {
     /// Starts on their way, by ticket (T-498).
     starts: HashMap<ulid::Ulid, StartWait>,
     permissions: HashMap<uuid::Uuid, PermissionWait>,
+    /// Phone answers to Codex approvals on their way (T-846).
+    approvals: HashMap<uuid::Uuid, ApprovalDelivery>,
+    /// The request each Codex seat's snapshot last carried (T-846), by
+    /// its id: a change is the old request's resolution, the edge a Codex
+    /// dialog's answer is confirmed by; `plan:` prefixed for a plan.
+    codex_asks: HashMap<uuid::Uuid, String>,
     phases: HashMap<ulid::Ulid, api::Phase>,
     suppress_awareness: bool,
     dialogs: HashMap<uuid::Uuid, api::Dialog>,
@@ -307,6 +342,8 @@ impl Control {
             pending: HashMap::new(),
             starts: HashMap::new(),
             permissions: HashMap::new(),
+            approvals: HashMap::new(),
+            codex_asks: HashMap::new(),
             phases: HashMap::new(),
             suppress_awareness: false,
             dialogs: HashMap::new(),
@@ -585,6 +622,7 @@ impl Daemon {
     pub(super) fn control_tick(&mut self) {
         self.control_expire_permissions();
         self.control_deliver_dialogs();
+        self.control_deliver_approvals();
         if self.control.stored.is_none() && self.control.retired.is_none() {
             return;
         }
@@ -969,9 +1007,10 @@ impl Daemon {
                 .control_dialog_answer(
                     &by, grant, device, command.id, &ticket, &session, &request, response,
                 ),
-            api::Request::Permission { ticket, session, request, decision } => {
-                self.control_permission_answer(&by, peer, &ticket, &session, &request, decision)
-            }
+            api::Request::Permission { ticket, session, request, decision } => self
+                .control_permission_answer(
+                    &by, peer, command.id, &ticket, &session, &request, decision,
+                ),
             api::Request::Snapshot => {
                 if let Some(p) = self.control.peers.get_mut(peer) {
                     p.subscribed = true;
@@ -1210,7 +1249,8 @@ impl Daemon {
         let Some(dialog) = self.control.dialogs.get(&id).filter(|d| d.request == request) else {
             return Reply::Rejected { message: "dialog changed; check the pane".into() };
         };
-        if dialog_plan(dialog, &response).is_none() {
+        let codex = self.session_kind(id) == SessionKind::Codex;
+        if dialog_plan(dialog, &response).is_none() || (codex && !codex_takes(dialog, &response)) {
             return Reply::Rejected {
                 message: "this dialog shape is not verified; answer in the pane".into(),
             };
@@ -1368,6 +1408,7 @@ impl Daemon {
                 continue;
             }
             let screen = self.dialog_screen(id);
+            let kind = self.session_kind(id);
             let step = match dialog {
                 None => Err("state_changed"),
                 Some(_) if !allowed => Err("state_changed"),
@@ -1376,9 +1417,8 @@ impl Daemon {
                 {
                     Err("deadline")
                 }
-                Some(d) => {
-                    dialog_step(d, &pending.response, &screen, &pending.walk).map_err(Miss::word)
-                }
+                Some(d) => dialog_step_for(kind, d, &pending.response, &screen, &pending.walk)
+                    .map_err(Miss::word),
             };
             let sid = id.simple().to_string()[..16].to_string();
             // `Ok(true)` is the last key: Enter, or Escape for a refusal. A
@@ -1480,6 +1520,12 @@ impl Daemon {
         self.control.dialog_edges.get(&session).filter(|(r, _)| r == request).map(|(_, e)| *e)
     }
 
+    /// The harness behind a session's pane; a record gone reads as Claude's,
+    /// whose shapes refuse any other screen.
+    fn session_kind(&self, id: uuid::Uuid) -> SessionKind {
+        self.board.sessions.iter().find(|s| s.id == id).map_or(SessionKind::Claude, |s| s.kind)
+    }
+
     /// Whether the session still waits on a question, a plan or its folder
     /// trust dialog (T-844).
     fn dialog_waiting(&self, id: uuid::Uuid) -> bool {
@@ -1516,12 +1562,13 @@ impl Daemon {
         screen: &str,
     ) {
         let waiting = self.dialog_waiting(id);
+        let kind = self.session_kind(id);
         let mut standing = false;
         let mut trust = false;
         if let Some(dialog) = self.control.dialogs.get(&id).filter(|d| d.request == pending.request)
         {
             trust = matches!(dialog.content, api::DialogContent::Trust { .. });
-            if waiting && dialog_shape(dialog, screen) {
+            if waiting && dialog_shape_for(kind, dialog, screen) {
                 standing = true;
             } else {
                 self.control.dialogs.remove(&id);
@@ -1664,6 +1711,12 @@ impl Daemon {
         if dialog_plan(dialog, &response).is_none() {
             return Err(format!(
                 "{key}'s dialog is not a shape the board answers; a person answers it"
+            ));
+        }
+        if self.session_kind(id) == SessionKind::Codex && !codex_takes(dialog, &response) {
+            return Err(format!(
+                "{key}'s agent is a codex, whose dialog takes one choice of one question from \
+                 the board (index); words, or several answers, are a person's, in the pane"
             ));
         }
         let (max_steps, walk) = walk_budget(dialog);
@@ -1914,7 +1967,8 @@ impl Daemon {
         // whose run then prints nothing.
         if let Some(old) = self.control.permissions.remove(&id) {
             if renews && takes_over(&old, tool, input) {
-                let wait = PermissionWait { stream, grants, closed: None, ..old };
+                let road = PermissionRoad::Hook { stream, renews, closed: None };
+                let wait = PermissionWait { road, grants, ..old };
                 self.control.permissions.insert(id, wait);
                 return;
             }
@@ -1929,12 +1983,10 @@ impl Daemon {
                     input: input.clone(),
                     expires_at: now_ms() + hold.as_millis() as u64,
                 },
-                stream,
+                road: PermissionRoad::Hook { stream, renews, closed: None },
                 offered: Instant::now(),
                 deadline: Instant::now() + hold,
                 grants,
-                renews,
-                closed: None,
             },
         );
         self.control_changed();
@@ -1993,10 +2045,12 @@ impl Daemon {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn control_permission_answer(
         &mut self,
         by: &Principal,
         peer: &str,
+        command: u64,
         ticket: &str,
         session: &str,
         request: &str,
@@ -2012,21 +2066,55 @@ impl Daemon {
         let grant = self.control.peers.get(peer).map(|p| p.grant);
         if !self.control.permissions.get(&id).is_some_and(|p| {
             p.projection.request == request
-                && p.closed.is_none()
+                && !matches!(p.road, PermissionRoad::Hook { closed: Some(_), .. })
                 && grant.is_some_and(|g| p.grants.contains(&g))
         }) {
             return Reply::Rejected {
                 message: "permission expired or was already answered; check the pane".into(),
             };
         }
+        if self.control.permissions.get(&id).is_some_and(PermissionWait::codex) {
+            // A Codex approval (T-846): the answer walks the pane's dialog,
+            // as a question's does, and the receipt waits for the request
+            // to leave the runtime's snapshot. The wait stays until then, so
+            // no second phone starts a walk of its own.
+            let (Ok(ticket), Some(grant)) = (ulid::Ulid::from_string(ticket), grant) else {
+                return Reply::Rejected { message: "invalid ticket".into() };
+            };
+            if self.control.approvals.contains_key(&id) || self.control_input_in_flight(id) {
+                return Reply::Rejected { message: "input is already pending".into() };
+            }
+            let Some(device) = self.control.peers.get(peer).map(|p| p.device) else {
+                return Reply::Rejected { message: "session changed".into() };
+            };
+            self.control.approvals.insert(
+                id,
+                ApprovalDelivery {
+                    grant,
+                    device,
+                    command,
+                    ticket,
+                    request: request.into(),
+                    allow: decision == api::PermissionDecision::Allow,
+                    deadline: Instant::now() + Duration::from_secs(8),
+                    next: Instant::now(),
+                    steps: 0,
+                    confirm: None,
+                },
+            );
+            return Reply::delivery("awaiting_delivery");
+        }
         let Some(mut pending) = self.control.permissions.remove(&id) else {
             return Reply::Rejected { message: "permission is no longer pending".into() };
         };
         // No second browser can answer after this point. Successful transport
         // is not proof Claude executed the tool; report only decision delivery.
-        let sent = serde_json::to_vec(&decision)
-            .ok()
-            .is_some_and(|bytes| pending.stream.write_all(&bytes).is_ok());
+        let sent = match &mut pending.road {
+            PermissionRoad::Hook { stream, .. } => serde_json::to_vec(&decision)
+                .ok()
+                .is_some_and(|bytes| stream.write_all(&bytes).is_ok()),
+            PermissionRoad::Codex => false,
+        };
         self.feed.board(
             by.actor(),
             "mesophon_permission_answer",
@@ -2034,6 +2122,276 @@ impl Daemon {
         );
         self.control_changed();
         Reply::delivery(if sent { "decision_sent" } else { "unknown" })
+    }
+
+    /// Walk each queued Codex approval answer one key per pass (T-846), as
+    /// `control_deliver_dialogs` walks a question: to the `Yes, proceed`
+    /// row for an allow, the `No, …` row for a deny, then Enter. The last
+    /// key waits for the request to leave the snapshot (`answered`),
+    /// `input_sent` past `DIALOG_CONFIRM`, and `unknown` with its reason
+    /// when no key could be chosen.
+    fn control_deliver_approvals(&mut self) {
+        use mesimon_backend_tmux::DialogKey;
+        let ready: Vec<_> = self
+            .control
+            .approvals
+            .iter()
+            .filter(|(_, p)| Instant::now() >= p.next)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ready {
+            let Some(mut pending) = self.control.approvals.remove(&id) else { continue };
+            let standing = self
+                .control
+                .permissions
+                .get(&id)
+                .is_some_and(|p| p.codex() && p.projection.request == pending.request);
+            if let Some(until) = pending.confirm {
+                if !standing {
+                    self.control_settle_approval(id, pending, "answered", None);
+                } else if Instant::now() >= until {
+                    self.control_settle_approval(id, pending, "input_sent", None);
+                } else {
+                    pending.next = Instant::now() + Duration::from_millis(250);
+                    self.control.approvals.insert(id, pending);
+                }
+                continue;
+            }
+            let by = Principal::Paired {
+                device: pending.device.to_hex(),
+                grant: pending.grant.to_hex(),
+            };
+            let allowed = standing
+                && self.control_granted(pending.grant, pending.device)
+                && !authorize(&by, &Action::ApproveExisting, &Resource::Session { id }).denied()
+                && self.control_target(&pending.ticket.to_string(), &id.to_string()) == Some(id)
+                && self.board.sessions.iter().any(|s| {
+                    s.id == id
+                        && s.state == SessionState::RequiresAction { reason: Reason::Permission }
+                });
+            let screen = self.dialog_screen(id);
+            let step = if !allowed {
+                Err("state_changed")
+            } else if Instant::now() >= pending.deadline || pending.steps >= 12 {
+                Err("deadline")
+            } else {
+                let projection = self.control.permissions.get(&id).map(|p| p.projection.clone());
+                match projection {
+                    Some(p) => codex_approval_step(&screen, pending.allow, &p).map_err(Miss::word),
+                    None => Err("state_changed"),
+                }
+            };
+            let sid = id.simple().to_string()[..16].to_string();
+            let sent = step.and_then(|step| {
+                match step {
+                    DialogStep::Up => self.backend.dialog_key(&sid, DialogKey::Up).map(|_| false),
+                    DialogStep::Down => {
+                        self.backend.dialog_key(&sid, DialogKey::Down).map(|_| false)
+                    }
+                    DialogStep::Submit => self.backend.send_enter(&sid).map(|_| true),
+                    _ => return Err("shape_unrecognised"),
+                }
+                .map_err(|_| "pane_unreachable")
+            });
+            match sent {
+                Ok(last) => {
+                    pending.steps += 1;
+                    pending.next =
+                        Instant::now() + Duration::from_millis(if last { 250 } else { 350 });
+                    if last {
+                        pending.confirm = Some(Instant::now() + DIALOG_CONFIRM);
+                    }
+                    self.control.approvals.insert(id, pending);
+                }
+                Err(reason) => {
+                    let reason = if pending.steps > 0 {
+                        format!("{reason}; cursor moved")
+                    } else {
+                        reason.to_string()
+                    };
+                    self.control_settle_approval(id, pending, "unknown", Some(reason));
+                }
+            }
+        }
+    }
+
+    /// A Codex approval answer's last word (T-846): its receipt and feed
+    /// line. The wait is dropped once the keys went in, whatever confirmed
+    /// them; one no key carried stays for the next answer.
+    fn control_settle_approval(
+        &mut self,
+        id: uuid::Uuid,
+        pending: ApprovalDelivery,
+        status: &str,
+        reason: Option<String>,
+    ) {
+        if status != "unknown" {
+            self.control.permissions.remove(&id);
+        }
+        self.control.remember(
+            pending.grant,
+            pending.command,
+            Reply::Delivery { status: status.into(), reason, replaced: None },
+        );
+        let by =
+            Principal::Paired { device: pending.device.to_hex(), grant: pending.grant.to_hex() };
+        self.feed.board_outcome(
+            by.actor(),
+            "mesophon_permission_answer",
+            Some(pending.ticket),
+            status,
+        );
+        self.control_changed();
+    }
+
+    /// The request a Codex seat's snapshot carries, projected (T-846): a
+    /// question into `dialogs`, as the hook stream's `AskUserQuestion` is,
+    /// an approval into `permissions` where a phone is paired to answer it,
+    /// and the plan a seat stopped on into `dialogs` as a `Plan`. The
+    /// request's id changing is its resolution: the projection goes and
+    /// the dialog's edge reads `Answered`, which is what a walked answer's
+    /// receipt waits for. A secret question, a form and a seat not stopped
+    /// on its request project nothing.
+    pub(super) fn control_codex_ask(
+        &mut self,
+        id: uuid::Uuid,
+        ask: Option<&crate::agents::codex::Ask>,
+        plan: Option<(&str, &str)>,
+    ) {
+        use crate::agents::codex::AskKind;
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { return };
+        let (state, ticket) = (rec.state.clone(), rec.ticket);
+        let plan = plan.filter(|_| state == SessionState::RequiresAction { reason: Reason::Plan });
+        let current = match (ask, plan) {
+            (Some(ask), _) => Some(ask.id.clone()),
+            (None, Some((key, _))) => Some(format!("plan:{key}")),
+            (None, None) => None,
+        };
+        let was = self.control.codex_asks.get(&id).cloned();
+        if was.is_some() && was != current {
+            let was = was.unwrap_or_default();
+            if self.control.dialogs.get(&id).is_some_and(|d| d.request == was) {
+                self.control.dialogs.remove(&id);
+                self.control.dialog_edges.insert(id, (was.clone(), DialogEdge::Answered));
+                self.control_changed();
+            }
+            if self
+                .control
+                .permissions
+                .get(&id)
+                .is_some_and(|p| p.codex() && p.projection.request == was)
+            {
+                self.control.permissions.remove(&id);
+                self.control_changed();
+            }
+            self.control.codex_asks.remove(&id);
+        }
+        let Some(current) = current else { return };
+        if self.control.codex_asks.get(&id) == Some(&current) {
+            return;
+        }
+        match (ask.map(|a| &a.kind), plan) {
+            (Some(AskKind::Question { questions }), _)
+                if state == SessionState::RequiresAction { reason: Reason::Question } =>
+            {
+                let Some(content) = Self::codex_questions(questions) else { return };
+                let dialog = api::Dialog { request: current.clone(), content };
+                self.control.dialogs.insert(id, dialog);
+                self.control.codex_asks.insert(id, current);
+                self.control_changed();
+            }
+            (Some(AskKind::Approval { what, command, cwd, reason, .. }), _)
+                if state == SessionState::RequiresAction { reason: Reason::Permission } =>
+            {
+                let by = Principal::Automation { rule: "codex_observer".into() };
+                if authorize(&by, &Action::Mutate, &Resource::Session { id }).denied()
+                    || self.control.stored.is_none()
+                    || !self.control.online
+                    || self.control_target(&ticket.to_string(), &id.to_string()) != Some(id)
+                {
+                    return;
+                }
+                let grants: Vec<_> = self
+                    .control
+                    .stored
+                    .iter()
+                    .flat_map(|s| &s.grants)
+                    .filter(|g| self.control_granted(g.id, g.device))
+                    .map(|g| g.id)
+                    .collect();
+                if grants.is_empty() {
+                    return;
+                }
+                let mut input = serde_json::Map::new();
+                for (key, value) in [("command", command), ("cwd", cwd), ("reason", reason)] {
+                    if let Some(value) = value {
+                        input.insert(key.into(), serde_json::Value::String(value.clone()));
+                    }
+                }
+                let hold = Duration::from_secs(mesimon_core::mesophon::PERMISSION_HOLD_SECS);
+                self.control.permissions.insert(
+                    id,
+                    PermissionWait {
+                        projection: api::Permission {
+                            request: current.clone(),
+                            tool: what.clone(),
+                            input: serde_json::Value::Object(input),
+                            expires_at: now_ms() + hold.as_millis() as u64,
+                        },
+                        road: PermissionRoad::Codex,
+                        offered: Instant::now(),
+                        deadline: Instant::now() + hold,
+                        grants,
+                    },
+                );
+                self.control.codex_asks.insert(id, current);
+                self.control_changed();
+            }
+            (None, Some((_, markdown))) => {
+                let content = api::DialogContent::Plan { markdown: markdown.into() };
+                self.control.dialogs.insert(id, api::Dialog { request: current.clone(), content });
+                self.control.codex_asks.insert(id, current);
+                self.control_changed();
+            }
+            _ => {}
+        }
+    }
+
+    /// A Codex question's content as the phone's dialog (T-846), within the
+    /// bounds `control_observe_dialog` keeps for Claude's: one to four
+    /// questions, each with one to eight options; a secret question, or one
+    /// with no options (free words in Codex's notes row, unmeasured), draws
+    /// no card. The `header` is Codex's, or the question's first word.
+    fn codex_questions(
+        questions: &[crate::agents::codex::AskQuestion],
+    ) -> Option<api::DialogContent> {
+        if questions.is_empty()
+            || questions.len() > 4
+            || questions.iter().any(|q| q.secret || q.options.is_empty() || q.options.len() > 8)
+        {
+            return None;
+        }
+        let questions = questions
+            .iter()
+            .map(|q| api::Question {
+                question: q.question.clone(),
+                header: if q.header.is_empty() {
+                    q.question.split_whitespace().next().unwrap_or_default().to_string()
+                } else {
+                    q.header.clone()
+                },
+                options: q
+                    .options
+                    .iter()
+                    .map(|o| api::QuestionOption {
+                        label: o.label.clone(),
+                        description: o.description.clone(),
+                    })
+                    .collect(),
+                multi_select: false,
+            })
+            .collect();
+        Some(api::DialogContent::Questions { questions })
     }
 
     /// A ticket filed live from the owner's phone, with the pictures its
@@ -3159,7 +3517,9 @@ impl Daemon {
             || self.control_trust_of(s).is_some()
             || self.control_dialog_of(s).is_some_and(|d| match &d.content {
                 api::DialogContent::Plan { .. } | api::DialogContent::Trust { .. } => true,
-                api::DialogContent::Questions { questions } => dialog_answerable(questions),
+                api::DialogContent::Questions { questions } => {
+                    dialog_answerable_for(s.kind, questions)
+                }
             })
     }
 
@@ -3638,26 +3998,39 @@ impl Daemon {
 /// Whether a renewing run's request is the same dialog as the wait it
 /// finds: its tool and its input, as the phone was shown them.
 fn takes_over(wait: &PermissionWait, tool: &str, input: &serde_json::Value) -> bool {
-    wait.projection.tool == tool && wait.projection.input == *input
+    matches!(wait.road, PermissionRoad::Hook { .. })
+        && wait.projection.tool == tool
+        && wait.projection.input == *input
 }
 
 impl PermissionWait {
     /// A renewing run's stream closing starts its grace (T-632).
     fn note_closed(&mut self, now: Instant) {
-        if self.renews && self.closed.is_none() && permission_peer_closed(&self.stream) {
-            self.closed = Some(now);
+        if let PermissionRoad::Hook { stream, renews: true, closed: closed @ None } = &mut self.road
+        {
+            if permission_peer_closed(stream) {
+                *closed = Some(now);
+            }
         }
     }
 
     /// Past its day, its run gone (a renewing one's past the grace), or no
-    /// device it was offered to still paired.
+    /// device it was offered to still paired. A Codex wait has no run: it
+    /// ends with its request (`control_codex_ask`) or its day.
     fn lapsed(&self, now: Instant, granted: impl Fn(BoardId) -> bool) -> bool {
-        now >= self.deadline
-            || self.closed.map_or_else(
-                || permission_peer_closed(&self.stream),
+        let run_gone = match &self.road {
+            PermissionRoad::Hook { stream, closed, .. } => closed.map_or_else(
+                || permission_peer_closed(stream),
                 |at| now >= at + PERMISSION_RENEW_GRACE,
-            )
-            || !self.grants.iter().any(|g| granted(*g))
+            ),
+            PermissionRoad::Codex => false,
+        };
+        now >= self.deadline || run_gone || !self.grants.iter().any(|g| granted(*g))
+    }
+
+    /// A Codex approval's wait, judged open while its request stands.
+    fn codex(&self) -> bool {
+        matches!(self.road, PermissionRoad::Codex)
     }
 }
 
@@ -4246,7 +4619,10 @@ struct Row {
 /// the rest of the line.
 fn numbered(line: &str) -> Option<(bool, usize, &str)> {
     let line = line.trim();
-    let (selected, rest) = line.strip_prefix('❯').map_or((false, line), |s| (true, s.trim()));
+    let (selected, rest) = match line.strip_prefix('❯').or_else(|| line.strip_prefix('›')) {
+        Some(rest) => (true, rest.trim()),
+        None => (false, line),
+    };
     let (n, rest) = rest.split_once(". ")?;
     n.parse::<usize>().ok().map(|n| (selected, n, rest.trim()))
 }
@@ -4258,8 +4634,15 @@ fn numbered(line: &str) -> Option<(bool, usize, &str)> {
 /// mark, and the `Next`/`Submit` row under the ticks is a row of its own
 /// (T-571). `None` when the numbering skips.
 fn dialog_rows(screen: &str) -> Option<Vec<Row>> {
+    dialog_rows_to(screen, "Enter to select")
+}
+
+/// `dialog_rows`, with the words that close the list: Claude Code's
+/// `Enter to select`, Codex's `enter to submit answer` or `Press enter to
+/// confirm` (T-846).
+fn dialog_rows_to(screen: &str, footer: &str) -> Option<Vec<Row>> {
     let lines: Vec<&str> = screen.lines().collect();
-    let footer = lines.iter().rposition(|l| l.contains("Enter to select")).unwrap_or(lines.len());
+    let footer = lines.iter().rposition(|l| l.contains(footer)).unwrap_or(lines.len());
     let mut rows: Vec<Row> = Vec::new();
     let mut open = false;
     for line in &lines[..footer] {
@@ -4274,7 +4657,10 @@ fn dialog_rows(screen: &str) -> Option<Vec<Row>> {
             open = true;
             continue;
         }
-        let (selected, rest) = line.strip_prefix('❯').map_or((false, line), |s| (true, s.trim()));
+        let (selected, rest) = match line.strip_prefix('❯').or_else(|| line.strip_prefix('›')) {
+            Some(rest) => (true, rest.trim()),
+            None => (false, line),
+        };
         let ticks = rows.last().is_some_and(|r| r.ticked.is_some());
         if ticks && matches!(rest, "Next" | "Submit") {
             rows.push(Row { number: None, selected, ticked: None, text: rest.to_string() });
@@ -4423,6 +4809,180 @@ fn reads_answer(question: &api::Question, answer: &api::QuestionAnswer, drawn: &
             labels.is_some_and(|labels| !labels.is_empty() && any_order(drawn, &labels))
         }
     }
+}
+
+/// `dialog_step` for the harness whose pane shows the dialog (T-846):
+/// Claude Code's measured shapes, or Codex's.
+fn dialog_step_for(
+    kind: SessionKind,
+    dialog: &api::Dialog,
+    response: &api::DialogAnswer,
+    screen: &str,
+    walk: &Walk,
+) -> Result<DialogStep, Miss> {
+    match kind {
+        SessionKind::Codex => codex_dialog_step(dialog, response, screen),
+        _ => dialog_step(dialog, response, screen, walk),
+    }
+}
+
+/// `dialog_shape` for the harness whose pane shows the dialog (T-846).
+fn dialog_shape_for(kind: SessionKind, dialog: &api::Dialog, screen: &str) -> bool {
+    match kind {
+        SessionKind::Codex => codex_dialog_shape(dialog, screen),
+        _ => dialog_shape(dialog, screen),
+    }
+}
+
+/// The answers a Codex dialog takes from the board (T-846), as measured on
+/// Codex 0.163.0: one question's one choice (its row and Enter), a refusal
+/// (Esc, which Codex reads as an interrupt) and a plan's accept (Enter on
+/// `Yes, implement this plan`, T-420). Words typed into the question's
+/// notes, several questions, several choices and a plan sent back are
+/// unmeasured and stay the pane's.
+fn codex_takes(dialog: &api::Dialog, response: &api::DialogAnswer) -> bool {
+    match (&dialog.content, dialog_plan(dialog, response)) {
+        (api::DialogContent::Questions { questions }, Some(Plan::Single(answer))) => {
+            questions.len() == 1 && matches!(answer, api::QuestionAnswer::Choice { .. })
+        }
+        (api::DialogContent::Questions { .. }, Some(Plan::Reject)) => true,
+        (api::DialogContent::Plan { .. }, Some(Plan::Accept)) => true,
+        _ => false,
+    }
+}
+
+/// The question shapes the board answers on a Codex seat (T-846): one
+/// question with options, as `codex_takes` admits.
+pub(super) fn dialog_answerable_for(kind: SessionKind, questions: &[api::Question]) -> bool {
+    match kind {
+        SessionKind::Codex => {
+            questions.len() == 1
+                && !questions[0].multi_select
+                && !questions[0].options.is_empty()
+                && dialog_answerable(questions)
+        }
+        _ => dialog_answerable(questions),
+    }
+}
+
+/// Codex's question dialog, as measured on 0.163.0 (T-846): the question's
+/// words, numbered rows (`label   description`, the cursor `›` on one), a
+/// `None of the above` row Codex adds, and the footer `tab to add notes |
+/// enter to submit answer | esc to interrupt`. The plan dialog is
+/// `codex::plan_dialog`'s.
+fn codex_dialog_shape(dialog: &api::Dialog, screen: &str) -> bool {
+    match &dialog.content {
+        api::DialogContent::Questions { questions } => {
+            let squeezed: String = screen.lines().map(squeeze).collect();
+            let question = questions.first().map(|q| squeeze(&q.question)).unwrap_or_default();
+            questions.len() == 1
+                && !question.is_empty()
+                && squeezed.contains(&question)
+                && squeezed.contains("entertosubmitanswer")
+        }
+        api::DialogContent::Plan { .. } => crate::agents::codex::plan_dialog(&input_screen(screen)),
+        // Claude Code's folder trust dialog (T-844) is never projected for a
+        // Codex seat, whose trust is `startup_attention`'s.
+        api::DialogContent::Trust { .. } => false,
+    }
+}
+
+/// A captured screen as the backend's `InputScreen`, without a cursor: the
+/// plan-dialog check wants the lines alone.
+fn input_screen(screen: &str) -> mesimon_backend_tmux::InputScreen {
+    mesimon_backend_tmux::InputScreen {
+        lines: screen.lines().map(str::to_string).collect(),
+        cursor: None,
+    }
+}
+
+/// One key of an answer into Codex's dialog (T-846): the cursor toward the
+/// chosen option's row, then Enter (`enter to submit answer`); Esc for a
+/// refusal; for a plan, Enter where the dialog stands at its `Yes` row
+/// (`plan_dialog::codex_at_default`). Anything `codex_takes` does not admit
+/// is no measured shape.
+fn codex_dialog_step(
+    dialog: &api::Dialog,
+    response: &api::DialogAnswer,
+    screen: &str,
+) -> Result<DialogStep, Miss> {
+    let plan = dialog_plan(dialog, response).ok_or(Miss::ShapeUnrecognised)?;
+    if !codex_takes(dialog, response) || !codex_dialog_shape(dialog, screen) {
+        return Err(Miss::ShapeUnrecognised);
+    }
+    match (&dialog.content, plan) {
+        (api::DialogContent::Plan { .. }, Plan::Accept) => {
+            crate::plan_dialog::codex_at_default(&input_screen(screen))
+                .map(|_| DialogStep::Submit)
+                .map_err(|_| Miss::ShapeUnrecognised)
+        }
+        (api::DialogContent::Questions { .. }, Plan::Reject) => {
+            let rows =
+                dialog_rows_to(screen, "enter to submit answer").ok_or(Miss::ShapeUnrecognised)?;
+            cursor(&rows)?;
+            Ok(DialogStep::Reject)
+        }
+        (
+            api::DialogContent::Questions { questions },
+            Plan::Single(api::QuestionAnswer::Choice { index }),
+        ) => {
+            let option = questions[0].options.get(index).ok_or(Miss::ShapeUnrecognised)?;
+            let rows =
+                dialog_rows_to(screen, "enter to submit answer").ok_or(Miss::ShapeUnrecognised)?;
+            let current = cursor(&rows)?;
+            let target = option_row(&rows, &option.label, &option.description)?;
+            Ok(toward(current, target, DialogStep::Submit))
+        }
+        _ => Err(Miss::ShapeUnrecognised),
+    }
+}
+
+/// One key of an approval's answer into Codex's dialog (T-846), as measured
+/// on 0.163.0: numbered rows under the request, the first `Yes, proceed
+/// (y)`, the last `No, and tell Codex what to do differently (esc)`, the
+/// cursor `›` on one, and the footer `Press enter to confirm or esc to
+/// cancel`. An allow walks to the first `Yes` row, a deny to the `No` row,
+/// and Enter confirms. The heading is not read: a command's, an edit's and
+/// a permission's dialogs share the rows. The key is bound to the request
+/// the phone answered, not its rows alone: the screen must show the
+/// request's reason (`Reason: …`), or, without one, the end of its command
+/// (the item spells `/bin/zsh -lc '…'`, the dialog the words inside), so a
+/// dialog that replaced it between the tap and the key gets nothing; a
+/// request with neither is no shape the board presses. The request's
+/// standing is re-read each key from the projection the snapshot keeps.
+fn codex_approval_step(
+    screen: &str,
+    allow: bool,
+    projection: &api::Permission,
+) -> Result<DialogStep, Miss> {
+    let squeezed: String = screen.lines().map(squeeze).collect();
+    if !squeezed.contains("Pressentertoconfirm") {
+        return Err(Miss::ShapeUnrecognised);
+    }
+    let reason = projection.input["reason"].as_str().map(squeeze).filter(|r| !r.is_empty());
+    let command = projection.input["command"].as_str().map(|c| {
+        let c = squeeze(c);
+        let c = c.trim_end_matches(['\'', '"']);
+        let start = c.char_indices().rev().nth(47).map_or(0, |(i, _)| i);
+        c[start..].to_string()
+    });
+    let bound = match (reason, command) {
+        (Some(reason), _) => squeezed.contains(&reason),
+        (None, Some(tail)) if !tail.is_empty() => squeezed.contains(&tail),
+        _ => false,
+    };
+    if !bound {
+        return Err(Miss::LabelNotFound);
+    }
+    let rows = dialog_rows_to(screen, "Press enter to confirm").ok_or(Miss::ShapeUnrecognised)?;
+    let current = cursor(&rows)?;
+    let yes = rows.iter().position(|r| r.text.starts_with("Yes"));
+    let no = rows.iter().rposition(|r| r.text.starts_with("No"));
+    let (Some(yes), Some(no)) = (yes, no) else { return Err(Miss::ShapeUnrecognised) };
+    if rows.iter().filter(|r| r.text.starts_with("No")).count() != 1 {
+        return Err(Miss::ShapeUnrecognised);
+    }
+    Ok(toward(current, if allow { yes } else { no }, DialogStep::Submit))
 }
 
 /// Recognize only measured native menus, reading the whole dialog (T-567).
@@ -6242,12 +6802,18 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
                 input: serde_json::json!({"command": "ls"}),
                 expires_at: 0,
             },
-            stream,
+            road: PermissionRoad::Hook { stream, renews, closed: None },
             offered: now,
             deadline: now + Duration::from_secs(mesimon_core::mesophon::PERMISSION_HOLD_SECS),
             grants,
-            renews,
-            closed: None,
+        }
+    }
+
+    /// The hook road's stream and close, for the tests that watch them.
+    fn hook_road(p: &PermissionWait) -> (&UnixStream, Option<Instant>) {
+        match &p.road {
+            PermissionRoad::Hook { stream, closed, .. } => (stream, *closed),
+            PermissionRoad::Codex => panic!("a hook road"),
         }
     }
 
@@ -6273,8 +6839,34 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         assert!(p.lapsed(later, |_| false), "a revoked phone ends it");
         assert!(p.lapsed(p.deadline, |g| g == phone), "a day ends it");
         drop(hook);
-        await_peer_closed(&p.stream);
+        await_peer_closed(hook_road(&p).0);
         assert!(p.lapsed(Instant::now(), |g| g == phone), "a hook set's run gone ends it");
+    }
+
+    /// T-846: a Codex approval's wait has no run to end it: it stands for
+    /// its day or until its request leaves the snapshot, and the mod's
+    /// renewal never takes it over.
+    #[test]
+    fn a_codex_approval_s_wait_has_no_run_and_is_never_renewed() {
+        let phone = BoardId::random();
+        let now = Instant::now();
+        let p = PermissionWait {
+            projection: api::Permission {
+                request: "\"9\"".into(),
+                tool: "command".into(),
+                input: serde_json::json!({"command": "printf x > out"}),
+                expires_at: 0,
+            },
+            road: PermissionRoad::Codex,
+            offered: now,
+            deadline: now + Duration::from_secs(mesimon_core::mesophon::PERMISSION_HOLD_SECS),
+            grants: vec![phone],
+        };
+        assert!(p.codex());
+        assert!(!p.lapsed(now + Duration::from_secs(3600), |g| g == phone));
+        assert!(p.lapsed(p.deadline, |g| g == phone));
+        assert!(p.lapsed(now, |_| false));
+        assert!(!takes_over(&p, "command", &serde_json::json!({"command": "printf x > out"})));
     }
 
     /// The mod's rounds: a renewing run that closed keeps its wait for the
@@ -6286,11 +6878,11 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         let mut p = wait(host, vec![phone], true);
         let now = Instant::now();
         p.note_closed(now);
-        assert_eq!(p.closed, None, "open while its run lives");
+        assert_eq!(hook_road(&p).1, None, "open while its run lives");
         drop(hook);
-        await_peer_closed(&p.stream);
+        await_peer_closed(hook_road(&p).0);
         p.note_closed(now);
-        assert_eq!(p.closed, Some(now));
+        assert_eq!(hook_road(&p).1, Some(now));
         assert!(!p.lapsed(now, |g| g == phone), "within the grace");
         assert!(p.lapsed(now + PERMISSION_RENEW_GRACE, |g| g == phone), "past it");
         assert!(takes_over(&p, "Bash", &serde_json::json!({"command": "ls"})));
@@ -6312,5 +6904,238 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         assert!(!invite.accepts(&owner.public(), &proof, now));
         assert!(!invite.accepts(&browser.public(), &proof, invite.expires));
         assert!(!invite.accepts(&browser.public(), "invalid", now));
+    }
+
+    /// Codex 0.163.0's question dialog as captured on 2026-10-17 (T-846), the
+    /// cursor on its first row.
+    const CODEX_QUESTION: &str = "\
+  Question 1/1 (1 unanswered)
+  Choose fixture color?
+
+  › 1. Blue               Use blue for the fixture.
+    2. Green              Use green for the fixture.
+    3. None of the above  Optionally, add details in notes (tab)
+
+  tab to add notes | enter to submit answer | esc to interrupt
+";
+
+    /// Codex 0.163.0's command approval dialog as captured on 2026-10-17
+    /// (T-846), its second row wrapped by the pane.
+    const CODEX_APPROVAL: &str = "\
+  Would you like to run the following command?
+
+  Environment: local
+
+  Reason: May I write this disposable fixture file?
+
+  $ printf MESIMON_REFUSED_WRITE >
+  /private/tmp/msmn-e2e-codex-runtime-apj3xgcw/approval-refused.txt
+
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with `printf
+     MESIMON_REFUSED_WRITE > /private/tmp/msmn-e2e-codex-runtime-apj3xgcw/
+     approval-refused.txt` (p)
+  3. No, and tell Codex what to do differently (esc)
+
+  Press enter to confirm or esc to cancel
+";
+
+    fn codex_question() -> api::Dialog {
+        api::Dialog {
+            request: "\"q1\"".into(),
+            content: api::DialogContent::Questions {
+                questions: vec![api::Question {
+                    question: "Choose fixture color?".into(),
+                    header: "Color".into(),
+                    multi_select: false,
+                    options: vec![
+                        api::QuestionOption {
+                            label: "Blue".into(),
+                            description: "Use blue for the fixture.".into(),
+                        },
+                        api::QuestionOption {
+                            label: "Green".into(),
+                            description: "Use green for the fixture.".into(),
+                        },
+                    ],
+                }],
+            },
+        }
+    }
+
+    /// T-846: a Codex question's choice walks `›` to the option's row (its
+    /// label and description read as one) and presses Enter; a refusal is
+    /// Esc; words, batches and Claude's screen are no shape.
+    #[test]
+    fn a_codex_question_walks_its_rows_by_label_and_description() {
+        let dialog = codex_question();
+        let choose = |i| api::DialogAnswer::Choice { index: i };
+        let step = |response, screen: &str| {
+            dialog_step_for(SessionKind::Codex, &dialog, &response, screen, &Walk::default())
+        };
+        assert_eq!(step(choose(0), CODEX_QUESTION), Ok(DialogStep::Submit));
+        assert_eq!(step(choose(1), CODEX_QUESTION), Ok(DialogStep::Down));
+        let on_green = CODEX_QUESTION.replace("› 1.", "  1.").replace("  2.", "› 2.");
+        assert_eq!(step(choose(1), &on_green), Ok(DialogStep::Submit));
+        assert_eq!(step(choose(0), &on_green), Ok(DialogStep::Up));
+        assert_eq!(step(api::DialogAnswer::Reject, CODEX_QUESTION), Ok(DialogStep::Reject));
+        assert_eq!(step(choose(5), CODEX_QUESTION), Err(Miss::ShapeUnrecognised));
+        assert_eq!(
+            step(api::DialogAnswer::Text { text: "Purple".into() }, CODEX_QUESTION),
+            Err(Miss::ShapeUnrecognised),
+            "words go in Codex's notes row, unmeasured"
+        );
+        assert_eq!(
+            step(
+                api::DialogAnswer::Answers {
+                    answers: vec![api::QuestionAnswer::Choice { index: 0 }]
+                },
+                CODEX_QUESTION
+            ),
+            Ok(DialogStep::Submit),
+            "the crown's one answer per question, for one question"
+        );
+        for bad in [
+            "Choose fixture color?\n❯ 1. Blue\n  2. Green\nEnter to select · Esc to cancel",
+            "Question 1/1\nChoose fixture color?\n  1. Blue\n  2. Green\ntab to add notes | enter to submit answer",
+            "Question 1/1\nChoose fixture color?\n› 1. Blue\n› 2. Green\nenter to submit answer",
+            "Question 1/1\nWhich region?\n› 1. Blue\n  2. Green\nenter to submit answer",
+            "› Ask Codex to do anything",
+        ] {
+            assert_eq!(step(choose(0), bad), Err(Miss::ShapeUnrecognised), "{bad}");
+        }
+        assert!(dialog_shape_for(SessionKind::Codex, &dialog, CODEX_QUESTION));
+        assert!(!dialog_shape_for(SessionKind::Claude, &dialog, CODEX_QUESTION));
+        let mut two = dialog.clone();
+        if let api::DialogContent::Questions { questions } = &mut two.content {
+            questions.push(questions[0].clone());
+        }
+        assert!(!codex_takes(
+            &two,
+            &api::DialogAnswer::Answers {
+                answers: vec![
+                    api::QuestionAnswer::Choice { index: 0 },
+                    api::QuestionAnswer::Choice { index: 0 }
+                ]
+            }
+        ));
+        assert!(dialog_answerable_for(SessionKind::Codex, questions_of(&dialog)));
+        assert!(!dialog_answerable_for(SessionKind::Codex, questions_of(&two)));
+    }
+
+    /// The approval the phone answered, as the snapshot carried it on 0.163.0:
+    /// the item's command is the shell wrapper, the dialog shows the words
+    /// inside, and the reason is drawn as `Reason: …`.
+    fn codex_approval(reason: Option<&str>, command: Option<&str>) -> api::Permission {
+        let mut input = serde_json::Map::new();
+        if let Some(reason) = reason {
+            input.insert("reason".into(), reason.into());
+        }
+        if let Some(command) = command {
+            input.insert("command".into(), command.into());
+        }
+        api::Permission {
+            request: "\"0\"".into(),
+            tool: "command".into(),
+            input: serde_json::Value::Object(input),
+            expires_at: 0,
+        }
+    }
+
+    /// T-846: an approval's allow is Enter on the `Yes, proceed` row, a deny
+    /// walks down to the one `No` row; the heading is not read, a second
+    /// `No` row or a missing footer is no shape, and a dialog that does not
+    /// show the answered request's reason or command gets no key.
+    #[test]
+    fn a_codex_approval_walks_to_yes_or_no_and_confirms() {
+        let reason = "May I write this disposable fixture file?";
+        let command = "/bin/zsh -lc 'printf MESIMON_REFUSED_WRITE > \
+                       /private/tmp/msmn-e2e-codex-runtime-apj3xgcw/approval-refused.txt'";
+        let p = codex_approval(Some(reason), Some(command));
+        assert_eq!(codex_approval_step(CODEX_APPROVAL, true, &p), Ok(DialogStep::Submit));
+        assert_eq!(codex_approval_step(CODEX_APPROVAL, false, &p), Ok(DialogStep::Down));
+        let on_two =
+            CODEX_APPROVAL.replace("› 1.", "  1.").replace("  2. Yes, and", "› 2. Yes, and");
+        assert_eq!(codex_approval_step(&on_two, true, &p), Ok(DialogStep::Up));
+        assert_eq!(codex_approval_step(&on_two, false, &p), Ok(DialogStep::Down));
+        let on_no = CODEX_APPROVAL.replace("› 1.", "  1.").replace("  3. No", "› 3. No");
+        assert_eq!(codex_approval_step(&on_no, false, &p), Ok(DialogStep::Submit));
+        assert_eq!(codex_approval_step(&on_no, true, &p), Ok(DialogStep::Up));
+        let edits = CODEX_APPROVAL.replace(
+            "Would you like to run the following command?",
+            "Would you like to make the following edits?",
+        );
+        assert_eq!(codex_approval_step(&edits, true, &p), Ok(DialogStep::Submit));
+        for bad in [
+            CODEX_APPROVAL.replace("Press enter to confirm or esc to cancel", "").as_str(),
+            CODEX_APPROVAL.replace("› 1.", "  1.").as_str(),
+            CODEX_QUESTION,
+            "› Ask Codex to do anything",
+        ] {
+            assert_eq!(codex_approval_step(bad, true, &p), Err(Miss::ShapeUnrecognised), "{bad}");
+        }
+        // Bound to the request: the command's tail stands in for a missing
+        // reason; another request's dialog, or a request with neither, gets
+        // no key.
+        let by_command = codex_approval(None, Some(command));
+        assert_eq!(codex_approval_step(CODEX_APPROVAL, true, &by_command), Ok(DialogStep::Submit));
+        let other = codex_approval(Some("Delete the build directory?"), Some("rm -rf target"));
+        assert_eq!(codex_approval_step(CODEX_APPROVAL, true, &other), Err(Miss::LabelNotFound));
+        let other_command = codex_approval(None, Some("/bin/zsh -lc 'rm -rf target'"));
+        assert_eq!(
+            codex_approval_step(CODEX_APPROVAL, true, &other_command),
+            Err(Miss::LabelNotFound)
+        );
+        let bare = codex_approval(None, None);
+        assert_eq!(codex_approval_step(CODEX_APPROVAL, true, &bare), Err(Miss::LabelNotFound));
+    }
+
+    /// T-846: a Codex plan's accept is the T-420 press, at the `Yes` row
+    /// alone; sending it back is unmeasured and stays the pane's.
+    #[test]
+    fn a_codex_plan_takes_the_accept_at_its_yes_row_alone() {
+        let plan = api::Dialog {
+            request: "plan:abc".into(),
+            content: api::DialogContent::Plan { markdown: "Ship it.".into() },
+        };
+        let dialog = "Implement this plan?\n› Yes, implement this plan\n  No, stay in Plan mode\n";
+        let step = |response, screen: &str| {
+            dialog_step_for(SessionKind::Codex, &plan, &response, screen, &Walk::default())
+        };
+        assert_eq!(step(api::DialogAnswer::Accept, dialog), Ok(DialogStep::Submit));
+        let no = dialog.replace("› Yes", "  Yes").replace("  No", "› No");
+        assert_eq!(step(api::DialogAnswer::Accept, &no), Err(Miss::ShapeUnrecognised));
+        assert_eq!(step(api::DialogAnswer::Reject, dialog), Err(Miss::ShapeUnrecognised));
+        assert!(dialog_shape_for(SessionKind::Codex, &plan, dialog));
+        assert!(!dialog_shape_for(SessionKind::Codex, &plan, "› Ask Codex to do anything"));
+    }
+
+    /// T-846: a Codex question becomes the phone's dialog within the bounds
+    /// Claude's keeps; a secret or option-less question draws no card.
+    #[test]
+    fn a_codex_question_is_projected_within_the_phone_s_bounds() {
+        use crate::agents::codex::{AskOption, AskQuestion};
+        let q = |options: usize, secret: bool| AskQuestion {
+            question: "Choose fixture color?".into(),
+            header: String::new(),
+            options: (0..options)
+                .map(|i| AskOption { label: format!("Option {i}"), description: String::new() })
+                .collect(),
+            secret,
+        };
+        let Some(api::DialogContent::Questions { questions }) =
+            Daemon::codex_questions(&[q(2, false)])
+        else {
+            panic!("a dialog")
+        };
+        assert_eq!(questions[0].header, "Choose", "the first word stands in for a header");
+        assert_eq!(questions[0].options.len(), 2);
+        assert!(!questions[0].multi_select);
+        assert!(Daemon::codex_questions(&[q(2, true)]).is_none(), "a secret stays the pane's");
+        assert!(Daemon::codex_questions(&[q(0, false)]).is_none(), "free words are unmeasured");
+        assert!(Daemon::codex_questions(&[q(9, false)]).is_none());
+        assert!(Daemon::codex_questions(&[]).is_none());
+        assert!(Daemon::codex_questions(&vec![q(2, false); 5]).is_none());
     }
 }

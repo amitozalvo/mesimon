@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import shlex
 import shutil
+import threading
 import subprocess
 import sys
 import time
@@ -29,7 +30,7 @@ state = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(state)
 Inconclusive = state.Inconclusive
 HOOK_COMMAND = '"$MESIMON_LIFECYCLE_PYTHON" -B "$MESIMON_LIFECYCLE_SCRIPT" hook'
-BUDGETS = {"stop": 1, "compact": 2, "identity": 2, "question": 1}
+BUDGETS = {"stop": 1, "compact": 2, "identity": 2, "question": 3}
 MAX_FILE = 16 * 1024 * 1024
 
 
@@ -147,6 +148,9 @@ class Verification(state.Verification):
         result = self.native_read(sid, "hooks/list", {"cwds": [str(self.repo)]})
         enabled = [hook for group in result.get("data", []) for hook in group.get("hooks", []) if hook.get("enabled")]
         gate = "'" + str(self.args.binary) + "' gate --provider codex --from-env"
+        # With the board's tools on (the question case, T-846) the launch also
+        # carries the agent brief's sessionStart hook (T-816).
+        brief = "'" + str(self.args.binary) + "' agent-brief"
         expected_events = {"userPromptSubmit"}
         if self.args.case == "stop": expected_events.add("stop")
         if self.args.case == "compact": expected_events.update(["preCompact", "postCompact"])
@@ -156,7 +160,7 @@ class Verification(state.Verification):
         for hook in enabled:
             valid = ((hook.get("source") == "user" and hook.get("command") == HOOK_COMMAND
                       and hook.get("eventName") in expected_events)
-                     or (hook.get("source") == "sessionFlags" and hook.get("command") == gate))
+                     or (hook.get("source") == "sessionFlags" and hook.get("command") in (gate, brief)))
             if not valid:
                 raise AssertionError("hook review includes an unvetted definition")
         state.write(self.out / "reviewed-hooks.json", enabled)
@@ -337,19 +341,107 @@ class Verification(state.Verification):
             raise AssertionError("native identity selection created a competing Mesimon agent seat")
         self.mark(assertion="native new resume and fork retain one Mesimon seat and owned environment", passed=True, original=original, fresh=fresh, fork=fork)
 
+    def carried(self, sid):
+        """The request the runtime's snapshot carries for `sid` (T-846), or None."""
+        path = self.runtime / ("cdx-" + sid.replace("-", "")[:16] + ".json")
+        try:
+            return json.loads(path.read_text()).get("request")
+        except (OSError, ValueError):
+            return None
+
     def question(self):
-        sid = self.spawn_unsubmitted()
-        self.slash(sid, "/plan")
-        self.wait(sid, "native Plan mode enabled", lambda s,t,p: "Plan mode" in p)
-        self.ask(sid, "Use request_user_input once to ask 'Choose fixture color?' with exactly two options Blue and Green. After my answer, reply exactly MESIMON_QUESTION_BLUE. Do not propose a plan or use any other tools.")
-        self.wait(sid, "native question and board attention agree", lambda s,t,p:
-                  s["state"] == {"state":"requires_action", "reason":"question"}
-                  and s.get("observation_hold") and "Choose fixture color?" in p and "Blue" in p)
-        self.tm("send-keys", "-t", sid.replace("-", "")[:16], "Enter")
-        self.mark(action="native_select_Blue_question_answer", session=sid)
-        self.completed(sid, "MESIMON_QUESTION_BLUE")
-        self.page(sid)
-        self.mark(assertion="native question resolves through original TUI and releases board attention", passed=True)
+        """T-846: the crown answers a real request_user_input by its keys.
+
+        A crowned Codex seat starts the worker and is kept busy on a sleep
+        turn, so the question's wake queues behind it and no second model
+        turn answers the board's words. The seat is launched before the
+        board's tools go on, so its model has none to wander into (a seat
+        launched with them called merge_ticket instead of sleeping); the
+        tools go on for the crown's wire calls once its turn is running. The
+        worker enters Plan mode through its terminal and asks; the runtime's
+        snapshot carries the question and its options; the crown's
+        answer_agent presses Enter on the chosen row and reads `answered`
+        once Codex resolves the request; the same turn completes on the
+        chosen color.
+        """
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True, timeout=5)
+        subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+                        "commit", "-q", "-m", "fixture"], check=True, timeout=5)
+        crown = self.request("create_ticket", column="TODO", title="Coordinate the fixture", workspace=None)["id"]
+        self.request("crown_ticket", id=crown)
+        csid = self.request("spawn_session", ticket=crown, kind="claude", submit_prompt=False)["id"]
+        self.sessions.append(csid)
+        self.wait(csid, "crown composer ready", lambda s,t,p: s["state"]["state"] == "idle"
+                  and not s.get("pending_prefill", True) and not s.get("observation_hold", True))
+        self.tm("send-keys", "-t", csid.replace("-", "")[:16], "C-u")
+        self.ask(csid, "Run sleep 120 once in the terminal, then reply exactly MESIMON_CROWN_DONE. No other tools.")
+        self.wait(csid, "crown busy for the case, so its wakes queue", lambda s,t,p:
+                  s["state"]["state"] == "running" and s.get("codex_turn_id"))
+        # The crown's wire calls need the board's tools on (T-846); its own
+        # Codex process keeps the launch it had, without them.
+        self.request("set_mcp_tools", on=True)
+        worker = self.request("create_ticket", column="TODO", title="Reply exactly MESIMON_WORKER_READY. Do not use tools.",
+                              workspace="worktree")["id"]
+        key = next(t for t in self.client.board()["tickets"] if t["id"] == worker)["short_key"]
+        view = self.client.agent(csid, "agent_read_ticket", key=key)
+        if view.get("resp") != "agent_ticket":
+            raise AssertionError("the crown could not read its worker's ticket: " + str(view))
+        self.reserve_turn()
+        self.calls += 1
+        started = self.client.agent(csid, "agent_start_ticket", key=key, seen=view["ticket"]["seen"],
+                                    plan=False, tier=None, workspace="worktree")
+        if started.get("resp") != "agent_started":
+            raise AssertionError("the crown could not start its worker: " + str(started))
+        deadline = time.monotonic() + 60
+        wsid = None
+        while wsid is None:
+            if time.monotonic() > deadline:
+                raise state.Inconclusive("the crown-started worker never took its seat")
+            wsid = next((s["id"] for s in self.client.board()["sessions"]
+                         if s["ticket"] == worker and s["kind"] == "codex"), None)
+            time.sleep(0.2)
+        self.sessions.append(wsid)
+        self.mark(assertion="the crown started a Codex worker in a worktree", passed=True, session=wsid)
+        self.completed(wsid, "MESIMON_WORKER_READY")
+        self.slash(wsid, "/plan")
+        self.wait(wsid, "native Plan mode enabled", lambda s,t,p: "Plan mode" in p)
+        self.ask(wsid, "Use the blocking request_user_input tool once (never request_user_input_async) to ask 'Choose fixture color?' with exactly two options Blue and Green, and wait for my answer. After my answer, reply exactly MESIMON_QUESTION_BLUE. Do not propose a plan or use any other tools.")
+        def asking(s, t, p):
+            request = self.carried(wsid) or {}
+            labels = [o.get("label") for q in request.get("questions", []) for o in q.get("options", [])]
+            return (s["state"] == {"state":"requires_action", "reason":"question"} and s.get("observation_hold")
+                    and "Choose fixture color?" in p and request.get("kind") == "question"
+                    and labels == ["Blue", "Green"])
+        self.wait(wsid, "native question, board attention and the carried request agree", asking)
+        request = self.carried(wsid)
+        view = self.client.agent(csid, "agent_read_ticket", key=key)["ticket"]
+        needs = view.get("needs_you") or {}
+        if needs.get("request") != request["id"] or needs.get("answerable") is not True \
+                or [q["text"] for q in needs.get("questions", [])] != ["Choose fixture color?"]:
+            raise AssertionError("get_ticket did not list the carried question as answerable: " + str(needs))
+        self.mark(assertion="get_ticket lists the Codex question with its options as answerable", passed=True)
+        answered = {}
+        def answer():
+            client = state.lab.Client(self.repo)
+            try:
+                answered["reply"] = client.agent(csid, "agent_answer_ticket", key=key, seen=view["seen"],
+                                                 request=request["id"], index=0)
+            finally:
+                client.close()
+        thread = threading.Thread(target=answer, daemon=True)
+        thread.start()
+        self.mark(action="crown_answer_agent_blue", session=wsid)
+        thread.join(70)
+        reply = answered.get("reply")
+        if reply is None or reply.get("resp") != "agent_answered" or reply.get("outcome") != "answered" \
+                or reply.get("answer") != "Blue":
+            raise AssertionError("the crown's answer did not land as answered: " + str(reply))
+        self.mark(assertion="answer_agent walked the native dialog and read answered on the request's resolution", passed=True)
+        self.completed(wsid, "MESIMON_QUESTION_BLUE")
+        if self.carried(wsid) is not None:
+            raise AssertionError("the resolved request is still carried by the snapshot")
+        self.page(wsid)
+        self.mark(assertion="the crown's answer completed the native turn and the snapshot dropped the request", passed=True)
 
     def run(self):
         getattr(self, self.args.case)()

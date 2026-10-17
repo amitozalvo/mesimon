@@ -692,6 +692,14 @@ impl Harness {
         cmd
     }
 
+    /// A daemon seam for the next boot (`restart`): a harness that needs a
+    /// file under its own `dir` named in the environment (T-846: the fake
+    /// Codex runtime beside the Claude stub) writes it after `boot`, sets it
+    /// here and restarts.
+    pub fn set_env(&self, key: &str, value: impl AsRef<std::ffi::OsStr>) {
+        self.fixture.set_env(key, value);
+    }
+
     pub fn client(&self, name: &str) -> TestClient {
         let mut c = TestClient::connect(&self.paths.orch_sock());
         assert!(matches!(

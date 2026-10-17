@@ -356,6 +356,13 @@ pub struct Snapshot {
     pub plan: Option<String>,
     #[serde(default)]
     pub plan_key: Option<String>,
+    /// The server request that waits on a person, while it does (T-846): a
+    /// question's words and options, or an approval's command, as the
+    /// request carried them, keyed by its id; gone on
+    /// `serverRequest/resolved`. The daemon projects it into the card
+    /// Remote Control and the crown answer. Bounded, never a reply's text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<Ask>,
     /// Durable evidence that this generation and its owned server have stopped.
     #[serde(default)]
     pub stopped: bool,
@@ -382,6 +389,64 @@ pub struct Snapshot {
     /// The daemon's ack for a steer it pasted is this count rising.
     #[serde(default)]
     pub steers: u64,
+}
+
+/// A server request that waits on a person, as the snapshot carries it
+/// (T-846): the content the native dialog shows, so a phone or the crown
+/// can answer the same dialog by its keys. Bounds: `Ask::QUESTIONS`
+/// questions of `Ask::OPTIONS` options, `Ask::TEXT` chars a field.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ask {
+    /// The request's id, as `serverRequest/resolved` names it.
+    pub id: String,
+    #[serde(flatten)]
+    pub kind: AskKind,
+}
+
+impl Ask {
+    pub const QUESTIONS: usize = 4;
+    pub const OPTIONS: usize = 8;
+    pub const TEXT: usize = 1000;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AskKind {
+    /// `item/tool/requestUserInput`: its questions, in order. A secret
+    /// question is carried as `secret` and never projected.
+    Question { questions: Vec<AskQuestion> },
+    /// A `requestApproval` of any kind, or Codex's one-tool MCP approval:
+    /// `what` names the kind in a word (`command`, `edit`, `permissions`,
+    /// `mcp_tool`), the rest is what the dialog shows.
+    Approval {
+        what: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        decisions: Vec<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskQuestion {
+    pub question: String,
+    #[serde(default)]
+    pub header: String,
+    #[serde(default)]
+    pub options: Vec<AskOption>,
+    #[serde(default)]
+    pub secret: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskOption {
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
 }
 
 /// Why the runtime's ledger holds the seat, as the snapshot carries it
@@ -749,6 +814,7 @@ mod tests {
             title: None,
             plan: None,
             plan_key: None,
+            request: None,
             stopped: false,
             rate_limits: None,
             rate_limits_at_ms: 0,

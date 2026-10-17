@@ -21,7 +21,7 @@ SMOKE = ("complete", "mcp", "brief", "queue", "sleep-resume", "handover")
 EXTENDED = ("guard", "plan", "interrupt", "steer", "child", "stop", "compact", "identity", "question")
 TURNS = {"complete": 1, "mcp": 1, "brief": 2, "queue": 2, "sleep-resume": 2,
          "handover": 2, "guard": 2, "plan": 2, "interrupt": 1, "steer": 2, "child": 2,
-         "stop": 2, "compact": 3, "identity": 2, "question": 1}
+         "stop": 2, "compact": 3, "identity": 2, "question": 3}
 LIFECYCLE = {"stop", "compact", "identity", "question"}
 
 
@@ -341,7 +341,7 @@ def report(directory, manifest):
             if row.get(key):
                 lines.extend(["", f"{row['case']} ({key}): {row[key]}", ""])
     lines.extend(["", "Token readings may lag and omit native overhead; no dollar cap is claimed.",
-                  "Codex questions and plans remain the person's; crown dialog automation is unsupported."])
+                  "A Codex question is the crown's where the board lets it (T-846); approvals, secrets and forms stay the person's."])
     replace_text(directory / "verdicts.md", "\n".join(lines) + "\n")
 
 

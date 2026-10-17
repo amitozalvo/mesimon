@@ -48,6 +48,12 @@ class Client:
             raise RuntimeError(response)
         return response
 
+    def agent(self, session, cmd, **fields):
+        """A command as an agent session sends it (T-846: the crown's road)."""
+        principal = {"kind": "agent", "session": session}
+        self.sock.sendall((json.dumps({"principal": principal, "command": {"cmd": cmd, **fields}}) + "\n").encode())
+        return json.loads(self.file.readline())
+
     def board(self):
         return self.request("snapshot")["board"]
 

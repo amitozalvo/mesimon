@@ -8,28 +8,153 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::{Ask, AskKind, AskOption, AskQuestion};
 use mesimon_core::attention::{rank, Signal, TurnOutcome};
 use mesimon_core::board::{FailReason, Reason, SessionState, StopReason, UnknownReason};
 use serde_json::Value;
 
 const MAX_IDENTITIES: usize = 1024;
 const MAX_PREVIEW_CHARS: usize = 32_768;
+/// The most open asks a ledger carries content for (T-846); the request
+/// ids themselves are bounded by `MAX_IDENTITIES`.
+const MAX_ASKS: usize = 16;
 
 /// An item started and not yet completed: its kind, for the snapshot's
-/// `Hold` (T-843), and the turn it compacts when it is a compaction (T-398).
+/// `Hold` (T-843), the turn it compacts when it is a compaction (T-398),
+/// and for a command the command itself, which its approval request names
+/// by `itemId` alone (T-846).
 #[derive(Debug)]
 struct PendingItem {
     kind: String,
     compaction_turn: Option<String>,
+    command: Option<String>,
+    cwd: Option<String>,
 }
 
 impl PendingItem {
-    fn new(kind: &str, turn_id: Option<&str>) -> Self {
+    fn new(item: &Value, turn_id: Option<&str>) -> Self {
+        let kind = string(item, "type").unwrap_or_default();
         Self {
             kind: kind.chars().take(64).collect(),
             compaction_turn: (kind == "contextCompaction")
                 .then(|| turn_id.map(str::to_owned))
                 .flatten(),
+            command: (kind == "commandExecution").then(|| command_text(&item["command"])).flatten(),
+            cwd: (kind == "commandExecution")
+                .then(|| string(item, "cwd").map(|c| bound(c, Ask::TEXT)))
+                .flatten(),
+        }
+    }
+}
+
+/// `text` cut to `max` chars, with an ellipsis where it was cut.
+fn bound(text: &str, max: usize) -> String {
+    let mut out: String = text.chars().take(max).collect();
+    if out.len() < text.len() {
+        out.push('…');
+    }
+    out
+}
+
+/// A command as the protocol spells it: one string, or an argv array.
+fn command_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => Some(bound(s, Ask::TEXT)),
+        Value::Array(parts) => {
+            let words: Vec<&str> = parts.iter().filter_map(Value::as_str).collect();
+            (!words.is_empty()).then(|| bound(&words.join(" "), Ask::TEXT))
+        }
+        _ => None,
+    }
+}
+
+/// The content of a request that asks a person (T-846), as the native
+/// dialog shows it: a question's words and options, or an approval's
+/// command (off the request where it carries one, else off the started
+/// item it names), its folder, its reason and the decisions it offers.
+/// `None` for a request that asks nobody.
+fn ask_of(
+    method: &str,
+    params: &Value,
+    id: &str,
+    items: &BTreeMap<String, PendingItem>,
+) -> Option<Ask> {
+    let reason = request_reason(method, params)?;
+    let kind = match method {
+        "item/tool/requestUserInput" => AskKind::Question {
+            questions: params["questions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .take(Ask::QUESTIONS)
+                .map(|q| AskQuestion {
+                    question: string(q, "question")
+                        .map(|t| bound(t, Ask::TEXT))
+                        .unwrap_or_default(),
+                    header: string(q, "header").map(|t| bound(t, 64)).unwrap_or_default(),
+                    options: q["options"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .take(Ask::OPTIONS)
+                        .map(|o| AskOption {
+                            label: string(o, "label").map(|t| bound(t, 200)).unwrap_or_default(),
+                            description: string(o, "description")
+                                .map(|t| bound(t, Ask::TEXT))
+                                .unwrap_or_default(),
+                        })
+                        .collect(),
+                    secret: q["isSecret"].as_bool() == Some(true),
+                })
+                .collect(),
+        },
+        _ if reason == Reason::Permission => {
+            let item = string(params, "itemId").and_then(|item| items.get(item));
+            let what = match method {
+                "item/commandExecution/requestApproval" => "command",
+                "item/fileChange/requestApproval" => "edit",
+                "item/permissions/requestApproval" => "permissions",
+                _ => "mcp_tool",
+            };
+            let tool = [string(params, "serverName"), string(params, "toolName")]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" · ");
+            AskKind::Approval {
+                what: what.into(),
+                command: command_text(&params["command"])
+                    .or_else(|| item.and_then(|i| i.command.clone()))
+                    .or_else(|| (!tool.is_empty()).then(|| bound(&tool, Ask::TEXT))),
+                cwd: string(params, "cwd")
+                    .map(|c| bound(c, Ask::TEXT))
+                    .or_else(|| item.and_then(|i| i.cwd.clone())),
+                reason: string(params, "reason")
+                    .or_else(|| string(params, "message"))
+                    .map(|r| bound(r, Ask::TEXT)),
+                decisions: params["availableDecisions"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .take(8)
+                    .map(|d| bound(d, 64))
+                    .collect(),
+            }
+        }
+        // A form (an MCP elicitation that is not Codex's one-tool approval)
+        // stays the pane's: no card draws it.
+        _ => return None,
+    };
+    Some(Ask { id: id.into(), kind })
+}
+
+/// The open asks with `ask` added, newest last, within `MAX_ASKS`.
+fn push_ask(asks: &mut Vec<Ask>, ask: Option<Ask>) {
+    if let Some(ask) = ask {
+        asks.retain(|a| a.id != ask.id);
+        if asks.len() < MAX_ASKS {
+            asks.push(ask);
         }
     }
 }
@@ -52,6 +177,7 @@ fn retire_cancelled_compaction(items: &mut BTreeMap<String, PendingItem>, turn: 
 struct ChildWork {
     known: bool,
     requests: BTreeMap<String, Reason>,
+    asks: Vec<Ask>,
     work_requests: BTreeSet<String>,
     items: BTreeMap<String, PendingItem>,
     hooks: BTreeSet<String>,
@@ -94,7 +220,7 @@ impl ChildWork {
             if item_terminal(item, completed) {
                 self.items.remove(id);
             } else {
-                self.items.insert(id.into(), PendingItem::new(kind, turn_id));
+                self.items.insert(id.into(), PendingItem::new(item, turn_id));
             }
         }
         self.descendants.extend(child_ids(item));
@@ -104,6 +230,7 @@ impl ChildWork {
         let params = &frame["params"];
         if let Some(reason) = request_reason(method, params) {
             if let Some(id) = request_id(&frame["id"]) {
+                push_ask(&mut self.asks, ask_of(method, params, &id, &self.items));
                 self.requests.insert(id, reason);
             } else {
                 self.uncertain = true;
@@ -129,6 +256,7 @@ impl ChildWork {
                 if let Some(id) = request_id(&params["requestId"]) {
                     self.requests.remove(&id);
                     self.work_requests.remove(&id);
+                    self.asks.retain(|a| a.id != id);
                 }
             }
             "hook/started" | "hook/completed" => {
@@ -196,6 +324,11 @@ pub struct Update {
     /// Only a completed `plan` item supplies authoritative plan text.
     pub plan: Option<String>,
     pub activity: Option<String>,
+    /// The request that waits on a person, with its content (T-846): the
+    /// oldest open one of this thread, else of a known descendant. `None`
+    /// once every such request is resolved. Reported on every update, so
+    /// the snapshot mirrors the ledger.
+    pub ask: Option<Ask>,
     /// The bookkeeping a closed turn's audit dropped (T-843), in the words
     /// of its `Hold`, so the snapshot and the journal can say so.
     pub released: Option<String>,
@@ -216,6 +349,9 @@ pub struct Ledger {
     saw_task_item: bool,
     retired_turns: BTreeSet<String>,
     requests: BTreeMap<String, Reason>,
+    /// The content of each request in `requests` that a card can draw
+    /// (T-846), oldest first.
+    asks: Vec<Ask>,
     work_requests: BTreeSet<String>,
     items: BTreeMap<String, PendingItem>,
     hooks: BTreeSet<String>,
@@ -243,6 +379,7 @@ impl Ledger {
             saw_task_item: false,
             retired_turns: BTreeSet::new(),
             requests: BTreeMap::new(),
+            asks: Vec::new(),
             work_requests: BTreeSet::new(),
             items: BTreeMap::new(),
             hooks: BTreeSet::new(),
@@ -332,7 +469,19 @@ impl Ledger {
             plan: None,
             activity: None,
             released: None,
+            ask: self.open_ask(),
         }
+    }
+
+    /// The request a card may answer for (T-846): this thread's oldest open
+    /// ask, else a known descendant's, whose dialog shows in the same pane.
+    fn open_ask(&self) -> Option<Ask> {
+        self.asks.first().cloned().or_else(|| {
+            self.child_work
+                .values()
+                .filter(|work| work.known)
+                .find_map(|work| work.asks.first().cloned())
+        })
     }
 
     pub fn state(&self) -> &SessionState {
@@ -513,6 +662,7 @@ impl Ledger {
         }
         update.observation_hold = self.held();
         update.turn_id = self.active_turn.clone();
+        update.ask = self.open_ask();
     }
 
     fn enforce_bounds(&mut self) {
@@ -567,6 +717,7 @@ impl Ledger {
             self.active_turn = None;
             self.runtime_active = false;
             self.requests.clear();
+            self.asks.clear();
             self.work_requests.clear();
             self.items.clear();
             self.hooks.clear();
@@ -654,6 +805,7 @@ impl Ledger {
         }
         if let Some(reason) = request_reason(method, params) {
             if let Some(id) = request_id(&frame["id"]) {
+                push_ask(&mut self.asks, ask_of(method, params, &id, &self.items));
                 self.requests.insert(id, reason);
                 if self.terminal_emitted {
                     self.terminal = None;
@@ -707,6 +859,7 @@ impl Ledger {
                     if let Some(id) = request_id(&params["requestId"]) {
                         self.requests.remove(&id);
                         self.work_requests.remove(&id);
+                        self.asks.retain(|a| a.id != id);
                     }
                 }
                 "thread/status/changed" => {
@@ -833,7 +986,7 @@ impl Ledger {
                     self.items.remove(id);
                 } else {
                     self.items
-                        .insert(id.into(), PendingItem::new(kind, self.active_turn.as_deref()));
+                        .insert(id.into(), PendingItem::new(item, self.active_turn.as_deref()));
                 }
                 update.activity = Some(kind.chars().take(80).collect());
             }
@@ -2060,5 +2213,165 @@ mod tests {
         let hold = ledger.hold(0);
         assert!(!hold.turn_closed);
         assert_eq!(hold.items, vec!["commandExecution".to_string()]);
+    }
+
+    /// T-846: a question's words and options ride every update while the
+    /// request stands, and leave with `serverRequest/resolved`.
+    #[test]
+    fn a_question_s_words_and_options_ride_the_update_until_it_is_resolved() {
+        let mut ledger = ready();
+        assert_eq!(start(&mut ledger, "turn-1").ask, None);
+        let mut question = frame(
+            "item/tool/requestUserInput",
+            json!({"turnId":"turn-1","isBlocking":true,"itemId":"ask-1","questions":[{
+                "id":"color","header":"Color","question":"Choose fixture color?",
+                "options":[
+                    {"label":"Blue","description":"Use blue for the fixture."},
+                    {"label":"Green","description":"Use green for the fixture."}
+                ],
+                "isSecret":false
+            }]}),
+        );
+        question["id"] = json!("q1");
+        let update = ledger.observe(7, &question);
+        assert_eq!(update.signals, vec![Signal::Attention { reason: Reason::Question }]);
+        let ask = update.ask.expect("the question rides the update");
+        assert_eq!(ask.id, request_id(&json!("q1")).unwrap());
+        let AskKind::Question { questions } = &ask.kind else { panic!("{ask:?}") };
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].question, "Choose fixture color?");
+        assert_eq!(questions[0].header, "Color");
+        assert!(!questions[0].secret);
+        assert_eq!(
+            questions[0].options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(),
+            vec!["Blue", "Green"]
+        );
+        assert_eq!(questions[0].options[0].description, "Use blue for the fixture.");
+        // An unrelated frame reports the same ask: the snapshot mirrors it.
+        let delta =
+            ledger.observe(7, &frame("item/agentMessage/delta", json!({"turnId":"turn-1"})));
+        assert_eq!(delta.ask.as_ref().map(|a| a.id.as_str()), Some(ask.id.as_str()));
+        let resolved = resolve(&mut ledger, json!("q1"));
+        assert_eq!(resolved.ask, None);
+        assert_eq!(resolved.signals, vec![Signal::TurnStarted]);
+    }
+
+    /// T-846: a secret question is carried marked, so no card draws it; a
+    /// request with no id carries nothing and holds as before.
+    #[test]
+    fn a_secret_question_is_carried_as_secret_and_an_unidentified_one_not_at_all() {
+        let mut ledger = ready();
+        start(&mut ledger, "turn-1");
+        let mut secret = frame(
+            "item/tool/requestUserInput",
+            json!({"turnId":"turn-1","isBlocking":true,"questions":[{
+                "id":"token","question":"Paste the token","isSecret":true,"options":[]
+            }]}),
+        );
+        secret["id"] = json!(3);
+        let update = ledger.observe(7, &secret);
+        assert_eq!(update.signals, vec![Signal::Attention { reason: Reason::Secret }]);
+        let AskKind::Question { questions } = update.ask.expect("carried").kind else {
+            panic!("a question")
+        };
+        assert!(questions[0].secret && questions[0].options.is_empty());
+        resolve(&mut ledger, json!(3));
+        let anonymous = frame(
+            "item/tool/requestUserInput",
+            json!({"turnId":"turn-1","isBlocking":true,"questions":[{"question":"?"}]}),
+        );
+        let update = ledger.observe(7, &anonymous);
+        assert_eq!(update.ask, None);
+        assert!(update.observation_hold, "an unidentified request still holds");
+    }
+
+    /// T-846: an approval names its command through the item it started,
+    /// and carries the folder, the reason and the decisions on offer.
+    #[test]
+    fn an_approval_carries_its_item_s_command_and_the_decisions_on_offer() {
+        let mut ledger = ready();
+        start(&mut ledger, "turn-1");
+        ledger.observe(
+            7,
+            &frame(
+                "item/started",
+                json!({"turnId":"turn-1","item":{
+                    "id":"cmd-1","type":"commandExecution","status":"inProgress",
+                    "command":"printf MESIMON > out.txt","cwd":"/work/repo"
+                }}),
+            ),
+        );
+        let mut approval = frame(
+            "item/commandExecution/requestApproval",
+            json!({"turnId":"turn-1","itemId":"cmd-1","reason":"May I write this file?",
+                   "availableDecisions":["accept","acceptForSession","decline"]}),
+        );
+        approval["id"] = json!(9);
+        let update = ledger.observe(7, &approval);
+        assert_eq!(update.signals, vec![Signal::Attention { reason: Reason::Permission }]);
+        let ask = update.ask.expect("the approval rides the update");
+        assert_eq!(
+            ask.kind,
+            AskKind::Approval {
+                what: "command".into(),
+                command: Some("printf MESIMON > out.txt".into()),
+                cwd: Some("/work/repo".into()),
+                reason: Some("May I write this file?".into()),
+                decisions: vec!["accept".into(), "acceptForSession".into(), "decline".into()],
+            }
+        );
+        // A request spelling its own command (an argv) is taken as given.
+        let mut edit = frame(
+            "item/fileChange/requestApproval",
+            json!({"turnId":"turn-1","itemId":"edit-1","command":["git","apply"]}),
+        );
+        edit["id"] = json!(10);
+        let update = ledger.observe(7, &edit);
+        let ask = update.ask.expect("the first open ask is still the command's");
+        assert_eq!(ask.id, request_id(&json!(9)).unwrap());
+        assert_eq!(resolve(&mut ledger, json!(9)).ask.map(|a| a.id), request_id(&json!(10)));
+        let update = resolve(&mut ledger, json!(10));
+        assert_eq!(update.ask, None);
+        // A form that is not Codex's one-tool approval stays the pane's.
+        let mut form = frame(
+            "mcpServer/elicitation/request",
+            json!({"turnId":"turn-1","mode":"form","message":"Confirm?"}),
+        );
+        form["id"] = json!(11);
+        let update = ledger.observe(7, &form);
+        assert_eq!(update.signals, vec![Signal::Attention { reason: Reason::Elicitation }]);
+        assert_eq!(update.ask, None);
+        let mut tool = frame(
+            "mcpServer/elicitation/request",
+            json!({"turnId":"turn-1","mode":"form","message":"Run it?","serverName":"fs",
+                   "toolName":"write","_meta":{"codex_approval_kind":"mcp_tool_call"}}),
+        );
+        tool["id"] = json!(12);
+        let ask = ledger.observe(7, &tool).ask.expect("a one-tool approval is carried");
+        assert!(matches!(ask.kind, AskKind::Approval { ref what, ref command, ref reason, .. }
+            if what == "mcp_tool" && command.as_deref() == Some("fs · write")
+                && reason.as_deref() == Some("Run it?")));
+    }
+
+    /// T-846: a known descendant's question shows in the same pane, so it
+    /// is carried when the parent has none; an idle reconcile drops every
+    /// ask with the requests it belongs to.
+    #[test]
+    fn a_known_child_s_question_is_carried_and_a_reconcile_clears_asks() {
+        let mut ledger = ready();
+        start(&mut ledger, "turn-1");
+        discover_child(&mut ledger);
+        let mut question = child_frame(
+            "item/tool/requestUserInput",
+            json!({"turnId":"child-turn","isBlocking":true,
+                   "questions":[{"question":"Child asks?","options":[{"label":"Yes"}]}]}),
+        );
+        question["id"] = json!("child-q");
+        let update = ledger.observe(7, &question);
+        assert_eq!(update.signals, vec![Signal::Attention { reason: Reason::Question }]);
+        assert_eq!(update.ask.as_ref().map(|a| a.id.clone()), request_id(&json!("child-q")));
+        let update = ledger.reconcile(7, &snapshot(json!({"type":"idle"})), true);
+        assert_eq!(update.ask, None);
+        assert_eq!(update.signals, vec![Signal::Ready]);
     }
 }

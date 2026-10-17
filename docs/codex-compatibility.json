@@ -263,6 +263,43 @@
           "finding": "Isolation remediation, sandbox cleanup failures, startup and other failed attempts remain separately documented."
         }
       ]
+    },
+    "0.163.0": {
+      "captured_at": "2026-10-17",
+      "captured_at_unix_ms": 1792269840000,
+      "model": "gpt-6-luna",
+      "reasoning_effort": "low",
+      "mode": [
+        "native_interactive_tmux",
+        "transparent_unix_websocket_relay"
+      ],
+      "scope": "Two version-scoped native observations for the board's answer roads (T-846). The 0.153.4 suite was not rerun on this version; a smoke run certifies nothing here.",
+      "observed": [
+        "crown_answers_native_question",
+        "native_approval_carried"
+      ],
+      "end_to_end": {
+        "crown_answers_native_question": {
+          "status": "passed",
+          "capture": "20261017T204253Z-8bec1d31/question",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "A crowned Codex seat starts a worker; its blocking request_user_input rides the runtime snapshot with its options; get_ticket lists it as answerable; answer_agent presses Enter on the chosen row and reads answered on serverRequest/resolved; the same turn completes on the chosen option.",
+          "model": "gpt-6-luna",
+          "reasoning_effort": "low",
+          "submitted_user_turns": 3,
+          "cleanup_owners": 2
+        },
+        "native_approval_carried": {
+          "status": "passed",
+          "capture": "20261017T204358Z-codex-approval-no-e16f9775",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "A real command approval rides the runtime snapshot as what=command with the item's command, cwd, the request's reason and its decisions (accept, cancel on this version); the native refusal resolves it and the snapshot drops it. The phone's walk of the same dialog is proven on the captured screen and the synthetic runtime, not on this run.",
+          "model": "gpt-5.6-luna",
+          "reasoning_effort": "low",
+          "submitted_user_turns": 1,
+          "cleanup_owners": 2
+        }
+      }
     }
   }
 }

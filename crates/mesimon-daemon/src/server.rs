@@ -3574,6 +3574,9 @@ impl Daemon {
         &mut self,
         snapshots: Vec<(uuid::Uuid, Option<crate::agents::codex::Snapshot>)>,
     ) {
+        /// A Codex seat, the request its snapshot carries and its last plan
+        /// (key, text), for `control_codex_ask` (T-846).
+        type CodexAsk = (uuid::Uuid, Option<crate::agents::codex::Ask>, Option<(String, String)>);
         self.codex_polling = false;
         let now = now_ms();
         let mut dirty = false;
@@ -3581,6 +3584,9 @@ impl Daemon {
         let mut stopped = Vec::new();
         let mut quota = Vec::new();
         let mut steered = Vec::new();
+        // Each seat's open request and last plan (T-846), projected into the
+        // phone's cards after the loop, once the state they gate on landed.
+        let mut asks: Vec<CodexAsk> = Vec::new();
         for (id, snapshot) in snapshots {
             let principal = Principal::Automation { rule: "codex_observer".into() };
             if matches!(
@@ -3604,6 +3610,10 @@ impl Daemon {
                         || (now.saturating_sub(s.heartbeat_ms) <= 5_000
                             && s.heartbeat_ms <= now + 1_000))
             });
+            if let Some(snapshot) = &valid {
+                let plan = snapshot.plan_key.clone().zip(snapshot.plan.clone());
+                asks.push((id, snapshot.request.clone(), plan));
+            }
             let Some(mut snapshot) = valid else {
                 self.codex_ready.remove(&id);
                 // A new runtime gets a bounded startup grace, but holds the
@@ -3838,6 +3848,10 @@ impl Daemon {
                 self.feed.board("daemon", "codex_steered", Some(ticket));
                 dirty |= self.ack_owed(id);
             }
+        }
+        for (id, ask, plan) in &asks {
+            let plan = plan.as_ref().map(|(key, text)| (key.as_str(), text.as_str()));
+            self.control_codex_ask(*id, ask.as_ref(), plan);
         }
         let mut quota_moved = false;
         for (at, limits) in quota {
@@ -8026,7 +8040,7 @@ impl Daemon {
                     multi_select: q.multi_select,
                 })
                 .collect(),
-            answerable: dialog.map(|(_, qs)| mesophon::dialog_answerable(qs)),
+            answerable: dialog.map(|(_, qs)| mesophon::dialog_answerable_for(rec.kind, qs)),
         })
     }
 

@@ -514,14 +514,14 @@ pub(super) fn rederiving(s: &SessionRecord) -> bool {
 }
 
 /// Whether this state change is a stop the crown is woken for, and why:
-/// a claude entering `RequiresAction{Question}` (T-569) or
+/// an agent entering `RequiresAction{Question}` (T-569) or
 /// `RequiresAction{Plan}` (T-582) on a board whose crown mode lets it
-/// answer — autonomous unless the person chose supervised (T-610).
-/// Supervised, the person is the one to
-/// wake, and the card's needs-you already does. A secret, a form or a
-/// permission is never the crown's, so none of them wakes it; a codex has
-/// no dialog the board answers for the crown. Whose agent it is — one THIS
-/// crown started — is `note_crown_wake`'s to judge.
+/// answer — autonomous unless the person chose supervised (T-610). A
+/// claude's since T-569, a codex's since T-846, when its runtime carries
+/// the request the board answers by keys. Supervised, the person is the
+/// one to wake, and the card's needs-you already does. A secret, a form or
+/// a permission is never the crown's, so none of them wakes it. Whose agent
+/// it is — one THIS crown started — is `note_crown_wake`'s to judge.
 pub(super) fn asks_the_crown(
     mode: CrownMode,
     kind: SessionKind,
@@ -2370,7 +2370,8 @@ mod tests {
     }
 
     /// T-569, T-582: a question or a plan wakes the crown under the switch
-    /// and not without, only on the edge into it, and only from a claude.
+    /// and not without, only on the edge into it, from a claude and, since
+    /// T-846, a codex; never from a shell.
     #[test]
     fn a_question_or_a_plan_wakes_the_crown_only_under_the_switch() {
         let question = SessionState::RequiresAction { reason: Reason::Question };
@@ -2392,8 +2393,13 @@ mod tests {
         );
         assert_eq!(
             asks_the_crown(CrownMode::Autonomous, SessionKind::Codex, &asked),
+            Some(WakeCause::Asked),
+            "a codex's question is carried by its runtime and walked by keys (T-846)"
+        );
+        assert_eq!(
+            asks_the_crown(CrownMode::Autonomous, SessionKind::Bash, &asked),
             None,
-            "no dialog to answer"
+            "a shell has no dialog"
         );
         assert_eq!(
             asks_the_crown(
@@ -2416,8 +2422,8 @@ mod tests {
         );
         assert_eq!(
             asks_the_crown(CrownMode::Autonomous, SessionKind::Codex, &planned),
-            None,
-            "a codex plan"
+            Some(WakeCause::Planned),
+            "a codex plan is the T-420 press, for the crown too (T-846)"
         );
         assert_eq!(
             asks_the_crown(CrownMode::Autonomous, SessionKind::Claude, &change(plan.clone(), plan)),

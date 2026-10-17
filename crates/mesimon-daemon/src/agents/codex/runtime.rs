@@ -786,6 +786,7 @@ impl Observation {
                 title: None,
                 plan: None,
                 plan_key: None,
+                request: None,
                 stopped: false,
                 rate_limits: None,
                 rate_limits_at_ms: 0,
@@ -1056,6 +1057,8 @@ impl Observation {
         self.snapshot.state = update.state;
         self.snapshot.observation_hold = update.observation_hold;
         self.snapshot.turn_id = update.turn_id;
+        // The request a card may answer (T-846), while it stands.
+        self.snapshot.request = update.ask;
         if let Some(plan) = &update.plan {
             let text = bound_text(plan.clone(), 8000);
             self.snapshot.plan_key = Some(format!("{:x}", Sha256::digest(text.as_bytes())));
@@ -1401,6 +1404,7 @@ fn complete_page(page: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::super::AskKind;
     use super::*;
 
     fn config() -> RuntimeConfig {
@@ -1583,6 +1587,38 @@ mod tests {
             observer.owned_threads.contains("main"),
             "retain identity after discarding idle history"
         );
+    }
+
+    /// T-846: the snapshot carries the open request's content, by its id,
+    /// and clears it on `serverRequest/resolved`.
+    #[test]
+    fn the_snapshot_carries_the_open_request_and_clears_it_when_resolved() {
+        let mut observer = selected();
+        event(&mut observer, "main", "turn/started", json!({"turn":{"id":"turn"}}));
+        assert_eq!(observer.snapshot.request, None);
+        observer
+            .incoming(
+                &config(),
+                json!({"id":"q1","method":"item/tool/requestUserInput","params":{
+                    "threadId":"main","turnId":"turn","isBlocking":true,
+                    "questions":[{"question":"Choose fixture color?",
+                        "options":[{"label":"Blue","description":""},{"label":"Green","description":""}]}]
+                }}),
+            )
+            .unwrap();
+        assert_eq!(
+            observer.snapshot.state,
+            SessionState::RequiresAction { reason: mesimon_core::board::Reason::Question }
+        );
+        let ask = observer.snapshot.request.clone().expect("the request rides the snapshot");
+        assert!(matches!(&ask.kind, AskKind::Question { questions }
+            if questions.len() == 1 && questions[0].options.len() == 2));
+        let json = serde_json::to_value(&observer.snapshot).unwrap();
+        assert_eq!(json["request"]["kind"], "question");
+        assert_eq!(json["request"]["questions"][0]["options"][1]["label"], "Green");
+        event(&mut observer, "main", "serverRequest/resolved", json!({"requestId":"q1"}));
+        assert_eq!(observer.snapshot.request, None);
+        assert_eq!(observer.snapshot.state, SessionState::Running);
     }
 
     #[test]

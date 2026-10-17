@@ -1,5 +1,8 @@
-//! The crown accepts a plan (T-582): `accept_plan` on a plan dialog a claude
-//! the crown started stopped on, under the board's `crown_mode` (T-610).
+//! The crown accepts a plan (T-582): `accept_plan` on a plan dialog an agent
+//! the crown started stopped on, under the board's `crown_mode` (T-610). A
+//! claude's plan rides the hook stream; a codex's is the runtime's plan item,
+//! projected while its native dialog stands (T-846), and the press is
+//! `plan_dialog::codex_at_default`'s.
 //!
 //! The press is the board's own accept (T-420, `press_plan`): Enter on the
 //! dialog's default row, only once the screen shows the dialog with the
@@ -102,10 +105,10 @@ impl Daemon {
                 ));
             }
         }
-        if rec.kind != SessionKind::Claude {
+        if !rec.kind.is_agent() {
             return Err(format!(
-                "{key}'s agent is not a claude; the board accepts a claude's plan for the crown, \
-                 and this one is a person's"
+                "{key}'s seat is a shell, not an agent; the board accepts an agent's plan for the \
+                 crown"
             ));
         }
         // A person's answer always wins: a plan the hook stream ended, or
@@ -168,7 +171,7 @@ impl Daemon {
             && self.board.live_agent(plan.ticket).is_some_and(|rec| {
                 rec.id == id
                     && rec.started_by.is_some()
-                    && rec.kind == SessionKind::Claude
+                    && rec.kind.is_agent()
                     && rec.state == SessionState::RequiresAction { reason: Reason::Plan }
             })
             && !authorize(&by, &Action::Mutate, &Resource::Ticket { id: plan.ticket }).denied()

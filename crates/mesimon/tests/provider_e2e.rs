@@ -12,7 +12,7 @@ use std::time::Duration;
 use mesimon_core::board::{
     AgentProvider, SessionKind, SessionRecord, SessionState, StopReason, WorkspaceStrategy,
 };
-use mesimon_core::command::{Command, PendingAction, Response};
+use mesimon_core::command::{AgentTicketView, Command, PendingAction, Response};
 use mesimon_core::Principal;
 use serde_json::{json, Value};
 
@@ -1546,4 +1546,223 @@ fn a_codex_tier_switch_parks_waits_for_the_stop_and_wakes_on_the_new_tier() {
         .expect("the runtime's config");
     assert!(config.contains(r#"model=\"gpt-6-astra\""#), "{config}");
     assert!(config.contains(r#"model_reasoning_effort=\"high\""#), "{config}");
+}
+
+/// Codex 0.163.0's question dialog as the fixture paints it (T-846), the
+/// cursor on `row` (1 or 2), in the pane's own line ends.
+fn codex_question_screen(row: usize) -> String {
+    let mark = |n: usize| if n == row { "›" } else { " " };
+    format!(
+        "  Question 1/1 (1 unanswered)\r\n  Choose fixture color?\r\n\r\n  {} 1. Blue               \
+         Use blue for the fixture.\r\n  {} 2. Green              Use green for the fixture.\r\n    \
+         3. None of the above  Optionally, add details in notes (tab)\r\n\r\n  tab to add notes | \
+         enter to submit answer | esc to interrupt\r\n",
+        mark(1),
+        mark(2)
+    )
+}
+
+/// Whether `keys` hold an Enter: the pane's tty reads tmux's `Enter` as a
+/// newline under `ICRNL`, a raw one as a return.
+fn entered(keys: &[u8]) -> bool {
+    keys.contains(&b'\n') || keys.contains(&b'\r')
+}
+
+/// T-846: a Codex question's request rides the runtime's snapshot into the
+/// card Remote Control and the crown read, the board's answer lands as the
+/// keys the native dialog takes, and the stop ends on the request's
+/// resolution, never on a timer. A secret question and an approval project
+/// no question card, and the crown is refused in words.
+#[test]
+fn a_codex_question_is_carried_to_the_board_and_answered_by_keys_until_resolved() {
+    let Some(h) = Fixture::boot("codex_question") else { return };
+    let mut c = h.client();
+    let read = |c: &mut TestClient, session: uuid::Uuid, key: &str| -> AgentTicketView {
+        match c.send(Principal::Agent { session }, Command::AgentReadTicket { key: key.into() }) {
+            Response::AgentTicket { ticket } => ticket,
+            other => panic!("read {key}: {other:?}"),
+        }
+    };
+    // The crown is a Claude stub seat; its worker a Codex seat in a worktree
+    // of its own, since the crown holds the checkout.
+    select(&mut c, AgentProvider::ClaudeCode);
+    let crown = ticket(&mut c, "coordinate", None);
+    let worker = ticket(&mut c, "mesimon-probe-846 codex worker", None);
+    let sa = spawn(&mut c, crown);
+    assert!(matches!(c.request(Command::CrownTicket { id: crown }), Response::Ok));
+    h.claude_idle(&mut c, sa);
+    select(&mut c, AgentProvider::Codex);
+    let kw = c.board().ticket(worker).unwrap().short_key.clone();
+    let view = read(&mut c, sa, &kw);
+    assert!(matches!(
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket {
+                key: kw.clone(),
+                seen: view.seen,
+                plan: false,
+                tier: None,
+                workspace: Some("worktree".into()),
+            },
+        ),
+        Response::AgentStarted { .. }
+    ));
+    wait_until(Duration::from_secs(20), "the Codex worker's seat", || {
+        c.board().live_agent(worker).is_some_and(|s| s.kind == SessionKind::Codex)
+    });
+    let ws = c.board().live_agent(worker).unwrap().id;
+    h.codex_ready(&mut c, ws);
+    let input = h.owner.dir.join(format!("{ws}.input"));
+    let typed = || std::fs::read(&input).unwrap_or_default();
+    let asking = |s: &SessionState| {
+        *s == SessionState::RequiresAction { reason: mesimon_core::board::Reason::Question }
+    };
+
+    // ---- the question stands: the snapshot carries it, the card reads it
+    let question = json!({"id":"\"q1\"","kind":"question","questions":[{
+        "question":"Choose fixture color?","header":"Color","secret":false,
+        "options":[
+            {"label":"Blue","description":"Use blue for the fixture."},
+            {"label":"Green","description":"Use green for the fixture."}
+        ]
+    }]});
+    let at = |row: usize, request: &Value| {
+        json!({"state":{"state":"requires_action","reason":"question"},"turn_id":"ask-turn",
+               "hold":true,"ack":false,"request":request,
+               "screen":codex_question_screen(row),"cursor":null})
+    };
+    h.control(ws, at(1, &question));
+    c.await_state(ws, "asking", asking);
+    let needs = read(&mut c, sa, &kw).needs_you.expect("the question");
+    assert_eq!(needs.reason, "question");
+    assert_eq!(needs.request.as_deref(), Some("\"q1\""));
+    assert_eq!(needs.questions.len(), 1);
+    assert_eq!(needs.questions[0].text, "Choose fixture color?");
+    assert_eq!(needs.questions[0].options, vec!["Blue".to_string(), "Green".to_string()]);
+    assert_eq!(needs.answerable, Some(true));
+
+    // ---- the answer walks the dialog: Down to Green, Enter -----------------
+    let before = typed().len();
+    let view = read(&mut c, sa, &kw);
+    let cmd = Command::AgentAnswerTicket {
+        key: kw.clone(),
+        seen: view.seen,
+        request: "\"q1\"".into(),
+        index: Some(1),
+        text: None,
+        answers: None,
+    };
+    let sock = h.paths.orch_sock();
+    let call = std::thread::spawn(move || {
+        TestClient::connect(&sock).send(Principal::Agent { session: sa }, cmd)
+    });
+    wait_until(Duration::from_secs(5), "Down in the Codex pane", || {
+        typed()[before..].windows(3).any(|w| w == b"\x1b[B")
+    });
+    assert!(!entered(&typed()[before..]), "no Enter before the cursor is seen on Green");
+    h.control(ws, at(2, &question));
+    wait_until(Duration::from_secs(5), "Enter on Green", || entered(&typed()[before..]));
+    std::thread::sleep(Duration::from_millis(1200));
+    assert!(!call.is_finished(), "the receipt waits for the request to resolve, not a timer");
+    assert!(asking(&session(&mut c, ws).state), "still needs you until Codex resolves it");
+
+    // ---- Codex resolves the request: the stop ends, the receipt says so ----
+    h.control(
+        ws,
+        json!({"state":{"state":"running"},"turn_id":"ask-turn","hold":true,"ack":false,
+               "screen":"• Working (1s • esc to interrupt)\r\n\r\n› Ask Codex to do anything\r\n",
+               "cursor":[2,2]}),
+    );
+    match call.join().unwrap() {
+        Response::AgentAnswered { key, outcome, reason, answer, .. } => {
+            assert_eq!((key.as_str(), outcome.as_str()), (kw.as_str(), "answered"));
+            assert_eq!((reason, answer.as_str()), (None, "Green"));
+        }
+        other => panic!("answer_agent: {other:?}"),
+    }
+    c.await_state(ws, "working on the answer", |s| *s == SessionState::Running);
+    let feed = std::fs::read_to_string(h.paths.state_dir.join("activity.jsonl")).unwrap();
+    assert!(
+        feed.lines().any(|l| l.contains("\"cmd\":\"answer_agent\"")
+            && l.contains("\"answer\":\"Green\"")
+            && l.contains("\"outcome\":\"answered\"")),
+        "{feed}"
+    );
+
+    // ---- a secret question stays the pane's -------------------------------
+    let secret = json!({"id":"\"q2\"","kind":"question","questions":[{
+        "question":"Paste the token","header":"Token","secret":true,"options":[]
+    }]});
+    h.control(
+        ws,
+        json!({"state":{"state":"requires_action","reason":"secret"},"turn_id":"ask-turn",
+               "hold":true,"ack":false,"request":secret,
+               "screen":"  Paste the token\r\n  › \r\n","cursor":null}),
+    );
+    c.await_state(ws, "a secret", |s| {
+        *s == SessionState::RequiresAction { reason: mesimon_core::board::Reason::Secret }
+    });
+    let needs = read(&mut c, sa, &kw).needs_you.expect("the stop");
+    assert_eq!((needs.reason.as_str(), needs.request, needs.answerable), ("secret", None, None));
+    assert!(needs.questions.is_empty(), "a secret's words never leave the pane");
+    let view = read(&mut c, sa, &kw);
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentAnswerTicket {
+            key: kw.clone(),
+            seen: view.seen,
+            request: "\"q2\"".into(),
+            index: Some(0),
+            text: None,
+            answers: None,
+        },
+    ) {
+        Response::Err { message } => assert!(message.contains("secret"), "{message}"),
+        other => panic!("a secret answered: {other:?}"),
+    }
+
+    // ---- an approval is a person's: the crown is refused in words --------
+    let approval = json!({"id":"\"a1\"","kind":"approval","what":"command",
+        "command":"printf MESIMON > out.txt","cwd":"/work","reason":"May I?",
+        "decisions":["accept","decline"]});
+    h.control(
+        ws,
+        json!({"state":{"state":"requires_action","reason":"permission"},"turn_id":"ask-turn",
+               "hold":true,"ack":false,"request":approval,
+               "screen":"  Would you like to run the following command?\r\n\r\n› 1. Yes, proceed (y)\r\n  \
+                         2. No, and tell Codex what to do differently (esc)\r\n\r\n  Press enter to \
+                         confirm or esc to cancel\r\n","cursor":null}),
+    );
+    c.await_state(ws, "a permission", |s| {
+        *s == SessionState::RequiresAction { reason: mesimon_core::board::Reason::Permission }
+    });
+    let needs = read(&mut c, sa, &kw).needs_you.expect("the stop");
+    assert_eq!(needs.reason, "permission");
+    assert!(needs.questions.is_empty() && needs.request.is_none());
+    let view = read(&mut c, sa, &kw);
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentAnswerTicket {
+            key: kw.clone(),
+            seen: view.seen,
+            request: "\"a1\"".into(),
+            index: Some(0),
+            text: None,
+            answers: None,
+        },
+    ) {
+        Response::Err { message } => {
+            assert!(
+                message.contains("permission") && message.contains("never the crown"),
+                "{message}"
+            )
+        }
+        other => panic!("a permission answered by the crown: {other:?}"),
+    }
+    h.control(
+        ws,
+        json!({"state":{"state":"idle","stop_reason":"end_turn"},"turn_id":"ask-turn","hold":false,
+               "ack":false,"screen":"Synthetic provider fixture\r\n› ","cursor":[2,1]}),
+    );
+    c.await_state(ws, "done", |s| *s == SessionState::Idle { stop_reason: StopReason::EndTurn });
 }

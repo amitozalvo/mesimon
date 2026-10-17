@@ -58,9 +58,12 @@ These reuse the native gate, plan, interruption, child and lifecycle checks.
 The steer case sends words into a running turn the way the board and Remote
 Control's Steer do, and checks that the same turn replies to them; its manifest
 records when the model read them against the running command's end.
-Only the child case enables model-created child agents. A native question or
-plan is tested through Codex's terminal: Mesimon's crown cannot answer Codex
-dialogs. These checks do not claim Claude mod-road or crown-dialog parity.
+Only the child case enables model-created child agents. The question case
+(three turns) starts its worker from a crowned Codex seat kept busy on a `sleep`
+turn, and the crown's `answer_agent` walks the real `request_user_input` dialog
+by its keys, confirmed by the request leaving the runtime's snapshot (T-846);
+the plan case is still answered through Codex's terminal. These checks do not
+claim Claude mod-road parity.
 
 Latest results are `target/rig/codex/verdicts.json` and `verdicts.md`. Every run
 also retains its own directory with per-case manifests, board snapshots,

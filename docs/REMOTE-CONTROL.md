@@ -55,6 +55,10 @@ While the relay answers, the page is always the relay’s current one.
 
 **Now** puts what needs you first: a permission request or a single-choice
 question can be answered right on its card, and anything else opens the ticket.
+A Codex agent's cards work the same way: its approval shows the command and the
+reason Codex gave, its question the options, and your tap is pressed into Codex's
+own dialog on your Mac, the card clearing once Codex takes it. A secret question,
+a form and an answer typed in words stay the terminal's.
 Below it are the agents that are working, then the idle ones; an agent that has
 stopped stays on Now for an hour under "Recently idle", and older ones are on Board. A ticket is the same
 card in Now and on the Board: its title, its tags and key, how long the agent has been

@@ -1155,10 +1155,11 @@ pub enum Command {
     /// Accept the plan another ticket's agent stopped on, by key (T-582):
     /// the board's own accept (T-420), Enter on the plan dialog's default
     /// row once the screen shows it there, pressed for the crown. Crown
-    /// only, behind `Board::crown_mode`, only for a claude the crown
-    /// started, only at `RequiresAction{Plan}` on the dialog `request`
-    /// names (get_ticket's `needs_you.request`). The receipt waits for the
-    /// hook edge (`Response::AgentPlanAccepted`).
+    /// only, behind `Board::crown_mode`, only for an agent the crown
+    /// started (a claude's plan rides the hook stream, a codex's its runtime
+    /// snapshot, T-846), only at `RequiresAction{Plan}` on the dialog
+    /// `request` names (get_ticket's `needs_you.request`). The receipt waits
+    /// for the dialog's edge (`Response::AgentPlanAccepted`).
     AgentAcceptPlan {
         key: String,
         #[serde(default)]

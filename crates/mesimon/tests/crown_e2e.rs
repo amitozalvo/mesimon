@@ -6033,3 +6033,209 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
     let model = rec.argv.iter().position(|a| a == "--model").and_then(|at| rec.argv.get(at + 1));
     assert_eq!(model.map(String::as_str), Some("opus"), "{:?}", rec.argv);
 }
+
+/// The crown answers a Codex worker's question (T-846). The worker's runtime
+/// is the synthetic one (`fake_codex_runtime.py`), which publishes the
+/// request the real app-server would and paints Codex 0.163.0's dialog as
+/// captured: the question wakes the crown, `get_ticket` lists it with its
+/// options and `answerable`, `answer_agent` presses Enter on the chosen row,
+/// the receipt reads `answered` only once the request leaves the snapshot,
+/// and the turn that took the answer wakes the crown at its end. Words and
+/// a batch are refused for a codex in words.
+#[test]
+fn the_crown_answers_a_codex_worker_s_question() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\n\
+                        while IFS= read -r line; do \
+                        printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+    const FAKE_RUNTIME: &str = include_str!("common/fake_codex_runtime.py");
+    let Some(h) = Harness::boot_with_env(
+        "crown_codex",
+        Some(STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    // The fake Codex runtime lives beside the Claude stub, named to the
+    // daemon on a restart (its env is read at spawn).
+    let runtime = h.dir.join("fake-codex-runtime.py");
+    std::fs::write(&runtime, FAKE_RUNTIME).unwrap();
+    std::fs::set_permissions(&runtime, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+        .unwrap();
+    h.set_env("MESIMON_CODEX_RUNTIME_BIN", &runtime);
+    h.set_env("MESIMON_CODEX_BIN", h.dir.join("must-not-launch-real-codex"));
+    h.set_env("MESIMON_CODEX_HOME", h.dir.join("synthetic-codex-home"));
+    h.set_env("MESIMON_SLEEP_MIN_AGE_MS", "0");
+    h.restart();
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_codex");
+    let got = h.dir.join("got.txt");
+    let typed = || std::fs::read_to_string(&got).unwrap_or_default();
+    let landed = |probe: &str| typed().contains(probe);
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let asking = |s: &SessionState| {
+        *s == SessionState::RequiresAction { reason: mesimon_core::board::Reason::Question }
+    };
+    let control = |id: uuid::Uuid, value: serde_json::Value| {
+        let path = mesimon_daemon::agents::codex::snapshot_path(&h.paths, id);
+        let control = std::path::PathBuf::from(format!("{}.control", path.display()));
+        mesimon_daemon::agents::codex::write_json(&control, &value).unwrap();
+    };
+    let screen = |row: usize| {
+        let mark = |n: usize| if n == row { "›" } else { " " };
+        format!(
+            "  Question 1/1 (1 unanswered)\r\n  Which auth provider?\r\n\r\n  {} 1. Okta        \
+             Hosted SSO.\r\n  {} 2. Auth0       Hosted too.\r\n    3. None of the above  \
+             Optionally, add details in notes (tab)\r\n\r\n  tab to add notes | enter to submit \
+             answer | esc to interrupt\r\n",
+            mark(1),
+            mark(2)
+        )
+    };
+
+    let a = create(&mut c, "coordinate");
+    let w = create(&mut c, "mesimon-probe-846 worker");
+    let (ka, kw) = (key_of(&mut c, a), key_of(&mut c, w));
+    let sa = spawn(&mut c, a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    assert!(matches!(
+        c.request(Command::SetAgentProvider {
+            provider: mesimon_core::board::AgentProvider::Codex
+        }),
+        Response::Ok
+    ));
+    let v = read(&mut c, sa, &kw).unwrap();
+    assert!(matches!(
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket {
+                key: kw.clone(),
+                seen: v.seen,
+                plan: false,
+                tier: None,
+                workspace: Some("worktree".into()),
+            },
+        ),
+        Response::AgentStarted { .. }
+    ));
+    wait_until(std::time::Duration::from_secs(20), "W's Codex seat", || {
+        c.board().live_agent(w).is_some_and(|s| s.kind == SessionKind::Codex)
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    c.await_state(ws, "the synthetic Codex at its composer", |s| {
+        matches!(s, SessionState::Idle { .. })
+    });
+    wait_until(std::time::Duration::from_secs(10), "W's prefill", || {
+        c.board().sessions.iter().any(|s| s.id == ws && !s.pending_prefill)
+    });
+    let input = h.dir.join(format!("{ws}.input"));
+    let keys = || std::fs::read(&input).unwrap_or_default();
+
+    // ---- the worker asks: the crown wakes, and reads the question ----------
+    let question = serde_json::json!({"id":"\"q7\"","kind":"question","questions":[{
+        "question":"Which auth provider?","header":"Auth","secret":false,
+        "options":[{"label":"Okta","description":"Hosted SSO."},
+                   {"label":"Auth0","description":"Hosted too."}]
+    }]});
+    control(
+        ws,
+        json!({"state":{"state":"requires_action","reason":"question"},"turn_id":"ask-turn",
+               "hold":true,"ack":false,"request":question,"screen":screen(1),"cursor":null}),
+    );
+    c.await_state(ws, "asking", asking);
+    let wake = format!("{kw} \"mesimon-probe-846 worker\" asks a question");
+    wait_until(std::time::Duration::from_secs(10), "the question's wake on the crown", || {
+        landed(&wake)
+    });
+    assert!(!typed().contains("Which auth provider"), "the question's words never ride a wake");
+    start(&mut c, sa);
+    let needs = read(&mut c, sa, &kw).unwrap().needs_you.expect("the question");
+    assert_eq!(needs.request.as_deref(), Some("\"q7\""));
+    assert_eq!(needs.questions[0].text, "Which auth provider?");
+    assert_eq!(needs.questions[0].options, vec!["Okta".to_string(), "Auth0".to_string()]);
+    assert_eq!(needs.answerable, Some(true));
+
+    // ---- refusals in words: words and batches are a person's on a codex ---
+    let answer_cmd = |c: &mut TestClient, index, text: Option<&str>| {
+        let v = read(c, sa, &kw).unwrap();
+        Command::AgentAnswerTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            request: "\"q7\"".into(),
+            index,
+            text: text.map(str::to_string),
+            answers: None,
+        }
+    };
+    let cmd = answer_cmd(&mut c, None, Some("Something else"));
+    match c.send(Principal::Agent { session: sa }, cmd) {
+        Response::Err { message } => {
+            assert!(message.contains("codex") && message.contains("index"), "{message}")
+        }
+        other => panic!("words into a codex: {other:?}"),
+    }
+
+    // ---- answered: Enter on the row the cursor stands on ------------------
+    let before = keys().len();
+    let cmd = answer_cmd(&mut c, Some(0), None);
+    let sock = h.paths.orch_sock();
+    let call = std::thread::spawn(move || {
+        TestClient::connect(&sock).send(Principal::Agent { session: sa }, cmd)
+    });
+    wait_until(std::time::Duration::from_secs(5), "the answer's Enter in W's pane", || {
+        // The pane's tty reads tmux's `Enter` as a newline under `ICRNL`.
+        keys()[before..].iter().any(|k| matches!(k, b'\n' | b'\r'))
+    });
+    assert!(!keys()[before..].windows(3).any(|k| k == b"\x1b[B"), "Okta is the cursor's row");
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    assert!(!call.is_finished(), "the receipt waits for the request to resolve");
+    control(
+        ws,
+        json!({"state":{"state":"running"},"turn_id":"ask-turn","hold":true,"ack":false,
+               "screen":"• Working (1s • esc to interrupt)\r\n\r\n› Ask Codex to do anything\r\n",
+               "cursor":[2,2]}),
+    );
+    match call.join().unwrap() {
+        Response::AgentAnswered { key, outcome, reason, answer, seen } => {
+            assert_eq!((key.as_str(), outcome.as_str()), (kw.as_str(), "answered"));
+            assert_eq!((reason, answer.as_str()), (None, "Okta"));
+            assert!(seen.is_some());
+        }
+        other => panic!("answer_agent: {other:?}"),
+    }
+    assert!(
+        touches(&mut c).iter().any(|t| t.ticket == w && t.action == "answered"),
+        "♛ answered on the card"
+    );
+    assert_eq!(said_on(&mut c, w).as_deref(), Some("Okta"));
+    let line = format!("answered by {ka}: Okta");
+    let detail = |c: &mut TestClient| {
+        c.board().sessions.iter().find(|s| s.id == ws).and_then(|s| s.detail.clone())
+    };
+    c.await_state(ws, "running on the answer", |s| *s == SessionState::Running);
+    assert_eq!(detail(&mut c).as_deref(), Some(line.as_str()));
+
+    // ---- the turn that took the answer wakes the crown when it ends --------
+    stop(&mut c, sa);
+    control(
+        ws,
+        json!({"state":{"state":"idle","stop_reason":"end_turn"},"turn_id":"ask-turn",
+               "hold":false,"ack":false,"screen":"Synthetic provider fixture\r\n› ","cursor":[2,1]}),
+    );
+    c.await_state(ws, "W done", |s| {
+        *s == SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn }
+    });
+    wait_until(std::time::Duration::from_secs(10), "the answer's turn waking the crown", || {
+        landed(&format!("{kw} \"mesimon-probe-846 worker\" answered your ask"))
+    });
+}

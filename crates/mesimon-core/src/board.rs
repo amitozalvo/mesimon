@@ -2135,13 +2135,14 @@ impl CrownMode {
     }
 
     /// Is a session stopped in `state` the crown's to answer, under this
-    /// mode, when the crown started it (T-569, T-582)? A claude's question
-    /// or plan. A secret, a form or a permission is never the crown's, and
-    /// a codex has no dialog the board answers for it. The crown's wake
-    /// and the person's banner (T-678) read this one rule.
+    /// mode, when the crown started it (T-569, T-582)? An agent's question
+    /// or plan: a claude's, and since T-846 a codex's, whose request the
+    /// runtime carries and whose dialog the board walks with the same keys.
+    /// A secret, a form or a permission is never the crown's. The crown's
+    /// wake and the person's banner (T-678) read this one rule.
     pub fn takes_stop(self, kind: SessionKind, state: &SessionState) -> bool {
         self.answers()
-            && kind == SessionKind::Claude
+            && kind.is_agent()
             && matches!(
                 state,
                 SessionState::RequiresAction { reason: Reason::Question | Reason::Plan }
@@ -3607,6 +3608,24 @@ mod tests {
         assert!(!back.sends() && !back.answers());
         assert!(CrownMode::Autonomous.sends() && CrownMode::Autonomous.answers());
         assert_eq!(back.toggled(), CrownMode::Autonomous);
+    }
+
+    /// T-846: a codex's question or plan is the crown's as a claude's is;
+    /// a permission, a secret or a form stays a person's for both, and a
+    /// shell's stop is nobody's dialog.
+    #[test]
+    fn takes_stop_admits_a_claude_s_and_a_codex_s_question_or_plan_alone() {
+        let stopped = |reason| SessionState::RequiresAction { reason };
+        for kind in [SessionKind::Claude, SessionKind::Codex] {
+            assert!(CrownMode::Autonomous.takes_stop(kind, &stopped(Reason::Question)));
+            assert!(CrownMode::Autonomous.takes_stop(kind, &stopped(Reason::Plan)));
+            for reason in [Reason::Permission, Reason::Secret, Reason::Elicitation, Reason::Auth] {
+                assert!(!CrownMode::Autonomous.takes_stop(kind, &stopped(reason)), "{reason:?}");
+            }
+            assert!(!CrownMode::Supervised.takes_stop(kind, &stopped(Reason::Question)));
+            assert!(!CrownMode::Autonomous.takes_stop(kind, &SessionState::Running));
+        }
+        assert!(!CrownMode::Autonomous.takes_stop(SessionKind::Bash, &stopped(Reason::Question)));
     }
 
     /// T-810: every board merges into main unless it says pull requests.

@@ -31,8 +31,9 @@ The [README](../README.md) gets you to a first agent. This page is the rest.
   board has quit. If it is ever refused, `mesimon doctor` says so on its `private server`
   line, and the board's Esc menu offers to restart the server.
 - **Claude Code or Codex** on your `PATH`, authenticated through its native CLI.
-  Codex runtime integration is tested against `codex-cli 0.153.4`; `mesimon doctor`
-  reports installed versions and the measured compatibility boundary.
+  Codex runtime integration is tested against `codex-cli 0.153.4`, and its question and
+  approval dialogs, which Remote Control and the crown answer, were measured on `0.163.0`;
+  `mesimon doctor` reports installed versions and the measured compatibility boundary.
 
 ## Installing
 
@@ -440,7 +441,9 @@ the agent is at a dialog. A question from such an agent wakes the crown, which r
 agent's ticket and may pick one of its options, tick several where the question takes several, or
 type a one-line answer in their place, through the same screen-checked road as Remote Control's
 question card. A dialog that asks several questions at once is answered whole, one answer per
-question, because Claude Code submits them together. The card lights `♛ answered` and reads
+question, because Claude Code submits them together. A Codex agent's question is the crown's
+too: the crown picks one of its options and the board presses it in Codex's own dialog; words
+typed in its place and several questions at once stay yours. The card lights `♛ answered` and reads
 `answered by T-411: Okta` while the agent works on the answer (several answers are joined by `;`),
 and the activity feed records the answer as the agent's. Words for an agent you started, and every
 question or plan from one, wait for you under either mode, and so does a permission, a secret or a
@@ -453,10 +456,10 @@ Switching to supervised, or taking the crown back, holds whatever words had not 
 card. Where its words are held for you, the ask opens at the level the crown chose when you edit
 it, and `^y` sends it at that level.
 
-A plan an agent the crown started stops on wakes the crown too. The crown reads the plan on that
-agent's ticket and may accept it the way the board's own accept does: one Enter on the plan
-dialog's first row, only once the screen shows the dialog with the cursor there, and only while
-no other agent is working in the same checkout. The card lights `♛ accepted plan` and reads `plan
+A plan an agent the crown started stops on wakes the crown too, a Codex agent's as a Claude
+agent's. The crown reads the plan on that agent's ticket and may accept it the way the board's
+own accept does: one Enter on the plan dialog's first row, only once the screen shows the dialog
+with the cursor there, and only while no other agent is working in the same checkout. The card lights `♛ accepted plan` and reads `plan
 accepted by T-411` while the agent works on the plan, and the activity feed records the accept as
 the agent's. The crown is told that a plan it would change, or one that reaches past its brief,
 is yours: it raises its hand on its own card, and you answer the dialog. If you answer first, the

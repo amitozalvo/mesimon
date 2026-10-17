@@ -145,7 +145,7 @@ mod tests {
         assert!(v.is_dirty(), "new is marked: its first save is never skipped");
         v.mark_clean();
         assert_eq!(v.len(), 2);
-        assert!(v.iter().any(|n| *n == 2));
+        assert!(v.contains(&2));
         assert!(!v.is_dirty());
         v.push(3);
         assert!(v.is_dirty());
