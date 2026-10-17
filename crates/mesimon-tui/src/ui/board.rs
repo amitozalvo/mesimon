@@ -27,8 +27,7 @@ pub(super) fn draw_columns(f: &mut Frame, area: Rect, app: &App) {
     }
     let mut window = app.col_window.get();
     // A column pinned collapsed (T-117) is a spine unless the cursor is in it.
-    let pinned: Vec<bool> =
-        app.board.sorted_columns().iter().map(|c| c.settings.collapsed).collect();
+    let pinned = app.pinned_columns();
     let geom = layout::board_geometry(area.width, cols.len(), app.cursor_col, &pinned, &mut window);
     app.col_window.set(window);
 

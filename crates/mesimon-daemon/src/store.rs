@@ -2464,6 +2464,7 @@ order = "a0"
                 settings: mesimon_core::board::ColumnSettings {
                     description: Some("planned for this version".into()),
                     collapsed: true,
+                    collapsed_when_empty: false,
                     workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
                     refuses_new: true,
                     claude_mode: mesimon_core::board::ClaudeMode::Plan,

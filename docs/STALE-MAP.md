@@ -27336,3 +27336,21 @@ T-744: the root `.gitignore` was written for Rust and never named Python. `-B` o
 reach a module loaded through `importlib` (`ci/test_run_test.py` loads `test-run.py` that way), so
 a test run rewrote tracked bytecode and every ticket worktree carried a stray diff. The files are
 untracked and `.gitignore` names `__pycache__/` and `*.pyc`.
+
+## A column can collapse when empty (T-837, 2026-10-17, the author: "Add another mode \"when empty\"")
+
+The column dialog's `Collapsed` row was a switch; it is now three choices Enter cycles: `off`,
+`always`, `when empty` (`board::Collapse`). A `when empty` column is a spine while no
+un-archived ticket stands in it and opens the moment one lands; the cursor in it expands it as
+it does an `always` column, and the launch and a refresh skip it while it is folded
+(`leave_pinned_column`).
+
+- On disk it is two switches, `collapsed` (always, as before) and `collapsed_when_empty`, read
+  as one mode by `ColumnSettings::collapse`/`set_collapse`. No schema bump: a build that drops
+  the new one shows the column open, which narrows nothing, and an old `collapsed = true` still
+  reads `always`.
+- `Board::column_pinned` is the one predicate; the board and the composer's dialog geometry ask
+  it through `App::pinned_columns`, never `settings.collapsed`.
+
+`collapse_modes_round_trip_and_when_empty_follows_the_tickets` and
+`a_when_empty_column_folds_only_while_empty` pin it; `column_settings_120x30` shows the three.

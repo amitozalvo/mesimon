@@ -1212,6 +1212,36 @@ impl ColumnOffers {
     }
 }
 
+/// When a column folds to a one-cell spine (T-837), in the order Enter
+/// cycles them. On disk it is two switches, `collapsed` (always) and
+/// `collapsed_when_empty`, so a build that drops the second only shows an
+/// empty column open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Collapse {
+    #[default]
+    Off,
+    Always,
+    WhenEmpty,
+}
+
+impl Collapse {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Off => Self::Always,
+            Self::Always => Self::WhenEmpty,
+            Self::WhenEmpty => Self::Off,
+        }
+    }
+
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Always => "always",
+            Self::WhenEmpty => "when empty",
+        }
+    }
+}
+
 /// Native Codex launch policies. Inherit leaves the user's CLI configuration intact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1289,6 +1319,10 @@ pub struct ColumnSettings {
     /// Pinned as a one-cell spine unless the cursor is in it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub collapsed: bool,
+    /// Pinned so only while no ticket is in it (T-837); `collapse()` reads
+    /// the pair. No schema bump: a build that drops it shows the column open.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub collapsed_when_empty: bool,
     /// The workspace a ticket CREATED here starts with, stamped onto the
     /// ticket at mint; the ticket field stays the truth and a change here is
     /// never retroactive. `None` = the board's (`Board::workspace`).
@@ -1362,6 +1396,21 @@ impl ColumnSettings {
         self.offers.unwrap_or(if self.reclaim { ColumnOffers::Both } else { ColumnOffers::Off })
     }
 
+    pub fn collapse(&self) -> Collapse {
+        if self.collapsed {
+            Collapse::Always
+        } else if self.collapsed_when_empty {
+            Collapse::WhenEmpty
+        } else {
+            Collapse::Off
+        }
+    }
+
+    pub fn set_collapse(&mut self, c: Collapse) {
+        self.collapsed = c == Collapse::Always;
+        self.collapsed_when_empty = c == Collapse::WhenEmpty;
+    }
+
     /// Whether any automation would act on a ticket here — the header's one
     /// optional mark.
     pub fn automated(&self) -> bool {
@@ -1385,8 +1434,10 @@ impl ColumnSettings {
         if let Some(d) = &self.description {
             out.push(format!("about: {d}"));
         }
-        if self.collapsed {
-            out.push("collapsed".into());
+        match self.collapse() {
+            Collapse::Off => {}
+            Collapse::Always => out.push("collapsed".into()),
+            Collapse::WhenEmpty => out.push("collapsed when empty".into()),
         }
         if self.refuses_new {
             out.push("takes no new tickets".into());
@@ -3224,6 +3275,18 @@ impl Board {
         v
     }
 
+    /// Whether a column is pinned as a spine (T-117), which a `WhenEmpty`
+    /// column is only while it holds no ticket (T-837).
+    pub fn column_pinned(&self, column: &Column) -> bool {
+        match column.settings.collapse() {
+            Collapse::Off => false,
+            Collapse::Always => true,
+            Collapse::WhenEmpty => {
+                !self.tickets.iter().any(|t| t.column == column.name && !t.is_archived())
+            }
+        }
+    }
+
     /// Archived tickets, newest archive first (`at` stamps sort as strings).
     pub fn archived_tickets(&self) -> Vec<&Ticket> {
         let mut v: Vec<&Ticket> = self.tickets.iter().filter(|t| t.is_archived()).collect();
@@ -3948,6 +4011,46 @@ mod tests {
                 assert_eq!(board.archive_columns().contains("chosen"), offer.archive());
             }
         }
+    }
+
+    /// T-837: the collapse mode round-trips through its two switches, an old
+    /// `collapsed = true` still reads `always`, and `when empty` pins a column
+    /// only while no live ticket stands in it.
+    #[test]
+    fn collapse_modes_round_trip_and_when_empty_follows_the_tickets() {
+        let old: ColumnSettings =
+            serde_json::from_value(serde_json::json!({"collapsed": true})).unwrap();
+        assert_eq!(old.collapse(), Collapse::Always);
+        let mut c = Collapse::Off;
+        for _ in 0..3 {
+            let mut settings = ColumnSettings::default();
+            settings.set_collapse(c);
+            let wire: ColumnSettings =
+                serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+            assert_eq!(wire.collapse(), c);
+            c = c.next();
+        }
+        assert_eq!(c, Collapse::Off, "Enter cycles the three");
+        assert_eq!(
+            serde_json::to_string(&ColumnSettings::default()).unwrap(),
+            "{}",
+            "off writes nothing"
+        );
+
+        let mut settings = ColumnSettings::default();
+        settings.set_collapse(Collapse::WhenEmpty);
+        let mut board = Board {
+            columns: vec![Column { name: "c".into(), order: "a0".into(), settings }],
+            ..Default::default()
+        };
+        assert!(board.column_pinned(&board.columns[0]), "empty: a spine");
+        let mut t = ticket(1, "c", "a0");
+        t.archived =
+            Some(Archived { at: "@1".into(), by: String::new(), until: None, needs_you: false });
+        board.tickets.push(t);
+        assert!(board.column_pinned(&board.columns[0]), "an archived ticket is not in it");
+        board.tickets.push(ticket(2, "c", "a1"));
+        assert!(!board.column_pinned(&board.columns[0]), "a ticket opens it");
     }
 
     /// An M1 sessions.json line must keep parsing after the M2 enum growth

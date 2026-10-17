@@ -3219,6 +3219,12 @@ impl App {
         &self.columns_sorted
     }
 
+    /// Which of `columns()` are pinned as spines (`Board::column_pinned`),
+    /// for the geometry the board and the composer both lay out.
+    pub(crate) fn pinned_columns(&self) -> Vec<bool> {
+        self.board.sorted_columns().iter().map(|c| self.board.column_pinned(c)).collect()
+    }
+
     /// Recompute what `columns()` returns from `board`. `absorb` calls it;
     /// so must anything else that rewrites `board.columns`.
     pub(crate) fn reindex_columns(&mut self) {
@@ -3316,10 +3322,10 @@ impl App {
     fn leave_pinned_column(&mut self, was: Option<&str>) {
         let cols = self.board.sorted_columns();
         let Some(col) = cols.get(self.cursor_col) else { return };
-        if !col.settings.collapsed || was == Some(col.name.as_str()) {
+        if !self.board.column_pinned(col) || was == Some(col.name.as_str()) {
             return;
         }
-        let expanded = |i: &usize| !cols[*i].settings.collapsed;
+        let expanded = |i: &usize| !self.board.column_pinned(cols[*i]);
         let right = (self.cursor_col + 1..cols.len()).find(expanded);
         let left = (0..self.cursor_col).rev().find(expanded);
         if let Some(to) = right.or(left) {
@@ -6309,7 +6315,7 @@ impl App {
             col_new,
             col_on_sort: false,
             col_sort_word,
-            col_collapsed: cs.collapsed,
+            col_collapse_word: cs.collapse().word(),
             col_workspace_word: match cs.workspace {
                 None => "board default",
                 Some(WorkspaceStrategy::Worktree) => "worktree",
@@ -8377,7 +8383,7 @@ impl App {
                     ));
                 }
             }
-            Verb::ColumnCollapse => self.set_column(|s| s.collapsed = !s.collapsed)?,
+            Verb::ColumnCollapse => self.set_column(|s| s.set_collapse(s.collapse().next()))?,
             Verb::SortColumn => {
                 if let Mode::ColumnSettings { subject: ColumnSubject::Existing(name), sort, .. } =
                     &self.mode
@@ -14924,7 +14930,7 @@ pub(crate) fn shared_team_fixture() -> mesimon_core::team::TeamInfo {
 mod tests {
     use super::*;
     use crate::theme::{Flavor, Profile};
-    use mesimon_core::board::{Column, Ticket};
+    use mesimon_core::board::{Collapse, Column, Ticket};
 
     fn ticket(n: u128, column: &str, order: &str) -> Ticket {
         Ticket {
@@ -22476,8 +22482,9 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         press(&mut app, 'j');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        assert!(!app.board.column("todo").unwrap().settings.collapsed);
+        assert_eq!(app.board.column("todo").unwrap().settings.collapse(), Collapse::Off);
 
         // The empty `doing` deleted from under the cursor: the clamp would
         // land on the pinned `done`, so the cursor goes left to `todo`.
@@ -22497,6 +22504,25 @@ mod tests {
         assert_eq!(app.cursor_col, 0);
     }
 
+    /// T-837: a `when empty` column is a spine only while it holds no
+    /// ticket, and the launch skips it then as it skips an `always` one.
+    #[test]
+    fn a_when_empty_column_folds_only_while_empty() {
+        let mut board = board_three_columns();
+        board.columns[0].settings.set_collapse(Collapse::WhenEmpty);
+        board.columns[1].settings.set_collapse(Collapse::WhenEmpty);
+        let mut app = App::for_test(board, theme());
+        assert_eq!(app.pinned_columns(), [false, true, false], "only the empty `doing` folds");
+        assert_eq!(app.cursor_col, 0);
+
+        let mut board = board_three_columns();
+        board.columns[0].settings.set_collapse(Collapse::WhenEmpty);
+        board.tickets.retain(|t| t.column != "todo");
+        app.board = std::sync::Arc::new(board);
+        assert_eq!(app.pinned_columns(), [true, false, false], "emptied, it folds");
+        assert_eq!(App::for_test((*app.board).clone(), theme()).cursor_col, 1, "launch skips it");
+    }
+
     #[test]
     fn a_column_row_sends_the_whole_settings_and_stays() {
         let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
@@ -22512,9 +22538,13 @@ mod tests {
             app.board.column("todo").unwrap().settings.collapsed,
             "relabelled off the snapshot"
         );
-        assert!(app.ctx().col_collapsed);
+        assert_eq!(app.ctx().col_collapse_word, "always");
+        // Enter steps on to `when empty` (T-837), then off.
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(!app.board.column("todo").unwrap().settings.collapsed);
+        assert!(sent_contains(&sent, "collapsed_when_empty: true"), "{sent:?}");
+        assert_eq!(app.ctx().col_collapse_word, "when empty");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.ctx().col_collapse_word, "off");
         // The card's own moves sit on the main page (T-806, GOING OUT) and
         // cycle the other columns.
         let row = keymap::column_items(&app.ctx())

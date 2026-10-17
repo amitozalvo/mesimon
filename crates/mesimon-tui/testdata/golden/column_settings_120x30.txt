@@ -3,7 +3,7 @@
    TODO           │  Description             none                                                    │               1
                   │                                                                                  │
    Decay treatment│ LOOK                                                                             │ accent bar  >1y
-                  │  Collapsed               ○ off                                                   │
+                  │  Collapsed               ● off   ○ always   ○ when empty                         │
    Keymap validato│  Sort once               newest first                                            │
                   │                                                                                  │
                   │ NEW TICKETS                                                                      │

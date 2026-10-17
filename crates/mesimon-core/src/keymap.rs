@@ -1678,7 +1678,7 @@ pub struct Ctx {
     /// order and Enter runs it.
     pub col_on_sort: bool,
     pub col_sort_word: &'static str,
-    pub col_collapsed: bool,
+    pub col_collapse_word: &'static str,
     pub col_workspace_word: &'static str,
     pub col_claude_mode_word: &'static str,
     pub col_codex_sandbox_word: &'static str,
@@ -6417,7 +6417,9 @@ fn column_value(verb: Verb, c: &Ctx) -> Option<Value> {
     };
     Some(match verb {
         Verb::ColumnDescription => Value::Word(or(&c.col_description, "none").into()),
-        Verb::ColumnCollapse => Value::Switch(c.col_collapsed),
+        Verb::ColumnCollapse => {
+            choice(&["off", "always", "when empty"], or(c.col_collapse_word, "off"))
+        }
         Verb::SortColumn => Value::Word(or(c.col_sort_word, "newest first").into()),
         Verb::ColumnRefusesNew => Value::Switch(!c.col_refuses_new),
         // A column that says nothing works where the board does (T-816).
