@@ -182,9 +182,10 @@ make dev
 ```
 
 Claude Code asks whether to trust a folder before it works there for the first time, before
-any hook fires. The ticket's card then reads `TRUST`, with the dialog's words, and the brief
-waits. Press `w` on the card or the ticket page (`trust workspace`), or tap **Yes, I trust this
-folder** on the ticket in Remote Control: mesimon presses the dialog's own keys in the pane,
+any hook fires. The ticket's card then reads `TRUST`, and the brief waits. Move the cursor
+onto the card: its row asks `trust folder?` with `w confirm` beside it (the ticket page's
+row says the same). Press `w`, or tap **Yes, I trust this folder** on the ticket in Remote
+Control: mesimon presses the dialog's own keys in the pane,
 reading the screen before each, exactly as you would at the keyboard, and the brief goes in
 once Claude Code starts. `Enter` still attaches, and `No, exit` stays the pane's: it ends the
 agent. mesimon never answers the dialog by itself and never writes `~/.claude.json`.

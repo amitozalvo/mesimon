@@ -2278,17 +2278,21 @@ static BOARD: &[Binding] = &[
         // keys toward `Yes, I trust this folder`, never a blind Enter, and
         // the brief goes in by itself once the composer paints. `w` for
         // the WORKSPACE the dialog is about ("Accessing workspace:" is its
-        // heading); free on every screen. Beside `enter` in the footer: go
-        // there and read it, or trust it from here.
+        // heading); free on every screen. Overlay-only (`prio: 0`): the key
+        // rides the card's own row, `trust folder? ∙ w confirm`, under
+        // the title that reads TRUST (the author, after `w trust workspace`
+        // in the footer: "it should say it directly on the card itself or
+        // users won't be able to understand what to do"), so the hint is
+        // the answer to the question beside it, not a footer word.
         keys: &[Key::Char('w')],
         verb: Verb::AcceptTrust,
         show: "w",
-        hint: |_| "trust workspace",
+        hint: |_| "confirm",
         avail: |c| c.ticket_trust_ready,
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
-        prio: 22,
+        prio: 0,
     },
     Binding {
         // Shift on the Enter axis again, and the same sentence the composer's
@@ -3113,16 +3117,17 @@ static TICKET: &[Binding] = &[
     },
     Binding {
         // The board's `w` (T-844), on the page about the same ticket: the
-        // agent's trust dialog accepted from here, beside `enter`'s focus.
+        // agent's trust dialog accepted from here. Overlay-only like the
+        // board's: the key rides the owed row's `trust folder?`.
         keys: &[Key::Char('w')],
         verb: Verb::AcceptTrust,
         show: "w",
-        hint: |_| "trust workspace",
+        hint: |_| "confirm",
         avail: |c| c.ticket_trust_ready,
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
-        prio: 22,
+        prio: 0,
     },
     Binding {
         // The board's ask key, on the page that shows the same ticket
@@ -8622,7 +8627,8 @@ mod tests {
     /// planning keeps the three-stop ring.
     /// The folder trust dialog's key (T-844): `w` on the board and the ticket
     /// page while the subject's agent stands on it, the same verb on both,
-    /// hinted as what it does; inert and unhinted on every other card.
+    /// hinted `confirm` beside the card's `trust folder?` and never in
+    /// the footer; inert and unhinted on every other card.
     #[test]
     fn w_trusts_the_workspace_only_while_the_dialog_stands() {
         let standing = Ctx { has_ticket: true, ticket_trust_ready: true, ..Default::default() };
@@ -8630,9 +8636,11 @@ mod tests {
             assert_eq!(resolve(scope, Key::Char('w'), &standing), Some(Verb::AcceptTrust));
             assert_eq!(
                 hint_for(scope, Verb::AcceptTrust, &standing),
-                Some(("w", "trust workspace")),
+                Some(("w", "confirm")),
                 "{scope:?}"
             );
+            let b = binding_for(scope, Verb::AcceptTrust, &standing).expect("bound");
+            assert_eq!(b.prio, 0, "{scope:?}: the hint sits on the card's row, off the footer");
         }
         let quiet = Ctx { has_ticket: true, ..Default::default() };
         for scope in [Scope::Board, Scope::Ticket] {

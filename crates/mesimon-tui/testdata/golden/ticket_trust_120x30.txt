@@ -1,0 +1,30 @@
+ TICKET (T-1)   mesimon › kanban-tui  !1
+
+ Decay treatments
+ TODO for >1y ∙ created >1y ago
+ trust folder? ∙ w confirm
+
+
+  PREVIEW                                                                                  SESSIONS                  1
+
+                               ▀▀▀▄  ▄▄▄    ▀▀▀▄ !                                        ! ✻ claude
+                                ▀▀▀▄▀█▀▀    ▄▀▀▀                                              Claude Code asks to trus~
+                                ▄▀███▀▄▄▄▄▄▄▀█▀▄                                           x sleep
+                              ▄▀████████████████▀▄
+                              ████▀████████▀██████
+                              ██████▀████████▀████
+                              ▀▀▀██████████████▀▀▀
+                               ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+
+    Claude Code asks to trust this folder
+    it cannot start until the folder is trusted ∙ accept it here or in its pane
+
+
+
+
+
+
+
+
+
+ enter focus ∙ r rename ∙ d delete ∙ n describe                                                                  ? keys

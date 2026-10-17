@@ -27600,9 +27600,13 @@ words "open its pane". Both left the person at the keyboard.
   not know. The ticket page and the Now card show the folder and one button, `Yes, I trust
   this folder`, whose answer is `Request::Dialog { Accept }`; the list reads `asks for trust`.
 - **The board's `w`** (`Verb::AcceptTrust`, `Ctx::ticket_trust_ready`, `Command::AcceptTrust
-  { ticket }`): `trust workspace` beside `enter` in the footer on the board and the ticket
-  page while the subject's agent stands at `Trust`, inert and unhinted otherwise; `w` was free
-  on every screen and the dialog's own heading is `Accessing workspace:`. The daemon runs the
+  { ticket }`), overlay-only: the cursor card's owed row asks `trust folder?` with
+  `w confirm` beside it (`App::pending_row`, `TRUST_ROW`; the key through `ask_keys`, the
+  T-551 road), and the ticket page's owed row says the same, while the subject's agent stands
+  at `Trust`; inert, unhinted and rowless otherwise. It shipped first as `w trust workspace`
+  in the footer, and the author: "it should say it directly on the card itself or users won't
+  be able to understand what to do". `w` was free on every screen and the dialog's own
+  heading is `Accessing workspace:`. The daemon runs the
   same walk under `Deliverer::Board` (`Principal::Local`), with `trust_accept` and its outcome
   in the feed and the card's state for a receipt; `agent_allows` refuses it to every agent.
   The ticket page's clause reads `it cannot start until the folder is trusted ∙ accept it here

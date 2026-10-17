@@ -255,8 +255,13 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         };
         // A held ask's keys ride the cursor card (T-551) — the subject the
         // frame's `Ctx` was built for, so the keys it names act on THIS card.
+        // The trust dialog's accept rides the same row (T-844).
         let keys_ctx = app.frame_ctx();
-        let owed_keys = if selected && (app.ticket_held(t.id) || app.unsent_of(t.id).is_some()) {
+        let owed_keys = if selected
+            && (app.ticket_held(t.id)
+                || app.unsent_of(t.id).is_some()
+                || app.ticket_trust_ready(t.id))
+        {
             super::ask_keys(app, &keys_ctx)
         } else {
             Vec::new()

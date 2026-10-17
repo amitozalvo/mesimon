@@ -4544,6 +4544,60 @@ fn golden_ticket_unsent_120() {
     golden("ticket_unsent_120x30", &lines);
 }
 
+/// A seat on its folder trust dialog (T-844): T-1's claude asks before it
+/// works in the folder, before any hook. The card wears the needs-you mark
+/// and its row asks the dialog's question with the accept key beside it,
+/// in the keymap's words — the author, on `w trust workspace` in the footer
+/// alone: "it should say it directly on the card itself".
+fn trust_app() -> App {
+    let mut b = fixture(false);
+    let mut rec = session_record(
+        11,
+        ulid_n(1),
+        SessionKind::Claude,
+        SessionState::RequiresAction { reason: mesimon_core::board::Reason::Trust },
+    );
+    rec.detail = Some("Claude Code asks to trust this folder".into());
+    b.sessions.push(rec);
+    app_graphite(b)
+}
+
+#[test]
+fn golden_trust_open_120() {
+    let mut app = trust_app();
+    app.cursor_col = 0;
+    app.cursor_row = Some(0);
+    let lines = render(&app, 120, 30);
+    let row = lines
+        .iter()
+        .find(|l| l.contains("trust folder?"))
+        .unwrap_or_else(|| panic!("the row asks the dialog's question:\n{}", lines.join("\n")));
+    assert!(row.contains("w confirm"), "the accept key beside the words:\n{}", lines.join("\n"));
+    assert!(
+        !lines.last().is_some_and(|l| l.contains("w confirm")),
+        "off the footer:\n{}",
+        lines.join("\n")
+    );
+    assert_eq!(app.board.needs_you_count(), 1, "the header counts it");
+    golden("board_trust_open_120x30", &lines);
+}
+
+/// The ticket page says the same on its owed row, the key beside it, and
+/// the zone says why nothing can be read.
+#[test]
+fn golden_ticket_trust_120() {
+    let mut app = trust_app();
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("trust folder? ∙ w confirm")), "{}", lines.join("\n"));
+    assert!(
+        lines.iter().any(|l| l.contains("it cannot start until the folder is trusted")),
+        "{}",
+        lines.join("\n")
+    );
+    golden("ticket_trust_120x30", &lines);
+}
+
 /// The merge train armed (2026-09-04): a REVIEW card it will merge wears
 /// the owed mark and, open, says so and names what it waits on; a card it
 /// will ask to rebase says that. The HEADER says nothing — the train only

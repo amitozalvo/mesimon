@@ -737,6 +737,10 @@ fn history_field(text: &str) -> EditBuffer {
 /// long enough that sweeping across the board floats nothing.
 const HOVER_PEEK: Duration = Duration::from_millis(400);
 
+/// The owed row's words while the ticket's agent stands on its folder trust
+/// dialog (T-844): the dialog's own question, the accept key beside it.
+pub(crate) const TRUST_ROW: &str = "trust folder?";
+
 /// Rows a reading zone moves per notch of the wheel (T-716): a notch is a
 /// small gesture, and one row a notch reads as stuck.
 const WHEEL_ROWS: isize = 3;
@@ -5714,7 +5718,8 @@ impl App {
     /// are `pending_row`'s either way; the ticket page reads them whole.
     pub(crate) fn card_owed(&self, ticket: ulid::Ulid) -> (Option<String>, Option<String>) {
         let row = self.pending_row(ticket);
-        let ships = self.unsent_of(ticket).is_none()
+        let ships = !self.ticket_trust_ready(ticket)
+            && self.unsent_of(ticket).is_none()
             && self.tier_owed_row(ticket).is_none()
             && match self.pending_of(ticket) {
                 Some(p) => {
@@ -5739,6 +5744,14 @@ impl App {
     /// reopens, and a closed door with no sign is a ticket that silently
     /// never merges.
     pub(crate) fn pending_row(&self, ticket: ulid::Ulid) -> Option<String> {
+        // The agent stands on its folder trust dialog (T-844): nothing
+        // starts until the folder is trusted, and the row asks the question
+        // the dialog asks, the accept key beside it (`w confirm`). The
+        // author, on `w trust workspace` in the footer alone: "users won't
+        // be able to understand what to do".
+        if self.ticket_trust_ready(ticket) {
+            return Some(TRUST_ROW.to_string());
+        }
         // The first prompt never went (T-570): nothing else waits on this
         // seat until it does, and the resend key rides under the words.
         if let Some(unsent) = self.unsent_of(ticket) {
@@ -20072,6 +20085,34 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent_contains(&sent, "plan: true"), "{:?}", sent.borrow());
         assert_eq!(app.status, "asked in plan mode");
+    }
+
+    /// A seat on its folder trust dialog (T-844): the card's row asks the
+    /// dialog's question, the key beside it reads `w confirm`, and `w` sends
+    /// the accept. Off the dialog the row, the hint and the key are gone.
+    #[test]
+    fn w_on_a_trust_seat_sends_the_accept_and_the_row_asks_the_question() {
+        let (mut app, sent, _) = app_with_claude(
+            SessionState::RequiresAction { reason: mesimon_core::board::Reason::Trust },
+            false,
+        );
+        assert!(app.ctx().ticket_trust_ready);
+        assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("trust folder?"));
+        assert_eq!(app.card_owed(ulid::Ulid(1)).0.as_deref(), Some("trust folder?"));
+        assert_eq!(
+            mesimon_core::keymap::hint_for(Scope::Board, Verb::AcceptTrust, &app.ctx()),
+            Some(("w", "confirm"))
+        );
+        app.handle_key(KeyCode::Char('w'), KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "AcceptTrust"), "{:?}", sent.borrow());
+        assert!(app.status.starts_with("trusting the workspace"), "{}", app.status);
+        app.board_mut().sessions[0].state = SessionState::Running;
+        assert!(!app.ctx().ticket_trust_ready);
+        assert_eq!(app.pending_row(ulid::Ulid(1)), None);
+        assert_eq!(
+            mesimon_core::keymap::hint_for(Scope::Board, Verb::AcceptTrust, &app.ctx()),
+            None
+        );
     }
 
     /// A seat whose first prompt never went (T-570): the card's row says

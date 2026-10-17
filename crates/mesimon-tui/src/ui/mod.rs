@@ -54,9 +54,16 @@ pub(super) fn ask_keys(
     ctx: &mesimon_core::keymap::Ctx,
 ) -> Vec<&'static mesimon_core::keymap::Binding> {
     use mesimon_core::keymap::{binding_for, Verb};
-    // A seat whose first prompt never went (T-570) has one key: the resend.
-    let verbs: &[Verb] =
-        if ctx.ticket_unsent { &[Verb::Prompt] } else { &[Verb::SendQueuedAsk, Verb::TakeBackAsk] };
+    // A seat on its folder trust dialog (T-844) has one key: the accept,
+    // beside the row's `trust folder?`. A seat whose first prompt never
+    // went (T-570) has one too: the resend.
+    let verbs: &[Verb] = if ctx.ticket_trust_ready {
+        &[Verb::AcceptTrust]
+    } else if ctx.ticket_unsent {
+        &[Verb::Prompt]
+    } else {
+        &[Verb::SendQueuedAsk, Verb::TakeBackAsk]
+    };
     verbs.iter().filter_map(|v| binding_for(app.scope(), *v, ctx)).collect()
 }
 
