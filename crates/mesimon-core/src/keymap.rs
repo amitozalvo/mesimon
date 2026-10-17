@@ -3780,10 +3780,11 @@ static TOUR: &[Binding] = &[
     },
 ];
 
-/// Setup (T-816): one question at a time, and a barrier: the last page's
-/// Enter is the only way out (the author: "don't allow to exit the setup").
-/// Esc and q leave the rest on their defaults and go to that page, and do
-/// nothing there.
+/// Setup (T-816): one question at a time, and a barrier, so no board key
+/// reaches past it. Its way out is the last page's Enter, which applies the
+/// answers; q and Esc leave with nothing applied, and ^c quits as it does
+/// on the board (T-850, the author: "can't quit setup without applying").
+/// The next open of the folder asks again.
 static SETUP: &[Binding] = &[
     Binding {
         keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
@@ -3832,13 +3833,25 @@ static SETUP: &[Binding] = &[
     Binding {
         keys: &[Key::Char('q'), Key::Esc],
         verb: Verb::Back,
-        show: "esc",
-        hint: |_| "skip the rest",
-        avail: |c| !c.setup_ready,
+        show: "q",
+        hint: |_| "quit setup",
+        avail: always,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
         prio: 250,
+    },
+    // Overlay-only, as on the board: the spelling of leaving a program.
+    Binding {
+        keys: &[Key::Ctrl('c')],
+        verb: Verb::Quit,
+        show: "^c",
+        hint: |_| "quit mesimon",
+        avail: always,
+        class: Class::Plain,
+        group: Group::App,
+        mutates: false,
+        prio: 0,
     },
     // A barrier inherits no `?`: Setup carries its own.
     Binding {

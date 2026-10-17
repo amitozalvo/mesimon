@@ -375,17 +375,6 @@ impl Setup {
         Ok(())
     }
 
-    /// Esc: every page not answered on its default, and the last page.
-    pub fn skip_rest(&mut self) -> Result<()> {
-        for ask in self.asks().into_iter().skip(self.at) {
-            if !self.chosen.contains_key(&ask) {
-                self.skipped.insert(ask);
-            }
-        }
-        let last = self.asks().len();
-        self.go(last)
-    }
-
     /// `h`: the page before, its answer under the cursor.
     pub fn back(&mut self) -> Result<()> {
         if self.at > 0 {
@@ -707,12 +696,14 @@ mod tests {
         assert!(s.options()[0].recommended, "merging for you");
     }
 
-    /// What Esc on the first page applies: a plain board, worktrees, auto
+    /// What `s` on every page applies: a plain board, worktrees, auto
     /// merge kept.
     #[test]
     fn skipping_everything_is_the_defaults() {
         let mut s = setup(0);
-        s.skip_rest().expect("skip");
+        while !s.ready() {
+            s.skip().expect("skip");
+        }
         assert!(s.ready());
         assert!(s.skipped(Ask::Work) && s.skipped(Ask::Merge));
         assert_eq!(
@@ -735,7 +726,8 @@ mod tests {
         s.cursor = 2;
         s.next().expect("unsure");
         assert_eq!(s.ask(), Some(Ask::Merge));
-        s.skip_rest().expect("skip");
+        s.skip().expect("skip");
+        assert!(s.ready());
         let o = s.outcome();
         assert_eq!((o.template, o.merge_into), (Template::Kanban, MergeInto::Main));
         assert!(!o.auto_merge_off);

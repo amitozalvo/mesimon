@@ -1940,9 +1940,9 @@ pub struct App {
     pub tour: Option<Box<crate::tour::Tour>>,
     /// Setup while it is open (T-816).
     pub setup: Option<Box<crate::setup::Setup>>,
-    /// Setup was applied from this board: it is not opened again before
-    /// the snapshot that says so lands.
-    setup_applied: bool,
+    /// Setup was applied or left on this run: it is not opened again,
+    /// though a left one's snapshot still says it waits.
+    setup_done: bool,
     /// Setup opens over a board that waits for it (T-816): armed in
     /// `lib.rs::run` once the prefs are loaded, so no test app meets it
     /// unasked.
@@ -2217,7 +2217,7 @@ impl App {
             help: false,
             tour: None,
             setup: None,
-            setup_applied: false,
+            setup_done: false,
             setup_armed: false,
             setup_probes: false,
             practice: false,
@@ -2297,7 +2297,7 @@ impl App {
         let joined = self.team.board.as_ref().is_some_and(|b| b.role != "owner");
         if !self.setup_armed
             || !self.board.setup_pending
-            || self.setup_applied
+            || self.setup_done
             || self.practice
             || joined
             || self.setup.is_some()
@@ -2344,7 +2344,7 @@ impl App {
         let Some(s) = self.setup.take() else { return Ok(()) };
         let o = s.outcome();
         self.mode = Mode::Normal;
-        self.setup_applied = true;
+        self.setup_done = true;
         let sent = self.client.request(Command::ApplySetup {
             template: o.template,
             noun: o.noun.into(),
@@ -9387,16 +9387,15 @@ impl App {
                 self.tour = None;
                 self.mode = Mode::Normal;
             }
-            // Setup's Esc: the rest on their defaults, then the last page,
-            // where it is not bound: Enter there is the only way out.
+            // Setup's q and Esc (T-850): out to the board as it is, nothing
+            // applied. The folder still waits for Setup, so the next time
+            // mesimon opens it asks again; this run does not.
             Scope::Setup => {
-                let done = match self.setup.as_mut() {
-                    Some(s) if !s.ready() => s.skip_rest(),
-                    _ => Ok(()),
-                };
-                if let Err(e) = done {
-                    self.status = format!("{e:#}");
-                }
+                self.setup = None;
+                self.setup_done = true;
+                self.mode = Mode::Normal;
+                self.status =
+                    "setup skipped ∙ it asks again the next time mesimon opens here".into();
             }
             // The menu is the board's, so the notes always return there.
             Scope::Releases => {
@@ -25162,43 +25161,50 @@ mod tests {
         assert_eq!(app.mode, Mode::Normal, "applied here: not opened again");
     }
 
-    /// Esc leaves the rest on their defaults and shows the last page, and
-    /// nothing leaves Setup but that page's Enter: not Esc or q there, not
-    /// Settings, ctrl-c or a reload anywhere. The board opens on today's
-    /// defaults, the tour not asked for.
+    /// No board key reaches past Setup, but q and Esc leave it on any page
+    /// with nothing applied (T-850): the board as it is, and Setup not
+    /// opened again this run though the folder still waits for it.
     #[test]
-    fn setup_esc_twice_is_the_defaults() {
+    fn setup_q_and_esc_leave_with_nothing_applied() {
+        for (code, page) in [(KeyCode::Char('q'), 0), (KeyCode::Esc, 2)] {
+            let mut board = board_three_columns();
+            board.setup_pending = true;
+            let (mut app, sent) = App::for_test_logged(board, theme(), false);
+            app.setup_armed = true;
+            app.open_setup();
+            for (code, mods) in [
+                (KeyCode::Char(','), KeyModifiers::NONE),
+                (KeyCode::Char('U'), KeyModifiers::SHIFT),
+            ] {
+                app.handle_key(code, mods).unwrap();
+                assert_eq!(app.mode, Mode::Setup, "{code:?} leaves nothing");
+            }
+            for _ in 0..page {
+                app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            }
+            assert_eq!(app.setup.as_ref().is_some_and(|s| s.ready()), page == 2);
+            app.handle_key(code, KeyModifiers::NONE).unwrap();
+            assert_eq!(app.mode, Mode::Normal, "{code:?} on page {page}");
+            assert!(app.setup.is_none() && !app.quit);
+            assert!(!sent.borrow().iter().any(|s| s.contains("ApplySetup")), "nothing applied");
+            assert_eq!(app.board_prefs.bool(PrefKey::MergeTrain), None);
+            app.refresh().unwrap();
+            assert_eq!(app.mode, Mode::Normal, "not opened again this run");
+        }
+    }
+
+    /// ctrl-c quits mesimon from Setup as from the board (T-850), applying
+    /// nothing.
+    #[test]
+    fn setup_ctrl_c_quits() {
         let mut board = board_three_columns();
         board.setup_pending = true;
         let (mut app, sent) = App::for_test_logged(board, theme(), false);
         app.setup_armed = true;
         app.open_setup();
-        for (code, mods) in [
-            (KeyCode::Char(','), KeyModifiers::NONE),
-            (KeyCode::Char('c'), KeyModifiers::CONTROL),
-            (KeyCode::Char('U'), KeyModifiers::SHIFT),
-        ] {
-            app.handle_key(code, mods).unwrap();
-            assert_eq!(app.mode, Mode::Setup, "{code:?} leaves nothing");
-        }
-        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        assert!(app.setup.as_ref().is_some_and(|s| s.ready()));
-        for code in [KeyCode::Esc, KeyCode::Char('q')] {
-            app.handle_key(code, KeyModifiers::NONE).unwrap();
-            assert_eq!(app.mode, Mode::Setup, "{code:?} on the last page leaves nothing");
-        }
-        assert!(!app.quit);
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL).unwrap();
+        assert!(app.quit);
         assert!(!sent.borrow().iter().any(|s| s.contains("ApplySetup")));
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.mode, Mode::Normal);
-        let applied: Vec<String> =
-            sent.borrow().iter().filter(|s| s.contains("ApplySetup")).cloned().collect();
-        assert_eq!(applied.len(), 1);
-        assert!(
-            applied[0].contains("template: Kanban") && applied[0].contains("workspace: Worktree")
-        );
-        assert_eq!(app.board_prefs.bool(PrefKey::MergeTrain), None, "auto merge left alone");
-        assert!(app.tour.is_none());
     }
 
     /// Settings › About (T-850): its one row opens mesimon's repository,

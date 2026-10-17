@@ -12145,10 +12145,13 @@ fn a_click_under_setup_reaches_only_its_keys() {
     let frame = render(&app, 120, 30);
     click(&mut app, card);
     assert!(matches!(app.mode, Mode::Setup), "{:?}", app.mode);
-    let skip = spot_of(&frame, "esc skip the rest");
-    click(&mut app, (skip.0 + 1, skip.1));
+    let next = spot_of(&frame, "enter next");
+    click(&mut app, (next.0 + 1, next.1));
     assert!(matches!(app.mode, Mode::Setup));
-    assert!(app.setup.as_ref().is_some_and(|s| s.ready()), "the hint pressed its key");
+    assert_eq!(app.setup.as_ref().map(|s| s.at), Some(1), "the hint pressed its key");
+    let quit = spot_of(&render(&app, 120, 30), "q quit setup");
+    click(&mut app, (quit.0, quit.1));
+    assert!(matches!(app.mode, Mode::Normal), "q left Setup");
 }
 
 #[test]
@@ -12177,7 +12180,7 @@ fn golden_setup_merging() {
 
 #[test]
 fn golden_setup_ready_narrow() {
-    golden("setup_ready_80x24", &render(&setting_up("<"), 80, 24));
+    golden("setup_ready_80x24", &render(&setting_up("s\n"), 80, 24));
 }
 
 // ---- the guided tour (T-763) ----------------------------------------------

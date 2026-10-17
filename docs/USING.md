@@ -117,8 +117,9 @@ finished work is merged into main, with pull requests on GitHub or GitLab, or no
 starts on your own), whether mesimon merges for you or an agent brings a pull request that fell
 behind main up to date, with pull requests the board's columns (to merged, or on to production),
 and a worktree for each ticket where the folder holds several repositories. The recommended
-answer is marked and is the default: `s` leaves a question on it and `esc` leaves all the rest on
-theirs. Each answer is a setting afterwards: *Behaviour › Worktrees*, *Merge into* and *Auto
+answer is marked and is the default, and `s` leaves a question on it. `q` or `esc` leaves Setup
+with nothing applied, on the board as it starts, and Setup asks again the next time mesimon opens
+the folder; `ctrl-c` quits. Each answer is a setting afterwards: *Behaviour › Worktrees*, *Merge into* and *Auto
 merge*. Agents get every board tool and the [agent brief](../README.md#three-promises); each
 column's *Tools* and *Agents › Agent brief* change that. *Settings › About* opens mesimon's
 project page.

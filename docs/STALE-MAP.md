@@ -27955,3 +27955,14 @@ says something, nothing refused, every page, answer, workflow and forge),
 `setup_merge_120x30`, `settings_about_*` new, `setup_brief_120x36` removed, the other setup and
 Settings goldens reminted (one row, About, in the section list). `setup_e2e` green. No rig test:
 nothing an agent is told changed.
+
+**Addendum (T-850, same day, the author: "can't quit setup without applying. ctrl+c not
+working (and there should be an easier way too, q for example)").** T-816's "don't allow to exit
+the setup" is reversed. `q` and `Esc` (one binding, as the q-pops law asks of every scope) leave
+Setup on any page with nothing applied: the board as it starts, `App::setup_done` (was
+`setup_applied`) keeping it closed for this run, and `setup_pending` still on, so the next open of
+the folder asks again. `^c` is `Verb::Quit` there as on the board, overlay-only. Esc's "skip the
+rest" went with it (`Setup::skip_rest`): at two to four pages, `s` does the same. Setup is still a
+barrier for every board key. Tests: `app::setup_q_and_esc_leave_with_nothing_applied`,
+`setup_ctrl_c_quits`, `ui::a_click_under_setup_reaches_only_its_keys` (clicks `q quit setup`);
+the Setup goldens' footers reminted.
