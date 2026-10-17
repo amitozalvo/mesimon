@@ -596,6 +596,11 @@ pub enum Verb {
     /// the words go to every agent seated in the column — the same sentence,
     /// plural; it never starts one.
     Prompt,
+    /// `w` on a card whose agent stopped at its harness's folder trust
+    /// dialog (T-844): the dialog's own keys toward its Yes row, pressed by
+    /// the daemon for the person, the screen read before each. The same
+    /// walk a paired phone's trust card asks for. Never an automation.
+    AcceptTrust,
     /// `S` on the ticket page: a second shell beside whatever is there.
     /// There is no Claude twin: a ticket holds ONE claude (2026-09-02), and a
     /// second seat is a shell — see STALE-MAP "One claude per ticket".
@@ -1448,6 +1453,10 @@ pub struct Ctx {
     /// (T-420): Shift+Enter's field opens at `accept plan`, and a blank
     /// Enter there presses the harness's own default on the dialog.
     pub ticket_plan_ready: bool,
+    /// The subject ticket's agent sits on its harness's folder trust dialog
+    /// (T-844): `RequiresAction { Trust }`, TRUST on the card. `w` presses
+    /// the dialog's own Yes for the person; Enter still attaches.
+    pub ticket_trust_ready: bool,
     /// The subject ticket's agent is KNOWN to be planning without a dialog
     /// up yet: its argv carries plan mode (T-420). A queued ask there
     /// defaults to accepting the plan it ends on; Shift+Tab flips it. A
@@ -2260,6 +2269,26 @@ static BOARD: &[Binding] = &[
         group: Group::Navigate,
         mutates: false,
         prio: 10,
+    },
+    Binding {
+        // The folder trust dialog (T-844): Claude Code asks before it works
+        // in a folder for the first time, before any hook fires, so the
+        // card read SETUP and only the pane could answer. The key is the
+        // same accept a paired phone's trust card sends: the dialog's own
+        // keys toward `Yes, I trust this folder`, never a blind Enter, and
+        // the brief goes in by itself once the composer paints. `w` for
+        // the WORKSPACE the dialog is about ("Accessing workspace:" is its
+        // heading); free on every screen. Beside `enter` in the footer: go
+        // there and read it, or trust it from here.
+        keys: &[Key::Char('w')],
+        verb: Verb::AcceptTrust,
+        show: "w",
+        hint: |_| "trust workspace",
+        avail: |c| c.ticket_trust_ready,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: true,
+        prio: 22,
     },
     Binding {
         // Shift on the Enter axis again, and the same sentence the composer's
@@ -3081,6 +3110,19 @@ static TICKET: &[Binding] = &[
         group: Group::Sessions,
         mutates: true,
         prio: 20,
+    },
+    Binding {
+        // The board's `w` (T-844), on the page about the same ticket: the
+        // agent's trust dialog accepted from here, beside `enter`'s focus.
+        keys: &[Key::Char('w')],
+        verb: Verb::AcceptTrust,
+        show: "w",
+        hint: |_| "trust workspace",
+        avail: |c| c.ticket_trust_ready,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: true,
+        prio: 22,
     },
     Binding {
         // The board's ask key, on the page that shows the same ticket
@@ -8578,6 +8620,27 @@ mod tests {
     /// change the flag it carries. On the dialog itself Shift+Tab is
     /// inert and unhinted (one stop is no ring); a seat merely KNOWN to be
     /// planning keeps the three-stop ring.
+    /// The folder trust dialog's key (T-844): `w` on the board and the ticket
+    /// page while the subject's agent stands on it, the same verb on both,
+    /// hinted as what it does; inert and unhinted on every other card.
+    #[test]
+    fn w_trusts_the_workspace_only_while_the_dialog_stands() {
+        let standing = Ctx { has_ticket: true, ticket_trust_ready: true, ..Default::default() };
+        for scope in [Scope::Board, Scope::Ticket] {
+            assert_eq!(resolve(scope, Key::Char('w'), &standing), Some(Verb::AcceptTrust));
+            assert_eq!(
+                hint_for(scope, Verb::AcceptTrust, &standing),
+                Some(("w", "trust workspace")),
+                "{scope:?}"
+            );
+        }
+        let quiet = Ctx { has_ticket: true, ..Default::default() };
+        for scope in [Scope::Board, Scope::Ticket] {
+            assert_eq!(resolve(scope, Key::Char('w'), &quiet), None);
+            assert_eq!(hint_for(scope, Verb::AcceptTrust, &quiet), None);
+        }
+    }
+
     #[test]
     fn shift_enter_accepts_a_ready_plan_and_the_field_says_so() {
         let plan = Ctx {

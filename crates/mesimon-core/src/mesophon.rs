@@ -602,6 +602,12 @@ pub struct Agent {
     pub permission: Option<Permission>,
     #[serde(default)]
     pub dialog: Option<Dialog>,
+    /// The folder trust dialog the agent stopped on before it started
+    /// (T-844), while it stands. Its own field: a browser from before it
+    /// draws nothing for a field it does not know, where an unknown
+    /// `dialog` kind would have broken its page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust: Option<Trust>,
     pub session: String,
     pub provider: String,
     pub state: String,
@@ -1164,6 +1170,7 @@ mod tests {
             agent: Some(Agent {
                 permission: None,
                 dialog: None,
+                trust: None,
                 session: "s".into(),
                 provider: "claude".into(),
                 state: "working".into(),
@@ -1594,8 +1601,30 @@ pub struct Dialog {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DialogContent {
-    Questions { questions: Vec<Question> },
-    Plan { markdown: String },
+    Questions {
+        questions: Vec<Question>,
+    },
+    Plan {
+        markdown: String,
+    },
+    /// The folder trust dialog a harness shows before it starts (T-844),
+    /// read off the pane, since no hook fires before it is answered. The
+    /// one answer is `DialogAnswer::Accept`: the dialog's own keys toward
+    /// its Yes row, pressed for the person. A phone draws it from
+    /// `Agent::trust`, never from `Agent::dialog`, so a browser from
+    /// before this kind is unchanged.
+    Trust {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        folder: Option<String>,
+    },
+}
+/// The trust dialog a phone offers to accept (T-844): its `request` for
+/// `Request::Dialog`, and the folder it is about where the screen says.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Trust {
+    pub request: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Question {

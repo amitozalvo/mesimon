@@ -164,6 +164,8 @@ function stateWord(agent) {
   if (agent.state !== "needs attention") return agent.state;
   return agent.permission
     ? "needs approval"
+    : agent.trust
+      ? "asks for trust"
     : agent.dialog?.kind === "plan"
       ? "has a plan"
       : agent.dialog
@@ -217,8 +219,8 @@ function Ghost({ store, item, column }) {
 // opens the ticket.
 function NeedCard({ store, ticket, board, live }) {
   const pressed = ticket.id === board.selected;
-  const { permission, dialog, session } = ticket.agent;
-  const entry = (permission || dialog) ? store.entryFor(ticket) : undefined;
+  const { permission, dialog, trust, session } = ticket.agent;
+  const entry = (permission || dialog || trust) ? store.entryFor(ticket) : undefined;
   const off = !live || answerBusy(entry);
   const send = (body) => store.sendInteraction({ ...body, ticket: ticket.id, session }, entry);
   const question = answerable(dialog) ? dialog.questions[0] : undefined;
@@ -232,6 +234,10 @@ function NeedCard({ store, ticket, board, live }) {
     ${permission && html`<div class="need-body">
       <p class="need-line"><${Icon} name="shield" size=${15} cls="attn-ink" /><span>Wants to use ${permission.tool}</span></p>
       <pre class="need-code">${requestSummary(permission)}</pre>
+    </div>`}
+    ${trust && html`<div class="need-body">
+      <p class="need-line"><${Icon} name="shield" size=${15} cls="attn-ink" /><span>Asks to trust this folder before it starts</span></p>
+      ${trust.folder && html`<pre class="need-code">${trust.folder}</pre>`}
     </div>`}
     ${question && html`<div class="need-body">
       <p class="need-question" dir="auto">${question.question}</p>
@@ -252,6 +258,11 @@ function NeedCard({ store, ticket, board, live }) {
               onClick=${() => send({ op: "permission", request: permission.request, decision: "deny" })}>Deny</button>
             <button type="button" class="btn btn-attn" disabled=${off || expired}
               onClick=${() => send({ op: "permission", request: permission.request, decision: "allow" })}>Approve once</button>
+          </div>`
+        : trust
+          ? html`<div class="need-actions">
+            <button type="button" class="btn btn-attn" disabled=${off}
+              onClick=${() => send({ op: "dialog", request: trust.request, response: { answer: "accept" } })}>Yes, I trust this folder</button>
           </div>`
         : dialog?.kind === "plan" || (dialog && !question)
           ? html`<div class="need-actions"><button type="button" class="btn btn-attn" onClick=${() => store.select(ticket.id)}>${dialog.kind === "plan" ? "Review plan" : "Answer in the ticket"}</button></div>`

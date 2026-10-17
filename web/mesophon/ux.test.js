@@ -3709,6 +3709,24 @@ try {
           await page.locator("#attention").screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-plan.png`) });
           await attention("Reject plan").click();
           assert.equal(await page.evaluate(() => fixture.requests.filter((r) => r.op === "dialog").at(-1).request), "plan-1");
+          // T-844: the folder trust dialog rides its own field, with one
+          // button, and its answer is the dialog road's `accept`.
+          await page.evaluate(() => {
+            fixture.tickets[0].agent.dialog = undefined;
+            fixture.tickets[0].agent.trust = { request: "trust-1", folder: "/Users/me/code/app" };
+            fixture.update();
+          });
+          await until(page, () => document.querySelector("#attention").textContent.includes("Trust this folder"));
+          assert((await page.locator("#attention").textContent()).includes("/Users/me/code/app"));
+          assert.equal(await page.locator("#attention button").count(), 1);
+          await attention("Yes, I trust this folder").click();
+          assert.deepEqual(
+            await page.evaluate(() => { const r = fixture.requests.filter((r) => r.op === "dialog").at(-1); return [r.request, r.response]; }),
+            ["trust-1", { answer: "accept" }]);
+          await page.evaluate(() => {
+            fixture.tickets[0].agent.trust = undefined;
+            fixture.update();
+          });
           // T-568: words queued for the turn never lock the answer. At the
           // question Steer is off, so the words queue; the receipt says whose
           // words they replaced, and the answer still goes.

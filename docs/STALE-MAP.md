@@ -27553,3 +27553,71 @@ Tests: `runtime::tests::a_steer_counts_when_the_server_takes_it_on_the_foregroun
 `provider_e2e::{a_steer_goes_into_a_running_codex_turn_and_is_acked_by_the_runtime,
 a_codex_dialog_refuses_a_steer_in_the_boards_words, an_unacked_codex_steer_is_pressed_once_and_given_up}`,
 the Codex rig's `steer` case, `state.test.js`'s help-line test and the UX suite's Codex seat.
+
+## The trust dialog is accepted from the board and from a phone (T-844, 2026-10-17, the author: "allow users to accept remotely since they are running inside mesimon and consent was explicitly given anyway. right now, users of mesimon remote control are stuck and there's no way out unless they return to their computer")
+
+**Why.** Claude Code asks whether to trust a folder before it works there for the first time,
+and the question comes before any hook fires: `SessionStart` lands only once it is answered.
+A seat on it read SETUP at the 10 s startup probe (`SpawnProbe`: bytes, no title), its launch
+words were abandoned as `unsent` (`pressable()` is false on any `RequiresAction`), and the one
+road out was the pane. A phone saw "needs attention" with nothing to tap. T-762 had documented
+the way out (trust the root once); T-824 had given Codex's folder dialog a TRUST card and the
+words "open its pane". Both left the person at the keyboard.
+
+**What shipped.**
+
+- **The dialog is read off the pane** (`trust_dialog.rs`, the daemon's `probe_claude_startup`,
+  one `capture-pane` a second for a Claude seat at `Spawning`, `StartupModal` or `Trust`, the
+  cadence `probe_codex_startup` already pays). Claude Code 2.1.302 spells the dialog in its
+  binary: the `Accessing workspace:` heading, the `Quick safety check` paragraph,
+  `cancelFirst`, `focus: "cancel"` and `hideIndexes`, so the cursor opens on `No, exit` and the
+  rows carry no numbers; the 2.1.28x shape the lab drivers answered (`❯ 1. Yes, I trust this
+  folder` first) reads too, and so does Codex's `Trust this folder? › 1. Trust and continue`.
+  The reader wants a heading, both rows as whole rows by their exact labels and at most one
+  marker: a conversation quoting the words, a heading with one row, or the composer is `None`.
+  A recognised dialog is `Signal::Attention { Trust }` (TRUST on the card, detail `Claude Code
+  asks to trust this folder`; Codex's folder dialog now says `Codex asks to trust this folder`,
+  its hook review keeps `open its pane`), and a composer seen in its place is `Ready`, as
+  Codex's `input_ready` is. A startup modal this does not recognise reads SETUP as before.
+- **The brief waits.** `settle_owed` holds a Claude seat's parked words while it stands at
+  `Trust`: `next_press`, `ready_by` and, on the mod road, `bridge_by` are pushed each pass, so
+  the composer and the bridge get their whole waits once the dialog goes, and the words go in
+  as any launch's do — answered in the pane, from the board or from a phone. Nothing is
+  marked unsent on this dialog; `relaunch_silent_mods` and `rescue_silent_mods` never saw it
+  (both want `Spawning`, and the first wants a composer).
+- **The accept is the dialog's own keys**, on Remote Control's dialog road: the daemon
+  projects the dialog as `DialogContent::Trust { folder }` (`control_offer_trust`, a request
+  minted since no hook names one), a `DialogAnswer::Accept` walks it (`trust_step`: Down or Up
+  toward the Yes row, Enter on it, the screen read before every key, a cursor on neither row
+  sends nothing), and the edge is `SessionStart` (`dialog_edge`), or the seat leaving `Trust`
+  with no hook to say so (Codex, or a composer seen first). No refusal road: `No, exit` ends
+  the agent and stays the pane's (`dialog_plan` gives a `Reject` on a trust dialog nothing).
+  A walk that sent no key puts `could not accept the trust dialog ∙ answer it in its pane` on
+  the card.
+- **The phone draws it from `Agent::trust`**, a field of its own (`api::Trust { request,
+  folder }`), never a `dialog` kind: a browser from before this ticket would have thrown on
+  `dialog.questions.map` for a kind it did not know, and it draws nothing for a field it does
+  not know. The ticket page and the Now card show the folder and one button, `Yes, I trust
+  this folder`, whose answer is `Request::Dialog { Accept }`; the list reads `asks for trust`.
+- **The board's `w`** (`Verb::AcceptTrust`, `Ctx::ticket_trust_ready`, `Command::AcceptTrust
+  { ticket }`): `trust workspace` beside `enter` in the footer on the board and the ticket
+  page while the subject's agent stands at `Trust`, inert and unhinted otherwise; `w` was free
+  on every screen and the dialog's own heading is `Accessing workspace:`. The daemon runs the
+  same walk under `Deliverer::Board` (`Principal::Local`), with `trust_accept` and its outcome
+  in the feed and the card's state for a receipt; `agent_allows` refuses it to every agent.
+  The ticket page's clause reads `it cannot start until the folder is trusted ∙ accept it here
+  or in its pane`.
+
+**Not done.** The crown gets no accept: whether one agent may trust a folder for another is a
+policy question nobody asked. Claude Code's dialog on a folder that pre-approves permissions
+(`No, continue without these permissions`) reads and walks the same, unmeasured live. The
+phone offers no `No, exit`.
+
+**Measured.** `cargo ut`; `trust_accept_e2e` (a Python stub painting 2.1.302's dialog with the
+cursor on `No, exit`: TRUST with its words before any hook, the brief still owed past a 3 s
+composer wait with no key sent, `Command::AcceptTrust` → `Down`, `Enter` and nothing else, the
+composer painted, `SessionStart`, the brief pasted, `trust_accept ∙ answered` in the feed);
+`provider_e2e::worktree_trust_calls_for_the_person_before_delivering_the_queued_prompt` with
+the new Codex words; the phone's `ux.test.js` trust case (chromium). Tests:
+`trust_dialog::tests::*`, `mesophon::tests::a_trust_dialog_walks_to_yes_and_takes_no_refusal`,
+`keymap::tests::w_trusts_the_workspace_only_while_the_dialog_stands`.

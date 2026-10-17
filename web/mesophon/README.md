@@ -35,7 +35,7 @@ reload shows an edit) beside a host board built from this checkout.
   peek each away spell makes.
 - `store.js`: application state and every action on it; the view renders from it.
 - `shell.js`, `lists.js`, `detail.js`, `dialogs.js`, `compose.js`: the view
-  (pairing, sidebar, Now, Board and Sent, the ticket, permission/question/plan
+  (pairing, sidebar, Now, Board and Sent, the ticket, permission/question/plan/trust
   cards, the New ticket sheet and Sent's bar). Host text is always a text node.
 - `shin.js`, `icons.js`: the mascot from `assets/mascot/shin.txt` and inline icons.
 - `app.js`: boot and window-level events, the service worker's registration and
@@ -76,7 +76,8 @@ carries `since` (when it entered that state, the host's clock), and while live
 line), read by the host from the transcript as the TUI's card reads it. The
 remembered board keeps `since` and each ticket's `tags`, never `doing` or
 `said`. A needs-you card
-answers a permission or a single-choice question in place; anything else opens
+answers a permission, a single-choice question or a folder trust dialog (`agent.trust`,
+T-844: its own field, so an older browser draws nothing for it) in place; anything else opens
 the ticket. Output draws a periodic, bounded 50-line window as the pane's own
 screen: the lines box is the pane's width in cells (`cols` on the preview
 reply; the longest line stands in for an older host), the type is sized so that

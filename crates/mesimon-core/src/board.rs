@@ -679,6 +679,13 @@ impl SessionRecord {
         self.state == (SessionState::RequiresAction { reason: Reason::Plan })
     }
 
+    /// On the harness's folder trust dialog (T-844): TRUST on the card, a
+    /// dialog that comes before the session and that the board may accept
+    /// for a person who asked.
+    pub fn on_trust_dialog(&self) -> bool {
+        self.state == (SessionState::RequiresAction { reason: Reason::Trust })
+    }
+
     /// Launched with `--permission-mode plan` — the one fact the board holds
     /// about a mode. A session that entered plan mode from inside its pane
     /// is not known to be planning.

@@ -56,12 +56,14 @@ export function requestSummary(permission) {
 export function Attention({ store, ticket, entry, live }) {
   const permission = ticket?.agent?.permission;
   const dialog = ticket?.agent?.dialog;
-  if (!permission && !dialog) return html`<section id="attention" hidden></section>`;
+  const trust = ticket?.agent?.trust;
+  if (!permission && !dialog && !trust) return html`<section id="attention" hidden></section>`;
   // An answer on its way, never a prompt queued for the turn (T-568).
   const busy = answerBusy(entry);
   const off = !live || busy;
   const send = (body) =>
     store.sendInteraction({ ...body, ticket: ticket.id, session: ticket.agent.session }, entry);
+  if (trust) return html`<${TrustCard} ticket=${ticket} trust=${trust} off=${off} send=${send} />`;
   if (permission) {
     const expired = Date.now() >= permission.expires_at;
     return html`<section id="attention" class="attention" aria-label="Agent needs your answer">
@@ -126,6 +128,23 @@ export function Attention({ store, ticket, entry, live }) {
             }}>Send answer</button>
         </div>`
       : html`<p class="attention-note">This dialog shape needs a local answer in the pane.</p>`}
+  </section>`;
+}
+
+// The folder trust dialog a harness shows before it starts (T-844), with its
+// one answer. The host presses the dialog's own Yes in the pane, the screen
+// read before every key, as the person would at the keyboard; the brief
+// then goes in by itself. "No, exit" ends the agent and stays the pane's.
+function TrustCard({ ticket, trust, off, send }) {
+  const harness = ticket.agent.provider === "codex" ? "Codex" : "Claude Code";
+  return html`<section id="attention" class="attention" aria-label="Agent needs your answer">
+    <h3 class="attention-head"><${Icon} name="shield" size=${18} cls="attn-ink" /><span>Trust this folder</span></h3>
+    ${trust.folder && html`<pre class="attention-code">${trust.folder}</pre>`}
+    <p class="attention-note">${harness} asks before it works in a folder for the first time. You started this agent from mesimon; accepting presses Yes in its terminal, as you would there, and it goes on with its brief. To decline, answer in the terminal: No ends the agent.</p>
+    <div class="attention-actions">
+      <button type="button" class="btn btn-attn" disabled=${off}
+        onClick=${() => send({ op: "dialog", request: trust.request, response: { answer: "accept" } })}>Yes, I trust this folder</button>
+    </div>
   </section>`;
 }
 

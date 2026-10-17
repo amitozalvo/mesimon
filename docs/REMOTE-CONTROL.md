@@ -295,6 +295,21 @@ An answer's receipt says how far it got:
 "Decision sent" on a permission confirms transport, not tool execution or
 completion.
 
+## Trust dialogs
+
+Claude Code asks whether to trust a folder before it works there for the first
+time, and Codex asks the same of a worktree. The question comes before the agent
+starts, so nothing else can answer it, and the ticket says **asks for trust**.
+The ticket page and its Now card show the folder and one button, **Yes, I trust
+this folder**: your terminal presses the dialog's own keys, the arrow to its Yes
+row and then Enter, reading the screen before each, exactly as you would at the
+keyboard. The agent then starts and its brief goes in by itself. Declining is
+not offered here: the dialog's No ends the agent, so it stays the terminal's.
+The receipt reads as a question's does; two ticks once the agent started. A
+terminal running an older mesimon shows the ticket as needing attention with
+no card, as before. Nothing is written to Claude Code's or Codex's own trust
+settings; the harness keeps its answer as it would from the keyboard.
+
 ## Notes
 
 A ticket's notes are the pages beside its transcript: swipe left on the transcript for the

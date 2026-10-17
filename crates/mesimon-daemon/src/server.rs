@@ -2809,6 +2809,9 @@ impl Daemon {
                 self.persist_and_notify();
                 resp
             }
+            // The board's `w` on a trust dialog (T-844): the walk Remote
+            // Control's card asks for, from the terminal.
+            Command::AcceptTrust { ticket } => self.accept_trust(ticket),
             Command::SleepSession { id } => match self.sleep_one(id, false) {
                 Ok(()) => {
                     self.persist_and_notify();
@@ -2922,6 +2925,7 @@ impl Daemon {
         // A fact only a snapshot carries moved: broadcast, persist nothing.
         let mut repaint = false;
         let mut changed = self.probe_codex_startup(now);
+        changed |= self.probe_claude_startup(now);
         changed |= self.drive_codex_inputs(now);
         for (id, change) in fired {
             changed |= stage!("apply_change", self.apply_change(id, &change, None, None));
@@ -3848,6 +3852,80 @@ impl Daemon {
         }
     }
 
+    /// Claude Code's folder trust dialog, read off the pane once a second
+    /// while a Claude seat starts (T-844). It comes before `SessionStart`,
+    /// so no hook can say it is there: a seat on it read SETUP at the 10 s
+    /// probe and its words went unsent. Here it reads TRUST, with the
+    /// dialog offered to the phone's card and the board's `w`
+    /// (`control_offer_trust`), and the words keep waiting (`settle_owed`).
+    /// The dialog's leave is `SessionStart`'s; a composer seen in its place
+    /// says the same (`Ready`), as Codex's `input_ready` does. A startup
+    /// modal this does not recognise reads SETUP as before.
+    fn probe_claude_startup(&mut self, now: u64) -> bool {
+        use crate::agents::claude::composer::{self, Composer};
+        if !self.ticks.is_multiple_of(4) {
+            return false;
+        }
+        let candidates: Vec<_> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|s| {
+                s.kind == SessionKind::Claude
+                    && s.state.has_pane()
+                    && matches!(
+                        s.state,
+                        SessionState::Spawning
+                            | SessionState::RequiresAction {
+                                reason: Reason::StartupModal | Reason::Trust
+                            }
+                    )
+            })
+            .map(|s| (s.id, s.sid16(), s.state.clone(), s.cwd.clone()))
+            .collect();
+        let mut dirty = false;
+        for (id, sid, state, cwd) in candidates {
+            let principal = Principal::Automation { rule: "claude_startup".into() };
+            if authorize(&principal, &Action::Mutate, &Resource::Session { id }).denied() {
+                continue;
+            }
+            let Ok(screen) = self.backend.capture_input_screen(&sid) else { continue };
+            let at_trust = state == (SessionState::RequiresAction { reason: Reason::Trust });
+            let signal = match crate::trust_dialog::read(&screen) {
+                Some(dialog) => {
+                    dirty |= self.control_offer_trust(id, Some(dialog.folder.unwrap_or(cwd)));
+                    if at_trust {
+                        continue;
+                    }
+                    Signal::Attention { reason: Reason::Trust }
+                }
+                // The dialog went and the composer paints: the seat is up. A
+                // projection nothing walks goes with it; one a delivery is
+                // still walking settles the delivery first (`trust_taken`).
+                None if at_trust && composer::read(&screen) != Composer::Absent => {
+                    if !self.control_trust_walking(id) {
+                        dirty |= self.control_drop_trust(id);
+                    }
+                    Signal::Ready
+                }
+                None => {
+                    if !at_trust {
+                        dirty |= self.control_drop_trust(id);
+                    }
+                    continue;
+                }
+            };
+            if let Some(machine) = self.machines.get_mut(&id) {
+                if let Some(change) = machine.apply(&signal, now) {
+                    let detail = matches!(signal, Signal::Attention { .. })
+                        .then(|| "Claude Code asks to trust this folder".to_string());
+                    dirty |= self.apply_change(id, &change, detail, Some("claude_startup"));
+                }
+            }
+        }
+        dirty
+    }
+
     /// A capture a tick while launch words wait on the composer; a dialog
     /// standing, or a composer nothing waits on, is looked at once a second
     /// (T-840: four captures a second per seat for as long as it stood).
@@ -3915,6 +3993,18 @@ impl Daemon {
                 dirty = true;
                 Signal::Ready
             } else if let Some(reason) = crate::agents::codex::startup_attention(&screen) {
+                // The folder dialog is one the board accepts for a person
+                // (T-844): offered to the phone's card and the board's `w`.
+                // The hook review stays the pane's.
+                if reason == mesimon_core::board::Reason::Trust {
+                    if crate::trust_dialog::read(&screen).is_some() {
+                        let cwd =
+                            self.board.sessions.iter().find(|s| s.id == id).map(|s| s.cwd.clone());
+                        dirty |= self.control_offer_trust(id, cwd);
+                    } else {
+                        dirty |= self.control_drop_trust(id);
+                    }
+                }
                 Signal::Attention { reason }
             } else if self.codex_ready.contains(&id)
                 && crate::agents::codex::input_ready(&screen)
@@ -3926,6 +4016,11 @@ impl Daemon {
                     }
                 )
             {
+                // The folder dialog's projection goes with the dialog (T-844),
+                // unless a delivery still walks it: that settles first.
+                if !self.control_trust_walking(id) {
+                    dirty |= self.control_drop_trust(id);
+                }
                 Signal::Ready
             } else {
                 continue;
@@ -3936,7 +4031,14 @@ impl Daemon {
                         change.to,
                         SessionState::RequiresAction { reason: mesimon_core::board::Reason::Trust }
                     )
-                    .then(|| "Codex needs your trust decision ∙ open its pane".to_string());
+                    .then(|| {
+                        if crate::trust_dialog::read(&screen).is_some() {
+                            "Codex asks to trust this folder"
+                        } else {
+                            "Codex needs your trust decision ∙ open its pane"
+                        }
+                        .to_string()
+                    });
                     dirty |= self.apply_change(id, &change, detail, Some("codex_startup"));
                 }
             }
@@ -4952,6 +5054,25 @@ impl Daemon {
                 self.owed.remove(&id);
                 continue;
             };
+            // The folder trust dialog comes before the session (T-844): the
+            // words are not abandoned on it. They wait, the composer's and
+            // the bridge's clocks held, for the dialog to be answered — in
+            // the pane, from the board or from a phone — and then go in as
+            // any launch's do. A startup modal this did not recognise still
+            // reads SETUP, below, and the words go unsent as before.
+            if rec.kind == SessionKind::Claude
+                && rec.state == (SessionState::RequiresAction { reason: Reason::Trust })
+                && self.owed.get(&id).is_some_and(|o| o.parked.is_some())
+            {
+                if let Some(owed) = self.owed.get_mut(&id) {
+                    owed.next_press = Some(now + SUBMIT_RETRY_MS);
+                    owed.ready_by = Some(now + composer_wait_ms());
+                    if owed.mod_road {
+                        owed.bridge_by = Some(now + mod_bridge_wait_ms());
+                    }
+                }
+                continue;
+            }
             // A pane that died, or one showing a startup modal, is not a pane
             // to keep pressing Enter into — the modal's Enter is an ANSWER,
             // and mesimon does not answer dialogs on the user's behalf.

@@ -1653,7 +1653,10 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // touched it (T-299). A session read by the same rule as the line
         // above, and a fact about the PERSON besides — the notification
         // thread is the only caller it was built for.
-        | Command::FocusQuiet => false,
+        | Command::FocusQuiet
+        // A dialog's Enter is a person's answer (T-844): the board and a
+        // paired phone press it for a person who asked, never an agent.
+        | Command::AcceptTrust { .. } => false,
     }
 }
 

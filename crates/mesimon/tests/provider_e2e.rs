@@ -615,7 +615,7 @@ fn worktree_trust_calls_for_the_person_before_delivering_the_queued_prompt() {
         )]
     );
     let held = session(&mut c, id);
-    assert_eq!(held.detail.as_deref(), Some("Codex needs your trust decision ∙ open its pane"));
+    assert_eq!(held.detail.as_deref(), Some("Codex asks to trust this folder"));
     assert!(held.pending_prefill && held.pending_submit);
     assert!(!h.owner.dir.join(format!("{id}.input")).exists());
     assert_eq!(board.ticket(ticket).unwrap().column, "TODO");

@@ -5525,6 +5525,12 @@ impl App {
         self.board.pane_target(ticket).is_some_and(|s| s.on_plan_dialog())
     }
 
+    /// The ticket's paned agent sits on its folder trust dialog (T-844):
+    /// TRUST on the card, `w` accepts it from here.
+    pub(crate) fn ticket_trust_ready(&self, ticket: ulid::Ulid) -> bool {
+        self.board.pane_target(ticket).is_some_and(|s| s.on_trust_dialog())
+    }
+
     /// The ticket's paned agent was launched in plan mode (T-420) and is
     /// not on the dialog yet: a queued ask there defaults to accepting the
     /// plan it ends on. Read off the argv — the one place plan mode is a
@@ -6558,6 +6564,7 @@ impl App {
             ticket_held: subject.is_some_and(|t| self.ticket_held(t)),
             ticket_unsent: subject.is_some_and(|t| self.unsent_of(t).is_some()),
             ticket_plan_ready: subject.is_some_and(|t| self.ticket_plan_ready(t)),
+            ticket_trust_ready: subject.is_some_and(|t| self.ticket_trust_ready(t)),
             ticket_planning: subject.is_some_and(|t| self.ticket_planning(t)),
             plan_able: match &self.mode {
                 Mode::Input { purpose: InputPurpose::Create { .. }, .. }
@@ -8212,6 +8219,15 @@ impl App {
                 }
             }
             Verb::Sleep => self.sleep_verb(scope, ctx)?,
+            Verb::AcceptTrust => {
+                // The daemon reads the pane and presses the dialog's own keys
+                // (T-844); a pane it does not recognise refuses in words, and
+                // the card's state says when the dialog took the answer.
+                if let Some(ticket) = self.subject() {
+                    self.status = "trusting the workspace ∙ the card says when it took".into();
+                    self.send_on(ticket, Command::AcceptTrust { ticket })?;
+                }
+            }
             Verb::SleepAllDone => {
                 match self.req(Command::ReclaimAll) {
                     Response::Reclaimed { slept, skipped } => {

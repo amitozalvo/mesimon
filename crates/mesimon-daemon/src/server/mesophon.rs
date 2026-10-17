@@ -130,6 +130,9 @@ struct DialogDelivery {
 enum Deliverer {
     /// A paired phone's: the receipt is its command's (T-567).
     Phone { grant: BoardId, device: DeviceId, command: u64 },
+    /// The board's own `w` on a trust dialog (T-844): a person at the
+    /// terminal, whose receipt is the card's state and a feed line.
+    Board,
     /// The crown's `answer_agent` (T-569). The shim's call waits on `reply`
     /// until the delivery settles; `answer` is the label or the text, for
     /// the feed and the card; `prior` is the turn's mark before the answer
@@ -149,6 +152,7 @@ impl Deliverer {
                 Principal::Paired { device: device.to_hex(), grant: grant.to_hex() }
             }
             Deliverer::Crown { session, .. } => Principal::Agent { session: *session },
+            Deliverer::Board => Principal::Local,
         }
     }
 }
@@ -1152,7 +1156,7 @@ impl Daemon {
         let dialog = self.control.dialogs.get(&session)?;
         match &dialog.content {
             api::DialogContent::Questions { questions } => Some((&dialog.request, questions)),
-            api::DialogContent::Plan { .. } => None,
+            api::DialogContent::Plan { .. } | api::DialogContent::Trust { .. } => None,
         }
     }
 
@@ -1162,7 +1166,7 @@ impl Daemon {
         let dialog = self.control.dialogs.get(&session)?;
         match &dialog.content {
             api::DialogContent::Plan { markdown } => Some((&dialog.request, markdown)),
-            api::DialogContent::Questions { .. } => None,
+            api::DialogContent::Questions { .. } | api::DialogContent::Trust { .. } => None,
         }
     }
 
@@ -1277,8 +1281,20 @@ impl Daemon {
                     }
                     continue;
                 }
+                // A trust dialog's leave has no hook of its own on Codex, and
+                // on Claude `SessionStart` may follow the composer by a beat
+                // (T-844): the seat moving off the dialog is the answer taken.
+                let trust_taken = self
+                    .control
+                    .dialogs
+                    .get(&id)
+                    .is_some_and(|d| matches!(d.content, api::DialogContent::Trust { .. }))
+                    && !self.dialog_waiting(id);
                 match edge {
                     Some(DialogEdge::Answered | DialogEdge::ModAnswered) => {
+                        self.control_settle_dialog(id, pending, "answered", None, "")
+                    }
+                    None if trust_taken => {
                         self.control_settle_dialog(id, pending, "answered", None, "")
                     }
                     Some(DialogEdge::Dismissed) if reject => {
@@ -1311,6 +1327,7 @@ impl Daemon {
                 Deliverer::Crown { crown, session, .. } => {
                     self.crown_answer_allowed(*crown, *session, pending.ticket, id)
                 }
+                Deliverer::Board => self.dialog_waiting(id),
             };
             let dialog = self.control.dialogs.get(&id).filter(|d| d.request == pending.request);
             // A session whose mod speaks `answer` takes the whole answer in
@@ -1463,14 +1480,17 @@ impl Daemon {
         self.control.dialog_edges.get(&session).filter(|(r, _)| r == request).map(|(_, e)| *e)
     }
 
-    /// Whether the session still waits on a question or a plan.
+    /// Whether the session still waits on a question, a plan or its folder
+    /// trust dialog (T-844).
     fn dialog_waiting(&self, id: uuid::Uuid) -> bool {
         use mesimon_core::board::Reason;
         self.board.sessions.iter().any(|s| {
             s.id == id
                 && matches!(
                     s.state,
-                    SessionState::RequiresAction { reason: Reason::Question | Reason::Plan }
+                    SessionState::RequiresAction {
+                        reason: Reason::Question | Reason::Plan | Reason::Trust
+                    }
                 )
         })
     }
@@ -1497,12 +1517,22 @@ impl Daemon {
     ) {
         let waiting = self.dialog_waiting(id);
         let mut standing = false;
+        let mut trust = false;
         if let Some(dialog) = self.control.dialogs.get(&id).filter(|d| d.request == pending.request)
         {
+            trust = matches!(dialog.content, api::DialogContent::Trust { .. });
             if waiting && dialog_shape(dialog, screen) {
                 standing = true;
             } else {
                 self.control.dialogs.remove(&id);
+            }
+        }
+        // A trust accept that sent no key says so on the card (T-844): the
+        // board's `w` has no receipt of its own, and the phone's card reads
+        // the same line in its awareness.
+        if trust && waiting && status == "unknown" {
+            if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                rec.detail = Some(crate::trust_dialog::NOT_ACCEPTED.into());
             }
         }
         let by = pending.by.principal();
@@ -1519,6 +1549,9 @@ impl Daemon {
                     Some(pending.ticket),
                     status,
                 );
+            }
+            Deliverer::Board => {
+                self.feed.board_outcome(by.actor(), "trust_accept", Some(pending.ticket), status);
             }
             Deliverer::Crown { crown, answer, reply, prior, .. } => {
                 self.crown_answer_settled(
@@ -2971,6 +3004,7 @@ impl Daemon {
             doing,
             said,
             dialog: self.control_dialog_of(s).cloned(),
+            trust: self.control_trust_of(s),
             permission: self.control_permission_of(s.id).cloned(),
             session: s.id.to_string(),
             provider: if s.kind == SessionKind::Codex { "codex" } else { "claude" }.into(),
@@ -3002,6 +3036,111 @@ impl Daemon {
         })
     }
 
+    /// The folder trust dialog a phone offers to accept (T-844), while the
+    /// agent still stands on it: its own field on the agent, never a
+    /// `dialog` kind a browser from before would not know.
+    fn control_trust_of(&self, s: &SessionRecord) -> Option<api::Trust> {
+        use mesimon_core::board::Reason;
+        if s.state != (SessionState::RequiresAction { reason: Reason::Trust }) {
+            return None;
+        }
+        let dialog = self.control.dialogs.get(&s.id)?;
+        match &dialog.content {
+            api::DialogContent::Trust { folder } => {
+                Some(api::Trust { request: dialog.request.clone(), folder: folder.clone() })
+            }
+            _ => None,
+        }
+    }
+
+    /// A folder trust dialog read off `id`'s pane (T-844), projected for the
+    /// phone's card and the board's `w` while it stands, once per dialog:
+    /// a request minted here, since no hook names one. `true` when new.
+    pub(super) fn control_offer_trust(&mut self, id: uuid::Uuid, folder: Option<String>) -> bool {
+        if self
+            .control
+            .dialogs
+            .get(&id)
+            .is_some_and(|d| matches!(d.content, api::DialogContent::Trust { .. }))
+        {
+            return false;
+        }
+        let request = format!("trust-{}", uuid::Uuid::new_v4().simple());
+        self.control
+            .dialogs
+            .insert(id, api::Dialog { request, content: api::DialogContent::Trust { folder } });
+        self.control_changed();
+        true
+    }
+
+    /// The trust dialog left `id`'s pane with no hook to say so (T-844):
+    /// the projection goes. A delivery still walking it settles on its own
+    /// (`state_changed`, or `answered` once the seat moved on).
+    pub(super) fn control_drop_trust(&mut self, id: uuid::Uuid) -> bool {
+        let trust = self
+            .control
+            .dialogs
+            .get(&id)
+            .is_some_and(|d| matches!(d.content, api::DialogContent::Trust { .. }));
+        if trust {
+            self.control.dialogs.remove(&id);
+            self.control_changed();
+        }
+        trust
+    }
+
+    /// Whether an accept is still walking `id`'s dialog (T-844): its
+    /// projection stays until the delivery settles on it.
+    pub(super) fn control_trust_walking(&self, id: uuid::Uuid) -> bool {
+        self.control.dialog_deliveries.contains_key(&id)
+    }
+
+    /// The board's `w` (T-844): the trust dialog `ticket`'s agent stands on,
+    /// accepted by the walk a phone's card asks for, with a feed line of its
+    /// own and the card's state for a receipt. Refuses in words, and the
+    /// dialog stays up for the person.
+    pub(super) fn accept_trust(&mut self, ticket: ulid::Ulid) -> Response {
+        use mesimon_core::board::Reason;
+        let Some(rec) = self.board.pane_target(ticket) else {
+            return Response::Err { message: "no live agent session on this ticket".into() };
+        };
+        if rec.state != (SessionState::RequiresAction { reason: Reason::Trust }) {
+            return Response::Err { message: "no trust dialog waiting".into() };
+        }
+        let id = rec.id;
+        let Some(dialog) = self
+            .control
+            .dialogs
+            .get(&id)
+            .filter(|d| matches!(d.content, api::DialogContent::Trust { .. }))
+        else {
+            return Response::Err { message: crate::trust_dialog::NOT_RECOGNISED.into() };
+        };
+        if self.control.dialog_deliveries.contains_key(&id) {
+            return Response::Err { message: "already trusting the workspace".into() };
+        }
+        let request = dialog.request.clone();
+        let (max_steps, walk) = walk_budget(dialog);
+        self.control.dialog_deliveries.insert(
+            id,
+            DialogDelivery {
+                by: Deliverer::Board,
+                ticket,
+                request,
+                response: api::DialogAnswer::Accept,
+                deadline: Instant::now() + walk,
+                next: Instant::now(),
+                steps: 0,
+                max_steps,
+                walk: Walk::default(),
+                confirm: None,
+                by_mod: None,
+            },
+        );
+        self.feed.board("local", "trust_accept", Some(ticket));
+        Response::Ok
+    }
+
     /// The permission a phone draws for this session, until it expires.
     fn control_permission_of(&self, id: uuid::Uuid) -> Option<&api::Permission> {
         self.control
@@ -3017,8 +3156,9 @@ impl Daemon {
     fn control_answers_here(&self, id: uuid::Uuid) -> bool {
         let Some(s) = self.board.sessions.iter().find(|s| s.id == id) else { return false };
         self.control_permission_of(id).is_some()
+            || self.control_trust_of(s).is_some()
             || self.control_dialog_of(s).is_some_and(|d| match &d.content {
-                api::DialogContent::Plan { .. } => true,
+                api::DialogContent::Plan { .. } | api::DialogContent::Trust { .. } => true,
                 api::DialogContent::Questions { questions } => dialog_answerable(questions),
             })
     }
@@ -4023,9 +4163,12 @@ fn answer_fits(question: &api::Question, answer: &api::QuestionAnswer) -> bool {
 fn dialog_plan(dialog: &api::Dialog, response: &api::DialogAnswer) -> Option<Plan> {
     use api::{DialogAnswer as A, QuestionAnswer as Q};
     let api::DialogContent::Questions { questions } = &dialog.content else {
-        return match response {
-            A::Accept => Some(Plan::Accept),
-            A::Reject => Some(Plan::Reject),
+        return match (response, &dialog.content) {
+            (A::Accept, _) => Some(Plan::Accept),
+            // A trust dialog's `No, exit` ends the agent (T-844): the pane's
+            // alone, never a phone's button.
+            (A::Reject, api::DialogContent::Trust { .. }) => None,
+            (A::Reject, _) => Some(Plan::Reject),
             _ => None,
         };
     };
@@ -4084,6 +4227,7 @@ fn dialog_shape(dialog: &api::Dialog, screen: &str) -> bool {
                 && screen.contains("Yes,manuallyapproveedits")
                 && screen.contains("TellClaudewhattochange")
         }
+        api::DialogContent::Trust { .. } => crate::trust_dialog::read_text(screen).is_some(),
     }
 }
 
@@ -4294,6 +4438,9 @@ fn dialog_step(
     walk: &Walk,
 ) -> Result<DialogStep, Miss> {
     let plan = dialog_plan(dialog, response).ok_or(Miss::ShapeUnrecognised)?;
+    if let api::DialogContent::Trust { .. } = &dialog.content {
+        return trust_step(&plan, screen);
+    }
     if let api::DialogContent::Questions { questions } = &dialog.content {
         if dialog_batched(questions) {
             return batch_step(questions, &plan, screen, walk);
@@ -4335,6 +4482,24 @@ fn dialog_step(
     }
     let target = option_row(&rows, &label, &description)?;
     Ok(toward(current, target, DialogStep::Submit))
+}
+
+/// One key of a trust dialog's accept (T-844): the dialog's own Yes row,
+/// reached by its arrows and pressed by Enter, from `trust_dialog`'s read
+/// of the screen before every key. A cursor on neither row, or a screen
+/// that is not the measured dialog, sends nothing. No refusal road: the
+/// dialog's `No, exit` ends the agent and stays the pane's.
+fn trust_step(plan: &Plan, screen: &str) -> Result<DialogStep, Miss> {
+    use crate::trust_dialog::{self, Step};
+    if *plan != Plan::Accept {
+        return Err(Miss::ShapeUnrecognised);
+    }
+    let dialog = trust_dialog::read_text(screen).ok_or(Miss::ShapeUnrecognised)?;
+    match dialog.toward_yes().ok_or(Miss::ShapeUnrecognised)? {
+        Step::Up => Ok(DialogStep::Up),
+        Step::Down => Ok(DialogStep::Down),
+        Step::Enter => Ok(DialogStep::Submit),
+    }
 }
 
 /// One key of a batch or several-choice answer (T-571), off the tab the
@@ -4469,6 +4634,11 @@ fn batch_step(
 /// `PostToolUse` says it took an answer; another tool's `PreToolUse` says it
 /// is gone with none taken, the refusal road (T-447). Nothing else does.
 fn dialog_edge(frame: &HookFrame, dialog: &api::Dialog) -> Option<DialogEdge> {
+    // A trust dialog has no tool (T-844): the agent starting is its answer
+    // taken, and nothing else the hooks say is about it.
+    if let api::DialogContent::Trust { .. } = dialog.content {
+        return (frame.event == "SessionStart").then_some(DialogEdge::Answered);
+    }
     let own = dialog_own_call(frame, dialog);
     match frame.event.as_str() {
         // The mod's `answered` report rides in as a `PostToolUse` of its own
@@ -4507,6 +4677,7 @@ fn dialog_own_call(frame: &HookFrame, dialog: &api::Dialog) -> bool {
     let tool = match dialog.content {
         api::DialogContent::Questions { .. } => "AskUserQuestion",
         api::DialogContent::Plan { .. } => "ExitPlanMode",
+        api::DialogContent::Trust { .. } => return false,
     };
     frame.payload["tool_name"].as_str() == Some(tool)
         && frame.payload["tool_use_id"].as_str().is_none_or(|c| c == dialog.request)
@@ -4519,7 +4690,7 @@ mod tests {
     fn questions_of(dialog: &api::Dialog) -> &[api::Question] {
         match &dialog.content {
             api::DialogContent::Questions { questions } => questions,
-            api::DialogContent::Plan { .. } => &[],
+            api::DialogContent::Plan { .. } | api::DialogContent::Trust { .. } => &[],
         }
     }
     /// A walk that has pasted into the first question's text row.
@@ -4541,6 +4712,64 @@ mod tests {
                 }],
             },
         }
+    }
+
+    /// The folder trust dialog's accept (T-844): its own arrows toward the
+    /// Yes row and Enter on it, read off the screen each time; a refusal is
+    /// no answer of the board's, and an unmarked or unknown screen sends
+    /// nothing. Codex's dialog walks the same way.
+    #[test]
+    fn a_trust_dialog_walks_to_yes_and_takes_no_refusal() {
+        let trust = api::Dialog {
+            request: "trust-1".into(),
+            content: api::DialogContent::Trust { folder: Some("/x".into()) },
+        };
+        let opened = " Accessing workspace: /x\n\n Quick safety check: Is this a project you created or one you trust?\n\n ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm · Esc to cancel";
+        let accept = api::DialogAnswer::Accept;
+        assert_eq!(dialog_step(&trust, &accept, opened, &Walk::default()), Ok(DialogStep::Down));
+        let on_yes = opened.replace(" ❯ No, exit", "   No, exit").replace("   Yes,", " ❯ Yes,");
+        assert_eq!(dialog_step(&trust, &accept, &on_yes, &Walk::default()), Ok(DialogStep::Submit));
+        assert!(dialog_shape(&trust, opened));
+        assert!(!dialog_shape(&trust, "────\n❯ \n────"));
+        // `No, exit` ends the agent: the pane's alone.
+        assert_eq!(dialog_plan(&trust, &api::DialogAnswer::Reject), None);
+        assert_eq!(
+            dialog_step(&trust, &api::DialogAnswer::Reject, opened, &Walk::default()),
+            Err(Miss::ShapeUnrecognised)
+        );
+        assert_eq!(
+            dialog_step(&trust, &api::DialogAnswer::Choice { index: 0 }, opened, &Walk::default()),
+            Err(Miss::ShapeUnrecognised)
+        );
+        for bad in [
+            "────\n❯ \n────",
+            &opened.replace(" ❯ No, exit", "   No, exit"),
+            "Quick safety check\n ❯ Yes, I trust this folder\n",
+        ] {
+            assert_eq!(
+                dialog_step(&trust, &accept, bad, &Walk::default()),
+                Err(Miss::ShapeUnrecognised),
+                "{bad}"
+            );
+        }
+        let codex = "  Trust this folder? Codex can read, edit, and run files here.\n› 1. Trust and continue\n  2. Quit";
+        assert_eq!(dialog_step(&trust, &accept, codex, &Walk::default()), Ok(DialogStep::Submit));
+        let on_quit = codex.replace("› 1.", "  1.").replace("  2. Quit", "› 2. Quit");
+        assert_eq!(dialog_step(&trust, &accept, &on_quit, &Walk::default()), Ok(DialogStep::Up));
+        // The agent starting is the dialog's edge; no tool frame is about it.
+        let frame = |event: &str, payload: serde_json::Value| HookFrame {
+            session: "s".into(),
+            event: event.into(),
+            reason: None,
+            pane: None,
+            road: mesimon_core::road::Road::Hooks,
+            payload,
+        };
+        let start = frame("SessionStart", serde_json::json!({"source": "startup"}));
+        assert_eq!(dialog_edge(&start, &trust), Some(DialogEdge::Answered));
+        let other = frame("PreToolUse", serde_json::json!({"tool_name": "Read"}));
+        assert_eq!(dialog_edge(&other, &trust), None);
+        assert!(dialog_dropped(&start, &trust));
     }
 
     #[test]

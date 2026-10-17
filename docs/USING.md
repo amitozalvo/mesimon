@@ -179,13 +179,20 @@ uv sync
 make dev
 ```
 
+Claude Code asks whether to trust a folder before it works there for the first time, before
+any hook fires. The ticket's card then reads `TRUST`, with the dialog's words, and the brief
+waits. Press `w` on the card or the ticket page (`trust workspace`), or tap **Yes, I trust this
+folder** on the ticket in Remote Control: mesimon presses the dialog's own keys in the pane,
+reading the screen before each, exactly as you would at the keyboard, and the brief goes in
+once Claude Code starts. `Enter` still attaches, and `No, exit` stays the pane's: it ends the
+agent. mesimon never answers the dialog by itself and never writes `~/.claude.json`.
+
 On a folder workspace (a root that is not a repository, holding nested repos), Claude Code asks
 to trust every ticket's worktree, each time: it keeps its answer per folder and carries it only
-to git worktrees of a trusted checkout, and the root is not one. The ticket's card reads
-needs-you at that dialog. mesimon never answers it and never writes `~/.claude.json`. To be
-asked once, run `git init` in the root, commit a README and a `.gitignore` naming the nested
-repos, then run `claude` there once and accept. Each ticket's worktree is then a git worktree of
-the trusted root. `mesimon doctor` says the same on its `workspace` line.
+to git worktrees of a trusted checkout, and the root is not one. To be asked once, run
+`git init` in the root, commit a README and a `.gitignore` naming the nested repos, then run
+`claude` there once and accept. Each ticket's worktree is then a git worktree of the trusted
+root. `mesimon doctor` says the same on its `workspace` line.
 
 For Codex, Mesimon creates an empty `.codex/` directory in its managed Git worktrees before
 starting or waking a session. This lets Codex reuse the main checkout's saved trust on its
@@ -197,9 +204,10 @@ take precedence. Plain folder workspaces with nested repos have no main Git chec
 inherit from and may still ask for each ticket's folder.
 Hook review is a separate Codex decision: it remembers the exact definitions you trust;
 new or changed hooks need review again. When either trust dialog blocks startup, the card
-reads `TRUST` and asks you to open the agent's pane; `Tab` reaches sessions needing you.
-The ticket's prompt waits until the native composer is ready. Mesimon neither answers the
-dialog nor edits your Codex trust settings.
+reads `TRUST`; `Tab` reaches sessions needing you. The folder dialog takes the same `w` and
+the same Remote Control button as Claude Code's (its `Trust and continue` row); the hook
+review asks you to open the agent's pane. The ticket's prompt waits until the native composer
+is ready. Mesimon never answers a dialog by itself and never edits your Codex trust settings.
 
 What you step into is the agent itself: Claude Code or Codex exactly as you run it without
 mesimon, with the same prompt, the same slash commands and the same permission dialogs. Type to

@@ -826,6 +826,14 @@ pub enum Command {
     WakeSession {
         id: uuid::Uuid,
     },
+    /// Accept the folder trust dialog the ticket's agent stopped on
+    /// (T-844): the board's `w`. The daemon walks the dialog's own keys
+    /// toward its Yes row, the screen read before each, as a phone's
+    /// `Dialog { Accept }` does, and refuses, naming why, when the pane
+    /// shows no dialog it recognises. Never an automation: a person asked.
+    AcceptTrust {
+        ticket: ulid::Ulid,
+    },
     /// Take the header's sleep offer: sleep every eligible session on
     /// sleep-safe tickets (2026-08-30 rescope — was board-wide; the key must
     /// sleep exactly what the suggestion names, nothing broader).
@@ -1488,6 +1496,7 @@ impl Command {
             | SleepSession { .. }
             | WakeSession { .. }
             | ReclaimAll => m(Mutate, true, None),
+            AcceptTrust { ticket } => m(Mutate, true, Some(*ticket)),
             // Moves are recorded by `place_ticket` itself, with the mover;
             // the rest are session plumbing the feed does not narrate.
             MoveTicket { .. }

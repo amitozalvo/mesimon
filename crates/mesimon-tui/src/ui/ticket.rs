@@ -6,7 +6,7 @@
 //! from the body but a breathing row — no band, no rule (L1); the zone
 //! divider is a 2-cell gap.
 
-use mesimon_core::board::{NoteMeta, SessionKind, SessionState, StopReason};
+use mesimon_core::board::{NoteMeta, Reason, SessionKind, SessionState, StopReason};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -1261,6 +1261,14 @@ pub(super) fn quiet_words(rec: &mesimon_core::board::SessionRecord) -> (String, 
         ),
         // The question, whole. It is the reason the session is stopped and
         // the only thing worth the zone.
+        // The folder trust dialog (T-844) comes before the session and the
+        // board can press its Yes: the clause says so, and the key beside
+        // the rail says how.
+        SessionState::RequiresAction { reason: Reason::Trust } => (
+            rec.detail.clone().unwrap_or_else(|| word.to_lowercase()),
+            vec!["it cannot start until the folder is trusted ∙ accept it here or in its pane"
+                .into()],
+        ),
         SessionState::RequiresAction { .. } => (
             // The rail's own fallback for a question nothing recorded, not a
             // Debug-printed enum: one vocabulary, and this is not its home.
