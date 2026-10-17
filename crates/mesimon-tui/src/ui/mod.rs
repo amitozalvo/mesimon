@@ -83,7 +83,11 @@ pub fn draw(f: &mut Frame, app: &App) {
     // The mouse's half (T-716): the hints the frame left whole are what a
     // click presses, and the hover lights what the pointer is over.
     let mut hits = app.hits.borrow_mut();
-    crate::mouse::scrape_hints(f.buffer_mut(), &mut hits);
+    // Only where a pointer can press one (T-838): the scrape rebuilds
+    // every row as text and finds every hint in it, per frame.
+    if app.prefs.mouse {
+        crate::mouse::scrape_hints(f.buffer_mut(), &mut hits);
+    }
     match (app.prefs.mouse, app.selection.get(), app.pointer.get()) {
         // A drag is selecting text: what it covers is what the release
         // copies, read off the frame it was made on.

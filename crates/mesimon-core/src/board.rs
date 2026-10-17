@@ -3356,6 +3356,45 @@ impl Board {
         self.sessions.retain(|rec| rec.state.has_pane() || !archived.contains(&rec.ticket));
     }
 
+    /// A copy of the board with `drop_archived_records` applied, cloning
+    /// only the records it keeps (T-838): the daemon took it per snapshot
+    /// by cloning every record — 641 parked ones, over a megabyte of
+    /// launch argv — and dropping them. Every other field is cloned whole.
+    pub fn without_archived_records(&self) -> Board {
+        let archived: std::collections::HashSet<ulid::Ulid> =
+            self.tickets.iter().filter(|t| t.is_archived()).map(|t| t.id).collect();
+        Board {
+            columns: self.columns.clone(),
+            tickets: self.tickets.clone(),
+            sessions: self
+                .sessions
+                .iter()
+                .filter(|rec| rec.state.has_pane() || !archived.contains(&rec.ticket))
+                .cloned()
+                .collect(),
+            agent_provider: self.agent_provider,
+            crown_budget: self.crown_budget,
+            crown_mode: self.crown_mode,
+            merge_into: self.merge_into,
+            crown_archives: self.crown_archives,
+            crown_watches: self.crown_watches,
+            next_key: self.next_key,
+            tags: self.tags.clone(),
+            tags_seeded: self.tags_seeded,
+            mcp_tools: self.mcp_tools,
+            claude_md_ignored: self.claude_md_ignored,
+            system_prompt: self.system_prompt,
+            default_column: self.default_column.clone(),
+            follow_up_mode: self.follow_up_mode,
+            prompts: self.prompts.clone(),
+            crown: self.crown,
+            tiers: self.tiers.clone(),
+            default_tier: self.default_tier.clone(),
+            setup_pending: self.setup_pending,
+            workspace: self.workspace,
+        }
+    }
+
     pub fn ticket_awake_sessions(&self, id: ulid::Ulid) -> usize {
         self.sessions.iter().filter(|s| s.ticket == id && s.state.has_pane()).count()
     }
@@ -4024,9 +4063,19 @@ mod tests {
             rec(3, 2, SessionState::Running),
             rec(4, 2, gone),
         ];
+        let copy = board.without_archived_records();
         board.drop_archived_records();
         let kept: Vec<u128> = board.sessions.iter().map(|s| s.id.as_u128()).collect();
         assert_eq!(kept, vec![1, 3]);
+        // The copy keeps the same records without cloning the rest (T-838),
+        // and every other field whole.
+        let copied: Vec<u128> = copy.sessions.iter().map(|s| s.id.as_u128()).collect();
+        assert_eq!(copied, kept);
+        assert_eq!(
+            serde_json::to_string(&copy).unwrap(),
+            serde_json::to_string(&board).unwrap(),
+            "the copy is the dropped board"
+        );
     }
 
     #[test]

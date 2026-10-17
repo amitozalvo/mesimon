@@ -27227,3 +27227,104 @@ phantom card (and the grown editor's stripe) widens the board on its second `^t`
 
 Goldens: every fixture without a two-tag ticket went narrow; `board_tags_*` keep the wide bar.
 `a_second_tag_on_any_ticket_widens_every_bar` pins the flip.
+
+## The fifth simplify pass, a bug hunt off the diff (T-838, 2026-10-17, "simplify")
+
+The author: "bug hunt as well, try to look for areas where last 2 simplify runs may have failed to
+catch. focus on performance and bugs". The last four passes reviewed diffs, so this one split in
+two: three reviewers over the 63 commits since T-795 (`71b64b01..`) and three over code the
+diffs never reached — the daemon's tick, snapshot and hook paths read whole, the TUI's frame
+path read whole, and a workspace scan for the panic classes a diff review never sees (byte
+slicing, index arithmetic, casts, locks, serde defaults). Each finding was checked against the
+code before it was applied; the goldens are unchanged.
+
+**Applied, bugs.**
+- **A subscriber that stops reading no longer stops the daemon.** `broadcast` wrote each
+  `board_changed` line into the subscriber's socket under its mutex with no timeout, and the
+  reply writer wrote whole board answers under the same mutex; a TUI under Ctrl+Z filled its
+  8 KiB send buffer after ~300 pushes and the writer thread blocked for good (no tick, no hook
+  frame, no other client). `Command::Subscribe` now sets a 5 s write timeout on the socket
+  (`SUBSCRIBER_WRITE_TIMEOUT`, per socket so the reply clone takes it), and a write that times
+  out drops the subscriber and ends its loop; the client reconnects as after any dropped line.
+- **A hand-edited `order` cannot kill the writer thread.** `fracindex::idx` was an `expect` on a
+  byte off the base-62 alphabet, and `between` took `Ticket.order`/`Column.order` straight
+  from disk: one `order = "a.0"` in a `ticket.toml` panicked the daemon on the next filing or
+  move beside it, and the respawn died again. A foreign byte now reads as the lowest digit;
+  the minted key is valid and may sort beside the foreign one rather than between.
+- **The merged pipeline is each repository's newest merge.** `forge::pipeline_of` took the first
+  merged PR in set order (`updated_ms`, which a comment on an older PR moves), while
+  `merged_reads` reads a live pipeline onto the newest-merged per repository alone: a comment on
+  a superseded PR with a settled failure turned a passed merge into "pipeline failed" on the
+  card, in the gate and to the crown. It folds `newest_merged` now, so a ticket with legs in
+  two repositories reads both merges.
+- **`ticket_set` keeps one record per PR whatever sat between its readings** (`dedup_by` drops
+  adjacent twins only); `Remote::parse` refuses a local path with a colon as `ssh_alias`
+  already did; a move the daemon refused no longer stamps `own_moves`, which claimed the next
+  mover's move of that card inside 10 s as the cursor's.
+- **Two clocks on one animation**: the glide readers and `glide::draw` read `App::now`, as
+  `absorb_moves` stamps them, so a test's injected clock governs both ends.
+
+**Applied, performance.**
+- **The snapshot's pipeline clause reads nothing of git or the disk.** `held_items` judged
+  every standing held line through `gate_with` → `pipeline_refusal` on every broadcast, and
+  that forked `git rev-parse` per leg with an open PR (`pipeline_head_unread`) and read every
+  transcript tail of the ticket (`opened_unread`) — the twin of the merge clause T-795 took off
+  git. `Reading::{Fresh, Cached}` names the road: a move reads the tip and the tails now; a
+  snapshot reads the flags' tip and the ledger's URLs (`Ledger::opened_owed`), a held line at
+  most one cost pass late.
+- **`ssh -G` has a 3 s deadline** (`SSH_TIMEOUT`): it runs on the writer thread once per SSH
+  alias and evaluates `Match exec` blocks of the person's own config, under a CLI call's 20 s.
+- **A snapshot clones only the records it sends.** `Board::without_archived_records` builds the
+  copy from the kept records; the daemon cloned every record (641 parked, over a megabyte of
+  argv on the author's board) per snapshot and dropped them.
+- **One tmux fork per list.** `activity` and `pane_facts` ran `list-sessions` before every
+  `list-panes` (every 1 s and 2 s); the liveness fork is asked only when the list failed, so
+  a dead server still reads as no panes.
+- **Smaller:** the Links dialog no longer asks 16 ms frames (its blink is on the spinner's
+  100 ms step; `link_flashing` is gone); the arcade rasterises each card once instead of asking
+  `card_at` of every cell against every card per frame; `pr_fingerprint` is a summed hash per
+  card instead of a formatted, sorted, joined line; the column dialog values each section once
+  (was per row); `scrape_hints` runs only with the mouse on; a card group's lines move into
+  the column instead of cloning; `pr_passed_news` scans without a key clone;
+  `poll_agent_recovery`'s retain is a set lookup (was records²); `unprompted_hint` stats last;
+  `drain_queue` and `service_plan_accepts` rank nothing on an empty queue;
+  `forge::State::keep_tickets` prunes `commit_pipelines` and `deployed` to the merge commits a
+  kept set names (they grew by every PR ever merged, written whole and copied into every
+  query); a deleted ticket's attention machines go when its grace expires; the TUI's
+  `pr_seen`, `crown_residue` and `summaries` are pruned on absorb; `tags::painted`'s no-op
+  sort, `Ctx::theme_name` (filled per frame, read by nothing) and Setup's `col` twin of `nth`
+  are gone.
+
+**Checked and kept.** The train's seat stays `Busy` for an agent stopped on a usage limit
+(T-808): `lets_merge` passes only a seat the train can speak to, as a parked seat is off the
+train; T-808's "the train sees a finished turn" is the shared-checkout hold, not the seat.
+`merge_refusal`'s `find(Merged)` names the forge only. The `ps axo` scan while a Claude sits
+idle feeds a park decision (`foregrounds`, T-707), not only a glyph, so it is not gated on a
+reader.
+
+**Found and left open (each a decision or a structure change):**
+- `sessions.json` is serialised whole (1.3 MB pretty JSON, 470 KB of it parked seats' argv) on
+  every changed tick and compared as text; a dirty flag, or a parked seat that keeps no argv
+  (a wake rebuilds flags from `LaunchContext`; `resume` replays the stored argv today).
+- 684 archived tickets ride every snapshot; serving the drawer by ask is a wire change.
+- Every shelf build (30 s while an agent is busy) re-reads every Codex transcript and walks
+  `~/.codex/sessions` whole (`shelf.rs`'s `everywhere` skip is off for Codex).
+- `archive_held` reads every note of every un-archived ticket in a `requires_ticked` column on
+  the bucket after any broadcast; a per-ticket open-box count keyed on note revs.
+- The phone's `control_awareness` is tickets × records per push; `persist_crown` serialises the
+  ledger every second to learn nothing changed; `cost::save` clones the 2 MB ledger to set one
+  field; `refresh_panes` broadcasts inside the tick and the tick broadcasts again; a Codex seat
+  at a dialog is captured four times a second; `Msg::ForgeBurst` carries no `gen`.
+- The TUI renders one full frame per terminal event (a trackpad sweep is ~200 frames);
+  coalescing motion in `tick` touches the one-event-one-draw handover `lib.rs` relies on. The
+  ticket page's description excerpt is parsed as markdown per frame (the zone's document is
+  cached, the band's excerpt is not); `ticket_summary` allocates per card per frame, twice;
+  `needs_you_count` is computed three times a frame; `Board::ticket` is a linear scan over
+  archived tickets too, asked several times per card.
+- A practice board skips the 60×20 floor, under which five `u16` subtractions in the ticket
+  page, search, editor and settings can underflow (debug builds only); the tour opens none of
+  those screens.
+- `HostProbe::reads_nothing` is effectively dead on a live board (every stored probe carries
+  `cli` or `lost` since T-810); `set_board_workspace` stores `None` for the shared checkout
+  where `apply_setup` stores `Some(SharedCheckout)`, read alike everywhere; OpenAI's `Price`
+  carries an invented cache-write rate nothing bills yet.

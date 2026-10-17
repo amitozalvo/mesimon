@@ -641,12 +641,24 @@ pub(crate) fn draw(f: &mut Frame, app: &App, area: Rect, heading: Rect) {
     };
     let mut field =
         Field { area, walls: vec![false; area.width as usize * area.height as usize], cards };
+    // Each card's cells first, once per card (T-838: asking `card_at` of
+    // every cell was every cell against every card, per frame), then
+    // every other inked cell.
+    for (_, r) in &field.cards {
+        let r = r.intersection(area);
+        for y in r.y..r.bottom() {
+            for x in r.x..r.right() {
+                let i = (y - area.y) as usize * area.width as usize + (x - area.x) as usize;
+                field.walls[i] = true;
+            }
+        }
+    }
     for y in 0..area.height {
         for x in 0..area.width {
-            let p = (x as i32, y as i32);
-            let cell = &f.buffer_mut()[(area.x + x, area.y + y)];
-            field.walls[y as usize * area.width as usize + x as usize] =
-                field.card_at(p).is_some() || cell.symbol() != " ";
+            let i = y as usize * area.width as usize + x as usize;
+            if !field.walls[i] {
+                field.walls[i] = f.buffer_mut()[(area.x + x, area.y + y)].symbol() != " ";
+            }
         }
     }
     game.sync(field);

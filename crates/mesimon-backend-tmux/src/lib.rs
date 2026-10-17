@@ -590,10 +590,13 @@ impl TmuxBackend {
     /// flight repaints continuously, an idle prompt emits only sparse
     /// statusline bursts.
     pub fn activity(&self) -> Result<Vec<(String, u64)>> {
-        if !self.server_alive() {
-            return Ok(Vec::new());
-        }
-        let out = self.list_panes(&["session_name", "window_activity"])?;
+        // One fork on a live server (T-838): `list-sessions` is asked only
+        // when the list failed, to read a dead server as no panes as before.
+        let out = match self.list_panes(&["session_name", "window_activity"]) {
+            Ok(out) => out,
+            Err(_) if !self.server_alive() => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
         Ok(pairs(&out).filter_map(|(name, t)| Some((name.to_string(), t.parse().ok()?))).collect())
     }
 
@@ -602,16 +605,19 @@ impl TmuxBackend {
     /// callers filter, same rule as `pane_title`). The title is the last
     /// field because it is the one that may contain the separator.
     pub fn pane_facts(&self) -> Result<Vec<PaneFacts>> {
-        if !self.server_alive() {
-            return Ok(Vec::new());
-        }
-        let out = self.list_panes(&[
+        let listed = self.list_panes(&[
             "session_name",
             "pane_pid",
             "pane_dead",
             "pane_current_command",
             "pane_title",
-        ])?;
+        ]);
+        // As `activity`: the liveness fork only on a failure (T-838).
+        let out = match listed {
+            Ok(out) => out,
+            Err(_) if !self.server_alive() => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
         Ok(parse_facts(&out))
     }
 

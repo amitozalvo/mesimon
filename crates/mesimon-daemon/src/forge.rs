@@ -31,6 +31,10 @@ use crate::paths::Paths;
 
 /// How long one CLI call may take before its group is killed.
 const CALL_TIMEOUT: Duration = Duration::from_secs(20);
+/// `ssh -G`'s deadline (T-838): it runs on the writer thread, once per
+/// SSH alias, and evaluates `Match exec` blocks of the person's own
+/// config, so a slow one must not hold the board for a CLI call's 20 s.
+const SSH_TIMEOUT: Duration = Duration::from_secs(3);
 /// The cadence between samples with every repository answering.
 pub const EVERY: Duration = Duration::from_secs(60);
 /// The cadence for a repository holding a PR whose pipeline runs or waits
@@ -1306,7 +1310,7 @@ pub fn ssh_hostname(alias: &str, config: Option<&Path>) -> Option<String> {
         args.extend(["-F", c]);
     }
     args.extend(["--", alias]);
-    let out = run(Path::new("ssh"), &args, None).ok()?;
+    let out = run_for(Path::new("ssh"), &args, None, SSH_TIMEOUT).ok()?;
     forge::ssh_config_hostname(&out)
 }
 
@@ -1660,6 +1664,18 @@ impl State {
         self.owed.retain(|t, _| live.contains(t));
         self.landed.retain(|t, _| live.contains(t));
         self.quiet.retain(|t, _| live.contains(t));
+        // And the merge commits no kept set names (T-838): the two maps
+        // grew by every PR ever merged, were written whole to `forge.json`
+        // and copied into every pass's and burst's query.
+        let named: HashSet<(String, String)> = self
+            .sets
+            .values()
+            .flatten()
+            .filter(|p| p.state == PrState::Merged && !p.merge_oid.is_empty())
+            .map(|p| (p.repo.clone(), p.merge_oid.clone()))
+            .collect();
+        self.commit_pipelines.retain(|k, _| named.contains(k));
+        self.deployed.retain(|k, _| named.contains(k));
     }
 
     /// The PRs of `set` the backfill's URLs name for `t` (T-810), taken as

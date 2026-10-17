@@ -6616,7 +6616,7 @@ fn a_ticket_links_row_flashes_its_card_on_the_board() {
     assert_eq!(app.link_hovered(), Some(ulid_n(1)), "the cursor's row names T-1");
     app.spin_epoch.set(Some(std::time::Instant::now()));
     let lit = ink(&app);
-    assert!(app.animating(), "the flash wants its frames");
+    assert!(!app.animating(), "the blink rides the 100 ms frames, and asks no faster ones");
     app.spin_epoch.set(Some(std::time::Instant::now() - std::time::Duration::from_millis(410)));
     let dark = ink(&app);
     assert_ne!(lit, dark, "the lit phase skips the recess, the dark one takes it");

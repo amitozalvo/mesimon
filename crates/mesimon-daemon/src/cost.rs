@@ -377,10 +377,18 @@ impl Ledger {
         live: &[String],
         owed: impl Fn(&str) -> bool,
     ) -> Option<bool> {
-        if self.tickets.get(&ticket).is_some_and(|t| t.pr_urls.iter().any(|u| owed(u))) {
+        if self.opened_owed(ticket, &owed) {
             return Some(true);
         }
         urls_in_tails(&self.tails(ticket, live)).map(|urls| urls.iter().any(|u| owed(u)))
+    }
+
+    /// `opened_unread`'s ledger half alone (T-838): a URL the pass has
+    /// kept that `owed` says no read has held yet, with no transcript read.
+    /// The snapshot road's, where a tail its pass has not reached is a held
+    /// line one pass late and not a file read per snapshot.
+    pub fn opened_owed(&self, ticket: ulid::Ulid, owed: impl Fn(&str) -> bool) -> bool {
+        self.tickets.get(&ticket).is_some_and(|t| t.pr_urls.iter().any(|u| owed(u)))
     }
 
     /// A ticket's transcripts with how far the pass read each, `live` as

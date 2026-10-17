@@ -269,7 +269,7 @@ pub(crate) fn draw(f: &mut Frame, app: &App, area: Rect) {
     if !app.prefs.card_moves {
         return;
     }
-    let now = mesimon_core::clock::now_ms();
+    let now = (app.now)();
     let spots = app.spots.borrow();
     let theme = &app.theme;
     let braille = theme.glyph_tier() == crate::glyphs::Tier::Unicode;

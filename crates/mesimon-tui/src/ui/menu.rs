@@ -146,9 +146,11 @@ fn draw_table(
     let name_w = items.iter().map(|m| (m.label)(ctx).width()).max().unwrap_or(0);
     // Options line up within a section, as a table's columns do; across
     // sections they would push the widest choices past the frame.
-    let cols: Vec<Vec<usize>> = items
-        .iter()
-        .map(|m| {
+    // Each section's columns once (T-838: measured per item, the frame
+    // valued every row of the section per row of it).
+    let mut by_group: std::collections::BTreeMap<_, Vec<usize>> = Default::default();
+    for m in items {
+        by_group.entry(keymap::column_group(m.verb)).or_insert_with(|| {
             let g = keymap::column_group(m.verb);
             super::settings::option_columns(
                 items
@@ -156,8 +158,10 @@ fn draw_table(
                     .filter(|o| keymap::column_group(o.verb) == g)
                     .filter_map(|o| keymap::value(o.verb, ctx)),
             )
-        })
-        .collect();
+        });
+    }
+    let cols: Vec<&Vec<usize>> =
+        items.iter().map(|m| &by_group[&keymap::column_group(m.verb)]).collect();
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut cursor_at: Option<(u16, u16)> = None;
     for (n, slot) in slots.iter().enumerate().skip(first).take(room) {
@@ -195,7 +199,7 @@ fn draw_table(
                         .style(theme.selected_row())
                     }
                     _ => super::settings::row_line(
-                        app, ctx, items[*i], name_w, &cols[*i], width, selected,
+                        app, ctx, items[*i], name_w, cols[*i], width, selected,
                     ),
                 }
             }

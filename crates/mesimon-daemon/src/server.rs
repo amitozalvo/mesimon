@@ -187,6 +187,11 @@ const LAUNCH_DEATH_MS: u64 = 1_000;
 /// Observe-tier transcript polling cadence (2 s) — stat-then-read, adopted
 /// hook-less sessions only.
 const TAIL_POLL_TICKS: u64 = 8;
+/// How long a write to a subscriber's socket may block the writer thread
+/// before the subscriber is dropped (T-838). Long enough for a board
+/// answer to a client reading it under load; a client that reads nothing
+/// is gone from the daemon's point of view.
+const SUBSCRIBER_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Gap between presses of an owed, unacknowledged Enter, and how many presses
 /// to spend before giving up. T-5 measured the `UserPromptSubmit` ack at
 /// ~94 ms, so 500 ms is a wide margin, and 10 attempts covers ~5 s of Claude
@@ -2337,6 +2342,16 @@ enum AgentReplay {
     Created { key: String, column: String, workspace: String },
 }
 
+/// How a column gate reads what the forge's sets do not hold (T-838): a
+/// move reads the branch's tip and the transcripts now; a snapshot reads
+/// the flags' tip and the ledger, since it judges every held line on
+/// every broadcast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reading {
+    Fresh,
+    Cached,
+}
+
 impl Daemon {
     fn handle(&mut self, env: Envelope, stream: &Arc<Mutex<UnixStream>>) -> Response {
         // The agent tier is a separate path, deliberately (T-84). Sharing the
@@ -2450,6 +2465,17 @@ impl Daemon {
             }
             Command::Subscribe => {
                 let was_headless = !self.git_has_reader();
+                // A subscriber that stops reading (a TUI under Ctrl+Z) must
+                // not hold the writer thread (T-838): its socket's send
+                // buffer is 8 KiB on macOS, and a push or a reply into a
+                // full one blocked for good, every tick, hook and other
+                // client behind it. The timeout is the socket's, so the
+                // reply writer's clone takes it too; a write that times
+                // out drops the subscriber and ends its loop, and the
+                // client reconnects as after any dropped line.
+                if let Ok(s) = stream.lock() {
+                    let _ = s.set_write_timeout(Some(SUBSCRIBER_WRITE_TIMEOUT));
+                }
                 self.subscribers.push(stream.clone());
                 // A headless daemon stopped sampling (T-251): the first board
                 // back gets a fresh header now rather than at the next bucket.
@@ -3022,7 +3048,11 @@ impl Daemon {
     /// normalized evidence into machines and updates board previews.
     fn poll_agent_recovery(&mut self, channel: RecoveryChannel) -> bool {
         let now = now_ms();
-        self.recovery.retain(|id, _| self.board.sessions.iter().any(|r| r.id == *id));
+        // The ids once (T-838): the retain was every entry against every
+        // record, three times a second.
+        let live: std::collections::HashSet<uuid::Uuid> =
+            self.board.sessions.iter().map(|r| r.id).collect();
+        self.recovery.retain(|id, _| live.contains(id));
         let mut candidates = Vec::new();
         for record in &self.board.sessions {
             let Some(adapter) = crate::agents::adapter(record.kind) else { continue };
@@ -4349,13 +4379,13 @@ impl Daemon {
     /// and no file at the transcript path `SessionStart` named — Claude
     /// Code writes none before the first prompt (measured on 2.1.288).
     fn unprompted_hint(&self, rec: &mesimon_core::board::SessionRecord) -> bool {
-        never_prompted(rec)
-            && matches!(
-                rec.state,
-                SessionState::Idle { stop_reason: StopReason::Unknown } | SessionState::Sleeping
-            )
-            && rec.unsent.is_none()
+        // The stat last (T-838): this is asked of every record per snapshot.
+        matches!(
+            rec.state,
+            SessionState::Idle { stop_reason: StopReason::Unknown } | SessionState::Sleeping
+        ) && rec.unsent.is_none()
             && !self.owed.contains_key(&rec.id)
+            && never_prompted(rec)
     }
 
     /// `unprompted_hint`, confirmed the way a wake judges a conversation
@@ -7180,8 +7210,12 @@ impl Daemon {
     /// or `None` when it may enter (`forge::entry_refusal`). With no PR
     /// bound, the transcripts say whether one was opened here: the ledger's
     /// URLs and the tail its pass has not reached, read now, so a turn's end
-    /// judges the `pr create` of that same turn (T-750).
-    fn pipeline_refusal(&self, id: ulid::Ulid) -> Option<String> {
+    /// judges the `pr create` of that same turn (T-750). `read` says
+    /// whether the branch's tip and the transcripts are read now (a move)
+    /// or off the flags and the ledger (a snapshot, T-838: a held line is
+    /// judged on every snapshot, and forked git per leg and read every
+    /// transcript tail each time).
+    fn pipeline_refusal(&self, id: ulid::Ulid, read: Reading) -> Option<String> {
         use mesimon_core::forge::pipelined;
         // A board that merges into main reads no pipeline, and the column's
         // setting is inert there (T-810).
@@ -7201,10 +7235,11 @@ impl Daemon {
         let set = set.filter(|_| live);
         // The reading is of a commit the branch has left, or of one never
         // pushed (T-780): the push's pipeline is the next read's.
-        if set.is_some_and(pipelined) && self.pipeline_head_unread(id) {
+        if set.is_some_and(pipelined) && self.pipeline_head_unread(id, read) {
             return Some("pipeline not read".into());
         }
-        let unread = if set.is_some_and(pipelined) { None } else { self.opened_unread(id, live) };
+        let unread =
+            if set.is_some_and(pipelined) { None } else { self.opened_unread(id, live, read) };
         mesimon_core::forge::entry_refusal(set, unread)
     }
 
@@ -7214,8 +7249,9 @@ impl Daemon {
     /// held, in any state: a closed PR is read. A ticket no read asks about
     /// (a checkout ticket, a binding with no branch yet) is owed nothing,
     /// and its transcripts are not read: T-750's no-PR pass, rather than a
-    /// wait no read will ever end.
-    fn opened_unread(&self, id: ulid::Ulid, live: bool) -> Option<bool> {
+    /// wait no read will ever end. A cached reading asks the ledger alone:
+    /// a URL its pass has not reached yet is a held line a snapshot late.
+    fn opened_unread(&self, id: ulid::Ulid, live: bool, read: Reading) -> Option<bool> {
         let asked = self.worktrees.get(&id).is_some_and(|b| !b.branch.is_empty())
             && !self.tearing_down.contains(&id);
         if !asked {
@@ -7224,7 +7260,10 @@ impl Daemon {
         let hosts = self.forge_hosts();
         let owed =
             |url: &str| self.forge_reaches(url, &hosts) && !(live && self.forge.held_url(id, url));
-        self.costs.opened_unread(id, &self.live_transcripts(id), owed)
+        match read {
+            Reading::Fresh => self.costs.opened_unread(id, &self.live_transcripts(id), owed),
+            Reading::Cached => Some(self.costs.opened_owed(id, owed)),
+        }
     }
 
     /// The hosts a forge read reaches (T-797): those of the remotes of the
@@ -7265,10 +7304,11 @@ impl Daemon {
     }
 
     /// An open PR of the ticket's whose head is not its leg's tip
-    /// (`forge::head_unread`, T-780). The tip is read now, one `rev-parse`
-    /// per leg holding an open PR: the flags' is a slow bucket old at the
-    /// turn's end that pushed.
-    fn pipeline_head_unread(&self, id: ulid::Ulid) -> bool {
+    /// (`forge::head_unread`, T-780). For a move the tip is read now, one
+    /// `rev-parse` per leg holding an open PR: the flags' is a slow bucket
+    /// old at the turn's end that pushed. A snapshot reads the flags' tip,
+    /// and a leg not sampled yet is not judged.
+    fn pipeline_head_unread(&self, id: ulid::Ulid, read: Reading) -> bool {
         let Some(set) = self.forge.sets.get(&id) else { return false };
         let Some(b) = self.worktrees.get(&id).filter(|b| !b.branch.is_empty()) else {
             return false;
@@ -7282,8 +7322,16 @@ impl Daemon {
                 // against its upstream is this leg's.
                 let paths = self.forge.repo_paths(&leg.repo);
                 let open = set.iter().any(|p| p.state.is_open() && paths.contains(&p.repo));
-                let tip =
-                    if open { worktree::branch_tip(&leg.repo, &b.branch) } else { String::new() };
+                let tip = match read {
+                    _ if !open => String::new(),
+                    Reading::Fresh => worktree::branch_tip(&leg.repo, &b.branch),
+                    Reading::Cached => self
+                        .wt_repos
+                        .get(&id)
+                        .and_then(|legs| legs.iter().find(|l| l.name == leg.name))
+                        .map(|l| l.tip.clone())
+                        .unwrap_or_default(),
+                };
                 paths.into_iter().filter(move |_| open).map(move |p| (p, tip.clone()))
             })
             .collect();
@@ -7831,12 +7879,19 @@ impl Daemon {
     /// What the column `dest` refuses `id` for on the way in, in the words
     /// the mover hears (T-749 reads it again to clear a held line).
     fn column_gate(&self, id: ulid::Ulid, dest: &str) -> Option<String> {
-        self.gate_with(id, dest, || self.ticket_unmerged(id))
+        self.gate_with(id, dest, || self.ticket_unmerged(id), Reading::Fresh)
     }
 
-    /// `column_gate` with the merge clause's reading given: git now for a
-    /// move, the cached flags for what the snapshot shows.
-    fn gate_with(&self, id: ulid::Ulid, dest: &str, unmerged: impl Fn() -> bool) -> Option<String> {
+    /// `column_gate` with the merge clause's reading given and the
+    /// pipeline clause's named: git and the transcripts now for a move,
+    /// the cached flags and the ledger for what the snapshot shows.
+    fn gate_with(
+        &self,
+        id: ulid::Ulid,
+        dest: &str,
+        unmerged: impl Fn() -> bool,
+        read: Reading,
+    ) -> Option<String> {
         // M4 DONE gate (author rule 3), now the column's `requires_merge`
         // (T-117): entering means the work landed — an unmerged worktree
         // blocks the move. It lived inside the human's move path until T-84,
@@ -7856,7 +7911,7 @@ impl Daemon {
         // Its pipeline twin (T-739): unknown is never green, and a ticket
         // that opened no PR has none to pass (T-750).
         if self.board.column(dest).is_some_and(|c| c.settings.requires_pipeline) {
-            if let Some(why) = self.pipeline_refusal(id) {
+            if let Some(why) = self.pipeline_refusal(id, read) {
                 return Some(format!("{why} — before {dest}"));
             }
         }
@@ -7965,8 +8020,10 @@ impl Daemon {
     /// The held lines still standing (T-749): a column rule's until the
     /// rule passes, the move gate's until the ticket moves.
     fn held_items(&self) -> Vec<mesimon_core::command::HeldMove> {
-        // On every snapshot (T-795): the merge clause as the card reads it,
-        // off the cached flags, never a git fork per held line.
+        // On every snapshot (T-795, T-838): the merge clause as the card
+        // reads it, off the cached flags, and the pipeline clause off the
+        // flags' tip and the ledger: never a git fork or a transcript read
+        // per held line.
         let unmerged_cached = |t: ulid::Ulid| {
             self.worktrees.get(&t).is_some_and(|b| {
                 !b.branch.is_empty() && !self.wt_agg.get(&t).is_some_and(|a| a.merged)
@@ -7974,7 +8031,7 @@ impl Daemon {
         };
         self.held.standing(
             |t| self.board.ticket(t).is_some(),
-            |t, dest| self.gate_with(t, dest, || unmerged_cached(t)).is_some(),
+            |t, dest| self.gate_with(t, dest, || unmerged_cached(t), Reading::Cached).is_some(),
         )
     }
 
@@ -8212,8 +8269,7 @@ impl Daemon {
         // A parked record of an archived ticket stays home (T-804); the
         // ticket page and the picker ask `TicketSessions` for the one
         // archived ticket they show.
-        let mut board = self.board.clone();
-        board.drop_archived_records();
+        let mut board = self.board.without_archived_records();
         for rec in &mut board.sessions {
             self.decorate(rec);
         }
@@ -11657,6 +11713,11 @@ impl Daemon {
     }
 
     fn drain_queue(&mut self) -> bool {
+        // Nothing queued ranks nothing (T-838): the order sorts every
+        // column's tickets, once a second.
+        if self.queued.is_empty() {
+            return false;
+        }
         let mut seen: Vec<String> = Vec::new();
         let mut take: Vec<usize> = Vec::new();
         for i in self.queue_order() {
@@ -11952,6 +12013,9 @@ impl Daemon {
     /// "never a blind Enter" is `accept_plan`'s, unchanged. Worktree
     /// tickets have their own checkout and press on their own clock.
     fn service_plan_accepts(&mut self, _now: u64) -> bool {
+        if self.queued.is_empty() {
+            return false;
+        }
         let mut seen: Vec<String> = Vec::new();
         let mut due: Vec<(ulid::Ulid, uuid::Uuid)> = Vec::new();
         for i in self.queue_order() {
@@ -13108,6 +13172,12 @@ impl Daemon {
             if let Some(g) = self.grace.remove(&id) {
                 let mut sids = Vec::new();
                 for s in &g.sessions {
+                    // Its attention machine goes with the record (T-838):
+                    // past the grace band nothing restores it, and the
+                    // machine was ticked every 250 ms for the daemon's life.
+                    if !self.board.sessions.iter().any(|r| r.id == s.id) {
+                        self.machines.remove(&s.id);
+                    }
                     // SIGTERM the group now; the reaper's grace-then-kill-pane
                     // finishes the ladder (docs/19 §1 — never SIGKILL).
                     if s.holds_process() && !s.observe_only() {
@@ -14582,7 +14652,9 @@ impl Daemon {
                         // commit before's (T-780).
                         Arrival::PipelinePasses
                             if edge.passed
-                                && !*head_unread.get_or_init(|| self.pipeline_head_unread(t)) =>
+                                && !*head_unread.get_or_init(|| {
+                                    self.pipeline_head_unread(t, Reading::Fresh)
+                                }) =>
                         {
                             2
                         }

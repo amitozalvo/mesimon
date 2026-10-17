@@ -479,9 +479,9 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     let mut edit_at: Option<(usize, u16)> = None; // (flat line idx, x offset)
                                                   // The card mid-shake, if any: its flat line range and its offset.
     let mut shaken: Option<(usize, usize, i16)> = None;
-    for g in &groups {
+    for g in groups {
         let start = lines.len();
-        lines.extend(g.lines.iter().cloned());
+        lines.extend(g.lines);
         let end = lines.len();
         if g.shake != 0 {
             shaken = Some((start, end, g.shake));
@@ -498,7 +498,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         card_ranges.push((start, end, g.waiting));
         if let Some(id) = g.id {
             let mark = if app.board.is_crowned(id) {
-                g.lines.first().and_then(|l| cell_of(l, crown_glyph))
+                lines.get(start).and_then(|l| cell_of(l, crown_glyph))
             } else {
                 None
             };

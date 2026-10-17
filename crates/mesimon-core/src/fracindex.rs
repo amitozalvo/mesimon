@@ -5,7 +5,12 @@
 const DIGITS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
 fn idx(c: u8) -> usize {
-    DIGITS.iter().position(|&d| d == c).expect("invalid fracindex digit")
+    // A byte off the alphabet reads as the lowest digit (T-838): an `order`
+    // comes off disk unchecked, and a hand-edited `ticket.toml` or another
+    // tool's key must not take the daemon's writer thread down on the next
+    // filing beside it. The key minted is still a valid one; it may only
+    // sort beside the foreign key rather than strictly between.
+    DIGITS.iter().position(|&d| d == c).unwrap_or(0)
 }
 
 fn mid(a: usize, b: usize) -> Option<usize> {
@@ -54,6 +59,18 @@ mod tests {
     fn between_unbounded() {
         let k = between("", "");
         assert!(!k.is_empty());
+    }
+
+    #[test]
+    fn a_key_off_the_alphabet_mints_a_valid_key_and_never_panics() {
+        // A hand-edited `order` (T-838): the daemon's writer thread files
+        // beside it rather than dying on it.
+        for foreign in ["a.0", "-", "é", " "] {
+            for k in [between(foreign, ""), between("", foreign), between(foreign, "z")] {
+                assert!(!k.is_empty());
+                assert!(k.bytes().all(|b| DIGITS.contains(&b)), "{k:?}");
+            }
+        }
     }
 
     #[test]

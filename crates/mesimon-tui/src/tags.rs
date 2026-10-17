@@ -26,10 +26,7 @@ pub(crate) struct Painted {
 /// Resolve a ticket's tag references against the registry, in group order so
 /// the bands never reshuffle under the reader.
 pub(crate) fn painted(board: &Board, tags: &[TagRef]) -> Vec<Painted> {
-    let mut out: Vec<Painted> =
-        tags.iter().map(|t| Painted { name: t.name.clone(), tint: board.tint_of(t) }).collect();
-    out.sort_by_key(|_| 0); // keep input order; tags are already group-sorted
-    out
+    tags.iter().map(|t| Painted { name: t.name.clone(), tint: board.tint_of(t) }).collect()
 }
 
 /// The bar a board with a two-tag ticket on it gives every card, so the

@@ -825,21 +825,22 @@ impl Remote {
     /// `ssh://git@gitlab.example.com:2222/g/s/p.git`, `https://gitlab.com/g/p`.
     pub fn parse(url: &str) -> Option<Remote> {
         let url = url.trim();
-        let (host, path) =
-            if let Some((scheme_less, _)) = url.split_once("://").map(|(_, r)| (r, ())) {
-                let (hostport, path) = scheme_less.split_once('/')?;
-                let host = hostport.rsplit('@').next()?.split(':').next()?;
-                (host, path)
-            } else if let Some((userhost, path)) = url.split_once(':') {
-                // scp-like: `git@host:path`
-                if path.starts_with("//") {
-                    return None;
-                }
-                let host = userhost.rsplit('@').next()?;
-                (host, path)
-            } else {
+        let (host, path) = if let Some((_, scheme_less)) = url.split_once("://") {
+            let (hostport, path) = scheme_less.split_once('/')?;
+            let host = hostport.rsplit('@').next()?.split(':').next()?;
+            (host, path)
+        } else if let Some((userhost, path)) = url.split_once(':') {
+            // scp-like: `git@host:path`. A slash before the colon is a
+            // local path with a colon in it, never a host (the rule
+            // `ssh_alias` already kept, T-838).
+            if path.starts_with("//") || userhost.contains('/') {
                 return None;
-            };
+            }
+            let host = userhost.rsplit('@').next()?;
+            (host, path)
+        } else {
+            return None;
+        };
         let path = path.trim_matches('/').trim_end_matches(".git").trim_matches('/');
         if host.is_empty() || path.is_empty() || !path.contains('/') {
             return None;
@@ -1019,8 +1020,14 @@ pub fn ticket_set(mut prs: Vec<Pr>) -> Vec<Pr> {
         p.conflict = false;
         p.review = Review::None;
     }
-    prs.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms).then(b.number.cmp(&a.number)));
+    // One record per PR, its newest reading (T-838): `dedup_by` drops
+    // adjacent twins only, so the pairs are made adjacent first, newest
+    // reading first, and the set is ordered after.
+    prs.sort_by(|a, b| {
+        (a.repo.as_str(), a.number, b.updated_ms).cmp(&(b.repo.as_str(), b.number, a.updated_ms))
+    });
     prs.dedup_by(|a, b| a.repo == b.repo && a.number == b.number);
+    prs.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms).then(b.number.cmp(&a.number)));
     prs
 }
 
@@ -1192,9 +1199,21 @@ pub fn pipeline_of(set: &[Pr]) -> Pipeline {
             worst => worst,
         };
     }
-    match set.iter().find(|p| p.state == PrState::Merged) {
-        Some(p) => p.pipeline.clone(),
-        None => Pipeline::Unknown,
+    // Each repository's newest merged PR (T-838): the set is in
+    // `updated_ms` order, which a comment on an older PR moves, and the
+    // daemon reads a live pipeline onto the newest merged alone
+    // (`merged_reads`), so the first merged in set order could be a
+    // superseded PR at its settled word. A ticket with legs in two
+    // repositories folds both.
+    let merged = newest_merged(set);
+    if merged.is_empty() {
+        return Pipeline::Unknown;
+    }
+    let worst = merged.iter().fold(Pipeline::None, |acc, p| acc.worst(p.pipeline.clone()));
+    let unread = merged.iter().any(|p| p.pipeline == Pipeline::Unknown);
+    match worst {
+        Pipeline::None | Pipeline::Passed if unread => Pipeline::Unknown,
+        worst => worst,
     }
 }
 
@@ -1955,6 +1974,46 @@ mod tests {
             "the merge commit's once nothing is open"
         );
         assert_eq!(pipeline_of(&[]), Pipeline::Unknown);
+    }
+
+    /// T-838: the merged word is each repository's newest merged PR's, by
+    /// merge time, whatever a comment did to the set's order; two
+    /// repositories' merges fold.
+    #[test]
+    fn the_merged_pipeline_is_the_newest_merge_per_repository() {
+        let mut old = pr("o/r", 1, PrState::Merged, "a", 90);
+        old.merged_ms = 10;
+        old.pipeline = Pipeline::Failed("t".into());
+        let mut new = pr("o/r", 2, PrState::Merged, "b", 20);
+        new.merged_ms = 20;
+        new.pipeline = Pipeline::Passed;
+        // The set orders by `updated_ms`: a comment on #1 put it first.
+        let set = ticket_set(vec![old.clone(), new.clone()]);
+        assert_eq!(set[0].number, 1);
+        assert_eq!(pipeline_of(&set), Pipeline::Passed, "the superseded failure is not read");
+        let mut other = pr("o/x", 3, PrState::Merged, "c", 5);
+        other.merged_ms = 30;
+        other.pipeline = Pipeline::Failed("u".into());
+        assert_eq!(
+            pipeline_of(&ticket_set(vec![old, new, other])),
+            Pipeline::Failed("u".into()),
+            "another repository's failing merge counts"
+        );
+    }
+
+    /// T-838: two readings of one PR survive `dedup_by` only when adjacent;
+    /// the set keeps one record per PR, the newer reading, whatever sat
+    /// between them.
+    #[test]
+    fn the_set_keeps_one_record_per_pr_however_the_readings_interleave() {
+        let mut early = pr("o/r", 1, PrState::Open, "a", 10);
+        early.pipeline = Pipeline::Running(String::new());
+        let mut late = pr("o/r", 1, PrState::Open, "a", 30);
+        late.pipeline = Pipeline::Passed;
+        let between = pr("o/r", 2, PrState::Open, "b", 20);
+        let set = ticket_set(vec![early, between, late]);
+        assert_eq!(set.iter().map(|p| p.number).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(set[0].pipeline, Pipeline::Passed, "the newer reading");
     }
 
     /// T-799: a reviewer's commit on the forge put #42's head one past the

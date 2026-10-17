@@ -1236,9 +1236,7 @@ pub struct Ctx {
     pub peek_on: bool,
     /// `P` is showing every card's reply, not only the cursor card's.
     pub peek_all: bool,
-    /// The live theme's id (`Flavor::name`).
-    pub theme_name: &'static str,
-    /// Its one-line blurb, for the Theme section's line.
+    /// The live theme's one-line blurb, for the Theme section's line.
     pub theme_blurb: &'static str,
     /// `MESIMON_THEME` is pinning the live theme; a pick still saves.
     pub theme_pinned: bool,
@@ -10472,7 +10470,6 @@ mod tests {
             release_available: true,
             release_tag: "v0.1.0-alpha.5".into(),
             shell_env_stale: true,
-            theme_name: "graphite",
             theme_blurb: "dark, the default",
             team_signed_in: true,
             team_shared: true,

@@ -596,7 +596,7 @@ impl Setup {
             Some(Ask::Agents) => 1,
             _ => 0,
         };
-        let col = self.col(w, start);
+        let col = nth(w, start);
         let a = w.ticket(&col, LOGIN);
         if self.ask() == Some(Ask::Fix) {
             let b = w.ticket(&col, DARK);
@@ -605,7 +605,7 @@ impl Setup {
             w.prs.push(pr_of(self.facts.forge(), b, 411, "open", "passed"));
         }
         if self.ask() == Some(Ask::Projects) {
-            w.ticket(&self.col(w, 0), AVATARS);
+            w.ticket(&nth(w, 0), AVATARS);
         }
         if start > 0 {
             w.worktree(a, 1);
@@ -624,13 +624,6 @@ impl Setup {
         if self.team() && start == 2 {
             w.prs.push(pr_of(self.facts.forge(), a, 412, "open", "passed"));
         }
-    }
-
-    /// The board's `i`-th column by name: the scenes say "the column after
-    /// working", whatever this template calls it.
-    fn col(&self, w: &World, i: usize) -> String {
-        let cols = w.board.sorted_columns();
-        cols.get(i.min(cols.len().saturating_sub(1))).map(|c| c.name.clone()).unwrap_or_default()
     }
 
     /// The ticket from TODO to where this board's work ends, as far as the

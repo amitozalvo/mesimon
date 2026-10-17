@@ -1463,7 +1463,7 @@ pub struct App {
     pub forge: mesimon_core::command::ForgeStatus,
     /// What each card's pull requests looked like when the cursor last
     /// rested on it (T-739): the `news` showing's memory, the spoke's rule.
-    pub(crate) pr_seen: std::collections::HashMap<ulid::Ulid, String>,
+    pub(crate) pr_seen: std::collections::HashMap<ulid::Ulid, u64>,
     /// When this board saw each pull request's pipeline turn `passed`
     /// (T-803), by ticket, repository and number: the card says `passed`
     /// for `PR_PASSED_MS` after, and its mark alone after that.
@@ -2412,7 +2412,6 @@ impl App {
             || self.striking()
             || self.gliding()
             || self.summary_pulsing()
-            || self.link_flashing()
             || self.settings_striking()
             || self.reply_revealing()
             || self.tour.as_ref().is_some_and(|t| t.animating())
@@ -2479,11 +2478,6 @@ impl App {
         }
     }
 
-    /// Is that card on screen, flashing? It wants the frames its blink does.
-    fn link_flashing(&self) -> bool {
-        self.link_hovered().is_some_and(|id| self.spots.borrow().card(id).is_some())
-    }
-
     /// Where that card stands on screen this frame, whole: what the dialog
     /// hangs from. `None` when no such dialog is open or the card is cut by
     /// its column's edge.
@@ -2528,7 +2522,7 @@ impl App {
         if !self.prefs.card_moves {
             return Vec::new();
         }
-        let now = mesimon_core::clock::now_ms();
+        let now = (self.now)();
         self.glides
             .iter()
             .filter(|g| g.ghost(now) && g.was.0 == column)
@@ -2539,7 +2533,7 @@ impl App {
     /// Is a card's move playing on the board right now (T-817), its
     /// opening after the landing included?
     fn gliding(&self) -> bool {
-        let now = mesimon_core::clock::now_ms();
+        let now = (self.now)();
         self.prefs.card_moves
             && matches!(self.screen, Screen::Board)
             && self.glides.iter().any(|g| !g.settled(now))
@@ -2553,7 +2547,7 @@ impl App {
         if !self.prefs.card_moves {
             return None;
         }
-        let now = mesimon_core::clock::now_ms();
+        let now = (self.now)();
         let g = self.glides.iter().find(|g| g.ticket == id && !g.settled(now))?;
         let since = now.saturating_sub(g.landed_at());
         let landed = now >= g.landed_at();
@@ -2563,7 +2557,7 @@ impl App {
     /// Was the cursor on a moving card when it left (T-817)? Its ghost is
     /// then the card as the cursor showed it.
     pub(crate) fn glide_was_cursor(&self, id: ulid::Ulid) -> bool {
-        let now = mesimon_core::clock::now_ms();
+        let now = (self.now)();
         self.glides.iter().any(|g| g.ticket == id && g.ghost(now) && g.was_cursor)
     }
 
@@ -2571,7 +2565,7 @@ impl App {
     /// `glide::ROW_MS` from the move's start, so it shrinks where it was as
     /// the card opens where it went.
     pub(crate) fn ghost_dropped(&self, id: ulid::Ulid) -> usize {
-        let now = mesimon_core::clock::now_ms();
+        let now = (self.now)();
         self.glides
             .iter()
             .find(|g| g.ticket == id && g.ghost(now))
@@ -2582,10 +2576,7 @@ impl App {
     /// (T-817)? Its glyph is bold.
     pub(crate) fn moved_unseen(&self, id: ulid::Ulid) -> bool {
         self.prefs.card_moves
-            && self
-                .unseen_moves
-                .get(&id)
-                .is_some_and(|&landed| mesimon_core::clock::now_ms() >= landed)
+            && self.unseen_moves.get(&id).is_some_and(|&landed| (self.now)() >= landed)
     }
 
     /// The archived cards still burning in `column` (T-544): the crown
@@ -2840,12 +2831,21 @@ impl App {
     /// those) and flags the reconnect cadence.
     fn req(&mut self, command: Command) -> Response {
         // A card this board sends to another column is its own move: the
-        // cursor rides it, and it is not played back (T-817).
-        if let Command::MoveTicket { id, .. } = &command {
-            self.own_moves.insert(*id, (self.now)());
-        }
+        // cursor rides it, and it is not played back (T-817). Stamped on
+        // the answer (T-838): a move the daemon refused moved nothing, and
+        // the stamp would have claimed the next mover's move of that card
+        // within `OWN_MOVE_MS` as the cursor's.
+        let moved = match &command {
+            Command::MoveTicket { id, .. } => Some(*id),
+            _ => None,
+        };
         match self.client.request(command) {
-            Ok(r) => r,
+            Ok(r) => {
+                if let Some(id) = moved.filter(|_| !matches!(r, Response::Err { .. })) {
+                    self.own_moves.insert(id, (self.now)());
+                }
+                r
+            }
             Err(_) => {
                 self.note_daemon_down();
                 Response::Err { message: "daemon unreachable ∙ reconnecting".into() }
@@ -2970,6 +2970,15 @@ impl App {
         self.crown_said = crown_said.into_iter().map(|s| (s.ticket, s)).collect();
         let said = &self.crown_said;
         self.crown_said_seen.retain(|t, _| said.contains_key(t));
+        // What was keyed by a ticket or a note the board no longer has goes
+        // with it (T-838): these grew for the session's life.
+        let tickets: std::collections::HashSet<ulid::Ulid> =
+            self.board.tickets.iter().map(|t| t.id).collect();
+        self.pr_seen.retain(|t, _| tickets.contains(t));
+        self.crown_residue.retain(|t| tickets.contains(t));
+        let notes: std::collections::HashSet<ulid::Ulid> =
+            self.board.tickets.iter().flat_map(|t| t.notes.iter().map(|n| n.id)).collect();
+        self.summaries.retain(|n, _| notes.contains(n));
         self.absorb_crown_touches(crown_touches, crown_was, &placed);
         self.absorb_moves(moved, &crown_moved, followed);
         self.settle_drawer();
@@ -4482,37 +4491,35 @@ impl App {
     /// `PR_PASSED_MS` after this board saw it turn; the 100 ms tick redraws,
     /// so the word leaves on time.
     pub(crate) fn pr_passed_news(&self, p: &mesimon_core::command::PrItem) -> bool {
+        // A scan, not a lookup (T-838): the map holds a few entries for 5 s,
+        // and the key's clone was per PR per card per frame.
         p.pipeline == "passed"
-            && self
-                .pr_passed
-                .get(&(p.ticket, p.repo.clone(), p.number))
-                .is_some_and(|at| (self.now)().saturating_sub(*at) < PR_PASSED_MS)
+            && self.pr_passed.iter().any(|((t, r, n), at)| {
+                (*t, *n) == (p.ticket, p.number)
+                    && *r == p.repo
+                    && (self.now)().saturating_sub(*at) < PR_PASSED_MS
+            })
     }
 
-    /// The ticket's pull requests in one line: what `news` compares.
-    fn pr_fingerprint(&self, ticket: ulid::Ulid) -> String {
-        // Everything the line says (T-794's words and the deployed mark),
-        // by repository and number, so a reorder alone is no news (T-795).
-        let mut each: Vec<String> = self
-            .card_prs(ticket)
-            .iter()
-            .map(|p| {
-                format!(
-                    "{}:{}:{}:{}:{}:{}:{}:{}:{}",
-                    p.forge,
-                    p.repo,
-                    p.number,
-                    p.state,
-                    p.pipeline,
-                    p.job.as_deref().unwrap_or_default(),
-                    p.conflict,
-                    p.review,
-                    p.deployed.join(",")
-                )
-            })
-            .collect();
-        each.sort();
-        each.join(" ")
+    /// The ticket's pull requests in one number: what `news` compares.
+    /// Everything the line says (T-794's words and the deployed mark), by
+    /// repository and number, summed so a reorder alone is no news (T-795).
+    /// A hash, not a line (T-838): it is asked per card per frame, and the
+    /// line formatted, sorted and joined every PR each time.
+    fn pr_fingerprint(&self, ticket: ulid::Ulid) -> u64 {
+        self.card_prs(ticket).iter().fold(0u64, |acc, p| {
+            acc.wrapping_add(crate::text::hash64((
+                &p.forge,
+                &p.repo,
+                p.number,
+                &p.state,
+                &p.pipeline,
+                &p.job,
+                p.conflict,
+                &p.review,
+                &p.deployed,
+            )))
+        })
     }
 
     /// The card's pull-request line (T-739): one glyph and the forge's own
@@ -6344,7 +6351,6 @@ impl App {
             has_archived: self.board.tickets.iter().any(|t| t.is_archived()),
             peek_on: self.peek,
             peek_all: self.peek_all,
-            theme_name: self.theme.flavor.name(),
             theme_blurb: self.theme.flavor.blurb(),
             theme_pinned: self.forced.is_some(),
             theme_tab_word: match self.mode {
