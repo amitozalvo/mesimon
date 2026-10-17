@@ -34,6 +34,9 @@ const PAGE_GUESS: usize = 48 * 1024;
 /// How long a stopped agent stays on Now, and its conversation on the
 /// shelf: the page's `RECENT_MS`.
 const RECENT_MS: u64 = 3_600_000;
+/// How long a Codex seat's rollout is trusted once it stops growing before
+/// `~/.codex/sessions` is walked again for a continuation (T-815, T-840).
+const ROLLOUT_WALK: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
 pub(super) struct Shelf {
@@ -54,6 +57,19 @@ pub(super) struct Shelf {
     /// connection, the copy turned off): a read from before lands on
     /// nothing.
     generation: u64,
+    /// Each Codex seat's rollout as the last walk found it, by session: a
+    /// fact about the disk, kept across `forget`.
+    rollouts: HashMap<String, Rollout>,
+}
+/// Where a Codex conversation is written now: its seat's rollout or a
+/// continuation of it (T-815). Walking `~/.codex/sessions` for one is the
+/// cost; a rollout still growing has none, so it is walked for again only
+/// once it stops and a minute has passed since the last walk.
+struct Rollout {
+    original: std::path::PathBuf,
+    current: std::path::PathBuf,
+    len: u64,
+    walked: Instant,
 }
 #[derive(Clone, Copy)]
 struct Held {
@@ -70,6 +86,21 @@ impl Shelf {
         self.dirty = true;
         self.generation += 1;
     }
+}
+
+/// The rollout a Codex seat writes, while the last walk still holds; `None`
+/// asks the reader to walk again.
+fn rollout(
+    rollouts: &mut HashMap<String, Rollout>,
+    session: &str,
+    original: &std::path::Path,
+    now: Instant,
+) -> Option<std::path::PathBuf> {
+    let r = rollouts.get_mut(session).filter(|r| r.original == original)?;
+    let len = std::fs::metadata(&r.current).ok()?.len();
+    let grew = len > r.len;
+    r.len = len;
+    (grew || now.duration_since(r.walked) < ROLLOUT_WALK).then(|| r.current.clone())
 }
 
 /// One build: the items in shelf order, with the bodies read on the writer
@@ -93,7 +124,9 @@ pub(crate) struct PageRead {
     ticket: String,
     session: String,
     page: Option<Reply>,
+    /// The slot's key, where the plan could not know it: a walk's.
     key: Option<u64>,
+    rollout: Option<Rollout>,
 }
 struct Read {
     name: String,
@@ -101,24 +134,47 @@ struct Read {
     session: String,
     kind: SessionKind,
     path: std::path::PathBuf,
+    /// A Codex seat's own rollout, whose continuation is looked for first.
+    walk: bool,
 }
 impl Read {
     fn run(self) -> PageRead {
-        let page = crate::agents::read_transcript_reply(
+        let path = if self.walk {
+            crate::agents::codex::discovery::current_rollout(&self.path)
+        } else {
+            self.path.clone()
+        };
+        // Taken before the read, so a write in between moves the key again.
+        let stat = self.walk.then(|| stat_key(&path, &self.session)).flatten();
+        let page = crate::agents::read_transcript_reply_at(
             self.kind,
-            &self.path,
+            &path,
             crate::agents::transcript::Ask::default(),
             None,
         );
-        let key = (self.kind == SessionKind::Codex)
-            .then(|| {
-                page.as_ref()
-                    .and_then(|page| serde_json::to_vec(page).ok())
-                    .map(|bytes| key_of(&(&self.session, bytes)))
-            })
-            .flatten();
-        PageRead { name: self.name, ticket: self.ticket, session: self.session, page, key }
+        let rollout = stat.map(|(_, len)| Rollout {
+            original: self.path,
+            current: path,
+            len,
+            walked: Instant::now(),
+        });
+        PageRead {
+            name: self.name,
+            ticket: self.ticket,
+            session: self.session,
+            page,
+            key: stat.map(|(key, _)| key),
+            rollout,
+        }
     }
+}
+
+/// A conversation's slot key, off the file it is read from: its size and
+/// age, and whose it is. With its size, for the rollout's growth.
+fn stat_key(path: &std::path::Path, session: &str) -> Option<(u64, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    let mtime = meta.modified().ok().and_then(mesimon_core::clock::epoch_ms).unwrap_or(0);
+    Some((key_of(&(path, meta.len(), mtime, session)), meta.len()))
 }
 
 fn key_of(value: &impl Hash) -> u64 {
@@ -191,7 +247,12 @@ impl Daemon {
     }
 
     /// A build's conversations landed (`Msg::ShelfRead`).
-    pub(super) fn shelf_read(&mut self, build: Build, pages: Vec<PageRead>) {
+    pub(super) fn shelf_read(&mut self, build: Build, mut pages: Vec<PageRead>) {
+        for p in &mut pages {
+            if let Some(r) = p.rollout.take() {
+                self.control.shelf.rollouts.insert(p.session.clone(), r);
+            }
+        }
         if build.generation != self.control.shelf.generation {
             return;
         }
@@ -263,25 +324,42 @@ impl Daemon {
             .filter(|(_, s)| s.kind.is_agent() && shelved_by_now(s, at))
             .collect();
         now_list.sort_by_key(|(_, s)| (!busy(s), std::cmp::Reverse(s.state_changed_at)));
-        for (t, s) in now_list.iter().take(TRANSCRIPTS) {
-            let Some(path) = crate::cost::transcript_of(s).map(|(p, _)| p) else { continue };
-            let Ok(meta) = std::fs::metadata(&path) else { continue };
-            let mtime = meta.modified().ok().and_then(mesimon_core::clock::epoch_ms).unwrap_or(0);
-            let name = format!("transcript:{}", t.id);
-            let key = key_of(&(&path, meta.len(), mtime, s.id));
-            spent += self.control.shelf.sizes.get(&name).copied().unwrap_or(PAGE_GUESS);
-            if s.kind != SessionKind::Codex && everywhere(&name, key) {
-                items.push(Planned { name, key, body: None, pending: false });
+        let shown: Vec<String> =
+            now_list.iter().take(TRANSCRIPTS).map(|(_, s)| s.id.to_string()).collect();
+        let rollouts = &mut self.control.shelf.rollouts;
+        rollouts.retain(|session, _| shown.contains(session));
+        let now = Instant::now();
+        for ((t, s), session) in now_list.iter().zip(shown) {
+            let Some(original) = crate::cost::transcript_of(s).map(|(p, _)| p) else { continue };
+            // A Codex conversation may go on in a continued rollout (T-815):
+            // one the last walk no longer vouches for is walked on the reader.
+            let walk = s.kind == SessionKind::Codex;
+            let path = if walk {
+                rollout(rollouts, &session, &original, now)
             } else {
-                reads.push(Read {
-                    name: name.clone(),
-                    ticket: t.id.to_string(),
-                    session: s.id.to_string(),
-                    kind: s.kind,
-                    path,
-                });
-                items.push(Planned { name, key, body: None, pending: true });
+                Some(original.clone())
+            };
+            let stat = path.and_then(|p| Some((stat_key(&p, &session)?.0, p)));
+            let (key, path, walk) = match stat {
+                Some((key, path)) => (key, path, false),
+                None if walk => (0, original, true),
+                None => continue,
+            };
+            let name = format!("transcript:{}", t.id);
+            spent += self.control.shelf.sizes.get(&name).copied().unwrap_or(PAGE_GUESS);
+            if !walk && everywhere(&name, key) {
+                items.push(Planned { name, key, body: None, pending: false });
+                continue;
             }
+            reads.push(Read {
+                name: name.clone(),
+                ticket: t.id.to_string(),
+                session,
+                kind: s.kind,
+                path,
+                walk,
+            });
+            items.push(Planned { name, key, body: None, pending: true });
         }
 
         // Notes: the tickets Now lists first, then the board's order; a
@@ -539,6 +617,7 @@ mod tests {
                 session: session.into(),
                 kind: SessionKind::Codex,
                 path: original.clone(),
+                walk: true,
             }
             .run()
         };
@@ -561,6 +640,21 @@ mod tests {
         let unchanged =
             choose(Some(&changed.held), &[item("transcript:a", current.key.unwrap(), true)], now);
         assert!(unchanged.seal.is_empty());
+
+        // The walk is remembered (T-840): the continuation is read with no
+        // walk while it grows or the walk is under a minute old.
+        let walked = current.rollout.expect("a walk is remembered");
+        assert_eq!(walked.current, continued);
+        let t0 = walked.walked;
+        let mut rollouts = HashMap::from([("session".to_string(), walked)]);
+        assert_eq!(rollout(&mut rollouts, "session", &original, t0), Some(continued.clone()));
+        assert_eq!(rollout(&mut rollouts, "other", &original, t0), None);
+        assert_eq!(rollout(&mut rollouts, "session", &continued, t0), None, "another seat");
+        let later = t0 + ROLLOUT_WALK;
+        assert_eq!(rollout(&mut rollouts, "session", &original, later), None, "stopped a minute");
+        write(&continued, "Continued, and more", 300);
+        assert_eq!(rollout(&mut rollouts, "session", &original, later), Some(continued.clone()));
+        assert_eq!(rollout(&mut rollouts, "session", &original, later), None, "stopped again");
     }
 
     /// A browser new to the shelf gets every item; then only what changed,

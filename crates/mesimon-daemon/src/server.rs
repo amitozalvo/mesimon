@@ -281,6 +281,15 @@ struct PendingResume {
     plan: bool,
 }
 
+/// What `refresh_panes` moved: a record's title, which persists, and a
+/// foreground, which only a snapshot carries. The tick folds both into its
+/// one broadcast (T-840).
+#[derive(Default)]
+struct Panes {
+    changed: bool,
+    repaint: bool,
+}
+
 struct GraceEntry {
     ticket: Ticket,
     sessions: Vec<SessionRecord>,
@@ -399,8 +408,9 @@ enum Msg {
     /// A forge pass landed (T-739): the generation it was asked under, and
     /// what it found.
     ForgeSampled(u64, crate::forge::Sample),
-    /// A turn's end's read of its tickets' repositories landed (T-761).
-    ForgeBurst(crate::forge::Sample),
+    /// A turn's end's read of its tickets' repositories landed (T-761): the
+    /// forge's `epoch` it was asked under, and what it found.
+    ForgeBurst(u64, crate::forge::Sample),
     /// The backfill's read of old transcripts landed (T-810).
     Backfilled(Vec<crate::cost::Backfilled>),
     /// One ticket's own flags sample (T-678): a turn's end on a branch the
@@ -602,6 +612,12 @@ pub struct Daemon {
     /// broadcast, so a move, a sleep, a ticked box or a column's offers
     /// reach the header within the second, not the minute.
     archive_due: bool,
+    /// Each ticket's unticked summary boxes as the archive offer last read
+    /// them, under `notes_key` of its notes then (T-840): the offer is
+    /// priced within a second of every broadcast, and read every note of
+    /// every ticket a `requires_ticked` column held each time. A write
+    /// moves the key; `write_note` drops the entry besides.
+    open_box_counts: std::cell::RefCell<HashMap<ulid::Ulid, (u64, usize)>>,
     /// The disk the archive offer frees (T-679): the sum of `tree_sizes`
     /// over the trees it would tear down, on the same 1 s bucket.
     archive_bytes: u64,
@@ -1243,6 +1259,7 @@ pub fn run(paths: Paths) -> Result<()> {
         terminals: terminals_in(&snap),
         reclaim_cache: (0, 0),
         archive_cache: 0,
+        open_box_counts: Default::default(),
         archive_due: true,
         archive_bytes: 0,
         tree_sizes: HashMap::new(),
@@ -1492,7 +1509,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::ClientGone(stream) => d.on_client_gone(&stream),
             Msg::WorktreeFlags(gen, flags) => d.on_worktree_flags(gen, flags),
             Msg::ForgeSampled(gen, sample) => d.on_forge_sampled(gen, sample),
-            Msg::ForgeBurst(sample) => d.on_forge_burst(sample),
+            Msg::ForgeBurst(epoch, sample) => d.on_forge_burst(epoch, sample),
             Msg::Backfilled(found) => d.on_backfilled(found),
             Msg::TicketFlags(ticket, seq, flags, local) => {
                 d.on_ticket_flags(ticket, seq, flags, local)
@@ -2881,6 +2898,8 @@ impl Daemon {
         let now = now_ms();
         let fired: Vec<(uuid::Uuid, Change)> =
             self.machines.iter_mut().filter_map(|(id, m)| m.tick(now).map(|c| (*id, c))).collect();
+        // A fact only a snapshot carries moved: broadcast, persist nothing.
+        let mut repaint = false;
         let mut changed = self.probe_codex_startup(now);
         changed |= self.drive_codex_inputs(now);
         for (id, change) in fired {
@@ -2937,7 +2956,9 @@ impl Daemon {
         if self.ticks.is_multiple_of(TAIL_POLL_TICKS) {
             changed |= stage!("poll_tails", self.poll_tails());
             changed |= stage!("probe_status_files", self.probe_status_files());
-            changed |= stage!("refresh_panes", self.refresh_panes());
+            let panes = stage!("refresh_panes", self.refresh_panes());
+            changed |= panes.changed;
+            repaint |= panes.repaint;
         }
         if self.ticks.is_multiple_of(inactivity_park_ticks()) {
             changed |= stage!("park_inactive", self.park_inactive(now));
@@ -2997,6 +3018,8 @@ impl Daemon {
         }
         if changed {
             stage!("persist_sessions", self.persist_sessions());
+        }
+        if changed || repaint {
             stage!("broadcast", self.broadcast());
         }
         // ≤1 write() per wheel bucket, no fsync (14 §1.7).
@@ -3199,15 +3222,15 @@ impl Daemon {
     /// status line's breadcrumb leaf uses. The hostname means never-set (see
     /// `pane_title`) and a missing pane keeps the last name: latch, never
     /// clear, so sleeping/parked sessions stay recognizable.
-    fn refresh_panes(&mut self) -> bool {
+    fn refresh_panes(&mut self) -> Panes {
         let paned = self.board.sessions.iter().any(|r| r.state.has_pane());
         // A quiet board — no pane of ours, no terminal we know of — forks
         // nothing. A terminal enters the map through `open_terminal` or the
         // startup snapshot, so one that exists is always polled.
         if !paned && self.terminals.is_empty() {
-            return false;
+            return Panes::default();
         }
-        let Ok(facts) = self.backend.pane_facts() else { return false };
+        let Ok(facts) = self.backend.pane_facts() else { return Panes::default() };
         let mut changed = false;
         for rec in self.board.sessions.iter_mut().filter(|r| r.state.has_pane()) {
             if crate::agents::adapter(rec.kind).is_some_and(|adapter| {
@@ -3236,9 +3259,9 @@ impl Daemon {
         // command when tmux names something other than the shell it was
         // born with; the terminals likewise, against the daemon's `$SHELL`,
         // which is what `open_terminal` launched. Both live in maps, never on
-        // the record on disk — so a change here is broadcast and NOT
-        // reported as `changed`, which would persist the sessions for a
-        // fact that belongs to a live pane.
+        // the record on disk — so a change here is a `repaint` and NOT
+        // `changed`, which would persist the sessions for a fact that
+        // belongs to a live pane.
         let mut foregrounds = HashMap::new();
         for rec in
             self.board.sessions.iter().filter(|r| r.kind == SessionKind::Bash && r.state.has_pane())
@@ -3300,14 +3323,12 @@ impl Daemon {
                 Some((t, foreground_of(&f.current_command, &shell)))
             })
             .collect();
-        if foregrounds != self.foregrounds || terminals != self.terminals {
+        let repaint = foregrounds != self.foregrounds || terminals != self.terminals;
+        if repaint {
             self.foregrounds = foregrounds;
             self.terminals = terminals;
-            if !changed {
-                self.broadcast();
-            }
         }
-        changed
+        Panes { changed, repaint }
     }
 
     fn poll_tails(&mut self) -> bool {
@@ -3748,7 +3769,11 @@ impl Daemon {
         }
     }
 
+    /// A capture a tick while launch words wait on the composer; a dialog
+    /// standing, or a composer nothing waits on, is looked at once a second
+    /// (T-840: four captures a second per seat for as long as it stood).
     fn probe_codex_startup(&mut self, now: u64) -> bool {
+        let second = self.ticks.is_multiple_of(4);
         let candidates: Vec<_> = self
             .board
             .sessions
@@ -3757,6 +3782,7 @@ impl Daemon {
                 s.kind == SessionKind::Codex
                     && s.state.has_pane()
                     && !s.argv.is_empty()
+                    && (s.pending_prefill || second)
                     && (s.pending_prefill
                         || self.codex_native_ready.get(&s.id) != Some(&s.codex_generation)
                         || matches!(
@@ -10758,6 +10784,7 @@ impl Daemon {
         let key = t.short_key.clone();
         let now = now_iso();
         let author = by.note_author();
+        self.open_box_counts.get_mut().remove(&ticket);
         match (note, blank) {
             (None, true) => Response::Err { message: "nothing to save".into() },
             (Some(id), true) => {
@@ -12344,8 +12371,16 @@ impl Daemon {
     /// a person turned it on for holds one now. Reads notes only for such a
     /// column.
     fn archive_held(&self, t: &Ticket) -> bool {
-        self.board.column(&t.column).is_some_and(|c| c.settings.requires_ticked)
-            && self.open_boxes(t.id) > 0
+        if !self.board.column(&t.column).is_some_and(|c| c.settings.requires_ticked) {
+            return false;
+        }
+        let key = notes_key(&t.notes);
+        let held = self.open_box_counts.borrow().get(&t.id).copied();
+        let open = match held {
+            Some((k, open)) if k == key => open,
+            _ => self.open_boxes(t.id),
+        };
+        open > 0
     }
 
     /// The boxes still unticked in the ticket's `Summary` sections (T-713),
@@ -12354,15 +12389,19 @@ impl Daemon {
     /// a ticket holding one at its door and keeps it from the archive and
     /// the offer. A snooze is a return and is not asked. A note that cannot
     /// be read counts nothing.
+    /// The gates read the disk every time; the count is kept for the offer.
     fn open_boxes(&self, id: ulid::Ulid) -> usize {
         let Some(t) = self.board.ticket(id) else { return 0 };
-        t.notes
+        let open = t
+            .notes
             .iter()
             .filter_map(|n| store::read_note(&self.paths, &t.short_key, n.id).ok())
             .map(|body| {
                 mesimon_core::summary::Count::of(&mesimon_core::summary::extract(&body)).open()
             })
-            .sum()
+            .sum();
+        self.open_box_counts.borrow_mut().insert(id, (notes_key(&t.notes), open));
+        open
     }
 
     /// One ticket off the board, whichever gesture asked — `a a` or the
@@ -12654,9 +12693,10 @@ impl Daemon {
                 self.restore_forge(file);
                 self.queue_backfill();
             } else {
-                let gen = self.forge.gen.wrapping_add(1);
+                let (gen, epoch) =
+                    (self.forge.gen.wrapping_add(1), self.forge.epoch.wrapping_add(1));
                 self.forge = crate::forge::State::default();
-                self.forge.gen = gen;
+                (self.forge.gen, self.forge.epoch) = (gen, epoch);
                 self.forge_written.clear();
             }
             self.persist_and_notify();
@@ -14143,9 +14183,10 @@ impl Daemon {
         }
         self.forge.burst_inflight = true;
         self.forge_asked(&query);
+        let epoch = self.forge.epoch;
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(Msg::ForgeBurst(crate::forge::sample(query, now_ms())));
+            let _ = tx.send(Msg::ForgeBurst(epoch, crate::forge::sample(query, now_ms())));
         });
     }
 
@@ -14377,8 +14418,13 @@ impl Daemon {
     }
 
     /// A turn's end's read landed (T-761): taken as a pass is, its
-    /// repositories' errors alone replaced; the minute is not reset.
-    fn on_forge_burst(&mut self, mut sample: crate::forge::Sample) {
+    /// repositories' errors alone replaced; the minute is not reset. One
+    /// asked before the forge was let go (`set_merge_into`) lands on
+    /// nothing, and leaves alone a read the restored forge has out (T-840).
+    fn on_forge_burst(&mut self, epoch: u64, mut sample: crate::forge::Sample) {
+        if epoch != self.forge.epoch {
+            return;
+        }
         self.forge.burst_inflight = false;
         if !self.through_prs() {
             return;
@@ -16604,6 +16650,17 @@ fn mod_bridge_wait_ms() -> u64 {
 /// every road — a move into a `requires_ticked` column, `a a`, the crown's
 /// `archive_ticket` — with `what` saying which: `before DONE`, `to archive
 /// from DONE`.
+/// What a ticket's notes are at: every write bumps a note's `rev` and stamps
+/// its `edited_at`, a delete takes its id off, a new note adds one.
+fn notes_key(notes: &[mesimon_core::board::NoteMeta]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for n in notes {
+        (n.id, n.rev, &n.edited_at).hash(&mut h);
+    }
+    h.finish()
+}
+
 fn open_boxes_refusal(open: usize, what: &str) -> Option<String> {
     match open {
         0 => None,

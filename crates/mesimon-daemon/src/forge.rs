@@ -1467,6 +1467,10 @@ pub struct State {
     pub last_ms: u64,
     pub inflight: bool,
     pub gen: u64,
+    /// Bumped, like `gen` kept, when the forge is let go: a turn's end's
+    /// read asked before lands on nothing (`gen` moves with every minute's
+    /// pass, which a burst outlives).
+    pub epoch: u64,
     /// What each ticket's last read was taken on, and the look after its
     /// last turn (T-761): equal, the set read then still holds.
     pub basis: HashMap<ulid::Ulid, Basis>,

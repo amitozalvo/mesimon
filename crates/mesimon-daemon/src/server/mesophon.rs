@@ -1755,15 +1755,19 @@ impl Daemon {
     fn control_awareness(&mut self) {
         let Some(stored) = &self.control.stored else { return };
         let board = stored.board.to_hex();
+        // Each ticket's most urgent agent, the first of its rank as
+        // `min_by_key` keeps it: one pass over the records, not one per
+        // ticket (T-840).
+        let mut urgent: HashMap<ulid::Ulid, &SessionRecord> = HashMap::new();
+        for s in self.board.sessions.iter().filter(|s| s.kind.is_agent()) {
+            let held = urgent.entry(s.ticket).or_insert(s);
+            if attention::rank(&s.state) < attention::rank(&held.state) {
+                *held = s;
+            }
+        }
         let mut changes = Vec::new();
         for ticket in self.board.tickets.iter().filter(|t| !t.is_archived()) {
-            let Some(session) = self
-                .board
-                .sessions
-                .iter()
-                .filter(|s| s.ticket == ticket.id && s.kind.is_agent())
-                .min_by_key(|s| attention::rank(&s.state))
-            else {
+            let Some(&session) = urgent.get(&ticket.id) else {
                 continue;
             };
             let phase = api::Phase::of(&session.state);

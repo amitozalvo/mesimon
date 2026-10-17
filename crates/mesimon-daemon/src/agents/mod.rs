@@ -99,7 +99,7 @@ pub fn read_transcript(
 pub fn read_transcript_reply(
     provider: SessionKind,
     path: &Path,
-    mut ask: transcript::Ask,
+    ask: transcript::Ask,
     conversation: Option<&str>,
 ) -> Option<mesimon_core::mesophon::Reply> {
     let path = if provider == SessionKind::Codex {
@@ -107,6 +107,17 @@ pub fn read_transcript_reply(
     } else {
         path.to_path_buf()
     };
+    read_transcript_reply_at(provider, &path, ask, conversation)
+}
+
+/// [`read_transcript_reply`] of a path already resolved: a Codex rollout's
+/// continuation is not looked for (the shelf keeps it, T-840).
+pub fn read_transcript_reply_at(
+    provider: SessionKind,
+    path: &Path,
+    mut ask: transcript::Ask,
+    conversation: Option<&str>,
+) -> Option<mesimon_core::mesophon::Reply> {
     let name = transcript::conversation(&path.to_string_lossy());
     if conversation != Some(name.as_str()) {
         ask.after = None;
@@ -114,7 +125,7 @@ pub fn read_transcript_reply(
             ask.before = None;
         }
     }
-    read_transcript(provider, &path, ask).map(|page| mesimon_core::mesophon::Reply::Transcript {
+    read_transcript(provider, path, ask).map(|page| mesimon_core::mesophon::Reply::Transcript {
         conversation: name,
         rows: page.rows,
         from: page.from,

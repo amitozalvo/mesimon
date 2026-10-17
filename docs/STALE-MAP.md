@@ -27373,3 +27373,37 @@ handovers after a tick rest on that, and a click hit-tests against the frame its
 - `tick` is `next_event` + `on_event`; `next_event` takes the terminal as a `read(timeout)`
   closure, which is how `a_pointer_sweep_draws_one_frame_and_a_click_inside_it_lands_in_place`
   drives it with a queue: forty moves are one frame, and a click inside a sweep is its own two.
+
+## The fifth pass's daemon leftovers (T-840)
+
+Six of the costs T-838 found and left open, each behaviour-preserving: no schema bump, no wire
+change, nothing the board says moves. Like T-688 was to T-682.
+
+- **The shelf remembers where a Codex conversation is written.** Every build (30 s while an
+  agent is busy) walked `~/.codex/sessions` for each Codex seat on Now, read the page, and
+  serialised it to key it, because the slot's stat key named the seat's own rollout and not a
+  continuation (T-815). `Shelf::rollouts` keeps each seat's walk (the rollout it found, its
+  size, when); while that file grows or the walk is under a minute old, the slot is keyed off
+  its stat and skipped where every browser holds it, as a Claude slot is. A seat whose file
+  stopped growing a minute after its walk is walked again on the reader. On the author's
+  machine (266 rollouts, 439 MB) a walk is 0.8 ms warm and 2.3 ms cold, against a 13 µs stat,
+  before the page's read and parse. A continuation is seen at most a minute and a build late.
+  The slot key is the stat's for Codex too, so a growing rollout is sent each build as a
+  growing Claude transcript always was.
+- **The archive offer keeps each ticket's open-box count** (`open_box_counts`) under a hash of
+  its notes' `(id, rev, edited_at)`, and reads the notes only when it moved; `write_note` drops
+  the entry besides. The gates (`requires_ticked` at a column's door and on `a a`) still read
+  the disk every time, and refresh the count.
+- **A turn's end's forge read carries the forge's `epoch`** (`Msg::ForgeBurst(epoch, _)`),
+  bumped only when `set_merge_into(Main)` lets the forge go. `gen` moves with every minute's
+  pass, which a burst outlives, so it could not be the guard. A stale landing returns before it
+  clears `burst_inflight`, which by then belongs to a read the restored forge has out.
+- **A Codex seat at a dialog, or one whose composer was not seen yet, is captured once a
+  second**, not every 250 ms tick; one with launch words waiting (`pending_prefill`) still every
+  tick. `drive_codex_inputs` is unchanged.
+- **`control_awareness` indexes the agents by ticket once per push** (the first of the lowest
+  rank, as `min_by_key` kept it) instead of filtering every record per un-archived ticket.
+- **One broadcast per tick.** `refresh_panes` returns `Panes { changed, repaint }`; a foreground
+  change is a `repaint`, folded into the tick's broadcast without persisting the sessions.
+  It broadcast on its own before, and a tick with any other change broadcast again: two
+  snapshot round-trips for every TUI.
