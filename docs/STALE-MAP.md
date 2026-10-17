@@ -27966,3 +27966,33 @@ rest" went with it (`Setup::skip_rest`): at two to four pages, `s` does the same
 barrier for every board key. Tests: `app::setup_q_and_esc_leave_with_nothing_applied`,
 `setup_ctrl_c_quits`, `ui::a_click_under_setup_reaches_only_its_keys` (clicks `q quit setup`);
 the Setup goldens' footers reminted.
+
+## A refused credential pairs again (T-852, 2026-10-18)
+
+**What was wrong.** A browser keeps its relay credential in IndexedDB. When the relay no longer
+knew it (its database reset), `/control` closed the socket with no frame, which the page reads
+as a network loss: `Connection::connect` retried the same credential three times on a code and
+said "Pairing did not complete", and a fresh code never helped. Only clearing the site's data
+got out.
+
+**Shipped.** The relay says the refusal: `Wire::Error { code: control::DENIED }` before any
+`Authenticated`, for a credential it does not know or a registration of a key it already holds;
+a fault (`Unavailable`) stays a bare close. The page's `connect` reads `denied` only before
+`authenticated` and only when it sent a credential: it deletes the credential, saves, and the
+next attempt registers with the same seed, so the device id is unchanged and a host that lists
+it (after the reset, on its next publish) reaches the same boards. The line is authentication,
+never a board: an `error` after `authenticated` (an away host, a removed grant, which the relay
+deliberately does not tell apart) keeps the credential and the boards as before. A host reads
+any first frame but `Authenticated` as a failed connect, as it read the close; the mailbox
+socket ignores every frame before `authenticated`. The relay half is on
+`msmn/T-852-pairing-hangs-on-pairing-when` in `mesimon-relay`.
+
+**Not done.** A registration the relay refuses after the credential was dropped (a known key)
+is left to the old retry and its message: no browser device is disabled or deleted at the relay
+today, so minting a new seed there would orphan the store's sealing keys for a case that does
+not occur.
+
+Tests: `ux.test.js`'s `refusedFlow` (the fixture relay forgets a credential; a code pairs at
+once, the refused credential sent once and then a registration; a valid credential and one whose
+host is away kept across reloads), `control::tests::the_page_reads_the_denied_word` (the page's
+literal is the wire's), and the relay's `an_unknown_credential_is_refused_in_words`.

@@ -15,6 +15,12 @@ pub const QUEUE: usize = 32;
 /// collecting host, which renews on it. A host from before drops any
 /// `Error` frame unread, so the relay may send it to every host.
 pub const LAPSED: &str = "lapsed";
+/// The `Error` code for an authentication the relay refuses (T-852): a
+/// credential it does not know, or a key it holds already. It comes before
+/// `Authenticated` and so never speaks for a board; a browser drops the
+/// credential it sent and registers again. A host reads any first frame but
+/// `Authenticated` as a failed connect, as it read the bare close before.
+pub const DENIED: &str = "denied";
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -519,6 +525,12 @@ mod tests {
         let text = serde_json::to_string(&Wire::Error { code: LAPSED.into() }).unwrap();
         assert_eq!(text, r#"{"kind":"error","code":"lapsed"}"#);
         assert!(matches!(serde_json::from_str(&text), Ok(Wire::Error { code }) if code == LAPSED));
+    }
+    /// The page spells the refusal word itself (T-852): it must be this one.
+    #[test]
+    fn the_page_reads_the_denied_word() {
+        let page = include_str!("../../../web/mesophon/connection.js");
+        assert!(page.contains(&format!("const DENIED = \"{DENIED}\";")));
     }
     /// A phone's largest picture piece (T-629), sealed and framed as the
     /// relay carries it, stays under the frame cap: base64 and then hex

@@ -48,7 +48,7 @@ await fs.mkdir(path.join(root, "test-results"), { recursive: true });
 const fakeCrypto = `export default async function init() {};
 export class Browser {
   seed() { return 'test-seed'; } free() {}
-  auth() { return JSON.stringify({kind:'auth'}); }
+  auth(credential) { return JSON.stringify({kind:'auth', credential: credential ?? null}); }
   pair() { return JSON.stringify({kind:'pair'}); }
   connect() { return JSON.stringify({kind:'connect'}); }
   accept() { return JSON.stringify({reply:{result:'ready',incarnation:window.fixture.incarnation,next:window.fixture.next,features:window.fixture.features}}); }
@@ -101,6 +101,20 @@ function fixture() {
     relayDown: localStorage.getItem("fixture-relay-down") === "1",
     // How many of the next sockets the relay fails to open (T-706).
     relayMisses: 0,
+    // The credential each authentication carried, and the ones the relay no
+    // longer knows (T-852: its database was reset), kept across reloads.
+    auths: [],
+    forgotten: JSON.parse(localStorage.getItem("fixture-forgotten") || "[]"),
+    forget(credential) {
+      this.forgotten.push(credential);
+      localStorage.setItem("fixture-forgotten", JSON.stringify(this.forgotten));
+    },
+    // A registration mints a credential no earlier one had.
+    register() {
+      const n = Number(localStorage.getItem("fixture-registrations") || 0) + 1;
+      localStorage.setItem("fixture-registrations", String(n));
+      return `fixture-${n}`;
+    },
     saveMail() {
       localStorage.setItem("fixture-mail", JSON.stringify(this.mail));
     },
@@ -308,8 +322,16 @@ function fixture() {
     send(text) {
       const wire = JSON.parse(text);
       queueMicrotask(() => {
-        if (wire.kind === "auth")
-          this.message({ kind: "authenticated", credential: "fixture" });
+        if (wire.kind === "auth") {
+          state.auths.push(wire.credential);
+          // A credential the relay does not know is refused, and the socket
+          // closed (T-852); a registration is answered with a new one.
+          if (wire.credential && state.forgotten.includes(wire.credential)) {
+            this.message({ kind: "error", code: "denied" });
+            this.close();
+          } else
+            this.message({ kind: "authenticated", credential: wire.credential || state.register() });
+        }
         // The relay's generic answer while the host is away.
         else if (wire.kind === "connect" && state.refuse)
           this.message({ kind: "error", code: "unavailable" });
@@ -2757,6 +2779,78 @@ async function backFlow(browser, engineName) {
   }
 }
 
+// A credential the relay no longer knows (T-852): its database was reset, so
+// the relay refuses the credential this browser kept. A pairing code then
+// registers again rather than hanging on "Pairing…", and a valid credential,
+// or one whose host is away, is kept.
+async function refusedFlow(browser, engineName) {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, colorScheme: "dark", serviceWorkers: "block" });
+  await context.addInitScript(fixture);
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  const stored = () =>
+    page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const open = indexedDB.open("mesophon", 1);
+          open.onsuccess = () => {
+            const get = open.result.transaction("device").objectStore("device").get("identity");
+            get.onsuccess = () => resolve(get.result);
+          };
+        }),
+    );
+  try {
+    await page.goto(origin);
+    await until(page, () => !document.querySelector("#pair").disabled);
+    await page.getByLabel("Pairing code", { exact: true }).fill("fixture-pair-code");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    assert.equal((await stored()).credential, "fixture-1");
+
+    // The relay forgets it; a new code from the host pairs at once.
+    await page.evaluate(() => {
+      fixture.forget("fixture-1");
+      fixture.auths.length = 0;
+      location.hash = "pair=fixture-pair-code-2";
+    });
+    await until(page, () => !document.querySelector("#onboarding").hidden);
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await until(page, () => !document.querySelector("#shell").hidden && document.querySelector("#onboarding").hidden);
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    assert.deepEqual(
+      await page.evaluate(() => fixture.auths.slice(0, 2)),
+      ["fixture-1", null],
+      "the refused credential is sent once, then the browser registers",
+    );
+    let identity = await stored();
+    assert.equal(identity.credential, "fixture-2");
+    assert.deepEqual(identity.boards.map((b) => b.pin.board), ["board-a"]);
+
+    // A valid credential is kept across a reload, and so is one whose host
+    // is away: the relay's answer for the board is no refusal of the browser.
+    await page.evaluate(() => localStorage.setItem("fixture-refuse", "1"));
+    await page.reload();
+    await until(page, () => fixture.auths.length > 0 && fixture.sockets.some((s) => s.readyState === 3));
+    await until(page, () => /Reconnecting|Connecting/.test(document.querySelector("#connection").textContent));
+    identity = await stored();
+    assert.equal(identity.credential, "fixture-2");
+    assert.deepEqual(identity.boards.map((b) => b.pin.board), ["board-a"]);
+    assert.equal(await page.evaluate(() => fixture.auths.includes(null)), false, "nothing registers again");
+    await page.evaluate(() => localStorage.removeItem("fixture-refuse"));
+    await page.reload();
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    assert.equal((await stored()).credential, "fixture-2");
+    assert.deepEqual(errors, []);
+    console.log(`${engineName}: a refused credential pairs again passed`);
+  } catch (error) {
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-refused-failure.png`) });
+    throw error;
+  } finally {
+    await context.close();
+  }
+}
+
 // Forgetting one board (T-673): a board whose host is gone is forgotten from
 // the picker, after a second word, and the live one stays connected; the last
 // one forgotten leaves the pairing screen and nothing kept.
@@ -3884,6 +3978,7 @@ try {
       await backFlow(browser, engineName);
       await keyboardFlow(browser, engineName);
       await keptFlow(browser, engineName);
+      await refusedFlow(browser, engineName);
       await forgetFlow(browser, engineName);
     } finally {
       await browser.close();

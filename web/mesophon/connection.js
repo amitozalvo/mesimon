@@ -9,6 +9,9 @@ const RECONNECTING = "Reconnecting… Last received view is stale.";
 // one that failed is often a network still waking, and the retry after it
 // is connecting, not unreachable.
 const SURE = 2;
+// The relay's `error` code for an authentication it refuses, before
+// `authenticated` (`control::DENIED`).
+const DENIED = "denied";
 
 export class Connection {
   constructor({ Browser, identity, save, onState, onReady, onReply, onLost }) {
@@ -88,6 +91,7 @@ export class Connection {
     else if (attempt) this.onState("reconnecting", RECONNECTING);
     else this.onState("connecting", "Connecting… Last received view is stale.");
     this.crypto = new this.Browser(this.identity.seed);
+    const credential = this.identity.credential;
     const ws = (this.socket = new WebSocket(
       `${location.origin.replace(/^http/, "ws")}/control`,
     ));
@@ -98,7 +102,7 @@ export class Connection {
       if (gen === this.generation)
         ws.send(
           this.crypto.auth(
-            this.identity.credential || undefined,
+            credential || undefined,
             this.identity.name || "My browser",
           ),
         );
@@ -164,6 +168,17 @@ export class Connection {
               );
             } else this.onReply(reply, original, id);
           } else if (wire.kind === "error") {
+            // Before `authenticated` the relay speaks for this browser's own
+            // credential, never a board: one it refuses (its database was
+            // reset) is dropped and the next attempt registers again (T-852).
+            if (!this.reached && wire.code === DENIED && credential) {
+              terminal = true;
+              delete this.identity.credential;
+              await this.save();
+              if (gen !== this.generation) return;
+              this.connect(entry, code, attempt + 1);
+              return;
+            }
             // The relay deliberately cannot distinguish an offline host from a
             // removed grant. Only an authenticated Revoked clears protected data.
             ws.close();
