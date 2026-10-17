@@ -787,6 +787,8 @@ fn golden_snooze_armed_120() {
 fn golden_archived_snoozed_120() {
     let mut app = app_graphite(fixture_snoozed());
     app.mode = Mode::Archived { idx: 0 };
+    // The archived tickets come on their own ask, as the loop makes it (T-842).
+    app.poll_archive();
     let lines = render(&app, 120, 30);
     assert!(
         lines.iter().any(|l| l.contains("wakes in >1y")),
@@ -1835,6 +1837,7 @@ fn golden_board_pinned_120() {
 fn golden_archived_dialog_120() {
     let mut app = app_graphite(fixture_archived());
     app.mode = Mode::Archived { idx: 0 };
+    app.poll_archive();
     golden("board_archived_dialog_120x30", &render(&app, 120, 30));
 }
 
@@ -1843,7 +1846,9 @@ fn golden_ticket_archived_120() {
     // The identity line carries the archived badge; A restores from here.
     let mut app = app_graphite(fixture_archived());
     app.screen = Screen::Ticket { ticket: ulid_n(7), rail_idx: 0 };
-    // Its records come on their own ask, as the loop's pump makes it (T-804).
+    // The ticket (T-842) and its records (T-804) come on their own asks, as
+    // the loop's pump makes them.
+    app.poll_archive();
     app.poll_held();
     golden("ticket_archived_120x30", &render(&app, 120, 30));
 }
@@ -10754,7 +10759,10 @@ fn the_crowning_sweeps_the_title_on_the_card_and_the_page() {
 fn struck(board: Board, from: ulid::Ulid, target: ulid::Ulid, action: &str, ago: u64) -> App {
     let mut b = board;
     b.crown = Some(ulid_n(3));
+    // An archived card burns on the copy the board kept (T-842).
+    let burnt = (action == "archived").then(|| b.ticket(target).cloned()).flatten();
     let mut app = app_graphite(b);
+    app.burnt.extend(burnt);
     (app.cursor_col, app.cursor_row) = (3, Some(0));
     let at = mesimon_core::clock::now_ms() - ago;
     app.crown_touches.push(mesimon_core::command::CrownTouch {

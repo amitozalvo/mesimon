@@ -105,7 +105,8 @@ fn draw_list(f: &mut Frame, app: &App, s: &Search, area: Rect) -> Option<(u16, u
     // `3/47` says both "this is narrow" and "this board is big" — and the
     // second number moves when `tab` widens the list, which is the readout
     // that makes the toggle legible without a chip of its own.
-    let total = app.board.tickets.iter().filter(|t| s.archived || !t.is_archived()).count();
+    let live = app.board.tickets.iter().filter(|t| !t.is_archived()).count();
+    let total = live + if s.archived { app.archived_count() } else { 0 };
     let inner = dialog::frame(
         f,
         app,

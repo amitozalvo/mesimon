@@ -325,6 +325,29 @@ impl TestClient {
         }
     }
 
+    /// The archived tickets, newest archive first: the snapshot leaves them
+    /// out (T-842).
+    pub fn archived(&mut self) -> Vec<mesimon_core::board::Ticket> {
+        match self.request(Command::ArchivedTickets) {
+            Response::Tickets { tickets } => tickets,
+            other => panic!("archived_tickets: {other:?}"),
+        }
+    }
+
+    /// A ticket by id, on the board or archived (T-842); `None` is deleted.
+    pub fn ticket_any(&mut self, id: ulid::Ulid) -> Option<mesimon_core::board::Ticket> {
+        self.board()
+            .ticket(id)
+            .cloned()
+            .or_else(|| self.archived().into_iter().find(|t| t.id == id))
+    }
+
+    /// Whether `id` is archived (T-842): off the board and in the archive.
+    /// Panics on a ticket that is neither, as `board.ticket(id).unwrap()` did.
+    pub fn is_archived(&mut self, id: ulid::Ulid) -> bool {
+        self.ticket_any(id).unwrap_or_else(|| panic!("no such ticket {id}")).is_archived()
+    }
+
     /// Let `column` take new tickets (T-764), for a test that mints straight
     /// into a column the template closes (IN PROGRESS, REVIEW).
     pub fn open_to_new(&mut self, column: &str) {

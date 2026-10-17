@@ -419,6 +419,11 @@ pub enum Command {
     TicketSessions {
         ticket: ulid::Ulid,
     },
+    /// The archived tickets (T-842). The snapshot carries none of them —
+    /// on a long-lived board they were three quarters of every push — so
+    /// the archived list, the picker and a page on one ask for them, whole,
+    /// newest archive first.
+    ArchivedTickets,
     /// Create (`note: None`) or replace (`Some`) a note on a ticket — the
     /// whole file, never a section (docs/13 §13.3: prose is an opaque blob).
     /// Blank text on an existing note deletes it. The daemon mints the id,
@@ -1384,6 +1389,7 @@ impl Command {
             | FocusQuiet
             | ReadNote { .. }
             | TicketSessions { .. }
+            | ArchivedTickets
             | AgentGetTicket
             | AgentReadTicket { .. }
             | AgentReadAttachment { .. }
@@ -1719,6 +1725,11 @@ pub enum Response {
     },
     Board {
         board: Board,
+        /// How many tickets are archived (T-842): `board.tickets` carries
+        /// none of them, and `ArchivedTickets` returns them. Absent from an
+        /// older daemon parses as 0, and that daemon's board carries them all.
+        #[serde(default)]
+        archived: usize,
         grace: Vec<GraceItem>,
         #[serde(default)]
         external: Vec<ExternalItem>,
@@ -1907,6 +1918,10 @@ pub enum Response {
     /// trimmed as the snapshot's are.
     Sessions {
         sessions: Vec<crate::board::SessionRecord>,
+    },
+    /// ArchivedTickets' answer: every archived ticket, newest archive first.
+    Tickets {
+        tickets: Vec<crate::board::Ticket>,
     },
     /// ReadNote / AgentReadNote's answer: the body and its metadata.
     Note {

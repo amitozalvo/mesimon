@@ -67,7 +67,7 @@ fn a_snoozed_ticket_leaves_and_comes_back_lit_at_the_top() {
         Response::Ok
     ));
     let board = c.board();
-    let t = board.ticket(napper).unwrap();
+    let t = c.ticket_any(napper).unwrap();
     assert_eq!(t.snooze_until_secs(), Some(until));
     assert!(t.archived.as_ref().is_some_and(|a| a.needs_you));
     assert!(board.column_tickets("TODO").iter().all(|t| t.id != napper));
@@ -82,9 +82,7 @@ fn a_snoozed_ticket_leaves_and_comes_back_lit_at_the_top() {
     );
 
     // The tick wheel wakes it: back, first in TODO, lit, age restarted.
-    wait_until(Duration::from_secs(8), "the snooze to wake", || {
-        !c.board().ticket(napper).unwrap().is_archived()
-    });
+    wait_until(Duration::from_secs(8), "the snooze to wake", || !c.is_archived(napper));
     let board = c.board();
     let t = board.ticket(napper).unwrap();
     assert!(t.is_woke(), "asked to be lit");
@@ -119,9 +117,7 @@ fn a_snoozed_ticket_leaves_and_comes_back_lit_at_the_top() {
         c.request(Command::SnoozeTicket { id: stays, until, needs_you: false }),
         Response::Ok
     ));
-    wait_until(Duration::from_secs(8), "the quiet snooze to wake", || {
-        !c.board().ticket(stays).unwrap().is_archived()
-    });
+    wait_until(Duration::from_secs(8), "the quiet snooze to wake", || !c.is_archived(stays));
     assert!(!c.board().ticket(stays).unwrap().is_woke(), "quiet means quiet");
 
     // A session still working holds the ticket on the board, naming itself —
@@ -141,7 +137,7 @@ fn a_snoozed_ticket_leaves_and_comes_back_lit_at_the_top() {
         c.request(Command::SnoozeTicket { id: napper, until: now_secs() + 60, needs_you: true }),
         "agent still awake",
     );
-    assert!(!c.board().ticket(napper).unwrap().is_archived());
+    assert!(!c.is_archived(napper));
     assert!(c.board().sessions.iter().any(|s| s.id == sid && s.state == SessionState::Running));
 
     hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
@@ -150,8 +146,8 @@ fn a_snoozed_ticket_leaves_and_comes_back_lit_at_the_top() {
         c.request(Command::SnoozeTicket { id: napper, until: now_secs() + 60, needs_you: true }),
         Response::Ok
     ));
+    assert!(c.is_archived(napper));
     let board = c.board();
-    assert!(board.ticket(napper).unwrap().is_archived());
     assert!(c.sessions_of(napper).iter().any(|s| s.id == sid && s.state == SessionState::Sleeping));
     assert_eq!(board.ticket_awake_sessions(napper), 0);
     drop(h);

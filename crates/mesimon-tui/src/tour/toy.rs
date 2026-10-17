@@ -241,8 +241,11 @@ impl World {
 
     /// What the board would draw after this world: the snapshot.
     fn snapshot(&self) -> Response {
+        // As the daemon's: archived tickets stay home (T-842), asked for.
+        let (board, archived) = self.board.for_snapshot();
         Response::Board {
-            board: self.board.clone(),
+            board,
+            archived,
             grace: Vec::new(),
             external: self.external.clone(),
             external_scanning: false,
@@ -286,6 +289,9 @@ impl World {
     fn answer(&mut self, command: Command) -> Response {
         match command {
             Command::Snapshot | Command::Subscribe => self.snapshot(),
+            Command::ArchivedTickets => Response::Tickets {
+                tickets: self.board.archived_tickets().into_iter().cloned().collect(),
+            },
             Command::CreateTicket { column, title, .. } => self.create(&column, &title, ""),
             Command::CreateTicketWithNote { column, title, text, tags, .. } => {
                 let made = self.create(&column, &title, &text);

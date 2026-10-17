@@ -27843,3 +27843,75 @@ ticket is priced.
 Tests: `keymap::tests::the_sort_row_owns_h_and_l` (a Codex-only board lists `Sleep after` and the
 door says the sleep), `provider_e2e::daemon_handover_keeps_unpasted_codex_words_and_sends_them_once`
 (replaces `…_abandons_unpasted_volatile_words_…`, which pinned the old drop).
+
+## The snapshot leaves archived tickets out, and the list asks for them (T-842, 2026-10-18)
+
+**The cost.** After T-804 took the parked records off, the archived tickets were what remained
+of the author's snapshot: measured over the socket on the release build, 0.1.0-beta.7, idle,
+716 tickets, 690 of them archived:
+
+| | bytes |
+|---|---|
+| whole snapshot | 567,179 |
+| `board.tickets` | 446,762 |
+| the 690 archived tickets | 428,031 (their `notes` metadata 162,608) |
+| the 26 live tickets | 18,732 |
+| sessions (14 records) | 23,320 |
+| `costs`, the next largest | 78,631 |
+
+Three quarters of every push, serialised per subscriber on the writer thread and parsed on the
+TUI's UI thread, and drawn by nothing on the board: only the Esc menu's `Archived tickets` list,
+the picker's archived half, a page on an archived ticket and a note's link to one read them. The
+round trip was 28 ms at p50 and 37 ms at p90 on that build with the board idle — T-804's
+98–161 ms was a debug build under load — so the cost was bandwidth and the parse, growing by
+one ticket per ticket shipped.
+
+**Now.** `Board::for_snapshot` (the daemon's copy, replacing `without_archived_records`) and
+`Board::drop_archived` (in place) leave out every archived ticket and, as before, every paneless
+record of one; an archived ticket with a pane still open rides, so a record on the snapshot
+never names a ticket it lacks. `Response::Board` carries `archived`, the count, `#[serde(default)]`.
+The new read `Command::ArchivedTickets` → `Response::Tickets` returns them whole, newest archive
+first, the order `Board::archived_tickets` gives; `Command::meta` reads, `agent_allows` refuses.
+Measured with this build on a copy of that board: `board.tickets` is 20,553 bytes (29 live
+tickets, the board having moved on); the whole snapshot computes to ~139 KB against the 567 KB,
+`costs` and the records untouched.
+
+**The TUI holds them while something shows them**, T-804's mechanism grown to tickets:
+`App::wants_archive` is the archived list open, the picker with its archived half on, the links
+list open (a note's `T-n` may name an archived ticket), or the page on a ticket the snapshot
+lacks or carries archived; `poll_archive` (in `pump`, before `poll_held`, whose `shown_archived`
+reads what it lays) asks once when wanted and again after every snapshot while it stays, and
+lays the tickets into `board.tickets` (`lay_tickets`: those the board lacks), where
+`archived_tickets()`, `Board::ticket`, the dialog, the search, the page and the restore key read
+unchanged. `absorb` lays the held set into each new board first (`lay_archive`), and when the
+page's ticket left the snapshot that very pass with nothing held — archived under it by `a`
+there, the crown or a phone — asks right there, or `clamp_screen` reads it as deleted and leaves
+the page. Opening the list, the picker and the links list ask at once, so their first frame is
+whole. `App::archived_count` is the daemon's count or what the board carries (an older daemon
+sends them all and answers the ask with an error, which the TUI takes as "the board has them");
+it gates the menu row, the picker's total and the list's closing. `undo_target` reads an archived
+ticket as absent-and-not-in-grace, since `x` takes it off the next snapshot rather than marking
+it; `unarchive`'s status says `restored` when the column is not at hand. The crown's burn plays
+on a copy the board keeps (`App::burnt`, filled in `absorb` from the touched cards as they were,
+dropped with their strikes), as the next snapshot no longer carries the card.
+
+**What did not move.** `archive_all`, the reclaim offer's candidate set, the crown's
+`archive_ticket`, the phone's `sent_archived` and board sharing all read the daemon's own
+`self.board`, never the snapshot; the phone's board reply is built daemon-side. The relay's
+runtime deserialises no `Response::Board` (it imports `mesimon_team` alone); its half is one
+assertion in `relay/tests/board_e2e.rs`, on `msmn/T-842-archived-tickets-off-the`. The shape is
+serde-additive both ways: an old TUI on a new daemon shows an empty list and no menu row until
+the `U` handover the build-skew notice already asks for; a new TUI on an old daemon reads the
+board it is sent. The tour's toy daemon serves the same shape and the same ask.
+
+**Refuted:** ids or keys of the archived tickets on the snapshot beside the count (~20–30 KB,
+one sixth of what remains) so every id-keyed reader stays exact; the count plus "absent and
+not in grace" was enough, and the ask decides the one case that matters (the page). Paging the
+ask: one answer of 428 KB when a list opens beats 428 KB on every push; a `since`/`limit`
+field can come later as `#[serde(default)]`.
+
+Tests: `board::tests::the_snapshot_drops_only_paneless_records_of_archived_tickets` (the ticket
+cut, the pane exception and the count), `archive_e2e` (off the snapshot, listed, counted),
+`TestClient::{archived, ticket_any, is_archived}` for every e2e that read an archived ticket
+off the snapshot, `app::tests::{archived_tickets, archived_ticket}` for the TUI's; the goldens
+with an archived ticket on screen call `poll_archive` as the loop does.

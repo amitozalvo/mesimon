@@ -626,6 +626,7 @@ mod tests {
             *self.asked.lock().expect("asked") += 1;
             Ok(Response::Board {
                 board: self.board.lock().expect("the board").clone(),
+                archived: 0,
                 grace: Vec::new(),
                 external: Vec::new(),
                 external_scanning: false,

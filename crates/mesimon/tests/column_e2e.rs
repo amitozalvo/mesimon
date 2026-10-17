@@ -162,17 +162,19 @@ fn columns_are_added_renamed_sorted_deleted_and_survive_a_restart() {
     );
     let board = board_of(c.request(Command::Snapshot));
     assert_eq!(names(&board), ["LATER", "INBOX", "DOING", "REVIEW", "QA", "DONE"]);
-    for id in [t1, t2, parked] {
+    for id in [t1, t2] {
         assert_eq!(board.ticket(id).unwrap().column, "INBOX", "{id} followed the rename");
     }
-    assert!(board.ticket(parked).unwrap().is_archived(), "still archived");
+    let parked_t = c.ticket_any(parked).expect("still archived");
+    assert!(parked_t.is_archived(), "still archived");
+    assert_eq!(parked_t.column, "INBOX", "{parked} followed the rename");
     assert_eq!(board.ticket(t3).unwrap().column, "REVIEW");
     assert_eq!(settings(&board, "INBOX").on_working.as_deref(), Some("DOING"));
     assert_eq!(settings(&board, "REVIEW").on_working.as_deref(), Some("DOING"));
     assert_eq!(settings(&board, "DOING").on_done.as_deref(), Some("REVIEW"));
-    // On disk too: the ticket files were rewritten.
-    for id in [t1, parked] {
-        let key = &board.ticket(id).unwrap().short_key;
+    // On disk too: the ticket files were rewritten (the archived one is off
+    // the snapshot, T-842, read above).
+    for key in [&board.ticket(t1).unwrap().short_key, &parked_t.short_key] {
         let text = std::fs::read_to_string(
             repo.join(".mesimon/board/tickets").join(key).join("ticket.toml"),
         )
@@ -193,7 +195,7 @@ fn columns_are_added_renamed_sorted_deleted_and_survive_a_restart() {
     assert!(matches!(c.request(Command::DeleteColumn { name: "INBOX".into() }), Response::Ok));
     let board = board_of(c.request(Command::Snapshot));
     assert_eq!(names(&board), ["LATER", "DOING", "REVIEW", "QA", "DONE"]);
-    assert_eq!(board.ticket(parked).unwrap().column, "INBOX");
+    assert_eq!(c.ticket_any(parked).unwrap().column, "INBOX", "archived, still in the gone column");
     assert!(matches!(c.request(Command::UnarchiveTicket { id: parked }), Response::Ok));
     let board = board_of(c.request(Command::Snapshot));
     assert_eq!(board.ticket(parked).unwrap().column, "LATER", "restored into the first column");

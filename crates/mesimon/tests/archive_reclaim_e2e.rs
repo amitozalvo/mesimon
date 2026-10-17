@@ -111,8 +111,7 @@ fn archive_reclaims_a_landed_worktree() {
     wait_until(Duration::from_secs(20), "the archive to reclaim the worktree", || {
         !path.exists() && !branch_exists(&repo, &branch) && wt_of(&mut c, id).is_none()
     });
-    let board = c.board();
-    let t = board.ticket(id).expect("archived, not deleted");
+    let t = c.ticket_any(id).expect("archived, not deleted");
     assert!(t.is_archived());
     // Off the snapshot now (T-804), asked for by the ticket's page.
     assert!(
@@ -302,7 +301,7 @@ fn the_sweep_reclaims_an_archived_tree_whose_work_landed_later() {
     wait_until(Duration::from_secs(5), "the sweep's teardown in the feed", || {
         feed_count(&h, "worktree_torn_down", id) == 1
     });
-    assert!(c.board().ticket(id).unwrap().is_archived(), "archived, not deleted");
+    assert!(c.is_archived(id), "archived, not deleted");
 }
 
 /// A tree the last daemon left standing — archived with its work unmerged,

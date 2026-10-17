@@ -346,7 +346,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
             other => panic!("the crown's archive while the row is off: {other:?}"),
         }
     }
-    assert!(!c.board().ticket(d).unwrap().is_archived());
+    assert!(!c.is_archived(d));
     assert_eq!(read(&mut c, sa, &kd).unwrap().seen, dv.seen, "nothing changed");
     // A person turns the row on; the board and doctor read it on.
     assert!(matches!(c.request(Command::SetCrownArchives { on: true }), Response::Ok));
@@ -392,7 +392,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         Response::AgentTicket { .. } => {}
         other => panic!("archive: {other:?}"),
     }
-    assert!(c.board().ticket(d).unwrap().is_archived());
+    assert!(c.is_archived(d));
     // An archived ticket still reads, and refuses every edit but the restore.
     let dv = read(&mut c, sa, &kd).expect("an archived ticket still reads");
     match c.send(
@@ -409,7 +409,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         Response::AgentTicket { ticket } => assert_eq!(ticket.column, "IN PROGRESS"),
         other => panic!("restore: {other:?}"),
     }
-    assert!(!c.board().ticket(d).unwrap().is_archived());
+    assert!(!c.is_archived(d));
     // The refusals wrote nothing to the feed: the archive and the restore
     // that landed are its only two lines of the crown's.
     let feed_path = h.paths.state_dir.join("activity.jsonl");
@@ -438,7 +438,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         }
         other => panic!("the crown's archive after the row went off: {other:?}"),
     }
-    assert!(!c.board().ticket(d).unwrap().is_archived());
+    assert!(!c.is_archived(d));
 
     // ---- start_agent: the crown starts work, behind the spawn budget --------
     // The budget is a board scalar a person sets; two here so the cap is
@@ -915,7 +915,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         Response::Archived { archived, .. } => assert!(archived >= 1, "the offer took E"),
         other => panic!("archive all: {other:?}"),
     }
-    assert!(c.board().ticket(e).unwrap().is_archived());
+    assert!(c.is_archived(e));
     assert!(c.board().crown.is_none(), "the offer's archive drops the crown");
     let file = std::fs::read_to_string(h.paths.board_dir.join("board/columns.toml")).unwrap();
     assert!(!file.contains("crown ="), "{file}");
@@ -1434,7 +1434,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
         Response::AgentTicket { .. } => {}
         other => panic!("archive after the park: {other:?}"),
     }
-    assert!(c.board().ticket(w2).unwrap().is_archived());
+    assert!(c.is_archived(w2));
     assert!(!c.board().crown_started().iter().any(|s| s.ticket == w2), "the seat stays free");
     assert!(
         c.sessions_of(w2).iter().any(|s| s.id == ws2 && s.state == SessionState::Sleeping),

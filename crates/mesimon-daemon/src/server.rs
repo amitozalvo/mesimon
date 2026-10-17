@@ -2653,6 +2653,7 @@ impl Daemon {
             ),
             Command::ReadNote { ticket, note } => self.read_note(ticket, note),
             Command::TicketSessions { ticket } => self.ticket_sessions(ticket),
+            Command::ArchivedTickets => self.archived_tickets(),
             Command::WriteNote { ticket, note, text, rev } => {
                 self.write_note(ticket, note, text, rev, &Principal::Local)
             }
@@ -8669,10 +8670,11 @@ impl Daemon {
                 format!("pull requests not read — {trouble}"),
             ));
         }
-        // A parked record of an archived ticket stays home (T-804); the
-        // ticket page and the picker ask `TicketSessions` for the one
-        // archived ticket they show.
-        let mut board = self.board.without_archived_records();
+        // An archived ticket stays home (T-842), and so does a parked record
+        // of one (T-804): the archived list and the picker ask
+        // `ArchivedTickets` for them, the ticket page and the picker's
+        // preview `TicketSessions` for the one archived ticket they show.
+        let (mut board, archived) = self.board.for_snapshot();
         for rec in &mut board.sessions {
             self.decorate(rec);
         }
@@ -8688,6 +8690,7 @@ impl Daemon {
             team: self.team_info(),
             mesophon: self.control_info(),
             board,
+            archived,
             terminals,
             grace,
             external: self.external.clone(),
@@ -11190,6 +11193,12 @@ impl Daemon {
         // And whether the seat never took a prompt (T-603): one `stat`
         // per idle or parked claude.
         rec.unprompted = self.unprompted_hint(rec);
+    }
+
+    /// `Command::ArchivedTickets` (T-842): every archived ticket, newest
+    /// archive first, as the snapshot would carry them if it carried them.
+    fn archived_tickets(&self) -> Response {
+        Response::Tickets { tickets: self.board.archived_tickets().into_iter().cloned().collect() }
     }
 
     /// `Command::TicketSessions` (T-804): one ticket's records, as the

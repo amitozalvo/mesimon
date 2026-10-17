@@ -601,6 +601,13 @@ pub(crate) struct Held {
     stale: bool,
 }
 
+/// The archived tickets, asked for (T-842): the snapshot leaves them out.
+pub(crate) struct HeldArchive {
+    tickets: Vec<Ticket>,
+    /// A snapshot landed since they were read.
+    stale: bool,
+}
+
 impl Default for Search {
     fn default() -> Self {
         Self::new()
@@ -1747,6 +1754,20 @@ pub struct App {
     /// and the picker's preview ask `TicketSessions` for the one they show
     /// (`poll_held`), and `absorb` lays them back into every board after.
     pub(crate) held: Option<Held>,
+    /// The archived tickets while something shows them (T-842): the
+    /// archived list, the picker ranking them, or the page on one. The
+    /// snapshot leaves every archived ticket out, so `poll_archive` asks
+    /// `ArchivedTickets` for them and `absorb` lays them back into every
+    /// board after (`lay_archive`), where the list, the picker, the page and
+    /// the restore key read them as they always did.
+    pub(crate) archive: Option<HeldArchive>,
+    /// How many tickets the daemon holds archived (T-842), off the snapshot;
+    /// 0 from an older daemon, whose board carries them (`archived_count`).
+    pub(crate) archived: usize,
+    /// The cards the crown archived as this board last drew them (T-544):
+    /// the burn plays on the card as it was, since the next snapshot does
+    /// not carry an archived ticket (T-842). Dropped with their strikes.
+    pub(crate) burnt: Vec<Ticket>,
     /// The ticket page's preview zone: where `{ }` asked it to be, what the
     /// last draw measured, and the page turn in motion (see `Pager`).
     pub preview: Pager,
@@ -2128,6 +2149,9 @@ impl App {
             summary_jump: Cell::new(None),
             summary_pulses: std::collections::HashMap::new(),
             held: None,
+            archive: None,
+            archived: snap.archived,
+            burnt: Vec::new(),
             preview: Pager::default(),
             rich_cache: std::cell::RefCell::new(None),
             cursor_card: Cell::new(None),
@@ -2599,8 +2623,13 @@ impl App {
         self.strikes
             .iter()
             .filter(|s| s.burning(now))
-            .filter_map(|s| self.board.ticket(s.target))
-            .filter(|t| t.is_archived() && t.column == column)
+            .filter_map(|s| {
+                self.burnt
+                    .iter()
+                    .find(|c| c.id == s.target)
+                    .or_else(|| self.board.ticket(s.target).filter(|t| t.is_archived()))
+            })
+            .filter(|t| t.column == column)
             .collect()
     }
 
@@ -2896,6 +2925,7 @@ impl App {
     fn absorb(&mut self, snap: Snapshot) {
         let Snapshot {
             board,
+            archived,
             grace,
             external,
             external_scanning,
@@ -2950,7 +2980,17 @@ impl App {
             .collect();
         let crown_moved: std::collections::HashSet<ulid::Ulid> =
             crown_touches.iter().filter(|t| t.action == "moved").map(|t| t.ticket).collect();
+        // The cards the crown archived, as this board last drew them: the
+        // burn plays on that copy (T-842), the snapshot having let them go.
+        let burnt: Vec<Ticket> = crown_touches
+            .iter()
+            .filter(|t| t.action == "archived")
+            .filter_map(|t| self.board.ticket(t.ticket))
+            .cloned()
+            .collect();
         let mut board = board;
+        self.archived = archived;
+        self.lay_archive(&mut board);
         self.lay_held(&mut board);
         self.board = Arc::new(board);
         self.reindex_columns();
@@ -2987,7 +3027,7 @@ impl App {
         let notes: std::collections::HashSet<ulid::Ulid> =
             self.board.tickets.iter().flat_map(|t| t.notes.iter().map(|n| n.id)).collect();
         self.summaries.retain(|n, _| notes.contains(n));
-        self.absorb_crown_touches(crown_touches, crown_was, &placed);
+        self.absorb_crown_touches(crown_touches, crown_was, &placed, burnt);
         self.absorb_moves(moved, &crown_moved, followed);
         self.settle_drawer();
         self.seed_team_drafts();
@@ -3366,7 +3406,7 @@ impl App {
         }
         // Same for the archived dialog: a restore (here or from another
         // client) can empty the list under it.
-        if matches!(self.mode, Mode::Archived { .. }) && self.board.archived_tickets().is_empty() {
+        if matches!(self.mode, Mode::Archived { .. }) && self.archived_count() == 0 {
             self.mode = Mode::Normal;
         }
         // A refresh can retire the menu row the cursor was on (the last thing
@@ -3603,6 +3643,7 @@ impl App {
             dirty |= self.poll_shell_tail();
             dirty |= self.poll_notes();
             dirty |= self.poll_summaries();
+            dirty |= self.poll_archive();
             dirty |= self.poll_held();
             self.poll_pickup();
         }
@@ -6018,12 +6059,18 @@ impl App {
         touches: Vec<mesimon_core::command::CrownTouch>,
         crown_was: Option<ulid::Ulid>,
         placed: &std::collections::HashMap<ulid::Ulid, (String, String)>,
+        burnt: Vec<Ticket>,
     ) {
         let cursor = self.subject();
         let now = mesimon_core::clock::now_ms();
         for t in &touches {
             if self.crown_touches.iter().any(|k| k.at_ms == t.at_ms && k.ticket == t.ticket) {
                 continue;
+            }
+            if let Some(card) = burnt.iter().find(|c| c.id == t.ticket) {
+                if !self.burnt.iter().any(|c| c.id == card.id) {
+                    self.burnt.push(card.clone());
+                }
             }
             if cursor != Some(t.ticket) {
                 self.crown_residue.insert(t.ticket);
@@ -6047,6 +6094,8 @@ impl App {
             }
         }
         self.strikes.retain(|s| !s.over(now));
+        let strikes = &self.strikes;
+        self.burnt.retain(|c| strikes.iter().any(|s| s.target == c.id));
         self.crown_touches = touches;
         if self.board.crown != crown_was {
             self.crowned_at = self.board.crown.map(|id| (id, mesimon_core::clock::now_ms()));
@@ -6115,6 +6164,81 @@ impl App {
             self.status = message;
         }
         self.refresh()
+    }
+
+    /// How many tickets are archived: the daemon's count (T-842), or what
+    /// the board carries from an older daemon, which sends them all.
+    pub(crate) fn archived_count(&self) -> usize {
+        self.archived.max(self.board.tickets.iter().filter(|t| t.is_archived()).count())
+    }
+
+    /// Whether the archived tickets are wanted on `board` (T-842): the
+    /// archived list is open, the picker ranks them, or the page is on a
+    /// ticket the snapshot does not carry — archived under it by `a` here,
+    /// the crown or another client — or carries archived.
+    fn wants_archive(&self, board: &Board) -> bool {
+        match &self.mode {
+            Mode::Archived { .. } | Mode::Links { .. } => return true,
+            Mode::Search(s) if s.archived => return true,
+            _ => {}
+        }
+        self.ticket_page().is_some_and(|t| board.ticket(t).is_none_or(|t| t.is_archived()))
+    }
+
+    /// Ask for the archived tickets (T-842) while something shows them:
+    /// once when it comes on screen and again after every snapshot while it
+    /// stays, since one archived or restored in between is the snapshot's.
+    /// They are laid into the board, where every reader finds them.
+    pub(crate) fn poll_archive(&mut self) -> bool {
+        if !self.wants_archive(&self.board) {
+            self.archive = None;
+            return false;
+        }
+        if self.archive.as_ref().is_some_and(|a| !a.stale) {
+            return false;
+        }
+        // An older daemon sends every ticket on the snapshot and knows no
+        // such command: what the board has is the whole answer.
+        let Response::Tickets { tickets } = self.req(Command::ArchivedTickets) else {
+            self.archive = Some(HeldArchive { tickets: Vec::new(), stale: false });
+            return false;
+        };
+        let board = Arc::make_mut(&mut self.board);
+        Self::lay_tickets(board, &tickets);
+        self.archive = Some(HeldArchive { tickets, stale: false });
+        // An open picker ranks what it has: the archived rows join it now.
+        self.research(true);
+        true
+    }
+
+    /// Lay the held archived tickets into a snapshot's board (T-842) while
+    /// still wanted, and mark them for asking again. A page whose ticket
+    /// left the snapshot this very pass asks now, or `clamp_screen` reads
+    /// the ticket as deleted and leaves the page.
+    fn lay_archive(&mut self, board: &mut Board) {
+        if !self.wants_archive(board) {
+            self.archive = None;
+            return;
+        }
+        if self.archive.is_none() {
+            let Response::Tickets { tickets } = self.req(Command::ArchivedTickets) else {
+                return;
+            };
+            Self::lay_tickets(board, &tickets);
+            self.archive = Some(HeldArchive { tickets, stale: false });
+            return;
+        }
+        let Some(held) = self.archive.as_mut() else { return };
+        held.stale = true;
+        Self::lay_tickets(board, &held.tickets);
+    }
+
+    /// The archived tickets the board lacks join it; one it carries — live
+    /// again, or archived with a pane open — is the snapshot's to say.
+    fn lay_tickets(board: &mut Board, tickets: &[Ticket]) {
+        let has: std::collections::HashSet<ulid::Ulid> =
+            board.tickets.iter().map(|t| t.id).collect();
+        board.tickets.extend(tickets.iter().filter(|t| !has.contains(&t.id)).cloned());
     }
 
     /// The archived ticket whose records are on screen (T-804): the page
@@ -6414,7 +6538,7 @@ impl App {
             bulk_sleep_bytes: self.resources.reclaim_bytes,
             bulk_archive: self.resources.archive_tickets,
             bulk_archive_bytes: self.resources.archive_bytes,
-            has_archived: self.board.tickets.iter().any(|t| t.is_archived()),
+            has_archived: self.archived_count() > 0,
             peek_on: self.peek,
             peek_all: self.peek_all,
             theme_blurb: self.theme.flavor.blurb(),
@@ -8378,11 +8502,12 @@ impl App {
             }
             Verb::ExternalDrawer => self.open_drawer()?,
             Verb::ArchivedList => {
-                if self.board.archived_tickets().is_empty() {
+                if self.archived_count() == 0 {
                     self.status = "nothing archived".into();
                     self.mode = Mode::Normal;
                 } else {
                     self.mode = Mode::Archived { idx: 0 };
+                    self.poll_archive();
                 }
             }
             Verb::Links => self.open_links(),
@@ -8560,6 +8685,9 @@ impl App {
             // ---- search (T-349) ---------------------------------------------
             Verb::Search => {
                 self.mode = Mode::Search(Search::new());
+                // The archived tickets rank too (T-842): asked for now, so
+                // the first frame has them.
+                self.poll_archive();
                 // Open on the whole board: an empty query matches everything
                 // at score 0, so the first frame is the list the reader is
                 // about to narrow rather than an empty box.
@@ -8600,11 +8728,14 @@ impl App {
     /// archiving may have been restored from another client.
     fn undo_target(&self) -> Option<LastUndo> {
         match self.last_undo {
-            Some(LastUndo::Archive(id)) => self
-                .board
-                .ticket(id)
-                .is_some_and(|t| t.is_archived())
-                .then_some(LastUndo::Archive(id)),
+            // Archived, it is off the snapshot (T-842) unless something shows
+            // it; restored since, it is on the board; deleted, in the grace
+            // band.
+            Some(LastUndo::Archive(id)) => {
+                (!self.board.ticket(id).is_some_and(|t| !t.is_archived())
+                    && !self.grace.iter().any(|g| g.id == id))
+                .then_some(LastUndo::Archive(id))
+            }
             // The grace band is the daemon's, and it is the thing that
             // actually holds the deleted ticket — an empty band means the
             // window closed, whatever we last remembered.
@@ -10083,7 +10214,8 @@ impl App {
                 ("Publishing…".into(), "the relay is naming the board".into(), "")
             }
             SharingRow::Publish => {
-                let tickets = plural(self.board.tickets.len(), "ticket");
+                let live = self.board.tickets.iter().filter(|t| !t.is_archived()).count();
+                let tickets = plural(live + self.archived_count(), "ticket");
                 let notes = plural(self.board.tickets.iter().map(|t| t.notes.len()).sum(), "note");
                 let detail = if error.starts_with("sharing") {
                     format!("{error} ∙ enter tries again")
@@ -10999,6 +11131,8 @@ impl App {
         }
         self.mode = Mode::Search(s);
         if requery {
+            // The archived half, toggled in, is asked for now (T-842).
+            self.poll_archive();
             // A narrower query means a different best match, so the cursor
             // goes back to the top — telescope's rule, and the one that makes
             // typing read as narrowing rather than as scrolling.
@@ -12722,10 +12856,15 @@ impl App {
         if self.last_undo == Some(LastUndo::Archive(id)) {
             self.last_undo = None;
         }
-        let col = self.board.ticket(id).map(|t| t.column.clone()).unwrap_or_default();
+        let col = self.board.ticket(id).map(|t| t.column.clone());
         match self.req(Command::UnarchiveTicket { id }) {
             Response::Err { message } => self.status = message,
-            _ => self.status = format!("restored to {col}"),
+            _ => {
+                self.status = match col {
+                    Some(col) => format!("restored to {col}"),
+                    None => "restored".into(),
+                }
+            }
         }
         self.refresh()
     }
@@ -13715,8 +13854,15 @@ impl App {
         let Some(ticket) = self.subject() else {
             return;
         };
+        // A key in a note may name an archived ticket, off the snapshot
+        // (T-842): the archive is held while the list is open, so the key
+        // resolves and Enter on it finds the page.
+        let was =
+            std::mem::replace(&mut self.mode, Mode::Links { ticket, links: Vec::new(), idx: 0 });
+        self.poll_archive();
         let links = self.fetch_links(ticket);
         if links.is_empty() {
+            self.mode = was;
             self.status = self.no_links_status(ticket);
         } else {
             self.mode = Mode::Links { ticket, links, idx: 0 };
@@ -13838,6 +13984,8 @@ fn cycled_workspace(current: Option<WorkspaceStrategy>) -> Option<WorkspaceStrat
 #[derive(Default)]
 struct Snapshot {
     board: Board,
+    /// How many tickets are archived, none of them on `board` (T-842).
+    archived: usize,
     grace: Vec<GraceItem>,
     external: Vec<ExternalItem>,
     external_scanning: bool,
@@ -13872,6 +14020,7 @@ impl Snapshot {
         match resp {
             Response::Board {
                 board,
+                archived,
                 grace,
                 external,
                 external_scanning,
@@ -13897,6 +14046,7 @@ impl Snapshot {
                 forge,
             } => Some(Self {
                 board,
+                archived,
                 grace,
                 external,
                 external_scanning,
@@ -14219,6 +14369,10 @@ pub(crate) mod test_support {
                         .collect();
                     return Ok(Response::Sessions { sessions });
                 }
+                Command::ArchivedTickets => {
+                    let tickets = self.board.archived_tickets().into_iter().cloned().collect();
+                    return Ok(Response::Tickets { tickets });
+                }
                 Command::ReadNote { ticket, note } => {
                     let known = self.board.ticket(ticket).and_then(|t| t.note(note)).cloned();
                     return Ok(match (known, self.notes.get(&note)) {
@@ -14443,35 +14597,35 @@ pub(crate) mod test_support {
                 _ => {}
             }
             match command {
-                Command::Snapshot => Ok(Response::Board {
-                    board: {
-                        let mut board = self.board.clone();
-                        board.drop_archived_records();
-                        board
-                    },
-                    grace: self.grace.clone(),
-                    external: self.external.clone(),
-                    external_scanning: false,
-                    resources: self.resources.clone(),
-                    worktrees: Vec::new(),
-                    notices: Vec::new(),
-                    prs: Vec::new(),
-                    forge: Default::default(),
-                    shell_env: self.shell_env.clone(),
-                    git: self.git.clone(),
-                    claude_md: self.claude_md.clone().for_board(&self.board),
-                    pending: self.pending.clone(),
-                    automation: self.automation.clone(),
-                    claude_default_mode: Some("auto".into()),
-                    status_top: self.status_top,
-                    team: Default::default(),
-                    mesophon: Default::default(),
-                    terminals: self.terminals.clone(),
-                    crown_touches: Vec::new(),
-                    crown_said: Vec::new(),
-                    machine_tiers: self.machine_tiers.clone(),
-                    usage: self.usage.clone(),
-                    costs: Vec::new(),
+                Command::Snapshot => Ok({
+                    let (board, archived) = self.board.for_snapshot();
+                    Response::Board {
+                        board,
+                        archived,
+                        grace: self.grace.clone(),
+                        external: self.external.clone(),
+                        external_scanning: false,
+                        resources: self.resources.clone(),
+                        worktrees: Vec::new(),
+                        notices: Vec::new(),
+                        prs: Vec::new(),
+                        forge: Default::default(),
+                        shell_env: self.shell_env.clone(),
+                        git: self.git.clone(),
+                        claude_md: self.claude_md.clone().for_board(&self.board),
+                        pending: self.pending.clone(),
+                        automation: self.automation.clone(),
+                        claude_default_mode: Some("auto".into()),
+                        status_top: self.status_top,
+                        team: Default::default(),
+                        mesophon: Default::default(),
+                        terminals: self.terminals.clone(),
+                        crown_touches: Vec::new(),
+                        crown_said: Vec::new(),
+                        machine_tiers: self.machine_tiers.clone(),
+                        usage: self.usage.clone(),
+                        costs: Vec::new(),
+                    }
                 }),
                 // The column lifecycle (T-117), as the daemon does it — the
                 // refusals included, so the status a test reads is the
@@ -17178,6 +17332,19 @@ mod tests {
         press(app, 'a');
     }
 
+    /// The archived tickets as the fake daemon lists them (T-842): off the
+    /// snapshot, so a test reads them through the ask the board makes.
+    fn archived_tickets(app: &mut App) -> Vec<Ticket> {
+        match app.req(Command::ArchivedTickets) {
+            Response::Tickets { tickets } => tickets,
+            other => panic!("archived_tickets: {other:?}"),
+        }
+    }
+
+    fn archived_ticket(app: &mut App, id: ulid::Ulid) -> Ticket {
+        archived_tickets(app).into_iter().find(|t| t.id == id).expect("archived")
+    }
+
     fn field_text(app: &App) -> String {
         match &app.mode {
             Mode::Input { buffer, .. } => buffer.as_str().to_string(),
@@ -18087,8 +18254,13 @@ mod tests {
         // The board last had the moved card in `done`: its trail starts there.
         let placed: std::collections::HashMap<_, _> =
             [(target, ("done".to_string(), "z".to_string()))].into();
-        app.absorb_crown_touches(vec![fresh.clone(), stale.clone()], Some(crown), &placed);
-        app.absorb_crown_touches(vec![fresh, stale], Some(crown), &placed);
+        app.absorb_crown_touches(
+            vec![fresh.clone(), stale.clone()],
+            Some(crown),
+            &placed,
+            Vec::new(),
+        );
+        app.absorb_crown_touches(vec![fresh, stale], Some(crown), &placed, Vec::new());
         assert_eq!(app.strikes.len(), 1, "one strike, for the fresh touch alone");
         assert_eq!(app.strikes[0].target, target);
         assert_eq!(app.strikes[0].was, Some(("done".into(), "z".into())), "where it was");
@@ -23380,7 +23552,7 @@ mod tests {
         press(&mut app, 'z'); // tomorrow 9:00
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.snooze_armed, None);
-        let t = app.board.ticket(ulid::Ulid(1)).unwrap();
+        let t = archived_ticket(&mut app, ulid::Ulid(1));
         let now = mesimon_core::clock::now_secs();
         let until = t.snooze_until_secs().expect("an archive with a deadline");
         assert!(until > now + 3600, "tomorrow 9:00 is more than an hour out");
@@ -23448,10 +23620,11 @@ mod tests {
         assert!(app.snooze_armed.is_some(), "{}", app.status);
         app.on_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(app.status.contains("its session asleep"), "{}", app.status);
-        assert!(app.board.ticket(ulid::Ulid(1)).unwrap().is_archived());
-        // A snoozed ticket's parked record is off the snapshot (T-804): its
-        // page asks for it.
+        assert!(archived_tickets(&mut app).iter().any(|t| t.id == ulid::Ulid(1)));
+        // A snoozed ticket is off the snapshot (T-842) and so is its parked
+        // record (T-804): its page asks for both, the ticket first.
         app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        app.poll_archive();
         app.poll_held();
         let rec = app.board.sessions.iter().find(|s| s.id == sid).unwrap();
         assert_eq!(rec.state, SessionState::Sleeping);
@@ -23552,7 +23725,7 @@ mod tests {
         assert!(app.status.contains("quietly"), "{}", app.status);
         press(&mut app, 'z');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        let t = app.board.ticket(ulid::Ulid(1)).unwrap();
+        let t = archived_ticket(&mut app, ulid::Ulid(1));
         assert!(t.archived.as_ref().is_some_and(|a| !a.needs_you));
     }
 
@@ -23577,7 +23750,7 @@ mod tests {
         assert_eq!(app.snooze_row(ulid::Ulid(1)).as_deref(), Some("snooze until next Sunday 9:00"));
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(app.status.contains("next Sunday 9:00"), "{}", app.status);
-        let t = app.board.ticket(ulid::Ulid(1)).unwrap();
+        let t = archived_ticket(&mut app, ulid::Ulid(1));
         let until = t.archived.as_ref().and_then(|a| a.until.as_deref()).expect("a deadline");
         // The deadline is a Sunday, 09:00 local, ahead of now.
         let until: u64 = until.trim_start_matches('@').parse().expect("@<secs>");
@@ -23609,7 +23782,7 @@ mod tests {
         archive(&mut app); // ticket 1 selected, no sessions — gate passes
         let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
         assert_eq!(todo, vec![ulid::Ulid(2)]);
-        assert_eq!(app.board.archived_tickets().len(), 1);
+        assert_eq!(app.archived_count(), 1);
         assert!(app.status.starts_with("archived T-1"));
         // Cursor clamped onto the surviving row.
         assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(2)));
@@ -23639,7 +23812,7 @@ mod tests {
         assert!(!app.animating(), "and stops asking for fast frames");
         // Advisory fired client-side; nothing was sent, nothing archived.
         assert_eq!(app.board.column_tickets("todo").len(), 2);
-        assert!(app.board.archived_tickets().is_empty());
+        assert!((app.archived_count() == 0));
     }
 
     #[test]
@@ -23854,15 +24027,15 @@ mod tests {
         let mut app = app_three_columns();
         press(&mut app, 'a');
         assert!(app.archive_armed.is_some(), "the first a arms");
-        assert!(app.board.archived_tickets().is_empty(), "the first a must not archive");
+        assert!((app.archived_count() == 0), "the first a must not archive");
         press(&mut app, 'j'); // anything else
         assert!(app.archive_armed.is_none());
         assert_eq!(app.status, "archive cancelled");
-        assert!(app.board.archived_tickets().is_empty());
+        assert!((app.archived_count() == 0));
         // And the full chord does archive.
         app.cursor_row = Some(0);
         archive(&mut app);
-        assert_eq!(app.board.archived_tickets().len(), 1);
+        assert_eq!(app.archived_count(), 1);
     }
 
     /// `u` undoes an archive, and says so before you press it.
@@ -23870,11 +24043,11 @@ mod tests {
     fn u_undoes_an_archive() {
         let mut app = app_three_columns();
         archive(&mut app);
-        assert_eq!(app.board.archived_tickets().len(), 1);
+        assert_eq!(app.archived_count(), 1);
         assert!(app.ctx().can_undo);
         assert_eq!(app.ctx().undo_word, "undo archive");
         press(&mut app, 'u');
-        assert!(app.board.archived_tickets().is_empty(), "u put it back");
+        assert!((app.archived_count() == 0), "u put it back");
         let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
         assert_eq!(todo, vec![ulid::Ulid(1), ulid::Ulid(2)]);
         // Nothing left to undo, so the key goes quiet again.
@@ -23912,10 +24085,11 @@ mod tests {
         let (mut app, sent) = app_with_notes_state(Some(SessionState::Sleeping), &[]);
         let id = ulid::Ulid(1);
         archive(&mut app);
-        assert!(app.board.ticket(id).unwrap().is_archived());
+        assert_eq!(app.archived_count(), 1, "off the snapshot, counted (T-842)");
         assert!(app.board.sessions.is_empty(), "the snapshot leaves them out");
         assert!(!app.poll_held(), "no archived ticket on screen");
         app.screen = Screen::Ticket { ticket: id, rail_idx: 0 };
+        app.poll_archive();
         assert!(app.poll_held());
         assert_eq!(app.rail_sessions(id).len(), 1);
         assert!(!app.poll_held(), "asked once");

@@ -3415,31 +3415,55 @@ impl Board {
             .collect()
     }
 
-    /// Drop what the snapshot leaves out (T-804): a record with no pane on
-    /// an archived ticket. On a board months old they were 614 of 629
-    /// records and two thirds of every snapshot, sent on every push and
-    /// drawn by nothing on the board; `Command::TicketSessions` is how a
-    /// client that shows one archived ticket gets them.
-    pub fn drop_archived_records(&mut self) {
-        let archived: std::collections::HashSet<ulid::Ulid> =
-            self.tickets.iter().filter(|t| t.is_archived()).map(|t| t.id).collect();
-        self.sessions.retain(|rec| rec.state.has_pane() || !archived.contains(&rec.ticket));
+    /// Whether the snapshot carries this ticket (T-842): a live one, or an
+    /// archived one with a pane still open on it, so a record that rides
+    /// (`snapshot_record`) never names a ticket the board lacks. A parked
+    /// agent on an archived ticket keeps its ticket home with its record.
+    fn snapshot_ticket(&self, t: &Ticket) -> bool {
+        !t.is_archived() || self.ticket_awake_sessions(t.id) > 0
     }
 
-    /// A copy of the board with `drop_archived_records` applied, cloning
-    /// only the records it keeps (T-838): the daemon took it per snapshot
-    /// by cloning every record — 641 parked ones, over a megabyte of
-    /// launch argv — and dropping them. Every other field is cloned whole.
-    pub fn without_archived_records(&self) -> Board {
+    /// Whether the snapshot carries this record (T-804): one with a pane
+    /// always, a parked or gone one only on a ticket that is not archived.
+    fn snapshot_record(
+        rec: &SessionRecord,
+        archived: &std::collections::HashSet<ulid::Ulid>,
+    ) -> bool {
+        rec.state.has_pane() || !archived.contains(&rec.ticket)
+    }
+
+    /// Drop what the snapshot leaves out, in place: an archived ticket
+    /// (T-842) and a record with no pane on one (T-804). On a board months
+    /// old the records were 614 of 629 and two thirds of every snapshot, and
+    /// after that cut the tickets were 690 of 716 and three quarters of
+    /// what remained, sent on every push and drawn by nothing on the board.
+    /// `Command::ArchivedTickets` is how a client that lists them gets them
+    /// and `Command::TicketSessions` how one that shows one gets its
+    /// records. Returns how many tickets are archived, kept or not.
+    pub fn drop_archived(&mut self) -> usize {
         let archived: std::collections::HashSet<ulid::Ulid> =
             self.tickets.iter().filter(|t| t.is_archived()).map(|t| t.id).collect();
-        Board {
+        self.sessions.retain(|rec| Self::snapshot_record(rec, &archived));
+        let tickets = std::mem::take(&mut self.tickets);
+        self.tickets = tickets.into_iter().filter(|t| self.snapshot_ticket(t)).collect();
+        archived.len()
+    }
+
+    /// A copy of the board with `drop_archived` applied, cloning only the
+    /// tickets and records it keeps (T-838): the daemon took it per snapshot
+    /// by cloning every record — 641 parked ones, over a megabyte of launch
+    /// argv — and dropping them. Every other field is cloned whole. The
+    /// count beside it is how many tickets are archived.
+    pub fn for_snapshot(&self) -> (Board, usize) {
+        let archived: std::collections::HashSet<ulid::Ulid> =
+            self.tickets.iter().filter(|t| t.is_archived()).map(|t| t.id).collect();
+        let board = Board {
             columns: self.columns.clone(),
-            tickets: self.tickets.clone(),
+            tickets: self.tickets.iter().filter(|t| self.snapshot_ticket(t)).cloned().collect(),
             sessions: self
                 .sessions
                 .iter()
-                .filter(|rec| rec.state.has_pane() || !archived.contains(&rec.ticket))
+                .filter(|rec| Self::snapshot_record(rec, &archived))
                 .cloned()
                 .collect(),
             agent_provider: self.agent_provider,
@@ -3462,7 +3486,8 @@ impl Board {
             default_tier: self.default_tier.clone(),
             setup_pending: self.setup_pending,
             workspace: self.workspace,
-        }
+        };
+        (board, archived.len())
     }
 
     pub fn ticket_awake_sessions(&self, id: ulid::Ulid) -> usize {
@@ -4164,15 +4189,19 @@ mod tests {
 
     /// T-804: the snapshot leaves out a parked or gone record of an
     /// archived ticket, and nothing else — a record with a pane rides
-    /// whatever its ticket, and a live ticket keeps its parked ones.
+    /// whatever its ticket, and a live ticket keeps its parked ones. T-842:
+    /// it leaves out the archived ticket too, unless a pane is open on it,
+    /// and counts every archived ticket either way.
     #[test]
     fn the_snapshot_drops_only_paneless_records_of_archived_tickets() {
         let mut board = Board {
-            tickets: vec![ticket(1, "todo", "a"), ticket(2, "todo", "b")],
+            tickets: vec![ticket(1, "todo", "a"), ticket(2, "todo", "b"), ticket(3, "todo", "c")],
             ..Default::default()
         };
-        board.tickets[1].archived =
+        let archived =
             Some(Archived { at: "@1".into(), by: "local".into(), until: None, needs_you: false });
+        board.tickets[1].archived = archived.clone();
+        board.tickets[2].archived = archived;
         let rec = |n: u128, t: u128, state: SessionState| {
             SessionRecord::new(
                 uuid::Uuid::from_u128(n),
@@ -4190,10 +4219,14 @@ mod tests {
             rec(3, 2, SessionState::Running),
             rec(4, 2, gone),
         ];
-        let copy = board.without_archived_records();
-        board.drop_archived_records();
+        let (copy, counted) = board.for_snapshot();
+        let count = board.drop_archived();
         let kept: Vec<u128> = board.sessions.iter().map(|s| s.id.as_u128()).collect();
         assert_eq!(kept, vec![1, 3]);
+        // Ticket 2 rides for its open pane, ticket 3 stays home; both count.
+        let tickets: Vec<u128> = board.tickets.iter().map(|t| t.id.0).collect();
+        assert_eq!(tickets, vec![1, 2]);
+        assert_eq!((count, counted), (2, 2));
         // The copy keeps the same records without cloning the rest (T-838),
         // and every other field whole.
         let copied: Vec<u128> = copy.sessions.iter().map(|s| s.id.as_u128()).collect();

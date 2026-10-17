@@ -223,7 +223,9 @@ fn archive_gates_suggests_and_restores() {
     // 3. Archive: field on disk, off the board's columns, offer re-priced.
     assert!(matches!(c.request(Command::ArchiveTicket { id: cold }), Response::Ok));
     let (board, resources) = snapshot_of(c.request(Command::Snapshot));
-    assert!(board.ticket(cold).unwrap().is_archived());
+    // Off the snapshot (T-842), listed by its own ask.
+    assert!(board.ticket(cold).is_none(), "the snapshot leaves it out");
+    assert!(c.is_archived(cold));
     let done: Vec<_> = board.column_tickets("DONE").iter().map(|t| t.title.clone()).collect();
     assert_eq!(done, vec!["empty"], "only the session-less ticket stays on the board");
     assert_eq!(resources.archive_tickets, 1, "cold re-priced away; empty still offered");
@@ -288,7 +290,13 @@ fn archive_gates_suggests_and_restores() {
     }
     let (board, resources) = snapshot_of(c.request(Command::Snapshot));
     assert!(board.column_tickets("DONE").is_empty());
-    assert_eq!(board.archived_tickets().len(), 2);
+    assert!(board.archived_tickets().is_empty(), "none on the snapshot");
+    assert_eq!(c.archived().len(), 2);
+    // The count rides beside the board, for the menu row and the picker.
+    match c.request(Command::Snapshot) {
+        Response::Board { archived, .. } => assert_eq!(archived, 2, "counted on the snapshot"),
+        other => panic!("snapshot: {other:?}"),
+    }
     assert_eq!(resources.archive_tickets, 0);
 
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));

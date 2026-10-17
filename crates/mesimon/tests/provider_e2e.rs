@@ -180,7 +180,7 @@ fn session(c: &mut TestClient, id: uuid::Uuid) -> SessionRecord {
     if let Some(rec) = board.sessions.iter().find(|s| s.id == id) {
         return rec.clone();
     }
-    let archived: Vec<_> = board.tickets.iter().filter(|t| t.is_archived()).map(|t| t.id).collect();
+    let archived: Vec<_> = c.archived().iter().map(|t| t.id).collect();
     archived.into_iter().flat_map(|t| c.sessions_of(t)).find(|s| s.id == id).expect("session")
 }
 

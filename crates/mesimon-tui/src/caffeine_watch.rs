@@ -281,6 +281,7 @@ mod tests {
         ));
         Response::Board {
             board,
+            archived: 0,
             crown_touches: Vec::new(),
             crown_said: Vec::new(),
             machine_tiers: Default::default(),
