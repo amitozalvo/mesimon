@@ -49,13 +49,15 @@ overridden. No failed case is retried automatically.
 Extended cases are opt-in:
 
 ```sh
-python3 -B ci/rig.py --provider codex --live --only guard,plan,interrupt,steer
+python3 -B ci/rig.py --provider codex --live --only guard,plan,plan-launch,interrupt,steer
 python3 -B ci/rig.py --provider codex --live --only child,stop,compact,identity,question
 python3 -B ci/rig.py --provider codex --live --suite extended --max-turns 25
 ```
 
 These reuse the native gate, plan, interruption, child and lifecycle checks.
-The steer case sends words into a running turn the way the board and Remote
+The plan-launch case starts a ticket in plan mode the way `^p` does and checks that
+`/plan` took before the title, that the turn stopped on a plan, and that the board's
+accept moved the same thread on. The steer case sends words into a running turn the way the board and Remote
 Control's Steer do, and checks that the same turn replies to them; its manifest
 records when the model read them against the running command's end.
 Only the child case enables model-created child agents. The question case

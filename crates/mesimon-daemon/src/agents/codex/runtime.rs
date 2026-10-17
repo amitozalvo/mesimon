@@ -794,6 +794,7 @@ impl Observation {
                 releases: 0,
                 last_release: None,
                 steers: 0,
+                collaboration_mode: None,
             },
             ledger: None,
             retired: BTreeMap::new(),
@@ -867,6 +868,11 @@ impl Observation {
                 self.steers.insert(id.to_string());
             }
         }
+        // Each turn names the mode it runs in (T-847): an accepted plan's
+        // implementation goes back to `default` with no settings notice.
+        if method == "turn/start" {
+            self.note_mode(&frame["params"], &frame["params"]["collaborationMode"]);
+        }
         if !matches!(method, "thread/start" | "thread/resume" | "thread/fork")
             || frame["params"]["ephemeral"] == true
         {
@@ -939,6 +945,7 @@ impl Observation {
                             self.preview = AgentPreview::default();
                             self.snapshot.plan = None;
                             self.snapshot.plan_key = None;
+                            self.snapshot.collaboration_mode = None;
                         }
                         self.snapshot.thread_id = Some(id.into());
                         self.snapshot.launch_phase = LaunchPhase::Selected;
@@ -984,6 +991,20 @@ impl Observation {
         Ok(())
     }
 
+    /// The foreground thread's collaboration mode (T-847), off a frame's
+    /// `collaborationMode` when the frame is that thread's: what the daemon
+    /// waits on between typing `/plan` and sending a planned launch's words.
+    fn note_mode(&mut self, params: &Value, mode: &Value) {
+        if params["threadId"].as_str().is_none()
+            || params["threadId"].as_str() != self.snapshot.thread_id.as_deref()
+        {
+            return;
+        }
+        if let Some(mode) = mode["mode"].as_str() {
+            self.snapshot.collaboration_mode = Some(bound_text(mode.into(), 32));
+        }
+    }
+
     /// The account's quota as this app-server last told it (T-327): the
     /// `account/rateLimits/updated` notification after a turn, or the answer
     /// to a client's own `account/rateLimits/read`. Not a thread's — every
@@ -1022,6 +1043,10 @@ impl Observation {
                 self.retired.insert(thread.into(), Ledger::new(thread.into(), config.generation));
                 self.needs_audit = true;
             }
+        }
+        if frame["method"] == "thread/settings/updated" {
+            let params = &frame["params"];
+            self.note_mode(params, &params["threadSettings"]["collaborationMode"]);
         }
         if frame["method"] == "thread/name/updated"
             && frame["params"]["threadId"].as_str() == self.snapshot.thread_id.as_deref()
@@ -1473,6 +1498,27 @@ mod tests {
             .incoming(&config(), json!({"method":"account/rateLimits/updated","params":huge}))
             .unwrap();
         assert_eq!(observer.snapshot.rate_limits.as_ref(), Some(&read), "bounded");
+    }
+
+    /// T-847: the mode the server says the foreground thread is in after
+    /// `/plan`, and the one each turn the native client starts names; any
+    /// other thread's says nothing.
+    #[test]
+    fn the_foreground_threads_collaboration_mode_rides_the_snapshot() {
+        let mut observer = selected();
+        assert_eq!(observer.snapshot.collaboration_mode, None, "a thread starts unsaid");
+        let settings = |thread: &str, mode: &str| {
+            json!({"method":"thread/settings/updated","params":{"threadId":thread,
+                "threadSettings":{"model":"m","collaborationMode":{"mode":mode,"settings":{}}}}})
+        };
+        observer.incoming(&config(), settings("main", "plan")).unwrap();
+        assert_eq!(observer.snapshot.collaboration_mode.as_deref(), Some("plan"));
+        observer.incoming(&config(), settings("elsewhere", "default")).unwrap();
+        assert_eq!(observer.snapshot.collaboration_mode.as_deref(), Some("plan"));
+        let start = json!({"id":9,"method":"turn/start","params":{"threadId":"main",
+            "input":[],"collaborationMode":{"mode":"default","settings":{}}}});
+        observer.outgoing(&start).unwrap();
+        assert_eq!(observer.snapshot.collaboration_mode.as_deref(), Some("default"));
     }
 
     /// A steer counts once the server takes it on the foreground thread

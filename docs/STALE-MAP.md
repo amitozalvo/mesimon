@@ -27763,3 +27763,44 @@ a_codex_approval_s_wait_has_no_run_and_is_never_renewed}`, `crownwake::tests`,
 `crown_e2e::the_crown_answers_a_codex_worker_s_question`, and the two real-Codex runs recorded in
 `docs/codex-compatibility.json` under `0.163.0` (`crown_answers_native_question`,
 `native_approval_carried`; the approval's `availableDecisions` there read `accept, cancel`).
+
+## Plan mode on a Codex launch (T-847, 2026-10-18)
+
+**What was missing.** `^p` and `plan: true` (T-434) start Claude with `--permission-mode plan`;
+a Codex seat refused them (`plan_refusal`, `AgentProvider::has_plan_flag`), because Codex has no
+launch flag for its plan mode.
+
+**What Codex does, measured (0.163.0, real binary, no model turn).** `/plan` typed into the
+composer switches the thread: the native client sends `thread/settings/update` with
+`collaborationMode: {mode: "plan", …}`, the server answers with `thread/settings/updated`
+(`threadSettings.collaborationMode.mode`), the footer ends `… Plan mode`, and a second `/plan`
+leaves it in plan mode (idempotent). Nothing names the mode at thread start; every `turn/start`
+carries it (an accepted plan's implementation goes back to `default` there, with no settings
+notice).
+
+**What shipped.** A Codex start, wake or idle pane asked in plan mode sets
+`SessionRecord::codex_plan_owed` (persisted, serde default, skipped when false).
+`drive_codex_inputs` then types `/plan` into an empty composer, presses Enter 400 ms later, and
+withholds the title, the brief and the words until the thread is seen planning: the runtime's
+new `Snapshot::collaboration_mode` (from the server's `thread/settings/updated` and the native
+`turn/start`, foreground thread only) or `codex::plan_mode_shown` (the footer below the cursor,
+for a status line that keeps it). Unseen after 5 s it is pressed again once; unseen twice, the
+words go into the box **unsubmitted** (feed `codex_plan_unconfirmed`, a journal line) — never
+into a default-mode turn that would do the work it was asked to plan. A live pane is not
+relaunched: `deliver` routes a Codex pane's plan to `codex_park`, which never steers; mid-turn
+it is refused sent now and waits its idle queued, as Claude's is. `plan_refusal` and
+`has_plan_flag` are gone; the TUI offers `^p` on every seat and composer, and a Codex pane's
+receipt says `asked in plan mode` / `agent plans next` instead of `restarts`. The accept road is
+T-420's, unchanged. A column's `claude_mode = plan` stays Claude's (not asked for here).
+
+Tests: `provider_e2e::{a_planned_codex_start_types_plan_first_and_its_words_wait_for_the_mode,
+a_codex_pane_asked_in_plan_mode_waits_its_idle_and_types_plan_without_a_relaunch,
+a_parked_codex_seat_wakes_into_plan_mode_before_its_words,
+a_codex_plan_mode_never_seen_leaves_the_words_unsubmitted}` (the synthetic runtime answers a
+typed `/plan` on its snapshot, its footer, or not at all);
+`runtime::tests::the_foreground_threads_collaboration_mode_rides_the_snapshot`;
+`codex::tests::plan_mode_is_read_off_the_footer_and_nowhere_else`;
+`app::tests::ctrl_p_on_an_idle_codex_pane_asks_in_plan_mode_without_a_restart`; and the Codex
+rig's `plan-launch` case, passed on `gpt-6-luna` low: the planned start stopped on its plan with
+`codex_plan_mode` fed before the title, and the board's accept moved the same thread on to a
+turn of its own. `plan_mode_e2e` stays Claude's: its stub harness has no Codex runtime.

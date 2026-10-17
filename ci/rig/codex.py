@@ -18,9 +18,10 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
 SMOKE = ("complete", "mcp", "brief", "queue", "sleep-resume", "handover")
-EXTENDED = ("guard", "plan", "interrupt", "steer", "child", "stop", "compact", "identity", "question")
+EXTENDED = ("guard", "plan", "plan-launch", "interrupt", "steer", "child", "stop", "compact",
+            "identity", "question")
 TURNS = {"complete": 1, "mcp": 1, "brief": 2, "queue": 2, "sleep-resume": 2,
-         "handover": 2, "guard": 2, "plan": 2, "interrupt": 1, "steer": 2, "child": 2,
+         "handover": 2, "guard": 2, "plan": 2, "plan-launch": 2, "interrupt": 1, "steer": 2, "child": 2,
          "stop": 2, "compact": 3, "identity": 2, "question": 3}
 LIFECYCLE = {"stop", "compact", "identity", "question"}
 
@@ -230,6 +231,8 @@ def adapter(base):
                 return
             if self.args.case == "steer":
                 return self.steer()
+            if self.args.case == "plan-launch":
+                return self.plan_launch()
             if self.args.case != "queue":
                 return super().run()
             sid = self.start("Run sleep 8 once, then reply exactly MESIMON_QUEUE_FIRST. No other tools.")
@@ -255,6 +258,49 @@ def adapter(base):
             if len(first) != 1 or len(second) != 1 or first[0] >= second[0]:
                 raise AssertionError("queued turn did not produce exactly one ordered pair of final replies")
             self.mark(assertion="queued prompt completes once on the same thread after the first reply", passed=True)
+
+        def plan_launch(self):
+            """A start in plan mode on Codex (T-847): the board types /plan
+            before the title, the title goes once the thread is planning, the
+            turn stops on the native plan dialog, and the board's accept moves
+            the same thread on to a turn that implements it."""
+            self.reserve_turn()
+            self.calls += 1
+            title = ("Propose a minimal one-step plan to append the line PLAN_ACCEPTED to README.md. "
+                     "Do not implement it yet. Do not run tools; this fixture is fully described here.")
+            ticket = self.request("create_ticket", column="TODO", title=title, workspace=None)["id"]
+            sid = self.request("spawn_session", ticket=ticket, kind="claude", submit_prompt=True,
+                               plan=True)["id"]
+            self.sessions.append(sid)
+            before = (self.repo / "README.md").read_text()
+            feed = self.state / "activity.jsonl"
+            session, _, _ = self.wait(sid, "the planned launch stops on its native plan dialog",
+                                      lambda s, t, p: s["state"] == {"state": "requires_action", "reason": "plan"}
+                                      and s.get("plan_note") and s.get("codex_plan_dialog_seen")
+                                      and "Implement this plan?" in p, timeout=180)
+            if '"cmd":"codex_plan_mode"' not in (feed.read_text() if feed.is_file() else ""):
+                raise AssertionError("the board never saw the thread planning before the words went")
+            if (self.repo / "README.md").read_text() != before:
+                raise AssertionError("the planning turn changed the file it was asked to plan")
+            note = self.request("read_note", ticket=ticket, note=session["plan_note"])
+            if "PLAN_ACCEPTED" not in note.get("text", ""):
+                raise AssertionError("the native plan did not reach the ticket note")
+            self.mark(assertion="plan mode took before the title and the turn ended on a plan", passed=True)
+            thread = session["codex_thread_id"]
+            self.reserve_turn()
+            self.calls += 1
+            receipt = self.request("prompt_session", ticket=ticket, text="", queued=True, accept_plan=True)
+            if receipt.get("resp") not in ("queued", "ok"):
+                raise AssertionError("the board refused the plan accept: " + str(receipt))
+            # The implementation is a turn of its own on the same thread. Its
+            # file write asks the read-only fixture sandbox's permission,
+            # which stays the person's: the turn moving on is the claim.
+            turn = session["codex_turn_id"]
+            self.wait(sid, "the board's accept moves the same thread on to a turn of its own",
+                      lambda s, t, p: s.get("codex_thread_id") == thread
+                      and s.get("codex_turn_id") not in (None, turn)
+                      and s["state"] != {"state": "requires_action", "reason": "plan"}
+                      and "Implement this plan?" not in p, timeout=90)
 
         def steer(self):
             """Words sent to a running Codex turn go into that turn (T-845): the

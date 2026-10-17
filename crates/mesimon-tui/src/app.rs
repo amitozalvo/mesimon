@@ -5609,24 +5609,21 @@ impl App {
         *immediately = i;
     }
 
-    /// Can the text field's launch take plan mode (T-434)? Composing: the
-    /// board's provider is claude. Asking a ticket: the next turn is a
-    /// launch mesimon makes — no agent (a start), a parked one (a wake) or
-    /// a live claude between turns (parked and woken with the flag) — and
-    /// the seat is not already planning, where the field is about the
-    /// accept. A column's field never: one flag over N seats is not a
-    /// sentence the row can say. Codex has no launch flag for its plan
-    /// mode, so a codex seat offers nothing — the seat's provider is
-    /// `Book::seat_provider`, the one the daemon's `plan_refusal` reads
-    /// (T-685).
+    /// Can the text field's launch take plan mode (T-434)? Composing:
+    /// always. Asking a ticket: the next turn is one mesimon starts — no
+    /// agent (a start), a parked one (a wake) or a live one between turns
+    /// (a claude parked and woken with the flag, a codex given `/plan` in
+    /// its composer, T-847) — and the seat is not already planning, where
+    /// the field is about the accept. A column's field never: one flag over
+    /// N seats is not a sentence the row can say.
     pub(crate) fn plan_able(&self, target: Option<&AskTarget>) -> bool {
         let Some(target) = target else {
-            return self.composer_provider().has_plan_flag();
+            return true;
         };
         let AskTarget::Ticket(t) = target else {
             return false;
         };
-        if self.ticket_plan_able(*t) || !self.tiers().seat_provider(*t).has_plan_flag() {
+        if self.ticket_plan_able(*t) {
             return false;
         }
         match self.board.live_agent(*t) {
@@ -13078,12 +13075,16 @@ impl App {
         let waking = !starting && self.board.pane_target(ticket).is_none();
         let own = self.board.ticket(ticket).map(|t| t.short_key.clone()).unwrap_or_default();
         let word = keymap::AGENT_WORD;
-        // Plan mode (T-434) rides every receipt: on a pane it is a park and
-        // a wake, so the words for that seat change too.
+        // Plan mode (T-434) rides every receipt: on a claude pane it is a
+        // park and a wake, so the words for that seat change too; a codex
+        // pane takes `/plan` where it stands (T-847).
         let mode = if plan { " in plan mode" } else { "" };
+        let codex_pane =
+            self.board.pane_target(ticket).is_some_and(|s| s.kind == SessionKind::Codex);
         let (lead, first) = match (starting, waking, plan) {
             (true, _, _) => (format!("{word} starts{mode}"), format!("{word} starts next{mode}")),
             (_, true, _) => (format!("{word} wakes{mode}"), format!("{word} wakes next{mode}")),
+            (_, _, true) if codex_pane => (format!("{word} plans"), format!("{word} plans next")),
             (_, _, true) => {
                 (format!("{word} restarts{mode}"), format!("{word} restarts next{mode}"))
             }
@@ -13123,6 +13124,8 @@ impl App {
             Response::Ok if !queued && had => format!("{ask} ∙ queued ask dropped"),
             // Claude Code's send-now went over the words (T-601).
             Response::Ok if immediately => format!("{ask} immediately"),
+            // A codex pane takes `/plan` before the words (T-847).
+            Response::Ok if plan => format!("{ask}{mode}"),
             Response::Ok => ask.into(),
             // Parked HELD (T-565): its agent is on a question, so the words,
             // and any accept they carry, wait for the answer and a person's
@@ -14355,11 +14358,15 @@ pub(crate) mod test_support {
                         });
                         return Ok(Response::Queued { behind: waits_on, asking, held });
                     }
-                    // A pane in plan mode (T-434) is parked and woken: the
-                    // record comes back Spawning with the flag in its argv.
+                    // A claude pane in plan mode (T-434) is parked and
+                    // woken: the record comes back Spawning with the flag in
+                    // its argv. A codex pane takes `/plan` (T-847): `Ok`.
                     if seat == PendingAction::Ask && plan {
-                        if let Some(rec) =
-                            self.board.sessions.iter_mut().find(|s| s.ticket == ticket)
+                        if let Some(rec) = self
+                            .board
+                            .sessions
+                            .iter_mut()
+                            .find(|s| s.ticket == ticket && s.kind == SessionKind::Claude)
                         {
                             rec.state = SessionState::Spawning;
                             rec.pending_submit = true;
@@ -20000,7 +20007,7 @@ mod tests {
 
     /// T-434: `^p` in the composer — one-line and grown — starts the new
     /// ticket's claude in plan mode on Shift+Enter, and the selector row
-    /// says so. A codex board offers no key.
+    /// says so.
     #[test]
     fn ctrl_p_in_the_composer_starts_the_new_ticket_in_plan_mode() {
         let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
@@ -20028,12 +20035,43 @@ mod tests {
         assert!(sent_contains(&sent, "plan: true"), "{:?}", sent.borrow());
         assert_eq!(app.status, "agent started on the title in plan mode");
 
+        // A codex board's composer offers it too (T-847): its launch types
+        // `/plan` ahead of the title.
         let mut codex = app_three_columns();
+        codex.rich_keys = true;
         codex.board_mut().agent_provider = mesimon_core::board::AgentProvider::Codex;
         codex.handle_key(KeyCode::Char('o'), KeyModifiers::NONE).unwrap();
-        assert!(codex.ctx().composing && !codex.ctx().plan_able);
+        assert!(codex.ctx().composing && codex.ctx().plan_able);
         codex.handle_key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
-        assert!(!codex.ctx().plan_armed);
+        assert!(codex.ctx().plan_armed);
+    }
+
+    /// T-847: a codex pane between turns takes `^p` where it stands — no
+    /// restart — and a working one offers nothing, as a claude's does.
+    #[test]
+    fn ctrl_p_on_an_idle_codex_pane_asks_in_plan_mode_without_a_restart() {
+        let (mut app, sent, _) = app_with_session(SessionKind::Codex, SessionState::Running, false);
+        app.rich_keys = true;
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().prompting && !app.ctx().plan_able);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        // Idle as the runtime says it: the turn closed and nothing holds.
+        app.board_mut().sessions[0].state =
+            SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn };
+        app.board_mut().sessions[0].observation_hold = false;
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        if app.ctx().ask_queued {
+            app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        }
+        assert!(app.ctx().plan_able && !app.ctx().ask_queued);
+        app.handle_key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
+        assert!(app.ctx().plan_armed);
+        for ch in "go".chars() {
+            app.handle_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "plan: true"), "{:?}", sent.borrow());
+        assert_eq!(app.status, "asked in plan mode");
     }
 
     /// A seat whose first prompt never went (T-570): the card's row says

@@ -70,21 +70,6 @@ impl App {
         self.tiers().seat_provider(ticket).session_kind()
     }
 
-    /// The provider the open composer's launch would run: its `^n` pick's,
-    /// else the default tier's. Plan mode asks it (a Codex launch has no
-    /// plan flag).
-    pub(crate) fn composer_provider(&self) -> AgentProvider {
-        let pick = match &self.mode {
-            Mode::Input { purpose: InputPurpose::Create { tier, .. }, .. }
-            | Mode::Editor(Editor { purpose: EditorPurpose::Compose { tier, .. }, .. }) => {
-                tier.as_deref()
-            }
-            _ => None,
-        };
-        let book = self.tiers();
-        pick.and_then(|id| book.get(id)).unwrap_or_else(|| book.default_tier()).provider
-    }
-
     pub(crate) fn tier_name(&self, id: &str) -> String {
         self.tiers().get(id).map(|t| t.name).unwrap_or_else(|| id.to_string())
     }

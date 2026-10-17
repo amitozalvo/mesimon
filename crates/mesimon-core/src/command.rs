@@ -294,9 +294,11 @@ pub enum Command {
         /// the mode, only a relative Shift+Tab ring mesimon cannot read, so
         /// the launch flag is the one road that is a fact the board can
         /// hold (`SessionRecord.argv`). A pane mid-turn is refused sent now
-        /// and waits its idle queued. Claude only; a Codex board refuses
-        /// it. Ignored beside `accept_plan`, which is about a plan that
-        /// already exists. Absent from an older client = no plan.
+        /// and waits its idle queued. Codex has no launch flag: its start,
+        /// wake or idle pane types `/plan` into the composer and sends the
+        /// words once the thread is seen planning (T-847). Ignored beside
+        /// `accept_plan`, which is about a plan that already exists. Absent
+        /// from an older client = no plan.
         #[serde(default)]
         plan: bool,
         /// The ask field's tier pick (T-443, `^n`): applied to the ticket

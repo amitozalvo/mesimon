@@ -42,17 +42,6 @@ impl AgentProvider {
             Self::Codex => false,
         }
     }
-
-    /// The CLI has a launch flag for plan mode (T-434, T-685): Claude Code's
-    /// `--permission-mode plan`. Codex's plan mode has no flag, so a plan
-    /// ask at a Codex seat — live, parked or the one a Codex tier would
-    /// start — is refused.
-    pub fn has_plan_flag(self) -> bool {
-        match self {
-            Self::ClaudeCode => true,
-            Self::Codex => false,
-        }
-    }
 }
 
 /// Persisted session type and original provider. Notes are files, not sessions.
@@ -427,6 +416,13 @@ pub struct SessionRecord {
     pub codex_plan_dialog_seen: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_plan_dismissed_turn: Option<String>,
+    /// A Codex launch in plan mode (T-847) owes `/plan` in the composer
+    /// before its words: Codex has no launch flag for the mode, so the
+    /// title, the brief and the ask wait until the thread is seen planning.
+    /// Persisted, so a daemon handover types it again (`/plan` is idempotent)
+    /// rather than sending the words into the default mode.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub codex_plan_owed: bool,
     /// Named in-process teammates that reported idle and have not been
     /// messaged since (T-135). A Stop payload lists a teammate as `running`
     /// for its whole life, so this is what lets the attention machine tell a
@@ -622,6 +618,7 @@ impl SessionRecord {
             codex_stopping: false,
             codex_plan_dialog_seen: false,
             codex_plan_dismissed_turn: None,
+            codex_plan_owed: false,
             idle_teammates: Vec::new(),
             background_tasks: Default::default(),
             plan_note: None,
@@ -3897,10 +3894,8 @@ mod tests {
             rec(SessionKind::Claude, SessionState::Sleeping),
         ]);
         assert!(shell.send_now_seat(ticket).is_none());
-        assert!(
-            AgentProvider::ClaudeCode.has_send_now() && AgentProvider::ClaudeCode.has_plan_flag()
-        );
-        assert!(!AgentProvider::Codex.has_send_now() && !AgentProvider::Codex.has_plan_flag());
+        assert!(AgentProvider::ClaudeCode.has_send_now());
+        assert!(!AgentProvider::Codex.has_send_now());
     }
 
     /// T-541: a crown-started agent holds a budget seat only while it is

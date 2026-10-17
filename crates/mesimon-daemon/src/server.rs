@@ -721,6 +721,12 @@ pub struct Daemon {
     /// Each Codex seat's `turn/steer` count as its runtime last published it
     /// (T-845): a steer's ack is the count passing what it read at the paste.
     codex_steers: HashMap<uuid::Uuid, u64>,
+    /// Each Codex seat's collaboration mode, off its runtime's snapshot
+    /// (T-847): `plan` once a typed `/plan` took.
+    codex_modes: HashMap<uuid::Uuid, String>,
+    /// A `/plan` typed for a planned Codex launch and not yet seen to take
+    /// (T-847), by session: when its Enter goes and when the mode is due.
+    codex_plan_typed: HashMap<uuid::Uuid, PlanTyped>,
     /// T-843: the journal says once per turn that a Codex seat is held after
     /// its turn closed, and once per release that the runtime let it go.
     codex_held_logged: HashMap<uuid::Uuid, String>,
@@ -1312,6 +1318,8 @@ pub fn run(paths: Paths) -> Result<()> {
         codex_native_ready: HashMap::new(),
         codex_input_due: HashMap::new(),
         codex_steers: HashMap::new(),
+        codex_modes: HashMap::new(),
+        codex_plan_typed: HashMap::new(),
         codex_held_logged: HashMap::new(),
         codex_releases: HashMap::new(),
         codex_orphan_due: HashMap::new(),
@@ -1812,6 +1820,35 @@ struct Parked {
     brief: bool,
     title: bool,
 }
+
+/// A `/plan` typed into a Codex composer for a planned launch (T-847),
+/// waiting to be seen taking: the runtime's `collaboration_mode` or the
+/// footer's `Plan mode` (`codex::plan_mode_shown`).
+#[derive(Clone, Copy)]
+struct PlanTyped {
+    /// The Enter under the typed line, epoch ms; `None` once pressed. The
+    /// gap lets the slash menu open on the line before Enter picks from it.
+    enter_at: Option<u64>,
+    /// Past this with no witness, the line is pressed again or given up.
+    due: u64,
+    tries: u8,
+}
+
+/// Where a planned Codex launch's `/plan` stands (`drive_codex_plan`).
+enum PlanStep {
+    /// Typed, pressed or not yet seen to take: the words wait.
+    Wait,
+    /// The thread is planning: the words go.
+    Taken,
+    /// Never seen to take: the words go into the box unsubmitted, for the
+    /// person to send or not in whatever mode the pane shows.
+    GaveUp,
+}
+
+/// Gap between `/plan` and its Enter, and how long the mode may take after.
+const PLAN_KEY_MS: u64 = 400;
+const PLAN_TAKE_MS: u64 = 5_000;
+const PLAN_TRIES: u8 = 2;
 
 /// The feed line an owed paste earns on its ack: who is credited, and the
 /// word. A launch road's ack is the user's prompt landing; a road of the
@@ -3616,6 +3653,7 @@ impl Daemon {
             }
             let Some(mut snapshot) = valid else {
                 self.codex_ready.remove(&id);
+                self.codex_modes.remove(&id);
                 // A new runtime gets a bounded startup grace, but holds the
                 // checkout throughout it. Lost evidence never means done.
                 if rec.state == SessionState::Spawning
@@ -3643,6 +3681,10 @@ impl Daemon {
             // T-845: a steer the running turn took is acked by its count,
             // which moves without a new sequence.
             self.codex_steers.insert(id, snapshot.steers);
+            match snapshot.collaboration_mode.take() {
+                Some(mode) => self.codex_modes.insert(id, mode),
+                None => self.codex_modes.remove(&id),
+            };
             if self.owed.get(&id).and_then(|o| o.steer).is_some_and(|from| snapshot.steers > from) {
                 steered.push(id);
             }
@@ -3773,6 +3815,10 @@ impl Daemon {
             rec.codex_turn_id = snapshot.turn_id;
             dirty = true;
             if new_turn {
+                // A turn began before `/plan` took: someone typed in the
+                // pane, and the words owed went with it (`ack_owed`).
+                rec.codex_plan_owed = false;
+                self.codex_plan_typed.remove(&id);
                 rec.codex_plan_dialog_seen = false;
                 rec.codex_plan_dismissed_turn = None;
                 rec.pending_prefill = false;
@@ -4071,7 +4117,10 @@ impl Daemon {
             .filter(|s| {
                 s.kind == SessionKind::Codex
                     && s.state.has_pane()
-                    && (s.pending_prefill || s.pending_submit || self.parked(s.id))
+                    && (s.pending_prefill
+                        || s.pending_submit
+                        || s.codex_plan_owed
+                        || self.parked(s.id))
             })
             .map(|s| s.id)
             .collect();
@@ -4100,10 +4149,25 @@ impl Daemon {
             let sid = rec.sid16();
             let ticket = rec.ticket;
             let pending_prefill = rec.pending_prefill;
-            let submit = rec.pending_submit;
+            let mut submit = rec.pending_submit;
+            let plan_owed = rec.codex_plan_owed;
             let Ok(screen) = self.backend.capture_input_screen(&sid) else { continue };
             if !crate::agents::codex::input_ready(&screen) {
                 continue;
+            }
+            // A planned launch (T-847): `/plan` first, and the words only
+            // once the thread is seen planning.
+            let mut gave_up = false;
+            if plan_owed {
+                match self.drive_codex_plan(id, ticket, &sid, &screen, now) {
+                    PlanStep::Wait => continue,
+                    PlanStep::Taken => {}
+                    PlanStep::GaveUp => {
+                        submit = false;
+                        gave_up = true;
+                    }
+                }
+                dirty = true;
             }
             if let Some(due) = self.codex_input_due.get(&id).copied() {
                 if now < due {
@@ -4148,12 +4212,16 @@ impl Daemon {
             }
             self.control_pasted(id);
             // The words are in; the entry stays for its ack (the new-turn
-            // edge), so a queued ask's word still lands on the feed.
-            if let Some(owed) = self.owed.get_mut(&id) {
+            // edge), so a queued ask's word still lands on the feed. Words
+            // left unsubmitted (a `/plan` never seen to take) owe nothing.
+            if gave_up {
+                self.owed.remove(&id);
+            } else if let Some(owed) = self.owed.get_mut(&id) {
                 owed.parked = None;
             }
             if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                 rec.pending_prefill = false;
+                rec.pending_submit &= !gave_up;
                 rec.ticket_read |= brief;
             }
             if submit {
@@ -4162,6 +4230,74 @@ impl Daemon {
             dirty = true;
         }
         dirty
+    }
+
+    /// The `/plan` a planned Codex launch owes (T-847), one step a tick:
+    /// typed into an empty composer, its Enter a beat later, then a wait for
+    /// the thread to be seen planning — the runtime's `collaboration_mode`
+    /// off the server's `thread/settings/updated`, or `Plan mode` in the
+    /// footer. `/plan` is idempotent, so an unseen one is pressed again,
+    /// once; then the words go unsubmitted rather than into a default-mode
+    /// turn that would do the work it was asked to plan.
+    fn drive_codex_plan(
+        &mut self,
+        id: uuid::Uuid,
+        ticket: ulid::Ulid,
+        sid: &str,
+        screen: &mesimon_backend_tmux::InputScreen,
+        now: u64,
+    ) -> PlanStep {
+        use crate::agents::codex::{composer_holds_text, plan_mode_shown};
+        let Some(typed) = self.codex_plan_typed.get(&id).copied() else {
+            // The box is the person's while it holds their words.
+            if composer_holds_text(screen) || self.backend.send_text(sid, "/plan").is_err() {
+                return PlanStep::Wait;
+            }
+            let typed = PlanTyped { enter_at: Some(now + PLAN_KEY_MS), due: 0, tries: 1 };
+            self.codex_plan_typed.insert(id, typed);
+            return PlanStep::Wait;
+        };
+        if let Some(at) = typed.enter_at {
+            if now >= at && self.backend.send_enter(sid).is_ok() {
+                let pressed = PlanTyped { enter_at: None, due: now + PLAN_TAKE_MS, ..typed };
+                self.codex_plan_typed.insert(id, pressed);
+            }
+            return PlanStep::Wait;
+        }
+        let taken =
+            self.codex_modes.get(&id).is_some_and(|mode| mode == "plan") || plan_mode_shown(screen);
+        if !taken && now < typed.due {
+            return PlanStep::Wait;
+        }
+        if !taken && typed.tries < PLAN_TRIES {
+            // The line still in the box took no Enter; an empty box, a
+            // `/plan` that went and did not take. Either is pressed again.
+            let enter_at = if composer_holds_text(screen) {
+                Some(now)
+            } else if self.backend.send_text(sid, "/plan").is_ok() {
+                Some(now + PLAN_KEY_MS)
+            } else {
+                return PlanStep::Wait;
+            };
+            let again = PlanTyped { enter_at, due: 0, tries: typed.tries + 1 };
+            self.codex_plan_typed.insert(id, again);
+            return PlanStep::Wait;
+        }
+        self.codex_plan_typed.remove(&id);
+        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+            rec.codex_plan_owed = false;
+        }
+        if taken {
+            self.feed.board("automation", "codex_plan_mode", Some(ticket));
+            PlanStep::Taken
+        } else {
+            self.journal.line(&format!(
+                "codex {sid}: plan mode not seen after {} /plan; the words wait in the box unsubmitted",
+                typed.tries
+            ));
+            self.feed.board("automation", "codex_plan_unconfirmed", Some(ticket));
+            PlanStep::GaveUp
+        }
     }
 
     /// One hook frame off the ingest socket (Claude hook or tmux pane-died).
@@ -5949,15 +6085,11 @@ impl Daemon {
                 let Some(text) = mesimon_core::command::sanitize_prompt(&text) else {
                     return Response::Err { message: "nothing to send".into() };
                 };
-                // Plan mode (T-434) is a Claude launch flag: the same
-                // refusal the person's field would get on a Codex board.
-                if let Some(message) = self.plan_refusal(target, plan) {
-                    return Response::Err { message };
-                }
                 // `now` and `immediately` (T-600, T-601) are the person's
                 // sends, refused where theirs are: at a dialog, whose keys a
-                // paste would answer; with plan mode mid-turn, which restarts
-                // the agent; and `immediately` at an agent with no send-now.
+                // paste would answer; with plan mode mid-turn, which starts
+                // only at an idle (a Claude relaunch, a Codex `/plan`, T-847);
+                // and `immediately` at an agent with no send-now.
                 if let (true, QueuedSeat::Pane(id)) = (deliver.at_once(), &seat) {
                     let level = deliver.word();
                     if self.pane_waits_on_you(*id) {
@@ -5972,8 +6104,8 @@ impl Daemon {
                     if plan && !self.session_idle(*id) {
                         return Response::Err {
                             message: format!(
-                                "{key}'s agent is mid-turn, and plan mode restarts it; \
-                                 ask_agent with deliver idle queues the words for its idle."
+                                "{key}'s agent is mid-turn, and plan mode starts only at its \
+                                 idle; ask_agent with deliver idle queues the words for it."
                             ),
                         };
                     }
@@ -6213,22 +6345,12 @@ impl Daemon {
                     return Response::Err { message };
                 }
                 // The crown's tier (T-584), judged before anything changes:
-                // one it may name, not over a person's own start, and one
-                // plan mode can launch on.
+                // one it may name, and not over a person's own start.
                 let pick = match tier.as_deref().map(|w| self.crown_tier_pick(target, &key, w)) {
                     None => None,
                     Some(Ok(t)) => Some(t),
                     Some(Err(message)) => return Response::Err { message },
                 };
-                let plan_refused = match &pick {
-                    Some(t) => (plan && !t.provider.has_plan_flag()).then(|| {
-                        format!("plan mode is a claude launch flag ∙ {} runs codex", t.name)
-                    }),
-                    None => self.plan_refusal(target, plan),
-                };
-                if let Some(message) = plan_refused {
-                    return Response::Err { message };
-                }
                 if let Some(t) = pick {
                     if let Err(message) = self.apply_ticket_tier(target, Some(t.id)) {
                         return Response::Err { message };
@@ -10655,24 +10777,7 @@ impl Daemon {
         let sid = rec.sid16();
         let id = rec.id;
         if rec.kind == SessionKind::Codex {
-            if rec.pending_submit || self.owed.contains_key(&id) {
-                return Err("a prompt is already waiting for this session".into());
-            }
-            if rec.state == SessionState::Running {
-                if let Some(from) = self.codex_steers.get(&id).copied() {
-                    return self.codex_steer(id, ticket, text, ack, from);
-                }
-            }
-            self.park(
-                id,
-                ticket,
-                Parked { text: text.to_string(), brief: false, title: false },
-                ack,
-            );
-            if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
-                rec.observation_hold = true;
-            }
-            return Ok(());
+            return self.codex_park(id, ticket, text, ack, false);
         }
         let immediately = immediately && !self.session_idle(id);
         // Immediately on the mod road (T-601): the words into the empty
@@ -10707,6 +10812,37 @@ impl Daemon {
             self.backend.paste_text(&sid, text).map_err(|e| format!("could not deliver: {e}"))?;
         }
         self.owed.insert(id, Owed::pasted(ticket, ack, now_ms()));
+        Ok(())
+    }
+
+    /// Words for a Codex pane, pasted by `drive_codex_inputs` on its own
+    /// clock once the composer reads; mid-turn, a steer. `plan` (T-847)
+    /// owes `/plan` ahead of them, which is never a steer: the ask reaches
+    /// here only at an idle (`prompt_session`, `queued_target_ready`).
+    fn codex_park(
+        &mut self,
+        id: uuid::Uuid,
+        ticket: ulid::Ulid,
+        text: &str,
+        ack: Ack,
+        plan: bool,
+    ) -> Result<(), String> {
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
+            return Err("no live agent session on this ticket — start or wake one first".into());
+        };
+        if rec.pending_submit || self.owed.contains_key(&id) {
+            return Err("a prompt is already waiting for this session".into());
+        }
+        if rec.state == SessionState::Running && !plan {
+            if let Some(from) = self.codex_steers.get(&id).copied() {
+                return self.codex_steer(id, ticket, text, ack, from);
+            }
+        }
+        self.park(id, ticket, Parked { text: text.to_string(), brief: false, title: false }, ack);
+        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+            rec.observation_hold = true;
+            rec.codex_plan_owed |= plan;
+        }
         Ok(())
     }
 
@@ -11225,22 +11361,19 @@ impl Daemon {
         let accept_plan = accept_plan && matches!(seat, QueuedSeat::Pane(_));
         // Plan mode (T-434) is about the NEXT turn's launch; an accept is
         // about a plan that already exists, so beside it the flag is
-        // nothing. Claude only — a launch flag Codex does not have — and on
-        // a live pane only an IDLE one: there is no keystroke that sets the
-        // mode absolutely, so the pane is parked and woken with the flag,
-        // which `sleep_one` refuses mid-turn. Sent now, that refusal is the
-        // person's answer; queued, the drain waits for idle as it always
-        // has and the relaunch is the delivery.
+        // nothing. On a live pane only an IDLE one: Claude Code has no
+        // keystroke that sets the mode absolutely, so its pane is parked and
+        // woken with the flag, which `sleep_one` refuses mid-turn; Codex
+        // takes `/plan` in its composer (T-847), and an Enter there mid-turn
+        // is a steer. Sent now, that refusal is the person's answer; queued,
+        // the drain waits for idle as it always has.
         let plan = plan && !accept_plan;
-        if let Some(message) = self.plan_refusal(ticket, plan) {
-            return Response::Err { message };
-        }
         if plan && !queued {
             if let QueuedSeat::Pane(id) = seat {
                 if !self.session_idle(id) {
                     return Response::Err {
                         message: format!(
-                            "{} is mid-turn ∙ plan mode restarts it, so queue the ask for its idle",
+                            "{} is mid-turn ∙ plan mode starts at its idle, so queue the ask for it",
                             mesimon_core::keymap::AGENT_WORD
                         ),
                     };
@@ -11302,19 +11435,6 @@ impl Daemon {
         } else {
             "has no send-now (Claude Code's alone)"
         })
-    }
-
-    /// Why a plan-mode ask cannot reach this ticket (T-434), or `None`. The
-    /// flag is `--permission-mode plan`, Claude Code's; a Codex session, or
-    /// an empty seat on a Codex board, has no launch flag for its plan mode.
-    /// The seat's provider is `Book::seat_provider`, the one the TUI's
-    /// `plan_able` reads (T-685).
-    fn plan_refusal(&self, ticket: ulid::Ulid, plan: bool) -> Option<String> {
-        if !plan {
-            return None;
-        }
-        (!self.tier_book().seat_provider(ticket).has_plan_flag())
-            .then(|| "plan mode is a claude launch flag ∙ this seat runs codex".to_string())
     }
 
     /// Ask every seat in a column — paned, parked or EMPTY (T-405). The one
@@ -11504,10 +11624,24 @@ impl Daemon {
         immediately: bool,
     ) -> Response {
         match seat {
-            // Plan mode on a pane (T-434) is a relaunch, never a paste — and
-            // so is a tier switch the seat owes (T-443), once it is idle:
-            // the words ride the relaunch. Owed but mid-turn, a send-now
-            // pastes on the tier it has; `prompt_session` queues its own.
+            // Plan mode on a Codex pane (T-847) is `/plan` typed ahead of
+            // the words, in the pane it is: no relaunch, unless a tier
+            // switch is owed as well, which the relaunch below carries.
+            QueuedSeat::Pane(id)
+                if plan
+                    && self.is_codex(id)
+                    && !(self.tier_owed(id) && self.session_at_rest(id)) =>
+            {
+                match self.codex_park(id, ticket, &text, ack, true) {
+                    Ok(()) => Response::Ok,
+                    Err(message) => Response::Err { message },
+                }
+            }
+            // Plan mode on a Claude pane (T-434) is a relaunch, never a
+            // paste — and so is a tier switch the seat owes (T-443), once it
+            // is idle: the words ride the relaunch. Owed but mid-turn, a
+            // send-now pastes on the tier it has; `prompt_session` queues its
+            // own.
             QueuedSeat::Pane(id) if plan || (self.tier_owed(id) && self.session_at_rest(id)) => {
                 self.relaunch(ticket, id, Some(text), plan, "local")
             }
@@ -12013,6 +12147,10 @@ impl Daemon {
         }
     }
 
+    fn is_codex(&self, id: uuid::Uuid) -> bool {
+        self.board.sessions.iter().any(|s| s.id == id && s.kind == SessionKind::Codex)
+    }
+
     /// Is this pane's session between turns — idle, not parked in the
     /// background, and not working by any of `quiet`'s signs? What a plan
     /// relaunch waits for; a tier switch reads the wider `session_at_rest`,
@@ -12100,11 +12238,14 @@ impl Daemon {
             // `queued ∙ sending`). A wake and a start hold it through their
             // own record — `Spawning` and an owed Enter are both WORKING —
             // and their entry is the user's prompt, so the card shows the
-            // launching arc instead. A pane relaunched into plan mode
-            // (T-434) is a wake in all but its seat word.
+            // launching arc instead. A Claude pane relaunched into plan mode
+            // (T-434) is a wake in all but its seat word; a Codex one takes
+            // `/plan` and then the paste (T-847), a queued ask's.
             let sent = match seat {
-                seat @ QueuedSeat::Pane(pane) if !plan && !self.tier_owed(pane) => {
-                    match self.deliver_queued_ask(ticket, seat, text, Ack::QUEUED, false, false) {
+                seat @ QueuedSeat::Pane(pane)
+                    if (!plan || self.is_codex(pane)) && !self.tier_owed(pane) =>
+                {
+                    match self.deliver_queued_ask(ticket, seat, text, Ack::QUEUED, plan, false) {
                         Response::Ok => true,
                         _ => {
                             self.feed.board("automation", "queued_ask_failed", Some(ticket));
@@ -13839,6 +13980,9 @@ impl Daemon {
             rec.agent_preview_path =
                 Some(crate::agents::codex::preview_path(&self.paths, id).display().to_string());
             rec.pending_prefill = true;
+            // No launch flag for Codex's plan mode (T-847): `/plan` goes into
+            // the composer before the title does.
+            rec.codex_plan_owed = plan;
         }
         let launch = self.launch(&argv, &self.launch_vars(ticket, &cwd, id, kind, &pick));
         match self.backend.spawn(&rec.sid16(), &cwd, &launch) {
@@ -15973,6 +16117,8 @@ impl Daemon {
             if rec.kind == SessionKind::Codex {
                 rec.codex_thread_id = resumed_thread;
                 rec.observation_hold = true;
+                // A wake in plan mode types `/plan` first (T-847), as a start does.
+                rec.codex_plan_owed = plan;
                 rec.agent_preview_path =
                     Some(crate::agents::codex::preview_path(&self.paths, id).display().to_string());
             }
@@ -15988,6 +16134,8 @@ impl Daemon {
             rec.codex_submit_sent = false;
             rec.pending_prefill = false;
             self.owed.remove(&id);
+            self.codex_plan_typed.remove(&id);
+            self.codex_modes.remove(&id);
             if let Some(new_id) = fresh {
                 // Point the record at the conversation it is actually hosting
                 // now. The stale path would otherwise send the NEXT resume

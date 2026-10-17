@@ -314,6 +314,7 @@ mod tests {
             codex_stopping: false,
             codex_plan_dialog_seen: false,
             codex_plan_dismissed_turn: None,
+            codex_plan_owed: false,
             idle_teammates: vec![],
             background_tasks: Default::default(),
             plan_note: None,

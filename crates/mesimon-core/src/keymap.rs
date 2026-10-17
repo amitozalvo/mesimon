@@ -1462,12 +1462,12 @@ pub struct Ctx {
     /// defaults to accepting the plan it ends on; Shift+Tab flips it. A
     /// session that entered plan mode from inside its pane is not known.
     pub ticket_planning: bool,
-    /// The text field's launch can take PLAN MODE (T-434): the composer on
-    /// a claude board, or the ask field on a seat whose next turn is a
-    /// launch mesimon makes — empty (a start), parked (a wake), or a live
-    /// claude between turns (parked and woken with the flag). Never a seat
-    /// already planning (`ticket_plan_able`: the field is about accepting
-    /// then), never a codex seat (no launch flag), never a column.
+    /// The text field's launch can take PLAN MODE (T-434): the composer,
+    /// or the ask field on a seat whose next turn mesimon starts — empty (a
+    /// start), parked (a wake), or a live agent between turns (a claude
+    /// parked and woken with the flag, a codex given `/plan`, T-847). Never
+    /// a seat already planning (`ticket_plan_able`: the field is about
+    /// accepting then), never a column.
     pub plan_able: bool,
     /// The field's `^p` is ON: the launch it ends in runs in plan mode. The
     /// row under the field says so; the hint says what the next press does.

@@ -164,7 +164,8 @@ pub struct LaunchContext<'a> {
     /// Plan mode for THIS launch (T-434): the composer's or the ask field's
     /// `^p`, or the crown's `plan`. Overrides the column's `claude_mode`
     /// once; a later wake reads the column again. Claude reads it; Codex
-    /// has no launch flag for its plan mode and ignores it.
+    /// has no launch flag for its plan mode, so its launch types `/plan`
+    /// into the composer instead (`SessionRecord::codex_plan_owed`, T-847).
     pub plan: bool,
     /// The agent tier this launch runs on (T-443), already resolved for the
     /// session's provider (`tier::Book::launch`): its model and effort ride

@@ -9,6 +9,9 @@ path=Path(config['snapshot_path']); control=Path(str(path)+'.control')
 thread=config['resume'] or ('synthetic-'+config['session'])
 state={'state':'idle','stop_reason':'unknown'}; turn=None; sequence=1
 prior=None; submits=0; steers=0; pending=b''; pasted=False; stopping=False
+# Codex 0.163's `/plan` (T-847): typed, never pasted; the mode is then on the
+# snapshot (the server's thread/settings/updated) and/or in the footer.
+typed=b''; mode=None; plans=0
 def stop(*_):
     global stopping
     stopping=True
@@ -26,6 +29,9 @@ print('\x1b[?2004h',end='')
 try: initial=json.loads((root/'initial-screen.json').read_text())
 except FileNotFoundError: initial={}
 render(initial.get('screen','Synthetic provider fixture\r\n› \r\nanything the user wants'),initial.get('cursor',[2,1]))
+def plan_option(key,default):
+    return instruction.get(key,initial.get(key,default))
+instruction={}
 while not stopping:
     try: instruction=json.loads(control.read_text())
     except (FileNotFoundError,ValueError): instruction={}
@@ -40,7 +46,8 @@ while not stopping:
                'state':state,'observation_hold':instruction.get('hold',False),'history_path':None,'stopped':False,
                'hold':instruction.get('hold_reasons'),'releases':instruction.get('releases',0),'last_release':instruction.get('last_release'),
                'steers':steers,
-               'request':instruction.get('request'),'plan':instruction.get('plan'),'plan_key':instruction.get('plan_key')}
+               'request':instruction.get('request'),'plan':instruction.get('plan'),'plan_key':instruction.get('plan_key'),
+               'collaboration_mode':mode if plan_option('mode_on_snapshot',True) else None}
         temporary=path.with_suffix('.tmp')
         temporary.write_text(json.dumps(value));temporary.replace(path)
     if select.select([sys.stdin],[],[],0.1)[0]:
@@ -67,7 +74,18 @@ while not stopping:
                 (root/(config['session']+'.submits')).write_text(str(submits))
                 render(*shown)
                 continue
+            if not pasted and byte not in (b'\n',b'\r'):
+                typed+=byte
+            if byte in (b'\n',b'\r') and not pasted and typed.strip()==b'/plan':
+                typed=b''; plans+=1
+                (root/(config['session']+'.plans')).write_text(str(plans))
+                if plan_option('plan_ack',True):
+                    mode='plan'; sequence+=1
+                    if plan_option('plan_footer',False):
+                        render('Synthetic provider fixture\r\n› \r\nsynthetic-model · /repo Plan mode',[2,1])
+                continue
             if byte in (b'\n',b'\r') and not pasted:
+                typed=b''
                 submits+=1
                 if instruction.get('ack',True):
                     turn='synthetic-turn-'+str(submits);state={'state':'running'};sequence+=1

@@ -68,6 +68,19 @@ pub fn composer_holds_text(screen: &mesimon_backend_tmux::InputScreen) -> bool {
         && !(x == 2 && screen.lines.get(y).is_some_and(|line| line.starts_with('›')))
 }
 
+/// The composer's footer names Plan mode (T-847): Codex 0.163 writes it at
+/// the right of the line under the box once `/plan` took (`… · cwd… Plan
+/// mode`). Only below the cursor, the box's own row excluded, so neither the
+/// conversation nor the slash menu's `switch to Plan mode` reads as it. A
+/// configured status line may leave it out; the runtime's
+/// `collaboration_mode` is the other witness.
+pub fn plan_mode_shown(screen: &mesimon_backend_tmux::InputScreen) -> bool {
+    let Some((_, y)) = screen.cursor else { return false };
+    input_ready(screen)
+        && !composer_holds_text(screen)
+        && screen.lines.iter().skip(y + 1).any(|line| line.trim_end().ends_with("Plan mode"))
+}
+
 /// The native implementation dialog is local UI, not an app-server request.
 /// Require its choice list as well as the heading to reject conversational text.
 pub fn plan_dialog(screen: &mesimon_backend_tmux::InputScreen) -> bool {
@@ -389,6 +402,13 @@ pub struct Snapshot {
     /// The daemon's ack for a steer it pasted is this count rising.
     #[serde(default)]
     pub steers: u64,
+    /// The foreground thread's collaboration mode as the wire last said it
+    /// (T-847): `plan` or `default`, from the server's
+    /// `thread/settings/updated` and the native client's own
+    /// `thread/settings/update` and `turn/start`. `None` until one of them
+    /// names it: a thread starts in its default without saying so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collaboration_mode: Option<String>,
 }
 
 /// A server request that waits on a person, as the snapshot carries it
@@ -728,6 +748,22 @@ mod input_tests {
     }
 
     #[test]
+    fn plan_mode_is_read_off_the_footer_and_nowhere_else() {
+        // Codex 0.163's own lines, after `/plan` took and before.
+        let on = "› Ask Codex to do anything\n\n  GPT-6.1-Sol medium · /tmp/probe Plan mode\n  ← for agents · ? for shortcuts";
+        assert!(plan_mode_shown(&screen(on, Some((2, 0)))));
+        let off = "› Ask Codex to do anything\n\n  GPT-6.1-Sol default · /tmp/probe\n  ← for agents · ? for shortcuts";
+        assert!(!plan_mode_shown(&screen(off, Some((2, 0)))));
+        // The conversation above the box, and the slash menu in it, say nothing.
+        let above = "• Model changed to gpt-6.1-sol medium for Plan mode\n› /plan  switch to Plan mode\n› Ask Codex to do anything\n\n  GPT-6.1-Sol default · /tmp/probe";
+        assert!(!plan_mode_shown(&screen(above, Some((2, 2)))));
+        // Words still in the box: the slash command has not gone yet.
+        assert!(!plan_mode_shown(&screen("› /plan\n\n  GPT · /tmp Plan mode", Some((7, 0)))));
+        // A dialog hides the cursor: nothing is read.
+        assert!(!plan_mode_shown(&screen(on, None)));
+    }
+
+    #[test]
     fn plan_modal_is_distinct_from_plan_text_and_native_composer() {
         let modal = screen("Implement this plan?\n› 1. Yes, implement this plan\n  2. Yes, clear context and implement\n  3. No, stay in Plan mode\nPress enter to confirm or esc to go back", None);
         assert!(plan_dialog(&modal));
@@ -822,6 +858,7 @@ mod tests {
             releases: 0,
             last_release: None,
             steers: 0,
+            collaboration_mode: None,
         }
     }
 

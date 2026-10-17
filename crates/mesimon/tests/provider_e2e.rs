@@ -1766,3 +1766,159 @@ fn a_codex_question_is_carried_to_the_board_and_answered_by_keys_until_resolved(
     );
     c.await_state(ws, "done", |s| *s == SessionState::Idle { stop_reason: StopReason::EndTurn });
 }
+
+fn plans(h: &Fixture, id: uuid::Uuid) -> u32 {
+    std::fs::read_to_string(h.owner.dir.join(format!("{id}.plans")))
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
+}
+
+fn input(h: &Fixture, id: uuid::Uuid) -> String {
+    std::fs::read_to_string(h.owner.dir.join(format!("{id}.input"))).unwrap_or_default()
+}
+
+fn initial(h: &Fixture, value: Value) {
+    std::fs::write(h.owner.dir.join("initial-screen.json"), value.to_string()).unwrap();
+}
+
+fn plan_ask(c: &mut TestClient, ticket: ulid::Ulid, text: &str, queued: bool) -> Response {
+    c.request(Command::PromptSession {
+        ticket,
+        text: text.into(),
+        queued,
+        immediately: false,
+        accept_plan: false,
+        plan: true,
+        tier: None,
+        resend: false,
+    })
+}
+
+fn planned_start(c: &mut TestClient, ticket: ulid::Ulid) -> uuid::Uuid {
+    match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Codex,
+        submit_prompt: true,
+        plan: true,
+    }) {
+        Response::Spawned { id, .. } => id,
+        response => panic!("planned start: {response:?}"),
+    }
+}
+
+/// T-847: Codex has no launch flag for plan mode, so a planned start types
+/// `/plan` into the composer ahead of the title, and the title and the
+/// brief wait until the thread is seen planning. A `/plan` that did not take
+/// is pressed again; the one that does lets the words go, once.
+#[test]
+fn a_planned_codex_start_types_plan_first_and_its_words_wait_for_the_mode() {
+    let Some(h) = Fixture::boot("providerplan") else { return };
+    initial(&h, json!({"plan_ack": false}));
+    let mut c = h.client();
+    select(&mut c, AgentProvider::Codex);
+    let t = ticket(&mut c, "planned start", None);
+    let id = planned_start(&mut c, t);
+    assert!(session(&mut c, id).codex_plan_owed);
+    wait_until(Duration::from_secs(15), "the /plan line", || plans(&h, id) >= 1);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(!input(&h, id).contains("planned start"), "the words wait: {:?}", input(&h, id));
+    assert_eq!(submits(&h, id), 0);
+    let rec = session(&mut c, id);
+    assert!(rec.codex_plan_owed && rec.pending_submit && rec.pending_prefill, "{rec:?}");
+    // The thread answers the next `/plan`, as the server's
+    // `thread/settings/updated` does: the words go behind it.
+    h.control(id, json!({"plan_ack": true}));
+    c.await_state(id, "the planned turn", |s| *s == SessionState::Running);
+    let typed = input(&h, id);
+    let (plan_at, title_at) = (typed.rfind("/plan").unwrap(), typed.find("planned start").unwrap());
+    assert!(plan_at < title_at, "{typed:?}");
+    assert_eq!(plans(&h, id), 2);
+    assert_eq!(submits(&h, id), 1);
+    assert_eq!(typed.matches("planned start").count(), 1, "{typed:?}");
+    assert!(!session(&mut c, id).codex_plan_owed);
+    assert_eq!(fed(&h, "codex_plan_mode", t), 1);
+}
+
+/// T-847: a live Codex pane takes plan mode where it stands — `/plan`, then
+/// the words, no relaunch — and only between turns: sent now mid-turn the
+/// ask is refused as a claude's is, queued it waits for the idle. The
+/// footer's `Plan mode` is witness enough where the snapshot says nothing.
+#[test]
+fn a_codex_pane_asked_in_plan_mode_waits_its_idle_and_types_plan_without_a_relaunch() {
+    let Some(h) = Fixture::boot("providerplanpane") else { return };
+    initial(&h, json!({"mode_on_snapshot": false, "plan_footer": true}));
+    let mut c = h.client();
+    select(&mut c, AgentProvider::Codex);
+    let t = ticket(&mut c, "pane plan", None);
+    let id = spawn(&mut c, t);
+    h.codex_ready(&mut c, id);
+    h.control(id, json!({"state":{"state":"running"},"turn_id":"synthetic-busy"}));
+    c.await_state(id, "a turn running", |s| *s == SessionState::Running);
+    match plan_ask(&mut c, t, "plan the fix", false) {
+        Response::Err { message } => assert!(message.contains("mid-turn"), "{message}"),
+        response => panic!("plan mode mid-turn: {response:?}"),
+    }
+    assert!(matches!(plan_ask(&mut c, t, "plan the fix", true), Response::Queued { .. }));
+    std::thread::sleep(Duration::from_millis(800));
+    assert_eq!(plans(&h, id), 0, "nothing typed into a running turn");
+    h.control(
+        id,
+        json!({"state":{"state":"idle","stop_reason":"end_turn"},"turn_id":"synthetic-busy"}),
+    );
+    wait_until(Duration::from_secs(20), "the planned ask lands", || submits(&h, id) >= 1);
+    let typed = input(&h, id);
+    assert!(typed.find("/plan").unwrap() < typed.find("plan the fix").unwrap(), "{typed:?}");
+    assert_eq!(plans(&h, id), 1);
+    let launches = std::fs::read_to_string(h.owner.dir.join("runtime-launches.jsonl")).unwrap();
+    assert_eq!(launches.lines().count(), 1, "the pane was not relaunched");
+    assert!(!session(&mut c, id).codex_plan_owed);
+}
+
+/// T-847: a parked Codex seat asked in plan mode wakes and types `/plan`
+/// before the words, as a start does.
+#[test]
+fn a_parked_codex_seat_wakes_into_plan_mode_before_its_words() {
+    let Some(h) = Fixture::boot("providerplanwake") else { return };
+    let mut c = h.client();
+    select(&mut c, AgentProvider::Codex);
+    let t = ticket(&mut c, "wake plan", None);
+    let id = spawn(&mut c, t);
+    h.codex_ready(&mut c, id);
+    assert!(matches!(c.request(Command::SleepSession { id }), Response::Ok));
+    wait_until(Duration::from_secs(10), "the stop confirmed", || {
+        let rec = session(&mut c, id);
+        rec.state == SessionState::Sleeping && !rec.codex_stopping
+    });
+    assert_eq!(plans(&h, id), 0);
+    assert!(matches!(plan_ask(&mut c, t, "plan after the wake", false), Response::Spawned { .. }));
+    wait_until(Duration::from_secs(20), "the planned wake's turn", || submits(&h, id) >= 1);
+    let typed = input(&h, id);
+    assert!(typed.find("/plan").unwrap() < typed.find("plan after the wake").unwrap(), "{typed:?}");
+    assert_eq!(plans(&h, id), 1);
+    let launches = std::fs::read_to_string(h.owner.dir.join("runtime-launches.jsonl")).unwrap();
+    assert_eq!(launches.lines().count(), 2, "one start and one wake");
+}
+
+/// T-847: a `/plan` never seen to take, twice, is given up on: the words go
+/// into the box unsubmitted for the person, never into a default-mode turn
+/// that would do the work it was asked to plan, and the seat holds nothing.
+#[test]
+fn a_codex_plan_mode_never_seen_leaves_the_words_unsubmitted() {
+    let Some(h) = Fixture::boot("providerplannever") else { return };
+    initial(&h, json!({"plan_ack": false}));
+    let mut c = h.client();
+    select(&mut c, AgentProvider::Codex);
+    let t = ticket(&mut c, "never plans", None);
+    let id = planned_start(&mut c, t);
+    wait_until(Duration::from_secs(30), "the words in the box", || {
+        input(&h, id).contains("never plans")
+    });
+    std::thread::sleep(Duration::from_millis(1200));
+    assert_eq!(plans(&h, id), 2);
+    assert_eq!(submits(&h, id), 0, "no Enter under the words");
+    let rec = session(&mut c, id);
+    assert!(!rec.codex_plan_owed && !rec.pending_submit && !rec.pending_prefill, "{rec:?}");
+    assert_eq!(fed(&h, "codex_plan_unconfirmed", t), 1);
+    assert!(c.board().live_agent(t).is_some_and(|s| !mesimon_core::quiet::is_working(s)));
+}
