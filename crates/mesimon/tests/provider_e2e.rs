@@ -1090,6 +1090,125 @@ fn daemon_handover_keeps_sent_codex_prompt_held_without_pressing_enter_again() {
     });
 }
 
+fn submits(h: &Fixture, id: uuid::Uuid) -> u32 {
+    std::fs::read_to_string(h.owner.dir.join(format!("{id}.submits")))
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
+}
+
+fn fed(h: &Fixture, cmd: &str, ticket: ulid::Ulid) -> usize {
+    let needle = format!("\"cmd\":\"{cmd}\"");
+    std::fs::read_to_string(h.paths.activity_log())
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.contains(&needle) && l.contains(&ticket.to_string()))
+        .count()
+}
+
+fn steer(c: &mut TestClient, ticket: ulid::Ulid, text: &str) -> Response {
+    c.request(Command::PromptSession {
+        ticket,
+        text: text.into(),
+        queued: false,
+        immediately: false,
+        accept_plan: false,
+        plan: false,
+        tier: None,
+        resend: false,
+    })
+}
+
+/// A running Codex seat takes words mid-turn as its composer does (T-845):
+/// pasted, then one Enter, which Codex sends as a `turn/steer`; the runtime's
+/// count of taken steers is the ack. The turn goes on — no new turn, no
+/// parked words waiting for its end — and the seat takes the next at once.
+#[test]
+fn a_steer_goes_into_a_running_codex_turn_and_is_acked_by_the_runtime() {
+    let Some(h) = Fixture::boot("providersteer") else { return };
+    let mut c = h.client();
+    select(&mut c, AgentProvider::Codex);
+    let ticket = ticket(&mut c, "a long turn", None);
+    let id = spawn(&mut c, ticket);
+    h.codex_ready(&mut c, id);
+    h.control(id, json!({"state":{"state":"running"},"turn_id":"long-turn"}));
+    c.await_state(id, "the turn running", |s| *s == SessionState::Running);
+    let before = submits(&h, id);
+    assert!(matches!(steer(&mut c, ticket, "also check the docs"), Response::Ok));
+    wait_until(Duration::from_secs(10), "the steer taken by the running turn", || {
+        fed(&h, "codex_steered", ticket) == 1
+    });
+    assert_eq!(fed(&h, "prompt_submitted", ticket), 1);
+    assert_eq!(submits(&h, id), before + 1, "one Enter");
+    let input = std::fs::read_to_string(h.owner.dir.join(format!("{id}.input"))).unwrap();
+    assert_eq!(input.matches("also check the docs").count(), 1, "{input:?}");
+    let record = session(&mut c, id);
+    assert_eq!(record.state, SessionState::Running);
+    assert_eq!(record.codex_turn_id.as_deref(), Some("long-turn"));
+    assert!(!record.pending_submit, "nothing parked for the turn's end");
+    // The seat is free for the next steer straight away.
+    assert!(matches!(steer(&mut c, ticket, "and the changelog"), Response::Ok));
+    wait_until(Duration::from_secs(10), "the second steer", || {
+        fed(&h, "codex_steered", ticket) == 2
+    });
+    assert_eq!(submits(&h, id), before + 2);
+}
+
+/// A dialog over a running Codex turn is the person's (T-568): a steer is
+/// refused in the board's words and nothing reaches the pane.
+#[test]
+fn a_codex_dialog_refuses_a_steer_in_the_boards_words() {
+    let Some(h) = Fixture::boot("providersteerdialog") else { return };
+    let mut c = h.client();
+    select(&mut c, AgentProvider::Codex);
+    let ticket = ticket(&mut c, "a turn with a dialog", None);
+    let id = spawn(&mut c, ticket);
+    h.codex_ready(&mut c, id);
+    h.control(
+        id,
+        json!({"state":{"state":"running"},"turn_id":"asking-turn",
+            "screen":"Allow command?\r\n› 1. Yes\r\n  2. No","cursor":null}),
+    );
+    c.await_state(id, "the turn running", |s| *s == SessionState::Running);
+    std::thread::sleep(Duration::from_millis(300));
+    match steer(&mut c, ticket, "words for the box") {
+        Response::Err { message } => {
+            assert_eq!(message, mesimon_core::command::ANSWER_IN_PANE_FIRST)
+        }
+        response => panic!("a steer into a dialog: {response:?}"),
+    }
+    std::thread::sleep(Duration::from_millis(800));
+    let input = std::fs::read_to_string(h.owner.dir.join(format!("{id}.input"))).unwrap();
+    assert!(!input.contains("words for the box"), "{input:?}");
+    assert!(!session(&mut c, id).pending_submit);
+}
+
+/// A steer the runtime never counts is pressed once — the box emptied, so
+/// the words went — and given up when the presses run out, never pressed
+/// into an empty box again (T-845).
+#[test]
+fn an_unacked_codex_steer_is_pressed_once_and_given_up() {
+    let Some(h) = Fixture::boot("providersteerlost") else { return };
+    let mut c = h.client();
+    select(&mut c, AgentProvider::Codex);
+    let ticket = ticket(&mut c, "a turn that never says", None);
+    let id = spawn(&mut c, ticket);
+    h.codex_ready(&mut c, id);
+    h.control(id, json!({"state":{"state":"running"},"turn_id":"quiet-turn","steer_ack":false}));
+    c.await_state(id, "the turn running", |s| *s == SessionState::Running);
+    let before = submits(&h, id);
+    assert!(matches!(steer(&mut c, ticket, "are you there"), Response::Ok));
+    match steer(&mut c, ticket, "a second while the first is owed") {
+        Response::Err { message } => assert!(message.contains("already waiting"), "{message}"),
+        response => panic!("a second steer: {response:?}"),
+    }
+    wait_until(Duration::from_secs(15), "the steer given up", || {
+        fed(&h, "prompt_submit_gave_up", ticket) == 1
+    });
+    assert_eq!(submits(&h, id), before + 1, "one Enter, none into the empty box");
+    assert_eq!(fed(&h, "codex_steered", ticket), 0);
+}
+
 /// A turn in flight across a `U` handover reads `Running` at once, never
 /// `Unknown` until its next change (T-827): T-824 sat grey and "unavailable"
 /// on the board through seven minutes of a test run, its own work holding

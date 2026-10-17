@@ -718,6 +718,9 @@ pub struct Daemon {
     /// generation. Idle sessions then need no repeated terminal subprocess.
     codex_native_ready: HashMap<uuid::Uuid, Option<u64>>,
     codex_input_due: HashMap<uuid::Uuid, u64>,
+    /// Each Codex seat's `turn/steer` count as its runtime last published it
+    /// (T-845): a steer's ack is the count passing what it read at the paste.
+    codex_steers: HashMap<uuid::Uuid, u64>,
     /// T-843: the journal says once per turn that a Codex seat is held after
     /// its turn closed, and once per release that the runtime let it go.
     codex_held_logged: HashMap<uuid::Uuid, String>,
@@ -1308,6 +1311,7 @@ pub fn run(paths: Paths) -> Result<()> {
         codex_ready: std::collections::HashSet::new(),
         codex_native_ready: HashMap::new(),
         codex_input_due: HashMap::new(),
+        codex_steers: HashMap::new(),
         codex_held_logged: HashMap::new(),
         codex_releases: HashMap::new(),
         codex_orphan_due: HashMap::new(),
@@ -1889,6 +1893,10 @@ struct Owed {
     /// Why these words were sent, when that matters to the crown (T-469):
     /// its ack marks the turn that took them (`Daemon::turn_asks`).
     asked: Option<TurnAsk>,
+    /// Words pasted into a running Codex turn (T-845), with the runtime's
+    /// steer count at the paste: the count passing it is the ack, and the
+    /// Enter repeats while the words still stand in the box.
+    steer: Option<u64>,
 }
 
 impl Owed {
@@ -1910,6 +1918,7 @@ impl Owed {
             fill: false,
             ack,
             asked: None,
+            steer: None,
         }
     }
 
@@ -1931,6 +1940,7 @@ impl Owed {
             fill: false,
             ack,
             asked: None,
+            steer: None,
         }
     }
 
@@ -3566,6 +3576,7 @@ impl Daemon {
         let mut plans = Vec::new();
         let mut stopped = Vec::new();
         let mut quota = Vec::new();
+        let mut steered = Vec::new();
         for (id, snapshot) in snapshots {
             let principal = Principal::Automation { rule: "codex_observer".into() };
             if matches!(
@@ -3614,6 +3625,12 @@ impl Daemon {
             };
             if snapshot.sequence < rec.codex_observed_seq {
                 continue;
+            }
+            // T-845: a steer the running turn took is acked by its count,
+            // which moves without a new sequence.
+            self.codex_steers.insert(id, snapshot.steers);
+            if self.owed.get(&id).and_then(|o| o.steer).is_some_and(|from| snapshot.steers > from) {
+                steered.push(id);
             }
             // T-843: a seat held a minute past its turn's close goes to the
             // journal with the runtime's reasons, once per turn; a release
@@ -3809,6 +3826,13 @@ impl Daemon {
             if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                 rec.agent_plan_key = Some(key);
                 dirty = true;
+            }
+        }
+        for id in steered {
+            if let Some(ticket) = self.owed.get(&id).filter(|o| o.steer.is_some()).map(|o| o.ticket)
+            {
+                self.feed.board("daemon", "codex_steered", Some(ticket));
+                dirty |= self.ack_owed(id);
             }
         }
         let mut quota_moved = false;
@@ -4920,6 +4944,10 @@ impl Daemon {
             .map(|(id, _)| *id)
             .collect();
         for id in due {
+            if self.steering(id) {
+                changed |= self.press_steer(id, now);
+                continue;
+            }
             let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
                 self.owed.remove(&id);
                 continue;
@@ -10459,6 +10487,8 @@ impl Daemon {
     /// the feed line the paste earns when the agent takes it. This is the
     /// one place a paste of ours is entered in `owed` (T-244): a Claude
     /// pane's went in with its Enter and waits `INFLIGHT_MS` for the ack; a
+    /// running Codex turn's is a steer (`codex_steer`, T-845), pressed on
+    /// `settle_owed`'s cadence and acked by the runtime's count; any other
     /// Codex pane's is parked for `drive_codex_inputs`, which pastes on its
     /// own clock, and the record's hold is its clock.
     fn paste_to_ticket(&mut self, ticket: ulid::Ulid, text: &str, ack: Ack) -> Result<(), String> {
@@ -10490,8 +10520,13 @@ impl Daemon {
         let sid = rec.sid16();
         let id = rec.id;
         if rec.kind == SessionKind::Codex {
-            if rec.pending_submit || self.parked(id) {
+            if rec.pending_submit || self.owed.contains_key(&id) {
                 return Err("a prompt is already waiting for this session".into());
+            }
+            if rec.state == SessionState::Running {
+                if let Some(from) = self.codex_steers.get(&id).copied() {
+                    return self.codex_steer(id, ticket, text, ack, from);
+                }
             }
             self.park(
                 id,
@@ -10538,6 +10573,84 @@ impl Daemon {
         }
         self.owed.insert(id, Owed::pasted(ticket, ack, now_ms()));
         Ok(())
+    }
+
+    /// Words into a running Codex turn (T-845), as its own composer takes
+    /// them: Codex 0.163 sends what is entered mid-turn as a `turn/steer`,
+    /// which the running turn reads. Only into the box — a dialog is the
+    /// person's (T-568) — by bracketed paste, then an Enter of its own a
+    /// cadence later, after paste detection settles (`settle_owed`). The ack
+    /// is the runtime counting the steer past `from`, or a new turn if this
+    /// one ended under the words.
+    fn codex_steer(
+        &mut self,
+        id: uuid::Uuid,
+        ticket: ulid::Ulid,
+        text: &str,
+        ack: Ack,
+        from: u64,
+    ) -> Result<(), String> {
+        let Some(sid) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.sid16()) else {
+            return Err("no live agent session on this ticket — start or wake one first".into());
+        };
+        let screen = self
+            .backend
+            .capture_input_screen(&sid)
+            .map_err(|e| format!("could not deliver: {e}"))?;
+        if !crate::agents::codex::input_ready(&screen) {
+            return Err(mesimon_core::command::ANSWER_IN_PANE_FIRST.into());
+        }
+        self.backend.paste_input(&sid, text).map_err(|e| format!("could not deliver: {e}"))?;
+        let now = now_ms();
+        let words = Parked { text: text.to_string(), brief: false, title: false };
+        self.owed.insert(
+            id,
+            Owed {
+                presses: SUBMIT_ATTEMPTS,
+                next_press: Some(now + SUBMIT_RETRY_MS),
+                expires: None,
+                sent: Some(words),
+                steer: Some(from),
+                ..Owed::pasted(ticket, ack, now)
+            },
+        );
+        self.control_pasted(id);
+        Ok(())
+    }
+
+    /// Words pasted into a running Codex turn and not yet taken (T-845).
+    fn steering(&self, id: uuid::Uuid) -> bool {
+        self.owed.get(&id).is_some_and(|o| o.steer.is_some())
+    }
+
+    /// A steer's due Enter (T-845), on `settle_owed`'s cadence: pressed only
+    /// into a box still holding the words, so never into a dialog and never
+    /// a second turn; an empty box means they went and the count is on its
+    /// way. The presses run out either way, and words never seen taken are
+    /// the phone's `unknown`.
+    fn press_steer(&mut self, id: uuid::Uuid, now: u64) -> bool {
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
+            self.owed.remove(&id);
+            return false;
+        };
+        let (sid, ticket) = (rec.sid16(), rec.ticket);
+        if rec.state.has_pane() && !matches!(rec.state, SessionState::RequiresAction { .. }) {
+            if let Ok(screen) = self.backend.capture_input_screen(&sid) {
+                if crate::agents::codex::composer_holds_text(&screen) {
+                    let _ = self.backend.send_enter(&sid);
+                }
+            }
+        }
+        let Some(owed) = self.owed.get_mut(&id) else { return false };
+        if owed.presses > 1 {
+            owed.presses -= 1;
+            owed.next_press = Some(now + SUBMIT_RETRY_MS);
+            return false;
+        }
+        self.control_cancel(id);
+        self.drop_owed(id);
+        self.feed.board("daemon", "prompt_submit_gave_up", Some(ticket));
+        true
     }
 
     // ------------------------------------------------------------ merge train

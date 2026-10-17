@@ -49,12 +49,15 @@ overridden. No failed case is retried automatically.
 Extended cases are opt-in:
 
 ```sh
-python3 -B ci/rig.py --provider codex --live --only guard,plan,interrupt
+python3 -B ci/rig.py --provider codex --live --only guard,plan,interrupt,steer
 python3 -B ci/rig.py --provider codex --live --only child,stop,compact,identity,question
 python3 -B ci/rig.py --provider codex --live --suite extended --max-turns 25
 ```
 
 These reuse the native gate, plan, interruption, child and lifecycle checks.
+The steer case sends words into a running turn the way the board and Remote
+Control's Steer do, and checks that the same turn replies to them; its manifest
+records when the model read them against the running command's end.
 Only the child case enables model-created child agents. A native question or
 plan is tested through Codex's terminal: Mesimon's crown cannot answer Codex
 dialogs. These checks do not claim Claude mod-road or crown-dialog parity.

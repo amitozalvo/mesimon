@@ -58,6 +58,16 @@ pub fn input_ready(screen: &mesimon_backend_tmux::InputScreen) -> bool {
     x >= 2 && above[prompt + 1..].iter().all(|line| line.is_empty() || line.starts_with("  "))
 }
 
+/// An `input_ready` composer whose cursor has left the start of its prompt
+/// line: it holds text. An empty box shows its placeholder in the same cells
+/// a typed word would, so the cursor is the one sign (T-845): a steer's
+/// Enter repeats only while the pasted words still stand.
+pub fn composer_holds_text(screen: &mesimon_backend_tmux::InputScreen) -> bool {
+    let Some((x, y)) = screen.cursor else { return false };
+    input_ready(screen)
+        && !(x == 2 && screen.lines.get(y).is_some_and(|line| line.starts_with('›')))
+}
+
 /// The native implementation dialog is local UI, not an app-server request.
 /// Require its choice list as well as the heading to reject conversational text.
 pub fn plan_dialog(screen: &mesimon_backend_tmux::InputScreen) -> bool {
@@ -367,6 +377,11 @@ pub struct Snapshot {
     pub releases: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_release: Option<String>,
+    /// How many `turn/steer` requests on the foreground thread the server
+    /// accepted (T-845): words typed into a running turn and taken by it.
+    /// The daemon's ack for a steer it pasted is this count rising.
+    #[serde(default)]
+    pub steers: u64,
 }
 
 /// Why the runtime's ledger holds the seat, as the snapshot carries it
@@ -600,6 +615,26 @@ mod input_tests {
         }
     }
 
+    /// Mid-turn the composer sits under the turn's status line and is still
+    /// a box (T-845); the cursor alone says whether it holds words.
+    #[test]
+    fn a_running_turns_composer_is_a_box_and_its_cursor_says_whether_it_holds_text() {
+        let working =
+            "• Working (12s • esc to interrupt)\n\n› Ask Codex to do anything\n\n  ? for shortcuts";
+        let empty = screen(working, Some((2, 2)));
+        assert!(input_ready(&empty));
+        assert!(!composer_holds_text(&empty));
+        let typed = screen(
+            "• Working (12s • esc to interrupt)\n\n› also check the docs\n\n  ? for shortcuts",
+            Some((21, 2)),
+        );
+        assert!(input_ready(&typed) && composer_holds_text(&typed));
+        let wrapped = screen("› a long steer that\n  wraps", Some((2, 1)));
+        assert!(composer_holds_text(&wrapped));
+        let dialog = screen("Allow command?\n› 1. Yes\n  2. No", None);
+        assert!(!input_ready(&dialog) && !composer_holds_text(&dialog));
+    }
+
     #[test]
     fn startup_trust_recognizes_current_and_older_native_dialogs() {
         use mesimon_core::board::Reason;
@@ -720,6 +755,7 @@ mod tests {
             hold: None,
             releases: 0,
             last_release: None,
+            steers: 0,
         }
     }
 

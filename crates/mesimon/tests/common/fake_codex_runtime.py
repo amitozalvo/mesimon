@@ -8,13 +8,15 @@ with (root/'runtime-launches.jsonl').open('a') as log:
 path=Path(config['snapshot_path']); control=Path(str(path)+'.control')
 thread=config['resume'] or ('synthetic-'+config['session'])
 state={'state':'idle','stop_reason':'unknown'}; turn=None; sequence=1
-prior=None; submits=0; pending=b''; pasted=False; stopping=False
+prior=None; submits=0; steers=0; pending=b''; pasted=False; stopping=False
 def stop(*_):
     global stopping
     stopping=True
 signal.signal(signal.SIGTERM,stop)
 tty.setcbreak(0)
 def render(screen,cursor):
+    global shown
+    shown=(screen,cursor)
     print('\x1b[?25l\x1b[2J\x1b[3J\x1b[H'+screen,end='')
     if cursor is not None:
         x,y=cursor
@@ -36,7 +38,8 @@ while not stopping:
         value={'session':config['session'],'generation':config['generation'],'sequence':sequence,
                'heartbeat_ms':time.time_ns()//1000000,'thread_id':thread,'turn_id':turn,
                'state':state,'observation_hold':instruction.get('hold',False),'history_path':None,'stopped':False,
-               'hold':instruction.get('hold_reasons'),'releases':instruction.get('releases',0),'last_release':instruction.get('last_release')}
+               'hold':instruction.get('hold_reasons'),'releases':instruction.get('releases',0),'last_release':instruction.get('last_release'),
+               'steers':steers}
         temporary=path.with_suffix('.tmp')
         temporary.write_text(json.dumps(value));temporary.replace(path)
     if select.select([sys.stdin],[],[],0.1)[0]:
@@ -51,6 +54,18 @@ while not stopping:
                 pasted=False;pending=pending[6:];continue
             if pending.startswith(b'\x1b') and len(pending)<6: break
             byte,pending=pending[:1],pending[1:]
+            # Mid-turn the composer echoes what is pasted, so its cursor
+            # leaves the prompt's start: what a steer's Enter is gated on.
+            if pasted and state.get('state')=='running':
+                print(byte.decode('latin-1'),end='');sys.stdout.flush()
+            if byte in (b'\n',b'\r') and not pasted and state.get('state')=='running':
+                # Codex 0.163 sends an Enter mid-turn as a turn/steer; the
+                # turn goes on and the box empties.
+                submits+=1
+                if instruction.get('steer_ack',True): steers+=1
+                (root/(config['session']+'.submits')).write_text(str(submits))
+                render(*shown)
+                continue
             if byte in (b'\n',b'\r') and not pasted:
                 submits+=1
                 if instruction.get('ack',True):

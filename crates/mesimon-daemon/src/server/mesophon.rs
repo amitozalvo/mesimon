@@ -3189,7 +3189,10 @@ impl Daemon {
         let Ok(ticket) = ulid::Ulid::from_string(ticket) else {
             return Reply::Rejected { message: "invalid ticket".into() };
         };
-        if self.parked(id) || self.board.sessions.iter().any(|s| s.id == id && s.pending_submit) {
+        if self.parked(id)
+            || self.steering(id)
+            || self.board.sessions.iter().any(|s| s.id == id && s.pending_submit)
+        {
             return Reply::Rejected {
                 message: "a prompt is already waiting for this session".into(),
             };
@@ -3283,7 +3286,9 @@ impl Daemon {
         let ((grant, device, command), (ticket, id)) = (by, target);
         match self.paste_to_ticket(ticket, text, Ack::PROMPT) {
             Ok(()) => {
-                let waiting = self.parked(id);
+                // A Codex steer (T-845) is owed its runtime's count, as
+                // parked words are their paste: the phone waits for either.
+                let waiting = self.parked(id) || self.steering(id);
                 if waiting {
                     // This composer supplies exactly the user's words, without
                     // any outstanding initial ticket prefill.
@@ -3365,7 +3370,8 @@ impl Daemon {
             match self.send_queued_ask(ticket) {
                 Response::Err { message } => Reply::Rejected { message },
                 _ => {
-                    Reply::delivery(if self.parked(id) { "awaiting_delivery" } else { "submitted" })
+                    let waiting = self.parked(id) || self.steering(id);
+                    Reply::delivery(if waiting { "awaiting_delivery" } else { "submitted" })
                 }
             }
         } else {

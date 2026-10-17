@@ -3396,6 +3396,9 @@ try {
           });
           await until(page, () => document.querySelector("#steer-why").hidden);
           await delivery("steer");
+          // This seat is Codex's, whose steer waits for the turn's next
+          // step (T-845); the line says so, and Queue's says its own.
+          assert.equal(await page.locator(".mode-help").textContent(), "Goes into this turn at its next step.");
           await page.evaluate(() => {
             fixture.disposition = "submitted";
           });

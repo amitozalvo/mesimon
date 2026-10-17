@@ -18,9 +18,9 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
 SMOKE = ("complete", "mcp", "brief", "queue", "sleep-resume", "handover")
-EXTENDED = ("guard", "plan", "interrupt", "child", "stop", "compact", "identity", "question")
+EXTENDED = ("guard", "plan", "interrupt", "steer", "child", "stop", "compact", "identity", "question")
 TURNS = {"complete": 1, "mcp": 1, "brief": 2, "queue": 2, "sleep-resume": 2,
-         "handover": 2, "guard": 2, "plan": 2, "interrupt": 1, "child": 2,
+         "handover": 2, "guard": 2, "plan": 2, "interrupt": 1, "steer": 2, "child": 2,
          "stop": 2, "compact": 3, "identity": 2, "question": 1}
 LIFECYCLE = {"stop", "compact", "identity", "question"}
 
@@ -228,6 +228,8 @@ def adapter(base):
                           session["state"] == {"state": "idle", "stop_reason": "interrupted"}
                           and ticket["column"] == "IN PROGRESS")
                 return
+            if self.args.case == "steer":
+                return self.steer()
             if self.args.case != "queue":
                 return super().run()
             sid = self.start("Run sleep 8 once, then reply exactly MESIMON_QUEUE_FIRST. No other tools.")
@@ -253,6 +255,53 @@ def adapter(base):
             if len(first) != 1 or len(second) != 1 or first[0] >= second[0]:
                 raise AssertionError("queued turn did not produce exactly one ordered pair of final replies")
             self.mark(assertion="queued prompt completes once on the same thread after the first reply", passed=True)
+
+        def steer(self):
+            """Words sent to a running Codex turn go into that turn (T-845): the
+            board pastes them into the composer and presses Enter, Codex sends a
+            turn/steer, and the same turn's reply follows them."""
+            sid = self.start("Run sleep 15 once in the terminal, wait for it to finish, then reply "
+                             "exactly MESIMON_STEER_FIRST. Do not modify files.")
+            def active_tool(session, ticket, screen):
+                path = Path(session.get("agent_preview_path") or "/does-not-exist")
+                value = json.loads(path.read_text()) if path.is_file() else {}
+                return (session["state"]["state"] == "running" and session.get("codex_turn_id")
+                        and isinstance(value.get("activity"), dict) and "Tool" in value["activity"])
+            session, _, _ = self.wait(sid, "a real tool runs in the turn", active_tool)
+            turn = session["codex_turn_id"]
+            self.reserve_turn()
+            self.calls += 1
+            sent = time.time()
+            receipt = self.request("prompt_session", ticket=session["ticket"], queued=False,
+                                   text="Change of plan: reply exactly MESIMON_STEERED instead.")
+            if receipt.get("resp") != "ok":
+                raise AssertionError("a running Codex turn refused the steer: " + str(receipt))
+            feed = self.state / "activity.jsonl"
+            self.wait(sid, "the board saw the running turn take the steer", lambda *_:
+                      feed.is_file() and '"cmd":"codex_steered"' in feed.read_text(), timeout=20)
+            final, _, _ = self.completed(sid, "MESIMON_STEERED")
+            if final["codex_turn_id"] != turn:
+                raise AssertionError("the steer started a turn of its own instead of joining the running one")
+            rows = read_history(Path(final["transcript_path"]), self.home)
+            stamp = lambda row: datetime.datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00")).timestamp()
+            steered = [row for row in rows if row.get("type") == "response_item"
+                       and row.get("payload", {}).get("role") == "user"
+                       and "MESIMON_STEERED" in json.dumps(row["payload"])]
+            commands = [row for row in rows if row.get("type") == "event_msg"
+                        and row.get("payload", {}).get("type") == "item_completed"
+                        and row["payload"].get("item", {}).get("type") == "CommandExecution"]
+            if not steered or not commands:
+                raise RuntimeError("the history holds no steer or no finished command to order")
+            read_at, command_done = stamp(steered[0]), stamp(commands[0])
+            # What the help line says rests on this (T-845, 0.163): the steer
+            # waits for the turn's next step, and never cuts a command short.
+            self.manifest["steer_timing"] = dict(
+                read_after_send_ms=int((read_at - sent) * 1000),
+                command_done_after_send_ms=int((command_done - sent) * 1000),
+                read_while_command_ran=read_at < command_done,
+                command_exit_code=commands[0]["payload"]["item"].get("exit_code"))
+            self.mark(assertion="the steer was read in the running turn, which replied to it", passed=True,
+                      **self.manifest["steer_timing"])
 
         def audit(self):
             self.check_usage(force=True)

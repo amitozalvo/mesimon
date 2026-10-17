@@ -10,7 +10,7 @@ import { CrownMark, StartButton, StartReceipt, Tags, WorktreeMark, ageWords, cro
 import { NotePane } from "./notepad.js";
 import { receiptTick, sentPrompt } from "./sessions.js";
 import { startWaiting } from "./starts.js";
-import { queueWords, sendRefused, waitsOnYou } from "./queue.js";
+import { modeHelp, queueWords, sendRefused, waitsOnYou } from "./queue.js";
 import { Chat } from "./transcript.js";
 import { swipePanes } from "./swipe.js";
 
@@ -196,7 +196,7 @@ function Composer({ store, ticket, entry, live }) {
             <select id="prompt-tier" value=${pick} onChange=${(e) => store.setPromptTier(e.currentTarget.value)}>
               ${tiers.map((t) => html`<option key=${t.id} value=${t.id}>${t.name}</option>`)}
             </select></label>`}
-          ${!starts && html`<p class="mode-help">${mode === "steer" ? "Goes in now, mid-turn." : "Waits for the turn to end."}</p>`}
+          ${!starts && html`<p class="mode-help">${modeHelp(mode, agent)}</p>`}
         </div>
         <button id="send" type="submit" class="send" disabled=${sendOff}
           aria-label=${starts ? (asleep ? "Wake agent with these words" : "Start agent with these words") : mode === "steer" ? "Send prompt" : "Queue prompt"}>${starts

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Sessions, answerBusy, ghostOf, landed, receiptTick, reasonText } from "./sessions.js";
-import { afterWords, queueWords, sendRefused, waitsOnYou } from "./queue.js";
+import { afterWords, modeHelp, queueWords, sendRefused, waitsOnYou } from "./queue.js";
 import { BoardState, RECENT_MS } from "./board.js";
 import { crownTouch, worktreeWords } from "./lists.js";
 import { crownSentence } from "./detail.js";
@@ -291,6 +291,13 @@ test("the queued row names whose words wait and on what (T-568)", () => {
   assert.equal(row({ by: "T-411", sends: true, waits: ["T-5"] }), "T-411's agent · queued · after T-5");
   assert.equal(afterWords(["T-3"], ["T-3"], "T-3"), "after your answer");
   assert.equal(afterWords([], [], "T-3"), undefined);
+});
+
+test("the help line says when each delivery reaches the agent, Codex's steer at its next step (T-845)", () => {
+  assert.equal(modeHelp("queue", { provider: "codex" }), "Waits for the turn to end.");
+  assert.equal(modeHelp("steer", { provider: "codex" }), "Goes into this turn at its next step.");
+  assert.equal(modeHelp("steer", { provider: "claude" }), "Goes in now, mid-turn.");
+  assert.equal(modeHelp("queue", { provider: "claude" }), "Waits for the turn to end.");
 });
 
 test("Steer and Send now wait while the agent waits on you; Queue does not (T-568)", () => {

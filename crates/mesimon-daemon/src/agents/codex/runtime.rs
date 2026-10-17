@@ -743,6 +743,10 @@ struct Observation {
     owned_threads: BTreeSet<String>,
     pending: BTreeMap<String, Selection>,
     native_requests: BTreeMap<String, bool>,
+    /// The native client's `turn/steer` requests on the foreground thread
+    /// still unanswered (T-845); an answer without an error is a steer the
+    /// running turn took, counted on the snapshot.
+    steers: BTreeSet<String>,
     system_threads: BTreeSet<String>,
     mutation_unobserved: bool,
     buffered: Vec<Value>,
@@ -788,12 +792,14 @@ impl Observation {
                 hold: None,
                 releases: 0,
                 last_release: None,
+                steers: 0,
             },
             ledger: None,
             retired: BTreeMap::new(),
             owned_threads: BTreeSet::new(),
             pending: BTreeMap::new(),
             native_requests: BTreeMap::new(),
+            steers: BTreeSet::new(),
             system_threads: BTreeSet::new(),
             mutation_unobserved: false,
             buffered: Vec::new(),
@@ -853,6 +859,12 @@ impl Observation {
                     ));
             self.native_requests.insert(id.to_string(), mutation);
             self.mutation_unobserved |= mutation;
+            if method == "turn/steer"
+                && frame["params"]["threadId"].as_str().is_some()
+                && frame["params"]["threadId"].as_str() == self.snapshot.thread_id.as_deref()
+            {
+                self.steers.insert(id.to_string());
+            }
         }
         if !matches!(method, "thread/start" | "thread/resume" | "thread/fork")
             || frame["params"]["ephemeral"] == true
@@ -882,6 +894,9 @@ impl Observation {
         if frame.get("method").is_none() {
             if let Some(id) = frame.get("id") {
                 self.native_requests.remove(&id.to_string());
+                if self.steers.remove(&id.to_string()) && frame.get("error").is_none() {
+                    self.snapshot.steers = self.snapshot.steers.saturating_add(1);
+                }
             }
             let returned_thread = &frame["result"]["thread"];
             if returned_thread["ephemeral"] == true && returned_thread["threadSource"] == "system" {
@@ -1454,6 +1469,31 @@ mod tests {
             .incoming(&config(), json!({"method":"account/rateLimits/updated","params":huge}))
             .unwrap();
         assert_eq!(observer.snapshot.rate_limits.as_ref(), Some(&read), "bounded");
+    }
+
+    /// A steer counts once the server takes it on the foreground thread
+    /// (T-845): a refused one (the turn ended under it) and another
+    /// thread's never do.
+    #[test]
+    fn a_steer_counts_when_the_server_takes_it_on_the_foreground_thread() {
+        let mut observer = selected();
+        event(&mut observer, "main", "turn/started", json!({"turn":{"id":"turn"}}));
+        let steer = |id: u64, thread: &str| {
+            json!({"id":id,"method":"turn/steer","params":{"threadId":thread,
+                "input":[{"type":"text","text":"also this"}],"expectedTurnId":"turn"}})
+        };
+        observer.outgoing(&steer(2, "main")).unwrap();
+        assert_eq!(observer.snapshot.steers, 0, "asked, not taken");
+        observer.incoming(&config(), json!({"id":2,"result":{"turnId":"turn"}})).unwrap();
+        assert_eq!(observer.snapshot.steers, 1);
+        observer.outgoing(&steer(3, "main")).unwrap();
+        observer
+            .incoming(&config(), json!({"id":3,"error":{"code":-32600,"message":"no active turn"}}))
+            .unwrap();
+        observer.outgoing(&steer(4, "elsewhere")).unwrap();
+        observer.incoming(&config(), json!({"id":4,"result":{"turnId":"other"}})).unwrap();
+        observer.incoming(&config(), json!({"id":2,"result":{"turnId":"turn"}})).unwrap();
+        assert_eq!(observer.snapshot.steers, 1);
     }
 
     #[test]

@@ -511,6 +511,7 @@ mod tests {
             hold: None,
             releases: 0,
             last_release: None,
+            steers: 0,
         };
         (paths, record, config, snapshot)
     }

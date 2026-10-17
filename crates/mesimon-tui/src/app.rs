@@ -3491,9 +3491,8 @@ impl App {
         if let Some(ev) = self.queued_event.take() {
             return Ok(Some(ev));
         }
-        let moved = |ev: &TermEvent| {
-            matches!(ev, TermEvent::Mouse(m) if m.kind == MouseEventKind::Moved)
-        };
+        let moved =
+            |ev: &TermEvent| matches!(ev, TermEvent::Mouse(m) if m.kind == MouseEventKind::Moved);
         let Some(mut ev) = read(wait)? else { return Ok(None) };
         while moved(&ev) {
             match read(Duration::ZERO)? {

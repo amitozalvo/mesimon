@@ -9,6 +9,16 @@
 export const waitsOnYou = (agent) =>
   !!agent && (!!agent.dialog || !!agent.permission || agent.state === "needs attention");
 
+// What each delivery does, under the Queue / Steer row. Codex reads a
+// steer at the turn's next step, a running command left to finish (T-845,
+// measured on 0.163): it says so rather than claim "now".
+export const modeHelp = (mode, agent) =>
+  mode !== "steer"
+    ? "Waits for the turn to end."
+    : agent?.provider === "codex"
+      ? "Goes into this turn at its next step."
+      : "Goes in now, mid-turn.";
+
 // The host refuses Send now while the agent waits on you, its own question
 // read stale included (`asking` names the ticket's own key then).
 export const sendRefused = (ticket) =>

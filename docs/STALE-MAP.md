@@ -27506,3 +27506,50 @@ Tests: `observation::tests::{a_closed_turn_held_by_stale_bookkeeping_releases_on
 the_audit_never_releases_a_closed_turn_that_asks_a_person, a_running_turn_is_never_a_closed_one}`,
 `runtime::tests::a_closed_turn_held_by_a_stale_item_is_released_by_the_idle_audit_and_counted`,
 `provider_e2e::a_codex_seat_held_past_its_turn_and_its_release_reach_the_journal`.
+
+## A Codex steer goes into the running turn (T-845, 2026-10-17, from T-843's finding: a steer sent at 17:29Z on the axiom board's T-34 "Sending… Awaiting delivery" for the whole turn)
+
+**What was wrong.** Remote Control's Steer (and the board's plain send) reaches a Codex seat through
+`paste_at`, whose Codex branch parked the words for `drive_codex_inputs`, which pastes only into an
+idle seat. The phone's "Goes in now, mid-turn." waited for the turn's end, and a new turn by hand
+(`ack_owed`) or a wake dropped the words unsaid.
+
+**What Codex does.** Codex 0.163's TUI sends what is entered during a turn as `turn/steer`
+(`{threadId, input, expectedTurnId}` → `{turnId}`, from `codex app-server generate-ts`); its
+queue is a separate key. Measured on the rig (`--only steer`, `gpt-6-luna` low): the steer did
+not stop a running `sleep 15`. The model read it at the turn's next step, a tool yield 0.85 s
+after the send and 14.7 s before the command ended. The same turn then replied to it. So the
+phone's line for a Codex seat says **"Goes into this turn at its next step."**, Claude's keeps
+"Goes in now, mid-turn.", and Queue's is "Waits for the turn to end." for both
+(`queue.js::modeHelp`).
+
+**What shipped.**
+- The runtime counts `turn/steer` requests on the foreground thread whose answer carries no error
+  (`Snapshot.steers`, serde default, written on the heartbeat, no sequence bump). A steer the
+  server refuses (the turn ended under it) or another thread's is not counted.
+- `paste_at` on a Codex seat in `Running` whose count the daemon has read (`codex_steers`) takes
+  `codex_steer`: the box must read as a box (`codex::input_ready`; a dialog hides the cursor and
+  is refused with `ANSWER_IN_PANE_FIRST`, T-568), then bracketed paste, and an `Owed` with
+  `steer: Some(count at the paste)` whose Enter `settle_owed` presses a cadence later
+  (`press_steer`). The Enter repeats only while the box still holds text
+  (`codex::composer_holds_text`: the cursor off the prompt's start; the placeholder sits in the
+  same cells, so the cursor is the one sign) and never at `RequiresAction`. An empty box means
+  the words went; the presses run out either way (`SUBMIT_ATTEMPTS` × `SUBMIT_RETRY_MS`) and a
+  steer never counted is `prompt_submit_gave_up`, the phone's `unknown`. The ack is the count
+  passing the paste's (`codex_steered`, then `ack_owed`'s `prompt_submitted`), or a new turn if
+  the turn ended and the Enter started one.
+- The phone's receipt for a Codex steer is `awaiting_delivery` until that ack, then `submitted`;
+  a second steer while one is owed is refused ("a prompt is already waiting"), not a cancel of
+  the first.
+- Any other Codex seat (idle, spawning, at a dialog, unread count) keeps the parked road.
+
+**Not done.** A daemon handover forgets an owed steer (the `Owed` ledger is memory): its words are
+in Codex's box or its turn, and the phone's receipt reads as the restart left it. The count can
+be raced by a steer a person typed in the pane between the paste and the Enter; that acks ours.
+The parked road's drop on a hand-typed turn or a wake is unchanged.
+
+Tests: `runtime::tests::a_steer_counts_when_the_server_takes_it_on_the_foreground_thread`,
+`codex::tests::a_running_turns_composer_is_a_box_and_its_cursor_says_whether_it_holds_text`,
+`provider_e2e::{a_steer_goes_into_a_running_codex_turn_and_is_acked_by_the_runtime,
+a_codex_dialog_refuses_a_steer_in_the_boards_words, an_unacked_codex_steer_is_pressed_once_and_given_up}`,
+the Codex rig's `steer` case, `state.test.js`'s help-line test and the UX suite's Codex seat.
