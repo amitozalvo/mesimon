@@ -2635,7 +2635,7 @@ mod tests {
             mk(SessionState::RequiresAction { reason: Reason::Plan }, Some(10), Confidence::High);
         let low = mk(RA_PERM, Some(1), Confidence::Low);
         let running = mk(SessionState::Running, None, Confidence::High);
-        board.sessions = vec![running, plan.clone(), low, perm_late.clone(), perm_early.clone()];
+        *board.sessions = vec![running, plan.clone(), low, perm_late.clone(), perm_early.clone()];
         let q = attention_queue(&board);
         let ids: Vec<_> = q.iter().map(|s| s.id).collect();
         assert_eq!(ids, vec![perm_early.id, perm_late.id, plan.id]);

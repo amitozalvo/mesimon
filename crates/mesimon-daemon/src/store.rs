@@ -795,7 +795,7 @@ pub fn load_with(paths: &Paths, seed_tags: bool) -> Result<Loaded> {
     }
 
     let (sessions, sessions_write_barred) = load_sessions(&paths.sessions_file(), &mut notices);
-    board.sessions = sessions;
+    board.sessions = sessions.into();
 
     Ok(Loaded { board, notices, columns_write_barred, sessions_write_barred })
 }
@@ -2775,6 +2775,79 @@ by = "local"
         assert_eq!(again.board.default_tier.as_deref(), Some("01A"));
         assert_eq!(again.board.tiers, loaded.board.tiers);
         assert_eq!(again.board.tickets[0].tier.as_deref(), Some("01A"));
+        cleanup(&dir, &paths);
+    }
+
+    /// A board the size of the author's (T-839: 655 records, `sessions.json`
+    /// 1.28 MB), for the timing below.
+    fn big_board(board: &mut Board, dir: &Path) {
+        use mesimon_core::board::{SessionKind, SessionState};
+        for n in 0..655u32 {
+            let id = uuid::Uuid::from_u128(u128::from(n) + 1);
+            let mut argv: Vec<String> = ["claude", "--session-id"].map(String::from).into();
+            argv.push(id.to_string());
+            argv.push("--settings".into());
+            argv.push(format!("{}/hooks/{id}.json", dir.display()));
+            argv.push("--mcp-config".into());
+            argv.push(format!("{{\"mcpServers\":{{\"mesimon\":{{\"command\":\"{}/target/debug/mesimon\",\"args\":[\"mcp\",\"--session\",\"{id}\"]}}}}}}", dir.display()));
+            argv.push("--allowedTools".into());
+            argv.push("mcp__mesimon__get_ticket,mcp__mesimon__list_board,mcp__mesimon__read_note,mcp__mesimon__write_note,mcp__mesimon__move_ticket,mcp__mesimon__create_ticket,mcp__mesimon__tag_ticket,mcp__mesimon__raise_hand".into());
+            let mut r = SessionRecord::new(
+                id,
+                SessionKind::Claude,
+                ulid::Ulid::from_parts(1, u128::from(n)),
+                argv,
+                format!("{}/worktrees/T-{n}-a-ticket-title-slug", dir.display()),
+                SessionState::Sleeping,
+            );
+            r.claude_session_id = Some(id);
+            r.transcript_path =
+                Some(format!("/Users/someone/.claude/projects/-a-project-dir/{id}.jsonl"));
+            r.title = Some("Fix the auth redirect loop on the settings page".into());
+            r.state_changed_at = Some(1_790_870_640_000);
+            board.sessions.push(r);
+        }
+    }
+
+    /// Not an assertion about wall clock (see `search.rs`): the numbers in
+    /// STALE-MAP's T-839 block, printed so someone can check them.
+    #[test]
+    #[ignore = "prints a timing; run with --ignored"]
+    fn how_long_a_big_sessions_save_takes() {
+        let (dir, paths) = scratch("timing");
+        let mut board = load_with(&paths, false).unwrap().board;
+        big_board(&mut board, &dir);
+        let mut written = String::new();
+        let t0 = std::time::Instant::now();
+        save_sessions_if_changed(&paths, &board, &mut written).unwrap();
+        println!(
+            "first write   {:>8.2} ms, {} bytes",
+            t0.elapsed().as_secs_f64() * 1e3,
+            written.len()
+        );
+        let t0 = std::time::Instant::now();
+        for _ in 0..20 {
+            save_sessions_if_changed(&paths, &board, &mut written).unwrap();
+        }
+        println!(
+            "unchanged     {:>8.2} ms, text compared",
+            t0.elapsed().as_secs_f64() * 1e3 / 20.0
+        );
+        // `persist_sessions` since T-839: an unmarked board is not serialised.
+        board.sessions.mark_clean();
+        let t0 = std::time::Instant::now();
+        for _ in 0..20 {
+            if board.sessions.is_dirty() {
+                save_sessions_if_changed(&paths, &board, &mut written).unwrap();
+            }
+        }
+        println!("unchanged     {:>8.5} ms, unmarked", t0.elapsed().as_secs_f64() * 1e3 / 20.0);
+        let t0 = std::time::Instant::now();
+        for n in 0..20 {
+            board.sessions[0].title = Some(format!("t{n}"));
+            save_sessions_if_changed(&paths, &board, &mut written).unwrap();
+        }
+        println!("one changed   {:>8.2} ms", t0.elapsed().as_secs_f64() * 1e3 / 20.0);
         cleanup(&dir, &paths);
     }
 }

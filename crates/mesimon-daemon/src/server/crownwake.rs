@@ -1808,7 +1808,11 @@ impl Daemon {
     /// agent arms or ends without a turn does not make a second wake.
     pub(super) fn hear_lingering(&mut self) -> bool {
         let sessions = &self.board.sessions;
-        self.lingered.retain(|id| sessions.iter().any(|s| s.id == *id));
+        let known = |id: &uuid::Uuid| sessions.iter().any(|s| s.id == *id);
+        // Asked before it is written: a `&mut` marks the ledger (T-839).
+        if !self.lingered.iter().all(known) {
+            self.lingered.retain(|id| known(id));
+        }
         let Some(crown) = self.board.crown_holder().map(|t| t.id) else { return false };
         let now = now_ms();
         let after = super::linger_ms();

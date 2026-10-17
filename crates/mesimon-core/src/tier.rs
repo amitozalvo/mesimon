@@ -828,7 +828,7 @@ mod tests {
             Book::new(&ours, b).ring(t).into_iter().map(|t| t.id).collect()
         };
         assert_eq!(ids(&board), ["B", "A"], "a parked claude: its provider's, in order");
-        assert_eq!(ids(&Board { sessions: vec![], ..board.clone() }), ["B", "A", "C"]);
+        assert_eq!(ids(&Board { sessions: Default::default(), ..board.clone() }), ["B", "A", "C"]);
         // Nobody made a tier: the two built-ins are the whole cycle.
         let none = MachineTiers::default();
         assert_eq!(
@@ -849,7 +849,7 @@ mod tests {
         // The seat's provider (T-685): the parked claude's while it holds the
         // seat, the tier's once the seat is empty.
         assert_eq!(book.seat_provider(t), AgentProvider::ClaudeCode);
-        let empty = Board { sessions: vec![], ..board.clone() };
+        let empty = Board { sessions: Default::default(), ..board.clone() };
         assert_eq!(Book::new(&machine, &empty).seat_provider(t), AgentProvider::Codex);
     }
 

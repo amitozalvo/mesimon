@@ -328,7 +328,7 @@ mod tests {
     }
 
     fn board_with(sessions: Vec<SessionRecord>) -> Board {
-        Board { sessions, ..Board::default() }
+        Board { sessions: sessions.into(), ..Board::default() }
     }
 
     #[test]

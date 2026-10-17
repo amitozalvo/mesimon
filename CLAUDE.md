@@ -486,7 +486,9 @@ its own `schema_version`; a file from a newer build is left untouched and its wr
 **barred** rather than downgraded. Every save goes through
 `persist_columns`/`persist_sessions`/`persist_worktrees`/`persist_queue`/`persist_started`/
 `persist_costs`/`persist_crown`/`persist_train`/`persist_forge`, which honour the bars — never call `store::save_*`, `worktree::save_bindings`,
-`askqueue::save`, `started::save` or `cost::save` directly. `crown.json` (T-602) is the crown's
+`askqueue::save`, `started::save` or `cost::save` directly. `board.sessions` and the crown
+ledger's fields are `Tracked` (T-839): any `&mut` marks them and an unmarked one is not
+serialised, so a tick stage reads before it writes. `crown.json` (T-602) is the crown's
 wake ledger, so a restart neither loses a wake nor says one twice; `train.json` (T-635) keeps
 the merge train's rebase asks whose turn is still open, so a restart mid-rebase keeps the hold; `forge.json` (T-752) keeps each ticket's PRs, so a
 restart's first snapshot carries them. The ask queue's starts and wakes ride `queue.json` (T-418) and come

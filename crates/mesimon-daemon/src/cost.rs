@@ -679,9 +679,15 @@ pub fn read_only(paths: &Paths) -> Option<Ledger> {
         .ok()
 }
 
+/// `Ledger`'s shape with this build's schema, borrowed rather than cloned
+/// (T-839): the ledger is megabytes and only its version changes.
 pub fn save(paths: &Paths, ledger: &Ledger) -> Result<()> {
-    let mut body = ledger.clone();
-    body.schema_version = COSTS_SCHEMA;
+    #[derive(Serialize)]
+    struct Borrowed<'a> {
+        schema_version: u32,
+        tickets: &'a BTreeMap<ulid::Ulid, TicketLedger>,
+    }
+    let body = Borrowed { schema_version: COSTS_SCHEMA, tickets: &ledger.tickets };
     crate::store::write_atomic(
         &paths.costs_file(),
         &serde_json::to_string(&body)?,
@@ -1027,6 +1033,13 @@ mod tests {
             p
         };
         save(&paths, &ledger).unwrap();
+        // The borrowed body is the ledger's own shape (T-839): a field
+        // added to `Ledger` and not to it fails here.
+        let whole = Ledger { schema_version: COSTS_SCHEMA, ..ledger.clone() };
+        assert_eq!(
+            std::fs::read_to_string(paths.costs_file()).unwrap(),
+            serde_json::to_string(&whole).unwrap()
+        );
         let (back, notices, barred) = load_or_recover(&paths);
         assert!(notices.is_empty() && !barred);
         assert_eq!(back.tickets, ledger.tickets);

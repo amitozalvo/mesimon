@@ -30,6 +30,7 @@ use mesimon_core::crown;
 use mesimon_core::mcp;
 use mesimon_core::reconcile::{reconcile, state_for};
 use mesimon_core::road::{self, ModCommand, Road};
+use mesimon_core::tracked::Tracked;
 use mesimon_core::usage::{Provider, Wants};
 use mesimon_core::{authorize, fracindex, Action, Decision, Principal, Resource};
 
@@ -755,13 +756,13 @@ pub struct Daemon {
     /// since the crown's last turn, rendered into ONE sentence when the crown itself
     /// is idle. Kept in `crown.json` (T-602), so a restart loses none.
     /// Uncrowning drops them.
-    crown_wakes: Vec<CrownWake>,
+    crown_wakes: Tracked<Vec<CrownWake>>,
     /// Each worker's work as its last judged turn left it and as the last
     /// wake about it described it (T-469): what the next turn's end is
     /// compared with — a second idle at the same tip delivers nothing —
     /// and where a wake's delta runs from. Kept in `crown.json` with the
     /// wakes (T-602). A new crown starts with it empty.
-    crown_heard: HashMap<ulid::Ulid, crownwake::Heard>,
+    crown_heard: Tracked<HashMap<ulid::Ulid, crownwake::Heard>>,
     /// Workers the restored ledger names, owed one look after the restart
     /// (T-602, `hear_restored`), with the turn the last daemon did not
     /// judge; let go at `crown_recheck_until`.
@@ -771,6 +772,9 @@ pub struct Daemon {
     crown_barred: bool,
     /// The ledger as last written, so an unchanged one is not written again.
     crown_written: String,
+    /// The crown that ledger was written for (T-839): a change of hands
+    /// is a change of the ledger, though no `Tracked` field moved.
+    crown_written_for: Option<ulid::Ulid>,
     /// Tickets whose branch the worktree flags just read `merged` after
     /// reading it unmerged, or on a first reading of a branch the crown was
     /// told of (T-527), heard by the crown on the next tick (`hear_merges`).
@@ -780,7 +784,7 @@ pub struct Daemon {
     /// the ack of words that carried a reason (`Owed::asked`) and taken by
     /// that turn's end: the crown's ask comes back as an answer, a
     /// merge-flow sentence as a merge step the crown is not woken for.
-    turn_asks: HashMap<ulid::Ulid, TurnAsk>,
+    turn_asks: Tracked<HashMap<ulid::Ulid, TurnAsk>>,
     /// The crown's words that went in mid-turn and whose ack outlived the
     /// in-flight window (T-600), by ticket: the mark the ack would have
     /// set, kept for the turn that takes them (`crownwake::LateAsk`).
@@ -791,11 +795,11 @@ pub struct Daemon {
     /// between — a stale demote, a `SessionStart` in a living pane — is not
     /// a second one. On the writer, so the probe that runs off it cannot
     /// race the next turn's start.
-    turns_open: std::collections::HashSet<ulid::Ulid>,
+    turns_open: Tracked<std::collections::HashSet<ulid::Ulid>>,
     /// Records whose stretch idle with background tasks the crown has been
     /// told of (T-599, `hear_lingering`), forgotten on the record's next
     /// foreground turn. Kept in `crown.json` (T-602).
-    lingered: std::collections::HashSet<uuid::Uuid>,
+    lingered: Tracked<std::collections::HashSet<uuid::Uuid>>,
     /// The last automatic move each ticket was refused (T-749), for its
     /// page and `get_ticket`: the gate's words, kept until the ticket moves
     /// or, for a column rule, until the rule passes. Memory only, as the
@@ -806,7 +810,7 @@ pub struct Daemon {
     /// as a worker it started does (`crownwake::crown_hears`). A watch ends
     /// at the merge, with `unwatch`, when the ticket leaves the board, when
     /// the row is turned off, and with the crown. Kept in `crown.json`.
-    crown_watched: std::collections::BTreeSet<ulid::Ulid>,
+    crown_watched: Tracked<std::collections::BTreeSet<ulid::Ulid>>,
     /// The session whose dialog the `answer_agent` call in hand queued an
     /// answer for (T-569): the writer loop parks that call's reply with the
     /// delivery (`control_park_reply`), which answers it when it settles.
@@ -1308,19 +1312,20 @@ pub fn run(paths: Paths) -> Result<()> {
         crown_touches: HashMap::new(),
         crown_said: HashMap::new(),
         crown_dropped: HashMap::new(),
-        crown_wakes: Vec::new(),
-        crown_heard: HashMap::new(),
+        crown_wakes: Default::default(),
+        crown_heard: Default::default(),
         crown_recheck: HashMap::new(),
         crown_recheck_until: 0,
         crown_barred,
         crown_written: String::new(),
+        crown_written_for: None,
         crown_landed: Vec::new(),
-        turn_asks: HashMap::new(),
+        turn_asks: Default::default(),
         late_asks: HashMap::new(),
-        turns_open: std::collections::HashSet::new(),
-        lingered: std::collections::HashSet::new(),
+        turns_open: Default::default(),
+        lingered: Default::default(),
         held: crate::movegate::HeldMoves::default(),
-        crown_watched: std::collections::BTreeSet::new(),
+        crown_watched: Default::default(),
         answer_waits: None,
         modroad,
         mod_park: None,
@@ -3232,7 +3237,14 @@ impl Daemon {
         }
         let Ok(facts) = self.backend.pane_facts() else { return Panes::default() };
         let mut changed = false;
-        for rec in self.board.sessions.iter_mut().filter(|r| r.state.has_pane()) {
+        // Read first, written only where a title moved: a `&mut` on the
+        // records marks them for the save (T-839), and this runs every
+        // tail-poll bucket.
+        for i in 0..self.board.sessions.len() {
+            let rec = &self.board.sessions[i];
+            if !rec.state.has_pane() {
+                continue;
+            }
             if crate::agents::adapter(rec.kind).is_some_and(|adapter| {
                 adapter.capabilities().observation == crate::agents::ObservationMode::Structured
             }) {
@@ -3251,7 +3263,7 @@ impl Daemon {
                 continue;
             }
             if rec.title.as_deref() != Some(clean.as_str()) {
-                rec.title = Some(clean);
+                self.board.sessions[i].title = Some(clean);
                 changed = true;
             }
         }
@@ -3747,8 +3759,10 @@ impl Daemon {
                 )
             })
             .collect();
-        self.board.sessions.retain(|session| !orphans.contains(&session.id));
-        dirty |= !orphans.is_empty();
+        if !orphans.is_empty() {
+            self.board.sessions.retain(|session| !orphans.contains(&session.id));
+            dirty = true;
+        }
         for (id, key, plan) in plans {
             self.record_plan(id, plan);
             if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
@@ -8732,16 +8746,27 @@ impl Daemon {
     /// Also the one place `started.json` learns a key (T-441): every change
     /// of a record's conversation persists the sessions, so folding here
     /// misses none — and folds before the bar, which is `sessions.json`'s.
+    ///
+    /// Many tick stages persist on a change that touched no record: those
+    /// cost nothing, because a record is only reached for writing through
+    /// `Tracked`'s mark (T-839). A marked one is serialised and still
+    /// compared with the last write, since the mark over-approximates.
     fn persist_sessions(&mut self) {
+        if !self.board.sessions.is_dirty() {
+            return;
+        }
         if crate::started::fold(&mut self.started, &self.board.sessions) {
             self.persist_started();
         }
         if self.sessions_barred {
+            self.board.sessions.mark_clean();
             return;
         }
-        // Many tick stages persist on a change that touched no record.
-        let _ =
-            store::save_sessions_if_changed(&self.paths, &self.board, &mut self.sessions_written);
+        if store::save_sessions_if_changed(&self.paths, &self.board, &mut self.sessions_written)
+            .is_ok()
+        {
+            self.board.sessions.mark_clean();
+        }
     }
 
     /// The single write path for `costs.json` (T-327).

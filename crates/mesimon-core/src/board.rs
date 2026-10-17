@@ -2214,7 +2214,9 @@ pub enum FollowUpMode {
 pub struct Board {
     pub columns: Vec<Column>,
     pub tickets: Vec<Ticket>,
-    pub sessions: Vec<SessionRecord>,
+    /// Marked on every `&mut` (T-839), so `sessions.json` is serialised
+    /// only after something may have changed.
+    pub sessions: crate::tracked::Tracked<Vec<SessionRecord>>,
     /// Provider captured when a new agent start is accepted. Existing
     /// sessions, including sleeping ones, retain their persisted kind.
     #[serde(default)]
@@ -2448,7 +2450,7 @@ impl Default for Board {
         Self {
             columns: Vec::new(),
             tickets: Vec::new(),
-            sessions: Vec::new(),
+            sessions: Vec::new().into(),
             agent_provider: AgentProvider::default(),
             crown_budget: DEFAULT_CROWN_BUDGET,
             crown_mode: CrownMode::default(),
@@ -3793,7 +3795,7 @@ mod tests {
         session.codex_stopping = true;
         let mut board = Board {
             agent_provider: AgentProvider::ClaudeCode,
-            sessions: vec![session],
+            sessions: vec![session].into(),
             ..Board::default()
         };
         assert!(board.live_agent(ticket).is_some());
@@ -3848,7 +3850,8 @@ mod tests {
                 state,
             )
         };
-        let with = |sessions: Vec<SessionRecord>| Board { sessions, ..Board::default() };
+        let with =
+            |sessions: Vec<SessionRecord>| Board { sessions: sessions.into(), ..Board::default() };
         let paned = with(vec![rec(SessionKind::Claude, SessionState::Running)]);
         assert_eq!(
             paned.send_now_seat(ticket).map(|s| s.id),
@@ -4160,7 +4163,7 @@ mod tests {
             )
         };
         let gone = SessionState::Exited { reason: ExitReason::UserQuit };
-        board.sessions = vec![
+        *board.sessions = vec![
             rec(1, 1, SessionState::Sleeping),
             rec(2, 2, SessionState::Sleeping),
             rec(3, 2, SessionState::Running),

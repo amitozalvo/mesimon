@@ -27407,3 +27407,45 @@ change, nothing the board says moves. Like T-688 was to T-682.
   change is a `repaint`, folded into the tick's broadcast without persisting the sessions.
   It broadcast on its own before, and a tick with any other change broadcast again: two
   snapshot round-trips for every TUI.
+
+## Persist only what changed: `Tracked`, a borrowed costs body (T-839, 2026-10-17)
+
+Three state-file writes on the writer thread did the whole serialisation to learn nothing moved
+(T-838's "left open"). `sessions.json` and `crown.json` now skip the build when no field they are
+built from was reached for writing; `costs.json` is serialised from a borrowed body. No schema
+bump, no wire change: every byte on disk and on the wire is the same.
+
+- **`mesimon_core::tracked::Tracked<T>`** wraps a value and sets a mark in `DerefMut`, so every
+  `&mut` (a `push`, an `iter_mut().find`, an `entry`, a field assignment through an index) marks
+  it, and the compiler routes every mutator through the mark: no call site has to remember it,
+  which about 76 record mutation sites and 55 crown-ledger ones made the only safe shape (a
+  hand-set dirty flag is one forgotten site from a lost write across a restart). It reads, iterates
+  and serialises as the value; a new, cloned or deserialised one starts marked, so the first save
+  after it is never skipped. The mark over-approximates (a `get_mut` that changes nothing marks),
+  so a marked value still goes through the old text comparison: never more work than before.
+- **`Board::sessions` is `Tracked<Vec<SessionRecord>>`.** `persist_sessions` returns at once while
+  it is unmarked (skipping `started::fold`'s key per record too: a conversation key changes only on
+  a record), and marks it clean after a save that succeeded or a barred one. `sessions_written` and
+  `persist_sessions` as the single write path are unchanged.
+- **The crown ledger's six fields** (`crown_wakes`, `crown_heard`, `turns_open`, `turn_asks`,
+  `lingered`, `crown_watched`) are `Tracked`, and `crown_written_for` is the crown the last write
+  was for, since a change of hands moves no field. `persist_crown` builds `ledger()` only when one
+  is marked or the crown changed.
+- **Two tick stages took `&mut` every tick and changed nothing**, which would have kept the mark
+  set: `refresh_panes` walked the records with `iter_mut` (now by index, writing only a title that
+  moved) and `hear_lingering` called `lingered.retain` every bucket (now only when an id is gone);
+  the Codex orphan `retain` runs only on orphans. The other tick-time sites mutate only on an event.
+- **`cost::save`** serialises `{schema_version, tickets: &ledger.tickets}` instead of cloning the
+  2 MB ledger to set its version; its round-trip test asserts the bytes equal the owned ledger's,
+  so a field added to `Ledger` and not to the borrowed body fails there.
+
+**Measured** (ignored tests `how_long_a_big_sessions_save_takes` and
+`how_long_a_big_crown_ledger_check_takes`, run with `--ignored --nocapture`): 655 generated records
+(`sessions.json` 1.21 MB) and a ledger that heard 650 workers (233 KB). An unchanged
+`persist_sessions` took 20.3 ms in a debug build (0.8–1.2 ms release) and now takes ~10 ns; an
+unchanged `persist_crown` took 5.2 ms debug (0.64 ms release) and now ~10 ns. The crown figure is
+`ledger()`'s work replayed on the fixture, since no unit test builds a `Daemon`. A real change of
+one record still pays the serialisation and `write_atomic`'s fsync (30 ms debug, 9–11 ms release).
+
+**Left as it was:** a parked seat keeps its `argv` (T-838's separate decision); a real record change
+still writes the whole file.

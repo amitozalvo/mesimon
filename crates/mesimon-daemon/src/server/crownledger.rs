@@ -79,7 +79,7 @@ impl Daemon {
         Ledger {
             schema_version: CROWN_SCHEMA,
             crown: self.board.crown,
-            wakes: self.crown_wakes.clone(),
+            wakes: self.crown_wakes.to_vec(),
             heard: self.crown_heard.iter().map(|(w, h)| (*w, h.clone())).collect(),
             turns_open: self.turns_open.iter().copied().collect(),
             asks: self.turn_asks.iter().map(|(w, a)| (*w, *a)).collect(),
@@ -88,19 +88,48 @@ impl Daemon {
         }
     }
 
+    /// Whether the ledger may differ from the last one written: a field it
+    /// is built from was reached for writing (`Tracked`, T-839) or the crown
+    /// changed hands.
+    fn ledger_dirty(&self) -> bool {
+        self.board.crown != self.crown_written_for
+            || self.crown_wakes.is_dirty()
+            || self.crown_heard.is_dirty()
+            || self.turns_open.is_dirty()
+            || self.turn_asks.is_dirty()
+            || self.lingered.is_dirty()
+            || self.crown_watched.is_dirty()
+    }
+
+    fn mark_ledger_clean(&mut self) {
+        self.crown_written_for = self.board.crown;
+        self.crown_wakes.mark_clean();
+        self.crown_heard.mark_clean();
+        self.turns_open.mark_clean();
+        self.turn_asks.mark_clean();
+        self.lingered.mark_clean();
+        self.crown_watched.mark_clean();
+    }
+
     /// The single write path for `crown.json`: on the tick and on the way
-    /// down, written only when it changed, so a quiet board writes nothing.
+    /// down, written only when it changed, so a quiet board writes nothing
+    /// and, since T-839, builds nothing either: the 1 s bucket built and
+    /// serialised the whole ledger to learn that.
     pub(super) fn persist_crown(&mut self) {
-        if self.crown_barred {
+        if self.crown_barred || !self.ledger_dirty() {
             return;
         }
         let Ok(text) = serde_json::to_string_pretty(&self.ledger()) else { return };
-        let _ = store::write_if_changed(
+        if store::write_if_changed(
             &self.paths.crown_file(),
             text,
             store::PRIVATE,
             &mut self.crown_written,
-        );
+        )
+        .is_ok()
+        {
+            self.mark_ledger_clean();
+        }
     }
 
     /// Read the ledger back at start. What the last daemon was told of each
@@ -180,5 +209,55 @@ mod tests {
         // An empty file of this schema is an empty ledger.
         assert!(parse("{\"schema_version\": 1}").unwrap().heard.is_empty());
         assert!(parse("{\"schema_version\": 1}").unwrap().watched.is_empty());
+    }
+
+    /// Not an assertion about wall clock (see `search.rs`): the number in
+    /// STALE-MAP's T-839 block. `persist_crown` builds `Daemon::ledger` and
+    /// its text to compare with the last write; this is that work on a
+    /// ledger that heard 650 workers, a `Daemon` being no unit test's.
+    #[test]
+    #[ignore = "prints a timing; run with --ignored"]
+    fn how_long_a_big_crown_ledger_check_takes() {
+        let told = r#"{"tip":"0123456789abcdef0123456789abcdef01234567","merge":"ahead","ahead":3,"column":"REVIEW"}"#;
+        let heard: Vec<String> = (0..650u128)
+            .map(|n| {
+                let w = ulid::Ulid::from_parts(1, n + 10);
+                format!(r#""{w}": {{"judged": {told}, "told": {told}}}"#)
+            })
+            .collect();
+        let text = format!(
+            r#"{{"schema_version": 1, "crown": "{}", "heard": {{{}}}}}"#,
+            ulid::Ulid::from_parts(1, 1),
+            heard.join(",")
+        );
+        let ledger = parse(&text).unwrap();
+        let mut held: Tracked<HashMap<ulid::Ulid, Heard>> =
+            ledger.heard.clone().into_iter().collect();
+        let build = |held: &HashMap<ulid::Ulid, Heard>| Ledger {
+            schema_version: CROWN_SCHEMA,
+            crown: ledger.crown,
+            heard: held.iter().map(|(w, h)| (*w, h.clone())).collect(),
+            ..Ledger::default()
+        };
+        let written = serde_json::to_string_pretty(&build(&held)).unwrap();
+        let t0 = std::time::Instant::now();
+        for _ in 0..20 {
+            let now = serde_json::to_string_pretty(&build(&held)).unwrap();
+            assert_eq!(now, written);
+        }
+        println!(
+            "unchanged     {:>8.2} ms, {} bytes, built and compared",
+            t0.elapsed().as_secs_f64() * 1e3 / 20.0,
+            written.len()
+        );
+        // `persist_crown` since T-839: no field marked, nothing built.
+        held.mark_clean();
+        let t0 = std::time::Instant::now();
+        for _ in 0..20 {
+            if held.is_dirty() {
+                let _ = serde_json::to_string_pretty(&build(&held)).unwrap();
+            }
+        }
+        println!("unchanged     {:>8.5} ms, unmarked", t0.elapsed().as_secs_f64() * 1e3 / 20.0);
     }
 }
