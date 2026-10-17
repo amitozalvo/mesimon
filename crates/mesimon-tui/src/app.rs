@@ -18591,7 +18591,7 @@ mod tests {
         assert_eq!(shows(&app), Some(keymap::Value::Word("1 min".into())));
         assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetColumnSettings")).count(), 6);
         app.board_mut().agent_provider = mesimon_core::board::AgentProvider::Codex;
-        assert!(row(&app).is_none(), "nothing parks a Codex agent here");
+        assert!(row(&app).is_some(), "a Codex agent is parked by the same timer (T-849)");
     }
 
     /// T-735: the summary-box gate is a column row, off until a person turns

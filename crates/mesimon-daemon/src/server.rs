@@ -1015,11 +1015,16 @@ pub fn run(paths: Paths) -> Result<()> {
             let had_pane = r.state.has_pane();
             r.state = state_for(link, &r.state, r.kind.is_agent());
             if r.kind == SessionKind::Codex && (had_pane || r.state.has_pane()) {
-                // Unsent words are intentionally in memory (the same policy
-                // as Claude's owed ledger). A new daemon must not reconstruct
-                // and submit a partial prompt after losing those words.
+                // The owed ledger is memory (the same policy as Claude's). A
+                // new daemon must not reconstruct and submit a partial prompt
+                // after losing those words.
+                // Words the last daemon handed over unpasted (T-849) are
+                // whole, and are parked again below.
                 if r.pending_submit && !r.codex_submit_sent {
                     r.pending_submit = false;
+                    if r.unsent.is_some() {
+                        owed_handed.push(*id);
+                    }
                 }
                 r.observation_hold = true;
                 r.codex_stopping |= had_pane && !r.state.has_pane();
@@ -4601,7 +4606,9 @@ impl Daemon {
     /// next daemon, which resends a brief to a seat that never took a prompt
     /// (`resend_after_restart`) and otherwise lights the card. Words already
     /// pasted are in the box and may have been submitted; they are not
-    /// guessed at. Codex has no `unsent`, and keeps its own policy.
+    /// guessed at. A Codex seat's words are kept the same way (T-849):
+    /// `drive_codex_inputs` parks them here until its paste, so parked words
+    /// are words no box holds.
     fn hand_over_owed(&mut self) -> bool {
         let owed: Vec<(uuid::Uuid, Parked)> = self
             .owed
@@ -4613,7 +4620,14 @@ impl Daemon {
             .collect();
         let mut changed = false;
         for (id, words) in owed {
-            changed |= self.mark_unsent(id, Some(words));
+            changed |= match self.board.sessions.iter_mut().find(|s| s.id == id) {
+                Some(rec) if rec.kind == SessionKind::Codex && rec.state.has_pane() => {
+                    let Parked { text, brief, .. } = words;
+                    rec.unsent = Some(mesimon_core::board::Unsent { text, brief });
+                    true
+                }
+                _ => self.mark_unsent(id, Some(words)),
+            };
         }
         changed
     }
@@ -4627,6 +4641,9 @@ impl Daemon {
     /// keeps the card's mark and the seat's resend, as a failed start does.
     fn resend_after_restart(&mut self, id: uuid::Uuid) -> bool {
         let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { return false };
+        if rec.kind == SessionKind::Codex {
+            return self.repark_codex_after_restart(id);
+        }
         let Some(unsent) = rec.unsent.clone().filter(|u| u.brief) else { return false };
         let history_missing =
             crate::agents::adapter(rec.kind).is_some_and(|a| a.history_missing(rec));
@@ -4645,6 +4662,26 @@ impl Daemon {
             rec.unsent = None;
             rec.pending_submit = true;
         }
+        self.feed.board("daemon", "prompt_resent", Some(ticket));
+        true
+    }
+
+    /// A Codex seat's handed-over words (T-849), parked again as the last
+    /// daemon held them: none was pasted, so `drive_codex_inputs` pastes them
+    /// on the seat's next proven idle edge, the title first while the prefill
+    /// is still owed. A turn the runtime reports begun meanwhile is the
+    /// person's own prompt, and its ack drops them as it drops any ask.
+    fn repark_codex_after_restart(&mut self, id: uuid::Uuid) -> bool {
+        let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else { return false };
+        let Some(unsent) = rec.unsent.take() else { return false };
+        if !rec.state.has_pane() || rec.codex_submit_sent || self.owed.contains_key(&id) {
+            self.journal.line(&format!("session {id}'s unsent words dropped on restart"));
+            return true;
+        }
+        rec.pending_submit = true;
+        let ticket = rec.ticket;
+        let parked = Parked { text: unsent.text, brief: unsent.brief, title: unsent.brief };
+        self.owed.insert(id, Owed::launch(ticket, parked, Ack::PROMPT));
         self.feed.board("daemon", "prompt_resent", Some(ticket));
         true
     }

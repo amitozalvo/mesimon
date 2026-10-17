@@ -1276,8 +1276,11 @@ fn a_codex_seat_held_past_its_turn_and_its_release_reach_the_journal() {
     assert_eq!(journal().matches("released a turn").count(), 1);
 }
 
+/// Words parked for a held Codex seat reached no box, so the shutdown hands
+/// them over as `unsent` and the next daemon pastes them on the seat's next
+/// idle edge, with one Enter (T-849).
 #[test]
-fn daemon_handover_abandons_unpasted_volatile_words_without_submitting_partial_input() {
+fn daemon_handover_keeps_unpasted_codex_words_and_sends_them_once() {
     let Some(h) = Fixture::boot("providerunsent") else { return };
     let mut c = h.client();
     select(&mut c, AgentProvider::Codex);
@@ -1291,7 +1294,7 @@ fn daemon_handover_abandons_unpasted_volatile_words_without_submitting_partial_i
     assert!(matches!(
         c.request(Command::PromptSession {
             ticket,
-            text: "volatile custom words".into(),
+            text: "handed over words".into(),
             queued: false,
             immediately: false,
             accept_plan: false,
@@ -1303,15 +1306,22 @@ fn daemon_handover_abandons_unpasted_volatile_words_without_submitting_partial_i
     ));
     assert!(session(&mut c, id).pending_submit);
     c = h.restart(&mut c);
-    h.control(id, json!({"hold":false}));
-    wait_until(Duration::from_secs(10), "reconciled session after abandoned unsent words", || {
-        let record = session(&mut c, id);
-        !record.pending_submit && !record.observation_hold
+    let record = session(&mut c, id);
+    assert!(record.pending_submit && record.unsent.is_none(), "{record:?}");
+    wait_until(Duration::from_secs(10), "the resend on the feed", || {
+        fed(&h, "prompt_resent", ticket) == 1
     });
-    std::thread::sleep(Duration::from_millis(800));
-    assert!(!h.owner.dir.join(format!("{id}.submits")).exists());
+    assert_eq!(submits(&h, id), 0, "nothing goes into a held seat");
+    h.control(id, json!({"hold":false}));
+    wait_until(Duration::from_secs(10), "the handed-over words submitted", || submits(&h, id) == 1);
     let input = std::fs::read_to_string(h.owner.dir.join(format!("{id}.input"))).unwrap();
-    assert!(!input.contains("volatile custom words"));
+    assert_eq!(input.matches("handed over words").count(), 1, "{input}");
+    h.control(id, json!({"state":{"state":"running"},"turn_id":"handed-over-turn"}));
+    wait_until(Duration::from_secs(10), "the new turn acks them", || {
+        let record = session(&mut c, id);
+        !record.pending_submit && record.state == SessionState::Running
+    });
+    assert_eq!(submits(&h, id), 1);
 }
 
 #[test]

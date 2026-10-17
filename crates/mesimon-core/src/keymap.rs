@@ -6405,13 +6405,13 @@ static COLUMN_ITEMS: &[MenuItem] = &[
         avail: |c| !c.col_new,
         key: "",
     },
-    // T-543, the board's only idle timer since T-610. Claude only: a Codex
-    // board hides it, because nothing would act on a Codex agent here.
+    // T-543, the board's only idle timer since T-610; it parks a Codex
+    // agent too (T-828), so every provider's board shows it (T-849).
     MenuItem {
         verb: Verb::ColumnSleepAfter,
         label: |_| "Sleep after".into(),
         detail: |_| "any agent idle at its prompt".into(),
-        avail: |c| !c.col_new && !c.claude_unused,
+        avail: |c| !c.col_new,
         key: "",
     },
 ];
@@ -6493,13 +6493,13 @@ fn column_value(verb: Verb, c: &Ctx) -> Option<Value> {
         // The door says what is behind it: the launch, the tools, the park.
         Verb::ColumnAgentBehaviour => {
             let tools = format!("tools {}", or(c.col_tools_word, "full"));
+            let sleep = match c.col_sleep_after {
+                0 => "sleep off".to_string(),
+                m => format!("sleep {m} min"),
+            };
             Value::Door(if c.claude_unused {
-                format!("sandbox {} ∙ {tools}", or(c.col_codex_sandbox_word, "inherit"))
+                format!("sandbox {} ∙ {tools} ∙ {sleep}", or(c.col_codex_sandbox_word, "inherit"))
             } else {
-                let sleep = match c.col_sleep_after {
-                    0 => "sleep off".to_string(),
-                    m => format!("sleep {m} min"),
-                };
                 let mode = match c.col_claude_mode_word {
                     "" | "inherit" => or(&c.col_inherit_mode, "inherit"),
                     w => w,
@@ -9807,6 +9807,28 @@ mod tests {
         assert_eq!(
             column_items(&agents).iter().map(|m| m.verb).collect::<Vec<_>>(),
             [Verb::ColumnClaudeMode, Verb::ColumnTools, Verb::ColumnSleepAfter]
+        );
+        // A Codex-only board parks its agents by the same timer (T-828), so
+        // the row and the door's word for it stay (T-849).
+        let codex = Ctx {
+            column_agents: true,
+            claude_unused: true,
+            codex_in_use: true,
+            col_sleep_after: 30,
+            ..Default::default()
+        };
+        assert_eq!(
+            column_items(&codex).iter().map(|m| m.verb).collect::<Vec<_>>(),
+            [
+                Verb::ColumnCodexSandbox,
+                Verb::ColumnCodexApproval,
+                Verb::ColumnTools,
+                Verb::ColumnSleepAfter
+            ]
+        );
+        let door = Ctx { column_agents: false, ..codex };
+        assert!(
+            matches!(value(Verb::ColumnAgentBehaviour, &door), Some(Value::Door(d)) if d.ends_with("sleep 30 min"))
         );
     }
 

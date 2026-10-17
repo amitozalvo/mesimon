@@ -7,17 +7,17 @@
    Keymap validator       >1y    ⠋ Adopt drawer import  >1y    x Flaky e2e on runner  >1y
 
 
-
-
                   ╭─ AGENT BEHAVIOUR ∙ IN PROGRESS ──────────────────────────────────────────────────╮
                   │ LAUNCH                                                                           │
                   │  Codex sandbox     workspace write                                               │
                   │  Codex approvals   on request                                                    │
                   │  Tools             ● full   ○ notes + tags   ○ read only   ○ off                 │
                   │                                                                                  │
+                  │ IDLE                                                                             │
+                  │  Sleep after       off                                                           │
+                  │                                                                                  │
                   │  native sandbox policy ∙ inherit keeps Codex configuration ∙ applies on launch/~ │
                   ╰──────────────────────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
-
 
 
 

@@ -101,7 +101,8 @@ where the check is off.
   tmux server, which the daemon does not own.
 - An agent started moments before a restart, whose brief had not reached it yet, is sent the
   brief again once the board is back. If it had already been given a prompt, its card says
-  `brief not sent` instead, and its Shift+Enter sends it.
+  `brief not sent` instead, and its Shift+Enter sends it. A Codex agent's words still waiting
+  for it are sent when it is next idle at its prompt.
 
 ## On the board
 
@@ -617,7 +618,7 @@ with the command that fixes it (`gh auth login --hostname github.com`).
 ## Sleeping idle agents
 
 A column can opt its own tickets in: **Agent behaviour › Sleep after** in the column's
-settings sleeps a Claude agent on a ticket in that column after 1, 5, 15 or 60 minutes idle.
+settings sleeps a Claude or Codex agent on a ticket in that column after 1, 5, 15 or 60 minutes idle.
 It is off by default and works even with the TUI closed; the daemon checks every ten seconds.
 Any agent idle at its prompt counts, including one you woke or interrupted that has not
 finished a turn since; anything running, waiting on you or with background work stays awake.
@@ -659,8 +660,9 @@ transcript its sessions held (subagents included), at each model's published API
 subscriber pays none of that; it is what the same work would cost on the API. `$` on the board
 switches every card's corner from its age to its cost and back; while the cards show their cost,
 the ticket page's facts line shows it too (`∙ $4.20`). **Settings › Usage** shows the board's
-last 24 hours, 7 days and 30 days, and its **Details** row the costliest tickets (Enter opens one). Codex models have no
-published price in this build, so a Codex ticket shows its tokens instead. Counting starts with this version: an
+last 24 hours, 7 days and 30 days, and its **Details** row the costliest tickets (Enter opens one). A Codex ticket is
+priced the same way, at OpenAI's standard API rates; a model with no known rate shows `?` on its card and its tokens on
+the ticket page. Counting starts with this version: an
 older ticket counts what its current sessions' transcripts hold. On Claude Code 2.1.287 or newer,
 a session's turns are counted from Claude Code's own report of each turn, and its transcript is
 read beside it as a check; `mesimon doctor`'s `costs` line says where the two disagree.

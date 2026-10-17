@@ -27804,3 +27804,38 @@ typed `/plan` on its snapshot, its footer, or not at all);
 rig's `plan-launch` case, passed on `gpt-6-luna` low: the planned start stopped on its plan with
 `codex_plan_mode` fed before the title, and the board's accept moved the same thread on to a
 turn of its own. `plan_mode_e2e` stays Claude's: its stub harness has no Codex runtime.
+
+## Codex parity leftovers: Sleep after, handed-over words, prices (T-849, 2026-10-18)
+
+Three places T-843's sweep found where a Codex seat got less than a Claude seat.
+
+**Sleep after shows on every board.** The column dialog's `Sleep after` row was hidden where no
+tier used Claude (`Ctx::claude_unused`), from when nothing parked a Codex agent; column auto-sleep
+has parked Codex since T-828, so the row is gated on `!col_new` alone, and the `Agent behaviour`
+door's Codex spelling carries the sleep word as Claude's does (`sandbox … ∙ tools … ∙ sleep …`).
+
+**A Codex seat's unpasted words cross a restart.** T-722 kept a Claude launch's parked words as
+`unsent` on the way out and left Codex dropping its own. On the Codex road the owed entry's
+`parked` is exactly what no box holds — `drive_codex_inputs` pastes title, brief and words in one
+go and clears `parked` with the prefill — so `hand_over_owed` now writes it onto a Codex seat with
+a pane too (directly, not through `mark_unsent`, whose other callers are Claude's give-ups and
+must not start marking a Codex steer). The reconcile's Codex arm still drops `pending_submit`
+without `codex_submit_sent`, and hands a record with `unsent` to `resend_after_restart`, whose
+Codex branch (`repark_codex_after_restart`) parks the words again as a launch and puts the hold
+back: the next idle edge the runtime proves pastes them, the title too while `pending_prefill` is
+owed, with one Enter. Unlike Claude's resend it does not require a seat that never took a
+prompt: the Codex road waits on the runtime's own idle and a cursor in the composer, and a turn
+the runtime reports begun while the daemon was down is the person's prompt, whose ack drops the
+words as it drops any ask (`ack_owed`). Words already pasted, or already entered
+(`codex_submit_sent`), are unchanged — never reconstructed. A seat whose pane died meanwhile
+loses them with a journal line. Feed `prompt_resent`, by `daemon`.
+
+**Codex prices: no "est." marker.** T-815 already prices Codex rollouts at OpenAI's API rates, so
+a Codex card's `$` corner is the same kind of figure as a Claude card's — both are mesimon's
+API-price estimate. The author chose no Codex-only marker, which would have read Claude's figure
+as exact; `docs/USING.md`'s stale "Codex shows its tokens instead" line now says how a Codex
+ticket is priced.
+
+Tests: `keymap::tests::the_sort_row_owns_h_and_l` (a Codex-only board lists `Sleep after` and the
+door says the sleep), `provider_e2e::daemon_handover_keeps_unpasted_codex_words_and_sends_them_once`
+(replaces `…_abandons_unpasted_volatile_words_…`, which pinned the old drop).

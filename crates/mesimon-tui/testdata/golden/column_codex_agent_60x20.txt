@@ -2,17 +2,17 @@
 
   2    IN PROGRESS                         2   2   1
 
-  T    ⠋ Fix OSC-11 detection            >1y   R   D
-  O                                            E   O
   ╭─ AGENT BEHAVIOUR ∙ IN PROGRESS ──────────────────────╮
   │ LAUNCH                                               │
   │  Codex sandbox     workspace write                   │
   │  Codex approvals   on request                        │
   │  Tools             full                              │
   │                                                      │
+  │ IDLE                                                 │
+  │  Sleep after       off                               │
+  │                                                      │
   │  native sandbox policy ∙ inherit keeps Codex config~ │
   ╰──────────────── jk select ∙ enter choose ∙ esc back ─╯
-
 
 
 
