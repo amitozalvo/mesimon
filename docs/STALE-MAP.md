@@ -27328,3 +27328,11 @@ reader.
   `cli` or `lost` since T-810); `set_board_workspace` stores `None` for the shared checkout
   where `apply_setup` stores `Some(SharedCheckout)`, read alike everywhere; OpenAI's `Price`
   carries an invented cache-write rate nothing bills yet.
+
+## Python bytecode is ignored (T-832)
+
+Four `.pyc` files under `ci/__pycache__/` and `ci/rig/__pycache__/` were tracked since T-588 and
+T-744: the root `.gitignore` was written for Rust and never named Python. `-B` on the CLI does not
+reach a module loaded through `importlib` (`ci/test_run_test.py` loads `test-run.py` that way), so
+a test run rewrote tracked bytecode and every ticket worktree carried a stray diff. The files are
+untracked and `.gitignore` names `__pycache__/` and `*.pyc`.

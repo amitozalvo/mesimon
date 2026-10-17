@@ -18,3 +18,7 @@
 /web/mesophon/pkg/
 /web/mesophon/node_modules/
 /web/mesophon/test-results/
+
+# Python bytecode (the ci/ scripts; importlib writes it despite -B on the CLI)
+__pycache__/
+*.pyc
