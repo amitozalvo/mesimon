@@ -143,7 +143,7 @@ impl Uploads {
         let refs = mesimon_core::attachment::references(text);
         let mut result = Vec::new();
         for id in ids {
-            anyhow::ensure!(refs.contains(id), "attachment upload has no note reference");
+            anyhow::ensure!(refs.contains(id), "the words do not name that picture");
             anyhow::ensure!(
                 !result.iter().any(|(m, _): &(Attachment, Vec<u8>)| m.id == *id),
                 "duplicate attachment handle"

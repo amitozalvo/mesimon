@@ -107,6 +107,7 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval() {
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Queued { .. }
     ));
@@ -136,6 +137,7 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval() {
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Queued { .. }
     ));
@@ -176,6 +178,7 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval() {
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Ok
     ));
@@ -193,6 +196,7 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval() {
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Queued { .. }
     ));
@@ -303,6 +307,7 @@ fn accepts_go_one_per_quiet_checkout_and_a_column_accepts_every_plan() {
                 plan: false,
                 tier: None,
                 resend: false,
+                uploads: Vec::new(),
             }),
             Response::Queued { .. }
         ));

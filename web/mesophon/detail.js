@@ -7,7 +7,7 @@ import { Icon, Tick } from "./icons.js";
 import { Shin, animOf } from "./shin.js";
 import { Attention } from "./dialogs.js";
 import { CrownMark, StartButton, StartReceipt, Tags, WorktreeMark, ageWords, crownTouch, stateAge } from "./lists.js";
-import { NotePane } from "./notepad.js";
+import { NotePane, PictureList, PicturePick, pastePictures } from "./notepad.js";
 import { receiptTick, sentPrompt } from "./sessions.js";
 import { startWaiting } from "./starts.js";
 import { modeHelp, queueWords, sendRefused, waitsOnYou } from "./queue.js";
@@ -121,11 +121,19 @@ function Composer({ store, ticket, entry, live }) {
   const switching = !!agent && store.switchesTier(ticket);
   const steerOff = waitsOnYou(agent) || switching;
   const mode = steerOff ? "queue" : entry?.mode || "queue";
-  const sendOff = starts
+  const sending = !!entry?.sending;
+  const sendOff = sending || (starts
     ? startOff || !entry?.draft.trim()
     : !live || !agent?.promptable || !!entry?.review || !!entry?.receipt?.waiting ||
-      !!entry?.answer?.waiting || !entry?.draft.trim();
-  const fieldOff = starts ? startOff : !agent;
+      !!entry?.answer?.waiting || !entry?.draft.trim());
+  const fieldOff = sending || (starts ? startOff : !agent);
+  // A picture with the words (T-853): offered wherever the words can go,
+  // to a host that keeps it with the ticket.
+  const pictures = !!entry && !fieldOff && store.canAskPictures;
+  const caret = useRef();
+  const mark = (e) => {
+    caret.current = e.currentTarget.selectionStart;
+  };
   const tick = receiptTick(entry?.latest?.status);
   // In the conversation a sent prompt is its ghost, then its own row
   // (T-626): no line says it was submitted.
@@ -173,13 +181,22 @@ function Composer({ store, ticket, entry, live }) {
         <textarea id="prompt" ref=${field} aria-label=${starts ? "First prompt" : "Prompt"} aria-describedby="target" rows="1" dir="auto"
           placeholder=${agent ? `Message ${agent.provider}…` : starts ? startPlaceholder(store, ticket, asleep) : "No agent to message"}
           required disabled=${fieldOff}
-          value=${entry?.draft || ""} onInput=${(e) => store.setDraft(e.currentTarget.value)}
+          value=${entry?.draft || ""} onInput=${(e) => {
+            mark(e);
+            store.setDraft(e.currentTarget.value);
+          }}
+          onClick=${mark} onKeyUp=${mark} onSelect=${mark}
+          onPaste=${(e) => pastePictures(e, pictures, (files, at) => store.addPromptPictures(files, at), caret)}
           onKeyDown=${(e) => {
+            mark(e);
             if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) {
               e.preventDefault();
               e.currentTarget.form.requestSubmit();
             }
           }}></textarea>
+        ${entry?.pictures.length > 0 && html`<div class="composer-pics"><${PictureList} draft=${entry} onRemove=${(n) => store.removePromptPicture(n)} /></div>`}
+        ${pictures && html`<${PicturePick} id="prompt-picture" draft=${entry} caret=${caret} label="Picture"
+          onAdd=${(files, at) => store.addPromptPictures(files, at)} />`}
         <div class="composer-row" hidden=${!open}>
           ${starts
             ? html`<p id="start-what" class="start-what"><${Icon} name="play" size=${13} /><span>${asleep
@@ -206,7 +223,7 @@ function Composer({ store, ticket, entry, live }) {
           ? `Restarts on ${store.board?.tierNamed(pick)?.name || pick} when the turn ends, then sends.`
           : "Steer is off while the agent waits on you · answer it first. Queue still works."}</p>
       </div>
-      <p id="delivery" role="status" hidden=${ghost || (!tick && !entry?.delivery)}>${tick && html`<${Tick} state=${tick} />`}<span>${entry?.delivery || ""}</span></p>
+      <p id="delivery" role="status" hidden=${!sending && !entry?.error && (ghost || (!tick && !entry?.delivery))}>${!sending && !entry?.error && tick && html`<${Tick} state=${tick} />`}<span>${entry?.sending || entry?.error || entry?.delivery || ""}</span></p>
     </form>
   </footer>`;
 }

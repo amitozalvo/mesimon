@@ -93,6 +93,7 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
         plan: false,
         tier: None,
         resend: false,
+        uploads: Vec::new(),
     }) {
         Response::Err { message } => assert!(message.contains("nothing to send"), "{message}"),
         other => panic!("a blank prompt must refuse: {other:?}"),
@@ -108,6 +109,7 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Ok
     ));
@@ -151,6 +153,7 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Ok
     ));
@@ -197,6 +200,7 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
         plan: false,
         tier: None,
         resend: false,
+        uploads: Vec::new(),
     }) {
         Response::Spawned { id, fresh } => {
             assert_eq!(id, sid, "the wake re-enters the record — never a second claude");
@@ -258,6 +262,7 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
         plan: false,
         tier: None,
         resend: false,
+        uploads: Vec::new(),
     }) {
         Response::Spawned { id, .. } => {
             assert_ne!(id, sid, "a new session, never the corpse");
@@ -337,6 +342,7 @@ fn a_blank_ask_at_a_seat_that_never_took_a_prompt_sends_the_brief() {
         plan: false,
         tier: None,
         resend: false,
+        uploads: Vec::new(),
     };
     // At `queued` too: the brief has no turn of this seat's to wait for.
     match c.request(blank()) {

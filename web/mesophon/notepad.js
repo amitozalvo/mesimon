@@ -114,24 +114,41 @@ export function PictureBar({ id, can, draft, caret, onAdd, onRemove }) {
   if (!can && !draft.pictures.length) return null;
   const busy = !!draft.sending;
   return html`<div class="note-pics">
-    ${draft.pictures.length > 0 && html`<ul class="note-pic-list" aria-label="Pictures">
-      ${draft.pictures.map((p) => html`<li key=${p.n} class="note-pic">
-        <${Thumb} bitmap=${p.thumb} />
-        <span class="note-pic-name">Image #${p.n}</span>
-        <button type="button" class="note-pic-drop" aria-label=${`Remove Image #${p.n}`} disabled=${busy}
-          onClick=${() => onRemove(p.n)}><${Icon} name="x" size=${14} /></button>
-      </li>`)}
-    </ul>`}
-    ${can && html`<label class="btn btn-quiet note-pic-add" data-busy=${String(busy || draft.reading > 0)}>
-      <input id=${id} type="file" accept="image/*" multiple class="sr-only" disabled=${busy}
-        onChange=${async (e) => {
-          const files = [...e.currentTarget.files];
-          e.currentTarget.value = "";
-          const at = await onAdd(files, caret.current);
-          if (at !== undefined) caret.current = at;
-        }} />
-      <${Icon} name="image" size=${17} /><span>${draft.reading > 0 ? "Reading…" : "Picture"}</span></label>`}
+    <${PictureList} draft=${draft} onRemove=${onRemove} />
+    ${can && html`<${PicturePick} id=${id} draft=${draft} caret=${caret} onAdd=${onAdd}>
+      <span>${draft.reading > 0 ? "Reading…" : "Picture"}</span><//>`}
   </div>`;
+}
+
+// The pictures a draft holds, each with its number and a remove button.
+export function PictureList({ draft, onRemove }) {
+  if (!draft.pictures.length) return null;
+  const busy = !!draft.sending;
+  return html`<ul class="note-pic-list" aria-label="Pictures">
+    ${draft.pictures.map((p) => html`<li key=${p.n} class="note-pic">
+      <${Thumb} bitmap=${p.thumb} />
+      <span class="note-pic-name">Image #${p.n}</span>
+      <button type="button" class="note-pic-drop" aria-label=${`Remove Image #${p.n}`} disabled=${busy}
+        onClick=${() => onRemove(p.n)}><${Icon} name="x" size=${14} /></button>
+    </li>`)}
+  </ul>`;
+}
+
+// The file input that picks pictures into a draft, dressed as a button:
+// the icon and whatever `children` says beside it. The composer (T-853)
+// shows the icon alone.
+export function PicturePick({ id, draft, caret, onAdd, label, children }) {
+  const busy = !!draft.sending;
+  return html`<label class=${`btn btn-quiet note-pic-add${children ? "" : " note-pic-icon"}`} data-busy=${String(busy || draft.reading > 0)}
+    aria-label=${label}>
+    <input id=${id} type="file" accept="image/*" multiple class="sr-only" disabled=${busy}
+      onChange=${async (e) => {
+        const files = [...e.currentTarget.files];
+        e.currentTarget.value = "";
+        const at = await onAdd(files, caret.current);
+        if (at !== undefined) caret.current = at;
+      }} />
+    <${Icon} name="image" size=${17} />${children}</label>`;
 }
 
 // A pasted image goes in as a picked one; anything else pastes as text.

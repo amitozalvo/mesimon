@@ -764,6 +764,14 @@ picture the board keeps. A note or a new ticket with pictures is sent only while
 terminal is online; one without them still waits at the relay as before. The page names a
 saved picture and does not show it.
 
+A picture can go with the words you send an agent, too. In the board's ask field
+(Shift+Enter on a ticket) **Ctrl+V** reads the clipboard: the field grows into its room and
+the picture appears as `[Image #N]` in the words; `Ctrl+S` sends them. On Remote Control the
+composer's picture button (or a pasted image) does the same, and the picture is sent before
+the words. Either way the picture is kept with the ticket like a note's, and the words reach
+the agent naming it as `[Image #N](mesimon-attachment:<id>)`, which the agent reads with
+`read_attachment`. A column's ask takes no picture: a picture belongs to one ticket.
+
 ## What your agents can see
 
 An agent session mesimon starts gets the scoped board tools shown by `mesimon doctor --mcp`, so it

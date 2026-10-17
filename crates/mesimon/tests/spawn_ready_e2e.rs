@@ -232,6 +232,7 @@ fn a_give_up_is_marked_and_the_resend_clears_the_box_once() {
             plan: false,
             tier: None,
             resend: true,
+            uploads: Vec::new(),
         })
     };
     assert!(matches!(resend(&mut c), Response::Ok));

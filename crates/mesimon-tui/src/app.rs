@@ -994,6 +994,19 @@ pub enum EditorPurpose {
     },
 }
 
+impl EditorPurpose {
+    /// The most bytes the body may hold once its pictures are linked: a
+    /// note's limit, or a prompt's for an ask (T-853).
+    pub fn body_limit(&self) -> usize {
+        match self {
+            EditorPurpose::Ask { .. } => mesimon_core::command::PROMPT_MAX_BYTES,
+            EditorPurpose::Compose { .. } | EditorPurpose::Note { .. } => {
+                mesimon_core::board::NOTE_MAX_BYTES
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
     Title,
@@ -1007,15 +1020,13 @@ impl Editor {
         body: TextArea,
         focus: Field,
     ) -> Self {
-        let (plain, images) = if !matches!(purpose, EditorPurpose::Ask { .. }) {
-            crate::image_paste::unpack(body.as_str())
-        } else {
-            (body.as_str().to_string(), Vec::new())
-        };
+        // An ask's words unpack too (T-853): a taken-back ask that named a
+        // picture shows `[Image #N]` and keeps the id, as a note does.
+        let (plain, images) = crate::image_paste::unpack(body.as_str());
         let body = if images.is_empty() {
             body
         } else {
-            TextArea::from_text(&plain, mesimon_core::board::NOTE_MAX_BYTES)
+            TextArea::from_text(&plain, purpose.body_limit())
         };
         let baseline = (title.as_str().to_string(), body.as_str().to_string());
         Self {
@@ -6697,6 +6708,16 @@ impl App {
                 }
                 _ => false,
             },
+            ask_ticket: matches!(
+                &self.mode,
+                Mode::Input {
+                    purpose: InputPurpose::Prompt { target: AskTarget::Ticket(_), .. },
+                    ..
+                } | Mode::Editor(Editor {
+                    purpose: EditorPurpose::Ask { target: AskTarget::Ticket(_), .. },
+                    ..
+                })
+            ),
             ticket_queued: subject.is_some_and(|t| self.ticket_queued(t)),
             ticket_held: subject.is_some_and(|t| self.ticket_held(t)),
             ticket_unsent: subject.is_some_and(|t| self.unsent_of(t).is_some()),
@@ -10902,7 +10923,10 @@ impl App {
             // grows the same way (T-380): the prompt becomes the body with
             // the cursor at its end, the destination is the title row, and
             // the delivery toggle rides along.
-            Some(Verb::Describe) => {
+            // A picture into the ask field (T-853): the same growth, then
+            // the clipboard read the room's own `^v` starts.
+            Some(Verb::Describe) | Some(Verb::EditorPaste) => {
+                let paste = verb == Some(Verb::EditorPaste);
                 let mut ed = match purpose {
                     InputPurpose::Create { workspace, tags, description, images, plan, tier } => {
                         let mut editor = Editor::new(
@@ -10943,6 +10967,9 @@ impl App {
                 };
                 // The dialog grows out of the card the last frame drew.
                 ed.grow = self.card_grow();
+                if paste {
+                    self.read_clipboard_into(&ed);
+                }
                 self.mode = Mode::Editor(ed);
                 return Ok(());
             }
@@ -11229,19 +11256,7 @@ impl App {
                 }
                 _ => {}
             },
-            Some(Verb::EditorPaste) => {
-                if self.pending_paste.is_some() {
-                    self.status = "clipboard read already pending".into();
-                } else if ed.focus == Field::Body && !ed.asking() {
-                    match crate::image_paste::start(ed.draft_id, ed.body.clone()) {
-                        Ok(pending) => {
-                            self.pending_paste = Some(pending);
-                            self.status = "reading clipboard".into();
-                        }
-                        Err(e) => self.status = e.to_string(),
-                    }
-                }
-            }
+            Some(Verb::EditorPaste) => self.read_clipboard_into(&ed),
             Some(Verb::EditorExternal) => {
                 // Parked for the main loop, which owns the terminal; the
                 // editor stays open underneath and `external_edit_done`
@@ -11483,8 +11498,28 @@ impl App {
                 plan,
                 tier,
             },
-            buffer: history_field(ed.body.as_str()),
+            // A picture the words still name rides as its link (T-853): the
+            // one-line field holds words alone, and the link is the
+            // picture's name there.
+            buffer: history_field(&crate::image_paste::pack(ed.body.as_str(), &ed.images)),
         };
+    }
+
+    /// `^v` in the room: the desktop clipboard, read on a worker thread
+    /// (T-402), into `ed`'s body once it answers — a picture as `[Image
+    /// #N]`, text as text. One read at a time, and only into the body.
+    fn read_clipboard_into(&mut self, ed: &Editor) {
+        if self.pending_paste.is_some() {
+            self.status = "clipboard read already pending".into();
+        } else if ed.focus == Field::Body {
+            match crate::image_paste::start(ed.draft_id, ed.body.clone()) {
+                Ok(pending) => {
+                    self.pending_paste = Some(pending);
+                    self.status = "reading clipboard".into();
+                }
+                Err(e) => self.status = e.to_string(),
+            }
+        }
     }
 
     /// `^s` in the ask room (T-380): the field's Enter. The body goes out
@@ -11504,8 +11539,24 @@ impl App {
             self.mode = Mode::Editor(ed);
             return Ok(());
         }
+        if self.pending_paste.as_ref().is_some_and(|p| p.editor == ed.draft_id && !p.timed_out) {
+            self.status = "clipboard read pending".into();
+            self.mode = Mode::Editor(ed);
+            return Ok(());
+        }
+        // The pictures the words name go up first (T-853), as a note's do,
+        // and the words go linked to them; a refusal keeps the room open
+        // with the draft whole, pictures included.
+        let (text, uploads) = match self.upload_draft(&text, &ed.images, ed.purpose.body_limit()) {
+            Ok((text, _, uploads)) => (text, uploads),
+            Err(e) => {
+                self.status = format!("could not send pictures: {e}");
+                self.mode = Mode::Editor(ed);
+                return Ok(());
+            }
+        };
         self.mode = Mode::Normal;
-        self.commit_prompt(
+        let sent = self.commit_prompt(
             InputPurpose::Prompt {
                 target,
                 walk: None,
@@ -11516,7 +11567,12 @@ impl App {
                 tier,
             },
             text,
-        )
+            uploads.clone(),
+        );
+        if !uploads.is_empty() {
+            let _ = self.req(Command::DiscardAttachmentUploads { uploads });
+        }
+        sent
     }
 
     /// The grown composer folds back into the one-line field it grew out of,
@@ -11636,13 +11692,14 @@ impl App {
         body: String,
     ) -> Result<Option<ulid::Ulid>> {
         let created = note.is_none();
-        let (body, images, uploads) = match self.upload_draft(&body, &ed.images) {
-            Ok(result) => result,
-            Err(e) => {
-                self.status = format!("could not save pictures: {e}");
-                return Ok(None);
-            }
-        };
+        let (body, images, uploads) =
+            match self.upload_draft(&body, &ed.images, mesimon_core::board::NOTE_MAX_BYTES) {
+                Ok(result) => result,
+                Err(e) => {
+                    self.status = format!("could not save pictures: {e}");
+                    return Ok(None);
+                }
+            };
         let command = if uploads.is_empty() {
             Command::WriteNote { ticket, note, text: body.clone(), rev: None }
         } else {
@@ -12986,7 +13043,7 @@ impl App {
                 // At `accept plan` (T-429) the blank Enter IS the accept,
                 // for every plan-able seat in the column.
                 if self.column_starts(name) || *accept_plan {
-                    return self.commit_prompt(purpose, title);
+                    return self.commit_prompt(purpose, title, Vec::new());
                 }
                 return Ok(());
             }
@@ -13000,7 +13057,7 @@ impl App {
                 // A blank field at `accept plan` (T-420) is the accept
                 // itself — "accept the plan, ask nothing" — and commits.
                 if accept_plan {
-                    return self.commit_prompt(purpose, title);
+                    return self.commit_prompt(purpose, title, Vec::new());
                 }
                 // An EMPTY seat can commit a blank field: there the prompt is
                 // the ticket's own title and brief, which is what the press
@@ -13027,7 +13084,7 @@ impl App {
                 // rest. Any other seat has nothing to send, and says so —
                 // a blank Enter there was silent, and read as a dead key.
                 if starts {
-                    return self.commit_prompt(purpose, title);
+                    return self.commit_prompt(purpose, title, Vec::new());
                 }
                 // The brief goes now, whatever the toggle: the seat has no
                 // turn to wait for (the daemon's rule, said on the wire).
@@ -13036,7 +13093,7 @@ impl App {
                     if let InputPurpose::Prompt { queued, .. } = &mut purpose {
                         *queued = false;
                     }
-                    return self.commit_prompt(purpose, title);
+                    return self.commit_prompt(purpose, title, Vec::new());
                 }
                 self.status = "nothing to send".into();
                 self.shake(ticket);
@@ -13072,7 +13129,7 @@ impl App {
             // sending IS the whole act here, so both Enters do it — see the
             // input scope's ShiftEnter binding for why the harder one stays
             // bound rather than dying under the finger that opened the field.
-            InputPurpose::Prompt { .. } => return self.commit_prompt(purpose, title),
+            InputPurpose::Prompt { .. } => return self.commit_prompt(purpose, title, Vec::new()),
         }
         Ok(())
     }
@@ -13113,7 +13170,11 @@ impl App {
         // ticket with its tags, description and pictures or refuses it
         // whole, and the refusal comes back to a composer still holding it.
         let (text, uploads) = if with_images {
-            match self.upload_draft(description.as_deref().unwrap_or(""), &images) {
+            match self.upload_draft(
+                description.as_deref().unwrap_or(""),
+                &images,
+                mesimon_core::board::NOTE_MAX_BYTES,
+            ) {
                 Ok((text, _, uploads)) => (text, uploads),
                 Err(e) => {
                     self.status = format!("could not save pictures: {e}");
@@ -13186,6 +13247,7 @@ impl App {
             plan: false,
             tier: None,
             resend: true,
+            uploads: Vec::new(),
         });
         self.status = match answer {
             // What is true is that the words are on their way to the box;
@@ -13200,7 +13262,12 @@ impl App {
         self.refresh()
     }
 
-    fn commit_prompt(&mut self, purpose: InputPurpose, text: String) -> Result<()> {
+    fn commit_prompt(
+        &mut self,
+        purpose: InputPurpose,
+        text: String,
+        uploads: Vec<ulid::Ulid>,
+    ) -> Result<()> {
         let InputPurpose::Prompt { target, queued, immediately, accept_plan, plan, tier, .. } =
             purpose
         else {
@@ -13263,6 +13330,7 @@ impl App {
             plan,
             tier,
             resend: false,
+            uploads,
         });
         let refused = matches!(answer, Response::Err { .. });
         self.status = match answer {
@@ -19699,6 +19767,81 @@ mod tests {
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Normal);
         assert!(!sent_contains(&sent, "Prompt"), "{:?}", sent.borrow());
+    }
+
+    /// A picture into the words for a ticket's agent (T-853): `^v` in the
+    /// one-line field grows the room and reads the clipboard there, the
+    /// picture is `[Image #1]` in the words, and `^s` uploads it and sends
+    /// the words linked to it on one `PromptSession` naming the upload,
+    /// which is let go after. A taken-back ask that names a picture shows
+    /// the marker and folds back with its link whole.
+    #[test]
+    fn a_picture_pasted_into_an_ask_rides_the_prompt_as_an_upload() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        app.client
+            .request(Command::SetFollowUpMode { mode: mesimon_core::board::FollowUpMode::Steer })
+            .unwrap();
+        app.refresh().unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        for c in "look".chars() {
+            press(&mut app, c);
+        }
+        assert!(app.ctx().ask_ticket);
+        assert_eq!(
+            keymap::resolve(Scope::Input, Key::Ctrl('v'), &app.ctx()),
+            Some(Verb::EditorPaste)
+        );
+        // A read already pending keeps the key off the desktop clipboard
+        // (the test has none); the room still grows.
+        let (_keep, dead) = std::sync::mpsc::channel();
+        app.pending_paste = Some(crate::image_paste::Pending {
+            started: Instant::now(),
+            timed_out: false,
+            editor: ulid::Ulid(7),
+            body: TextArea::new(8),
+            result: dead,
+        });
+        app.handle_key(KeyCode::Char('v'), KeyModifiers::CONTROL).unwrap();
+        assert!(editor(&app).asking(), "the field grew into the room");
+        assert_eq!(editor(&app).body.as_str(), "look");
+        queued_picture(&mut app, Ok(crate::image_paste::Pasted::Image(vec![1, 2, 3])));
+        assert!(app.poll_image_paste());
+        assert_eq!(editor(&app).body.as_str(), "look[Image #1]");
+        assert_eq!(app.status, "[Image #1] pasted ∙ send keeps the picture");
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        {
+            let sent = sent.borrow();
+            let upload = sent.iter().position(|c| c.contains("UploadAttachment")).unwrap();
+            let prompt = sent.iter().position(|c| c.contains("PromptSession")).unwrap();
+            let drop = sent.iter().position(|c| c.contains("DiscardAttachmentUploads")).unwrap();
+            assert!(upload < prompt && prompt < drop, "{sent:?}");
+            let words = &sent[prompt];
+            assert!(words.contains("look[Image #1](mesimon-attachment:"), "{words}");
+            assert!(!words.contains("uploads: []"), "the upload rides the prompt: {words}");
+        }
+        // Taken back, the link is a marker in the room and a link again
+        // once folded into the field.
+        let id = ulid::Ulid::new();
+        let text = format!("see [Image #2]({})", mesimon_core::attachment::target(id));
+        app.mode = Mode::Editor(app.ask_room(
+            AskTarget::Ticket(ulid::Ulid(1)),
+            false,
+            false,
+            false,
+            false,
+            None,
+            &text,
+        ));
+        assert_eq!(editor(&app).body.as_str(), "see [Image #2]");
+        assert_eq!(editor(&app).images[0].id, id);
+        assert!(!editor(&app).dirty());
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        match &app.mode {
+            Mode::Input { buffer, .. } => assert_eq!(buffer.as_str(), text),
+            other => panic!("not folded back: {other:?}"),
+        }
     }
 
     /// A column's field grows the same way (T-378 + T-380): the header's

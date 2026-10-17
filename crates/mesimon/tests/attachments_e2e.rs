@@ -232,3 +232,81 @@ fn failed_note_save_rolls_back_new_files_and_can_be_retried() {
     assert!(matches!(c.request(save), Response::NoteWritten { note: Some(_) }));
     picture(&mut c, ticket, attachment);
 }
+
+/// A picture with the words to an agent (T-853): the prompt names it, the
+/// daemon keeps it with the ticket before the words go, the words reach the
+/// agent linked to it, and the agent's own `read_attachment` finds it. A
+/// prompt carrying an upload its words do not name is refused and keeps
+/// nothing.
+#[test]
+fn a_prompt_with_a_picture_keeps_it_with_the_ticket_and_links_it_in_the_words() {
+    // The stub agent keeps a receipt of every line it reads (prompt_e2e).
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+                        printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+    let Some(h) = Harness::boot("attachments-prompt", Some(STUB)) else { return };
+    let got = h.dir.join("got.txt");
+    let tmux_sock = h.paths.tmux_sock();
+    let mut c = h.client("pictures");
+    let ticket = match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "pictured ask".into(),
+        workspace: None,
+        tier: None,
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("{other:?}"),
+    };
+    let session = match c.request(Command::SpawnSession {
+        ticket,
+        kind: mesimon_core::board::SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("{other:?}"),
+    };
+    wait_until(Duration::from_secs(15), "the stub's pane", || {
+        tmux(&tmux_sock)
+            .args(["list-panes", "-a", "-F", "#{pane_pid}"])
+            .output()
+            .map(|o| !o.stdout.is_empty())
+            .unwrap_or(false)
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    let attachment = upload(&mut c);
+    let ask = |text: String, uploads: Vec<ulid::Ulid>| Command::PromptSession {
+        ticket,
+        text,
+        queued: false,
+        immediately: false,
+        accept_plan: false,
+        plan: false,
+        tier: None,
+        resend: false,
+        uploads,
+    };
+    match c.request(ask("look at this".into(), vec![attachment])) {
+        Response::Err { message } => assert!(message.contains("do not name"), "{message}"),
+        other => panic!("an unnamed upload went through: {other:?}"),
+    }
+    assert!(
+        !matches!(
+            c.request(Command::ReadAttachment { ticket, attachment }),
+            Response::Attachment { .. }
+        ),
+        "a refused ask kept its picture"
+    );
+    let text = format!("look at [Image #1]({})", mesimon_core::attachment::target(attachment));
+    match c.request(ask(text.clone(), vec![attachment])) {
+        Response::Ok => {}
+        other => panic!("{other:?}"),
+    }
+    wait_until(Duration::from_secs(15), "the linked words in the pane", || {
+        std::fs::read_to_string(&got).is_ok_and(|s| s.contains(&text))
+    });
+    picture(&mut c, ticket, attachment);
+    let mut shim = Shim::start(&h.paths.orch_sock(), session);
+    let result = shim.call("read_attachment", json!({ "attachment": attachment.to_string() }));
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(result["content"][0]["data"], PNG);
+}

@@ -224,6 +224,26 @@ def first_prompt(rows):
     return ""
 
 
+def solid_png(color, size=64):
+    """A `size`-square PNG of one colour, base64: what a picture test sends,
+    so the worker's reply can name what it saw (T-853)."""
+    import base64
+    import struct
+    import zlib
+    rgb = {"red": (255, 0, 0), "green": (0, 160, 0), "blue": (0, 0, 255)}[color]
+    row = b"\x00" + bytes(rgb) * size
+    raw = row * size
+
+    def chunk(kind, body):
+        return (struct.pack(">I", len(body)) + kind + body
+                + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF))
+
+    png = (b"\x89PNG\r\n\x1a\n"
+           + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+           + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+    return base64.b64encode(png).decode()
+
+
 def last_reply(rows):
     for row in reversed(rows):
         if row.get("type") == "assistant":
@@ -1304,6 +1324,20 @@ Reply with the single word ready and end your turn."""
             after = wake["at_ms"] if wake else now_ms
             self.wait_for("crown", lambda: self.crown_settled(after_ms=after, quiet=0) if wake
                           else self.crown_settled(), STEP_TIMEOUT, self.watch)
+            return True
+        if what == "picture_ask":
+            # The person's words with a picture (T-853): a solid PNG of
+            # `color` staged as the desk's `^v` stages one, then the words,
+            # naming it as a note would, sent now to the idle worker.
+            color = step.get("color", "red")
+            try:
+                upload = self.wire.upload_png(solid_png(color))
+                words = step["text"].replace("{link}", f"[Image #1](mesimon-attachment:{upload})")
+                r = self.wire.prompt(test["ticket"], words, queued=False, uploads=[upload])
+            except WireError as e:
+                record["failures"].append(f"the person's pictured prompt: {e}")
+                return False
+            self.log(f"the person's {color} picture and words to {test['key']}: {r.get('resp')}")
             return True
         if what == "resend":
             # The person's Shift+Enter over the seat's unsent words (P4).

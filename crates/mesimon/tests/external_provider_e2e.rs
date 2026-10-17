@@ -100,6 +100,7 @@ fn codex_external_opaque_identity_survives_provider_switch_and_restart_without_f
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         });
         assert!(
             matches!(response, Response::Err { ref message } if message.contains("resume it to take over")),

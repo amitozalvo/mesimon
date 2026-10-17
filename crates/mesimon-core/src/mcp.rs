@@ -475,11 +475,12 @@ pub fn tools() -> Vec<Value> {
             "name": "read_attachment",
             "description": "Returns one PNG picture on this session's ticket, or with key \
                             another ticket's (crown only), as image content. Attachment ids \
-                            appear in mesimon-attachment links in the description and notes.",
+                            appear in mesimon-attachment links in the description, in notes \
+                            and in a prompt the person sends with a picture.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "attachment": { "type": "string", "description": "An attachment id from a note's image link." },
+                    "attachment": { "type": "string", "description": "An attachment id from an image link in a note or a prompt." },
                     "key": { "type": "string", "description": "Optional. Another ticket's key; crown only." },
                 },
                 "required": ["attachment"],
@@ -3315,6 +3316,7 @@ mod tests {
                 plan: false,
                 tier: None,
                 resend: false,
+                uploads: Vec::new(),
             },
             Command::PromptColumn {
                 column: "TODO".into(),

@@ -28,6 +28,52 @@ impl Daemon {
         })
     }
 
+    /// Pictures that ride a prompt (T-853): `owner`'s finished uploads,
+    /// each named in `text`, are kept with the ticket BEFORE `send` puts
+    /// the words in front of the agent, since the agent's `read_attachment`
+    /// may follow at once; a send `refused` lets them go again, so a
+    /// refused ask leaves no picture behind. With no uploads the words go
+    /// as they are. `Err` is a picture that could not be kept, in the
+    /// sender's words, and then nothing was sent.
+    pub(super) fn with_pictures<R>(
+        &mut self,
+        owner: &attachments::Owner,
+        ticket: ulid::Ulid,
+        text: String,
+        uploads: &[ulid::Ulid],
+        send: impl FnOnce(&mut Self, String) -> R,
+        refused: impl Fn(&R) -> bool,
+    ) -> Result<R, String> {
+        if uploads.is_empty() {
+            return Ok(send(self, text));
+        }
+        // The words are matched as the agent will read them (scrubbed and
+        // capped): a link the cap would cut is a picture the words never
+        // name.
+        let clean = mesimon_core::command::sanitize_prompt(&text).unwrap_or_default();
+        let prepared = (|| -> Result<_> {
+            let t = self.board.ticket(ticket).ok_or_else(|| anyhow::anyhow!("no such ticket"))?;
+            Ok((t.short_key.clone(), self.uploads.prepare(owner, uploads, &clean)?))
+        })();
+        let (key, images) = match prepared {
+            Ok(prepared) => prepared,
+            Err(e) => return Err(format!("could not keep the pictures: {e:#}")),
+        };
+        for (meta, bytes) in images {
+            if let Err(e) = attachments::save(&self.paths, &key, &meta, &bytes) {
+                let _ = attachments::discard_files(&self.paths, &key, uploads);
+                return Err(format!("could not keep a picture: {e:#}"));
+            }
+        }
+        let response = send(self, text);
+        if refused(&response) {
+            let _ = attachments::discard_files(&self.paths, &key, uploads);
+        } else {
+            self.uploads.committed(uploads);
+        }
+        Ok(response)
+    }
+
     /// Commit `owner`'s finished uploads and then the note that links them:
     /// the desk's save, and a paired browser's (T-629) as `by`.
     pub(super) fn save_note_with_attachments(

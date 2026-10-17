@@ -206,12 +206,22 @@ class Wire:
              "submit_prompt": submit_prompt, "plan": plan}
         )
 
-    def prompt(self, ticket, text, queued=False):
+    def prompt(self, ticket, text, queued=False, uploads=None):
         """The person's words to the ticket's agent, as the ticket page's
-        composer sends them."""
+        composer sends them; `uploads` names pictures `upload_png` staged,
+        each linked from `text` (T-853)."""
         return self.request(
-            {"cmd": "prompt_session", "ticket": ticket, "text": text, "queued": queued}
+            {"cmd": "prompt_session", "ticket": ticket, "text": text, "queued": queued,
+             **({"uploads": uploads} if uploads else {})}
         )
+
+    def upload_png(self, data):
+        """One PNG, whole, as the desk's `^v` stages it: `data` base64.
+        Answers the upload's id, to name in a prompt's `uploads`."""
+        return self.request(
+            {"cmd": "upload_attachment", "upload": None, "offset": 0, "data": data,
+             "complete": True}
+        )["upload"]
 
     def sleep(self, session):
         return self.request({"cmd": "sleep_session", "id": session})

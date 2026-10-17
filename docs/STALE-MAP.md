@@ -27996,3 +27996,52 @@ Tests: `ux.test.js`'s `refusedFlow` (the fixture relay forgets a credential; a c
 once, the refused credential sent once and then a registration; a valid credential and one whose
 host is away kept across reloads), `control::tests::the_page_reads_the_denied_word` (the page's
 literal is the wire's), and the relay's `an_unknown_credential_is_refused_in_words`.
+
+## Pictures go with the words to an agent (T-853, 2026-10-18, "pictures inside ask agent prompt")
+
+**Asked.** "currently sending pictures is not possible when using shift+enter to ask the agent
+or from remote control send message. should 'just work'."
+
+**Measured first.** Claude Code 2.1.302's mod submit takes text alone: `$.prompt.submit`
+answers "takes text alone; attachments cannot be submitted" (the engine's `CJo` destructures
+`attachments` only to refuse a non-empty one), and the paste road is a bracketed paste of
+text. So no road carries image bytes into a turn. What every road, Claude and Codex, hook set
+and mod, already carries is the ticket's pictures through `read_attachment` (T-402, T-629).
+
+**Decided: the picture is the ticket's, and the words name it.** A pictured ask goes as a note
+does: the picture is uploaded (the desk's `UploadAttachment` chunks, the phone's `Upload`
+pieces), `PromptSession` and the phone's `Prompt` and `Start` carry `uploads`, the daemon keeps
+each picture at `attachments/<id>.png` beside the ticket's notes BEFORE the words go (an agent
+may read it the moment it has the words), and the words reach the agent as
+`[Image #N](mesimon-attachment:<id>)`, which `read_attachment` serves; its tool text now names
+a prompt as a place such a link appears. A send the daemon refuses lets the pictures go again
+(`Daemon::with_pictures`, one helper under both the desk's dispatch arm and the phone's
+`control_pictured`), and an upload the words do not name is refused ("the words do not name
+that picture") before anything is kept. Promise 3 holds as it does for a note: the person put
+`[Image #N]` in the words, and the link is the picture's own address, nothing of mesimon's.
+
+**Desk.** The ask room is the note editor (T-380), so `^v` there is the note's clipboard read
+(`image_paste`), gated by `Ctx::ask_ticket`: a ticket's ask, never a column's, which has no
+ticket to keep a picture. The one-line field's `^v` grows into the room and reads the clipboard
+there (`Verb::EditorPaste` in `INPUT`), so a picture never needs the room opened first.
+`Editor::new` unpacks an ask's links too, so a taken-back ask shows `[Image #N]` and folds back
+into the field with its link whole (`fold_ask` packs). `upload_draft` takes the body's limit
+(`EditorPurpose::body_limit`: a prompt's 4 KiB, a note's 32 KiB), and `editor_send` uploads,
+sends, then discards the staging as `write_note` does.
+
+**Phone.** The composer gets the note sheet's picture road (`PicturePick`, the icon alone beside
+the arrow, and `PictureList` under the words), on a host that says `ask_pictures`; the pictures
+go up first (`sendPicturedPrompt`), then the words linked, on `prompt` or on `start` from the
+same field. The receipt keeps the draft's own words, so a refusal gives them back with the
+pictures still held, and a taken prompt drops them (`sessions::dropPictures`). The caret marks
+on input too: the earlier draft's caret put the token mid-word in the first run.
+
+**Tests.** Core: `Request::Prompt`/`Start` parse and skip `uploads`; `a_ticket_ask_takes_a_picture_and_a_column_ask_does_not`
+(keymap). TUI: `a_picture_pasted_into_an_ask_rides_the_prompt_as_an_upload`. E2e:
+`attachments_e2e::a_prompt_with_a_picture_keeps_it_with_the_ticket_and_links_it_in_the_words`
+(the unnamed upload refused and kept nowhere, the linked words in the pane, the picture read
+by the desk and by the agent's shim). Page: the tier flow picks a picture on the composer,
+sends, and reads the upload for the ticket and the linked words on the prompt. Rig: `P6`
+(`picture_ask`, a solid red PNG: `tools:read_attachment`, `reply:red`), run once on Sonnet.
+**Owed:** a CHANGELOG line at the next bump — **Added:** a picture can go with the words you
+send an agent, from the board's ask (Ctrl+V) and from Remote Control's composer.

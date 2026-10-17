@@ -128,6 +128,12 @@ pub enum Request {
         /// `queued` said. Sent only to a host that says `tiers`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tier: Option<String>,
+        /// Pictures this browser uploaded for the words (T-853), each
+        /// linked from `text` as a note links one, kept with the ticket
+        /// before the words go. Sent only to a host that says
+        /// `ask_pictures`: an older one refuses the field.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        uploads: Vec<String>,
     },
     SendNow {
         ticket: String,
@@ -176,6 +182,10 @@ pub enum Request {
         /// a host that says `tiers`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tier: Option<String>,
+        /// Pictures this browser uploaded for the first words (T-853), as
+        /// `Prompt`'s. Sent only to a host that says `ask_pictures`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        uploads: Vec<String>,
     },
     /// Retitle a ticket (T-530): the board's rename from a phone. A blank
     /// title is refused; the host scrubs and caps it as it does the desk's.
@@ -1277,13 +1287,14 @@ mod tests {
     /// parses: the words are then the ticket's own.
     #[test]
     fn a_start_names_its_ticket_and_at_most_a_prompt() {
-        let Request::Start { ticket, prompt, tier } =
+        let Request::Start { ticket, prompt, tier, uploads } =
             serde_json::from_str(r#"{"op":"start","ticket":"01J"}"#).unwrap()
         else {
             panic!("start")
         };
         assert_eq!(ticket, "01J");
         assert_eq!((prompt, tier), (None, None));
+        assert!(uploads.is_empty());
         // T-643: a tier the board offers may ride it.
         let Request::Start { tier, .. } =
             serde_json::from_str(r#"{"op":"start","ticket":"01J","tier":"coder"}"#).unwrap()
@@ -1546,8 +1557,22 @@ mod tests {
             text: "next".into(),
             queued: true,
             tier: None,
+            uploads: Vec::new(),
         };
-        assert!(serde_json::to_value(plain).unwrap().get("tier").is_none());
+        let plain = serde_json::to_value(plain).unwrap();
+        assert!(plain.get("tier").is_none());
+        assert!(plain.get("uploads").is_none(), "an older host is sent no field it refuses");
+        // Pictures with the words (T-853), on a prompt and on a start.
+        let pictured = r#"{"op":"prompt","ticket":"t","session":"s","text":"see [Image #1](mesimon-attachment:01J)","uploads":["01J"]}"#;
+        let Request::Prompt { uploads, .. } = serde_json::from_str(pictured).unwrap() else {
+            panic!("prompt")
+        };
+        assert_eq!(uploads, vec!["01J".to_string()]);
+        let started = r#"{"op":"start","ticket":"t","prompt":"see [Image #1](mesimon-attachment:01J)","uploads":["01J"]}"#;
+        let Request::Start { uploads, .. } = serde_json::from_str(started).unwrap() else {
+            panic!("start")
+        };
+        assert_eq!(uploads, vec!["01J".to_string()]);
     }
 }
 

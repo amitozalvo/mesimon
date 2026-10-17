@@ -1706,7 +1706,7 @@ async function tierFlow(browser, engineName, size, viewport) {
   await context.addInitScript(fixture);
   await context.addInitScript(() => {
     const f = window.fixture;
-    f.features.push("start", "tiers");
+    f.features.push("start", "tiers", "ask_pictures");
     f.tiers = [
       { id: "claude", name: "claude", provider: "claude", summary: "Claude Code ∙ its own model" },
       { id: "01K", name: "coder", provider: "claude", summary: "Claude Code ∙ opus ∙ high" },
@@ -1796,6 +1796,30 @@ async function tierFlow(browser, engineName, size, viewport) {
     const sent = await page.evaluate(() => fixture.prompts[1]);
     assert.equal(sent.tier, "01K");
     assert.equal(sent.queued, true);
+
+    // A picture with the words (T-853): picked on the composer's own
+    // button, named [Image #N] in the draft and shown beneath it; sent, it
+    // goes up in pieces for the ticket and the words follow, linked to it,
+    // and a taken prompt lets its pictures go.
+    await until(page, () => !document.querySelector("#send").disabled || !document.querySelector("#prompt").value);
+    await page.locator("#prompt").fill("What is wrong here?");
+    const png = noisePng(240, 160);
+    const before = Object.keys(await page.evaluate(() => fixture.uploads)).length;
+    await page.locator("#prompt-picture").setInputFiles({ name: "shot.png", mimeType: "image/png", buffer: png });
+    await page.locator(".composer-pics .note-pic").first().waitFor();
+    assert.match(await page.locator("#prompt").inputValue(), /^What is wrong here\? \[Image #1\]$/);
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await shot("composer-picture");
+    await until(page, () => !document.querySelector("#send").disabled);
+    await page.locator("#send").click();
+    await until(page, () => fixture.prompts.length === 3);
+    const pictured = await page.evaluate(() => fixture.prompts[2]);
+    assert.deepEqual(pictured.uploads, [`pic-${before}`]);
+    assert.equal(pictured.text, `What is wrong here? [Image #1](mesimon-attachment:pic-${before})`);
+    const upload = await page.evaluate((id) => fixture.uploads[id], `pic-${before}`);
+    assert(upload.complete && upload.pieces >= 2 && upload.ticket === "ticket-0", JSON.stringify(upload));
+    await until(page, () => !document.querySelector("#prompt").value);
+    assert.equal(await page.locator(".composer-pics").count(), 0, "a taken prompt lets its pictures go");
 
     // An older host is offered no tier and sent none.
     await page.evaluate(() => {

@@ -130,6 +130,7 @@ fn prompt(c: &mut TestClient, ticket: ulid::Ulid, text: &str, resend: bool) -> R
         plan: false,
         tier: None,
         resend,
+        uploads: Vec::new(),
     })
 }
 

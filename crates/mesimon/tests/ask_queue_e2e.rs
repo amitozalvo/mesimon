@@ -113,6 +113,7 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
         plan: false,
         tier: None,
         resend: false,
+        uploads: Vec::new(),
     }) {
         Response::Queued { behind, .. } => assert_eq!(behind, vec![a_key.clone()]),
         other => panic!("expected the ask to be parked: {other:?}"),
@@ -152,6 +153,7 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Queued { .. }
     ));
@@ -178,6 +180,7 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
                 plan: false,
                 tier: None,
                 resend: false,
+                uploads: Vec::new(),
             }),
             Response::Queued { .. }
         ));
@@ -204,6 +207,7 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Ok
     ));
@@ -225,6 +229,7 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Queued { .. }
     ));
@@ -249,6 +254,7 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Queued { .. }
     ));
@@ -270,6 +276,7 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         "no turn for a send-now",
     );
@@ -288,6 +295,7 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Queued { .. }
     ));
@@ -363,6 +371,7 @@ fn a_queued_start_waits_for_the_checkout_and_then_spawns_a_claude() {
         plan: false,
         tier: None,
         resend: false,
+        uploads: Vec::new(),
     }) {
         Response::Queued { behind, .. } => assert_eq!(behind, vec![a_key.clone()]),
         other => panic!("expected the start to be parked: {other:?}"),
@@ -499,6 +508,7 @@ fn queued_asks_go_in_board_order_and_a_move_resorts_them() {
                 plan: false,
                 tier: None,
                 resend: false,
+                uploads: Vec::new(),
             }),
             Response::Queued { .. }
         ));
@@ -598,6 +608,7 @@ fn worktree_follow_up_waits_for_idle_with_send_now_and_take_back() {
                 plan: false,
                 tier: None,
                 resend: false,
+                uploads: Vec::new(),
             }),
             Response::Queued { .. }
         ));
@@ -666,6 +677,7 @@ fn worktree_follow_up_waits_for_idle_with_send_now_and_take_back() {
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Ok
     ));
@@ -739,6 +751,7 @@ fn an_ask_queued_onto_an_open_question_is_held_at_once() {
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         })
     };
 
@@ -859,6 +872,7 @@ fn a_queued_start_survives_a_daemon_restart_and_a_queued_pane_ask_does_not() {
         plan: false,
         tier: None,
         resend: false,
+        uploads: Vec::new(),
     }) {
         Response::Queued { behind, .. } => assert_eq!(behind, vec![a_key.clone()]),
         other => panic!("expected the start to be parked: {other:?}"),
@@ -873,6 +887,7 @@ fn a_queued_start_survives_a_daemon_restart_and_a_queued_pane_ask_does_not() {
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Queued { .. }
     ));

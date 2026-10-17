@@ -2668,8 +2668,8 @@ select {
    the arrow at its end. The arrow is always at the composer's bottom right. */
 .composer {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas: "text send" "why why";
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-areas: "text pic send" "why why why";
   align-items: end;
   gap: 0 8px;
   padding: 4px 4px 4px 14px;
@@ -2677,8 +2677,21 @@ select {
   background: var(--s1);
 }
 .composer[data-open="true"] {
-  grid-template-areas: "text text" "row send" "why why";
+  grid-template-areas: "text text text" "pics pics pics" "row pic send" "why why why";
   gap: 6px 8px;
+}
+/* The picture button beside the arrow (T-853), the icon alone; the
+   pictures picked, under the words. */
+.composer .note-pic-icon {
+  grid-area: pic;
+  width: 44px;
+  min-height: 44px;
+  padding: 0;
+  justify-content: center;
+}
+.composer-pics {
+  grid-area: pics;
+  padding: 0 0 2px;
 }
 #prompt {
   grid-area: text;

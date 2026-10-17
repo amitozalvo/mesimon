@@ -317,6 +317,14 @@ pub enum Command {
         /// resend.
         #[serde(default)]
         resend: bool,
+        /// Pictures the sender uploaded for these words (T-853), each
+        /// linked from `text` as a note links one (`[Image #N]` with a
+        /// `mesimon-attachment:` target), which the daemon keeps with the
+        /// ticket before the words go, where the agent's `read_attachment`
+        /// finds them. An upload `text` does not name is refused; a refused
+        /// send keeps none. Absent from an older client = no pictures.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        uploads: Vec<ulid::Ulid>,
     },
     /// Atomically remove a waiting prompt and return its words for editing.
     TakeQueuedAsk {
@@ -1586,6 +1594,7 @@ mod meta_tests {
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }
         .meta();
         assert_eq!(m, Meta { action: Action::Mutate, logged: true, subject: Some(id) });

@@ -387,6 +387,7 @@ fn starts_with_any_status_line(footer: &str) {
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Queued { .. }
     ));
@@ -661,6 +662,7 @@ fn queued_start_keeps_first_provider_even_when_its_words_are_replaced() {
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Queued { .. }
     ));
@@ -675,6 +677,7 @@ fn queued_start_keeps_first_provider_even_when_its_words_are_replaced() {
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Queued { .. }
     ));
@@ -799,6 +802,7 @@ fn lost_codex_observation_holds_the_checkout_and_recovers_without_duplicate_subm
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Queued { .. }
     ));
@@ -842,6 +846,7 @@ fn sleeping_codex_holds_checkout_and_refuses_wake_until_worker_stops() {
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Queued { .. }
     ));
@@ -1071,6 +1076,7 @@ fn daemon_handover_keeps_sent_codex_prompt_held_without_pressing_enter_again() {
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Ok
     ));
@@ -1116,6 +1122,7 @@ fn steer(c: &mut TestClient, ticket: ulid::Ulid, text: &str) -> Response {
         plan: false,
         tier: None,
         resend: false,
+        uploads: Vec::new(),
     })
 }
 
@@ -1301,6 +1308,7 @@ fn daemon_handover_keeps_unpasted_codex_words_and_sends_them_once() {
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Ok
     ));
@@ -1401,6 +1409,7 @@ fn uncertain_cleanup_requires_new_human_acknowledgement_and_retains_old_evidence
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Queued { .. }
     ));
@@ -1802,6 +1811,7 @@ fn plan_ask(c: &mut TestClient, ticket: ulid::Ulid, text: &str, queued: bool) ->
         plan: true,
         tier: None,
         resend: false,
+        uploads: Vec::new(),
     })
 }
 

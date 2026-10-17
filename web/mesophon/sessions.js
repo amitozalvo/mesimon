@@ -63,6 +63,13 @@ export const landed = (entry) => {
   return !!r && !!entry.chat?.rows.some((row) => row.at >= r.from && ["prompt", "notice"].includes(row.kind));
 };
 
+// The pictures an entry held go with the words that named them (T-853):
+// once those are taken, or dropped, the thumbnails are let go.
+export function dropPictures(entry) {
+  for (const p of entry?.pictures || []) p.thumb?.close?.();
+  if (entry) entry.pictures = [];
+}
+
 export class Sessions {
   constructor() {
     this.entries = new Map();
@@ -88,6 +95,13 @@ export class Sessions {
         delivery: "",
         mode: "queue",
         returned: undefined,
+        // Pictures picked for the words (T-853), named `[Image #N]` in the
+        // draft as a note's are; `reading` while one is decoded, `sending`
+        // the words of the piece going up, `error` a picture refused.
+        pictures: [],
+        reading: 0,
+        sending: "",
+        error: "",
         // The prompt's receipt, the answer's, and whichever was sent last:
         // the delivery line and its ticks are that one's.
         receipt: undefined,
@@ -173,8 +187,10 @@ export class Sessions {
       ["queued", "submitted"].includes(status) &&
       (receipt.op === "prompt" || receipt.restored) &&
       entry.draft === receipt.text
-    )
+    ) {
       entry.draft = "";
+      dropPictures(entry);
+    }
     if (["unknown", "rejected"].includes(status))
       this.retain(entry, receipt.text);
   }

@@ -93,6 +93,7 @@ fn asking_again_after_parking_by_hand_moves_the_card_to_in_progress() {
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Ok
     ));

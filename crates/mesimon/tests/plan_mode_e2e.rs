@@ -87,6 +87,7 @@ fn plan_mode_rides_the_start_the_wake_and_an_idle_panes_relaunch() {
         plan: true,
         tier: None,
         resend: false,
+        uploads: Vec::new(),
     }) {
         Response::Err { message } => assert!(message.contains("mid-turn"), "{message}"),
         other => panic!("a working pane took a plan ask: {other:?}"),
@@ -108,6 +109,7 @@ fn plan_mode_rides_the_start_the_wake_and_an_idle_panes_relaunch() {
             plan: true,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Queued { .. }
     ));
@@ -155,6 +157,7 @@ fn plan_mode_rides_the_start_the_wake_and_an_idle_panes_relaunch() {
         plan: true,
         tier: None,
         resend: false,
+        uploads: Vec::new(),
     }) {
         Response::Spawned { id, .. } => assert_eq!(id, s2),
         other => panic!("wake: {other:?}"),
@@ -197,6 +200,7 @@ fn plan_mode_rides_the_start_the_wake_and_an_idle_panes_relaunch() {
             plan: true,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Queued { .. }
     ));

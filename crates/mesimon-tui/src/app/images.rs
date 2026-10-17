@@ -31,15 +31,18 @@ impl App {
             return false;
         }
         if ed.body != pending.body || ed.focus != Field::Body {
-            self.status = "note changed while reading clipboard ∙ paste again".into();
+            self.status = "text changed while reading clipboard ∙ paste again".into();
             return true;
         }
+        let limit = ed.purpose.body_limit();
+        // What keeps the picture: a note's save, or an ask's send (T-853).
+        let keeps = if ed.asking() { "send" } else { "save" };
         match result {
             Err(message) => self.status = message,
             Ok(Pasted::Text(text)) => {
                 let pasted = ed.body.paste(&text);
                 self.status = if pasted.trimmed {
-                    "paste trimmed ∙ note text limit reached"
+                    "paste trimmed ∙ text limit reached"
                 } else {
                     "text pasted"
                 }
@@ -56,22 +59,18 @@ impl App {
                 let marker = image_paste::marker(&image);
                 let mut body = ed.body.clone();
                 if body.paste(&marker).trimmed {
-                    self.status =
-                        "no room for a picture reference ∙ note text limit reached".into();
+                    self.status = "no room for a picture reference ∙ text limit reached".into();
                     return true;
                 }
                 let mut images = ed.images.clone();
                 images.push(image);
-                if image_paste::pack(body.as_str(), &images).len()
-                    > mesimon_core::board::NOTE_MAX_BYTES
-                {
-                    self.status =
-                        "no room for a picture reference ∙ note text limit reached".into();
+                if image_paste::pack(body.as_str(), &images).len() > limit {
+                    self.status = "no room for a picture reference ∙ text limit reached".into();
                     return true;
                 }
                 ed.body = body;
                 ed.images = images;
-                self.status = format!("{marker} pasted ∙ save keeps the picture");
+                self.status = format!("{marker} pasted ∙ {keeps} keeps the picture");
             }
         }
         ed.esc_armed = false;
@@ -79,16 +78,20 @@ impl App {
         true
     }
 
+    /// `limit` is the most bytes the linked text may hold: a note's, or a
+    /// prompt's for an ask (T-853).
     pub(super) fn upload_draft(
         &mut self,
         body: &str,
         draft: &[DraftImage],
+        limit: usize,
     ) -> Result<(String, Vec<DraftImage>, Vec<ulid::Ulid>)> {
         let mut images: Vec<_> =
             draft.iter().filter(|i| body.contains(&image_paste::marker(i))).cloned().collect();
         anyhow::ensure!(
-            image_paste::pack(body, &images).len() <= mesimon_core::board::NOTE_MAX_BYTES,
-            "note text including image references exceeds 32 KiB"
+            image_paste::pack(body, &images).len() <= limit,
+            "text including image references exceeds {} KiB",
+            limit / 1024
         );
         let mut uploads = Vec::new();
         for image in &mut images {

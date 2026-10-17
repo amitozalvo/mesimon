@@ -2611,7 +2611,21 @@ impl Daemon {
                 plan,
                 tier,
                 resend: false,
-            } => self.prompt_session(ticket, text, queued, immediately, accept_plan, plan, tier),
+                uploads,
+            } => {
+                // Pictures (T-853) are kept with the ticket before the words
+                // go, and let go again when the send is refused.
+                let owner = crate::attachments::Owner::stream(stream);
+                let send = |d: &mut Self, text: String| {
+                    d.prompt_session(ticket, text, queued, immediately, accept_plan, plan, tier)
+                };
+                match self.with_pictures(&owner, ticket, text, &uploads, send, |r| {
+                    matches!(r, Response::Err { .. })
+                }) {
+                    Ok(response) => response,
+                    Err(message) => Response::Err { message },
+                }
+            }
             Command::PromptColumn { column, text, queued, accept_plan } => {
                 self.prompt_column(&column, text, queued, accept_plan)
             }

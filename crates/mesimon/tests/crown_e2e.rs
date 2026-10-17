@@ -752,6 +752,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         plan: false,
         tier: None,
         resend: false,
+        uploads: Vec::new(),
     }) {
         Response::Queued { .. } | Response::Ok => {}
         other => panic!("the person's queued ask: {other:?}"),
@@ -1122,6 +1123,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
         plan: false,
         tier: None,
         resend: false,
+        uploads: Vec::new(),
     }) {
         Response::Queued { .. } => {}
         other => panic!("queue a person's ask on W1: {other:?}"),
@@ -1243,6 +1245,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
         plan: false,
         tier: None,
         resend: false,
+        uploads: Vec::new(),
     }) {
         Response::Queued { .. } => {}
         other => panic!("queue a person's ask: {other:?}"),
@@ -3298,6 +3301,7 @@ fn the_crown_sends_immediately_into_a_working_turn() {
             plan: false,
             tier: None,
             resend: false,
+            uploads: Vec::new(),
         }),
         Response::Ok
     ));
@@ -3320,6 +3324,7 @@ fn the_crown_sends_immediately_into_a_working_turn() {
                 plan: false,
                 tier: None,
                 resend: false,
+                uploads: Vec::new(),
             }),
             Response::Ok
         ));
@@ -4932,6 +4937,7 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
         plan: false,
         tier: None,
         resend: false,
+        uploads: Vec::new(),
     }) {
         Response::Queued { .. } | Response::Ok => {}
         other => panic!("queue a person's ask: {other:?}"),

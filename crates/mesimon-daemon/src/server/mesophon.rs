@@ -868,6 +868,9 @@ impl Daemon {
                     // Pictures in a filed ticket's description, `Create`'s
                     // `uploads` and an `Upload` with no ticket (T-670).
                     "filed_pictures",
+                    // Pictures with the words to an agent, `Prompt`'s and
+                    // `Start`'s `uploads` (T-853).
+                    "ask_pictures",
                     // The conversation read from its transcript (T-626).
                     "transcript",
                     // A tier picked for a start or a prompt (T-643).
@@ -1042,14 +1045,19 @@ impl Daemon {
                     None => return,
                 }
             }
-            api::Request::Prompt { ticket, session, text, queued, tier } => self.control_prompt(
-                &by,
-                (grant, device, command.id),
-                (&ticket, &session),
-                text,
-                queued,
-                tier,
-            ),
+            api::Request::Prompt { ticket, session, text, queued, tier, uploads } => {
+                let send = |d: &mut Self, text: String| {
+                    d.control_prompt(
+                        &by,
+                        (grant, device, command.id),
+                        (&ticket, &session),
+                        text,
+                        queued,
+                        tier,
+                    )
+                };
+                self.control_pictured(grant, &ticket, text, &uploads, send)
+            }
             api::Request::SendNow { ticket, session } => {
                 self.control_queue_action(&by, &ticket, &session, Some((grant, device, command.id)))
             }
@@ -1067,8 +1075,13 @@ impl Daemon {
                 let pictures = (grant, uploads);
                 self.control_create_pictured(&by, title, description, column, &tags, pictures)
             }
-            api::Request::Start { ticket, prompt, tier } => {
-                self.control_start_agent(&by, (grant, device, command.id), &ticket, prompt, tier)
+            api::Request::Start { ticket, prompt, tier, uploads } => {
+                let start = |d: &mut Self, text: String| {
+                    let prompt = Some(text).filter(|t| !t.is_empty());
+                    d.control_start_agent(&by, (grant, device, command.id), &ticket, prompt, tier)
+                };
+                let text = prompt.unwrap_or_default();
+                self.control_pictured(grant, &ticket, text, &uploads, start)
             }
             api::Request::Rename { ticket, title } => self.control_rename(&by, &ticket, &title),
             api::Request::Move { ticket, column, before } => {
@@ -3154,6 +3167,41 @@ impl Daemon {
             Ok(upload) => Reply::Uploaded { upload: upload.to_string() },
             Err(e) => reject(&format!("{e:#}")),
         }
+    }
+
+    /// Words to an agent with pictures this phone uploaded (T-853): the
+    /// pictures are kept with the ticket before `send` puts the words in
+    /// front of it, and a refusal lets them go, uploads included, so a
+    /// retry uploads afresh. With none, `send` alone.
+    fn control_pictured(
+        &mut self,
+        grant: BoardId,
+        ticket: &str,
+        text: String,
+        uploads: &[String],
+        send: impl FnOnce(&mut Self, String) -> Reply,
+    ) -> Reply {
+        if uploads.is_empty() {
+            return send(self, text);
+        }
+        let owner = crate::attachments::Owner::Grant(grant.to_hex());
+        let ids: Vec<ulid::Ulid> =
+            uploads.iter().filter_map(|u| ulid::Ulid::from_string(u).ok()).collect();
+        let reply = match ulid::Ulid::from_string(ticket) {
+            Ok(id) if ids.len() == uploads.len() => {
+                let refused = |r: &Reply| matches!(r, Reply::Rejected { .. } | Reply::Revoked);
+                match self.with_pictures(&owner, id, text, &ids, send, refused) {
+                    Ok(reply) => reply,
+                    Err(message) => Reply::Rejected { message },
+                }
+            }
+            Ok(_) => Reply::Rejected { message: "unknown picture".into() },
+            Err(_) => Reply::Rejected { message: "invalid ticket".into() },
+        };
+        if matches!(reply, Reply::Rejected { .. } | Reply::Revoked) {
+            self.uploads.discard(&owner, &ids);
+        }
+        reply
     }
 
     /// A note write that links pictures this phone uploaded (T-629): the

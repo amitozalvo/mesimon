@@ -3,7 +3,7 @@
 // requests and the theme attribute. Transport stays in connection.js.
 import { Connection } from "./connection.js";
 import { BoardState } from "./board.js";
-import { Sessions, answerBusy, landed } from "./sessions.js";
+import { Sessions, answerBusy, dropPictures, landed } from "./sessions.js";
 import { sendRefused, waitsOnYou } from "./queue.js";
 import { Sent } from "./sent.js";
 import { Mailbox } from "./mailbox.js";
@@ -612,7 +612,7 @@ export class Store {
   // takes a blank start, and a tier only when it changes the ticket's.
   // Answers whether the request left (T-709): the composer clears its draft
   // only then.
-  startAgent(id, text = "", tier = "") {
+  startAgent(id, text = "", tier = "", uploads = []) {
     const board = this.active?.pin.board;
     const ticket = this.board?.tickets.find((t) => t.id === id);
     if (!board || !this.startable(ticket) || !this.canStart || startWaiting(this.startOf(ticket))) return false;
@@ -620,7 +620,8 @@ export class Store {
     const prompt = text.trim();
     const pick = tierPick(this, ticket, tier);
     const command = c.request(
-      { op: "start", ticket: id, ...(prompt ? { prompt } : {}), ...(pick ? { tier: pick } : {}) },
+      { op: "start", ticket: id, ...(prompt ? { prompt } : {}), ...(pick ? { tier: pick } : {}),
+        ...(uploads.length ? { uploads } : {}) },
       startContext(id),
     );
     if (command === undefined) {
@@ -1269,6 +1270,21 @@ export class Store {
   // live channel, never through the mailbox, to a host that takes it.
   get canAddPictures() {
     return this.canWriteNotes && this.live && !!this.connection?.features?.includes("pictures");
+  }
+  // Whether a picture can go with the words to an agent (T-853): over the
+  // live channel, to a host that keeps it with the ticket.
+  get canAskPictures() {
+    return this.live && !!this.connection?.features?.includes("ask_pictures");
+  }
+  // Pictures picked or pasted into the composer (T-853), named in the
+  // draft as a note's are.
+  async addPromptPictures(files, at) {
+    const entry = this.entry;
+    if (!entry || !this.canAskPictures) return;
+    return this.readPictures(entry, "draft", files, at, () => this.entry === entry);
+  }
+  removePromptPicture(n) {
+    this.dropPicture(this.entry, "draft", n);
   }
   // The notes of the ticket on screen, asked for again only when the board's
   // digest of them moved; then the body the page shows and does not hold.
@@ -2161,41 +2177,67 @@ export class Store {
   submitPrompt() {
     const entry = this.entry;
     const agent = this.board?.current?.agent;
-    if (!entry?.draft.trim()) return;
-    if (this.composerStarts(this.board?.current)) {
-      if (new TextEncoder().encode(entry.draft).length > 4096) {
-        entry.delivery = "Prompt must fit in 4096 UTF-8 bytes.";
+    if (!entry?.draft.trim() || entry.sending) return;
+    const starts = this.composerStarts(this.board?.current);
+    if (!starts && (!this.live || !agent?.promptable ||
+      entry.review || entry.receipt?.waiting || entry.answer?.waiting))
+      return;
+    // The pictures the words name go up first (T-853), then the words
+    // linked to them, as a note's do; the draft keeps its own words and
+    // its pictures until the host has taken them.
+    const held = new Map(entry.pictures.map((p) => [p.n, p]));
+    const pictures = unlinked(entry.draft).filter((n) => held.has(n)).map((n) => held.get(n));
+    if (pictures.length) {
+      if (!this.canAskPictures) {
+        entry.delivery = "Pictures need your terminal online.";
         this.sync();
         return;
       }
-      if (this.startAgent(entry.ticket, entry.draft, entry.tier)) {
-        entry.draft = "";
-        entry.tier = undefined;
-        entry.delivery = "";
-      }
-      this.sync();
+      this.sendPicturedPrompt(entry, pictures, starts);
       return;
     }
-    if (!this.live || !agent?.promptable ||
-      entry.review || entry.receipt?.waiting || entry.answer?.waiting)
-      return;
-    if (new TextEncoder().encode(entry.draft).length > 4096) {
+    this.sendPrompt(entry, entry.draft, [], starts);
+  }
+  async sendPicturedPrompt(entry, pictures, starts) {
+    const words = entry.draft;
+    const current = () => this.entry === entry && entry.draft === words;
+    const ids = await this.sendPictures(entry, pictures, entry.ticket, current);
+    this.sync();
+    if (!ids || !current()) return;
+    this.sendPrompt(entry, linked(words, ids), [...ids.values()], starts);
+  }
+  // The words to the agent as the host reads them (`text`, the draft with
+  // its pictures linked), with the pictures' ids. The receipt keeps the
+  // draft's own words, so a refusal gives them back pictures and all.
+  sendPrompt(entry, text, uploads, starts) {
+    if (new TextEncoder().encode(text).length > 4096) {
       entry.delivery = "Prompt must fit in 4096 UTF-8 bytes.";
       this.sync();
       return;
     }
+    if (starts) {
+      if (this.startAgent(entry.ticket, text, entry.tier, uploads)) {
+        entry.draft = "";
+        entry.tier = undefined;
+        entry.delivery = "";
+        dropPictures(entry);
+      }
+      this.sync();
+      return;
+    }
+    const agent = this.board?.current?.agent;
     const ticket = this.board.current;
     const pick = tierPick(this, ticket, entry.tier);
     const id = this.connection.request(
       // Steer is off while the agent waits on you (T-568), and while a tier
       // switch waits for the turn's end (T-643): the words queue.
-      { op: "prompt", ticket: entry.ticket, session: entry.session, text: entry.draft,
+      { op: "prompt", ticket: entry.ticket, session: entry.session, text,
         queued: entry.mode === "queue" || waitsOnYou(agent) || this.switchesTier(ticket),
-        ...(pick ? { tier: pick } : {}) },
+        ...(pick ? { tier: pick } : {}), ...(uploads.length ? { uploads } : {}) },
       entry.key,
     );
     if (id !== undefined) {
-      this.sessions.sent(entry, id, this.connection.incarnation);
+      this.sessions.sent(entry, id, this.connection.incarnation, "prompt", entry.draft);
       // The pick is the ticket's now; the next board says so.
       entry.tier = undefined;
     } else entry.delivery = "Delivery unknown. Check the agent before sending again.";

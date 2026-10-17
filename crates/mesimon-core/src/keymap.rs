@@ -1436,6 +1436,10 @@ pub struct Ctx {
     /// `queued` beside a dialog reads as a choice and is not one (user,
     /// 2026-09-23: "queued doesn't make sense here and can confuse users").
     pub ask_plan_ready: bool,
+    /// The ask field's (or the ask room's) words are bound for ONE ticket's
+    /// agent, not a column's seats (T-853): a picture belongs to a ticket,
+    /// so only there can one be pasted into the words.
+    pub ask_ticket: bool,
     /// A claude is mid-turn in the subject ticket's shared checkout, so a
     /// press that would START or WAKE a session there stops and asks first
     /// (T-294). The TUI's own read of `quiet::is_working`, and a HINT: it
@@ -7208,6 +7212,21 @@ static INPUT: &[Binding] = &[
         prio: 28,
     },
     Binding {
+        // A picture into the one-line ask (T-853): the field grows into the
+        // room, where pictures live, and the clipboard is read there — the
+        // room's own `^v`, one key earlier. A ticket's ask alone, as in the
+        // room.
+        keys: &[Key::Ctrl('v')],
+        verb: Verb::EditorPaste,
+        show: "^v",
+        hint: |_| "paste",
+        avail: |c| c.prompting && c.ask_ticket,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
         keys: &[Key::Esc],
         verb: Verb::Cancel,
         show: "esc",
@@ -7543,7 +7562,10 @@ static EDITOR: &[Binding] = &[
         verb: Verb::EditorPaste,
         show: "^v",
         hint: |_| "paste",
-        avail: |c| c.editor_body && !c.editor_asking,
+        // In the ask room (T-853) a picture goes with the words to one
+        // ticket's agent, kept with that ticket; a column's seats have no
+        // ticket to keep it, so there the key stays off.
+        avail: |c| c.editor_body && (!c.editor_asking || c.ask_ticket),
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
@@ -9476,6 +9498,29 @@ mod tests {
         assert_eq!(resolve(Scope::Editor, Key::Tab, &asking), None);
         let open = Ctx { workspace_open: true, ..ring };
         assert_eq!(resolve(Scope::Editor, Key::BackTab, &open), Some(Verb::CycleWorkspace));
+    }
+
+    /// A picture goes with the words to one ticket's agent (T-853): `^v`
+    /// reads the clipboard in the ask room and in the one-line field for a
+    /// ticket's ask, and stays off, unhinted, for a column's — a column has
+    /// no ticket to keep the picture. A note's body keeps its paste.
+    #[test]
+    fn a_ticket_ask_takes_a_picture_and_a_column_ask_does_not() {
+        let room =
+            Ctx { editing: true, editor_body: true, editor_asking: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('v'), &room), None);
+        assert_eq!(hint_for(Scope::Editor, Verb::EditorPaste, &room), None);
+        let ticket = Ctx { ask_ticket: true, ..room.clone() };
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('v'), &ticket), Some(Verb::EditorPaste));
+        assert_eq!(hint_for(Scope::Editor, Verb::EditorPaste, &ticket), Some(("^v", "paste")));
+        let note = Ctx { editing: true, editor_body: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('v'), &note), Some(Verb::EditorPaste));
+        let field = Ctx { prompting: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Input, Key::Ctrl('v'), &field), None);
+        let field = Ctx { prompting: true, ask_ticket: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Input, Key::Ctrl('v'), &field), Some(Verb::EditorPaste));
+        let title = Ctx { composing: true, ask_ticket: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Input, Key::Ctrl('v'), &title), None);
     }
 
     /// The editor owns its keys the way the composer does: the screen keys

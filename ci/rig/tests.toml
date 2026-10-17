@@ -88,7 +88,10 @@
 #              worker while its turn runs, `text`, sent once it has worked
 #              `after` seconds), `press_enter` (the person answers the
 #              worker's dialog in its pane), `resend` (the person's resend of
-#              the worker's unsent words), `restart_drop_mod` (the daemon
+#              the worker's unsent words), `picture_ask` (T-853: a solid PNG
+#              of `color` uploaded and sent with `text`, whose `{link}` is
+#              the picture's `[Image #1](mesimon-attachment:<id>)`),
+#              `restart_drop_mod` (the daemon
 #              again with MESIMON_MOD_DIR naming a copy of the mod whose first
 #              submit in each session is dropped). `prs_board` (T-810) sets
 #              Merge into: pull requests on a stub forge holding no PR; every
@@ -316,6 +319,29 @@ checks = ["road:mod", "crown:ask_agent", "fed:prompt_by_mod", "not_fed:prompt_by
 
   [[test.steps]]
   crown = "P3: call ask_agent for {key} with the text: Reply with the single word lantern and end your turn. Then end your turn with the single line: P3 asked. When the board wakes you because {key}'s agent answered, end your turn with the single line: P3 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
+id = "P6"
+title = "P6 · a picture with the person's words reaches the worker through read_attachment"
+workspace = "worktree"
+brief = "Reply with the single word ready and end your turn. Read no file and run no command."
+expect = "the person sends the idle worker a prompt with a picture (a solid red square, uploaded as the desk's ^v uploads one, linked [Image #1](mesimon-attachment:<id>) in the words): the worker calls read_attachment with that id, sees the picture, and answers with its colour: two prompts, the reply red."
+checks = ["road:mod", "started_by_crown", "tools:read_attachment", "prompts:2", "reply:red"]
+
+  [[test.steps]]
+  crown = "P6: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: P6 started. When the board wakes you for {key}, end your turn with the single line: P6 ready."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "picture_ask"
+  color = "red"
+  text = "This picture {link} is one solid colour. Look at it and reply with that colour's name as a single word, then end your turn. Run no command."
+
+  [[test.steps]]
+  crown = "P6, the person has sent {key} a picture with a question: when the board wakes you for {key}, end your turn with the single line: P6 seen."
   until = { stops = 1, state = "idle" }
   wake = true
 
