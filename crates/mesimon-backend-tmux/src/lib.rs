@@ -154,6 +154,11 @@ fn parse_facts(out: &str) -> Vec<PaneFacts> {
         .collect()
 }
 
+/// `Clone` so the daemon's pane sampler (T-857) can carry a copy onto its
+/// worker thread: every field is a path or a word, and the reads it makes
+/// (`pane_facts`, `activity`, the captures) want nothing a clone lacks. A
+/// `set_path` on the writer's copy after the clone reaches the next sample's.
+#[derive(Clone)]
 pub struct TmuxBackend {
     sock: PathBuf,
     conf: PathBuf,

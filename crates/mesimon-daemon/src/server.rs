@@ -409,6 +409,10 @@ enum Msg {
     /// A forge pass landed (T-739): the generation it was asked under, and
     /// what it found.
     ForgeSampled(u64, crate::forge::Sample),
+    /// The pane sampler's reads landed (T-857): `pane_facts`, `activity`,
+    /// the startup and composer captures, `ps`, `server_alive` and the
+    /// folder probe, taken off the writer thread, dated when they began.
+    PaneSampled(Box<crate::panes::Sample>),
     /// A turn's end's read of its tickets' repositories landed (T-761): the
     /// forge's `epoch` it was asked under, and what it found.
     ForgeBurst(u64, crate::forge::Sample),
@@ -639,6 +643,20 @@ pub struct Daemon {
     /// tmux reports the hostname as `#{pane_title}` when the app never set
     /// one — cached once so title filtering doesn't fork per tick.
     hostname: String,
+    /// The pane sampler (T-857): what the tick wants read from tmux and
+    /// `ps`, gathered until a worker is free to take it; whether one is
+    /// out; the number the sample out carries.
+    pane_due: crate::panes::Query,
+    pane_inflight: bool,
+    pane_gen: u64,
+    /// When the journal last named a slow sample: a loaded machine writes
+    /// one line a minute, not one a sample.
+    pane_slow_said: Option<Instant>,
+    /// The newest input screen the sampler read of each pane, by session
+    /// name, with the sample's time (T-857): what `settle_owed`'s composer
+    /// read consults in place of a fork on the writer. Pruned with the
+    /// panes.
+    screens: HashMap<String, (u64, mesimon_backend_tmux::InputScreen)>,
     /// Per-ticket worktree bindings (M4), persisted as worktrees.json.
     worktrees: worktree::Bindings,
     /// Spawn requests parked behind provisioning: replayed on Provisioned(Ok).
@@ -1294,6 +1312,11 @@ pub fn run(paths: Paths) -> Result<()> {
             .ok()
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .unwrap_or_default(),
+        pane_due: Default::default(),
+        pane_inflight: false,
+        pane_gen: 0,
+        pane_slow_said: None,
+        screens: HashMap::new(),
         worktrees,
         pending_spawns: Vec::new(),
         pending_resumes: Vec::new(),
@@ -1490,6 +1513,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::ClientGone(_) => "client gone".into(),
             Msg::WorktreeFlags(..) => "worktree flags".into(),
             Msg::ForgeSampled(..) => "forge sampled".into(),
+            Msg::PaneSampled(_) => "pane sampled".into(),
             Msg::ForgeBurst(..) => "forge burst".into(),
             Msg::Backfilled(..) => "backfill".into(),
             Msg::TicketFlags(..) => "ticket flags".into(),
@@ -1537,6 +1561,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::ClientGone(stream) => d.on_client_gone(&stream),
             Msg::WorktreeFlags(gen, flags) => d.on_worktree_flags(gen, flags),
             Msg::ForgeSampled(gen, sample) => d.on_forge_sampled(gen, sample),
+            Msg::PaneSampled(sample) => d.on_pane_sampled(*sample),
             Msg::ForgeBurst(epoch, sample) => d.on_forge_burst(epoch, sample),
             Msg::Backfilled(found) => d.on_backfilled(found),
             Msg::TicketFlags(ticket, seq, flags, local) => {
@@ -1939,6 +1964,11 @@ struct Owed {
     /// steer count at the paste: the count passing it is the ack, and the
     /// Enter repeats while the words still stand in the box.
     steer: Option<u64>,
+    /// The sampler's screens of this pane from before this stamp say
+    /// nothing (T-857): the entry's birth, then the box's clear. A screen
+    /// read before the pane came up, or before the Ctrl+C, is not the box
+    /// the words go into.
+    screen_after: u64,
 }
 
 impl Owed {
@@ -1961,6 +1991,7 @@ impl Owed {
             ack,
             asked: None,
             steer: None,
+            screen_after: now_ms(),
         }
     }
 
@@ -1983,6 +2014,7 @@ impl Owed {
             ack,
             asked: None,
             steer: None,
+            screen_after: now,
         }
     }
 
@@ -2979,11 +3011,11 @@ impl Daemon {
         let now = now_ms();
         let fired: Vec<(uuid::Uuid, Change)> =
             self.machines.iter_mut().filter_map(|(id, m)| m.tick(now).map(|c| (*id, c))).collect();
-        // A fact only a snapshot carries moved: broadcast, persist nothing.
-        let mut repaint = false;
-        let mut changed = self.probe_codex_startup(now);
-        changed |= self.probe_claude_startup(now);
-        changed |= self.drive_codex_inputs(now);
+        // The startup probes' screens (T-857): asked of the sampler here,
+        // read where the sample lands (`on_pane_sampled`).
+        self.want_codex_startup();
+        self.want_claude_startup();
+        let mut changed = self.drive_codex_inputs(now);
         for (id, change) in fired {
             changed |= stage!("apply_change", self.apply_change(id, &change, None, None));
         }
@@ -2991,8 +3023,8 @@ impl Daemon {
         // answers' deliveries do: the receipt follows its hook edge closely.
         changed |= stage!("settle_crown_plans", self.settle_crown_plans());
         if self.ticks.is_multiple_of(4) {
-            changed |= stage!("probe_spawning", self.probe_spawning());
-            changed |= stage!("probe_activity", self.probe_activity());
+            self.want_recovery(RecoveryChannel::Startup, now);
+            self.want_recovery(RecoveryChannel::Activity, now);
             changed |= stage!("wake_snoozed", self.wake_snoozed(now / 1000));
             changed |= stage!("finish_server_restart", self.finish_server_restart());
             // A blown move fuse that went a window with nothing trying lapses
@@ -3004,6 +3036,7 @@ impl Daemon {
             changed |= stage!("sweep_queue", self.sweep_queue());
             changed |= stage!("relaunch_silent_mods", self.relaunch_silent_mods(now));
             changed |= stage!("rescue_silent_mods", self.rescue_silent_mods(now));
+            self.want_owed_screens(now);
             changed |= stage!("settle_owed", self.settle_owed(now));
             changed |= stage!("settle_plan_accepts", self.settle_plan_accepts(now));
             changed |= stage!("service_plan_accepts", self.service_plan_accepts(now));
@@ -3038,15 +3071,13 @@ impl Daemon {
         if self.ticks.is_multiple_of(TAIL_POLL_TICKS) {
             changed |= stage!("poll_tails", self.poll_tails());
             changed |= stage!("probe_status_files", self.probe_status_files());
-            let panes = stage!("refresh_panes", self.refresh_panes());
-            changed |= panes.changed;
-            repaint |= panes.repaint;
+            self.want_panes();
         }
         if self.ticks.is_multiple_of(inactivity_park_ticks()) {
             changed |= stage!("park_inactive", self.park_inactive(now));
         }
         if self.ticks.is_multiple_of(RSS_TICKS) {
-            changed |= stage!("refresh_rss", self.refresh_rss());
+            changed |= self.want_rss();
         }
         // The worktree flags on their own cadence (a seam for the train's
         // e2e), sampled on a worker; the train's pass runs when they land
@@ -3095,13 +3126,15 @@ impl Daemon {
             stage!("queue_forge_busy", self.queue_forge_busy());
         }
         if self.ticks.is_multiple_of(server_guard_ticks()) {
-            changed |= stage!("guard_server", self.guard_server());
-            changed |= stage!("recheck_server_access", self.recheck_server_access());
+            self.want_guard();
+            self.want_server_access();
         }
+        // Every tmux and `ps` read the stages above asked for goes to one
+        // worker (T-857); its answers land as `Msg::PaneSampled`, and the
+        // stages that read them run there, under their own names.
+        stage!("queue_pane_sample", self.queue_pane_sample());
         if changed {
             stage!("persist_sessions", self.persist_sessions());
-        }
-        if changed || repaint {
             stage!("broadcast", self.broadcast());
         }
         // ≤1 write() per wheel bucket, no fsync (14 §1.7).
@@ -3136,23 +3169,21 @@ impl Daemon {
         self.shutting_down = true;
     }
 
-    fn probe_spawning(&mut self) -> bool {
-        self.poll_agent_recovery(RecoveryChannel::Startup)
-    }
-
-    fn probe_activity(&mut self) -> bool {
-        self.poll_agent_recovery(RecoveryChannel::Activity)
-    }
-
     fn probe_status_files(&mut self) -> bool {
         self.poll_agent_recovery(RecoveryChannel::Status)
     }
 
-    /// Batch common pane sampling while providers own eligibility, native
-    /// parsing and recovery heuristics. Only this authorized writer feeds
-    /// normalized evidence into machines and updates board previews.
-    fn poll_agent_recovery(&mut self, channel: RecoveryChannel) -> bool {
-        let now = now_ms();
+    /// The records a channel's probe should sample now, each with its pane's
+    /// name: the writer's half of a probe. `needs_poll` is the adapter's own
+    /// cursor (the startup probe's stage advances when it says yes, so a
+    /// candidate is asked exactly once), and providers own eligibility,
+    /// native parsing and the recovery heuristics; only this authorized
+    /// writer feeds normalized evidence into machines and board previews.
+    fn recovery_candidates(
+        &mut self,
+        channel: RecoveryChannel,
+        now: u64,
+    ) -> Vec<(uuid::Uuid, String)> {
         // The ids once (T-838): the retain was every entry against every
         // record, three times a second.
         let live: std::collections::HashSet<uuid::Uuid> =
@@ -3166,64 +3197,111 @@ impl Daemon {
                 candidates.push((record.id, record.sid16()));
             }
         }
-        if candidates.is_empty() {
-            return false;
-        }
-        let activity = if channel == RecoveryChannel::Activity {
-            let Ok(activity) = self.backend.activity() else { return false };
-            activity
-        } else {
-            Vec::new()
-        };
+        candidates
+    }
+
+    /// The channels that read files, on the writer as before: the status
+    /// file and the transcript tail fork nothing.
+    fn poll_agent_recovery(&mut self, channel: RecoveryChannel) -> bool {
+        let now = now_ms();
         let mut changed = false;
-        for (id, sid) in candidates {
+        for (id, _) in self.recovery_candidates(channel, now) {
             let sample = match channel {
-                RecoveryChannel::Startup => RecoverySample::Startup {
-                    has_output: self
-                        .backend
-                        .capture_tail(&sid, 3)
-                        .map(|lines| !lines.is_empty())
-                        .unwrap_or(false),
-                    title: self.backend.pane_title(&sid).ok(),
-                },
-                RecoveryChannel::Activity => {
-                    // A missing pane belongs to pane-death reconciliation.
-                    let Some((_, at)) = activity.iter().find(|(name, _)| *name == sid) else {
-                        continue;
-                    };
-                    RecoverySample::Activity { last_output_ms: at.saturating_mul(1000) }
-                }
                 RecoveryChannel::Status => RecoverySample::Status,
                 RecoveryChannel::Transcript => RecoverySample::Transcript,
+                // The pane channels ride the sampler (`want_recovery`).
+                RecoveryChannel::Startup | RecoveryChannel::Activity => continue,
             };
-            let Some(record) = self.board.sessions.iter().find(|record| record.id == id) else {
+            changed |= self.feed_recovery(id, sample, now);
+        }
+        changed
+    }
+
+    /// The pane channels' candidates, asked of the sampler (T-857): one
+    /// `capture_tail` and one `pane_title` per startup candidate, one
+    /// `activity` read for the activity probe. The answers come back through
+    /// `absorb_startup` and `absorb_activity`.
+    fn want_recovery(&mut self, channel: RecoveryChannel, now: u64) {
+        let candidates = self.recovery_candidates(channel, now);
+        if candidates.is_empty() {
+            return;
+        }
+        match channel {
+            RecoveryChannel::Startup => {
+                for (id, sid) in candidates {
+                    self.pane_due.startup(id, sid);
+                }
+            }
+            RecoveryChannel::Activity => self.pane_due.activity = true,
+            RecoveryChannel::Status | RecoveryChannel::Transcript => {}
+        }
+    }
+
+    /// The startup probe's answers (T-857), dated at the sample. A record
+    /// that left `Spawning` while the read was out moved on by better
+    /// evidence, and its answer is dropped.
+    fn absorb_startup(&mut self, probes: &[(uuid::Uuid, bool, Option<String>)], at: u64) -> bool {
+        let mut changed = false;
+        for (id, has_output, title) in probes {
+            let spawning = self
+                .board
+                .sessions
+                .iter()
+                .any(|r| r.id == *id && r.state == SessionState::Spawning);
+            if !spawning {
                 continue;
-            };
-            let Some(recovery) = self.recovery.get_mut(&id) else { continue };
-            let observations = recovery.poll(record, sample, now);
-            for observation in observations {
-                let principal = Principal::Automation { rule: "agent_recovery".into() };
-                if matches!(
-                    authorize(&principal, &Action::Mutate, &Resource::Session { id }),
-                    Decision::Deny { .. }
-                ) {
-                    continue;
-                }
-                if let Some(change) =
-                    self.observe_signal(id, &observation.signal, now, observation.source)
+            }
+            let sample = RecoverySample::Startup { has_output: *has_output, title: title.clone() };
+            changed |= self.feed_recovery(*id, sample, at);
+        }
+        changed
+    }
+
+    /// The activity probe's answer (T-857): each pane's last output, read
+    /// against the candidates as they stand now (`needs_poll`'s activity arm
+    /// is `Running` and not observe-only, no cursor), dated at the sample —
+    /// a silence is as long as it was when tmux was asked, never longer. A
+    /// missing pane belongs to pane-death reconciliation.
+    fn absorb_activity(&mut self, activity: &[(String, u64)], at: u64) -> bool {
+        let mut changed = false;
+        for (id, sid) in self.recovery_candidates(RecoveryChannel::Activity, at) {
+            let Some((_, last)) = activity.iter().find(|(name, _)| *name == sid) else { continue };
+            let sample = RecoverySample::Activity { last_output_ms: last.saturating_mul(1000) };
+            changed |= self.feed_recovery(id, sample, at);
+        }
+        changed
+    }
+
+    /// One sample into a record's recovery adapter, and each observation it
+    /// makes into the machine, authorized as `agent_recovery`.
+    fn feed_recovery(&mut self, id: uuid::Uuid, sample: RecoverySample, now: u64) -> bool {
+        let Some(record) = self.board.sessions.iter().find(|record| record.id == id) else {
+            return false;
+        };
+        let Some(recovery) = self.recovery.get_mut(&id) else { return false };
+        let observations = recovery.poll(record, sample, now);
+        let mut changed = false;
+        for observation in observations {
+            let principal = Principal::Automation { rule: "agent_recovery".into() };
+            if matches!(
+                authorize(&principal, &Action::Mutate, &Resource::Session { id }),
+                Decision::Deny { .. }
+            ) {
+                continue;
+            }
+            if let Some(change) =
+                self.observe_signal(id, &observation.signal, now, observation.source)
+            {
+                changed |= self.apply_change(id, &change, None, Some(observation.source));
+            }
+            // The preview outlives the state word: apply_change may clear
+            // detail, so apply the authorized preview after the transition.
+            if let Some(preview) = observation.preview {
+                if let Some(record) = self.board.sessions.iter_mut().find(|record| record.id == id)
                 {
-                    changed |= self.apply_change(id, &change, None, Some(observation.source));
-                }
-                // The preview outlives the state word: apply_change may clear
-                // detail, so apply the authorized preview after the transition.
-                if let Some(preview) = observation.preview {
-                    if let Some(record) =
-                        self.board.sessions.iter_mut().find(|record| record.id == id)
-                    {
-                        if record.detail.as_deref() != Some(preview.as_str()) {
-                            record.detail = Some(preview);
-                            changed = true;
-                        }
+                    if record.detail.as_deref() != Some(preview.as_str()) {
+                        record.detail = Some(preview);
+                        changed = true;
                     }
                 }
             }
@@ -3299,20 +3377,38 @@ impl Daemon {
     }
 
     /// Session names for the board: latch each live pane's OSC-0 title onto
-    /// its record (one batched tmux fork on the tail-poll bucket) so the TUI
+    /// its record (one batched tmux fork on the tail-poll bucket, on the
+    /// sampler since T-857: this asks, `absorb_panes` reads) so the TUI
     /// shows what the agent calls itself — the same source the focused tmux
     /// status line's breadcrumb leaf uses. The hostname means never-set (see
     /// `pane_title`) and a missing pane keeps the last name: latch, never
     /// clear, so sleeping/parked sessions stay recognizable.
-    fn refresh_panes(&mut self) -> Panes {
+    fn want_panes(&mut self) {
         let paned = self.board.sessions.iter().any(|r| r.state.has_pane());
         // A quiet board — no pane of ours, no terminal we know of — forks
         // nothing. A terminal enters the map through `open_terminal` or the
         // startup snapshot, so one that exists is always polled.
         if !paned && self.terminals.is_empty() {
-            return Panes::default();
+            return;
         }
-        let Ok(facts) = self.backend.pane_facts() else { return Panes::default() };
+        self.pane_due.facts = true;
+        // The process table too while an idle Claude pane could be running
+        // a `!` command (T-707; `absorb_panes` reads it).
+        if self.board.sessions.iter().any(|r| {
+            r.kind == SessionKind::Claude && r.state.has_pane() && idle_at_prompt(&r.state)
+        }) {
+            self.pane_due.rows = true;
+        }
+    }
+
+    /// The pane poll's writer half (T-857): the sampler's facts, and the
+    /// process table when it was asked for, dated at the sample.
+    fn absorb_panes(
+        &mut self,
+        facts: &[mesimon_backend_tmux::PaneFacts],
+        rows: Option<&[mesimon_core::board::ProcRow]>,
+        at: u64,
+    ) -> Panes {
         let mut changed = false;
         // Read first, written only where a title moved: a `&mut` on the
         // records marks them for the save (T-839), and this runs every
@@ -3371,34 +3467,23 @@ impl Daemon {
         // while an idle Claude pane exists, one `ps` for all of them, and
         // only a shell younger than the idle spell counts — the MCP servers
         // and a background task's shell are older (`bash_mode_foreground`).
-        let now = now_ms();
-        let idle_claudes: Vec<(uuid::Uuid, i32, u64)> = self
-            .board
-            .sessions
-            .iter()
-            .filter(|r| r.kind == SessionKind::Claude && r.state.has_pane())
-            .filter(|r| {
-                matches!(
-                    r.state,
-                    SessionState::Idle {
-                        stop_reason: StopReason::EndTurn
-                            | StopReason::Interrupted
-                            | StopReason::Unknown
-                            | StopReason::Monitoring
-                    }
-                )
-            })
-            .filter_map(|r| {
-                let sid = r.sid16();
-                let f = facts.iter().find(|f| f.session_name == sid && !f.pane_dead)?;
-                let spell = now.saturating_sub(r.state_changed_at.unwrap_or(now)) / 1000;
-                (f.pane_pid > 0 && spell > 0).then_some((r.id, f.pane_pid, spell))
-            })
-            .collect();
-        if !idle_claudes.is_empty() {
-            let rows = process_rows();
+        if let Some(rows) = rows {
+            let idle_claudes: Vec<(uuid::Uuid, i32, u64)> = self
+                .board
+                .sessions
+                .iter()
+                .filter(|r| {
+                    r.kind == SessionKind::Claude && r.state.has_pane() && idle_at_prompt(&r.state)
+                })
+                .filter_map(|r| {
+                    let sid = r.sid16();
+                    let f = facts.iter().find(|f| f.session_name == sid && !f.pane_dead)?;
+                    let spell = at.saturating_sub(r.state_changed_at.unwrap_or(at)) / 1000;
+                    (f.pane_pid > 0 && spell > 0).then_some((r.id, f.pane_pid, spell))
+                })
+                .collect();
             for (id, pane_pid, spell) in idle_claudes {
-                if let Some(cmd) = bash_mode_foreground(pane_pid, spell, &rows) {
+                if let Some(cmd) = bash_mode_foreground(pane_pid, spell, rows) {
                     foregrounds.insert(id, cmd);
                 }
             }
@@ -3432,17 +3517,22 @@ impl Daemon {
     /// server, since tmux exits when its last session ends, which must not
     /// break the Sleeping latch), and not observe-only adopted records (their
     /// process lives in the user's own terminal, not our tmux).
-    fn guard_server(&mut self) -> bool {
-        fn ours_paned(r: &SessionRecord) -> bool {
-            r.state.has_pane() && !r.observe_only()
+    fn want_guard(&mut self) {
+        if self.board.sessions.iter().any(ours_paned) {
+            self.pane_due.alive = true;
         }
-        if !self.board.sessions.iter().any(ours_paned) || self.backend.server_alive() {
+    }
+
+    /// `want_guard`'s answer (T-857). A pane spawned or woken since the read
+    /// began stands on a server the read never saw, and is left alone.
+    fn absorb_guard(&mut self, alive: bool, at: u64) -> bool {
+        if alive {
             return false;
         }
         let now = now_ms();
         let mut changed = false;
         for rec in &mut self.board.sessions {
-            if ours_paned(rec) {
+            if ours_paned(rec) && rec.state_changed_at.is_none_or(|t| t <= at) {
                 rec.state = SessionState::Unknown { reason: UnknownReason::SupervisorDead };
                 rec.confidence = Confidence::Stale;
                 rec.waiting_since = None;
@@ -3476,7 +3566,14 @@ impl Daemon {
     /// gone clears it, since the next spawn starts a fresh one (on macOS
     /// responsible for itself, `TmuxBackend::ensure_server`).
     fn probe_server_access(&mut self) -> bool {
-        let cut = match self.backend.folder_access(&self.paths.repo_root) {
+        let access = self.backend.folder_access(&self.paths.repo_root);
+        self.absorb_server_access(access)
+    }
+
+    /// The probe's answer, from the launch-death edge above or the sampler
+    /// (T-857): the notice follows it.
+    fn absorb_server_access(&mut self, access: mesimon_backend_tmux::Access) -> bool {
+        let cut = match access {
             mesimon_backend_tmux::Access::Denied(why) if mesimon_backend_tmux::is_cut_off(&why) => {
                 Some(why)
             }
@@ -3521,11 +3618,11 @@ impl Daemon {
 
     /// The probe again, only while its notice stands: a server restarted by
     /// any road (the menu, a `kill-server` by hand) takes the notice down.
-    fn recheck_server_access(&mut self) -> bool {
-        if !self.notices.iter().any(|n| n.kind == SERVER_CUT_OFF) {
-            return false;
+    /// Asked of the sampler (T-857); `absorb_server_access` reads it.
+    fn want_server_access(&mut self) {
+        if self.notices.iter().any(|n| n.kind == SERVER_CUT_OFF) {
+            self.pane_due.access = true;
         }
-        self.probe_server_access()
     }
 
     /// The Esc menu's `Restart the private tmux server` (T-690).
@@ -3941,26 +4038,36 @@ impl Daemon {
     /// The dialog's leave is `SessionStart`'s; a composer seen in its place
     /// says the same (`Ready`), as Codex's `input_ready` does. A startup
     /// modal this does not recognise reads SETUP as before.
-    fn probe_claude_startup(&mut self, now: u64) -> bool {
-        use crate::agents::claude::composer::{self, Composer};
+    fn want_claude_startup(&mut self) {
         if !self.ticks.is_multiple_of(4) {
-            return false;
+            return;
         }
+        let wanted: Vec<String> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|s| claude_startup_candidate(s))
+            .map(|s| s.sid16())
+            .collect();
+        for sid in wanted {
+            self.pane_due.screen(&sid);
+        }
+    }
+
+    /// `want_claude_startup`'s screens, read (T-857): the candidates as
+    /// they stand now, so a seat that moved on while the read was out
+    /// drops its screen; dated at the sample.
+    fn probe_claude_startup(
+        &mut self,
+        screens: &HashMap<String, mesimon_backend_tmux::InputScreen>,
+        now: u64,
+    ) -> bool {
+        use crate::agents::claude::composer::{self, Composer};
         let candidates: Vec<_> = self
             .board
             .sessions
             .iter()
-            .filter(|s| {
-                s.kind == SessionKind::Claude
-                    && s.state.has_pane()
-                    && matches!(
-                        s.state,
-                        SessionState::Spawning
-                            | SessionState::RequiresAction {
-                                reason: Reason::StartupModal | Reason::Trust
-                            }
-                    )
-            })
+            .filter(|s| claude_startup_candidate(s))
             .map(|s| (s.id, s.sid16(), s.state.clone(), s.cwd.clone()))
             .collect();
         let mut dirty = false;
@@ -3969,9 +4076,9 @@ impl Daemon {
             if authorize(&principal, &Action::Mutate, &Resource::Session { id }).denied() {
                 continue;
             }
-            let Ok(screen) = self.backend.capture_input_screen(&sid) else { continue };
+            let Some(screen) = screens.get(&sid) else { continue };
             let at_trust = state == (SessionState::RequiresAction { reason: Reason::Trust });
-            let signal = match crate::trust_dialog::read(&screen) {
+            let signal = match crate::trust_dialog::read(screen) {
                 Some(dialog) => {
                     dirty |= self.control_offer_trust(id, Some(dialog.folder.unwrap_or(cwd)));
                     if at_trust {
@@ -3982,7 +4089,7 @@ impl Daemon {
                 // The dialog went and the composer paints: the seat is up. A
                 // projection nothing walks goes with it; one a delivery is
                 // still walking settles the delivery first (`trust_taken`).
-                None if at_trust && composer::read(&screen) != Composer::Absent => {
+                None if at_trust && composer::read(screen) != Composer::Absent => {
                     if !self.control_trust_walking(id) {
                         dirty |= self.control_drop_trust(id);
                     }
@@ -4009,10 +4116,11 @@ impl Daemon {
     /// A capture a tick while launch words wait on the composer; a dialog
     /// standing, or a composer nothing waits on, is looked at once a second
     /// (T-840: four captures a second per seat for as long as it stood).
-    fn probe_codex_startup(&mut self, now: u64) -> bool {
-        let second = self.ticks.is_multiple_of(4);
-        let candidates: Vec<_> = self
-            .board
+    fn codex_startup_candidates(
+        &self,
+        second: bool,
+    ) -> Vec<(uuid::Uuid, String, SessionState, Option<u64>)> {
+        self.board
             .sessions
             .iter()
             .filter(|s| {
@@ -4032,7 +4140,26 @@ impl Daemon {
                         ))
             })
             .map(|s| (s.id, s.sid16(), s.state.clone(), s.codex_generation))
-            .collect();
+            .collect()
+    }
+
+    /// The Codex startup probe's screens, asked of the sampler (T-857) on
+    /// the probe's own cadence.
+    fn want_codex_startup(&mut self) {
+        let second = self.ticks.is_multiple_of(4);
+        for (_, sid, _, _) in self.codex_startup_candidates(second) {
+            self.pane_due.screen(&sid);
+        }
+    }
+
+    /// `want_codex_startup`'s screens, read: the candidates as they stand
+    /// now, dated at the sample.
+    fn probe_codex_startup(
+        &mut self,
+        screens: &HashMap<String, mesimon_backend_tmux::InputScreen>,
+        now: u64,
+    ) -> bool {
+        let candidates = self.codex_startup_candidates(true);
         let mut dirty = false;
         for (id, sid, state, generation) in candidates {
             let principal = Principal::Automation { rule: "codex_startup".into() };
@@ -4042,8 +4169,8 @@ impl Daemon {
             ) {
                 continue;
             }
-            let Ok(screen) = self.backend.capture_input_screen(&sid) else { continue };
-            if crate::agents::codex::input_ready(&screen) {
+            let Some(screen) = screens.get(&sid) else { continue };
+            if crate::agents::codex::input_ready(screen) {
                 self.codex_native_ready.insert(id, generation);
             }
             let signal = if state
@@ -4058,12 +4185,12 @@ impl Daemon {
                 let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else {
                     continue;
                 };
-                if crate::agents::codex::plan_dialog(&screen) {
+                if crate::agents::codex::plan_dialog(screen) {
                     dirty |= !rec.codex_plan_dialog_seen;
                     rec.codex_plan_dialog_seen = true;
                     continue;
                 }
-                if !rec.codex_plan_dialog_seen || !crate::agents::codex::input_ready(&screen) {
+                if !rec.codex_plan_dialog_seen || !crate::agents::codex::input_ready(screen) {
                     continue;
                 }
                 rec.codex_plan_dismissed_turn = rec.codex_turn_id.clone();
@@ -4072,12 +4199,12 @@ impl Daemon {
                 self.codex_ready.insert(id);
                 dirty = true;
                 Signal::Ready
-            } else if let Some(reason) = crate::agents::codex::startup_attention(&screen) {
+            } else if let Some(reason) = crate::agents::codex::startup_attention(screen) {
                 // The folder dialog is one the board accepts for a person
                 // (T-844): offered to the phone's card and the board's `w`.
                 // The hook review stays the pane's.
                 if reason == mesimon_core::board::Reason::Trust {
-                    if crate::trust_dialog::read(&screen).is_some() {
+                    if crate::trust_dialog::read(screen).is_some() {
                         let cwd =
                             self.board.sessions.iter().find(|s| s.id == id).map(|s| s.cwd.clone());
                         dirty |= self.control_offer_trust(id, cwd);
@@ -4087,7 +4214,7 @@ impl Daemon {
                 }
                 Signal::Attention { reason }
             } else if self.codex_ready.contains(&id)
-                && crate::agents::codex::input_ready(&screen)
+                && crate::agents::codex::input_ready(screen)
                 && matches!(
                     state,
                     SessionState::RequiresAction {
@@ -4112,7 +4239,7 @@ impl Daemon {
                         SessionState::RequiresAction { reason: mesimon_core::board::Reason::Trust }
                     )
                     .then(|| {
-                        if crate::trust_dialog::read(&screen).is_some() {
+                        if crate::trust_dialog::read(screen).is_some() {
                             "Codex asks to trust this folder"
                         } else {
                             "Codex needs your trust decision ∙ open its pane"
@@ -5189,6 +5316,28 @@ impl Daemon {
         changed
     }
 
+    /// The panes with launch words parked (T-857): their screens are asked
+    /// of the sampler every bucket, so `settle_owed`'s composer read finds
+    /// one at most a second old when the words are due, as the fork it
+    /// replaced did. Not a mod session still waiting on its bridge: its
+    /// words go down the bridge, and the paste road asks when it takes them.
+    fn want_owed_screens(&mut self, now: u64) {
+        let wanted: Vec<String> = self
+            .owed
+            .iter()
+            .filter(|(_, o)| {
+                o.parked.is_some()
+                    && (!o.mod_road || o.bridge_by.is_some_and(|by| by <= now + 1_000))
+            })
+            .filter_map(|(id, _)| self.board.sessions.iter().find(|s| s.id == *id))
+            .filter(|r| r.kind == SessionKind::Claude && r.state.has_pane())
+            .map(|r| r.sid16())
+            .collect();
+        for sid in wanted {
+            self.pane_due.screen(&sid);
+        }
+    }
+
     /// The tick's pass over the ledger: expire the pastes whose ack never
     /// came, and press again where an Enter is due — on cadence, until
     /// `UserPromptSubmit` settles the entry or the attempts run out. Giving
@@ -5324,11 +5473,17 @@ impl Daemon {
             }
             if claude && parked {
                 use crate::agents::claude::composer::{self, Composer};
-                let composer = self
-                    .backend
-                    .capture_input_screen(&sid16)
-                    .map_or(Composer::Absent, |screen| composer::read(&screen));
+                // The composer is read off the sampler's newest screen of
+                // this pane (T-857), never a fork here, and the next sample
+                // is asked for another so the next cadence reads fresh. A
+                // screen from before the entry's stamp — the pane's start, a
+                // clear — is not this box yet, and reads as no composer.
+                self.pane_due.screen(&sid16);
                 let Some(owed) = self.owed.get_mut(&id) else { continue };
+                let composer = match self.screens.get(&sid16) {
+                    Some((at, screen)) if *at >= owed.screen_after => composer::read(screen),
+                    _ => Composer::Absent,
+                };
                 let ready_by = *owed.ready_by.get_or_insert(now + composer_wait_ms());
                 match composer {
                     Composer::Absent if ready_by <= now => {
@@ -5351,6 +5506,7 @@ impl Daemon {
                     Composer::Holding if owed.clear_first => {
                         owed.clear_first = false;
                         let _ = self.backend.clear_input(&sid16);
+                        owed.screen_after = now;
                         owed.next_press = Some(now + SUBMIT_RETRY_MS);
                         continue;
                     }
@@ -9348,10 +9504,11 @@ impl Daemon {
         }
     }
 
-    /// One `ps` fork on the 10 s bucket, over the pane process groups we own.
-    /// The same bucket recomputes the sleep suggestion (nothing here forks
-    /// more than the `ps` and the one snapshot).
-    fn refresh_rss(&mut self) -> bool {
+    /// One `ps` on the 10 s bucket, over the pane process groups we own, on
+    /// the sampler (T-857) with the pane facts it reads the groups off; with
+    /// no pane the figures clear here, forking nothing. The same bucket
+    /// recomputes the sleep suggestion.
+    fn want_rss(&mut self) -> bool {
         if !self.board.sessions.iter().any(|s| s.state.has_pane()) {
             let had = self.rss_cache != (0, 0) || self.reclaim_cache != (0, 0);
             self.rss_cache = (0, 0);
@@ -9359,16 +9516,21 @@ impl Daemon {
             self.reclaim_cache = (0, 0);
             return had;
         }
-        let Ok(snap) = self.backend.snapshot() else { return false };
-        let ours: std::collections::HashSet<String> =
-            self.board.sessions.iter().filter(|s| s.state.has_pane()).map(|s| s.sid16()).collect();
-        let pgids: std::collections::HashSet<i32> = snap
-            .iter()
-            .filter(|p| !p.pane_dead && ours.contains(&p.session_name))
-            .map(|p| p.pane_pid)
-            .collect();
-        let by_pgid = crate::resources::measure_rss_by(&pgids);
-        self.rss_by = snap
+        self.pane_due.facts = true;
+        self.pane_due.rss = Some(
+            self.board.sessions.iter().filter(|s| s.state.has_pane()).map(|s| s.sid16()).collect(),
+        );
+        false
+    }
+
+    /// `want_rss`'s answer: the bytes by pane process group, folded onto the
+    /// records whose panes they are.
+    fn absorb_rss(
+        &mut self,
+        facts: &[mesimon_backend_tmux::PaneFacts],
+        by_pgid: &HashMap<i32, u64>,
+    ) -> bool {
+        self.rss_by = facts
             .iter()
             .filter(|p| !p.pane_dead)
             .filter_map(|p| {
@@ -12933,7 +13095,7 @@ impl Daemon {
         let t = t.clone();
         let _ = store::save_ticket(&self.paths, &t);
         self.drop_crown_if(id);
-        self.reclaim_on_archive(id);
+        self.reclaim_on_archive(id, None);
         true
     }
 
@@ -12950,7 +13112,12 @@ impl Daemon {
     /// behind the user's discard). Unmerged work keeps its worktree exactly
     /// as before: the archive stays reversible for work that has not landed.
     /// A snooze takes none of this — a snooze is a return.
-    fn reclaim_on_archive(&mut self, id: ulid::Ulid) {
+    ///
+    /// `merged` is the sample's verdict where the caller has one (T-857:
+    /// `reclaim_archived`, every bucket, forks nothing on the writer), and
+    /// `None` asks git, the one fork a person's archive still makes;
+    /// `process_teardowns` makes the fresh check where it tears down.
+    fn reclaim_on_archive(&mut self, id: ulid::Ulid, merged: Option<bool>) {
         let Some(b) = self.worktrees.get(&id) else { return };
         // A teardown already queued or under way is judged again where it
         // lands (`process_teardowns`), so the forks below are owed nothing
@@ -12959,7 +13126,7 @@ impl Daemon {
         if self.pending_teardown.iter().any(|t| t.ticket == id) || self.tearing_down.contains(&id) {
             return;
         }
-        let merged = !b.branch.is_empty() && self.ticket_merged(id);
+        let merged = !b.branch.is_empty() && merged.unwrap_or_else(|| self.ticket_merged(id));
         let awake = self.board.ticket_awake_sessions(id);
         if !worktree::reclaim_on_archive(b, merged, awake, self.worktrees_barred) {
             return;
@@ -13002,7 +13169,7 @@ impl Daemon {
             .map(|(id, _)| *id)
             .collect();
         for id in due {
-            self.reclaim_on_archive(id);
+            self.reclaim_on_archive(id, Some(true));
         }
     }
 
@@ -15337,6 +15504,99 @@ impl Daemon {
         }
     }
 
+    /// The tick's road for every tmux and `ps` read (T-857): what the
+    /// stages asked for this tick, and any still owed from the last, to one
+    /// worker, when none is out. A sample out when the next tick comes
+    /// leaves the asks gathering; they ride the next.
+    fn queue_pane_sample(&mut self) {
+        if self.pane_inflight || self.pane_due.is_empty() {
+            return;
+        }
+        let query = std::mem::take(&mut self.pane_due);
+        self.pane_inflight = true;
+        self.pane_gen = self.pane_gen.wrapping_add(1);
+        let gen = self.pane_gen;
+        let backend = self.backend.clone();
+        let repo = self.paths.repo_root.clone();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let sample = crate::panes::take(&backend, &repo, query, gen, now_ms());
+            let _ = tx.send(Msg::PaneSampled(Box::new(sample)));
+        });
+    }
+
+    /// A sample landed (T-857): each part to the stage that asked for it,
+    /// under the stage's own name, so a slow absorb is journalled as the
+    /// probe it is; then the persist and the broadcast a tick makes. Every
+    /// observation is dated at the sample's time, and each stage re-reads
+    /// its candidates off the board as it stands, so a record that moved on
+    /// while the read was out drops its answer. A sample past the journal's
+    /// slow-turn floor is said once a minute: the machine's tmux is slow,
+    /// and the board no longer is.
+    fn on_pane_sampled(&mut self, s: crate::panes::Sample) {
+        self.pane_inflight = false;
+        if s.gen != self.pane_gen {
+            return;
+        }
+        if s.took >= crate::journal::SLOW_TURN
+            && self.pane_slow_said.is_none_or(|t| t.elapsed() >= Duration::from_secs(60))
+        {
+            self.pane_slow_said = Some(Instant::now());
+            self.journal.line(&format!(
+                "slow pane sample: {} tmux/ps forks took {} ms, off the writer thread",
+                s.forks,
+                s.took.as_millis()
+            ));
+        }
+        macro_rules! stage {
+            ($name:literal, $e:expr) => {{
+                let t = Instant::now();
+                let r = $e;
+                self.note_stage($name, t.elapsed());
+                r
+            }};
+        }
+        let at = s.at;
+        let mut changed = false;
+        let mut repaint = false;
+        changed |= stage!("probe_codex_startup", self.probe_codex_startup(&s.screens, at));
+        changed |= stage!("probe_claude_startup", self.probe_claude_startup(&s.screens, at));
+        if let Some(facts) = &s.facts {
+            let panes = stage!("refresh_panes", self.absorb_panes(facts, s.rows.as_deref(), at));
+            changed |= panes.changed;
+            repaint |= panes.repaint;
+            if let Some(rss) = &s.rss {
+                changed |= stage!("refresh_rss", self.absorb_rss(facts, rss));
+            }
+        }
+        changed |= stage!("probe_spawning", self.absorb_startup(&s.startup, at));
+        if let Some(activity) = &s.activity {
+            changed |= stage!("probe_activity", self.absorb_activity(activity, at));
+        }
+        if let Some(alive) = s.alive {
+            changed |= stage!("guard_server", self.absorb_guard(alive, at));
+        }
+        if let Some(access) = s.access {
+            changed |= stage!("recheck_server_access", self.absorb_server_access(access));
+        }
+        // The newest screen of each pane, for the composer reads; a pane
+        // gone takes its screen with it.
+        let paned: std::collections::HashSet<String> =
+            self.board.sessions.iter().filter(|r| r.state.has_pane()).map(|r| r.sid16()).collect();
+        self.screens.retain(|sid, _| paned.contains(sid));
+        for (sid, screen) in s.screens {
+            if paned.contains(&sid) {
+                self.screens.insert(sid, (at, screen));
+            }
+        }
+        if changed {
+            stage!("persist_sessions", self.persist_sessions());
+        }
+        if changed || repaint {
+            stage!("broadcast", self.broadcast());
+        }
+    }
+
     fn queue_worktree_flags(&mut self) {
         if self.wt_inflight || self.worktrees.is_empty() {
             return;
@@ -17226,13 +17486,38 @@ fn archive_suggest_ms() -> u64 {
 /// The process table — pid, parent, age and name — for `bash_mode_foreground`
 /// (T-707). `ps axo` is BSD and procps alike; an unreadable table is empty,
 /// never an error: a missing `ps` only means no `!` command is ever seen.
-fn process_rows() -> Vec<mesimon_core::board::ProcRow> {
-    let Ok(out) =
-        std::process::Command::new("ps").args(["axo", "pid=,ppid=,etime=,comm="]).output()
-    else {
-        return Vec::new();
-    };
-    mesimon_core::board::parse_ps_rows(&String::from_utf8_lossy(&out.stdout))
+/// A record of ours with a pane on the private server: what the wholesale
+/// server guard watches. Not `Sleeping` (no pane, no process) and not an
+/// observe-only adopted record (its process lives in the user's own
+/// terminal, not our tmux).
+fn ours_paned(r: &SessionRecord) -> bool {
+    r.state.has_pane() && !r.observe_only()
+}
+
+/// An idle Claude at its prompt (T-707): the states in which a `!` command
+/// typed into the composer is the pane's foreground.
+fn idle_at_prompt(state: &SessionState) -> bool {
+    matches!(
+        state,
+        SessionState::Idle {
+            stop_reason: StopReason::EndTurn
+                | StopReason::Interrupted
+                | StopReason::Unknown
+                | StopReason::Monitoring
+        }
+    )
+}
+
+/// A Claude seat the startup probe reads the screen of: on its way up, or
+/// stopped at a dialog the probe recognises.
+fn claude_startup_candidate(s: &SessionRecord) -> bool {
+    s.kind == SessionKind::Claude
+        && s.state.has_pane()
+        && matches!(
+            s.state,
+            SessionState::Spawning
+                | SessionState::RequiresAction { reason: Reason::StartupModal | Reason::Trust }
+        )
 }
 
 /// Direct live children of a pid, by name — the tmux-recast bash-sleep guard.

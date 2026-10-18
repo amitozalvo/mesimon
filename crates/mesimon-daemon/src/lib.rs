@@ -17,6 +17,7 @@ pub mod ingest;
 pub mod journal;
 pub mod modroad;
 pub mod movegate;
+pub mod panes;
 pub mod paths;
 pub mod plan_dialog;
 pub mod resources;

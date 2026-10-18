@@ -28117,3 +28117,94 @@ unchanged. **Owed:** CHANGELOG lines at the next bump — **Changed:** when the 
 answer, the board says `daemon slow` with what it was doing, keeps drawing and reconnects in
 the background; it said `daemon unreachable` and froze. **Added:** `mesimon doctor` lists the
 daemon's slow turns of the last day.
+
+## The tick's tmux, ps and git forks ride a worker (T-857, 2026-10-18, the structural fix T-856 left open)
+
+T-856's "Left open": every tick forked `tmux` (`pane_facts`, the startup and activity probes,
+the Claude and Codex startup screens, the composer reads for owed words, `server_alive`, the
+folder probe) and `ps` (the RSS figure, the bash-mode foreground) on the single writer thread,
+and `reclaim_archived` asked git (`ticket_merged`) every bucket for an archived tree still
+standing. Under load a fork that takes 50 ms idle takes seconds, and every hook frame, client
+request and other board waited behind the tick.
+
+**Measured, before** (`slow_tmux_e2e` against the unchanged daemon: `MESIMON_TMUX_BIN` a
+wrapper that sleeps 2 s before the real tmux, one Spawning stub): `tick took 4068 ms ∙ slowest
+stage refresh_panes 2033 ms`, `tick took 6102 ms ∙ slowest stage probe_spawning 4052 ms`,
+`tick took 8155 ms ∙ slowest stage refresh_rss 4083 ms`, `tick took 4072 ms ∙ slowest stage
+guard_server 2037 ms`, and `tick took 2036 ms ∙ slowest stage probe_spawning 0 ms` — the
+unnamed 2 s was `probe_claude_startup`, which ran outside a `stage!`. A `Snapshot` round-trip
+hit the test client's 10 s read timeout, and so did the reconnect's `Hello`.
+
+**Applied: the pane sampler (`daemon/src/panes.rs`).** The same shape as the git sample, the
+worktree flags and the forge. The writer builds a `panes::Query` from its state over the ticks
+(`want_panes`, `want_rss`, `want_recovery` for the startup and activity channels,
+`want_claude_startup`, `want_codex_startup`, `want_owed_screens`, `want_guard`,
+`want_server_access`); `queue_pane_sample` hands it to one worker thread when none is out
+(`TmuxBackend` is `Clone` now; the worker runs `panes::take`); the answers land as
+`Msg::PaneSampled` carrying the time the reads began; and `on_pane_sampled` runs each stage's
+absorb under the stage's own name (`refresh_panes`, `refresh_rss`, `probe_spawning`,
+`probe_activity`, `probe_claude_startup`, `probe_codex_startup`, `guard_server`,
+`recheck_server_access`), so a slow absorb is still journalled as the probe it is. A bucket that
+comes round while a sample is out adds to the query rather than skipping: the read is late,
+never lost.
+- **Time is the sample's.** Every observation is fed `sample.at`, never `now()` at absorb
+  (`core/src/attention.rs` is time-injected on purpose): a silence is as long as it was when
+  tmux was asked; a startup probe is dated when the pane was read.
+- **A result that lands after the session moved on is dropped.** Each absorb re-reads its
+  candidates off the board as it stands: `absorb_startup` only for a record still `Spawning`;
+  `absorb_activity` against `needs_poll`'s activity arm again (stateless: `Running`, not
+  observe-only); the startup probes against their state filter; the guard only for a pane whose
+  `state_changed_at` is not after the read (a pane spawned or woken since stands on a server the
+  read never saw).
+- **`needs_poll` stays on the writer** (`recovery_candidates`): the startup channel's stage
+  advances when it says yes, so a candidate is asked exactly once and its answer comes back
+  through the sample. `feed_recovery` is the one road every channel's sample takes into the
+  adapter and the machine; the status-file and transcript channels read files and stay on the
+  tick as they were.
+- **The composer read is off the sampler's newest screen.** `settle_owed` consults
+  `Daemon::screens` (the newest `InputScreen` per pane, with its sample's time) and asks the next
+  sample for another, so the next cadence reads fresh; `want_owed_screens` asks every bucket for
+  every pane with words parked, so the screen is at most a second old when the words are due —
+  the fork it replaced was no fresher under load. `Owed::screen_after` is the stamp a screen
+  must postdate: the entry's birth (a wake reuses the pane's name, and the old pane's screen must
+  not paste into the new one before it asks for bracketed paste, T-570) and the one Ctrl+C of a
+  resend. An older screen reads as no composer, and the `COMPOSER_WAIT_MS` clock still bounds
+  the wait.
+- **`refresh_rss` reads its pane process groups off the same `pane_facts`** the titles use
+  (`snapshot()` was a second fork for the same three fields), and the `ps` runs on the worker;
+  the no-pane clear stays on the writer and forks nothing.
+- **`reclaim_archived` passes the sample's verdict** (`reclaim_on_archive(id, Some(true))`: its
+  filter already requires `wt_agg.merged` and no open PR), and `process_teardowns` makes the one
+  fresh `ticket_merged` where it tears down, as it did. A person's archive (`archive_one`) still
+  asks git once (`None`).
+- **The journal says what tmux costs**: `slow pane sample: N tmux/ps forks took M ms, off the
+  writer thread`, at most once a minute, when a sample passes `journal::SLOW_TURN`. It is the
+  author's work machine's answer to "how slow is tmux here" with the board no longer paying for
+  it.
+
+**Measured, after** (the same e2e): 67 `Snapshot` round-trips over 17 s, the slowest 14–20 ms;
+no slow turn in the journal; `slow pane sample: 1 tmux/ps forks took 2022 ms, off the writer
+thread`.
+
+**Still forks on the writer, and why.**
+- The actions — `paste_text`, `send_enter`, `clear_input`, `kill_session`, `spawn`,
+  `send_text`: a delivery or a kill is one fork at an edge, not a probe per tick, and its order
+  against the record's state is the point (T-5's separate Enter; one Ctrl+C, never two).
+- `drive_codex_inputs` and `press_steer` capture a screen and act on it in the same breath (a
+  paste into a box seen ready, an Enter into a box seen holding): a Codex seat with words
+  pending, a steer in flight — short windows, and the read-then-act pair belongs together.
+- `park_inactive`'s `client_quiet_secs`: one `list-clients` for a session already due to park.
+- `sweep_codex_orphans`' `panes()`: only with an orphan candidate, every 15 s.
+- `probe_server_access` at the launch-death edge (T-690), once; `on_shell_env`'s
+  `set_path`/`publish_path` at startup, once (the e2e waits for it before slowing tmux).
+- `focus_start`'s `pane_title`, `focus_quiet`, `pane_tail`/`terminal_tail`: a person's request,
+  one fork, as the `pane_tail` comment argues.
+- `on_worktree_flags`' `upstream_base` on landing, once per leg per fetch: T-216's own road.
+
+**Tests.** `slow_tmux_e2e` (above; a marker file turns the wrapper's sleep on after the spawn
+and after the shell env landed, so what is measured is the tick's own forks; a round-trip the
+client gives up on counts as its 10 s and reconnects);
+`panes::tests::a_query_counts_its_forks_and_asks_each_pane_once`; `hook_e2e` and `prompt_e2e`
+(the recovery and composer roads) and the full suite once, green. **Owed:** a CHANGELOG line
+at the next bump — **Changed:** the board stays quick on a loaded machine: what it reads from
+tmux and the process table runs beside the daemon's writer, not in its way.

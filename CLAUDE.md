@@ -291,7 +291,12 @@ Five crates: `mesimon` (the single binary; subcommand dispatch is a hand-rolled 
 state. Client requests, hook frames and the 250 ms tick all arrive as a `Msg` variant in
 `daemon/src/server.rs`. Never mutate state from another thread — add new inputs as new `Msg`
 variants fed by listener threads. Every mutation passes `authorize()`
-(`core/src/authorize.rs`); construct a real `Principal`/`Action`.
+(`core/src/authorize.rs`); construct a real `Principal`/`Action`. **The tick forks nothing on
+the writer** (T-857): every tmux or `ps` read a tick stage wants is a `want_*` that adds to
+`panes::Query`, rides one worker at a time (`queue_pane_sample`) and lands as `Msg::PaneSampled`,
+where the stage's absorb runs under its own name with the *sample's* time and re-reads its
+candidates off the board, so a record that moved on drops its answer. A new per-tick probe joins
+the query; an action at an edge (a paste, an Enter, a kill) stays a fork on the writer.
 
 **Three principals, kept apart.** `Local` is a person, `Agent { session }` means an agent
 asked, `Automation { rule }` is the daemon's own rules. **`Daemon::place_ticket` is the only
