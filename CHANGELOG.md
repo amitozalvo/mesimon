@@ -6,6 +6,29 @@ notes, and the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-beta.9 — 2026-10-18
+
+### Added
+
+- **`mesimon doctor` lists the daemon's slow turns.** The daemon section shows
+  up to three recent slow turns from the last day, newest first, each with
+  what the daemon was doing and how long it took. A board that read
+  `daemon slow` waited on one of them.
+
+### Changed
+
+- **The board keeps working while the daemon is slow.** When the daemon takes
+  more than 10 seconds to answer, the status row reads `daemon slow` with what
+  the daemon was last doing, the board keeps drawing, and it reconnects in the
+  background. It used to read `daemon unreachable` and freeze for 30 seconds
+  or more.
+- **A busy machine no longer stalls the daemon.** Everything the daemon reads
+  from tmux and the process table each tick now runs beside its main thread
+  instead of in its way, so a video call or a build on the same machine no
+  longer holds up the board, Remote Control or the agents' progress. In the
+  test that reproduces it, a tmux that answers 2 seconds late leaves board
+  requests under half a second where they timed out before.
+
 ## v0.1.0-beta.8 — 2026-10-18
 
 ### Added
