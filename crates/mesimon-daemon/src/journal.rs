@@ -100,6 +100,60 @@ impl Journal {
         let text = std::fs::read_to_string(path).ok()?;
         text.lines().rev().find(|l| l.contains(" stopping: ")).map(str::to_string)
     }
+
+    /// The newest `slow turn` lines in the journal at `path`, newest first,
+    /// at most `n`, each stamped no earlier than `since_ms` (T-856): what the
+    /// writer thread was doing when a board last waited on it. The stamp is
+    /// `iso_utc`, which orders as text, so no date is parsed back.
+    pub fn slow_turns(path: &Path, since_ms: u64, n: usize) -> Vec<SlowTurn> {
+        let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+        let floor = iso_utc(since_ms);
+        text.lines()
+            .rev()
+            .filter(|l| l.as_bytes().first().is_some_and(u8::is_ascii_digit) && *l >= &floor[..])
+            .filter_map(SlowTurn::parse)
+            .take(n)
+            .collect()
+    }
+}
+
+/// One `slow turn` line, read back: what the writer handled, how long it
+/// took, and the slowest stage where the line named one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlowTurn {
+    pub what: String,
+    pub took_ms: u64,
+    pub stage: Option<String>,
+}
+
+impl SlowTurn {
+    /// `<stamp> slow turn: <what> took <ms> ms[ ∙ slowest stage <name> <ms> ms]`.
+    pub fn parse(line: &str) -> Option<Self> {
+        let (_, rest) = line.split_once(" slow turn: ")?;
+        let (what, rest) = rest.rsplit_once(" took ")?;
+        let (took, stage) = match rest.split_once(" ∙ slowest stage ") {
+            // `<name> <ms> ms`: the name is what is left before the figure.
+            Some((took, stage)) => {
+                (took, stage.strip_suffix(" ms").and_then(|s| s.rsplit_once(' ')).map(|(s, _)| s))
+            }
+            None => (rest, None),
+        };
+        let took_ms = took.strip_suffix(" ms")?.parse().ok()?;
+        Some(Self {
+            what: what.to_string(),
+            took_ms,
+            stage: stage.filter(|s| !s.is_empty()).map(str::to_string),
+        })
+    }
+
+    /// The line's words for a status row: `tick took 23 s ∙ reclaim_archived`.
+    pub fn words(&self) -> String {
+        let secs = self.took_ms.div_ceil(1000);
+        match &self.stage {
+            Some(stage) => format!("{} took {secs} s ∙ {stage}", self.what),
+            None => format!("{} took {secs} s", self.what),
+        }
+    }
 }
 
 use mesimon_core::clock::now_ms;
@@ -181,6 +235,40 @@ mod tests {
         assert!(text.contains("slow turn: tick took "), "{text}");
         assert!(text.contains(" ms ∙ slowest stage probe_activity 480 ms"), "{text}");
         assert!(text.contains("slow turn: request snapshot took "), "{text}");
+    }
+
+    /// The lines are read back as what they said (T-856): the newest first,
+    /// a stage only where one was named, and nothing older than the floor.
+    #[test]
+    fn slow_turns_read_back_newest_first_above_the_floor() {
+        let path = tmp("readback");
+        let mut j = Journal::open_with(&path, ROTATE_BYTES, Duration::from_millis(20));
+        let long_ago = Instant::now() - Duration::from_millis(500);
+        j.line("started pid 1");
+        assert!(j.slow_turn(long_ago, "request snapshot", None));
+        assert!(j.slow_turn(
+            long_ago,
+            "tick",
+            Some(("reclaim_archived", Duration::from_millis(480)))
+        ));
+        let turns = Journal::slow_turns(&path, 0, 5);
+        assert_eq!(turns.len(), 2, "{turns:?}");
+        assert_eq!(turns[0].what, "tick");
+        assert_eq!(turns[0].stage.as_deref(), Some("reclaim_archived"));
+        assert!(turns[0].took_ms >= 500, "{turns:?}");
+        assert_eq!(turns[1].what, "request snapshot");
+        assert_eq!(turns[1].stage, None);
+        assert_eq!(Journal::slow_turns(&path, 0, 1).len(), 1, "capped");
+        // A floor in the future leaves nothing; a line a stage took 23 s
+        // reads as its seconds and its stage.
+        assert!(Journal::slow_turns(&path, now_ms() + 60_000, 5).is_empty());
+        let t = SlowTurn::parse(
+            "2026-10-18T08:00:00.000Z slow turn: tick took 23140 ms ∙ slowest stage reclaim_archived 22900 ms",
+        )
+        .unwrap();
+        assert_eq!(t.words(), "tick took 24 s ∙ reclaim_archived");
+        assert_eq!(SlowTurn::parse("2026-10-18T08:00:00.000Z started pid 1"), None);
+        assert!(Journal::slow_turns(Path::new("/nonexistent/daemon.log"), 0, 5).is_empty());
     }
 
     #[test]

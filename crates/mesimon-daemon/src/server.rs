@@ -12952,12 +12952,16 @@ impl Daemon {
     /// A snooze takes none of this — a snooze is a return.
     fn reclaim_on_archive(&mut self, id: ulid::Ulid) {
         let Some(b) = self.worktrees.get(&id) else { return };
+        // A teardown already queued or under way is judged again where it
+        // lands (`process_teardowns`), so the forks below are owed nothing
+        // here (T-856: `ticket_merged` is one to three git forks per leg, on
+        // the writer thread, asked every bucket for a tree still standing).
+        if self.pending_teardown.iter().any(|t| t.ticket == id) || self.tearing_down.contains(&id) {
+            return;
+        }
         let merged = !b.branch.is_empty() && self.ticket_merged(id);
         let awake = self.board.ticket_awake_sessions(id);
         if !worktree::reclaim_on_archive(b, merged, awake, self.worktrees_barred) {
-            return;
-        }
-        if self.pending_teardown.iter().any(|t| t.ticket == id) || self.tearing_down.contains(&id) {
             return;
         }
         self.pending_teardown.push(Teardown {

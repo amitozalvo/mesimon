@@ -2055,8 +2055,8 @@ impl App {
         // (`daemon_down`, the same cadence a daemon that DIES gets), never an
         // exit: the transport's notice says why, in the advisory row.
         let (snap, daemon_down) = match fetch(client.as_mut()) {
-            Ok(snap) => (snap, false),
-            Err(_) => (Snapshot::default(), true),
+            Ok(snap) => (snap, None),
+            Err(e) => (Snapshot::default(), Some(crate::client::outage(&e))),
         };
         // Before the move: the checker resolves the state root and the
         // staging dir off the same repo path everything else keys on.
@@ -2245,8 +2245,8 @@ impl App {
             caffeine: None,
             caffeinated: false,
         };
-        if daemon_down {
-            app.note_daemon_down();
+        if let Some(outage) = daemon_down {
+            app.note_daemon_down(outage);
         }
         // The board opens on its first column, and a first column pinned
         // collapsed would be expanded by the cursor landing in it (T-276).
@@ -2816,7 +2816,7 @@ impl App {
                 }
                 self.settle_pending_spawn_focus()?;
             }
-            Err(_) => self.note_daemon_down(),
+            Err(e) => self.note_daemon_down(crate::client::outage(&e)),
         }
         Ok(())
     }
@@ -2867,14 +2867,38 @@ impl App {
         Ok(())
     }
 
-    fn note_daemon_down(&mut self) {
+    fn note_daemon_down(&mut self, outage: crate::client::Outage) {
+        use crate::client::Outage;
+        let first = !self.daemon_down;
         self.daemon_down = true;
         self.status = if self.client.daemon_upgrade_needed() {
-            "older daemon ∙ U upgrades ∙ sessions keep running"
+            "older daemon ∙ U upgrades ∙ sessions keep running".into()
         } else {
-            "daemon unreachable ∙ reconnecting"
+            match outage {
+                Outage::Slow => self.slow_daemon_words(),
+                Outage::Gone => "daemon unreachable ∙ reconnecting".into(),
+                // A reopen still dialling says nothing new: the last
+                // verdict stands until the handshake lands or fails.
+                Outage::Dialing if !first => return,
+                Outage::Dialing => "daemon unreachable ∙ reconnecting".into(),
+            }
+        };
+    }
+
+    /// The status row's words for a daemon that is up and did not answer
+    /// in time (T-856). The journal's newest `slow turn` of the last ten
+    /// minutes names what its writer thread was doing — the turn before
+    /// this one, since a line is written when a turn ends — and `doctor`
+    /// lists them; with none, the row says where to look.
+    fn slow_daemon_words(&self) -> String {
+        let floor = (self.now)().saturating_sub(10 * 60 * 1000);
+        let recent = mesimon_daemon::Paths::for_repo(&self.repo_root).ok().and_then(|p| {
+            mesimon_daemon::journal::Journal::slow_turns(&p.daemon_log(), floor, 1).pop()
+        });
+        match recent {
+            Some(turn) => format!("daemon slow ∙ {} ∙ reconnecting", turn.words()),
+            None => "daemon slow ∙ reconnecting ∙ doctor names its slow turns".into(),
         }
-        .into();
     }
 
     /// Request through the reconnect-tolerant seam: a transport failure
@@ -2897,9 +2921,9 @@ impl App {
                 }
                 r
             }
-            Err(_) => {
-                self.note_daemon_down();
-                Response::Err { message: "daemon unreachable ∙ reconnecting".into() }
+            Err(e) => {
+                self.note_daemon_down(crate::client::outage(&e));
+                Response::Err { message: self.status.clone() }
             }
         }
     }
@@ -3640,7 +3664,7 @@ impl App {
         // Reconnect cadence: the daemon went away (update restart, crash).
         // The reopen inside `refresh` respawns it when it is truly gone.
         if !self.client.healthy() && !self.daemon_down {
-            self.note_daemon_down();
+            self.note_daemon_down(crate::client::Outage::Gone);
             dirty = true;
         }
         if wire
@@ -12813,10 +12837,11 @@ impl App {
                 self.merge_says(message);
             }
             Ok(_) => self.merge_dialog = None,
-            Err(_) => {
+            Err(e) => {
                 self.merge_dialog = None;
-                self.note_daemon_down();
-                self.merge_says("daemon unreachable ∙ reconnecting");
+                self.note_daemon_down(crate::client::outage(&e));
+                let words = self.status.clone();
+                self.merge_says(words);
             }
         }
         self.refresh()?;
@@ -15363,6 +15388,42 @@ mod tests {
         assert!(app.daemon_down);
         assert!(app.board.tickets.is_empty());
         assert!(app.status.contains("reconnecting"), "status: {}", app.status);
+    }
+
+    /// A daemon that is up and did not answer in time reads `daemon slow`,
+    /// never `unreachable` (T-856): the one word the person acts on
+    /// differently, and a reopen still dialling leaves it standing.
+    #[test]
+    fn a_slow_daemon_is_said_as_slow_not_unreachable() {
+        struct Slow;
+        impl Transport for Slow {
+            fn request(&mut self, _: Command) -> Result<Response> {
+                Err(crate::client::ResponseTimeout.into())
+            }
+            fn poll_event(&mut self) -> bool {
+                false
+            }
+            fn healthy(&mut self) -> bool {
+                false
+            }
+        }
+        let mut app = App::new(Box::new(Slow), PathBuf::from("/nonexistent"), theme()).unwrap();
+        assert!(app.daemon_down);
+        assert!(app.status.starts_with("daemon slow ∙"), "status: {}", app.status);
+        assert!(!app.status.contains("unreachable"), "status: {}", app.status);
+        let said = app.status.clone();
+        app.note_daemon_down(crate::client::Outage::Dialing);
+        assert_eq!(app.status, said, "a reopen in flight changes nothing said");
+        app.note_daemon_down(crate::client::Outage::Gone);
+        assert!(app.status.contains("unreachable"), "status: {}", app.status);
+        // A key's refusal carries the row's words, as the new verdict says them.
+        let refusal = app.req(Command::Snapshot);
+        assert!(app.status.starts_with("daemon slow ∙"), "status: {}", app.status);
+        assert!(
+            matches!(refusal, Response::Err { ref message } if *message == app.status),
+            "{refusal:?} vs {}",
+            app.status
+        );
     }
 
     #[test]

@@ -28045,3 +28045,75 @@ sends, and reads the upload for the ticket and the linked words on the prompt. R
 (`picture_ask`, a solid red PNG: `tools:read_attachment`, `reply:red`), run once on Sonnet.
 **Owed:** a CHANGELOG line at the next bump — **Added:** a picture can go with the words you
 send an agent, from the board's ask (Ctrl+V) and from Remote Control's composer.
+
+## A slow daemon is said as slow, and the board keeps drawing while it reconnects (T-856, 2026-10-18, "mesimon became extremely slow on my work computer")
+
+The author, on their work machine, a board that merges through pull requests: "often it says
+'daemon unreachable reconnecting' and hangs for a long time (30 second) and I can't do anything
+while it's that way. happens every minute or so, happened since last update (jumped 2
+versions)". Half an hour later: "looks like it is better now … i was on a zoom call while it
+happened so maybe it's related".
+
+**What the words meant.** `Conn::request` waits 10 s for the writer thread's answer and then
+drops the connection, and `App::note_daemon_down` said "unreachable" for every failed request.
+A reconnect ran on the loop's own thread: `open_current` → `connect_or_spawn` (connects at once
+when the daemon is up — its listener thread accepts while the writer is busy) → `hello` → a
+`Hello` and a `Subscribe` of 10 s each against the same busy writer, every 2 s. So a writer
+turn of S seconds froze the board for S plus a handshake per cadence, said as an outage: a
+20 s turn read as 30 s of "unreachable". The daemon was up the whole time.
+
+**What stalls the writer.** Every tick forks `tmux` (`pane_facts`, the recovery captures), `ps`
+(`refresh_rss`) and, on the slow bucket, `git` (`upstream_base`, `reclaim_archived` →
+`ticket_merged`: one to three forks per leg, more on a PR board where the forge's word is asked
+at the tip), all synchronous on the single writer. This machine's own journals show the same
+stages at 1–8 s whenever something else loads the box (the e2e suite, 2026-09-16 and
+2026-10-17: `refresh_titles 7783 ms`, `refresh_rss 8029 ms`, `refresh_panes 3397 ms`). A Zoom
+call is that load on a work laptop: a fork that takes 50 ms idle takes seconds, the tick's
+dozen forks add up past the board's patience, and the slow bucket and the forge minute stack
+on top — "every minute or so". The version jump reads as coincidence: nothing in beta.7 or
+beta.8 adds a per-minute writer fork, and beta.8's T-838 took git and the transcript tails
+*out* of the snapshot. The forge's own reads (`gh`, `glab`, the probe) were already on a
+worker and never blocked the writer; the one writer-side forge fork is `ssh -G`, once per
+repository, under 3 s.
+
+**Applied.**
+- **The status row tells slow from gone.** `client::ResponseTimeout` is the typed error of a
+  request the daemon took and did not answer in `RESPONSE_WAIT`; `client::outage` reads an
+  error as `Slow`, `Gone` or `Dialing`, and `note_daemon_down(outage)` says
+  `daemon slow ∙ <what> took <n> s ∙ <stage> ∙ reconnecting` from the journal's newest `slow
+  turn` of the last ten minutes (the turn before this one — a line is written when a turn
+  ends), `daemon slow ∙ reconnecting ∙ doctor names its slow turns` with none, and
+  `daemon unreachable ∙ reconnecting` only when the daemon hung up or is not there. A reopen
+  still dialling changes nothing said. A key's refusal (`App::req`) carries the row's words.
+- **The reconnect runs off the loop.** `Client::reopened` spawns `open_current` on a thread and
+  answers `Reopening` until the connection lands; the dial, a spawn, a handover wait, the
+  handshake and a skew restart all happen there, and the board keeps drawing with the last
+  snapshot. A daemon that is slow now costs one `RESPONSE_WAIT` on the request that found it,
+  not that plus a handshake per 2 s. `legacy_daemon` is left alone while a reopen is in
+  flight, so an older daemon's `U upgrades` does not flicker to `unreachable` between
+  attempts. The observer's road (`open_existing`) and `Shutdown` on a dropped connection are
+  unchanged; `Client::connect` at launch still blocks, under its `LateWord`.
+- **`doctor` lists the slow turns.** `Journal::slow_turns(path, since_ms, n)` reads the lines
+  back as `SlowTurn { what, took_ms, stage }` (the `iso_utc` stamp orders as text, so the
+  floor is a string compare); the daemon section prints the last 24 h's three newest, newest
+  first, as a `WARN` with the advice that each is a writer turn past 1 s and the stage is
+  where the time went. `ok ∙ none in the last 24 h` otherwise.
+- **The archive reclaim forks nothing for a queued teardown.** `reclaim_on_archive` asked
+  `ticket_merged` (git) before checking `pending_teardown` and `tearing_down`; the free checks
+  come first now, and `process_teardowns` judges the tree again where it lands, as it did.
+
+**Left open, the structural fix:** the tick's forks belong on a worker, as the git sample, the
+worktree flags and the forge already are — `refresh_panes`/`pane_facts`, `refresh_rss`, the
+recovery captures and `reclaim_archived`'s `ticket_merged`. The journal names which stage a
+given machine pays for; the author's work machine's `daemon.log` has that answer for the Zoom
+case and was not read here. A follow-up ticket per stage, each with its slow-turn line as the
+brief.
+
+**Tests.** `journal::slow_turns_read_back_newest_first_above_the_floor`;
+`app::a_slow_daemon_is_said_as_slow_not_unreachable` (a transport that times out reads
+`daemon slow`, a dial in flight leaves it, a hang-up reads `unreachable`, a key's refusal
+carries the row); `restart_skew_e2e` drives the real client's connect and observer roads
+unchanged. **Owed:** CHANGELOG lines at the next bump — **Changed:** when the daemon is slow to
+answer, the board says `daemon slow` with what it was doing, keeps drawing and reconnects in
+the background; it said `daemon unreachable` and froze. **Added:** `mesimon doctor` lists the
+daemon's slow turns of the last day.

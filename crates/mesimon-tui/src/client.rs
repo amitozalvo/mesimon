@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use mesimon_core::command::{Command, Envelope, ExeStamp, Notice, Response, PROTOCOL_VERSION};
 use mesimon_core::Principal;
 use mesimon_daemon::Paths;
@@ -65,7 +65,15 @@ pub struct Client {
     /// Surfaced once, when a skew could not be settled.
     notice: Option<Notice>,
     legacy_daemon: bool,
+    /// The board's connection being reopened on its own thread (T-856): the
+    /// dial, the spawn, the handshake and any skew restart happen there,
+    /// and the loop keeps drawing. `request` answers `Reopening` meanwhile
+    /// and takes the connection once it lands.
+    reopening: Option<Receiver<Reopened>>,
 }
+
+/// What a reopen thread hands back: the connection and any skew notice.
+type Reopened = Result<(Conn, Option<Notice>)>;
 
 #[derive(Debug)]
 struct ProtocolMismatch(u32);
@@ -80,6 +88,58 @@ impl std::error::Error for ProtocolMismatch {}
 
 fn upgradeable(error: &anyhow::Error) -> bool {
     matches!(error.downcast_ref::<ProtocolMismatch>(), Some(ProtocolMismatch(1)))
+}
+
+/// The daemon took the request and did not answer within `RESPONSE_WAIT`
+/// (T-856): the socket is open, so the process is up, and its writer thread
+/// is in a turn that has outrun the board's patience. Not an outage — the
+/// journal's `slow turn` line will name what it was doing.
+#[derive(Debug)]
+pub struct ResponseTimeout;
+
+impl std::fmt::Display for ResponseTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the daemon did not answer within {} s", RESPONSE_WAIT.as_secs())
+    }
+}
+
+impl std::error::Error for ResponseTimeout {}
+
+/// A reopen is in flight on its own thread (T-856): the request was not
+/// sent, and the next one asks again.
+#[derive(Debug)]
+struct Reopening;
+
+impl std::fmt::Display for Reopening {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("reconnecting to the daemon")
+    }
+}
+
+impl std::error::Error for Reopening {}
+
+/// How long one request waits for the writer thread's answer.
+pub const RESPONSE_WAIT: Duration = Duration::from_secs(10);
+
+/// What a failed request says about the daemon, for the status row (T-856):
+/// the one word a person acts on differently. `Slow` is a daemon that is up
+/// and did not answer in time; `Gone` is one that hung up or is not there;
+/// `Dialing` is a reopen still in flight, which changes nothing said so far.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outage {
+    Slow,
+    Gone,
+    Dialing,
+}
+
+pub fn outage(error: &anyhow::Error) -> Outage {
+    if error.downcast_ref::<ResponseTimeout>().is_some() {
+        Outage::Slow
+    } else if error.downcast_ref::<Reopening>().is_some() {
+        Outage::Dialing
+    } else {
+        Outage::Gone
+    }
 }
 
 /// One live connection's worth of channel plumbing — replaced wholesale on
@@ -156,24 +216,21 @@ impl Transport for Client {
             None if self.observer => open_existing(&self.repo_root)
                 .map(|c| self.conn.insert(c))
                 .and_then(|c| c.request(command)),
-            None => open_current(&self.repo_root, !self.restart_suppressed)
-                .map(|(c, n)| {
-                    // One failed restart disables the mechanism for this
-                    // process — the 2 s reconnect cadence must not turn
-                    // "one attempt per connect" into a restart storm.
-                    if n.is_some() {
-                        self.restart_suppressed = true;
-                        self.notice = n;
-                    }
-                    self.conn.insert(c)
-                })
-                .and_then(|c| c.request(command)),
+            None => match self.reopened() {
+                Ok(Some(c)) => c.request(command),
+                Ok(None) => Err(Reopening.into()),
+                Err(e) => Err(e),
+            },
         };
         if let Err(error) = &res {
             // Connection is toast; drop it so the next request reopens. No
             // blind replay — a mutation may have landed before its reply died.
             self.conn = None;
-            self.legacy_daemon = !self.observer && upgradeable(error);
+            // A reopen in flight is no verdict on the daemon's protocol: the
+            // last one stands until the handshake lands or fails.
+            if outage(error) != Outage::Dialing {
+                self.legacy_daemon = !self.observer && upgradeable(error);
+            }
         } else {
             self.legacy_daemon = false;
         }
@@ -222,6 +279,53 @@ impl Transport for Client {
 }
 
 impl Client {
+    /// The board's connection, reopened off the loop's thread (T-856).
+    ///
+    /// `open_current` dials, spawns a daemon that is gone, waits out a
+    /// handover and runs the handshake — up to `RESPONSE_WAIT` on each of
+    /// `Hello` and `Subscribe` when the daemon is up but its writer is in a
+    /// long turn. Done on this thread, every one of those held the loop,
+    /// and a daemon that was merely slow froze the board for the stall plus
+    /// a handshake per 2 s reconnect (the author's work machine, on a Zoom
+    /// call: 30 s at a time, said as "unreachable"). The thread does the
+    /// waiting; the loop asks `Ok(None)` each time until the connection
+    /// lands (`Ok(Some)`), or the attempt fails (`Err`, the next request
+    /// starts another).
+    fn reopened(&mut self) -> Result<Option<&mut Conn>> {
+        let Some(rx) = self.reopening.as_ref() else {
+            let (tx, rx) = channel::<Reopened>();
+            let root = self.repo_root.clone();
+            let allow_restart = !self.restart_suppressed;
+            std::thread::spawn(move || {
+                let _ = tx.send(open_current(&root, allow_restart));
+            });
+            self.reopening = Some(rx);
+            return Ok(None);
+        };
+        match rx.try_recv() {
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(TryRecvError::Disconnected) => {
+                self.reopening = None;
+                Ok(None)
+            }
+            Ok(Ok((c, n))) => {
+                self.reopening = None;
+                // One failed restart disables the mechanism for this
+                // process — the 2 s reconnect cadence must not turn
+                // "one attempt per connect" into a restart storm.
+                if n.is_some() {
+                    self.restart_suppressed = true;
+                    self.notice = n;
+                }
+                Ok(Some(self.conn.insert(c)))
+            }
+            Ok(Err(e)) => {
+                self.reopening = None;
+                Err(e)
+            }
+        }
+    }
+
     /// Connect, or come up DISCONNECTED with the reason as a notice.
     ///
     /// A daemon that cannot be reached at launch used to be fatal — the
@@ -243,6 +347,7 @@ impl Client {
                 observer: false,
                 notice,
                 legacy_daemon: false,
+                reopening: None,
             }),
             Err(why) => Ok(Client {
                 repo_root: repo_root.to_path_buf(),
@@ -250,6 +355,7 @@ impl Client {
                 restart_suppressed: false,
                 observer: false,
                 legacy_daemon: upgradeable(&why),
+                reopening: None,
                 notice: Some(if upgradeable(&why) {
                     Notice::new(
                         "protocol_mismatch",
@@ -285,6 +391,7 @@ impl Client {
             observer: true,
             notice: None,
             legacy_daemon: false,
+            reopening: None,
         })
     }
 }
@@ -608,7 +715,13 @@ impl Conn {
         let env = Envelope { principal: Principal::Local, command };
         let json = serde_json::to_string(&env)?;
         writeln!(self.write, "{json}").context("write to daemon")?;
-        self.responses.recv_timeout(Duration::from_secs(10)).context("daemon response timeout")
+        match self.responses.recv_timeout(RESPONSE_WAIT) {
+            Ok(response) => Ok(response),
+            Err(RecvTimeoutError::Timeout) => Err(ResponseTimeout.into()),
+            Err(RecvTimeoutError::Disconnected) => {
+                Err(anyhow!("the daemon hung up before answering"))
+            }
+        }
     }
 }
 

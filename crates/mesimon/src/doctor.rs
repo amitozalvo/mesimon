@@ -1188,6 +1188,27 @@ fn daemon(repo: &Path, verbose: bool) -> Section {
         "daemon log",
         format!("{} ∙ {last_stop}", redact(&log.display().to_string(), verbose)),
     ));
+    // The writer turns that outlasted a second in the last day (T-856): a
+    // board that waited on the daemon — `daemon slow` in its status row —
+    // waited on one of these, and the line names the stage.
+    let day_ago = mesimon_core::clock::now_ms().saturating_sub(24 * 3600 * 1000);
+    let slow = mesimon_daemon::journal::Journal::slow_turns(&log, day_ago, 3);
+    if slow.is_empty() {
+        records.push(rec(Level::Ok, "slow turns", "none in the last 24 h"));
+    } else {
+        let lines: Vec<String> = slow.iter().map(|t| t.words()).collect();
+        records.push(
+            rec(
+                Level::Warn,
+                "slow turns",
+                format!("last 24 h, newest first: {}", lines.join(" ∙∙ ")),
+            )
+            .advice(
+                "Each is a writer turn past 1 s; the board waits on it and reads `daemon slow`. \
+                     The stage named is where the time went; the journal has every line.",
+            ),
+        );
+    }
 
     match daemon_hello(&paths.orch_sock()) {
         None => records.push(rec(Level::Ok, "daemon", "not running (starts with the board)")),
