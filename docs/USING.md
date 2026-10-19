@@ -583,12 +583,27 @@ where the page stops at three; Enter opens the one under the cursor. A terminal 
 
 A ticket's pull requests are the ones its work made: a PR whose commits were made in the ticket's
 worktree, whose branch is the ticket's own, or that a `gh pr create` run by the ticket's agent
-opened. A PR an agent only mentions is not the ticket's, and neither is one whose head is a commit
+opened, in this repository or another on the same forge, on a worktree or on the checkout. A PR
+an agent only mentions is not the ticket's, and neither is one whose head is a commit
 the worktree started from or pulled in, such as another ticket's PR merged fast-forward just before
 this ticket's worktree was cut. When a board switches to pull requests, the conversations its
 tickets held before are read once in the background for PRs their agents opened, and those PRs
 appear without news, wakes or moves. Several PRs on one ticket is normal: a
 follow-up fix after a merge reads as a new open PR until it lands.
+
+A pull request someone else opened is a ticket's too when its agent reviewed it: a `gh pr
+review`, `gh pr comment` or `gh pr checkout` (`glab mr approve`, `note`, `checkout`) run by the
+ticket's agent that went through names it, by its address or its number, and so does its
+address on a plain line under a `Summary` heading in one of the ticket's notes, which is also
+how an agent names a PR it opened on another repository or outside the CLI. A number alone is
+read on the ticket's own repository, so an agent reviewing a PR of another repository names it
+with `-R` or its address, and a number after a `cd` in the same command names nothing. Such a PR
+shows on the card, the page and `ctrl-h` with the words `reviewed here`, its merge, pipeline
+and deployments move the ticket where a column waits for them and reach the crown, and it
+never holds the ticket's merge, DONE or a pipeline gate: those judge the ticket's own PRs.
+**Settings › Behaviour › Reviewed pull requests** (on by default) turns this off, and a ticket's
+PRs are then the ones your account opened. A review that only reads the PR, or a commit pushed
+to its branch with git alone, names nothing.
 
 A PR merged on the forge reads merged here without a pull, squashed, rebased or not, and the
 ticket page says `merged into main (PR #42) as 1a2b3c4`. A commit a reviewer added on the forge

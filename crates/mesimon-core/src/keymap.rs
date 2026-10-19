@@ -788,6 +788,11 @@ pub enum Verb {
     /// them. Board state like `CrownArchives`, off by default; Enter
     /// toggles it.
     CrownWatches,
+    /// The Behaviour row under Merge into (T-859): whether a pull request
+    /// someone else opened is a ticket's when its agent reviewed it or its
+    /// `Summary` names it. Board state like `MergeInto`, on by default;
+    /// Enter toggles it.
+    ReviewedPrs,
     /// The Settings row under it (T-224): whether every claude mesimon
     /// starts on this board carries `brief::TEXT` in its system prompt.
     /// Board state like `McpTools`, and the switch the offer's dialog turns.
@@ -1135,6 +1140,7 @@ impl SettingsSection {
             | Verb::FetchEvery
             | Verb::BoardWorkspace
             | Verb::MergeInto
+            | Verb::ReviewedPrs
             | Verb::SnoozeQuiet
             | Verb::WeekStart
             | Verb::KeepAwake
@@ -1192,6 +1198,8 @@ pub struct Ctx {
     pub crown_archives: bool,
     /// `Board::crown_watches` (T-712), for the row under that.
     pub crown_watches: bool,
+    /// `Board::reviewed_prs` (T-859): the Behaviour row under Merge into.
+    pub reviewed_prs: bool,
     pub column_agents: bool,
     pub col_naming: bool,
     pub col_offers_word: &'static str,
@@ -5421,6 +5429,27 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // Whose pull requests a ticket carries (T-859): the account's own, or
+    // also one someone else opened that the ticket's agent reviewed through
+    // the CLI or named in a note's Summary. Board state like Merge into;
+    // inert under main, where no forge is read.
+    MenuItem {
+        verb: Verb::ReviewedPrs,
+        label: |_| "Reviewed pull requests".into(),
+        detail: |c| {
+            if !c.merge_into.pull_requests() {
+                PRS_INERT.into()
+            } else if c.reviewed_prs {
+                "a PR the agent reviewed or named in its Summary is the ticket's too ∙ it holds \
+                 no merge or gate"
+                    .into()
+            } else {
+                "a ticket's PRs are the ones this account opened".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
     MenuItem {
         verb: Verb::MergeTrain,
         label: |_| "Auto merge".into(),
@@ -5952,6 +5981,7 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             // rows that serve it: the fetch and the train.
             Verb::BoardWorkspace,
             Verb::MergeInto,
+            Verb::ReviewedPrs,
             Verb::FetchEvery,
             Verb::MergeTrain,
             Verb::MergeTrainNotice,
@@ -6098,6 +6128,7 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
         }),
         Verb::CrownMode => choice(&["autonomous", "supervised"], c.crown_mode.word()),
         Verb::MergeInto => choice(&["main", "pull requests"], c.merge_into.word()),
+        Verb::ReviewedPrs => Value::Switch(c.reviewed_prs),
         Verb::BoardWorkspace => Value::Switch(c.board_worktree),
         Verb::CrownArchives => Value::Switch(c.crown_archives),
         Verb::CrownWatches => Value::Switch(c.crown_watches),
@@ -10491,6 +10522,7 @@ mod tests {
                     Verb::WeekStart,
                     Verb::BoardWorkspace,
                     Verb::MergeInto,
+                    Verb::ReviewedPrs,
                     Verb::FetchEvery,
                     Verb::MergeTrain,
                 ],
@@ -10523,7 +10555,7 @@ mod tests {
         .iter()
         .map(|m| m.verb)
         .collect();
-        assert_eq!(on[8..10], [Verb::MergeTrain, Verb::MergeTrainNotice]);
+        assert_eq!(on[9..11], [Verb::MergeTrain, Verb::MergeTrainNotice]);
         for v in prefs {
             assert!(!verbs.contains(&v), "{v:?} is a preference and belongs in Settings");
         }
@@ -11227,10 +11259,23 @@ mod tests {
                 ..Default::default()
             })
         };
-        for verb in [Verb::CardPrs, Verb::ColumnArrives, Verb::ColumnRequiresPipeline] {
+        for verb in
+            [Verb::CardPrs, Verb::ColumnArrives, Verb::ColumnRequiresPipeline, Verb::ReviewedPrs]
+        {
             assert_eq!(detail(verb, MergeInto::Main), PRS_INERT, "{verb:?}");
             assert_ne!(detail(verb, MergeInto::PullRequests), PRS_INERT, "{verb:?}");
         }
+        // T-859: the row says what the switch does either way, never Enter.
+        let reviewed = |on: bool| {
+            let item = SETTINGS_ITEMS.iter().find(|m| m.verb == Verb::ReviewedPrs).unwrap();
+            (item.detail)(&Ctx {
+                merge_into: MergeInto::PullRequests,
+                reviewed_prs: on,
+                ..Default::default()
+            })
+        };
+        assert!(reviewed(true).contains("holds no merge or gate"), "{}", reviewed(true));
+        assert!(reviewed(false).contains("this account opened"), "{}", reviewed(false));
         assert!(detail(Verb::MergeTrain, MergeInto::PullRequests).contains("the forge merges"));
         assert!(detail(Verb::MergeTrain, MergeInto::Main).contains("merges quiet REVIEW branches"));
         assert!(detail(Verb::MergeInto, MergeInto::Main).contains("no forge is read"));

@@ -297,7 +297,10 @@ pub const SUMMARY_ABOUT: &str = "A note section headed `Summary` is what the tic
      `Summary`. Only the boxes reach the card; any other line there stays the note's. \
      Nothing the board does or shows by itself is a box: the merge, the rebase, the \
      card's move. An open box reads as work left, so a stage's box is ticked as the stage \
-     lands and a finished job leaves none open. A working list stays under another heading.";
+     lands and a finished job leaves none open. A working list stays under another heading. \
+     A pull request's address on a plain line there (no box) names it as the ticket's: one \
+     its work opened in another repository, or one it reviewed; the board reads it from the \
+     forge and shows it beside the ticket's own.";
 
 /// What the ticket's own key is to the person (T-715), on a session's read
 /// of its own ticket (`key_about`): everything the session says is read
@@ -529,14 +532,16 @@ pub fn tools() -> Vec<Value> {
             // step by one worker and as nothing by the next, and "merge the
             // MR" as the example of a person's task primed a box for the
             // merge the board does by itself.
-            "description": "Creates a markdown note on the ticket (with key, another's: \
-                            crown only) or replaces one. The first note is the description; \
-                            empty deletes; over 32 KiB is refused. A plan from plan mode is \
-                            already a note. Lines under a `Summary` heading show on the \
-                            card, `- [ ]` boxes as progress: one per stage of the job, \
-                            ticked as each lands, or a step only a person can take; none \
-                            for the board's own merge or move; working lists under other \
-                            headings.",
+            // T-859 made room for the PR clause: the size refusal says
+            // itself when it happens, and the plan clause lost a word.
+            "description": "Creates a markdown note on the ticket (key: another's, crown \
+                            only) or replaces one. The first note is the description; \
+                            empty deletes. An accepted plan is a note already. Under a \
+                            `Summary` heading, `- [ ]` boxes show on the card as progress: \
+                            one per stage of the job, ticked as each lands, or a step only \
+                            a person can take; none for the board's own merge or move; a \
+                            PR's address on a plain line there is the ticket's; working \
+                            lists elsewhere.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1616,6 +1621,9 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // T-712: the crown spending its turns on a person's tickets is the
         // person's to allow, per board.
         | Command::SetCrownWatches { .. }
+        // T-859: whose pull requests a ticket carries is the team's
+        // workflow, as the merge setting is.
+        | Command::SetReviewedPrs { .. }
         // Where the status line sits over the user's own panes: chrome, and
         // theirs. An agent moving it would be redecorating a screen it is
         // not looking at.
@@ -2643,6 +2651,13 @@ mod tests {
         assert!(SUMMARY_ABOUT.contains("Only the boxes reach the card"), "{SUMMARY_ABOUT}");
         assert!(!SUMMARY_ABOUT.contains("one-line summary"), "{SUMMARY_ABOUT}");
         assert!(!SUMMARY_ABOUT.contains("plain line alone"), "{SUMMARY_ABOUT}");
+        // T-859: a pull request's address under the heading is the
+        // ticket's, said where the agent writes it and where it reads it.
+        assert!(
+            SUMMARY_ABOUT.contains("pull request's address on a plain line there"),
+            "{SUMMARY_ABOUT}"
+        );
+        assert!(description.contains("PR's address on a plain line there"), "{description}");
     }
 
     /// T-862: every step that is a person's is a hand on the crown's own
@@ -2958,7 +2973,7 @@ mod tests {
         let registry = tools();
         let tool = registry.iter().find(|t| t["name"] == "write_note").unwrap();
         let description = tool["description"].as_str().unwrap();
-        assert!(description.contains("A plan from plan mode is already a note"), "{description}");
+        assert!(description.contains("An accepted plan is a note already"), "{description}");
     }
 
     /// Descriptions describe; they do not instruct. This walks the tool

@@ -897,6 +897,50 @@ checks = ["road:mod", "started_by_crown", "unlanded", "crown_reply:closed", "rep
   rig = "forge_off"
 
 [[test]]
+id = "F10"
+title = "F10 · a pull request the worker reviews through the CLI is the ticket's: do the steps below"
+workspace = "worktree"
+brief = "Review pull request 43 of this repository and approve it, using the gh at {stub}/gh in place of gh. Then reply with the single word done and end your turn. Read no file."
+expect = "the worker runs the stub gh's `pr review 43 --approve` (silent off a tty, as the real one is); the board reads the review off its transcript, resolves the bare number on the ticket's own repository, reads PR 43 by itself (no list of the account's own holds it) and binds it reviewed (T-859): the snapshot's prs carry #43 with reviewed, and the ticket's merge is still to open a PR of its own."
+checks = ["road:mod", "started_by_crown", "reviewed:43", "replies:done"]
+
+  [[test.steps]]
+  rig = "forge_lab"
+
+  [[test.steps]]
+  crown = "F10: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: F10 started. When the board wakes you for {key}, end your turn with the single line: F10 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "forge_reviewed"
+
+  [[test.steps]]
+  rig = "forge_off"
+
+[[test]]
+id = "F11"
+title = "F11 · a pull request the worker names under its Summary is the ticket's: do the steps below"
+workspace = "worktree"
+brief = "This ticket reviews pull request https://github.com/example/rig/pull/43. Put that on the ticket so the board shows the pull request beside it, run no command and read no file, then reply with the single word done and end your turn."
+expect = "the worker reads get_ticket's summary section (a pull request's address on a plain line under a note's Summary heading names it as the ticket's, T-859) and writes a note with that line; the board reads PR 43 by itself off the stub forge and binds it reviewed: the snapshot's prs carry #43 with reviewed."
+checks = ["road:mod", "started_by_crown", "reviewed:43", "replies:done"]
+
+  [[test.steps]]
+  rig = "forge_lab"
+
+  [[test.steps]]
+  crown = "F11: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: F11 started. When the board wakes you for {key}, end your turn with the single line: F11 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "forge_reviewed"
+
+  [[test.steps]]
+  rig = "forge_off"
+
+[[test]]
 id = "M1"
 title = "M1 · the crown says who merges a delivered ticket, on a board that merges into main and then through pull requests: do the steps below"
 workspace = "worktree"

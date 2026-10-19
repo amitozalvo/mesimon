@@ -623,6 +623,11 @@ pub struct Daemon {
     /// every ticket a `requires_ticked` column held each time. A write
     /// moves the key; `write_note` drops the entry besides.
     open_box_counts: std::cell::RefCell<HashMap<ulid::Ulid, (u64, usize)>>,
+    /// Each ticket's pull requests named under its notes' `Summary`
+    /// headings (T-859), under `notes_key` of its notes when read: the
+    /// forge's query asks every minute, and reads a note again only once
+    /// a write moved the key.
+    summary_prs: std::cell::RefCell<HashMap<ulid::Ulid, (u64, Vec<String>)>>,
     /// The disk the archive offer frees (T-679): the sum of `tree_sizes`
     /// over the trees it would tear down, on the same 1 s bucket.
     archive_bytes: u64,
@@ -1300,6 +1305,7 @@ pub fn run(paths: Paths) -> Result<()> {
         reclaim_cache: (0, 0),
         archive_cache: 0,
         open_box_counts: Default::default(),
+        summary_prs: Default::default(),
         archive_due: true,
         archive_bytes: 0,
         tree_sizes: HashMap::new(),
@@ -2735,6 +2741,7 @@ impl Daemon {
             }
             Command::SetCrownArchives { on } => self.set_crown_archives(on),
             Command::SetCrownWatches { on } => self.set_crown_watches(on),
+            Command::SetReviewedPrs { on } => self.set_reviewed_prs(on),
             Command::SetStatusLine { top } => self.set_status_line(top),
             Command::SetUsageWants { claude, codex } => {
                 if self.usage.set_wants(conn_key(stream), Wants { claude, codex }) {
@@ -7838,18 +7845,114 @@ impl Daemon {
     /// wait no read will ever end. A cached reading asks the ledger alone:
     /// a URL its pass has not reached yet is a held line a snapshot late.
     fn opened_unread(&self, id: ulid::Ulid, live: bool, read: Reading) -> Option<bool> {
-        let asked = self.worktrees.get(&id).is_some_and(|b| !b.branch.is_empty())
-            && !self.tearing_down.contains(&id);
-        if !asked {
+        if self.tearing_down.contains(&id) {
             return Some(false);
         }
+        // Every ticket that names a PR is asked about now (T-859), a
+        // checkout ticket's `pr create` included, so its ledger, its
+        // Summary and, on a move, its transcripts' tails are read as a
+        // worktree ticket's are: one that names none is owed nothing.
+        let (_, theirs) = self.named_prs(id);
         let hosts = self.forge_hosts();
-        let owed =
-            |url: &str| self.forge_reaches(url, &hosts) && !(live && self.forge.held_url(id, url));
+        let repo = self.ticket_repo(id);
+        // An entry as the ledger or a tail spells it: a URL, or an act's
+        // number, made an address on the ticket's repository. One of the
+        // reviewed roads is owed only while the board takes them.
+        let owed = |entry: &str| {
+            let url = match &repo {
+                Some(r) => mesimon_core::forge::acted_url(entry, r),
+                None => mesimon_core::forge::pr_number_of(entry).map(|_| entry.to_string()),
+            };
+            let Some(url) = url else { return false };
+            if !self.board.reviewed_prs
+                && theirs.iter().any(|u| mesimon_core::forge::same_url(u, &url))
+            {
+                return false;
+            }
+            self.forge_reaches(&url, &hosts) && !(live && self.forge.held_url(id, &url))
+        };
+        if self.summary_prs_of(id).iter().any(|u| owed(u)) {
+            return Some(true);
+        }
         match read {
             Reading::Fresh => self.costs.opened_unread(id, &self.live_transcripts(id), owed),
             Reading::Cached => Some(self.costs.opened_owed(id, owed)),
         }
+    }
+
+    /// Every PR a ticket named (T-859), as addresses, and the ones among
+    /// them that are not a `pr create`'s: the acts' (`cost::acted_entries`,
+    /// each made an address on the ticket's one repository where it names
+    /// none) and the notes' `Summary`'s. The first list is what a forge
+    /// read matches and reads by itself; the second is what reads reviewed
+    /// when found that way, and what the board's switch may keep out.
+    fn named_prs(&self, id: ulid::Ulid) -> (Vec<String>, Vec<String>) {
+        use mesimon_core::forge::{acted_url, pr_number_of, same_url};
+        let repo = self.ticket_repo(id);
+        let acted: Vec<String> = self
+            .costs
+            .acted_entries(id)
+            .iter()
+            .filter_map(|e| match &repo {
+                Some(r) => acted_url(e, r),
+                None => pr_number_of(e).map(|_| e.clone()),
+            })
+            .collect();
+        let mut all: Vec<String> = Vec::new();
+        for url in self.costs.opened_urls(id) {
+            if !all.iter().any(|a| same_url(a, &url)) {
+                all.push(url);
+            }
+        }
+        let mut theirs = Vec::new();
+        for url in acted.into_iter().chain(self.summary_prs_of(id)) {
+            if all.iter().any(|a| same_url(a, &url)) {
+                continue;
+            }
+            all.push(url.clone());
+            theirs.push(url);
+        }
+        (all, theirs)
+    }
+
+    /// The one repository a ticket's bare PR numbers are on (T-859): its
+    /// worktree's single leg's remote, or the checkout's for a ticket on
+    /// it. `None` with several legs, where a number alone names no one
+    /// repository, and before the remote is learned.
+    fn ticket_repo(&self, id: ulid::Ulid) -> Option<mesimon_core::forge::Remote> {
+        let base = self.base_branch.clone().unwrap_or_default();
+        let dir = match self.worktrees.get(&id).filter(|b| !b.branch.is_empty()) {
+            Some(b) => {
+                let legs = b.legs(&self.paths.repo_root, &base);
+                let [leg] = legs.as_slice() else { return None };
+                leg.repo.clone()
+            }
+            None => self.paths.repo_root.clone(),
+        };
+        self.forge.remotes.get(&dir).cloned().flatten()
+    }
+
+    /// The pull requests a ticket's notes name under `Summary` (T-859),
+    /// read again only once a write moved `notes_key`.
+    fn summary_prs_of(&self, id: ulid::Ulid) -> Vec<String> {
+        let Some(t) = self.board.ticket(id) else { return Vec::new() };
+        let key = notes_key(&t.notes);
+        if let Some((k, urls)) = self.summary_prs.borrow().get(&id) {
+            if *k == key {
+                return urls.clone();
+            }
+        }
+        let mut urls: Vec<String> = Vec::new();
+        for n in &t.notes {
+            let Ok(body) = store::read_note(&self.paths, &t.short_key, n.id) else { continue };
+            for url in mesimon_core::summary::pr_urls(&body) {
+                if !urls.iter().any(|u| mesimon_core::forge::same_url(u, &url)) {
+                    urls.push(url);
+                }
+            }
+        }
+        self.summary_prs.borrow_mut().insert(id, (key, urls.clone()));
+        urls
     }
 
     /// The hosts a forge read reaches (T-797): those of the remotes of the
@@ -7860,6 +7963,15 @@ impl Daemon {
         let base = self.base_branch.clone().unwrap_or_default();
         let mut hosts = std::collections::HashSet::new();
         let mut whole = true;
+        // The checkout's own remote (T-859): what a ticket on the checkout
+        // pushes to, learned by the first forge query.
+        match self.forge.remotes.get(&self.paths.repo_root) {
+            Some(Some(remote)) => {
+                hosts.insert(remote.host.clone());
+            }
+            Some(None) => {}
+            None => whole = false,
+        }
         for (t, b) in &self.worktrees {
             if b.branch.is_empty() || self.tearing_down.contains(t) {
                 continue;
@@ -8236,6 +8348,7 @@ impl Daemon {
                             conflict: p.conflict,
                             review: p.review.word().into(),
                             deployed: p.deployed.clone(),
+                            reviewed: p.reviewed,
                         })
                         .collect()
                 })
@@ -11228,7 +11341,7 @@ impl Daemon {
             .filter(|s| matches!(s.state, SessionState::Idle { .. }))
             .and_then(|s| s.state_changed_at)
             .unwrap_or(0);
-        self.forge.fresh(ticket, turn_end, &self.costs.opened_urls(ticket))
+        self.forge.fresh(ticket, turn_end, &self.named_prs(ticket).0)
     }
 
     /// The ticket's seat as the train reads it, words owed included: the
@@ -13570,6 +13683,21 @@ impl Daemon {
         Response::Ok
     }
 
+    /// `Command::SetReviewedPrs` (T-859): whether a PR someone else opened
+    /// is a ticket's when its agent acted on it or its Summary names it.
+    /// Judged on the next read: an off drops every reviewed PR from the
+    /// sets then, since the pass binds nothing it may not.
+    fn set_reviewed_prs(&mut self, on: bool) -> Response {
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        if self.board.reviewed_prs != on {
+            self.board.reviewed_prs = on;
+            self.persist_and_notify();
+        }
+        Response::Ok
+    }
+
     /// Turn the agent tool surface on or off for this board (T-217).
     ///
     /// Only ever the whole board, only ever a person: `mcp::agent_allows`
@@ -14817,7 +14945,10 @@ impl Daemon {
     /// found. The remotes are parsed once per repository directory, here,
     /// since a parse is three git reads.
     fn queue_forge_sample(&mut self) {
-        if !self.through_prs() || !self.forge.due() || self.worktrees.is_empty() {
+        // A board with no worktree still reads the forge for the PRs its
+        // checkout tickets name (T-859); `forge_query` says when there is
+        // nothing to ask.
+        if !self.through_prs() || !self.forge.due() {
             return;
         }
         let Some(query) = self.forge_query(None) else { return };
@@ -14943,6 +15074,10 @@ impl Daemon {
         only: Option<&std::collections::HashSet<ulid::Ulid>>,
     ) -> Option<crate::forge::Query> {
         let base = self.base_branch.clone().unwrap_or_default();
+        // The checkout's own remote, learned once (T-859): what a ticket
+        // on the checkout pushes to, and a host a read reaches.
+        let root = self.paths.repo_root.clone();
+        self.forge.remote(&root, &base);
         let mut tickets: Vec<(ulid::Ulid, String, Vec<worktree::Leg>)> = Vec::new();
         for (t, b) in &self.worktrees {
             if b.branch.is_empty()
@@ -14952,6 +15087,23 @@ impl Daemon {
                 continue;
             }
             tickets.push((*t, b.branch.clone(), b.legs(&self.paths.repo_root, &base)));
+        }
+        // And every other ticket that named a PR (T-859): one on the
+        // checkout, or a binding with no branch yet, whose sessions opened
+        // or acted on a PR or whose Summary names one. Asked with no legs:
+        // only its addresses bind.
+        let asked: std::collections::HashSet<ulid::Ulid> =
+            tickets.iter().map(|(t, _, _)| *t).collect();
+        let rest: Vec<ulid::Ulid> = self.board.tickets.iter().map(|t| t.id).collect();
+        for t in rest {
+            if asked.contains(&t)
+                || self.tearing_down.contains(&t)
+                || only.is_some_and(|o| !o.contains(&t))
+                || self.named_prs(t).0.is_empty()
+            {
+                continue;
+            }
+            tickets.push((t, String::new(), Vec::new()));
         }
         if tickets.is_empty() {
             // Every binding still provisioning (no branch yet): asked again
@@ -14986,11 +15138,12 @@ impl Daemon {
                     add_repo(&mut repos, remote.clone(), leg.repo.clone());
                 }
             }
-            // A URL a session printed may name another repository of a host
-            // a leg's remote already reaches (the account's own forge), and
-            // never a host of its own: the transcript is untrusted text, and
-            // no CLI is pointed at a host it names.
-            let opened = self.costs.opened_urls(*t);
+            // A URL a session printed, acted on or wrote under a Summary
+            // (T-859) may name another repository of a host a leg's remote
+            // or the checkout's already reaches (the account's own forge),
+            // and never a host of its own: the transcript and the note are
+            // untrusted text, and no CLI is pointed at a host they name.
+            let (opened, theirs) = self.named_prs(*t);
             for url in &opened {
                 if let Some(remote) = mesimon_core::forge::repo_of_url(url) {
                     if hosts.contains(&remote.host) {
@@ -15004,6 +15157,7 @@ impl Daemon {
                 branch: branch.clone(),
                 legs: leg_queries,
                 opened,
+                theirs,
                 repos: mine,
                 held: self.forge.sets.get(t).cloned().unwrap_or_default(),
             });
@@ -15101,6 +15255,7 @@ impl Daemon {
             repos: repo_queries,
             pending,
             tickets: queries,
+            others: self.board.reviewed_prs,
             envs,
             commit_pipelines: self.forge.commit_pipelines.clone(),
             deployed: self.forge.deployed.clone(),
@@ -15123,6 +15278,14 @@ impl Daemon {
         // The whole board's answers: what a deploy no longer runs goes.
         self.forge.carried = std::mem::take(&mut sample.carried);
         self.absorb_forge(sample);
+    }
+
+    /// The addresses a read answered nothing for (T-859) replace each
+    /// ticket's, on the minute's pass and a turn's end's read alike.
+    fn take_unfound(&mut self, sample: &mut crate::forge::Sample) {
+        for (t, urls) in std::mem::take(&mut sample.unfound) {
+            self.forge.unfound.insert(t, urls);
+        }
     }
 
     /// A read's repositories' errors replace theirs; one the read left out
@@ -15155,8 +15318,9 @@ impl Daemon {
         self.queue_forge_burst();
     }
 
-    fn absorb_forge(&mut self, sample: crate::forge::Sample) {
+    fn absorb_forge(&mut self, mut sample: crate::forge::Sample) {
         self.forge.last_ms = self.forge.last_ms.max(sample.at_ms);
+        self.take_unfound(&mut sample);
         for (host, probe) in sample.probes {
             self.forge.take_probe(host, probe);
         }
@@ -15231,15 +15395,26 @@ impl Daemon {
                 }
                 old
             });
+            let held = self.forge.held.get(&t).cloned().unwrap_or_default();
             for line in crate::forge::delta(old.as_deref(), &set) {
                 self.feed.board_outcome("forge", "pr", Some(t), &line);
+            }
+            // A reviewed PR bound on the ticket's first read says so too
+            // (T-859): a turn's end's read can be the first, and whose PR
+            // it is belongs in the feed once, never on a wake.
+            if old.is_none() {
+                for p in set.iter().filter(|p| {
+                    p.reviewed && !held.iter().any(|(r, n)| *r == p.repo && *n == p.number)
+                }) {
+                    let line = format!("{} {} bound, reviewed here", p.state.word(), p.label());
+                    self.feed.board_outcome("forge", "pr", Some(t), &line);
+                }
             }
             // The edge since the last read: what a column arrives on, and
             // what the crown hears (T-744), one line per ticket per pass. A
             // first read is a baseline and says nothing, but what it held is
             // remembered, so an opening is said once (T-767) and a PR bound
             // since says its settled state (T-769).
-            let held = self.forge.held.get(&t).cloned().unwrap_or_default();
             self.forge.opens(t, &set);
             let unchanged = self.forge.sets.get(&t) == Some(&set);
             let edge = old.as_ref().map(|old| crate::forge::edge(old, &set, &held));
@@ -15518,6 +15693,7 @@ impl Daemon {
                     review: pr.review.word().into(),
                     merged_oid: pr.merge_oid.clone(),
                     deployed: pr.deployed.clone(),
+                    reviewed: pr.reviewed,
                     updated_ms: pr.updated_ms,
                 });
             }

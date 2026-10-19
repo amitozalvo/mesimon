@@ -859,6 +859,18 @@ fn crown_watches(on: bool) -> Record {
     }
 }
 
+/// Whose pull requests a ticket carries (T-859), on a board that merges
+/// through them: on by default, printed either way.
+fn reviewed_prs(on: bool) -> Record {
+    if on {
+        rec(Level::Ok, "reviewed pull requests", "on - a PR the ticket's agent reviewed, or named in a note's Summary, is the ticket's too")
+            .advice("A pull request someone else opened reaches a ticket when its agent acts on it through gh or glab (a review, a comment, an approval, a checkout) or writes its address on a plain line under a note's Summary heading. It shows on the card and the page and is followed, and it never holds the ticket's merge, DONE or pipeline gate. Settings > Behaviour > Reviewed pull requests turns it off.")
+    } else {
+        rec(Level::Ok, "reviewed pull requests", "off - a ticket's pull requests are the ones this account opened")
+            .advice("A PR the ticket's agent reviewed is not the ticket's. Settings > Behaviour > Reviewed pull requests lets a review, a comment or a Summary line bind one.")
+    }
+}
+
 /// How Claude sessions report to this board (T-574): which road the last
 /// Claude launch got and why (`<state>/mod/road.json`, because the daemon's
 /// seam is not in doctor's environment). No setting chooses the road
@@ -941,9 +953,10 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
     let g = mesimon_daemon::gitstatus::sample(repo);
     // Where this board's worktree branches land (T-810): the forge is read,
     // here as on the board, only where they land through pull requests.
-    let merge_into = mesimon_daemon::Paths::for_repo(repo)
-        .map(|p| mesimon_daemon::store::read_columns_scalars(&p).merge_into)
+    let scalars = mesimon_daemon::Paths::for_repo(repo)
+        .map(|p| mesimon_daemon::store::read_columns_scalars(&p))
         .unwrap_or_default();
+    let merge_into = scalars.merge_into;
     let prs = merge_into.pull_requests();
     // A workspace (T-225): repositories nested one level under the root.
     // Said before the branch line, because the branch line is then about
@@ -1053,6 +1066,9 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
             rec(Level::Ok, "merge into", format!("main - the merge train and m fast-forward a worktree branch into {base}"))
                 .advice("No forge is read on this board. Settings > Behaviour > Merge into sets pull requests, where a branch lands through its PR and the board reads GitHub or GitLab.")
         });
+        if prs {
+            records.push(reviewed_prs(scalars.reviewed_prs));
+        }
         // Which CLI would read this repository's pull requests (T-739): a
         // stat of PATH, and the CLI's own `auth status` for the host the
         // remote reaches, an `~/.ssh/config` alias resolved (T-800) — the
@@ -1689,6 +1705,21 @@ mod tests {
         for r in [off, on] {
             let advice = r.advice.unwrap();
             assert!(advice.contains("Settings > Agents > Crown watches tickets"), "{advice}");
+        }
+    }
+
+    /// T-859: doctor prints the reviewed pull requests switch either way,
+    /// naming the row.
+    #[test]
+    fn the_reviewed_prs_line_names_the_row() {
+        let off = super::reviewed_prs(false);
+        assert_eq!(off.label, "reviewed pull requests");
+        assert!(off.value.starts_with("off - "), "{}", off.value);
+        let on = super::reviewed_prs(true);
+        assert!(on.value.starts_with("on - "), "{}", on.value);
+        for r in [off, on] {
+            let advice = r.advice.unwrap();
+            assert!(advice.contains("Settings > Behaviour > Reviewed pull requests"), "{advice}");
         }
     }
 

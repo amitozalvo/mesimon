@@ -87,6 +87,10 @@ GH_STUB = """#!/bin/sh
 case "$1 $2" in
   "auth status") exit 0 ;;
   "pr list") cat "$MSMN_GH_PRS" 2>/dev/null || echo '[]' ;;
+  "pr view") cat "$(dirname "$MSMN_GH_PRS")/view.$3.json" 2>/dev/null || { echo "no pull requests found for $3" >&2; exit 1; } ;;
+  "pr review"|"pr comment") exit 0 ;;
+  "pr diff") echo "diff --git a/README.md b/README.md"; echo "+reviewed" ;;
+  "pr checks") echo "All checks were successful" ;;
   api\\ *)
     case "$4" in
       *check-runs*) cat "$MSMN_GH_CHECKS" 2>/dev/null || echo '{"check_runs":[]}' ;;
@@ -989,6 +993,9 @@ class Rig:
 
     def file_one(self, test, title):
         tid = self.wire.create_ticket(test.get("column", "TODO"), title)
+        # `{stub}` is the stub forge's folder (T-859): a pane's PATH is the
+        # person's, so a brief that wants the stub `gh` names its path.
+        test["brief"] = test["brief"].replace("{stub}", self.forge_stub())
         self.wire.write_note(tid, test["brief"])
         self.wire.write_note(tid, self.test_card(test))
         # Off the merge train: a rebase ask would be a prompt the test did
@@ -1819,6 +1826,38 @@ Reply with the single word ready and end your turn."""
                 record["failures"].append("the daemon would not restart with the stub forge")
                 return False
             return True
+        if what == "forge_reviewed":
+            # The reviewed PR 43 binds to the worker's ticket (T-859), read
+            # off the stub by itself, before the stub goes: the ledger's
+            # pass and the forge's each take a bucket.
+            bound = self.wait_for("the reviewed PR to bind", lambda: any(
+                p["ticket"] == test["ticket"] and p["number"] == 43 and p.get("reviewed")
+                for p in self.snapshot().get("prs", [])), STEP_TIMEOUT, self.watch)
+            if not bound:
+                record["failures"].append("the stub forge's PR 43 never bound reviewed to the ticket")
+                return False
+            return True
+        if what == "forge_lab":
+            # A stub forge up before the worker starts (T-859): someone
+            # else's PR 43 is served by itself alone (`pr view`), never in
+            # the account's list, so only a review or a Summary line binds
+            # it. The worker reaches the stub by its path: a pane's PATH is
+            # the person's login shell's, never the daemon's.
+            d = self.forge_stub()
+            with open(os.path.join(d, "prs.json"), "w") as f:
+                f.write("[]")
+            with open(os.path.join(d, "view.43.json"), "w") as f:
+                f.write('{"number":43,"url":"https://github.com/example/rig/pull/43",'
+                        '"state":"OPEN","isDraft":false,"headRefName":"feature/other",'
+                        '"headRefOid":"' + "ab" * 20 + '","mergeCommit":null,"mergeable":"MERGEABLE",'
+                        '"reviewDecision":"REVIEW_REQUIRED","updatedAt":"2026-10-19T06:00:00Z",'
+                        '"statusCheckRollup":[{"__typename":"CheckRun","name":"test-linux",'
+                        '"status":"COMPLETED","conclusion":"SUCCESS"}]}')
+            self.wire.set_merge_into("pull_requests")
+            if not self.restart(self.forge_env(d)):
+                record["failures"].append("the daemon would not restart with the stub forge")
+                return False
+            return True
         if what == "forge_off":
             # The board's own Claude Code and PATH back: the stub is gone,
             # and the board merges into main again (T-810).
@@ -2315,6 +2354,15 @@ Reply with the single word ready and end your turn."""
                 causes = [l.get("cause") for l in lines if l.get("kind") == "crown_wake"
                           and l.get("worker") == tid]
                 check(c, arg in causes, f"wakes {causes}" if causes else "no wake")
+            elif name == "reviewed":
+                # T-859: the feed says PR <arg> bound to the ticket as
+                # someone else's, reviewed here. The feed, not the snapshot:
+                # `forge_off` has put the board back on main by now.
+                said = [str(l.get("outcome", "")) for l in lines if l.get("kind") == "board"
+                        and l.get("actor") == "forge" and l.get("cmd") == "pr"
+                        and l.get("ticket") == tid]
+                check(c, any(f"#{arg} bound, reviewed here" in s for s in said),
+                      "; ".join(said) or "the forge said nothing of the ticket")
             else:
                 check(c, False, "unknown check")
         return results

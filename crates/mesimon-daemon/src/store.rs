@@ -169,6 +169,12 @@ struct ColumnsFile {
     /// written value, never the default.
     #[serde(default = "yes")]
     crown_watches: bool,
+    /// Reviewed pull requests are a ticket's (`Board::reviewed_prs`,
+    /// T-859). Absent means ON, written either way, so an off survives. No
+    /// bump: a build before it reads every bound PR as the ticket's own,
+    /// which holds a merge this build would not and widens nothing.
+    #[serde(default = "yes")]
+    reviewed_prs: bool,
     /// Whether the starter tags were offered (`Board::tags_seeded`). A scalar,
     /// so it sits here, before the tables. Absent on every file written
     /// before 2026-09-04, which is what makes an existing board's first load
@@ -619,6 +625,7 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                 merge_into: cf.merge_into,
                                 crown_archives: cf.crown_archives,
                                 crown_watches: cf.crown_watches,
+                                reviewed_prs: cf.reviewed_prs,
                                 tags: cf.tags,
                                 tags_seeded: cf.tags_seeded,
                                 mcp_tools: cf.mcp_tools,
@@ -829,6 +836,8 @@ pub struct ColumnsScalars {
     pub crown_archives: bool,
     /// `Board::crown_watches` (T-712).
     pub crown_watches: bool,
+    /// `Board::reviewed_prs` (T-859).
+    pub reviewed_prs: bool,
     /// `Board::mcp_tools` (T-217).
     pub mcp_tools: bool,
     /// `Board::system_prompt` (T-224).
@@ -856,6 +865,7 @@ impl Default for ColumnsScalars {
             merge_into: MergeInto::default(),
             crown_archives: false,
             crown_watches: true,
+            reviewed_prs: true,
             mcp_tools: true,
             system_prompt: true,
             default_column: None,
@@ -898,6 +908,7 @@ pub fn read_columns_scalars(paths: &Paths) -> ColumnsScalars {
         merge_into: cf.merge_into,
         crown_archives: cf.crown_archives,
         crown_watches: cf.crown_watches,
+        reviewed_prs: cf.reviewed_prs,
         mcp_tools: cf.mcp_tools,
         system_prompt: brief,
         default_column,
@@ -935,6 +946,7 @@ fn columns_text(board: &Board) -> Result<String> {
         merge_into: board.merge_into,
         crown_archives: board.crown_archives,
         crown_watches: board.crown_watches,
+        reviewed_prs: board.reviewed_prs,
         tags_seeded: board.tags_seeded,
         mcp_tools: board.mcp_tools,
         claude_md_ignored: board.claude_md_ignored,
@@ -2444,6 +2456,7 @@ order = "a0"
             merge_into: MergeInto::PullRequests,
             crown_archives: true,
             crown_watches: true,
+            reviewed_prs: true,
             tags_seeded: true,
             mcp_tools: false,
             claude_md_ignored: true,

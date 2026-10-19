@@ -68,6 +68,11 @@ pub struct Cursor {
     /// the next line or the next pass.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_create: Vec<String>,
+    /// `gh pr` / `glab mr` acts whose result the pass has not reached yet
+    /// (T-859), as `<id> <entry>`: the `acted on here` fact is read off the
+    /// result, which says whether the act went through.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_act: Vec<String>,
     /// Every `pr create` the transcript holds is in its ticket's `pr_urls`
     /// (T-810): read from its start by a build that looks for them, by the
     /// pass that learned it or by the backfill. A transcript the cursor had
@@ -131,10 +136,31 @@ pub struct TicketLedger {
     /// transcript is read once and the cursor never goes back.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pr_urls: Vec<String>,
+    /// The PRs a `gh pr` / `glab mr` act run by one of the ticket's
+    /// sessions was about (T-859), as `forge::pr_act` spells them: a URL,
+    /// or a number on the repository the command named or on the ticket's
+    /// own (`#42`, `o/r!7`). The `acted on here` fact, kept as `pr_urls`
+    /// is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pr_acted: Vec<String>,
 }
 
-/// How many opened URLs a ticket keeps: the newest.
+/// How many opened URLs a ticket keeps: the newest. The acted entries
+/// share the cap.
 const PR_URLS_CAP: usize = 32;
+
+/// `entry` joins `list` once, the oldest dropped past the cap: the fold of
+/// both the opened URLs and the acted entries (T-859).
+fn keep_named(list: &mut Vec<String>, entry: String) -> bool {
+    if list.iter().any(|u| mesimon_core::forge::same_url(u, &entry)) {
+        return false;
+    }
+    if list.len() >= PR_URLS_CAP {
+        list.remove(0);
+    }
+    list.push(entry);
+    true
+}
 
 impl TicketLedger {
     /// Where the mod's count of `path` starts, if it does: its own fence, or
@@ -175,6 +201,8 @@ pub struct Done {
     pub added: Vec<(u64, String, Tokens)>,
     /// PR URLs the pass found in a `pr create`'s result (T-739).
     pub pr_urls: Vec<String>,
+    /// The PRs the pass found an act was about (T-859).
+    pub pr_acted: Vec<String>,
 }
 
 impl Ledger {
@@ -323,14 +351,10 @@ impl Ledger {
                 moved = true;
             }
             for url in d.pr_urls {
-                if t.pr_urls.iter().any(|u| mesimon_core::forge::same_url(u, &url)) {
-                    continue;
-                }
-                if t.pr_urls.len() >= PR_URLS_CAP {
-                    t.pr_urls.remove(0);
-                }
-                t.pr_urls.push(url);
-                moved = true;
+                moved |= keep_named(&mut t.pr_urls, url);
+            }
+            for entry in d.pr_acted {
+                moved |= keep_named(&mut t.pr_acted, entry);
             }
             for (at_ms, model, tokens) in d.added {
                 if tokens.is_empty() {
@@ -365,12 +389,19 @@ impl Ledger {
         self.tickets.get(&ticket).map(|t| t.pr_urls.clone()).unwrap_or_default()
     }
 
-    /// Whether a ticket's sessions opened a PR a forge read still owes
-    /// (T-750, T-797): a URL the ledger keeps, or one in a transcript's tail
-    /// the pass has not reached, that `owed` says no read has held yet,
-    /// `live` naming the transcripts its sessions point at now (a new one
-    /// the ledger has not learned is read whole). `None` when a tail could
-    /// not be read: the gate reads that as unknown, never as none opened.
+    /// The PRs a ticket's sessions acted on (T-859), as `forge::pr_act`
+    /// spells them; `forge::acted_url` makes each an address.
+    pub fn acted_entries(&self, ticket: ulid::Ulid) -> Vec<String> {
+        self.tickets.get(&ticket).map(|t| t.pr_acted.clone()).unwrap_or_default()
+    }
+
+    /// Whether a ticket's sessions opened or acted on a PR a forge read
+    /// still owes (T-750, T-797, T-859): a URL or an acted entry the ledger
+    /// keeps, or one in a transcript's tail the pass has not reached, that
+    /// `owed` says no read has held yet, `live` naming the transcripts its
+    /// sessions point at now (a new one the ledger has not learned is read
+    /// whole). `None` when a tail could not be read: the gate reads that as
+    /// unknown, never as none opened.
     pub fn opened_unread(
         &self,
         ticket: ulid::Ulid,
@@ -388,7 +419,9 @@ impl Ledger {
     /// The snapshot road's, where a tail its pass has not reached is a held
     /// line one pass late and not a file read per snapshot.
     pub fn opened_owed(&self, ticket: ulid::Ulid, owed: impl Fn(&str) -> bool) -> bool {
-        self.tickets.get(&ticket).is_some_and(|t| t.pr_urls.iter().any(|u| owed(u)))
+        self.tickets
+            .get(&ticket)
+            .is_some_and(|t| t.pr_urls.iter().chain(&t.pr_acted).any(|u| owed(u)))
     }
 
     /// A ticket's transcripts with how far the pass read each, `live` as
@@ -504,13 +537,17 @@ fn read(job: Job, now_ms: u64) -> Option<Done> {
             cursor,
             added: Vec::new(),
             pr_urls: Vec::new(),
+            pr_acted: Vec::new(),
         });
     };
     let text = String::from_utf8_lossy(&buf[..end]);
     let mut added = Vec::new();
     let mut pr_urls = Vec::new();
+    let mut pr_acted = Vec::new();
     for line in text.lines() {
-        pr_urls.extend(opened_on(line, &mut cursor.pending_create));
+        let named = named_on(line, &mut cursor.pending_create, &mut cursor.pending_act);
+        pr_urls.extend(named.opened);
+        pr_acted.extend(named.acted);
         if cursor.codex {
             match codex_line(line) {
                 Some(CodexLine::Model(m)) => cursor.model = Some(m),
@@ -534,20 +571,34 @@ fn read(job: Job, now_ms: u64) -> Option<Done> {
         }
     }
     cursor.offset += end as u64 + 1;
-    Some(Done { ticket: job.ticket, path: job.path, cursor, added, pr_urls })
+    Some(Done { ticket: job.ticket, path: job.path, cursor, added, pr_urls, pr_acted })
 }
 
-/// The `opened here` fact (T-739) on one line: a `pr create` the agent ran
-/// and the URL its result printed. Parsed only where it can be there, so a
-/// line costs one parse, not two.
-fn opened_on(line: &str, pending: &mut Vec<String>) -> Vec<String> {
-    if line.contains("pr create")
+/// The `opened here` fact (T-739) and the `acted on here` fact (T-859) on
+/// one line: a `pr create` the agent ran and the URL its result printed, or
+/// a `gh pr` / `glab mr` act and the PR it was about. Parsed only where
+/// one can be there, so a line costs one parse, not two.
+fn named_on(
+    line: &str,
+    pending: &mut Vec<String>,
+    pending_act: &mut Vec<String>,
+) -> mesimon_core::forge::Named {
+    let id_of = |p: &String| p.split(' ').next().unwrap_or_default().to_string();
+    if line.contains("gh pr")
+        || line.contains("glab mr")
+        || line.contains("pr create")
         || line.contains("mr create")
         || pending.iter().any(|id| line.contains(id.as_str()))
+        || pending_act.iter().any(|p| line.contains(id_of(p).as_str()))
     {
-        return mesimon_core::forge::pr_create_line(line, pending);
+        return mesimon_core::forge::pr_line(line, pending, pending_act);
     }
-    Vec::new()
+    mesimon_core::forge::Named::default()
+}
+
+/// `named_on`'s opened half alone, where only the `pr create` is looked for.
+fn opened_on(line: &str, pending: &mut Vec<String>) -> Vec<String> {
+    named_on(line, pending, &mut Vec::new()).opened
 }
 
 /// One transcript the backfill read (T-810): the PR URLs its `pr create`
@@ -630,10 +681,10 @@ fn opened_in_tail(path: &str, cursor: &Cursor) -> std::result::Result<Vec<String
         Err(_) => return Err(()),
     };
     // Shorter than the cursor: rewritten, so read from the start.
-    let (offset, mut pending) = if len < cursor.offset {
-        (0, Vec::new())
+    let (offset, mut pending, mut pending_act) = if len < cursor.offset {
+        (0, Vec::new(), Vec::new())
     } else {
-        (cursor.offset, cursor.pending_create.clone())
+        (cursor.offset, cursor.pending_create.clone(), cursor.pending_act.clone())
     };
     if len == offset {
         return Ok(Vec::new());
@@ -646,9 +697,14 @@ fn opened_in_tail(path: &str, cursor: &Cursor) -> std::result::Result<Vec<String
     let mut buf = Vec::new();
     file.take(len - offset).read_to_end(&mut buf).map_err(|_| ())?;
     let Some(end) = buf.iter().rposition(|b| *b == b'\n') else { return Ok(Vec::new()) };
+    // The acted entries beside the opened URLs (T-859): a review in the
+    // tail the pass has not reached is owed a read as a `pr create` is.
     Ok(String::from_utf8_lossy(&buf[..end])
         .lines()
-        .flat_map(|line| opened_on(line, &mut pending))
+        .flat_map(|line| {
+            let named = named_on(line, &mut pending, &mut pending_act);
+            named.opened.into_iter().chain(named.acted)
+        })
         .collect())
 }
 
@@ -867,6 +923,40 @@ mod tests {
         assert!(text.contains("pr_urls"), "the fact survives a restart: {text}");
     }
 
+    /// The `acted on here` fact (T-859): a `gh pr review` and its empty
+    /// result land the number on the ticket's ledger, kept apart from the
+    /// opened URLs and surviving a restart; a tail the pass has not reached
+    /// shows it as owed.
+    #[test]
+    fn an_act_on_a_pr_in_the_transcript_names_it_on_the_ticket() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let t = ulid::Ulid::new();
+        let call = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_7","name":"Bash","input":{"command":"gh pr review 43 --approve"}}]}}"#;
+        std::fs::write(&path, format!("{call}\n")).unwrap();
+        let mut ledger = Ledger::default();
+        ledger.learn(t, &path.display().to_string(), false, false);
+        ledger.apply(scan(ledger.jobs(), NOW));
+        assert!(ledger.acted_entries(t).is_empty(), "the result has not come");
+        assert_eq!(
+            ledger.tickets[&t].conversations.values().next().unwrap().pending_act,
+            ["toolu_7 #43"]
+        );
+        // Unread tail: the act is owed as a `pr create` is.
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        use std::io::Write;
+        writeln!(f, r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"toolu_7","content":""}}]}}}}"#).unwrap();
+        assert_eq!(ledger.opened_unread(t, &[], |e| e == "#43"), Some(true));
+        assert!(ledger.apply(scan(ledger.jobs(), NOW)));
+        assert_eq!(ledger.acted_entries(t), ["#43"]);
+        assert!(ledger.opened_urls(t).is_empty(), "an act opened nothing");
+        assert!(ledger.opened_owed(t, |e| e == "#43"));
+        let text = serde_json::to_string(&ledger).unwrap();
+        assert!(text.contains("pr_acted"), "the fact survives a restart: {text}");
+        let back: Ledger = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.acted_entries(t), ["#43"]);
+    }
+
     /// T-810: the backfill reads a transcript the cursor passed before
     /// anything looked for `pr create`, from its start and line by line:
     /// Claude's result as a JSON-escaped string and as text blocks, and
@@ -935,6 +1025,7 @@ mod tests {
             cursor: passed(false),
             added: Vec::new(),
             pr_urls: Vec::new(),
+            pr_acted: Vec::new(),
         };
         ledger.apply(vec![stale]);
         assert!(ledger.tickets[&t].conversations[&c].backfilled);

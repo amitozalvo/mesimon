@@ -192,9 +192,18 @@ pub type LandedKey = (String, String, String);
 #[derive(Debug, Clone)]
 pub struct TicketQuery {
     pub ticket: ulid::Ulid,
+    /// The ticket's own `msmn/` branch; empty for a ticket on the checkout
+    /// (T-859), which is asked about for the PRs it named alone.
     pub branch: String,
     pub legs: Vec<LegQuery>,
+    /// Every PR the ticket named, as an address: the URLs its `pr create`s
+    /// printed (T-739), the ones its acts were about and the ones its
+    /// notes' `Summary` holds (T-859). One a list of the account's own
+    /// does not name is read by itself.
     pub opened: Vec<String>,
+    /// The part of `opened` that is not a `pr create`'s (T-859): a PR found
+    /// among these by itself alone is someone else's, and reads reviewed.
+    pub theirs: Vec<String>,
     /// Every repository the ticket's set can come from: its legs' remotes
     /// and the ones its sessions' URLs name (T-795).
     pub repos: Vec<Remote>,
@@ -226,6 +235,10 @@ pub struct Query {
     /// The repositories of the hosts in `probes`, listed after the probe.
     pub pending: Vec<PendingRepo>,
     pub tickets: Vec<TicketQuery>,
+    /// Whether a PR someone else opened may bind (`Board::reviewed_prs`,
+    /// T-859): off, a named address no list holds is matched against the
+    /// lists alone and never read by itself.
+    pub others: bool,
     /// The environments some column waits for: a deployment is read only
     /// where one is asked for.
     pub envs: Vec<String>,
@@ -426,6 +439,8 @@ fn arrived_envs(set: &[Pr]) -> Vec<String> {
 /// settled state in as its first edge (T-769).
 pub fn edge(old: &[Pr], new: &[Pr], held: &[(String, u64)]) -> Edge {
     let was = |p: &Pr| old.iter().find(|o| o.repo == p.repo && o.number == p.number);
+    // A reviewed PR newly bound is no opening (T-859): the worker reviewed
+    // it, and the feed's line says so; its settled state is still news.
     let fresh: Vec<&Pr> = new
         .iter()
         .filter(|p| p.state.is_open() && !held.iter().any(|(r, n)| *r == p.repo && *n == p.number))
@@ -456,7 +471,7 @@ pub fn edge(old: &[Pr], new: &[Pr], held: &[(String, u64)]) -> Edge {
         .collect();
     let verdict = |r: Review| matches!(r, Review::Approved | Review::ChangesRequested);
     Edge {
-        opened: fresh.iter().map(|p| p.label()).collect(),
+        opened: fresh.iter().filter(|p| !p.reviewed).map(|p| p.label()).collect(),
         bound: fresh
             .iter()
             .filter(|p| {
@@ -562,6 +577,10 @@ pub struct Sample {
     /// The "does this deployed commit carry this merge" answers this pass
     /// stood on (T-801), kept or new.
     pub carried: HashMap<CarriedKey, bool>,
+    /// The addresses read by themselves this pass that the forge answered
+    /// nothing for (T-859), per ticket: a `pr create`'s URL whose PR is
+    /// gone, a number that names no PR. Owed no further read.
+    pub unfound: HashMap<ulid::Ulid, Vec<String>>,
 }
 
 /// The local facts a ticket's set was read on (T-761): what its legs had
@@ -685,12 +704,63 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
         // reading where that read fails (T-800).
         let cut: Vec<Pr> = unlisted(&t.held, &bound, &full).into_iter().cloned().collect();
         for old in cut {
+            // Whose it is stays what the last read said (T-859): a fresh
+            // read says nothing of it, and a reviewed PR read as the
+            // ticket's own would hold its merge.
             let read = q
                 .repos
                 .iter()
                 .find(|r| r.remote.path == old.repo)
-                .and_then(|r| one_pr(r, old.number));
+                .and_then(|r| one_pr(r, old.number))
+                .map(|mut p| {
+                    p.reviewed = old.reviewed;
+                    p
+                });
             bound.push(read.unwrap_or(old));
+        }
+        // An address the ticket named that no list holds is read by itself
+        // (T-859): a `pr create`'s URL the list lags behind or cut off, and,
+        // where the board takes them, a PR someone else opened that the
+        // agent acted on or the Summary names. The last reading stands
+        // where the read fails; one that answers nothing is `unfound`, and
+        // owed no further read. Found only this way and not a `pr create`'s,
+        // it is someone else's: reviewed.
+        for url in &t.opened {
+            let named = |p: &Pr| {
+                forge::same_url(&p.url, url)
+                    || forge::repo_of_url(url).is_some_and(|r| {
+                        forge::url_names(url, &p.repo, p.number)
+                            && r.path.eq_ignore_ascii_case(&p.repo)
+                    })
+            };
+            if bound.iter().any(named) {
+                continue;
+            }
+            let theirs = t.theirs.iter().any(|u| forge::same_url(u, url));
+            if theirs && !q.others {
+                continue;
+            }
+            let (Some(remote), Some((_, number))) =
+                (forge::repo_of_url(url), forge::pr_number_of(url))
+            else {
+                continue;
+            };
+            let Some(r) = q.repos.iter().find(|r| r.remote == remote) else { continue };
+            match read_one(r, number) {
+                Ok(mut pr) => {
+                    pr.reviewed = theirs;
+                    bound.push(pr);
+                }
+                Err(why) => match t.held.iter().find(|h| named(h)) {
+                    Some(last) => bound.push(last.clone()),
+                    None if why == Missing::Gone => {
+                        out.unfound.entry(t.ticket).or_default().push(url.clone())
+                    }
+                    // A call that failed: still owed, as a `pr create`'s
+                    // URL was before (T-750).
+                    None => {}
+                },
+            }
         }
         let mut set = forge::ticket_set(bound);
         // GitLab's list lags the MR by minutes: a head after a push (T-784),
@@ -1040,6 +1110,29 @@ fn list(r: &RepoQuery) -> Result<Vec<Pr>, String> {
 /// One PR read by itself, any state (T-800): what a full list left out.
 /// `None` when the call fails or says something else.
 fn one_pr(r: &RepoQuery, number: u64) -> Option<Pr> {
+    read_one(r, number).ok()
+}
+
+/// Why a PR read by itself answered nothing (T-859).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Missing {
+    /// The forge says there is no such PR: gh's "Could not resolve to a
+    /// PullRequest" or "no pull requests found", GitLab's 404. An address
+    /// so answered is owed no further read.
+    Gone,
+    /// The call failed, or said something else: the last reading stands,
+    /// and a first read is still owed.
+    Failed,
+}
+
+/// `one_pr`, saying why it found nothing.
+fn read_one(r: &RepoQuery, number: u64) -> Result<Pr, Missing> {
+    let gone = |e: &str| {
+        e.contains("Could not resolve")
+            || e.contains("no pull requests found")
+            || e.contains("404")
+            || e.contains("Not Found")
+    };
     match r.cli.forge {
         Forge::GitHub => {
             let n = number.to_string();
@@ -1049,10 +1142,21 @@ fn one_pr(r: &RepoQuery, number: u64) -> Option<Pr> {
                 &["pr", "view", &n, "--repo", &repo, "--json", GH_FIELDS],
                 Some(&r.dir),
             )
-            .ok()?;
-            forge::parse_gh(&r.remote.path, &out).into_iter().find(|p| p.number == number)
+            .map_err(|e| if gone(&e) { Missing::Gone } else { Missing::Failed })?;
+            forge::parse_gh(&r.remote.path, &out)
+                .into_iter()
+                .find(|p| p.number == number)
+                .ok_or(Missing::Failed)
         }
-        Forge::GitLab => gitlab_mr(r, number).map(|m| m.pr),
+        Forge::GitLab => {
+            let out = r
+                .api(&format!("projects/{}/merge_requests/{number}", r.project()))
+                .map_err(|e| if gone(&e) { Missing::Gone } else { Missing::Failed })?;
+            forge::parse_glab_mr(&r.remote.path, &out)
+                .filter(|m| m.pr.number == number)
+                .map(|m| m.pr)
+                .ok_or(Missing::Failed)
+        }
     }
 }
 
@@ -1485,6 +1589,11 @@ pub struct State {
     /// The tickets whose own look (T-761's) is out with a forge half: not
     /// yet known whether their turn's end owes a read (T-773).
     pub looking: HashSet<ulid::Ulid>,
+    /// The addresses a read by itself answered nothing for (T-859), per
+    /// ticket: `held_url` reads them as answered, so a `pr create` whose PR
+    /// was deleted, or a number that names none, holds no gate forever.
+    /// Memory only: a restart asks once more.
+    pub unfound: HashMap<ulid::Ulid, Vec<String>>,
 }
 
 impl State {
@@ -1668,6 +1777,7 @@ impl State {
         self.owed.retain(|t, _| live.contains(t));
         self.landed.retain(|t, _| live.contains(t));
         self.quiet.retain(|t, _| live.contains(t));
+        self.unfound.retain(|t, _| live.contains(t));
         // And the merge commits no kept set names (T-838): the two maps
         // grew by every PR ever merged, were written whole to `forge.json`
         // and copied into every pass's and burst's query.
@@ -1712,11 +1822,12 @@ impl State {
         self.sets.get(&ticket).is_some_and(|s| s.iter().any(|p| p.state.is_open() && p.conflict))
     }
 
-    /// Any PR bound to the ticket, open, merged or closed (T-778): its
-    /// work goes through pull requests, and the forge merges it. A closed
-    /// one stays in the set for this (T-797).
+    /// Any PR of the ticket's own bound to it, open, merged or closed
+    /// (T-778): its work goes through pull requests, and the forge merges
+    /// it. A closed one stays in the set for this (T-797); a reviewed one
+    /// is another ticket's work and says nothing of this one's (T-859).
     pub fn has_pr(&self, ticket: ulid::Ulid) -> bool {
-        self.sets.get(&ticket).is_some_and(|s| !s.is_empty())
+        self.sets.get(&ticket).is_some_and(|s| forge::own(s).next().is_some())
     }
 
     /// Whether the ticket's reads ever held the PR a printed URL names
@@ -1726,6 +1837,11 @@ impl State {
         self.held.get(&ticket).is_some_and(|held| {
             held.iter().any(|(repo, number)| forge::url_names(url, repo, *number))
         }) || self.sets.get(&ticket).is_some_and(|s| s.iter().any(|p| forge::same_url(&p.url, url)))
+            // Read by itself and found nothing (T-859): answered.
+            || self
+                .unfound
+                .get(&ticket)
+                .is_some_and(|gone| gone.iter().any(|u| forge::same_url(u, url)))
     }
 
     /// The ticket's merged PR for the repository at `dir` at a tip
@@ -1790,6 +1906,10 @@ pub struct PrRecord {
     /// none, and the first pass asks again.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub landed_tips: Vec<String>,
+    /// Someone else's PR the ticket's agent reviewed (T-859). Absent in an
+    /// older file, which read every PR as the ticket's own.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub reviewed: bool,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -1816,6 +1936,7 @@ impl PrRecord {
             merged_ms: p.merged_ms,
             deployed: p.deployed.clone(),
             landed_tips: p.landed_tips.clone(),
+            reviewed: p.reviewed,
         }
     }
 
@@ -1837,6 +1958,7 @@ impl PrRecord {
             merged_ms: self.merged_ms,
             deployed: self.deployed,
             landed_tips: self.landed_tips,
+            reviewed: self.reviewed,
         })
     }
 }
@@ -2055,6 +2177,11 @@ pub fn delta(old: Option<&[Pr]>, new: &[Pr]) -> Vec<String> {
     for pr in new {
         let label = pr.label();
         match old.iter().find(|o| o.repo == pr.repo && o.number == pr.number) {
+            // A reviewed PR says so (T-859): the ticket's agent acted on
+            // someone else's.
+            None if pr.reviewed => {
+                out.push(format!("{} {label} bound, reviewed here", pr.state.word()))
+            }
             None => out.push(format!("{} {label} bound", pr.state.word())),
             Some(was) => {
                 if was.state != pr.state && matches!(pr.state, PrState::Merged | PrState::Closed) {
@@ -2105,6 +2232,7 @@ mod tests {
             merged_ms: 0,
             deployed: Vec::new(),
             landed_tips: Vec::new(),
+            reviewed: false,
         }
     }
 
@@ -3247,6 +3375,7 @@ mod tests {
                 base_oid: base.clone(),
             }],
             opened: Vec::new(),
+            theirs: Vec::new(),
             repos: Vec::new(),
             held: Vec::new(),
         };

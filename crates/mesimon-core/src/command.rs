@@ -660,6 +660,13 @@ pub enum Command {
     SetCrownWatches {
         on: bool,
     },
+    /// Whether a pull request someone else opened is a ticket's when its
+    /// agent reviewed it or a note's `Summary` names it
+    /// (`Board::reviewed_prs`, T-859). Local only: whose pull requests a
+    /// ticket carries is the team's workflow, as `SetMergeInto` is.
+    SetReviewedPrs {
+        on: bool,
+    },
     /// Project default for newly accepted agent starts. Existing sessions
     /// retain their provider. Local only: agents cannot choose who runs
     /// subsequent sessions on the board.
@@ -1495,6 +1502,7 @@ impl Command {
             | SetBoardWorkspace { .. }
             | SetCrownArchives { .. }
             | SetCrownWatches { .. }
+            | SetReviewedPrs { .. }
             | SetSystemPrompt { .. }
             | SetFollowUpMode { .. }
             | SetDefaultColumn { .. }
@@ -2438,6 +2446,11 @@ pub struct AgentPrView {
     /// the latest successful deployment is it or carries it (T-801).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deployed: Vec<String>,
+    /// Someone else's PR this ticket's agent reviewed, commented on or named
+    /// in its `Summary` (T-859): not the ticket's own work, so it holds no
+    /// merge and no gate of the ticket's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reviewed: bool,
 }
 
 /// Who merges a worktree branch (T-613), as `get_ticket` says it beside
@@ -2919,6 +2932,10 @@ pub struct PrItem {
     /// them: where the latest successful deployment is it or carries it (T-801).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deployed: Vec<String>,
+    /// Someone else's PR the ticket's agent reviewed (T-859): shown and
+    /// followed, holding no merge and no gate of the ticket's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reviewed: bool,
     /// Unix ms the forge last touched it (T-805); zero when unknown.
     #[serde(default)]
     pub updated_ms: u64,

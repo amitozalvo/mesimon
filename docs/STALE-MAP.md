@@ -28427,3 +28427,121 @@ the row under it. A session waiting at a dialog keeps its bare mark; the pane ho
 cell is `attn`; a lowered hand leaves no words); `board_raised_resting_120x30` golden.
 **Owed:** a CHANGELOG line at the next bump — **Changed:** a card whose agent asked for you shows
 the agent's reason under its title, in the needs-you colour, until the hand is lowered.
+## A pull request the ticket named is read by itself, and a reviewed one is the ticket's too (T-859, 2026-10-19, the author: "MRs sometimes not registered ∙ happens when MR repo is outside this repo ∙ also when an agent reviews an MR, it should also be registered given the review posted a comment / commit ∙ gate in settings on by default ∙ maybe ride on summary for MRs references? with duplicates handling and no checklist item on the ^j list")
+
+**Why MRs went unregistered.** Four holes in T-739's road, each measured in the code. A ticket
+with no worktree was never asked about: `forge_query` walked `self.worktrees`, `forge_hosts`
+too, `queue_forge_sample` returned on an empty `worktrees`, and `opened_unread` answered a
+checkout ticket "owed nothing" (T-797 even leaned on it). An agent on the checkout, or one that
+`cd`'d into a sibling repository, opened an MR that nothing read. A PR not in the account's own
+list (`pr list --author @me`) was never read at all: `binds` matched a printed URL against the
+lists alone, so a PR someone else opened reached no set however the agent acted on it, and a
+`pr create` the list lagged behind (GitLab's does, by minutes, T-784) waited a pass. Nothing but
+`pr create` was a fact. And a URL on a host no leg reaches is dropped by design (the security
+rule), which stays.
+
+**Decided: every address a ticket names is read, and a reviewed PR is shown and followed,
+never judged.** Three roads name a PR beside the two facts T-739 kept (a commit the worktree
+wrote, the ticket's own branch): the `pr create` result (`opened here`), **an act the agent ran
+through the CLI** (`acted on here`: `forge::pr_act` reads `gh pr review|comment|checkout|
+merge|close|reopen|ready|edit|lock|unlock|update-branch` and `glab mr approve|revoke|note|
+checkout|merge|close|reopen|rebase|update|subscribe|unsubscribe|todo` off the tool call, a read
+such as `view`, `diff`, `checks` or `list` naming nothing; the subject is the URL the command
+names, else its number after the `-R`/`--repo` it names, else a bare number, read only where it
+stands right after the verb, last on the command, or after a flag that takes no value — the
+short forms that mean a value under one verb and a switch under another (`-m -s -r -c -t`) are
+left out; and the result's own address wins where it printed one, since `gh pr comment` and
+`glab mr note` print the comment's, which is the PR's with a fragment `pr_urls` now cuts), and
+**an address on a line under a note's `Summary` heading** (`summary::pr_urls`, a box or a plain
+line, each once; the author's "ride on summary"). An act whose result was an error (Claude's
+`is_error`, Codex's `metadata.exit_code`) names nothing: a review the forge refused was no
+review; `gh pr review` prints nothing off a tty (its source: `!IsStdoutTTY → return nil`), so the
+entry stands on the command alone. A bare number names the working directory's repository: it
+resolves on the ticket's one repository (`Daemon::ticket_repo`: the single leg's remote, or the
+checkout's; several legs name none) and is dropped where the command changes directory first
+(`cd …&&`), since Claude Code's Bash resets its cwd after every call and a `cd` in the same
+command is the one way the number is another repository's. The ledger keeps the acts as
+`costs.json`'s `pr_acted` beside `pr_urls` (`cost::keep_named`, the same cap), the cursor's
+`pending_act` as `<id> <entry>`, and `named_on` reads both; the backfill stays `pr create`'s.
+
+`Daemon::named_prs` is the one list: the opened URLs, then the acts' (`forge::acted_url`) and
+the Summary's (`summary_prs_of`, cached under `notes_key` so a note is read again only once a
+write moved it), each once by `same_url`; `TicketQuery.opened` carries it all (so T-761's
+basis, `fresh` and `unchanged` see a new Summary line or act as they saw a `pr create`) and
+`TicketQuery.theirs` the part that is not a `pr create`'s. `forge_query` asks about every
+ticket that names a PR, legs or none, learns the checkout's own remote first (`forge_hosts`
+counts it), and the host rule stands: a URL binds only on a host a leg's or the checkout's remote
+reaches. In `sample`, an address no list of the pass holds is read by itself (`read_one`: `gh pr
+view`, GitLab's single MR read); found that way and not a `pr create`'s, it is `Pr.reviewed`
+(`forge.json`'s `PrRecord.reviewed`, `#[serde(default)]`, no bump: an older build reads it as the
+ticket's own, which holds a merge this build would not and widens nothing). A read that says
+there is no such PR (gh's "Could not resolve to a PullRequest", GitLab's 404: `Missing::Gone`)
+puts the address in `Sample.unfound` → `State.unfound` (memory), and `held_url` reads it as
+answered, so a deleted PR or a wrong number holds no `requires_pipeline` column forever; a call
+that failed (`Missing::Failed`) keeps the last reading where one is held and stays owed where
+none is, T-750's hold as before.
+
+**Shown and followed, never judged.** `forge::own(set)` is every PR but the reviewed, and it is
+what `holding`, `merge_refusal`, `merge_why`, `merged_at`, `pipelined`, `entry_refusal`,
+`head_unread` and `State::has_pr` judge: an open reviewed PR holds no DONE and no `m`, a merged
+one lands no leg, its pipeline passes no gate, and a ticket whose PRs are all reviewed reads as
+one with none bound (`merge` by the board's T-810 answer, "open a PR from its branch"). The
+reviewed PR is on the card's line, the page (`reviewed here` among its clauses), `^h`, `^k`,
+`get_ticket`'s `prs` (`reviewed: true`) and the snapshot's `PrItem.reviewed`; its merge, pipeline
+and deployment edges fire a column's `Arrives here when` and the crown's wake as any PR's do, so
+a review ticket follows the MR it reviewed; it is no `opening` (`Edge.opened` skips it: the
+worker reviewed it, it did not open it), and the feed says `open !7 bound, reviewed here`, on a
+first read too (a turn's end's read is often the ticket's first). Why a reviewed PR must not
+judge: a review ticket whose DONE waited for a colleague's merge, with `m` saying "merge it on
+GitLab" of a PR the agent cannot merge, would have been the visible wrong.
+
+**The switch: Settings › Behaviour › Reviewed pull requests**, under Merge into, on by default
+(`Board::reviewed_prs`, `#[serde(default = "yes")]`, a scalar in `columns.toml` beside
+`crown_watches`, no bump on the same argument; `Command::SetReviewedPrs`, local only in
+`agent_allows`: whose PRs a ticket carries is the team's workflow as `SetMergeInto` is; inert
+under main like every PR row, `PRS_INERT`; `doctor` prints `reviewed pull requests` under `merge
+into`). Off, `Query.others` keeps the acts' and the Summary's addresses to the lists alone, so an
+own PR named there still binds (the "outside this repo" case) and someone else's never does, and
+`opened_unread` owes nothing on those roads; the next read drops every reviewed PR (`carry`
+keeps only what the answered repository's read names), and on again they return. Why a person
+turns it off: a board where review tickets should carry nothing of the MRs they review, or where
+a bare number read on the ticket's repository is a risk the team would rather not take.
+
+**The agent is told.** `SUMMARY_ABOUT` (every `get_ticket`) and `write_note`'s description say a
+pull request's address on a plain line under `Summary` names it as the ticket's; the tool's
+description lost "over 32 KiB is refused" (the refusal says itself) and a word of the plan
+clause to stay under `MAX_TOOL_BYTES`. The line is no box, so `^j`'s list and the card's count
+are untouched ("no checklist item on the ^j list"); a URL inside a box binds all the same, and
+the box stays what the card counts. USING.md has the rule, the number's caveat and the switch.
+
+**Refuted.** Listing every open PR of a repository to find reviewed ones: a stranger's PR from a
+branch named like the ticket's would bind by `head_ref`, T-739's security finding, and a busy
+repository's 100 newest would still miss one. Verifying an act on the forge (the account's
+review, comment or approval read back): two more calls per reviewed MR per pass on GitLab, and
+the act's own result already says whether it went through. Resolving a bare number through the
+transcript's `cwd`: the entry's `cwd` is the process's, never the shell's. A reviewed PR judged
+like the ticket's own (simplest to build): the review ticket's DONE waits on a merge the agent
+cannot make. A `pr create` URL the forge answers nothing for staying owed (today's rule for a
+transferred PR): a wrong number from an act would hold a pipeline column for good.
+
+**Tests.** Core `forge::an_act_names_its_pr_and_a_read_names_none` (the command table, the
+`cd` guard, the flag positions, `shell_words`), `an_acted_entry_is_an_address_on_the_tickets_repository`,
+`an_act_and_its_result_name_the_pr_and_a_failed_act_names_none` (Claude's and Codex's shapes,
+the fragment cut, `is_error`, `exit_code`), `a_reviewed_pr_holds_no_merge_and_no_gate`;
+`summary::the_summary_names_its_pull_requests_and_the_rest_of_the_note_does_not`;
+`board::reviewed_prs_default_on_and_an_off_is_kept`; the keymap's inert-row and detail tests;
+`mcp::the_summary_convention_is_in_the_tools`. Daemon `cost::an_act_on_a_pr_in_the_transcript_names_it_on_the_ticket`
+(the pending act, the owed tail, the round trip); TUI `reviewed_prs_setting_toggles_through_board_command`;
+the `settings_behaviour_*` goldens reminted for the row. `forge_e2e::a_reviewed_pull_request_is_read_by_itself_shown_and_never_judged`
+(a `gh pr review 43 --approve` with an empty result binds #43 reviewed off `pr view` alone; `m`
+says open a PR; `get_ticket` says reviewed and the board's merge answer; the feed's line; a
+checkout ticket's Summary line binds #46 while a mention of #99 binds nothing; the switch off
+drops both, on returns them) and `a_ticket_with_no_pull_request_enters_and_one_opened_here_waits`'s
+checkout ticket, whose `pr create` is now read by itself and answered gone. Rig F10 (the worker
+approves PR 43 through the stub gh by its path: a pane's PATH is the person's, never the
+daemon's) and F11 (the worker is told the ticket reviews a PR and puts it on the ticket), each
+with a `forge_reviewed` step that waits for the bind before `forge_off` drops the forge, and a
+`reviewed:<n>` check on the feed's line (the snapshot is back on main by then): on the real
+Sonnet, 2026-10-19, both PASS in 47 s — F10's worker ran the stub's `pr review 43 --approve`
+and F11's wrote the address under `Summary` with nothing but `get_ticket`'s sentence to go on;
+the first run of each failed only because the check read the snapshot after `forge_off`.

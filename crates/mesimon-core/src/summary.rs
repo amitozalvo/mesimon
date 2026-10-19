@@ -138,6 +138,35 @@ fn task_box(text: &str) -> Option<(bool, &str)> {
 /// a box in sample code is not progress and a `#` in a shell snippet does
 /// not close the section.
 pub fn extract(body: &str) -> Vec<Row> {
+    section_lines(body)
+        .into_iter()
+        .filter_map(|(line_no, line)| {
+            let (done, text) = item(line).and_then(task_box)?;
+            Some(Row { line: line_no, text: text.trim().to_string(), done })
+        })
+        .collect()
+}
+
+/// Every pull request a `Summary` section names (T-859): the PR URLs on
+/// its lines, in document order, each once. A line there is the ticket's
+/// own word on its work, so an address there is a fact the forge reads,
+/// where a URL elsewhere in a note is a mention. A box or a plain line
+/// alike; the box, if it is one, stays what the card counts.
+pub fn pr_urls(body: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (_, line) in section_lines(body) {
+        for url in crate::forge::pr_urls(line) {
+            if !out.iter().any(|u| crate::forge::same_url(u, &url)) {
+                out.push(url);
+            }
+        }
+    }
+    out
+}
+
+/// The lines inside every `Summary` section, numbered from the body's
+/// first line: headings and fenced blocks left out.
+fn section_lines(body: &str) -> Vec<(usize, &str)> {
     let mut out = Vec::new();
     let mut open: Option<usize> = None;
     let mut fenced = false;
@@ -160,13 +189,9 @@ pub fn extract(body: &str) -> Vec<Row> {
             }
             continue;
         }
-        if open.is_none() {
-            continue;
+        if open.is_some() {
+            out.push((line_no, line));
         }
-        let Some((done, text)) = item(line).and_then(task_box) else {
-            continue;
-        };
-        out.push(Row { line: line_no, text: text.trim().to_string(), done });
     }
     out
 }
@@ -200,6 +225,29 @@ pub fn toggle(body: &str, line: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T-859: a pull request's address under `Summary` is the ticket's
+    /// word, on a plain line or in a box, once; elsewhere it is a mention.
+    #[test]
+    fn the_summary_names_its_pull_requests_and_the_rest_of_the_note_does_not() {
+        let body = "# Review the auth MR\n\n\
+            Prerequisite: https://gitlab.com/g/p/-/merge_requests/3\n\n\
+            ## Summary\n\
+            - [x] reviewed https://gitlab.com/g/p/-/merge_requests/7\n\
+            - MR: https://gitlab.com/g/p/-/merge_requests/7/\n\
+            - https://github.com/o/r/pull/42#issuecomment-1\n\
+            ```\n\
+            https://github.com/o/r/pull/99\n\
+            ```\n\n\
+            ## Notes\n\
+            see https://github.com/o/r/pull/100\n";
+        assert_eq!(
+            pr_urls(body),
+            ["https://gitlab.com/g/p/-/merge_requests/7", "https://github.com/o/r/pull/42"]
+        );
+        assert_eq!(extract(body).len(), 1, "the box stays what the card counts");
+        assert!(pr_urls("no summary here https://github.com/o/r/pull/1").is_empty());
+    }
 
     const BODY: &str = "# Fix the login redirect\n\n\
         Return path is dropped after SSO.\n\n\

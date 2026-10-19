@@ -6526,6 +6526,7 @@ impl App {
             merge_into: self.board.merge_into,
             crown_archives: self.board.crown_archives,
             crown_watches: self.board.crown_watches,
+            reviewed_prs: self.board.reviewed_prs,
             column_agents: self.column_agents,
             col_naming: matches!(self.mode, Mode::ColumnSettings { naming: Some(_), .. }),
             col_offers_word: cs.offers().word(),
@@ -7867,6 +7868,25 @@ impl App {
                             "crown archives on ∙ it may archive and restore tickets".into()
                         } else {
                             "crown archives off ∙ it may not archive or restore tickets".into()
+                        };
+                    }
+                }
+            }
+            Verb::ReviewedPrs => {
+                let on = !self.board.reviewed_prs;
+                match self.client.request(Command::SetReviewedPrs { on })? {
+                    Response::Err { message } => self.status = message,
+                    _ => {
+                        self.refresh()?;
+                        // Whose pull requests a ticket carries (T-859).
+                        self.status = if on {
+                            "reviewed pull requests on ∙ a PR the agent reviewed or named in its \
+                             Summary is the ticket's too"
+                                .into()
+                        } else {
+                            "reviewed pull requests off ∙ a ticket's PRs are the ones this \
+                             account opened"
+                                .into()
                         };
                     }
                 }
@@ -14961,6 +14981,10 @@ pub(crate) mod test_support {
                     self.board.crown_watches = on;
                     Ok(Response::Ok)
                 }
+                Command::SetReviewedPrs { on } => {
+                    self.board.reviewed_prs = on;
+                    Ok(Response::Ok)
+                }
                 Command::SetFollowUpMode { mode } => {
                     self.board.follow_up_mode = mode;
                     Ok(Response::Ok)
@@ -18361,7 +18385,11 @@ mod tests {
         let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
         app.settings_section = keymap::SettingsSection::Behaviour;
         let idx = app.settings_row(Verb::MergeInto);
-        assert_eq!(idx + 1, app.settings_row(Verb::FetchEvery), "above the fetch row");
+        assert_eq!(
+            idx + 2,
+            app.settings_row(Verb::FetchEvery),
+            "above the reviewed row, then the fetch row"
+        );
         app.mode = Mode::Settings { idx };
         assert_eq!(app.ctx().merge_into, MergeInto::Main, "main by default");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
@@ -18397,6 +18425,26 @@ mod tests {
         );
         assert!(app.status.contains("may not archive"), "{}", app.status);
         assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownArchives")).count(), 2);
+    }
+
+    /// T-859: the Behaviour row under Merge into turns reviewed pull
+    /// requests off and on through the board command, on by default.
+    #[test]
+    fn reviewed_prs_setting_toggles_through_board_command() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
+        app.settings_section = keymap::SettingsSection::Behaviour;
+        let idx = app.settings_row(Verb::ReviewedPrs);
+        assert_eq!(idx, app.settings_row(Verb::MergeInto) + 1, "under the merge row");
+        app.mode = Mode::Settings { idx };
+        assert!(app.board.reviewed_prs && app.ctx().reviewed_prs, "on by default");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!app.board.reviewed_prs && !app.ctx().reviewed_prs);
+        assert!(app.status.contains("this account opened"), "{}", app.status);
+        assert_eq!(app.mode, Mode::Settings { idx });
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.board.reviewed_prs && app.ctx().reviewed_prs);
+        assert!(app.status.contains("reviewed or named"), "{}", app.status);
+        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetReviewedPrs")).count(), 2);
     }
 
     /// The crown's watch switch (T-712) is ON on a fresh board (T-732), sits

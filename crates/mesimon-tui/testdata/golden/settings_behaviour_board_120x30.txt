@@ -15,14 +15,14 @@
       │  Crown                                                                                                   │
       │                     MERGE                                                                                │
       │  Terminal            Merge into                ● main   ○ pull requests                                  │
+      │                      Reviewed pull requests    ● on                                                      │
+      │  Usage                                                                                                   │
+      │                     REMOTE                                                                               │
+      │  About               Fetch from the remote     ● off    ○ 1 min           ○ 5 min   ○ 15 min  inherited  │
       │                                                                                                          │
-      │  Usage              REMOTE                                                                               │
-      │                      Fetch from the remote     ● off    ○ 1 min           ○ 5 min   ○ 15 min  inherited  │
-      │  About                                                                                                   │
       │                     AUTO MERGE                                                                           │
       │                      Auto merge                ● on                                            set here  │
       │                      Tells the agent           ● on                                           inherited  │
-      │                                                                                                          │
       │                                                                                                          │
       │                     machine: on ∙ merges quiet REVIEW branches, asks idle agents to rebase ∙ arming… ∙ ~ │
       ╰──────────────────────────────────────────────────── jk select ∙ enter change ∙ b machine ∙ esc sections ─╯

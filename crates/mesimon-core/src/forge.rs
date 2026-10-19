@@ -274,6 +274,19 @@ pub struct Pr {
     /// same. Read by ancestry on the daemon's worker (`merged_past`), never
     /// off the forge's list.
     pub landed_tips: Vec<String>,
+    /// Someone else's PR the ticket's agent reviewed (T-859): named by a
+    /// `gh pr` / `glab mr` act the agent ran or by a note's `Summary`, and
+    /// found by no list of the account's own. Shown and followed, never
+    /// judged: it holds no merge, no DONE and no pipeline gate (`own`).
+    pub reviewed: bool,
+}
+
+/// The set's own PRs (T-859): the ones the ticket's work made, every
+/// reviewed one left out. What the merge, the landing and the pipeline
+/// gate judge; a reviewed PR is another ticket's work, so an open one
+/// holds nothing and a merged one lands nothing here.
+pub fn own(set: &[Pr]) -> impl Iterator<Item = &Pr> {
+    set.iter().filter(|p| !p.reviewed)
 }
 
 impl Pr {
@@ -365,6 +378,7 @@ pub fn parse_gh(repo: &str, json: &str) -> Vec<Pr> {
                 merged_ms: iso_ms(v.get("mergedAt")),
                 deployed: Vec::new(),
                 landed_tips: Vec::new(),
+                reviewed: false,
             })
         })
         .collect()
@@ -522,6 +536,7 @@ fn glab_mr(repo: &str, v: &Value) -> Option<Pr> {
         merged_ms: iso_ms(v.get("merged_at")),
         deployed: Vec::new(),
         landed_tips: Vec::new(),
+        reviewed: false,
     })
 }
 
@@ -1032,10 +1047,11 @@ pub fn ticket_set(mut prs: Vec<Pr>) -> Vec<Pr> {
 }
 
 /// Whether a set holds a PR with a pipeline to judge: an open or a merged
-/// one. A set of closed PRs alone has none (T-797), and the pipeline gate
-/// reads it as no PR bound.
+/// one of the ticket's own. A set of closed PRs alone has none (T-797),
+/// and so has one of reviewed PRs alone (T-859): the pipeline gate reads
+/// either as no PR bound.
 pub fn pipelined(set: &[Pr]) -> bool {
-    set.iter().any(|p| p.state != PrState::Closed)
+    own(set).any(|p| p.state != PrState::Closed)
 }
 
 /// The set's merged PR for one repository at one tip: the newest merged PR
@@ -1049,7 +1065,9 @@ pub fn pipelined(set: &[Pr]) -> bool {
 /// the repository's PRs may name (T-800): a PR opened from a fork against
 /// its upstream names the upstream's.
 pub fn merged_at<'a>(set: &'a [Pr], repos: &[String], tip: &str) -> Option<&'a Pr> {
-    set.iter().find(|p| repos.contains(&p.repo) && p.state == PrState::Merged && p.lands(tip))
+    // A reviewed PR merged at this tip is another ticket's merge (T-859):
+    // the leg's commit reached it through that PR's branch, not this one.
+    own(set).find(|p| repos.contains(&p.repo) && p.state == PrState::Merged && p.lands(tip))
 }
 
 /// A merged PR whose head may carry the leg's tip without being it
@@ -1094,7 +1112,8 @@ pub fn parse_pr_commits(json: &str) -> Option<Vec<String>> {
 /// landed, whatever its branch reads: a follow-up MR after the branch merged
 /// holds the merge gate as it holds the train.
 pub fn holding(set: &[Pr]) -> Option<&Pr> {
-    set.iter().find(|p| p.state.is_open())
+    // Never a reviewed one (T-859): its merge is someone else's to make.
+    own(set).find(|p| p.state.is_open())
 }
 
 /// Why the merge is the forge's (T-739), in the one sentence `m`, the crown,
@@ -1114,13 +1133,15 @@ pub fn merge_refusal(set: &[Pr]) -> Option<String> {
     if let Some(open) = holding(set) {
         return Some(open_refusal(open));
     }
-    if let Some(merged) = set.iter().find(|p| p.state == PrState::Merged) {
+    if let Some(merged) = own(set).find(|p| p.state == PrState::Merged) {
         return Some(format!(
             "its pull requests carry the merge — merge on {}",
             merged.forge.name()
         ));
     }
-    let closed = set.first()?;
+    // A set of reviewed PRs alone (T-859) refuses nothing: no PR of the
+    // ticket's own is bound.
+    let closed = own(set).next()?;
     Some(format!(
         "{} {} closed unmerged — reopen it on {}",
         closed.forge.noun(),
@@ -1175,7 +1196,7 @@ pub fn missing_trouble(host: &str, candidates: &[Forge]) -> String {
 /// `get_ticket`'s `merge.why`, or `None` with none bound: its PRs closed
 /// unmerged, every one (T-797), else its work goes through them.
 pub fn merge_why(set: &[Pr]) -> Option<&'static str> {
-    if set.is_empty() {
+    if own(set).next().is_none() {
         None
     } else if pipelined(set) {
         Some("its work goes through pull requests")
@@ -1227,11 +1248,13 @@ pub fn pipeline_of(set: &[Pr]) -> Pipeline {
 /// create` is not waved through. A set of closed PRs alone is none bound
 /// (T-797): a closed PR has no pipeline to pass. Unknown is never green.
 pub fn entry_refusal(set: Option<&[Pr]>, unread: Option<bool>) -> Option<String> {
-    let set = set.filter(|s| pipelined(s));
+    // The ticket's own PRs alone (T-859): a reviewed PR's pipeline is
+    // another ticket's to pass.
+    let set: Option<Vec<Pr>> = set.filter(|s| pipelined(s)).map(|s| own(s).cloned().collect());
     if set.is_none() && unread == Some(false) {
         return None;
     }
-    match set.map(pipeline_of).unwrap_or(Pipeline::Unknown) {
+    match set.as_deref().map(pipeline_of).unwrap_or(Pipeline::Unknown) {
         Pipeline::Passed => None,
         Pipeline::Unknown => Some("pipeline not read".into()),
         Pipeline::None => Some("no pipeline ran".into()),
@@ -1252,7 +1275,7 @@ pub fn entry_refusal(set: Option<&[Pr]>, unread: Option<bool>) -> Option<String>
 /// spells it, with its branch's tip. A PR from another branch, one on a
 /// repository with no leg, and an empty head or tip are not judged.
 pub fn head_unread(set: &[Pr], branch: &str, tips: &[(String, String)]) -> bool {
-    set.iter()
+    own(set)
         .filter(|p| p.state.is_open() && !p.head_oid.is_empty())
         .filter(|p| p.head_ref.is_empty() || p.head_ref == branch)
         .any(|p| {
@@ -1260,15 +1283,28 @@ pub fn head_unread(set: &[Pr], branch: &str, tips: &[(String, String)]) -> bool 
         })
 }
 
-/// The transcript detector (the `opened here` fact). A pass keeps the ids
-/// of `pr create` tool calls whose result has not come yet in `pending`,
-/// and returns the PR URLs a result printed. Claude's JSONL (`tool_use` /
-/// `tool_result` blocks) and Codex's rollout (`function_call` /
+/// What one transcript line named (T-739, T-859): the PR URLs a `pr
+/// create`'s result printed (`opened`), and the entries of the PRs an act
+/// the agent ran was about (`acted`, as `pr_act` spells them, or the URL
+/// the act's result printed where it printed one).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Named {
+    pub opened: Vec<String>,
+    pub acted: Vec<String>,
+}
+
+/// The transcript detector: the `opened here` fact and the `acted on here`
+/// fact (T-859). A pass keeps the ids of `pr create` tool calls whose
+/// result has not come yet in `pending`, and of acts in `pending_act` as
+/// `<id> <entry>`; a result answers its call. An act's result that is an
+/// error (Claude's `is_error`, Codex's non-zero `exit_code`) names nothing:
+/// a review refused by the forge was no review. Claude's JSONL (`tool_use`
+/// / `tool_result` blocks) and Codex's rollout (`function_call` /
 /// `function_call_output`) both read; anything else is a line that says
 /// nothing.
-pub fn pr_create_line(line: &str, pending: &mut Vec<String>) -> Vec<String> {
-    let Ok(v) = serde_json::from_str::<Value>(line) else { return Vec::new() };
-    let mut out = Vec::new();
+pub fn pr_line(line: &str, pending: &mut Vec<String>, pending_act: &mut Vec<String>) -> Named {
+    let Ok(v) = serde_json::from_str::<Value>(line) else { return Named::default() };
+    let mut out = Named::default();
     // Claude: the message's content blocks.
     if let Some(Value::Array(blocks)) = v.get("message").and_then(|m| m.get("content")) {
         for b in blocks {
@@ -1279,18 +1315,15 @@ pub fn pr_create_line(line: &str, pending: &mut Vec<String>) -> Vec<String> {
                         .and_then(|i| i.get("command"))
                         .and_then(Value::as_str)
                         .unwrap_or_default();
-                    if is_pr_create(command) {
-                        if let Some(id) = b.get("id").and_then(Value::as_str) {
-                            remember(pending, id);
-                        }
+                    if let Some(id) = b.get("id").and_then(Value::as_str) {
+                        pr_call(id, command, pending, pending_act);
                     }
                 }
                 Some("tool_result") => {
                     let Some(id) = b.get("tool_use_id").and_then(Value::as_str) else { continue };
-                    if let Some(at) = pending.iter().position(|p| p == id) {
-                        pending.remove(at);
-                        out.extend(pr_urls(&flatten(b.get("content"))));
-                    }
+                    let failed = b.get("is_error").and_then(Value::as_bool) == Some(true);
+                    let text = flatten(b.get("content"));
+                    pr_result(id, &text, failed, pending, pending_act, &mut out);
                 }
                 _ => {}
             }
@@ -1301,24 +1334,91 @@ pub fn pr_create_line(line: &str, pending: &mut Vec<String>) -> Vec<String> {
         match p.get("type").and_then(Value::as_str) {
             Some("function_call") => {
                 let args = p.get("arguments").and_then(Value::as_str).unwrap_or_default();
-                if is_pr_create(args) {
-                    if let Some(id) = p.get("call_id").and_then(Value::as_str) {
-                        remember(pending, id);
-                    }
+                if let Some(id) = p.get("call_id").and_then(Value::as_str) {
+                    pr_call(id, &codex_command(args), pending, pending_act);
                 }
             }
             Some("function_call_output") => {
                 if let Some(id) = p.get("call_id").and_then(Value::as_str) {
-                    if let Some(at) = pending.iter().position(|q| q == id) {
-                        pending.remove(at);
-                        out.extend(pr_urls(&flatten(p.get("output"))));
-                    }
+                    let text = flatten(p.get("output"));
+                    pr_result(id, &text, codex_failed(&text), pending, pending_act, &mut out);
                 }
             }
             _ => {}
         }
     }
     out
+}
+
+/// The shell line a Codex call runs, out of its `arguments` JSON
+/// (`{"command":["bash","-lc","gh pr review 42"],…}`): the script under a
+/// `-c`/`-lc`, else the words joined. The raw text where it is not that
+/// shape, which `is_pr_create` read before and still reads.
+fn codex_command(args: &str) -> String {
+    let words: Option<Vec<String>> = serde_json::from_str::<Value>(args)
+        .ok()
+        .and_then(|v| v.get("command")?.as_array().cloned())
+        .map(|a| a.iter().filter_map(|w| w.as_str().map(str::to_string)).collect());
+    match words.as_deref() {
+        Some([_, flag, script, ..]) if matches!(flag.as_str(), "-c" | "-lc") => script.clone(),
+        Some(words) if !words.is_empty() => words.join(" "),
+        _ => args.to_string(),
+    }
+}
+
+/// A tool call: a `pr create` joins `pending`, an act `pending_act` with
+/// its entry.
+fn pr_call(id: &str, command: &str, pending: &mut Vec<String>, pending_act: &mut Vec<String>) {
+    if is_pr_create(command) {
+        remember(pending, id);
+    } else if let Some(entry) = pr_act(command) {
+        remember(pending_act, &format!("{id} {entry}"));
+    }
+}
+
+/// A tool result: the URLs a `pr create` printed, and what an act named.
+fn pr_result(
+    id: &str,
+    text: &str,
+    failed: bool,
+    pending: &mut Vec<String>,
+    pending_act: &mut Vec<String>,
+    out: &mut Named,
+) {
+    if let Some(at) = pending.iter().position(|p| p == id) {
+        pending.remove(at);
+        out.opened.extend(pr_urls(text));
+    }
+    if let Some(at) = pending_act.iter().position(|p| p.split(' ').next() == Some(id)) {
+        let entry = pending_act.remove(at);
+        let entry = entry.split_once(' ').map(|(_, e)| e.to_string()).unwrap_or_default();
+        if failed || entry.is_empty() {
+            return;
+        }
+        // The result's own address is the surer name: a comment's is the
+        // PR's with a fragment, whatever the command said.
+        let printed = pr_urls(text);
+        if printed.is_empty() {
+            out.acted.push(entry);
+        } else {
+            out.acted.extend(printed);
+        }
+    }
+}
+
+/// The `opened here` fact alone, as T-739 read it.
+pub fn pr_create_line(line: &str, pending: &mut Vec<String>) -> Vec<String> {
+    pr_line(line, pending, &mut Vec::new()).opened
+}
+
+/// Whether a Codex shell call's output says it failed: its JSON's
+/// `metadata.exit_code`, where the output is that shape. A plain text
+/// output said nothing of it, and is taken as a success.
+fn codex_failed(output: &str) -> bool {
+    serde_json::from_str::<Value>(output)
+        .ok()
+        .and_then(|v| v.get("metadata")?.get("exit_code")?.as_i64())
+        .is_some_and(|code| code != 0)
 }
 
 /// How many unanswered `pr create` ids a cursor keeps: a result that never
@@ -1333,6 +1433,242 @@ fn remember(pending: &mut Vec<String>, id: &str) {
         pending.remove(0);
     }
     pending.push(id.to_string());
+}
+
+/// The `gh pr` verbs that write to a PR someone may have opened (T-859):
+/// a review, a comment, a checkout, a merge, a close, a reopen, an edit.
+/// Never a read (`view`, `diff`, `checks`, `list`, `status`), which is no
+/// act on it, and never `create`, which is `is_pr_create`'s.
+const GH_ACTS: &[&str] = &[
+    "review",
+    "comment",
+    "checkout",
+    "merge",
+    "close",
+    "reopen",
+    "ready",
+    "edit",
+    "lock",
+    "unlock",
+    "update-branch",
+];
+
+/// The `glab mr` verbs that write to an MR, on the same rule.
+const GLAB_ACTS: &[&str] = &[
+    "approve",
+    "revoke",
+    "note",
+    "checkout",
+    "merge",
+    "close",
+    "reopen",
+    "rebase",
+    "update",
+    "subscribe",
+    "unsubscribe",
+    "todo",
+];
+
+/// Flags of those verbs that take no value, so a number right after one is
+/// the subject (`gh pr review --approve 42`). The short forms that mean a
+/// value under one verb and a switch under another (`-m`, `-s`, `-r`,
+/// `-c`, `-t`) are left out: a number after one of them is not read.
+const SWITCH_FLAGS: &[&str] = &[
+    "--approve",
+    "-a",
+    "--comment",
+    "--request-changes",
+    "--squash",
+    "--merge",
+    "--rebase",
+    "--auto",
+    "--disable-auto",
+    "--delete-branch",
+    "-d",
+    "--admin",
+    "--detach",
+    "--force",
+    "-f",
+    "--undo",
+    "--web",
+    "-w",
+    "--yes",
+    "-y",
+    "--skip-ci",
+    "--when-pipeline-succeeds",
+    "--remove-source-branch",
+    "--unique",
+    "--edit-last",
+    "--create-if-none",
+    "--track",
+    "--recurse-submodules",
+];
+
+/// A shell command that acts on a PR (T-859): `gh pr <verb> …` or `glab mr
+/// <verb> …` with a verb of `GH_ACTS` / `GLAB_ACTS`, anywhere in the line,
+/// and the PR it is about as the ledger keeps it: the URL the command
+/// names, else its number — `#42` for gh, `!42` for glab — after the
+/// `-R` / `--repo` the command names (`o/r#42`, `host/o/r#42`) or alone. A
+/// number is read as the subject only where it stands right after the
+/// verb, after a word that is no flag, or after a flag that takes no value
+/// (`SWITCH_FLAGS`, or a `--flag=value`), never after any other flag; a bare
+/// one names the working directory's repository, so it is dropped where
+/// the command changes directory before the call (`cd …&&`): that
+/// repository is not the ticket's. `None` for any other command.
+pub fn pr_act(command: &str) -> Option<String> {
+    let words = shell_words(command);
+    let is_bin = |w: &str, name: &str| w == name || w.ends_with(&format!("/{name}"));
+    let at = words.windows(3).position(|w| {
+        (is_bin(&w[0], "gh") && w[1] == "pr" && GH_ACTS.contains(&w[2].as_str()))
+            || (is_bin(&w[0], "glab") && w[1] == "mr" && GLAB_ACTS.contains(&w[2].as_str()))
+    })?;
+    let glyph = if words[at + 1] == "pr" { '#' } else { '!' };
+    let tail: Vec<&str> = words[at + 3..]
+        .iter()
+        .map(String::as_str)
+        .take_while(|w| !matches!(*w, "&&" | "||" | ";" | "|" | ">" | ">>" | "2>" | "<"))
+        .collect();
+    if let Some(url) = tail.iter().find_map(|w| pr_urls(w).into_iter().next()) {
+        return Some(url);
+    }
+    let number = |w: &str| {
+        let digits = w.trim_start_matches(['#', '!']);
+        (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| digits.to_string())
+    };
+    let mut repo: Option<String> = None;
+    let mut subject: Option<String> = None;
+    for (i, w) in tail.iter().enumerate() {
+        if let Some(r) = w.strip_prefix("--repo=").or_else(|| w.strip_prefix("-R=")) {
+            repo = Some(r.to_string());
+            continue;
+        }
+        if matches!(*w, "-R" | "--repo") {
+            repo = tail.get(i + 1).map(|r| r.to_string());
+            continue;
+        }
+        if subject.is_some() {
+            continue;
+        }
+        let Some(n) = number(w) else { continue };
+        // A number is the subject where it stands first, or after a word
+        // that is no flag (a body, a title), a switch, or a `--flag=value`
+        // that took its value with it. After any other flag it is that
+        // flag's value, whether or not this build knows the flag.
+        let before = i.checked_sub(1).and_then(|j| tail.get(j)).copied();
+        let placed = match before {
+            None => true,
+            Some(f) if !f.starts_with('-') => true,
+            Some(f) => SWITCH_FLAGS.contains(&f) || f.contains('='),
+        };
+        if placed {
+            subject = Some(n);
+        }
+    }
+    let n = subject?;
+    match repo {
+        Some(r) => Some(format!("{}{glyph}{n}", r.trim_end_matches('/').trim_end_matches(".git"))),
+        None => {
+            // A `cd` before the call: the number is some other repository's.
+            if words[..at].iter().any(|w| w == "cd") {
+                return None;
+            }
+            Some(format!("{glyph}{n}"))
+        }
+    }
+}
+
+/// A command line as the shell would split it: blanks separate, single
+/// quotes keep everything, double quotes keep everything but a
+/// backslash-escaped character, a bare backslash escapes the next.
+/// Enough to read `gh pr comment 42 -b "fixed 3 places"` as four words
+/// and a body.
+pub fn shell_words(command: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut quote: Option<char> = None;
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some('\'') => {
+                if c == '\'' {
+                    quote = None;
+                } else {
+                    word.push(c);
+                }
+            }
+            Some(_) => match c {
+                '"' => quote = None,
+                '\\' => {
+                    if let Some(n) = chars.next() {
+                        word.push(n);
+                    }
+                }
+                _ => word.push(c),
+            },
+            None => match c {
+                '\'' | '"' => {
+                    quote = Some(c);
+                    in_word = true;
+                }
+                '\\' => {
+                    if let Some(n) = chars.next() {
+                        word.push(n);
+                        in_word = true;
+                    }
+                }
+                c if c.is_whitespace() => {
+                    if in_word {
+                        words.push(std::mem::take(&mut word));
+                        in_word = false;
+                    }
+                }
+                _ => {
+                    word.push(c);
+                    in_word = true;
+                }
+            },
+        }
+    }
+    if in_word {
+        words.push(word);
+    }
+    words
+}
+
+/// The URL an act's entry names (T-859), on the repository the act ran in:
+/// a URL as it is; a number with the repository the command named, on
+/// that repository's host where it spelled one (`host/o/r#42`, or a full
+/// address) and else on `repo`'s; a bare number on `repo` itself. The
+/// glyph says which CLI ran, and so which shape the forge routes.
+pub fn acted_url(entry: &str, repo: &Remote) -> Option<String> {
+    if pr_number_of(entry).is_some() {
+        return Some(entry.to_string());
+    }
+    let at = entry.rfind(['#', '!'])?;
+    let (path, rest) = entry.split_at(at);
+    let glyph = rest.chars().next()?;
+    let n: u64 = rest[1..].parse().ok()?;
+    let target = if path.is_empty() {
+        repo.clone()
+    } else if path.contains("://") {
+        Remote::parse(path)?
+    } else {
+        let (first, _) = path.split_once('/')?;
+        if first.contains('.') {
+            Remote::parse(&format!("https://{path}"))?
+        } else {
+            Remote { host: repo.host.clone(), path: path.trim_matches('/').to_string() }
+        }
+    };
+    if !target.path.contains('/') {
+        return None;
+    }
+    Some(match glyph {
+        '#' => format!("https://{}/{}/pull/{n}", target.host, target.path),
+        _ => format!("https://{}/{}/-/merge_requests/{n}", target.host, target.path),
+    })
 }
 
 /// A shell command that opens a PR: `gh pr create …` or `glab mr create …`,
@@ -1367,8 +1703,10 @@ pub fn pr_urls(text: &str) -> Vec<String> {
         text.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '<' || c == '>')
     {
         let Some(at) = word.find("https://") else { continue };
-        // A JSON-encoded tool result spells its newline `\n` (T-795).
-        let url = word[at..].split('\\').next().unwrap_or_default();
+        // A JSON-encoded tool result spells its newline `\n` (T-795). A
+        // comment's address is the PR's with a fragment (T-859):
+        // `…/pull/42#issuecomment-7`, `…/merge_requests/42#note_7`.
+        let url = word[at..].split(['\\', '#', '?']).next().unwrap_or_default();
         let url = url.trim_end_matches(['.', ',', ';', ':', ')', ']']);
         if pr_number_of(url).is_some() && !out.iter().any(|u| same_url(u, url)) {
             out.push(url.to_string());
@@ -1429,7 +1767,140 @@ mod tests {
             merged_ms: 0,
             deployed: Vec::new(),
             landed_tips: Vec::new(),
+            reviewed: false,
         }
+    }
+
+    /// T-859: a `gh pr` / `glab mr` act names the PR it is about — a URL,
+    /// a number with the repository the command names, or a bare number
+    /// — and a read, a `create` or a number after a value flag names none.
+    #[test]
+    fn an_act_names_its_pr_and_a_read_names_none() {
+        let act = pr_act;
+        assert_eq!(act("gh pr review 42 --approve").as_deref(), Some("#42"));
+        assert_eq!(act("gh pr review --approve 42").as_deref(), Some("#42"));
+        assert_eq!(act("gh pr review --approve -b \"LGTM, 3 nits\" 42").as_deref(), Some("#42"));
+        assert_eq!(act("gh pr comment 42 -b \"fixed 3 places\"").as_deref(), Some("#42"));
+        assert_eq!(act("gh pr checkout 42 && git log -1").as_deref(), Some("#42"));
+        assert_eq!(act("glab mr note 7 -m 'see !9 first'").as_deref(), Some("!7"));
+        assert_eq!(act("glab mr approve !7").as_deref(), Some("!7"));
+        assert_eq!(act("/opt/homebrew/bin/gh pr merge --squash 42").as_deref(), Some("#42"));
+        assert_eq!(
+            act("gh pr review https://github.com/o/r/pull/42 -a").as_deref(),
+            Some("https://github.com/o/r/pull/42")
+        );
+        assert_eq!(act("gh pr review 42 --approve -R o/other").as_deref(), Some("o/other#42"));
+        assert_eq!(
+            act("gh pr comment --repo=ghe.corp/o/r 5 -b x").as_deref(),
+            Some("ghe.corp/o/r#5")
+        );
+        assert_eq!(act("glab mr approve 7 -R g/s/p").as_deref(), Some("g/s/p!7"));
+        // A bare number after a `cd` is some other repository's.
+        assert_eq!(act("cd ../other && gh pr review 42 --approve"), None);
+        assert_eq!(act("cd ../other && gh pr review 42 -R o/other").as_deref(), Some("o/other#42"));
+        // Reads, creates and prose name nothing.
+        for command in [
+            "gh pr view 42",
+            "gh pr diff 42",
+            "gh pr checks 42",
+            "gh pr list --author @me",
+            "gh pr create --fill",
+            "glab mr view 7",
+            "echo review 42",
+            "gh pr review --body-file 42",
+            "gh pr edit --milestone 3",
+        ] {
+            assert_eq!(act(command), None, "{command}");
+        }
+        // The number is read only where it stands as the subject.
+        assert_eq!(act("gh pr comment -b \"3 nits\" 42").as_deref(), Some("#42"), "last");
+        assert_eq!(act("gh pr comment -b 3 --edit-last"), None, "a flag's value");
+        // Shell words: quotes keep a body whole.
+        assert_eq!(shell_words(r#"a "b c" 'd e' f\ g"#), ["a", "b c", "d e", "f g"]);
+    }
+
+    /// T-859: an entry becomes an address on the ticket's repository, or on
+    /// the one the command named.
+    #[test]
+    fn an_acted_entry_is_an_address_on_the_tickets_repository() {
+        let here = Remote { host: "gitlab.corp".into(), path: "g/p".into() };
+        let at = |e: &str| acted_url(e, &here);
+        assert_eq!(at("!7").as_deref(), Some("https://gitlab.corp/g/p/-/merge_requests/7"));
+        assert_eq!(at("#7").as_deref(), Some("https://gitlab.corp/g/p/pull/7"));
+        assert_eq!(at("g/s/q!7").as_deref(), Some("https://gitlab.corp/g/s/q/-/merge_requests/7"));
+        assert_eq!(at("github.com/o/r#42").as_deref(), Some("https://github.com/o/r/pull/42"));
+        assert_eq!(
+            at("https://github.com/o/r#42").as_deref(),
+            Some("https://github.com/o/r/pull/42")
+        );
+        assert_eq!(
+            at("https://github.com/o/r/pull/42").as_deref(),
+            Some("https://github.com/o/r/pull/42")
+        );
+        assert_eq!(at("nonsense"), None);
+        assert_eq!(at("r#42"), None, "a path with no owner");
+    }
+
+    /// T-859: a comment's address is the PR's with a fragment; the detector
+    /// reads an act's result, and an error names nothing.
+    #[test]
+    fn an_act_and_its_result_name_the_pr_and_a_failed_act_names_none() {
+        let (mut create, mut act) = (Vec::new(), Vec::new());
+        let call = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh pr comment 42 -b ok"}}]}}"#;
+        assert_eq!(pr_line(call, &mut create, &mut act), Named::default());
+        assert_eq!(act, ["t1 #42"]);
+        let done = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"https://github.com/o/r/pull/42#issuecomment-9\n"}]}}"#;
+        let named = pr_line(done, &mut create, &mut act);
+        assert_eq!(named.acted, ["https://github.com/o/r/pull/42"], "the fragment is cut");
+        assert!(act.is_empty() && named.opened.is_empty());
+        // A review prints nothing off a tty: the entry stands.
+        let call = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"gh pr review 42 --approve"}}]}}"#;
+        pr_line(call, &mut create, &mut act);
+        let done = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":""}]}}"#;
+        assert_eq!(pr_line(done, &mut create, &mut act).acted, ["#42"]);
+        // One the forge refused was no act.
+        let call = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t3","name":"Bash","input":{"command":"glab mr approve 7"}}]}}"#;
+        pr_line(call, &mut create, &mut act);
+        let failed = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t3","is_error":true,"content":"403 Forbidden"}]}}"#;
+        assert_eq!(pr_line(failed, &mut create, &mut act), Named::default());
+        assert!(act.is_empty());
+        // Codex: the call's arguments and its output's exit code.
+        let call = r#"{"type":"response_item","payload":{"type":"function_call","call_id":"c1","arguments":"{\"command\":[\"bash\",\"-lc\",\"glab mr note 7 -m fine\"]}"}}"#;
+        pr_line(call, &mut create, &mut act);
+        assert_eq!(act, ["c1 !7"]);
+        let out = r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"{\"output\":\"https://gitlab.com/g/p/-/merge_requests/7#note_3\",\"metadata\":{\"exit_code\":0}}"}}"#;
+        assert_eq!(
+            pr_line(out, &mut create, &mut act).acted,
+            ["https://gitlab.com/g/p/-/merge_requests/7"]
+        );
+        let call = r#"{"type":"response_item","payload":{"type":"function_call","call_id":"c2","arguments":"{\"command\":[\"bash\",\"-lc\",\"glab mr approve 8\"]}"}}"#;
+        pr_line(call, &mut create, &mut act);
+        let out = r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"c2","output":"{\"output\":\"denied\",\"metadata\":{\"exit_code\":1}}"}}"#;
+        assert!(pr_line(out, &mut create, &mut act).acted.is_empty());
+    }
+
+    /// T-859: a reviewed PR is shown and followed, never judged: it holds
+    /// no merge, lands nothing, passes no gate and refuses no column.
+    #[test]
+    fn a_reviewed_pr_holds_no_merge_and_no_gate() {
+        let mut theirs = pr("o/r", 7, PrState::Open, "h7", 9);
+        theirs.reviewed = true;
+        theirs.pipeline = Pipeline::Failed("test".into());
+        let set = ticket_set(vec![theirs.clone()]);
+        assert!(holding(&set).is_none());
+        assert_eq!(merge_refusal(&set), None);
+        assert_eq!(merge_why(&set), None);
+        assert!(!pipelined(&set));
+        assert_eq!(entry_refusal(Some(&set), Some(false)), None, "no PR of its own to judge");
+        assert_eq!(merged_at(&set, &["o/r".into()], "h7"), None);
+        assert!(!head_unread(&set, "fix/x", &[("o/r".into(), "tip".into())]));
+        // Beside the ticket's own PR, the own one alone is judged.
+        let mut mine = pr("o/r", 42, PrState::Open, "h42", 8);
+        mine.pipeline = Pipeline::Passed;
+        let set = ticket_set(vec![theirs, mine]);
+        assert_eq!(holding(&set).map(|p| p.number), Some(42));
+        assert_eq!(entry_refusal(Some(&set), Some(false)), None, "the own pipeline passed");
+        assert_eq!(own(&set).count(), 1);
     }
 
     #[test]

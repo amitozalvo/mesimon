@@ -15,14 +15,14 @@
       │  Crown                                                                                                   │
       │                     MERGE                                                                                │
       │  Terminal            Merge into                ● main   ○ pull requests                                  │
+      │                      Reviewed pull requests    ● on                                                      │
+      │  Usage                                                                                                   │
+      │                     REMOTE                                                                               │
+      │  About               Fetch from the remote     ● off    ○ 1 min           ○ 5 min   ○ 15 min             │
       │                                                                                                          │
-      │  Usage              REMOTE                                                                               │
-      │                      Fetch from the remote     ● off    ○ 1 min           ○ 5 min   ○ 15 min             │
-      │  About                                                                                                   │
       │                     AUTO MERGE                                                                           │
       │                      Auto merge                ● on                                                      │
       │                      Tells the agent           ● on                                                      │
-      │                                                                                                          │
       │                                                                                                          │
       │                     the machine sleeps on its own clock, agents or not                                   │
       ╰───────────────────────────────────────────────── jk select ∙ enter change ∙ b this board ∙ esc sections ─╯

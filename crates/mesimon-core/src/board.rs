@@ -2275,6 +2275,18 @@ pub struct Board {
     /// schema bump.
     #[serde(default = "yes")]
     pub crown_watches: bool,
+    /// Reviewed pull requests (T-859): a pull request someone else opened is
+    /// a ticket's when its agent acted on it through the forge's CLI (a
+    /// review, a comment, an approval, a checkout) or named it in a note's
+    /// `Summary`, read by itself since no list of the account's own holds
+    /// it. ON by default (the author: "gate in settings on by default"):
+    /// shown and followed, never judged, so it costs the ticket nothing but
+    /// a read a minute. OFF, a ticket's pull requests are the account's own
+    /// alone, as before. An absent key reads on; a build that drops it
+    /// reads every PR as the ticket's own, which only holds a merge where
+    /// this build would not, so no schema bump.
+    #[serde(default = "yes")]
+    pub reviewed_prs: bool,
     /// Counter feeding short keys (T-1, T-2, …).
     pub next_key: u64,
     /// The tag registry: the vocabulary each axis offers, in the order it was
@@ -2462,6 +2474,7 @@ impl Default for Board {
             merge_into: MergeInto::default(),
             crown_archives: false,
             crown_watches: true,
+            reviewed_prs: true,
             next_key: 0,
             tags: Vec::new(),
             tags_seeded: false,
@@ -3472,6 +3485,7 @@ impl Board {
             merge_into: self.merge_into,
             crown_archives: self.crown_archives,
             crown_watches: self.crown_watches,
+            reviewed_prs: self.reviewed_prs,
             next_key: self.next_key,
             tags: self.tags.clone(),
             tags_seeded: self.tags_seeded,
@@ -3690,6 +3704,18 @@ mod tests {
         assert!(serde_json::from_value::<Board>(wire.clone()).unwrap().crown_watches);
         wire["crown_watches"] = serde_json::json!(false);
         assert!(!serde_json::from_value::<Board>(wire).unwrap().crown_watches);
+    }
+
+    /// T-859: reviewed pull requests are a ticket's on every board that
+    /// never said otherwise, and an off survives.
+    #[test]
+    fn reviewed_prs_default_on_and_an_off_is_kept() {
+        assert!(Board::default().reviewed_prs);
+        let mut wire = serde_json::to_value(Board::default()).unwrap();
+        wire.as_object_mut().unwrap().remove("reviewed_prs");
+        assert!(serde_json::from_value::<Board>(wire.clone()).unwrap().reviewed_prs);
+        wire["reviewed_prs"] = serde_json::json!(false);
+        assert!(!serde_json::from_value::<Board>(wire).unwrap().reviewed_prs);
     }
 
     /// T-543: a column opts its tickets into the idle park, taking an agent

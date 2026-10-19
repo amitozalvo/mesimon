@@ -1,12 +1,12 @@
  BOARD   mesimon › kanban-tui   6 tickets
   ╭─ SETTINGS ∙ BEHAVIOUR ∙ MACHINE ─────────────────────╮
   │                                                      │
-  │                                                      │
   │ TICKETS                                              │
   │  Worktrees                 ○ off                     │
   │                                                      │
   │ MERGE                                                │
   │  Merge into                ● main   ○ pull requests  │
+  │  Reviewed pull requests    ● on                      │
   │                                                      │
   │ REMOTE                                               │
   │  Fetch from the remote     off                       │

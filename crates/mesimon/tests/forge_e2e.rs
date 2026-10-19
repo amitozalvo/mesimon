@@ -96,6 +96,11 @@ case "$1 $2" in
     [ -f "$MSMN_GH_SLOW" ] && sleep "$(cat "$MSMN_GH_SLOW")"
     [ -f "$MSMN_GH_FAIL" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
     cat "$MSMN_GH_PRS" 2>/dev/null || echo '[]' ;;
+  "pr view")
+    view="$(dirname "$MSMN_GH_PRS")/view.$3.json"
+    if [ ! -f "$view" ]; then echo "HTTP 502: Bad Gateway" >&2; exit 1; fi
+    if [ "$(cat "$view")" = "gone" ]; then echo "GraphQL: Could not resolve to a PullRequest with the number of $3." >&2; exit 1; fi
+    cat "$view" ;;
   api\ *)
     case "$4" in
       *check-runs*)
@@ -562,8 +567,12 @@ fn a_ticket_with_no_pull_request_enters_and_one_opened_here_waits() {
         c.board().ticket(gone).is_some_and(|t| t.column == "REVIEW")
     });
 
-    // And a checkout ticket whose turn ran `pr create`: no forge read asks
-    // about a ticket with no branch, so it waits for no read (T-750's pass).
+    // And a checkout ticket whose turn ran `pr create` (T-859): a read asks
+    // about it now, by the address alone, so its turn's end is held as a
+    // worktree ticket's is until the forge reads the PR by itself. Here
+    // the forge says there is no such PR (deleted since): the address is
+    // owed no further read, and the held line goes with nothing bound.
+    write(&stub_dir.join("view.45.json"), "gone");
     let _ = c.request(Command::CreateTicket {
         column: "TODO".into(),
         title: "aside".into(),
@@ -592,8 +601,174 @@ fn a_ticket_with_no_pull_request_enters_and_one_opened_here_waits() {
     )
     .unwrap();
     turn(&mut c, aside_sid, &created);
-    wait_until(Duration::from_secs(10), "the checkout ticket to enter REVIEW", || {
-        c.board().ticket(aside).is_some_and(|t| t.column == "REVIEW")
+    // Its turn's end is held until the forge answers, or waved through
+    // when the answer came first (the read is quick here): either way the
+    // held line is gone once the forge has spoken, nothing is bound, and
+    // REVIEW takes the ticket.
+    wait_until(
+        Duration::from_secs(20),
+        "the held line to go once the forge says no such PR",
+        || {
+            !held_of(&mut c).iter().any(|(t, _)| *t == aside)
+                && c.board().ticket(aside).is_some_and(|t| t.column != "TODO")
+        },
+    );
+    assert!(!prs_of(&mut c).iter().any(|p| p.ticket == aside), "nothing bound");
+    if c.board().ticket(aside).is_some_and(|t| t.column != "REVIEW") {
+        assert!(matches!(
+            c.request(Command::MoveTicket { id: aside, column: "REVIEW".into(), before: None }),
+            Response::Ok
+        ));
+    }
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// T-859: a pull request the ticket named is read by itself where no list
+/// of the account's own holds it — a `gh pr review` of someone else's PR,
+/// an address under a note's Summary — and a reviewed PR shows, holds no
+/// merge, and leaves with the board's switch.
+#[test]
+fn a_reviewed_pull_request_is_read_by_itself_shown_and_never_judged() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    let stub_dir = std::env::temp_dir().join(format!("msmn-forge-named-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&stub_dir);
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    let gh = stub_dir.join("gh");
+    std::fs::write(&gh, GH_STUB).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let prs_file = stub_dir.join("prs.json");
+    write(&prs_file, "[]");
+    // Someone else's PRs, each served by itself alone: never in the
+    // account's list.
+    for n in [43u64, 46] {
+        write(
+            &stub_dir.join(format!("view.{n}.json")),
+            &numbered_pr(n, "feature/other", &"cd".repeat(20), false),
+        );
+    }
+    let path_var = format!(
+        "{}:{}",
+        stub_dir.display(),
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+    );
+    let Some(h) = Harness::boot_with_env(
+        "forge_named",
+        Some(STUB),
+        &[
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs_file.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("forge_named");
+    through_prs(&mut c);
+    let turn = |c: &mut TestClient, sid: uuid::Uuid, transcript: &Path| {
+        hook_send(
+            &hook_sock,
+            &sid.to_string(),
+            "SessionStart",
+            &format!(r#"{{"session_id":"x","transcript_path":"{}"}}"#, transcript.display()),
+        );
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+
+    // A reviewer: its turn ran `gh pr review 43 --approve`, which prints
+    // nothing off a tty, so the bare number is read on the ticket's own
+    // repository, and the PR binds reviewed.
+    let (reviewer, reviewer_sid, _, _) = ready(&mut c, "reviewer");
+    let reviewed = h.dir.join("reviewer.jsonl");
+    std::fs::write(
+        &reviewed,
+        concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_r","name":"Bash","input":{"command":"gh pr review 43 --approve"}}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_r","content":""}]}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    turn(&mut c, reviewer_sid, &reviewed);
+    wait_until(Duration::from_secs(20), "the reviewed PR to bind", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == reviewer && p.number == 43 && p.reviewed)
+    });
+    // Shown and never judged: with no PR of its own the ticket's merge is
+    // still a PR to open, the agent reads #43 as reviewed, and the feed
+    // says whose it is.
+    match c.request(Command::MergeTicket { id: reviewer }) {
+        Response::Merge { outcome: MergeOutcome::Refused, detail, .. } => {
+            assert!(detail.contains("open a PR"), "{detail}");
+            assert!(!detail.contains("#43"), "{detail}");
+        }
+        other => panic!("merge with a reviewed PR alone: {other:?}"),
+    }
+    match c.send(Principal::Agent { session: reviewer_sid }, Command::AgentGetTicket) {
+        Response::AgentTicket { ticket } => {
+            let pr = ticket.prs.iter().find(|p| p.label == "#43").expect("the reviewed PR");
+            assert!(pr.reviewed, "{pr:?}");
+            // The board's own answer for a branch with no PR of its own
+            // (T-810), not T-778's "its work goes through pull requests".
+            assert_eq!(
+                ticket.merge.as_ref().map(|m| m.why.as_str()),
+                Some("this board merges through pull requests"),
+                "{:?}",
+                ticket.merge
+            );
+        }
+        other => panic!("get_ticket: {other:?}"),
+    }
+    let feed = h.paths.state_dir.join("activity.jsonl");
+    wait_until(Duration::from_secs(10), "the feed's reviewed line", || {
+        std::fs::read_to_string(&feed).unwrap_or_default().contains("open #43 bound, reviewed here")
+    });
+
+    // A ticket on the checkout whose note's Summary names PR 46: a fact
+    // the forge reads, by itself.
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "summary".into(),
+        workspace: None,
+        tier: None,
+    });
+    let summary = c.board().tickets.iter().find(|t| t.title == "summary").unwrap().id;
+    match c.request(Command::WriteNote {
+        ticket: summary,
+        note: None,
+        text: "# Review\n\nA mention: https://github.com/example/forge/pull/99\n\n## Summary\n\
+               - https://github.com/example/forge/pull/46\n"
+            .into(),
+        rev: None,
+    }) {
+        Response::NoteWritten { .. } => {}
+        other => panic!("note: {other:?}"),
+    }
+    wait_until(Duration::from_secs(20), "the Summary's PR to bind to the checkout ticket", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == summary && p.number == 46 && p.reviewed)
+    });
+    assert!(!prs_of(&mut c).iter().any(|p| p.number == 99), "a mention binds nothing");
+
+    // The switch off drops both on the next read; on again, both return.
+    assert!(matches!(c.request(Command::SetReviewedPrs { on: false }), Response::Ok));
+    wait_until(Duration::from_secs(20), "the reviewed PRs to leave", || {
+        !prs_of(&mut c).iter().any(|p| p.number == 43 || p.number == 46)
+    });
+    assert!(matches!(c.request(Command::SetReviewedPrs { on: true }), Response::Ok));
+    wait_until(Duration::from_secs(20), "the reviewed PRs to return", || {
+        let prs = prs_of(&mut c);
+        prs.iter().any(|p| p.number == 43) && prs.iter().any(|p| p.number == 46)
     });
     let _ = std::fs::remove_dir_all(&stub_dir);
 }

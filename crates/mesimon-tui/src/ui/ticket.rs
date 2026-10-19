@@ -173,6 +173,11 @@ pub(super) fn pr_state_clauses(p: &mesimon_core::command::PrItem, last: bool) ->
         "changes_requested" => words.push("changes requested".into()),
         _ => {}
     }
+    // Someone else's PR the agent reviewed (T-859): it holds no merge, so
+    // the page says whose it is.
+    if p.reviewed {
+        words.push("reviewed here".into());
+    }
     let reached =
         if last { p.deployed.last().map(std::slice::from_ref) } else { Some(&p.deployed[..]) };
     if let Some(envs) = reached.filter(|e| !e.is_empty()) {
