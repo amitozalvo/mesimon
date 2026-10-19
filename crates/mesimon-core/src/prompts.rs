@@ -47,17 +47,27 @@ pub enum AgentPrompt {
     /// REVIEW); T-15 "add tests" raised its hand`) and `{keys}` the keys
     /// alone.
     CrownWake,
+    /// Another board's crown asked this board's crown (T-733): the words
+    /// that land on the crown's card and go in as its next prompt. `{board}`
+    /// is the asking board's name, `{key}` and `{title}` its crown's ticket,
+    /// `{text}` the crown's own words.
+    BoardAsk,
+    /// Another board's crown answered an ask this board's crown made
+    /// (T-733): the same road, said as a reply.
+    BoardReply,
 }
 
 impl AgentPrompt {
     /// The ring, in the order the Settings list shows them: the two halves of
     /// the merge flow in the order they happen, then the note nudge, then
-    /// the crown's wake.
-    pub const ALL: [AgentPrompt; 4] = [
+    /// the crown's wake, then the two sentences between boards.
+    pub const ALL: [AgentPrompt; 6] = [
         AgentPrompt::Rebase,
         AgentPrompt::Merged,
         AgentPrompt::NoteUpdated,
         AgentPrompt::CrownWake,
+        AgentPrompt::BoardAsk,
+        AgentPrompt::BoardReply,
     ];
 
     /// The row's name — what the setting IS, in the user's words.
@@ -67,6 +77,8 @@ impl AgentPrompt {
             AgentPrompt::Merged => "Merged notice",
             AgentPrompt::NoteUpdated => "Note nudge",
             AgentPrompt::CrownWake => "Crown wake",
+            AgentPrompt::BoardAsk => "Board ask",
+            AgentPrompt::BoardReply => "Board reply",
         }
     }
 
@@ -79,6 +91,8 @@ impl AgentPrompt {
             AgentPrompt::CrownWake => {
                 "when an agent the crown started delivers, is merged, answers or raises its hand"
             }
+            AgentPrompt::BoardAsk => "when a linked board's crown asks this board's crown",
+            AgentPrompt::BoardReply => "when a linked board's crown answers this crown's ask",
         }
     }
 
@@ -98,6 +112,11 @@ impl AgentPrompt {
                  returns the new text."
             }
             AgentPrompt::CrownWake => "{events} ∙ get_ticket key={keys} for state and notes",
+            AgentPrompt::BoardAsk => {
+                "The crown of the {board} board ({key} \"{title}\") asks: {text} ∙ ask_board \
+                 board={board} replies to it"
+            }
+            AgentPrompt::BoardReply => "The crown of the {board} board replied: {text}",
         }
     }
 
@@ -108,6 +127,8 @@ impl AgentPrompt {
             AgentPrompt::Rebase | AgentPrompt::Merged => &["branch", "base"],
             AgentPrompt::NoteUpdated => &["note", "id"],
             AgentPrompt::CrownWake => &["events", "keys"],
+            AgentPrompt::BoardAsk => &["board", "key", "title", "text"],
+            AgentPrompt::BoardReply => &["board", "text"],
         }
     }
 
@@ -123,6 +144,8 @@ impl AgentPrompt {
             AgentPrompt::Merged => "merged",
             AgentPrompt::NoteUpdated => "note_updated",
             AgentPrompt::CrownWake => "crown_wake",
+            AgentPrompt::BoardAsk => "board_ask",
+            AgentPrompt::BoardReply => "board_reply",
         }
     }
 }
@@ -143,6 +166,10 @@ pub struct PromptSet {
     pub note_updated: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crown_wake: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board_ask: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board_reply: Option<String>,
 }
 
 impl PromptSet {
@@ -153,6 +180,8 @@ impl PromptSet {
             AgentPrompt::Merged => self.merged.as_deref(),
             AgentPrompt::NoteUpdated => self.note_updated.as_deref(),
             AgentPrompt::CrownWake => self.crown_wake.as_deref(),
+            AgentPrompt::BoardAsk => self.board_ask.as_deref(),
+            AgentPrompt::BoardReply => self.board_reply.as_deref(),
         }
     }
 
@@ -177,6 +206,8 @@ impl PromptSet {
             AgentPrompt::Merged => &mut self.merged,
             AgentPrompt::NoteUpdated => &mut self.note_updated,
             AgentPrompt::CrownWake => &mut self.crown_wake,
+            AgentPrompt::BoardAsk => &mut self.board_ask,
+            AgentPrompt::BoardReply => &mut self.board_reply,
         };
         *slot = text;
     }

@@ -28545,3 +28545,70 @@ with a `forge_reviewed` step that waits for the bind before `forge_off` drops th
 Sonnet, 2026-10-19, both PASS in 47 s — F10's worker ran the stub's `pr review 43 --approve`
 and F11's wrote the address under `Summary` with nothing but `get_ticket`'s sentence to go on;
 the first run of each failed only because the check read the snapshot after `forge_off`.
+## Two crowns on one machine reach each other (T-733, 2026-10-19, "crown to crown communication over shared boards": "right now what I do is I paste asks from one crown to another (ctrl+tab). it should work just like the crown to tickets communication and needs a proper indication (maybe a lightning bolt targeting the board on title bar …)")
+
+**Proposed first, as an artifact, built as proposed** (the author: "build it as proposed").
+Local machines only, on a person's say-so; the shared-board half waits for Teams (T-653).
+
+**The link.** One machine-wide file, `~/.local/state/mesimon/links.toml` (`store::LINKS_SCHEMA`
+1, `[[pairs]]` of two canonical repository paths, `core/src/boardlink.rs`), read by every
+board's daemon at each command through a `stat` cache (`server/peer.rs::MachineLinksCache`,
+`tiers.toml`'s shape). One link reaches both ways, a board closed when it was linked is linked
+when it opens, and either side unlinks for both. A person makes it in **Settings › Crown ›
+Reaches boards** (`Verb::CrownLinks`, a door; `Scope::Boards`, `Mode::Boards`): the list is the
+linked boards, the boards whose daemon is up right now — the TUI walks `/tmp/mesimon-<uid>/*/
+orch.sock` off the draw thread and asks each `Hello`, which now carries `repo_root` and `crown`
+(`tui/src/boards.rs`; the seam `App::board_scanner` is set in `lib.rs::run`, so a test app lists
+nothing) — and a folder row for a board that is not open. No registry exists to list a closed
+board: the state root holds hundreds of `proj16` dirs that do not name their repository. A board
+is named by its directory (`boardlink::board_name`), the breadcrumb's rule; two of one name are
+told apart by path, and `find` says so.
+
+**The road.** `ask_board { board, text }` (crown only, `Command::AgentAskBoard`, top rung) finds
+the partner, connects to its `orch.sock` as `Principal::Peer { board }` — a new principal
+`authorize` denies everything to; the daemon admits it for exactly `Command::PeerAsk` and judges
+that against the file — and sends the words synchronously with short timeouts (an edge action,
+a fork on the writer; a daemon not listening refuses at once and reads `is not open`). The
+receiving daemon parks the words on its crown's card by `park_ask` (`QueuedAsk::from_board`,
+`Daemon::peer_parking`), through the board's **Board ask** template (`AgentPrompt::BoardAsk`:
+the asking board's name, its crown's key and title, the words, and that `ask_board board=…`
+replies); `sends` follows `crown_mode` — autonomous goes at the crown's idle, supervised holds
+for `^y` — and a person's queued words go first. A reply is the same tool back: a daemon that
+holds an open ask from a board (`asks_out`/`asks_in`, in memory) reads the next words it sends
+there, or gets from there, as the answer (`Board reply` template, `reply: true` on both
+receipts). Refused in words the crown relays: not linked (naming the setting), no crown (`^o`),
+no agent, at a dialog, a person's words first, not open. The feed carries the roads
+(`ask_board` with the road, `board_ask_received`, `board_ask_sent`), never the words.
+
+**What the board shows.** The header names each linked board after the merge word, dim. A
+`BoardTouch` on the snapshot (`sent`, `replied`, `received`, `got_reply`, `refused`, ten
+seconds in memory) lights that name with what happened in the crown's tint for `LINK_LIT_MS`
+(4 s; a refusal in the plain ink with its why) and strikes T-544's bolt between the crown's `♛`
+and the name: up for words that left, down for words that came (`strike::LinkStrike`,
+`Spots::links`, `strike::draw` now takes the header rect). The author's "blue" is the crown's
+tint: a saturated blue would break the one-saturated-colour rule, and the crown's words already
+wear it (T-783). The crown's card says where its words went (`→ relay: …`) and the receiving
+crown's card says whose they were (`relay: …`), on T-783's line.
+
+**The crown is told** (`CROWN_WAKES`): linked boards are `list_board`'s `linked_boards`,
+`ask_board` reaches their crown, the answer arrives as its next prompt beginning with the
+board's name, a reply is `ask_board` naming the board that asked, and work that belongs to the
+other repository is asked of its crown rather than done from here.
+
+**Tests.** Core: `boardlink` (pairs, names, `find`), `mcp` (twenty tools, the tier, the never
+list, the lint over the clause), `prompts` (six templates), keymap (the Crown section's five
+rows, the Boards scope). TUI: `reaches_boards_door_links_and_unlinks_through_board_commands`,
+`a_board_touch_lights_the_header_word_and_strikes_once`,
+`ui::the_header_names_linked_boards_and_lights_the_one_words_went_to` (golden
+`board_links_120x30`; `settings_crown_*` and `agent_prompt*` goldens reminted for the new rows).
+E2e `boardlink_e2e`: two daemons sharing one HOME, link from one side listed on both, the ask
+landing in the stub pane through the template, the reply read as one on both sides, supervised
+holding for `^y`, no crown and not open refused, unlink for both, the feeds without the words.
+Rig `X1` (`ci/rig.py --only X1`): a `peer_board` step lays `target/rig/rig-peer` with its own
+daemon and a stub crown, links it, and the crown is asked in plain words to have the relay
+released; the checks are `crown_board:ask_board`, `peer_fed:board_ask_received` and the crown's
+`X1 replied:` line repeating the peer's words; `peer_reply` unlinks and stops the peer.
+
+**Owed:** a CHANGELOG line at the next bump — **Added:** Settings › Crown › Reaches boards links
+two mesimon boards on one machine so their crowns can ask each other; the header names the
+linked boards and lights with what went between them.

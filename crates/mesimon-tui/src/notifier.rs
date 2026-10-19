@@ -650,6 +650,8 @@ mod tests {
                 terminals: Vec::new(),
                 prs: Vec::new(),
                 forge: Default::default(),
+                links: Vec::new(),
+                board_touches: Vec::new(),
             })
         }
 

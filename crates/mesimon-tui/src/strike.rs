@@ -149,6 +149,33 @@ impl Strike {
     }
 }
 
+/// A bolt between the crown's card and a linked board's name in the header
+/// (T-733): upward for words that left this board, downward for words that
+/// came. The same leader, stroke and cooling as a card's.
+#[derive(Debug, Clone)]
+pub(crate) struct LinkStrike {
+    pub board: String,
+    pub up: bool,
+    /// This board's crown at the time: the card the bolt leaves from or
+    /// lands on.
+    pub crown: Option<ulid::Ulid>,
+    /// The daemon's stamp: with `board`, the touch's identity.
+    pub at_ms: u64,
+    /// When this board first saw it: every phase counts here.
+    pub seen: u64,
+}
+
+impl LinkStrike {
+    pub(crate) fn moving(&self, now: u64) -> bool {
+        now.saturating_sub(self.seen) < BOLT_MS
+    }
+
+    fn seed(&self) -> u64 {
+        self.board.bytes().fold(0xA5A5_u64, |h, b| h.rotate_left(5) ^ u64::from(b))
+            ^ self.at_ms.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    }
+}
+
 /// Where the last draw put each card and column, for the bolt to join:
 /// a fact of the frame, like `App::cursor_card`. `ui::draw` clears it.
 #[derive(Debug, Default)]
@@ -165,6 +192,9 @@ pub(crate) struct Spots {
     pub columns: Vec<(usize, u16, u16)>,
     /// Each drawn chip on the board's top row and its cells across.
     pub chips: Vec<(mesimon_core::keymap::HeaderChip, u16, u16)>,
+    /// Each linked board's name on the header row (T-733): the name, and
+    /// the cell its first letter is in, for a bolt to leave from or land on.
+    pub links: Vec<(String, u16, u16)>,
     /// The card a board dialog is about, whole on screen (T-817): what
     /// the dialog hangs from.
     pub about: Option<Rect>,
@@ -467,8 +497,10 @@ pub(crate) fn paint(
 }
 
 /// The board's bolts, over the columns `area` this frame drew: after the
-/// columns and before any dialog, so a dialog covers them.
-pub(crate) fn draw(f: &mut Frame, app: &App, area: Rect) {
+/// columns and before any dialog, so a dialog covers them. `header` is the
+/// board's top row, where a bolt to or from a linked board's name ends
+/// (T-733): those bolts are painted over the header and the columns both.
+pub(crate) fn draw(f: &mut Frame, app: &App, header: Rect, area: Rect) {
     if !app.motion() {
         return;
     }
@@ -518,11 +550,56 @@ pub(crate) fn draw(f: &mut Frame, app: &App, area: Rect) {
         stops.push(hit);
         bolts.push((bolt(s.seed(), &stops, area.y), t));
     }
+    // Between the crown's card and a linked board's name (T-733): the same
+    // bolt, one end on the header row. A crown scrolled out of its column
+    // fires from, or takes it at, its column's header.
+    let mut over_header = false;
+    for s in &app.link_strikes {
+        let t = now.saturating_sub(s.seen);
+        if t >= BOLT_MS {
+            continue;
+        }
+        let Some(&(_, cx, cy)) = spots.links.iter().find(|(name, ..)| *name == s.board) else {
+            continue;
+        };
+        let Some(crown_id) = s.crown.or(app.board.crown) else { continue };
+        let card = match spots.card(crown_id) {
+            Some(c) => {
+                let x = c.mark.unwrap_or(c.x + lead);
+                if c.mark.is_some() {
+                    marks.push(((x, c.y), t));
+                }
+                rows.push((c.y, c.x, c.width));
+                (x, c.y)
+            }
+            None => match app.board.ticket(crown_id).and_then(|t| spots.head(&t.column)) {
+                Some(head) => head,
+                None => continue,
+            },
+        };
+        let chip = (cx, cy);
+        if card == chip {
+            continue;
+        }
+        over_header = true;
+        let stops = if s.up { vec![card, chip] } else { vec![chip, card] };
+        bolts.push((bolt(s.seed(), &stops, header.y), t));
+    }
     if bolts.is_empty() {
         return;
     }
     let skip = |x: u16, y: u16| rows.iter().any(|&(ry, rx, rw)| y == ry && x >= rx && x < rx + rw);
-    paint(f.buffer_mut(), area, theme, &bolts, &skip);
+    let canvas = if over_header {
+        Rect {
+            x: area.x,
+            y: header.y.min(area.y),
+            width: area.width,
+            height: area.bottom().saturating_sub(header.y.min(area.y)),
+        }
+    } else {
+        area
+    };
+    paint(f.buffer_mut(), canvas, theme, &bolts, &skip);
     // The crown flares as it fires, through the return stroke.
     for ((x, y), t) in marks {
         if t < LEADER_MS + STROKE_MS + 2 * FLICKER_MS {

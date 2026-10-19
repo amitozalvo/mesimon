@@ -232,6 +232,11 @@ struct ColumnsFile {
     prompt_note_updated: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     prompt_crown_wake: Option<String>,
+    /// The two sentences between boards (T-733), the same way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt_board_ask: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt_board_reply: Option<String>,
     /// The crowned ticket (`Board::crown`, T-411), a ULID. A scalar, so it
     /// sits here before the tables; absent — every file before the field —
     /// means no crown, and a plain default with no bump: a build that drops
@@ -640,6 +645,8 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                     merged: cf.prompt_merged,
                                     note_updated: cf.prompt_note_updated,
                                     crown_wake: cf.prompt_crown_wake,
+                                    board_ask: cf.prompt_board_ask,
+                                    board_reply: cf.prompt_board_reply,
                                 },
                                 crown: cf.crown,
                                 tiers: cf.tiers,
@@ -894,6 +901,8 @@ pub fn read_columns_scalars(paths: &Paths) -> ColumnsScalars {
         merged: cf.prompt_merged,
         note_updated: cf.prompt_note_updated,
         crown_wake: cf.prompt_crown_wake,
+        board_ask: cf.prompt_board_ask,
+        board_reply: cf.prompt_board_reply,
     };
     let mut b = Board { columns: cf.columns, ..Default::default() };
     if cf.schema_version < 4 {
@@ -959,6 +968,8 @@ fn columns_text(board: &Board) -> Result<String> {
         prompt_merged: board.prompts.merged.clone(),
         prompt_note_updated: board.prompts.note_updated.clone(),
         prompt_crown_wake: board.prompts.crown_wake.clone(),
+        prompt_board_ask: board.prompts.board_ask.clone(),
+        prompt_board_reply: board.prompts.board_reply.clone(),
         crown: board.crown,
         default_tier: board.default_tier.clone(),
         columns: board.columns.clone(),
@@ -1039,6 +1050,79 @@ pub fn save_machine_tiers(path: &Path, tiers: &MachineTiers) -> Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let f = MachineTiersFile { schema_version: MACHINE_TIERS_SCHEMA, tiers: tiers.clone() };
+    write_atomic(path, &toml::to_string_pretty(&f)?, PRIVATE)
+}
+
+/// `links.toml`'s stamp (T-733): v1 is a `[[pairs]]` list of two paths.
+pub const LINKS_SCHEMA: u32 = 1;
+
+/// `links.toml` with its stamp, the `MachineTiersFile` shape.
+#[derive(Serialize, Deserialize, Default)]
+struct LinksFile {
+    /// First, a scalar, for the `[[pairs]]` reason.
+    #[serde(default = "schema_v1")]
+    schema_version: u32,
+    #[serde(flatten)]
+    links: mesimon_core::boardlink::Links,
+}
+
+/// `load_links`' answer: the pairs, a notice for the advisory row, and
+/// whether writing would destroy bytes this build could not read.
+#[derive(Default)]
+pub struct LinksLoad {
+    pub links: mesimon_core::boardlink::Links,
+    pub notice: Option<Notice>,
+    pub barred: bool,
+}
+
+/// The machine's board links (T-733), under the ten state files' contract:
+/// an absent file is no links, a newer build's file is kept as it is with
+/// writes barred, and one that does not parse is quarantined.
+pub fn load_links(path: &Path) -> LinksLoad {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return LinksLoad::default(),
+        Err(e) => {
+            let notice =
+                Notice::new("quarantined", format!("{} could not be opened", short_name(path)))
+                    .with_path(path.display())
+                    .with_detail(e.to_string());
+            return LinksLoad { notice: Some(notice), barred: true, ..Default::default() };
+        }
+    };
+    let fault = match toml::from_str::<toml::Value>(&text) {
+        Err(e) => e.to_string(),
+        Ok(v) => {
+            let found = v.get("schema_version").and_then(|s| s.as_integer()).unwrap_or(1);
+            match verdict(found as u32, LINKS_SCHEMA) {
+                Verdict::Newer(n) => {
+                    return LinksLoad {
+                        notice: Some(future_notice(path, n, LINKS_SCHEMA)),
+                        barred: true,
+                        ..Default::default()
+                    };
+                }
+                Verdict::Load => match v.try_into::<LinksFile>() {
+                    Ok(f) => return LinksLoad { links: f.links, ..Default::default() },
+                    Err(e) => e.to_string(),
+                },
+            }
+        }
+    };
+    let moved = quarantine(path);
+    LinksLoad {
+        barred: moved.is_none(),
+        notice: Some(quarantine_notice(path, moved.as_deref(), fault)),
+        ..Default::default()
+    }
+}
+
+/// Write the machine's board links (T-733), private like `tiers.toml`.
+pub fn save_links(path: &Path, links: &mesimon_core::boardlink::Links) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let f = LinksFile { schema_version: LINKS_SCHEMA, links: links.clone() };
     write_atomic(path, &toml::to_string_pretty(&f)?, PRIVATE)
 }
 
@@ -2469,6 +2553,8 @@ order = "a0"
             prompt_merged: None,
             prompt_note_updated: None,
             prompt_crown_wake: None,
+            prompt_board_ask: None,
+            prompt_board_reply: None,
             crown: Some(ulid::Ulid(7)),
             default_tier: Some("01TIER".into()),
             columns: vec![Column {

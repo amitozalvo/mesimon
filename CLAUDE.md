@@ -299,7 +299,10 @@ candidates off the board, so a record that moved on drops its answer. A new per-
 the query; an action at an edge (a paste, an Enter, a kill) stays a fork on the writer.
 
 **Three principals, kept apart.** `Local` is a person, `Agent { session }` means an agent
-asked, `Automation { rule }` is the daemon's own rules. **`Daemon::place_ticket` is the only
+asked, `Automation { rule }` is the daemon's own rules. **A fourth is another board's daemon**
+(T-733): `Peer { board }` reaches this daemon over `orch.sock` for exactly one command, words for
+this board's crown (`PeerAsk`), admitted only while the machine's `~/.local/state/mesimon/links.toml`
+pairs the two boards (`server/peer.rs`); `authorize` denies it everything else. **`Daemon::place_ticket` is the only
 function that moves a ticket** — the DONE gate lives in it, so every mover obeys it.
 `daemon/src/movegate.rs` restrains everything that is not a person and never a person: no undo
 (an automatic mover may not reverse another principal's move inside 60 s), depth zero (no

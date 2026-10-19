@@ -13,6 +13,7 @@ pub mod automove;
 pub mod background;
 pub mod board;
 pub mod board_source;
+pub mod boardlink;
 pub mod brief;
 pub mod claudemd;
 pub mod clock;

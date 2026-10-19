@@ -844,12 +844,12 @@ fn the_crown_lets_one_agent_edit_the_others() {
     let touch = touch.expect("the crown's filing is a touch");
     assert_eq!((touch.action.as_str(), touch.from), ("created", Some(a)));
 
-    // ---- the shim: nineteen tools, and `get_ticket` with a key ---------------
+    // ---- the shim: twenty tools, and `get_ticket` with a key ------------------
     let mut shim = Shim::start(&sock, sa);
     shim.rpc("initialize", json!({"protocolVersion": "2025-11-25"}));
     shim.notify("notifications/initialized");
     let listed = shim.rpc("tools/list", json!({}));
-    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 19);
+    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 20);
     let r = shim.call("watch_ticket", json!({ "key": kb }));
     assert_eq!(r["isError"], true, "seen is required by the tool: {r}");
     let r = shim.call("merge_ticket", json!({ "key": kb }));

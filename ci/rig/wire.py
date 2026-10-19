@@ -114,8 +114,13 @@ class Wire:
     def request(self, command, timeout=None):
         """Send one command as the person; return the response dict, or raise
         `WireError` on `Response::Err`."""
+        return self.request_as(LOCAL, command, timeout)
+
+    def request_as(self, principal, command, timeout=None):
+        """`request`, as `principal` (`{"kind": "agent", "session": <uuid>}` is
+        a session's own tool call, T-733)."""
         self.sock.settimeout(timeout or self.timeout)
-        envelope = {"principal": LOCAL, "command": command}
+        envelope = {"principal": principal, "command": command}
         self.sock.sendall((json.dumps(envelope) + "\n").encode())
         try:
             while True:
@@ -193,6 +198,19 @@ class Wire:
 
     def set_crown_budget(self, budget):
         return self.request({"cmd": "set_crown_budget", "budget": budget})
+
+    # ---- Linked boards (T-733).
+
+    def link_board(self, path):
+        return self.request({"cmd": "link_board", "path": path})
+
+    def unlink_board(self, path):
+        return self.request({"cmd": "unlink_board", "path": path})
+
+    def ask_board(self, session, board, text):
+        """`ask_board` as the crown's session: words for a linked board's crown."""
+        return self.request_as({"kind": "agent", "session": session},
+                               {"cmd": "agent_ask_board", "board": board, "text": text})
 
     # ---- Sessions.
 

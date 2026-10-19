@@ -1073,3 +1073,21 @@ checks = ["woke:limited", "crown:sleep_agent", "tier:rig-alt"]
   [[test.steps]]
   crown = "L2: {key}'s agent hit the account's usage limit. Carry it on with the rig-alt tier, then end your turn with the single line: L2 moved."
   until = { events = ["SessionStart"], state = "idle" }
+
+[[test]]
+id = "X1"
+title = "X1 · the crown asks a linked board's crown and hears its reply: do the steps below"
+workspace = "worktree"
+brief = "Nothing starts on this ticket: the test is between the crowns."
+expect = "a second board, rig-peer, is open on this machine and linked with this one (T-733); its crown is a stub. Asked in plain words to have the relay released, naming no tool, the crown reads the linked board off list_board and sends its words with ask_board naming rig-peer, which puts them on that board's crown's card (board_ask_received there), and does the relay's work from nowhere else. The peer's crown answers with ask_board back, and the reply arrives as the crown's next prompt, beginning with the board's name; the crown ends that turn repeating the reply's words."
+checks = ["crown_board:ask_board", "peer_fed:board_ask_received", "crown_line:X1 replied:live"]
+
+  [[test.steps]]
+  rig = "peer_board"
+
+  [[test.steps]]
+  crown = "X1: the board rig-peer, linked with this one, owns the relay. Have its crown cut the relay's 0.1.0-beta.2 release and say when /version serves it; the work is that board's, not this one's. Then end your turn with the single line: X1 asked. When that board's reply comes as your prompt, end your turn with the single line: X1 replied: followed by the reply's words."
+  until = { crown_fed = "ask_board", state = "idle" }
+
+  [[test.steps]]
+  rig = "peer_reply"

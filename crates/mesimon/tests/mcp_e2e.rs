@@ -258,6 +258,7 @@ fn agent_board_tools_tier_and_collisions() {
             "start_agent",
             "sleep_agent",
             "ask_agent",
+            "ask_board",
             "answer_agent",
             "accept_plan",
             "merge_ticket",

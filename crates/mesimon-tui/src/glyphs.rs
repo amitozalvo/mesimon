@@ -429,6 +429,16 @@ pub(crate) fn crown(tier: Tier) -> &'static str {
     }
 }
 
+/// The bolt before a linked board's lit word in the header (T-733): `↯`
+/// U+21AF DOWNWARDS ZIGZAG ARROW, East Asian Width N — one cell, where the
+/// high-voltage sign is an emoji and two.
+pub(crate) fn bolt(tier: Tier) -> &'static str {
+    match tier {
+        Tier::Unicode => "↯",
+        Tier::Ascii => "~",
+    }
+}
+
 /// Does this session's `Running` mean work is in flight? An agent's does. A
 /// shell has no hook stream, so the daemon pins it at `Running` for the
 /// whole life of its pane (D15: "a live pane is all running means") — that

@@ -683,7 +683,7 @@ fn hello(stream: UnixStream, version: u32) -> Result<Conn> {
         client: format!("mesimon-tui/{}", env!("CARGO_PKG_VERSION")),
     })?;
     match hello {
-        Response::Hello { version: received, daemon_pid, build, exe_stamp, detached }
+        Response::Hello { version: received, daemon_pid, build, exe_stamp, detached, .. }
             if received == version =>
         {
             c.daemon = DaemonIdent { pid: daemon_pid, build, exe_stamp, detached };
@@ -821,6 +821,8 @@ mod tests {
                         build: "0.0.1".into(),
                         exe_stamp: None,
                         detached: false,
+                        repo_root: String::new(),
+                        crown: None,
                     },
                 );
                 assert!(matches!(read_command(&mut reader), Command::Shutdown));
@@ -851,6 +853,8 @@ mod tests {
                     build: String::new(),
                     exe_stamp: None,
                     detached: false,
+                    repo_root: String::new(),
+                    crown: None,
                 },
             );
         });

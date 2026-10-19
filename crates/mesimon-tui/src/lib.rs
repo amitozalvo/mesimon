@@ -12,6 +12,7 @@ mod keys;
 // Public so an integration test can drive the real connect path (the
 // build-skew daemon restart lives in it); the TUI itself uses it internally.
 mod arcade;
+mod boards;
 pub mod client;
 mod detach_guide;
 mod detect;
@@ -226,6 +227,8 @@ pub fn run(repo_root: &Path) -> Result<()> {
     app.editors = external::Editors::find(&app.repo_root);
     // What `^k` opens a URL with — same rule, same reason.
     app.opener = opener::find();
+    // The boards open on this machine (T-733): a walk of the runtime root.
+    app.board_scanner = Some(crate::boards::discover);
     // The zone a quota's reset time is told in (T-327) — same rule: a test
     // app tells it in UTC, so no golden reads a developer's clock.
     app.clock = localtime::at;

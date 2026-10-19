@@ -314,6 +314,8 @@ mod tests {
             shell_env: Default::default(),
             git: Default::default(),
             automation: Default::default(),
+            links: Vec::new(),
+            board_touches: Vec::new(),
             claude_md: Default::default(),
             claude_default_mode: None,
             status_top: false,

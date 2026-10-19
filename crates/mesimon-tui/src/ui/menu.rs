@@ -392,6 +392,19 @@ pub(super) fn draw_tier_edit(f: &mut Frame, app: &App) {
     draw_rows(f, app, *idx, &scoped(app, &format!("TIER ∙ {name}")), &words, &[], field);
 }
 
+/// The boards list (T-733), one level under Settings › Crown: the boards
+/// this one reaches, the boards open on this machine that it could, and a
+/// folder row, which becomes a path field in place. Dense like the tiers
+/// list, whose shape it is.
+pub(super) fn draw_boards(f: &mut Frame, app: &App) {
+    let Mode::Boards { idx, typing, armed } = &app.mode else { return };
+    let rows = app.board_rows();
+    let words: Vec<(String, String)> =
+        rows.iter().enumerate().map(|(i, r)| app.board_row_words(r, *armed && i == *idx)).collect();
+    let field = typing.as_ref().map(|b| ("Folder: ", b));
+    draw_rows(f, app, *idx, "REACHES BOARDS", &words, &[], field);
+}
+
 fn draw_dense(
     f: &mut Frame,
     app: &App,

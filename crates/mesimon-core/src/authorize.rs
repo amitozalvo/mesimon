@@ -230,6 +230,12 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
                 _,
             ) => authorize(principal, &Action::Mutate, resource),
         },
+        // Another board's daemon (T-733) holds no resource here at all: its
+        // one command, words for this board's crown, is judged by the
+        // daemon against the person's links and never through this table.
+        Principal::Peer { .. } => {
+            deny("a linked board's daemon only asks this board's crown, and reads nothing")
+        }
     }
 }
 
@@ -257,7 +263,8 @@ pub fn authorize_execution(
         Principal::Automation { .. }
         | Principal::Agent { .. }
         | Principal::Remote { .. }
-        | Principal::Paired { .. } => {
+        | Principal::Paired { .. }
+        | Principal::Peer { .. } => {
             Decision::Deny { reason: "execution requires the owner at the keyboard".into() }
         }
     }

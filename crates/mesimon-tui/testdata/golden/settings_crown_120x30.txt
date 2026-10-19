@@ -6,7 +6,7 @@
       │                      Mode               ● autonomous   ○ supervised                                      │
    Key│  Appearance          Archives tickets   ○ off                                                            │
       │                      Watches tickets    ● on                                                             │
-      │  Notifications                                                                                           │
+      │  Notifications       Reaches boards     none ›                                                           │
       │                                                                                                          │
       │  Behaviour                                                                                               │
       │                                                                                                          │

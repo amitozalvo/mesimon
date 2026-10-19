@@ -1387,6 +1387,10 @@ pub(crate) const CROWN_LIT_MS: u64 = 2_000;
 /// (T-811): the train merged or asked, or a forge read found an edge. A
 /// step up the grey ramp, drawn on the board's 100 ms frames.
 pub(crate) const WORKFLOW_LIT_MS: u64 = 4_000;
+/// How long a linked board's name in the header says what just went between
+/// the crowns (T-733, the author: "in blue for a few seconds"), in the
+/// crown's tint, before it settles back to the name alone.
+pub(crate) const LINK_LIT_MS: u64 = 4_000;
 /// The summary's wave crosses a card row in this long (T-696), whatever
 /// the row's width; a finishing tick crosses twice.
 pub(crate) const SUMMARY_SWEEP_MS: u64 = 700;

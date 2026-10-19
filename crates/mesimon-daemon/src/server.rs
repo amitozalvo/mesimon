@@ -103,6 +103,7 @@ mod crownledger;
 mod crownplan;
 mod crownwake;
 mod mesophon;
+mod peer;
 mod shelf;
 mod teamglue;
 mod tiers;
@@ -787,6 +788,22 @@ pub struct Daemon {
     /// `asked`. In memory, like the asks themselves (T-413); the crown's
     /// next ask to the ticket clears it.
     crown_dropped: HashMap<ulid::Ulid, CrownDrop>,
+    /// The machine's board links (T-733), `links.toml` as last read: which
+    /// boards this one reaches. Every board's daemon shares the file.
+    links: peer::MachineLinksCache,
+    /// Words that went to or came from a linked board (T-733), for the
+    /// header's bolt and its lit word; in memory like the crown's touches.
+    board_touches: Vec<mesimon_core::command::BoardTouch>,
+    /// Asks this crown made to another board that stand unanswered, by that
+    /// board's path (T-733): the next words from there are its reply. And
+    /// asks another board's crown made here that this crown has not answered:
+    /// the next words this crown sends there are the reply. In memory; a
+    /// restart forgets which, and the words still go as asks.
+    asks_out: HashMap<String, u64>,
+    asks_in: HashMap<String, u64>,
+    /// The peer ask `park_ask` is parking right now (T-733), for the entry
+    /// it pushes or replaces to carry; `None` at every other call.
+    peer_parking: Option<peer::FromBoard>,
     /// Wakes the crown is owed (T-414, T-469, T-527): one per worker that
     /// delivered, answered the crown's ask, raised its hand or was merged
     /// since the crown's last turn, rendered into ONE sentence when the crown itself
@@ -1159,6 +1176,7 @@ pub fn run(paths: Paths) -> Result<()> {
                 held: None,
                 plan: e.plan,
                 deliver: Deliver::Idle,
+                from_board: None,
             })
         })
         .collect();
@@ -1364,6 +1382,11 @@ pub fn run(paths: Paths) -> Result<()> {
         crown_touches: HashMap::new(),
         crown_said: HashMap::new(),
         crown_dropped: HashMap::new(),
+        links: peer::MachineLinksCache::new(crate::paths::machine_links_file().ok()),
+        board_touches: Vec::new(),
+        asks_out: HashMap::new(),
+        asks_in: HashMap::new(),
+        peer_parking: None,
         crown_wakes: Default::default(),
         crown_heard: Default::default(),
         crown_recheck: HashMap::new(),
@@ -2091,6 +2114,10 @@ struct QueuedAsk {
     /// crown asked `immediately`. Set by the crown's handler after
     /// `park_ask`; never persisted, as no crown's ask is.
     deliver: Deliver,
+    /// `Some` is a linked board's crown's ask for this board's crown (T-733):
+    /// where it came from and the words before the template. Held for a
+    /// person like a crown's ask unless `sends`; never persisted, like one.
+    from_board: Option<peer::FromBoard>,
 }
 
 /// A crown's ask that left the queue unsent (T-568): whose crown it was,
@@ -2106,7 +2133,7 @@ impl QueuedAsk {
     /// send (T-413, T-550), or one the daemon held on a question (T-420).
     /// The queue neither delivers it nor lets it take its checkout's turn.
     fn held_for_person(&self) -> bool {
-        self.held.is_some() || (self.by.is_some() && !self.sends)
+        self.held.is_some() || ((self.by.is_some() || self.from_board.is_some()) && !self.sends)
     }
 }
 
@@ -2489,6 +2516,20 @@ impl Daemon {
                 message: "automation is not a principal a client may claim".into(),
             };
         }
+        // Another board's daemon (T-733) is admitted for one command, judged
+        // by `peer_ask` against the person's links: a peer that sends
+        // anything else is confused, and `authorize` would deny it anyway.
+        if let Principal::Peer { board } = &env.principal {
+            let board = board.clone();
+            return match env.command {
+                Command::PeerAsk { crown_key, crown_title, text } => {
+                    self.peer_ask(board, crown_key, crown_title, text)
+                }
+                _ => Response::Err {
+                    message: "a linked board's daemon only asks this board's crown".into(),
+                },
+            };
+        }
         // `Remote` is minted by the daemon's own sync from a record whose
         // signature verified (T-215). Over the socket it is a same-uid
         // client dressing up as a teammate. Paired identities are minted only
@@ -2550,6 +2591,8 @@ impl Daemon {
         // Another board may have changed the machine's tiers (T-443): one
         // `stat`, so what this command reads or launches is current.
         self.refresh_machine_tiers();
+        // And the machine's board links (T-733), the same way.
+        self.refresh_links();
 
         let resp = match env.command {
             Command::Mesophon { action } => self.control_local(action),
@@ -2571,6 +2614,8 @@ impl Daemon {
                         .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string()),
                     exe_stamp: self.exe_stamp,
                     detached: self.detached,
+                    repo_root: self.my_root(),
+                    crown: self.board.crown_holder().map(|t| t.short_key.clone()),
                 }
             }
             Command::Snapshot => self.snapshot(),
@@ -2722,6 +2767,12 @@ impl Daemon {
             Command::SetManualMerge { id, on } => self.set_manual_merge(id, on),
             Command::CrownTicket { id } => self.crown_ticket(id),
             Command::Uncrown => self.uncrown(),
+            Command::LinkBoard { path } => self.link_board(path),
+            Command::UnlinkBoard { path } => self.unlink_board(path),
+            // Answered above, as a peer's; a local client never sends it.
+            Command::PeerAsk { .. } => Response::Err {
+                message: "a peer ask is another board's daemon's to send".into(),
+            },
             Command::SetMcpTools { on } => self.set_mcp_tools(on),
             Command::SetAgentProvider { provider } => self.set_default_tier(
                 mesimon_core::tier::TierScope::Board,
@@ -2959,6 +3010,7 @@ impl Daemon {
             | Command::AgentWatchTicket { .. }
             | Command::AgentMergeTicket { .. }
             | Command::AgentAskTicket { .. }
+            | Command::AgentAskBoard { .. }
             | Command::AgentAnswerTicket { .. }
             | Command::AgentAcceptPlan { .. }
             | Command::AgentRaiseHand { .. }
@@ -6695,6 +6747,9 @@ impl Daemon {
             // watch ends at the merge (`crownwake::owe_wake`), with
             // `unwatch`, when the ticket leaves the board (`drop_crown_if`),
             // when the row is turned off, and with the crown.
+            // The crown's ask to another board's crown (T-733): judged
+            // against the person's links and carried to that board's daemon.
+            Command::AgentAskBoard { board, text } => self.agent_ask_board(ticket, board, text),
             Command::AgentWatchTicket { key, unwatch, seen } => {
                 let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
                     Ok(t) => t,
@@ -8551,6 +8606,7 @@ impl Daemon {
             .into_iter()
             .map(|h| h.key)
             .collect(),
+            linked_boards: self.links_view(),
         }
     }
 
@@ -9014,6 +9070,8 @@ impl Daemon {
             status_top: self.backend.status_top(),
             crown_touches: self.recent_crown_touches(),
             crown_said: self.crown_said_view(),
+            links: self.links_view(),
+            board_touches: self.recent_board_touches(),
             machine_tiers: self.machine_tiers.tiers.clone(),
             usage: self.usage.view(),
             prs: self.forge_items(),
@@ -9585,7 +9643,7 @@ impl Daemon {
                 // A held ask (T-413) is memory-only, like a pane ask: the
                 // crown's words never wait in a file for a restart to send,
                 // whether a person or the queue would send them (T-550).
-                if q.by.is_some() || q.held.is_some() {
+                if q.by.is_some() || q.held.is_some() || q.from_board.is_some() {
                     return None;
                 }
                 let seat = match q.seat {
@@ -12210,6 +12268,10 @@ impl Daemon {
         accept_plan: bool,
         plan: bool,
     ) -> Result<(), String> {
+        // A linked board's words (T-733), when `park_peer_ask` is the caller:
+        // the entry carries where they came from, and the feed line is that
+        // handler's, not a person's `queued_ask`.
+        let peer = self.peer_parking.take();
         let t = self.open_ticket(ticket).map_err(str::to_string)?;
         if by.is_some() && self.queued.iter().any(|q| q.ticket == ticket && q.by.is_none()) {
             return Err(format!(
@@ -12296,7 +12358,9 @@ impl Daemon {
             q.plan = plan && !accept_plan;
             // So is the crown's level (T-600, T-601).
             q.deliver = Deliver::Idle;
-            if by.is_none() {
+            let peer_ask = peer.is_some();
+            q.from_board = peer;
+            if by.is_none() && !peer_ask {
                 self.feed.board("local", "queued_ask_replaced", Some(ticket));
             }
         } else {
@@ -12313,8 +12377,9 @@ impl Daemon {
                 held,
                 plan: plan && !accept_plan,
                 deliver: Deliver::Idle,
+                from_board: peer,
             });
-            if by.is_none() {
+            if by.is_none() && self.queued.last().is_none_or(|q| q.from_board.is_none()) {
                 self.feed.board("local", &fresh, Some(ticket));
             }
         }
@@ -12569,7 +12634,7 @@ impl Daemon {
         take.sort_unstable_by(|a, b| b.cmp(a));
         let mut changed = false;
         for i in take {
-            let QueuedAsk { ticket, seat, text, plan, by, .. } = self.queued.remove(i);
+            let QueuedAsk { ticket, seat, text, plan, by, from_board, .. } = self.queued.remove(i);
             changed = true;
             let word = seat.word();
             let words = by.map(|_| text.clone());
@@ -12627,6 +12692,15 @@ impl Daemon {
                     self.crown_touched(crown, ticket, "sent");
                     if let Some(words) = &words {
                         self.crown_said(ticket, words);
+                    }
+                }
+                // A linked board's crown's words (T-733), sent at this
+                // crown's idle: the feed names the road, and the crown's
+                // card says whose words and what they were.
+                None if from_board.is_some() => {
+                    self.feed.board("peer", "board_ask_sent", Some(ticket));
+                    if let Some(fb) = from_board {
+                        self.crown_said(ticket, &format!("{}: {}", fb.name, fb.words));
                     }
                 }
                 None => {
@@ -13009,6 +13083,11 @@ impl Daemon {
             if let Some(words) = words {
                 self.crown_said(ticket, &words);
             }
+        }
+        // A linked board's words a person sent (T-733): the card says whose.
+        if let (Some(fb), false) = (q.from_board, matches!(response, Response::Err { .. })) {
+            self.feed.board("peer", "board_ask_sent", Some(ticket));
+            self.crown_said(ticket, &format!("{}: {}", fb.name, fb.words));
         }
         self.broadcast();
         response

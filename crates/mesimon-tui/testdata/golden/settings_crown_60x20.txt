@@ -5,7 +5,7 @@
   │  Mode               ● autonomous   ○ supervised      │
   │  Archives tickets   ○ off                            │
   │  Watches tickets    ● on                             │
-  │                                                      │
+  │  Reaches boards     none ›                           │
   │                                                      │
   │                                                      │
   │                                                      │

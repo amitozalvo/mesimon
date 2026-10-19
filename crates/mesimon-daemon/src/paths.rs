@@ -216,6 +216,13 @@ pub fn machine_tiers_file() -> Result<PathBuf> {
     Ok(state_root()?.join("tiers.toml"))
 }
 
+/// The boards that reach each other on this machine (T-733), `links.toml`
+/// beside `tiers.toml`: one list every repo's daemon reads, written only on
+/// a person's gesture, so a link made on either board holds for both.
+pub fn machine_links_file() -> Result<PathBuf> {
+    Ok(state_root()?.join("links.toml"))
+}
+
 /// Create `dir` if missing, then insist it is a real directory that this uid
 /// owns, and close it to everyone else. Errors name the path.
 pub fn own_private_dir(dir: &Path) -> Result<()> {

@@ -239,7 +239,15 @@ pub const CROWN_WAKES: &str = concat!(
      words reach its agent as they reach one the crown started; its question or plan stays the \
      person's, and the board sends its agent nothing else. Asked to wait for such a ticket, the crown \
      watches it and ends its turn: a loop that polls keeps this session busy, which holds the \
-     merge train and the wake itself. ",
+     merge train and the wake itself. \
+     Another board on this machine, where a person linked the two (list_board's \
+     linked_boards; empty means none), has a crown of its own that ask_board reaches, \
+     naming the board: the words land on that crown's card and reach it as its next prompt \
+     once idle, and its answer comes back the same way, as this session's next prompt, \
+     beginning with that board's name; a reply to an ask from there is ask_board naming \
+     the board that asked. Work that belongs to the other board's repository is asked of \
+     its crown rather than done from here. A board that is not open or has no crown refuses \
+     in words, and a person opens or crowns it. ",
     crown_tiers!(),
     persons_plans!(),
     " ",
@@ -799,6 +807,29 @@ pub fn tools() -> Vec<Value> {
                 "additionalProperties": false,
             },
         }),
+        // The crown's ask to another board's crown (T-733): the words go to
+        // that board's daemon, which queues them for its crown as this
+        // board's crown's asks are queued for a worker; the reply is the
+        // same tool back, and arrives as this session's prompt.
+        json!({
+            "name": "ask_board",
+            "description": "Sends words to the crown of another mesimon board on this machine \
+                            (crown only): one a person linked with this board, named as \
+                            list_board's linked_boards names it. The words land on that \
+                            crown's card and reach it as its next prompt once idle, or wait \
+                            there for a person where that board is supervised; its reply \
+                            comes back the same way, as this session's next prompt. Refused \
+                            for a board not linked, not open, or without a crown.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "board": { "type": "string", "description": "A linked board's name or path." },
+                    "text": { "type": "string", "description": "Words a person would type." },
+                },
+                "required": ["board", "text"],
+                "additionalProperties": false,
+            },
+        }),
         // The crown's answer (T-569): Remote Control's screen-verified
         // dialog road, for a question an agent the crown started asks, on
         // a board whose crown mode is autonomous. The daemon
@@ -1008,6 +1039,12 @@ pub enum ToolCall {
         /// Claude Code's send-now.
         deliver: Deliver,
     },
+    /// Words for a linked board's crown (T-733): `board` names it as
+    /// `list_board`'s `linked_boards` does.
+    AskBoard {
+        board: String,
+        text: String,
+    },
     /// Exactly one of `index`, `text` (T-569) and `answers` (T-571).
     AnswerAgent {
         key: String,
@@ -1216,6 +1253,14 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
             seen: word(args, "seen")?,
             plan: flag(args, "plan")?,
             deliver: deliver(args)?,
+        }),
+        "ask_board" => Ok(ToolCall::AskBoard {
+            board: word(args, "board")?,
+            text: args
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or("ask_board requires a text string")?
+                .to_string(),
         }),
         "answer_agent" => {
             let (index, text) = one_answer(args, "")?;
@@ -1433,6 +1478,11 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // a person sends them. `PromptSession` itself stays below: the
         // person's send is the road, and there is no other.
         | Command::AgentAskTicket { .. }
+        // The crown's ask to another board's crown (T-733), judged by the
+        // daemon against the person's links on both boards: the words land
+        // on that crown's card by the queue, as the crown's own asks do.
+        // `PeerAsk`, the daemon-to-daemon carrier, stays below.
+        | Command::AgentAskBoard { .. }
         // The crown's answer (T-569): one key walk into a dialog an agent
         // the crown started stopped on, judged by the daemon against the
         // board's `crown_mode`, the agent's provenance and the
@@ -1504,6 +1554,12 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::RenameTag { .. }
         | Command::SetTagColor { .. }
         | Command::MoveTag { .. }
+        // Linking boards is a person's say-so (T-733), and the peer carrier
+        // is another daemon's, never a session's: an agent that could send
+        // `PeerAsk` would be claiming to be a board.
+        | Command::LinkBoard { .. }
+        | Command::UnlinkBoard { .. }
+        | Command::PeerAsk { .. }
         | Command::Hello { .. }
         | Command::Snapshot
         | Command::Subscribe
@@ -1723,6 +1779,7 @@ pub fn tier_needed_by(cmd: &Command) -> Option<AgentTools> {
         | Command::AgentMergeTicket { .. }
         | Command::AgentWatchTicket { .. }
         | Command::AgentAskTicket { .. }
+        | Command::AgentAskBoard { .. }
         | Command::AgentAnswerTicket { .. }
         | Command::AgentAcceptPlan { .. } => AgentTools::Full,
         _ => return None,
@@ -1736,7 +1793,7 @@ pub fn tier_needed_by_tool(name: &str) -> Option<AgentTools> {
         "write_note" | "tag_ticket" | "raise_hand" => AgentTools::Annotate,
         "move_ticket" | "create_ticket" | "rename_ticket" | "set_workspace" | "archive_ticket"
         | "start_agent" | "sleep_agent" | "merge_ticket" | "watch_ticket" | "ask_agent"
-        | "answer_agent" | "accept_plan" => AgentTools::Full,
+        | "ask_board" | "answer_agent" | "accept_plan" => AgentTools::Full,
         _ => return None,
     })
 }
@@ -2005,9 +2062,9 @@ mod tests {
     }
 
     #[test]
-    fn exactly_nineteen_tools() {
+    fn exactly_twenty_tools() {
         let t = tools();
-        assert_eq!(t.len(), 19);
+        assert_eq!(t.len(), 20);
         let names: Vec<&str> = t.iter().filter_map(|v| v["name"].as_str()).collect();
         assert_eq!(
             names,
@@ -2027,6 +2084,7 @@ mod tests {
                 "start_agent",
                 "sleep_agent",
                 "ask_agent",
+                "ask_board",
                 "answer_agent",
                 "accept_plan",
                 "merge_ticket",
@@ -3143,11 +3201,20 @@ mod tests {
                 answers: None,
             },
             Command::AgentAcceptPlan { key: "T-1".into(), seen: None, request: "toolu_1".into() },
+            Command::AgentAskBoard { board: "relay".into(), text: "x".into() },
         ];
         for c in &allowed {
             assert!(agent_allows(c), "{c:?} should be in the tier");
         }
         assert_eq!(allowed.len(), tools().len() + 1);
+        // The peer carrier and the links are nobody's tool (T-733).
+        assert!(!agent_allows(&Command::PeerAsk {
+            crown_key: "T-1".into(),
+            crown_title: "x".into(),
+            text: "x".into(),
+        }));
+        assert!(!agent_allows(&Command::LinkBoard { path: "/x".into() }));
+        assert!(!agent_allows(&Command::UnlinkBoard { path: "/x".into() }));
     }
 
     /// T-613: the crown's merge is a keyed tool parsed like its siblings, on

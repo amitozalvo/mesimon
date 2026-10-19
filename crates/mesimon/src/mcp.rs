@@ -197,6 +197,7 @@ fn tool_result(params: &Value, sock: &PathBuf, session: uuid::Uuid) -> Value {
         ToolCall::AskAgent { key, text, seen, plan, deliver } => {
             Command::AgentAskTicket { key, text, seen: Some(seen), plan, deliver }
         }
+        ToolCall::AskBoard { board, text } => Command::AgentAskBoard { board, text },
         ToolCall::AnswerAgent { key, seen, request, index, text, answers } => {
             Command::AgentAnswerTicket { key, seen: Some(seen), request, index, text, answers }
         }
@@ -321,6 +322,18 @@ fn render(resp: Response) -> Value {
         // the agent is idle, or sent at once with `deliver` now (T-600) or
         // immediately (T-601). `road` names which; `held_because` says why a
         // send was held.
+        // The crown's ask to another board (T-733): where the words went,
+        // how they wait there, who reads them, and where the answer lands.
+        Response::AgentAskedBoard { board, road, crown, reply } => text(&json!({
+            "board": board,
+            "road": road.word(),
+            "crown": crown,
+            "reply": reply,
+            "answer": format!(
+                "{board}'s crown answers with ask_board; its words arrive as this session's \
+                 next prompt once idle, beginning with the board's name"
+            ),
+        })),
         Response::AgentAsked { key, replaced, seen, held_for_person, held_because, road } => {
             let mut body = json!({
                 "key": key,

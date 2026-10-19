@@ -230,7 +230,7 @@ fn draw_screen(f: &mut Frame, app: &App) {
     board::draw_columns(f, outer[2], app);
     crate::arcade::draw(f, app, outer[2], outer[1]);
     // The crown's bolts (T-544), over the cards and under every dialog.
-    crate::strike::draw(f, app, outer[2]);
+    crate::strike::draw(f, app, outer[0], outer[2]);
     // A card another mover took plays its move (T-817).
     crate::glide::draw(f, app, outer[2]);
     // Behind a card's dialog the rest of the board recedes (T-817).
@@ -287,6 +287,9 @@ fn draw_screen(f: &mut Frame, app: &App) {
     }
     if matches!(app.mode, Mode::TierEdit { .. }) {
         menu::draw_tier_edit(f, app);
+    }
+    if matches!(app.mode, Mode::Boards { .. }) {
+        menu::draw_boards(f, app);
     }
     if matches!(app.mode, Mode::ColumnSettings { .. }) {
         menu::draw_column(f, app);

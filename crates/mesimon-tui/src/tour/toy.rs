@@ -269,6 +269,8 @@ impl World {
             costs: Vec::new(),
             prs: self.prs.clone(),
             forge: Default::default(),
+            links: Vec::new(),
+            board_touches: Vec::new(),
         }
     }
 
@@ -520,6 +522,8 @@ impl World {
                 build: String::new(),
                 exe_stamp: None,
                 detached: false,
+                repo_root: String::new(),
+                crown: None,
             },
             other => {
                 let name = format!("{other:?}");

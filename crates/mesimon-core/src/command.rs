@@ -527,6 +527,19 @@ pub enum Command {
     },
     /// Take the crown off whichever ticket wears it.
     Uncrown,
+    /// Link this board with the board at `path` (T-733): both crowns may
+    /// then ask each other through `ask_board`. A person's gesture, from
+    /// Settings → Crown → Reaches boards; the pair goes in the machine's
+    /// `links.toml`, which the other board's daemon reads too, so one link
+    /// reaches both ways. `path` is the other repository's root as the
+    /// person picked or typed it; the daemon canonicalizes it.
+    LinkBoard {
+        path: String,
+    },
+    /// Take the link to the board at `path` off, for both boards.
+    UnlinkBoard {
+        path: String,
+    },
     /// Re-read the user's shell environment (the Esc menu's shell-env row).
     ///
     /// Deliberately explicit rather than automatic on an rc-file change: the
@@ -1152,6 +1165,15 @@ pub enum Command {
         #[serde(default)]
         deliver: Deliver,
     },
+    /// Words for the crown of another board this board reaches (T-733):
+    /// `ask_board`. Crown only. `board` names a linked board by its name
+    /// (`list_board`'s `linked_boards`) or its path; the daemon carries the
+    /// words to that board's daemon as `PeerAsk`, which puts them on its
+    /// crown's card, and a reply comes back the same way.
+    AgentAskBoard {
+        board: String,
+        text: String,
+    },
     /// Answer the question another ticket's agent stopped on, by key
     /// (T-569): Remote Control's screen-verified dialog road, driven for the
     /// crown. Crown only, behind `Board::crown_mode`, only for an agent
@@ -1279,6 +1301,19 @@ pub enum Command {
         pane: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         speaks: Vec<String>,
+    },
+    /// Another board's daemon carrying its crown's `ask_board` words
+    /// (T-733), sent as `Principal::Peer { board }` over this board's
+    /// `orch.sock`. Admitted only from a board a person linked with this
+    /// one, and only onto this board's crown's card: the words are queued
+    /// for the crown as its own asks are queued for a worker, through the
+    /// board's `Board ask` template, with `crown_key` and `crown_title`
+    /// naming the asking crown's ticket. No other command of a peer's is
+    /// taken.
+    PeerAsk {
+        crown_key: String,
+        crown_title: String,
+        text: String,
     },
 }
 
@@ -1419,6 +1454,11 @@ impl Command {
             // crowned T-12" with.
             CrownTicket { id } => m(Mutate, true, Some(*id)),
             Uncrown => m(Mutate, true, None),
+            // Linking two boards (T-733) is a person's gesture the feed
+            // keeps; a peer's words are logged by their handler with the
+            // road they took, as the crown's asks are.
+            LinkBoard { .. } | UnlinkBoard { .. } => m(Mutate, true, None),
+            PeerAsk { .. } => m(Mutate, false, None),
             CreateTicketWithNote { .. } | CreateTicket { .. } => m(Mutate, true, None),
             DiscardAttachmentUploads { .. } | UploadAttachment { .. } => m(Mutate, false, None),
             ImportTicket { .. } => m(Action::ImportContent, true, None),
@@ -1544,6 +1584,7 @@ impl Command {
             | AgentWatchTicket { .. }
             | AgentMergeTicket { .. }
             | AgentAskTicket { .. }
+            | AgentAskBoard { .. }
             | AgentAnswerTicket { .. }
             | AgentAcceptPlan { .. }
             | AgentRaiseHand { .. } => m(Mutate, false, None),
@@ -1662,6 +1703,15 @@ pub enum Response {
         /// foreground `mesimon daemon --repo` is never restarted under them.
         #[serde(default)]
         detached: bool,
+        /// The repository this daemon serves, canonical (T-733): what the
+        /// board picker lists for each daemon it finds on the machine.
+        /// Empty from an older daemon.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        repo_root: String,
+        /// The key of the ticket wearing this board's crown, if one does
+        /// (T-733): the picker says whether an ask there has a taker.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        crown: Option<String>,
     },
     Ok,
     /// CreateTicket's receipt: the minted id, so the client can select it.
@@ -1847,6 +1897,16 @@ pub enum Response {
         prs: Vec<PrItem>,
         #[serde(default)]
         forge: ForgeStatus,
+        /// The boards this one reaches (T-733), as the machine's `links.toml`
+        /// pairs them with this repository: what the header names and the
+        /// Settings row lists. Absent from an older daemon parses as none.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        links: Vec<LinkView>,
+        /// Words that went to or came from a linked board in the last ten
+        /// seconds (T-733), for the header's bolt and its lit word. Absent
+        /// from an older daemon parses as none.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        board_touches: Vec<BoardTouch>,
     },
     /// SpawnSession on a worktree ticket that is not provisioned yet: the
     /// worktree is being created off-thread; a BoardChanged follows when the
@@ -2075,6 +2135,26 @@ pub enum Response {
         held_because: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         road: Option<AskRoad>,
+    },
+    /// AgentAskBoard's receipt (T-733): which board took the words, by
+    /// name; the road they took on that board (queued for its crown's idle,
+    /// or held for a person's `^y` there); the key of the crown that will
+    /// read them; and whether the board read them as a reply to an ask that
+    /// crown had made here.
+    AgentAskedBoard {
+        board: String,
+        road: AskRoad,
+        crown: String,
+        #[serde(default)]
+        reply: bool,
+    },
+    /// PeerAsk's answer (T-733), daemon to daemon: the road the words took
+    /// on the receiving board and the key of the crown that will read them.
+    PeerAsked {
+        road: AskRoad,
+        crown: String,
+        #[serde(default)]
+        reply: bool,
     },
     /// AgentAnswerTicket's receipt (T-569), sent once the delivery settles:
     /// `outcome` is `answered` only when the dialog's own hook edge came,
@@ -2388,6 +2468,35 @@ pub struct CrownSaid {
 /// card is wide, so the card cuts it, never the wire.
 pub const CROWN_SAID_BYTES: usize = 240;
 
+/// One board this board reaches (T-733): its name, the directory's, which
+/// the header and `ask_board` spell, and its repository's canonical path,
+/// which settles two boards of one name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkView {
+    pub name: String,
+    pub path: String,
+}
+
+/// Words that went between this board's crown and a linked board's (T-733),
+/// for the header to light: which board, by name and path; what happened,
+/// a WORD — `sent` (this crown asked it), `replied` (this crown answered
+/// its ask), `received` (its crown asked this one), `got_reply` (its crown
+/// answered this one's ask), `refused` (the ask could not go, `words` says
+/// why) — so an older client drops what it cannot read; this board's crown
+/// ticket at the time, the card the bolt leaves from or lands on; and when.
+/// In memory only, pruned after ten seconds; the feed is the record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoardTouch {
+    pub board: String,
+    pub path: String,
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub words: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crown: Option<ulid::Ulid>,
+    pub at_ms: u64,
+}
+
 /// One tag as an agent sees it: the name, and the axis it lives on (the
 /// digit that reaches it in the picker; 1–9, 0 = 10). No colour — a tint is
 /// how a card paints it, not what it means.
@@ -2564,6 +2673,11 @@ pub struct AgentBoardView {
     /// reads this before it chooses.
     #[serde(default)]
     pub checkout_held_by: Vec<String>,
+    /// The boards this one reaches (T-733), each by the name `ask_board`
+    /// takes and by its path, which settles two of one name. Empty where a
+    /// person linked none; the crown then asks no other board.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub linked_boards: Vec<LinkView>,
 }
 
 /// One tier as `list_board` shows it (T-584). `model` empty and `effort`
@@ -3454,7 +3568,7 @@ mod tests {
         let old = r#"{"resp":"hello","version":1,"daemon_pid":7}"#;
         let r: Response = serde_json::from_str(old).unwrap();
         match r {
-            Response::Hello { version, daemon_pid, build, exe_stamp, detached } => {
+            Response::Hello { version, daemon_pid, build, exe_stamp, detached, .. } => {
                 assert_eq!(version, 1);
                 assert_eq!(daemon_pid, 7);
                 assert!(build.is_empty(), "absent build reads as empty");
@@ -3637,14 +3751,18 @@ mod tests {
             build: "0.1.0-alpha.1".into(),
             exe_stamp: Some(ExeStamp { mtime_ms: 1_788_046_350_000, len: 30_000_000 }),
             detached: true,
+            repo_root: "/home/me/code/mesimon".into(),
+            crown: Some("T-12".into()),
         };
         let s = serde_json::to_string(&h).unwrap();
         let back: Response = serde_json::from_str(&s).unwrap();
         match back {
-            Response::Hello { build, exe_stamp, detached, .. } => {
+            Response::Hello { build, exe_stamp, detached, repo_root, crown, .. } => {
                 assert_eq!(build, "0.1.0-alpha.1");
                 assert_eq!(exe_stamp.unwrap().len, 30_000_000);
                 assert!(detached);
+                assert_eq!(repo_root, "/home/me/code/mesimon");
+                assert_eq!(crown.as_deref(), Some("T-12"));
             }
             other => panic!("expected hello, got {other:?}"),
         }

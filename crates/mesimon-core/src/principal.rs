@@ -30,6 +30,14 @@ pub enum Principal {
     /// list; a client that sends it over the wire is refused. `member` is
     /// the display name the relay holds for the signing device.
     Remote { member: String },
+    /// Another board's daemon on this machine (T-733), asking this board's
+    /// crown on its own crown's behalf. `board` is that repository's
+    /// canonical path, the file `links.toml` spells; the receiving daemon
+    /// admits it only while a person has linked the two boards, and only
+    /// for the one command that puts words on its crown's card. A same-uid
+    /// client could dress up as one, which is the boundary every socket
+    /// client already stands at.
+    Peer { board: String },
 }
 
 impl Principal {
@@ -49,6 +57,7 @@ impl Principal {
             Principal::Agent { .. } => "agent",
             Principal::Automation { .. } => "automation",
             Principal::Remote { .. } => "remote",
+            Principal::Peer { .. } => "peer",
         }
     }
 
@@ -64,6 +73,7 @@ impl Principal {
             Principal::Agent { session } => format!("agent:{session}"),
             Principal::Automation { rule } => format!("automation:{rule}"),
             Principal::Remote { member } => format!("member:{member}"),
+            Principal::Peer { board } => format!("peer:{board}"),
         }
     }
 }

@@ -605,6 +605,88 @@ class Phone:
                              "answer": answer, "at_ms": int(time.time() * 1000)})
 
 
+PEER_NAME = "rig-peer"
+# A shell that stands in for Claude on the peer board: it paints Claude's
+# composer (the daemon pastes only into one) and keeps every line pasted.
+PEER_STUB = (
+    "#!/bin/sh\n"
+    "printf '\\033[999;1H\\033[3A────────────────────\\n❯ \\n────────────────────\\n"
+    "  ? for shortcuts\\033[H'\n"
+    "stty -icanon 2>/dev/null\n"
+    "while IFS= read -r line; do printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n"
+)
+
+
+class Peer:
+    """A second board on this machine (T-733, X1): `target/rig/rig-peer`, a
+    repository of its own with its own daemon from this build, a stub Claude
+    as its crown, linked with the rig's board through the machine's
+    `links.toml` as a person links one. Its words to the rig's crown are the
+    stub's own `ask_board`. Stopped and unlinked when the test ends, so the
+    machine's links file is left as it was."""
+
+    def __init__(self, rig):
+        self.rig = rig
+        self.repo = os.path.join(rig.out, PEER_NAME)
+        os.makedirs(self.repo, exist_ok=True)
+        if not os.path.isdir(os.path.join(self.repo, ".git")):
+            git(self.repo, "init", "-q")
+            with open(os.path.join(self.repo, "README.md"), "w") as f:
+                f.write("the rig's peer board\n")
+            git(self.repo, "add", "README.md")
+            git(self.repo, "-c", "user.name=rig", "-c", "user.email=rig@mesimon.dev",
+                "commit", "-qm", "the peer board")
+        self.paths = board_paths(self.repo)
+        self.stub = os.path.join(rig.out, "peer-claude.sh")
+        with open(self.stub, "w") as f:
+            f.write(PEER_STUB)
+        os.chmod(self.stub, 0o700)
+        self.got = os.path.join(rig.out, "got.txt")
+        if os.path.exists(self.got):
+            os.remove(self.got)
+        os.makedirs(self.paths.state_dir, mode=0o700, exist_ok=True)
+        log = open(self.paths.daemon_log, "ab")
+        env = terminal_env({"MESIMON_DETACHED": "1", "MESIMON_CLAUDE_BIN": self.stub,
+                            "MESIMON_CLAUDE_ROAD": "hooks", **rig.seams})
+        subprocess.Popen([rig.bin, "daemon", "--repo", self.repo], stdin=subprocess.DEVNULL,
+                         stdout=log, stderr=log, env=env, start_new_session=True, cwd=self.repo)
+        log.close()
+        self.wire = Wire(self.paths.orch_sock, client="rig-peer", connect_for=30)
+        self.feed_mark = len(feed_all(self.paths))
+        self.ticket = self.wire.create_ticket("TODO", "Relay release")
+        self.wire.set_workspace(self.ticket, "shared_checkout")
+        self.session = self.wire.spawn(self.ticket, "claude", submit_prompt=False)["id"]
+        self.wire.crown(self.ticket)
+        self.crown_key = next(t["short_key"] for t in self.wire.board()["tickets"]
+                              if t["id"] == self.ticket)
+        rig.wire.link_board(self.repo)
+
+    def fed(self):
+        """The peer board's feed since it was laid: the commands."""
+        return [l.get("cmd") for l in feed_all(self.paths)[self.feed_mark:]
+                if l.get("kind") == "board"]
+
+    def reply(self, board, text):
+        """The peer's crown answers the rig's crown: `ask_board` back."""
+        return self.wire.ask_board(self.session, board, text)
+
+    def stop(self):
+        for attempt in (lambda: self.rig.wire.unlink_board(self.repo), self.wire.shutdown):
+            try:
+                attempt()
+            except (WireError, OSError, ConnectionError):
+                pass
+        deadline = time.time() + 15
+        while os.path.exists(self.paths.orch_sock) and time.time() < deadline:
+            time.sleep(0.1)
+        tmux = os.environ.get("MESIMON_TMUX_BIN") or (
+            os.path.join(self.rig.repo, "target/debug/mesimon-tmux")
+            if os.path.exists(os.path.join(self.rig.repo, "target/debug/mesimon-tmux")) else "tmux")
+        if os.path.exists(self.paths.tmux_sock):
+            subprocess.run([tmux, "-S", self.paths.tmux_sock, "kill-server"],
+                           capture_output=True, text=True)
+
+
 class Rig:
     def __init__(self, repo, args):
         self.repo = repo
@@ -622,6 +704,9 @@ class Rig:
         # The rig's seams on every start of its daemon (`--flags-off`).
         self.seams = {"MESIMON_RIG_NO_FLAGS": "1"} if getattr(args, "flags_off", False) else {}
         self.phone = None
+        # The second board X1 lays (T-733), while it stands, and its feed after.
+        self.peer = None
+        self.peer_fed = []
 
     # ---- the daemon
 
@@ -1194,6 +1279,11 @@ Reply with the single word ready and end your turn."""
             tickets = [t for t, k, _ in self.test_tickets(test) if k == on]
 
         def one_done(tid):
+            if until.get("crown_fed"):
+                # A step with no worker (X1): a board line of the crown's
+                # own ticket since the step began, `cmd` as named.
+                return any(l.get("kind") == "board" and l.get("cmd") == until["crown_fed"]
+                           and l.get("ticket") == self.crown for l in self.feed_lines[mark:])
             if until.get("woke"):
                 # A start that makes no agent (U1): the board's wake for it.
                 return any(l.get("kind") == "crown_wake" and l.get("worker") == tid
@@ -1433,6 +1523,37 @@ Reply with the single word ready and end your turn."""
             if not self.wait_for("crown", lambda: self.crown_settled(after_ms=after, quiet=0),
                                  STEP_TIMEOUT, self.watch):
                 record["failures"].append("the crown did not settle")
+                return False
+            self.closed()
+            return True
+        if what == "peer_board":
+            # X1 (T-733): a second board on this machine, crowned by a stub,
+            # linked with this one as a person links it.
+            self.peer = Peer(self)
+            self.log(f"the peer board {PEER_NAME} is up, crowned by {self.peer.crown_key}, "
+                     f"and linked with this board")
+            return True
+        if what == "peer_reply":
+            # X1: the peer's crown answers with ask_board; the words reach
+            # this board's crown as its next prompt, and the step ends when
+            # its turn on them ended. Then the peer goes, and the link.
+            sent_ms = int(time.time() * 1000)
+            words = step.get("text", "relay 0.1.0-beta.2 is live; /version serves it")
+            try:
+                r = self.peer.reply(os.path.basename(self.repo), words)
+                self.log(f"the peer's crown replied: {r.get('road')}, read as a reply: {r.get('reply')}")
+            except WireError as e:
+                record["failures"].append(f"the peer's reply: {e}")
+                self.peer.stop()
+                self.peer = None
+                return False
+            settled = self.wait_for("crown", lambda: self.crown_settled(after_ms=sent_ms, quiet=0),
+                                    STEP_TIMEOUT, self.watch)
+            self.peer_fed = self.peer.fed()
+            self.peer.stop()
+            self.peer = None
+            if not settled:
+                record["failures"].append("the crown did not settle on the peer's reply")
                 return False
             self.closed()
             return True
@@ -2017,7 +2138,7 @@ Reply with the single word ready and end your turn."""
             # A start that made no agent (U1) is judged on the board's and
             # the crown's side alone.
             if rec is None and name not in ("woke", "crown_hand", "crown_reply", "crown_line",
-                                            "crown"):
+                                            "crown", "crown_board", "peer_fed"):
                 check(c, False, "no agent record on the ticket")
             elif name == "road":
                 check(c, rec.get("road", "hooks") == arg, f"road {rec.get('road', 'hooks')}")
@@ -2113,6 +2234,16 @@ Reply with the single word ready and end your turn."""
                 check(c, seen, f"claude_road:mod ({seen[-1].get('outcome')})" if seen else "never written")
             elif name == "crown":
                 check(c, arg in crown_cmds, f"{arg}×{crown_cmds.count(arg)}")
+            elif name == "crown_board":
+                # A board line of the crown's own ticket (T-733): its ask to
+                # a linked board is about no ticket here.
+                own = [l for l in lines if l.get("kind") == "board" and l.get("actor") == "agent"
+                       and l.get("ticket") == self.crown and l.get("cmd") == arg]
+                check(c, own, f"{arg}×{len(own)} ({own[-1].get('outcome')})" if own else f"no {arg}")
+            elif name == "peer_fed":
+                # The peer board's feed (X1): what its daemon did with the words.
+                fed_peer = self.peer.fed() if self.peer else self.peer_fed
+                check(c, arg in fed_peer, f"{arg}×{fed_peer.count(arg)}")
             elif name == "crown_hand":
                 # The crown's own hand (T-744), its reason naming `arg`: a
                 # hand is on the crown's ticket, so the feed's line is not
@@ -2457,6 +2588,10 @@ Reply with the single word ready and end your turn."""
 
     def finish(self):
         """The last test's move, with the run's last words."""
+        if self.peer:
+            self.peer_fed = self.peer.fed()
+            self.peer.stop()
+            self.peer = None
         if not self.close_out:
             self.closed()
             return

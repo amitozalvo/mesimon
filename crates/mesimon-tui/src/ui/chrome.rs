@@ -147,6 +147,15 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
         let mut flow_w = super::spans_width(&flow);
         let flow_n = flow.len();
         spans.extend(flow);
+        // The boards this one reaches (T-733), after the workflow: each
+        // name, and the one words just went to or came from lit with them.
+        // Dropped whole on a row that cannot hold them, before the workflow
+        // word shortens.
+        let links_at = spans.len();
+        let (links, link_offsets) = links_mark(app);
+        let mut links_w = super::spans_width(&links);
+        let links_n = links.len();
+        spans.extend(links);
         // Asleep count cut from the header (author 2026-08-30): sleeping is
         // the quiet, correct condition — the card's own state word carries
         // it; the header only speaks when something is spendable (the offer)
@@ -168,6 +177,11 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
         }
         // What the board is, on the left. What it offers, on the right.
         let mut used: usize = super::spans_width(&spans);
+        if links_n > 0 && used + 1 > area.width as usize {
+            spans.splice(links_at..links_at + links_n, []);
+            used -= links_w;
+            links_w = 0;
+        }
         if flow_n > 0 && used + 1 > area.width as usize {
             let short = workflow_mark(app, true);
             let short_w = super::spans_width(&short);
@@ -212,6 +226,15 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
                 .filter(|c| c.2 > 0)
                 .map(|(chip, x, w)| (chip, area.x.saturating_add(x as u16), w as u16)),
         );
+        // Each linked board's name, for the bolt to or from it (T-733).
+        if links_w > 0 {
+            let links_x = marks_at + marks_w + flow_w;
+            app.spots.borrow_mut().links.extend(
+                link_offsets.into_iter().map(|(name, off)| {
+                    (name, area.x.saturating_add((links_x + off) as u16), area.y)
+                }),
+            );
+        }
         // And the mouse's (T-716): a click steps onto the chip.
         for (chip, x, w) in cells.into_iter().filter(|c| c.2 > 0) {
             let x = area.x.saturating_add(x as u16);
@@ -307,6 +330,36 @@ fn workflow_mark(app: &App, short: bool) -> Vec<Span<'static>> {
         style = selected_chip(theme, style, lit);
     }
     vec![Span::styled(" ∙ ".to_string(), theme.dim3()), Span::styled(word.to_string(), style)]
+}
+
+/// The boards this one reaches (T-733), each ` ∙ name` in the quiet ink, and
+/// the one words just went to or came from lit with what happened, in the
+/// crown's tint, for `LINK_LIT_MS`: `↯ sent ask to relay`, `↯ relay asks`,
+/// `↯ relay replied`, `↯ replied to relay`; a refusal's why in the plain
+/// ink. Returns the spans and each name's cell offset into them, where a
+/// bolt leaves from or lands.
+fn links_mark(app: &App) -> (Vec<Span<'static>>, Vec<(String, usize)>) {
+    let theme = &app.theme;
+    let lit = app.link_lit();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut offsets: Vec<(String, usize)> = Vec::new();
+    let mut w = 0usize;
+    for l in &app.links {
+        spans.push(Span::styled(" ∙ ".to_string(), theme.dim3()));
+        w += 3;
+        offsets.push((l.name.clone(), w));
+        let word = match lit.filter(|x| x.board == l.name) {
+            Some(x) => {
+                let word = format!("{} {}", crate::glyphs::bolt(theme.glyph_tier()), x.words);
+                let style = if x.refused { theme.base() } else { theme.crown_text() };
+                Span::styled(word, style)
+            }
+            None => Span::styled(mesimon_core::text::scrub_cells(&l.name, false), theme.dim2()),
+        };
+        w += word.content.width();
+        spans.push(word);
+    }
+    (spans, offsets)
 }
 
 /// What the branch name keeps of itself while the row is tight: `main` whole,

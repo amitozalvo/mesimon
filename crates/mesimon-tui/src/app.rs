@@ -3,6 +3,7 @@
 //! and the M3.5 ticket screen (Enter opens it; the old session picker is its
 //! SESSIONS rail now).
 
+pub(crate) mod boards;
 mod images;
 mod summary;
 mod tiers;
@@ -459,6 +460,15 @@ pub enum Mode {
         id: String,
         idx: usize,
         field: Option<EditBuffer>,
+        armed: bool,
+    },
+    /// The boards list (T-733), one level under Settings → Crown: the boards
+    /// this one reaches, the boards open on this machine, and a folder row.
+    /// `typing` is the folder row as a text field; `armed` a linked row's
+    /// first press toward unlinking.
+    Boards {
+        idx: usize,
+        typing: Option<EditBuffer>,
         armed: bool,
     },
     /// The CLAUDE.md offer's confirm dialog (T-217): the snippet that would
@@ -1496,6 +1506,21 @@ pub struct App {
     /// The crown's recent edits (T-411), off the snapshot: the cards to
     /// light for a beat with the word for what was done to them.
     pub crown_touches: Vec<mesimon_core::command::CrownTouch>,
+    /// The boards this one reaches (T-733), off the snapshot.
+    pub links: Vec<mesimon_core::command::LinkView>,
+    /// What went between the crowns lately (T-733), off the snapshot; the
+    /// ones seen, so a touch lights and strikes once.
+    pub(crate) board_touches: Vec<mesimon_core::command::BoardTouch>,
+    /// Bolts between the crown's card and a linked board's name (T-733).
+    pub(crate) link_strikes: Vec<crate::strike::LinkStrike>,
+    /// The header's lit word for the last board touch (T-733).
+    pub(crate) link_lit: Option<boards::LinkLit>,
+    /// The boards open on this machine, once the walk answered (T-733);
+    /// `None` while it runs.
+    pub(crate) open_boards: Option<Vec<crate::boards::OpenBoard>>,
+    pub(crate) boards_rx: Option<Receiver<Vec<crate::boards::OpenBoard>>>,
+    /// The walk itself, set in `lib.rs::run`; a test app has none.
+    pub(crate) board_scanner: Option<crate::boards::Scanner>,
     /// The machine's agent tiers (T-443), off the snapshot: the layer under
     /// `board.tiers`. Read through `App::tiers()`, never alone.
     pub machine_tiers: mesimon_core::tier::MachineTiers,
@@ -2136,6 +2161,13 @@ impl App {
             shell_tail: None,
             terminals: Vec::new(),
             crown_touches: Vec::new(),
+            links: Vec::new(),
+            board_touches: Vec::new(),
+            link_strikes: Vec::new(),
+            link_lit: None,
+            open_boards: None,
+            boards_rx: None,
+            board_scanner: None,
             machine_tiers: Default::default(),
             usage: Default::default(),
             costs: Vec::new(),
@@ -2456,6 +2488,7 @@ impl App {
             || self.status_flashing()
             || self.board.crown.is_some_and(|id| self.crowning_ms(id).is_some())
             || self.striking()
+            || self.link_striking()
             || self.gliding()
             || self.summary_pulsing()
             || self.settings_striking()
@@ -2982,6 +3015,8 @@ impl App {
             terminals,
             crown_touches,
             crown_said,
+            links,
+            board_touches,
             machine_tiers,
             usage,
             costs,
@@ -3053,6 +3088,8 @@ impl App {
         self.costs = costs;
         self.take_prs(prs);
         self.forge = forge;
+        self.links = links;
+        self.absorb_board_touches(board_touches);
         self.crown_said = crown_said.into_iter().map(|s| (s.ticket, s)).collect();
         let said = &self.crown_said;
         self.crown_said_seen.retain(|t, _| said.contains_key(t));
@@ -3653,6 +3690,7 @@ impl App {
         // writer is inside the merge (T-352), so a snapshot now would hold
         // the loop the way the keypress used to, spinner and all.
         dirty |= self.poll_merge()?;
+        dirty |= self.poll_boards();
         let wire = !self.merge_in_flight();
         // Async board-changed events from the daemon.
         while self.client.poll_event() {
@@ -4073,6 +4111,7 @@ impl App {
             | Mode::Sharing { idx, editing: None, .. }
             | Mode::Tiers { idx, naming: None }
             | Mode::TierEdit { idx, field: None, .. }
+            | Mode::Boards { idx, typing: None, .. }
             | Mode::Links { idx, .. }
             | Mode::Summary { idx, .. }
             | Mode::PullRequests { idx, .. }
@@ -4341,6 +4380,8 @@ impl App {
             ("a tier name", buf.paste(text), buf.limit())
         } else if let Mode::TierEdit { field: Some(buf), .. } = &mut self.mode {
             ("a tier's field", buf.paste(text), buf.limit())
+        } else if let Mode::Boards { typing: Some(buf), .. } = &mut self.mode {
+            ("a board's folder", buf.paste(text), buf.limit())
         } else {
             return Ok(false);
         };
@@ -6386,6 +6427,7 @@ impl App {
                     | Mode::Sharing { editing: Some(_), .. }
                     | Mode::Tiers { naming: Some(_), .. }
                     | Mode::TierEdit { field: Some(_), .. }
+                    | Mode::Boards { typing: Some(_), .. }
             )
     }
 
@@ -6453,6 +6495,8 @@ impl App {
             }
             Mode::Tiers { .. } => Scope::Tiers,
             Mode::TierEdit { .. } => Scope::TierEdit,
+            Mode::Boards { typing: Some(_), .. } => Scope::Input,
+            Mode::Boards { .. } => Scope::Boards,
             Mode::Brief { .. } => Scope::Brief,
             Mode::Links { .. } => Scope::Links,
             Mode::Summary { .. } => Scope::Summary,
@@ -6936,11 +6980,14 @@ impl App {
             codex_in_use: false,
             tiers_enter_word: "",
             tier_edit_enter_word: "",
+            crown_links: String::new(),
+            boards_enter_word: "",
             tier_on_step: false,
             tier_can_nudge: false,
         };
         // Agent tiers (T-443): the rows, the dialogs' Enter words and `^n`.
         self.fill_tier_ctx(&mut ctx);
+        self.fill_boards_ctx(&mut ctx);
         // The sharing dialog's Enter reads its word off the row under the
         // cursor, which only the mode knows.
         if let Mode::Sharing { idx, armed, .. } = &self.mode {
@@ -7133,6 +7180,9 @@ impl App {
             Mode::Tiers { naming: Some(_), .. } | Mode::TierEdit { field: Some(_), .. }
         ) {
             return self.key_tier_field(code, mods);
+        }
+        if matches!(self.mode, Mode::Boards { typing: Some(_), .. }) {
+            return self.key_board_field(code, mods);
         }
         let Some(key) = crate::keys::to_key(code, mods) else {
             return Ok(());
@@ -7802,6 +7852,8 @@ impl App {
             Verb::Tiers => {
                 self.mode = Mode::Tiers { idx: 0, naming: None };
             }
+            // The boards this one reaches (T-733).
+            Verb::CrownLinks => self.open_boards_list(),
             // `^n` on the board or the ticket page; the fields take theirs
             // in `key_input` and `key_editor`.
             Verb::TierNext => self.cycle_tier()?,
@@ -7990,7 +8042,12 @@ impl App {
             // there now — theirs if they wrote one, mesimon's otherwise — so
             // a rewrite starts from the sentence being rewritten and not from
             // an empty box.
-            Verb::PromptRebase | Verb::PromptMerged | Verb::PromptNote | Verb::PromptCrownWake => {
+            Verb::PromptRebase
+            | Verb::PromptMerged
+            | Verb::PromptNote
+            | Verb::PromptCrownWake
+            | Verb::PromptBoardAsk
+            | Verb::PromptBoardReply => {
                 let Some(which) = keymap::prompt_of(verb) else { return Ok(()) };
                 let text = self.board.prompts.text(which).to_string();
                 let items = keymap::prompt_items(&self.ctx());
@@ -9096,6 +9153,14 @@ impl App {
                     *idx = step(*idx, n, down);
                 }
             }
+            // Any motion disarms an unlink's first press.
+            Scope::Boards => {
+                let n = self.board_rows().len();
+                if let Mode::Boards { idx, armed, .. } = &mut self.mode {
+                    *idx = step(*idx, n, down);
+                    *armed = false;
+                }
+            }
             Scope::TierEdit => match verb {
                 Verb::CursorLeft | Verb::CursorRight => {
                     if let Err(e) = self.tier_edit_step(verb == Verb::CursorRight) {
@@ -9296,6 +9361,7 @@ impl App {
             }
             Scope::Sharing => self.sharing_act(),
             Scope::Tiers => self.tiers_act(),
+            Scope::Boards => self.boards_act(),
             Scope::TierEdit => self.tier_edit_act(),
             // A column row is a toggle, a cycle, the sort or the delete; the
             // dialog STAYS and the row relabels off the snapshot.
@@ -9429,6 +9495,7 @@ impl App {
             Scope::Usage => self.return_to_settings(Verb::Usage),
             Scope::Prompts => self.return_to_settings(Verb::AgentPrompts),
             Scope::Tiers => self.return_to_settings(Verb::Tiers),
+            Scope::Boards => self.return_to_settings(Verb::CrownLinks),
             // Back to the list, on the tier the page was about.
             Scope::TierEdit => {
                 let Mode::TierEdit { id, .. } = &self.mode else { return };
@@ -14173,6 +14240,9 @@ struct Snapshot {
     crown_touches: Vec<mesimon_core::command::CrownTouch>,
     /// The crown's last words to each card, and its last wake's (T-783).
     crown_said: Vec<mesimon_core::command::CrownSaid>,
+    /// The boards this one reaches, and what went between the crowns (T-733).
+    links: Vec<mesimon_core::command::LinkView>,
+    board_touches: Vec<mesimon_core::command::BoardTouch>,
     machine_tiers: mesimon_core::tier::MachineTiers,
     usage: mesimon_core::usage::Usage,
     costs: Vec<mesimon_core::cost::TicketCost>,
@@ -14210,6 +14280,8 @@ impl Snapshot {
                 costs,
                 prs,
                 forge,
+                links,
+                board_touches,
             } => Some(Self {
                 board,
                 archived,
@@ -14231,6 +14303,8 @@ impl Snapshot {
                 terminals,
                 crown_touches,
                 crown_said,
+                links,
+                board_touches,
                 machine_tiers,
                 usage,
                 costs,
@@ -14348,6 +14422,10 @@ pub(crate) mod test_support {
         pub usage: mesimon_core::usage::Usage,
         /// Answer the checkout's diff with no files: nothing uncommitted.
         pub clean_checkout: bool,
+        /// The boards the fake daemon says this one reaches (T-733), and
+        /// what went between the crowns.
+        pub links: Vec<mesimon_core::command::LinkView>,
+        pub board_touches: Vec<mesimon_core::command::BoardTouch>,
     }
 
     /// The fake daemon's fresh ticket: always `T-999` at the bottom of the
@@ -14791,6 +14869,8 @@ pub(crate) mod test_support {
                         machine_tiers: self.machine_tiers.clone(),
                         usage: self.usage.clone(),
                         costs: Vec::new(),
+                        links: self.links.clone(),
+                        board_touches: self.board_touches.clone(),
                     }
                 }),
                 // The column lifecycle (T-117), as the daemon does it — the
@@ -14985,6 +15065,24 @@ pub(crate) mod test_support {
                     self.board.reviewed_prs = on;
                     Ok(Response::Ok)
                 }
+                // The machine's board links (T-733), as the daemon keeps them.
+                Command::LinkBoard { path } => {
+                    if self.links.iter().any(|l| l.path == path) {
+                        return Ok(Response::Err { message: "linked already".into() });
+                    }
+                    let name = mesimon_core::boardlink::board_name(&path);
+                    self.links.push(mesimon_core::command::LinkView { name, path });
+                    Ok(Response::Ok)
+                }
+                Command::UnlinkBoard { path } => {
+                    let before = self.links.len();
+                    self.links.retain(|l| l.path != path);
+                    Ok(if self.links.len() == before {
+                        Response::Err { message: "is not linked".into() }
+                    } else {
+                        Response::Ok
+                    })
+                }
                 Command::SetFollowUpMode { mode } => {
                     self.board.follow_up_mode = mode;
                     Ok(Response::Ok)
@@ -15156,6 +15254,8 @@ pub(crate) mod test_support {
                 machine_tiers: Default::default(),
                 usage: Default::default(),
                 clean_checkout: false,
+                links: Vec::new(),
+                board_touches: Vec::new(),
             };
             App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme)
                 .expect("fake transport snapshot")
@@ -15194,6 +15294,8 @@ pub(crate) mod test_support {
                 machine_tiers: Default::default(),
                 usage: Default::default(),
                 clean_checkout: false,
+                links: Vec::new(),
+                board_touches: Vec::new(),
             };
             let app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme)
                 .expect("fake transport snapshot");
@@ -15411,6 +15513,8 @@ mod tests {
             machine_tiers: Default::default(),
             usage: Default::default(),
             clean_checkout: false,
+            links: Vec::new(),
+            board_touches: Vec::new(),
         };
         App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme())
             .expect("fake transport snapshot")
@@ -15772,6 +15876,8 @@ mod tests {
             machine_tiers: Default::default(),
             usage: Default::default(),
             clean_checkout: false,
+            links: Vec::new(),
+            board_touches: Vec::new(),
         };
         let app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme())
             .expect("fake transport snapshot");
@@ -15836,6 +15942,8 @@ mod tests {
             machine_tiers: Default::default(),
             usage: Default::default(),
             clean_checkout: false,
+            links: Vec::new(),
+            board_touches: Vec::new(),
         };
         let app = App::new(Box::new(fake), dir.clone(), theme()).expect("fake transport snapshot");
         (app, sent, dir)
@@ -18466,6 +18574,142 @@ mod tests {
         assert!(app.board.crown_watches && app.ctx().crown_watches);
         assert!(app.status.contains("wakes it as its own workers do"), "{}", app.status);
         assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownWatches")).count(), 2);
+    }
+
+    /// The Reaches boards door (T-733) sits under the watches row and opens
+    /// the boards list; with no walk (a test app) the list is the folder row
+    /// alone, a typed folder links through the board command, the linked row
+    /// unlinks on its second press, and Esc lands back on the door, which
+    /// names what the board reaches.
+    #[test]
+    fn reaches_boards_door_links_and_unlinks_through_board_commands() {
+        use boards::BoardRow;
+        use mesimon_core::keymap::Value;
+        let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
+        app.settings_section = keymap::SettingsSection::Crown;
+        let idx = app.settings_row(Verb::CrownLinks);
+        assert_eq!(idx, app.settings_row(Verb::CrownWatches) + 1, "under the watches row");
+        app.mode = Mode::Settings { idx };
+        assert_eq!(keymap::value(Verb::CrownLinks, &app.ctx()), Some(Value::Door("none".into())));
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Boards { idx: 0, typing: None, armed: false });
+        assert_eq!(app.open_boards, Some(Vec::new()), "no walk: nothing open, no scanning row");
+        assert_eq!(app.board_rows(), vec![BoardRow::Folder]);
+        assert_eq!(app.ctx().boards_enter_word, "type a folder");
+        // The folder row is a field; a path typed there links.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Boards { typing: Some(_), .. }));
+        assert!(app.text_field(), "a text field, so the layout pause stays out");
+        for ch in "/code/relay".chars() {
+            app.handle_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent.borrow().iter().any(|r| r.contains("LinkBoard") && r.contains("/code/relay")));
+        assert_eq!(app.links.len(), 1, "{:?}", app.links);
+        assert_eq!(app.links[0].name, "relay");
+        assert!(app.status.contains("relay linked"), "{}", app.status);
+        assert_eq!(app.mode, Mode::Boards { idx: 0, typing: None, armed: false });
+        assert!(matches!(app.board_rows()[0], BoardRow::Linked(_)));
+        assert_eq!(app.ctx().boards_enter_word, "unlink");
+        let (label, detail) = app.board_row_words(&app.board_rows()[0], false);
+        assert_eq!(label, "relay");
+        assert!(detail.contains("/code/relay"), "{detail}");
+        // An open board is a row too, and Enter on it links it.
+        app.open_boards = Some(vec![crate::boards::OpenBoard {
+            name: "site".into(),
+            path: "/code/site".into(),
+            crown: Some("T-4".into()),
+        }]);
+        let (label, detail) = app.board_row_words(&app.board_rows()[1], false);
+        assert_eq!(label, "site  open now");
+        assert!(detail.contains("crown T-4"), "{detail}");
+        app.mode = Mode::Boards { idx: 1, typing: None, armed: false };
+        assert_eq!(app.ctx().boards_enter_word, "link");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.links.len(), 2);
+        assert!(
+            !app.board_rows().iter().any(|r| matches!(r, BoardRow::Open(_))),
+            "linked rows only"
+        );
+        // Unlinking takes two presses; a step in between disarms.
+        app.mode = Mode::Boards { idx: 0, typing: None, armed: false };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Boards { idx: 0, typing: None, armed: true });
+        assert_eq!(app.ctx().boards_enter_word, "confirm unlink");
+        assert!(app
+            .board_row_words(&app.board_rows()[0], true)
+            .1
+            .ends_with("enter again confirms"));
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Boards { idx: 1, typing: None, armed: false }, "motion disarms");
+        app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent
+            .borrow()
+            .iter()
+            .any(|r| r.contains("UnlinkBoard") && r.contains("/code/relay")));
+        assert_eq!(app.links.len(), 1);
+        assert_eq!(app.links[0].name, "site");
+        assert!(app.status.contains("relay unlinked"), "{}", app.status);
+        // Esc lands on the door, which now names the board.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Settings { idx });
+        assert_eq!(keymap::value(Verb::CrownLinks, &app.ctx()), Some(Value::Door("site".into())));
+    }
+
+    /// A board touch (T-733) first seen fresh lights the header's word with
+    /// what happened and strikes once, upward for words that left and
+    /// downward for words that came; a refusal lights in the plain ink and
+    /// strikes nothing; a touch past its beat does nothing; the same touch
+    /// on a later snapshot strikes no second time.
+    #[test]
+    fn a_board_touch_lights_the_header_word_and_strikes_once() {
+        use mesimon_core::command::{BoardTouch, LinkView};
+        let (mut app, _, _) = app_with_claude(SessionState::Running, false);
+        let crown = app.board.tickets[0].id;
+        app.board_mut().crown = Some(crown);
+        app.links = vec![LinkView { name: "relay".into(), path: "/code/relay".into() }];
+        let now = (app.now)();
+        let touch = |action: &str, words: Option<&str>, at_ms| BoardTouch {
+            board: "relay".into(),
+            path: "/code/relay".into(),
+            action: action.into(),
+            words: words.map(str::to_string),
+            crown: Some(crown),
+            at_ms,
+        };
+        app.absorb_board_touches(vec![touch("sent", None, now)]);
+        let lit = app.link_lit().expect("lit");
+        assert_eq!(
+            (lit.board.as_str(), lit.words.as_str(), lit.refused),
+            ("relay", "sent ask to relay", false)
+        );
+        assert_eq!(app.link_strikes.len(), 1);
+        assert!(app.link_strikes[0].up, "words that left go up to the header");
+        assert!(app.link_striking(), "and the frame loop runs fast for the bolt");
+        // The same touch on the next snapshot: no second bolt.
+        app.absorb_board_touches(vec![touch("sent", None, now)]);
+        assert_eq!(app.link_strikes.len(), 1);
+        // Words that came strike downward and read as the other board's.
+        app.absorb_board_touches(vec![touch("sent", None, now), touch("received", None, now + 1)]);
+        assert_eq!(app.link_strikes.len(), 2);
+        assert!(!app.link_strikes[1].up);
+        assert_eq!(app.link_lit().unwrap().words, "relay asks");
+        app.absorb_board_touches(vec![touch("got_reply", None, now + 2)]);
+        assert_eq!(app.link_lit().unwrap().words, "relay replied");
+        app.absorb_board_touches(vec![touch("replied", None, now + 3)]);
+        assert_eq!(app.link_lit().unwrap().words, "replied to relay");
+        // A refusal says why, in the plain ink, with no bolt.
+        let before = app.link_strikes.len();
+        app.absorb_board_touches(vec![touch("refused", Some("is not open"), now + 4)]);
+        let lit = app.link_lit().unwrap();
+        assert_eq!((lit.words.as_str(), lit.refused), ("relay is not open", true));
+        assert_eq!(app.link_strikes.len(), before);
+        // A touch already past its beat — a board opened after it — is quiet.
+        app.link_lit = None;
+        app.absorb_board_touches(vec![touch("sent", None, now.saturating_sub(60_000))]);
+        assert!(app.link_lit().is_none());
     }
 
     /// The crown's lightning (T-544): a touch first seen fresh strikes once,
@@ -21557,6 +21801,8 @@ mod tests {
             machine_tiers: Default::default(),
             usage: Default::default(),
             clean_checkout: false,
+            links: Vec::new(),
+            board_touches: Vec::new(),
         };
         let mut app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme())
             .expect("fake transport snapshot");
@@ -23811,6 +24057,8 @@ mod tests {
                 machine_tiers: Default::default(),
                 usage: Default::default(),
                 clean_checkout: clean,
+                links: Vec::new(),
+                board_touches: Vec::new(),
             };
             let mut app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme())
                 .expect("fake transport snapshot");
@@ -25006,6 +25254,8 @@ mod tests {
             machine_tiers: Default::default(),
             usage: Default::default(),
             clean_checkout: false,
+            links: Vec::new(),
+            board_touches: Vec::new(),
         };
         let mut app = App::new(Box::new(fake), dir.clone(), theme()).unwrap();
         let mut team = super::joined_team_fixture();

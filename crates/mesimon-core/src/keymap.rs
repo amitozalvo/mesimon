@@ -261,6 +261,13 @@ pub enum Scope {
     /// One tier's page (T-443): name, provider, model, effort, delete. The
     /// column dialog's shapes — `h`/`l` step the provider and the effort.
     TierEdit,
+    /// The boards list (T-733), one level under Settings → Crown: the boards
+    /// this one reaches, the boards open on this machine that it could, and
+    /// a row that takes a folder. Its rows are the links and the machine's
+    /// daemons, so the mode builds them; Enter's hint reads what the row
+    /// under the cursor does (`Ctx::boards_enter_word`), and the folder row
+    /// being typed in makes the scope `Input`.
+    Boards,
     /// The Usage dialog (T-327), from the menu's Usage row: each provider's
     /// every quota window with its reset, how old the reading is, and why a
     /// provider has none. `r` reads again now, `s` opens the line's
@@ -283,7 +290,7 @@ impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 36] = [
+    pub const ALL: [Scope; 37] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -320,6 +327,7 @@ impl Scope {
         Scope::Tour,
         Scope::Setup,
         Scope::Arcade,
+        Scope::Boards,
     ];
 
     /// The scope a key falls through to when this one does not bind it.
@@ -343,6 +351,7 @@ impl Scope {
             | Scope::Sharing
             | Scope::Tiers
             | Scope::TierEdit
+            | Scope::Boards
             | Scope::Usage
             | Scope::Summary
             | Scope::PullRequests
@@ -390,6 +399,7 @@ impl Scope {
             Scope::Sharing => "SHARING",
             Scope::Tiers => "TIERS",
             Scope::TierEdit => "TIER",
+            Scope::Boards => "BOARDS",
             Scope::Usage => "USAGE",
             Scope::Brief => "AGENT BRIEF",
             Scope::Releases => "RELEASES",
@@ -701,12 +711,16 @@ pub enum Verb {
     /// The Agents row that opens the agent-prompt list (T-353) — another
     /// door, for the four sentences mesimon types into an agent's box.
     AgentPrompts,
-    /// Its four rows: each opens the template as a text field, in place.
+    /// Its rows, one a template: each opens it as a text field, in place.
     /// Enter saves it, an emptied field puts mesimon's own words back.
     PromptRebase,
     PromptMerged,
     PromptNote,
     PromptCrownWake,
+    /// The two sentences between boards (T-733): a linked board's crown's
+    /// ask as this crown reads it, and its reply.
+    PromptBoardAsk,
+    PromptBoardReply,
     /// The Settings row that holds this machine awake while an agent is
     /// mid-turn (T-288); remembered in `prefs.json`, held by the BOARD, so
     /// the daemon is never told and a closed board sleeps.
@@ -793,6 +807,11 @@ pub enum Verb {
     /// `Summary` names it. Board state like `MergeInto`, on by default;
     /// Enter toggles it.
     ReviewedPrs,
+    /// The Settings door under it (T-733): the boards this one reaches —
+    /// whose crowns the crown's `ask_board` reaches and whose asks land on
+    /// this crown's card. Opens the boards list; the pairs live in the
+    /// machine's `links.toml`, not the board's file.
+    CrownLinks,
     /// The Settings row under it (T-224): whether every claude mesimon
     /// starts on this board carries `brief::TEXT` in its system prompt.
     /// Board state like `McpTools`, and the switch the offer's dialog turns.
@@ -1151,9 +1170,11 @@ impl SettingsSection {
             | Verb::DefaultTier
             | Verb::Tiers
             | Verb::AgentPrompts => Self::Agents,
-            Verb::CrownBudget | Verb::CrownMode | Verb::CrownArchives | Verb::CrownWatches => {
-                Self::Crown
-            }
+            Verb::CrownBudget
+            | Verb::CrownMode
+            | Verb::CrownArchives
+            | Verb::CrownWatches
+            | Verb::CrownLinks => Self::Crown,
             Verb::ProjectPage => Self::About,
             _ => Self::Theme,
         }
@@ -1520,6 +1541,14 @@ pub struct Ctx {
     /// The tiers list's cursor is on a tier its scope orders, beside another
     /// one (T-562): the machine's tiers, or a board's own.
     pub tier_can_nudge: bool,
+    // ---- linked boards (T-733) ----
+    /// The Reaches boards door's label: the names of the boards this one
+    /// reaches, space-joined; empty where it reaches none.
+    pub crown_links: String,
+    /// The boards list's Enter word for the row under the cursor (`link`,
+    /// `unlink`, `unlink ∙ enter again confirms`, `type a folder`); empty is
+    /// inert.
+    pub boards_enter_word: &'static str,
     // ---- search (T-349) ----
     /// The picker is up. Every binding in its scope is gated on it, so a bare
     /// `Ctx` hints none of them — the tag picker's `tag_naming` rule.
@@ -4590,6 +4619,45 @@ static TIERS: &[Binding] = &[
     },
 ];
 
+/// The boards list (T-733), one level under Settings → Crown: the Tiers
+/// list's shapes — `jk` select, Enter does what the row says (link an open
+/// board, unlink a linked one on the second press, type a folder), Esc back.
+static BOARDS: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
+        verb: Verb::CursorDown,
+        show: "jk",
+        hint: |_| "select",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Enter],
+        verb: Verb::Act,
+        show: "enter",
+        hint: |c| c.boards_enter_word,
+        avail: |c| !c.boards_enter_word.is_empty(),
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: true,
+        prio: 20,
+    },
+    Binding {
+        keys: &[Key::Char('q'), Key::Esc],
+        verb: Verb::Back,
+        show: "esc",
+        hint: |_| "back",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 250,
+    },
+];
+
 /// One tier's page (T-443): the column dialog's shapes — `h`/`l` step the
 /// provider and the effort both ways, Enter steps forward, edits a field in
 /// place, or deletes on the second press.
@@ -5592,6 +5660,22 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // The boards this one reaches (T-733): the door to the list that links
+    // and unlinks them. The pairs are the machine's, read by every board's
+    // daemon, so one link reaches both ways and the detail says so.
+    MenuItem {
+        verb: Verb::CrownLinks,
+        label: |_| "Reaches boards".into(),
+        detail: |c| {
+            if c.crown_links.is_empty() {
+                "its asks stay on this board ∙ a board open on this machine can be linked".into()
+            } else {
+                "its asks reach their crowns, and theirs reach it".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
     MenuItem {
         verb: Verb::McpTools,
         label: |_| "Agent tools".into(),
@@ -5681,6 +5765,20 @@ pub static PROMPT_ITEMS: &[MenuItem] = &[
         verb: Verb::PromptCrownWake,
         label: |c| prompt_label(c, crate::prompts::AgentPrompt::CrownWake),
         detail: |c| prompt_detail(c, crate::prompts::AgentPrompt::CrownWake),
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::PromptBoardAsk,
+        label: |c| prompt_label(c, crate::prompts::AgentPrompt::BoardAsk),
+        detail: |c| prompt_detail(c, crate::prompts::AgentPrompt::BoardAsk),
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::PromptBoardReply,
+        label: |c| prompt_label(c, crate::prompts::AgentPrompt::BoardReply),
+        detail: |c| prompt_detail(c, crate::prompts::AgentPrompt::BoardReply),
         avail: always,
         key: "",
     },
@@ -5993,9 +6091,13 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::SystemPrompt,
             Verb::AgentPrompts,
         ],
-        SettingsSection::Crown => {
-            &[Verb::CrownBudget, Verb::CrownMode, Verb::CrownArchives, Verb::CrownWatches]
-        }
+        SettingsSection::Crown => &[
+            Verb::CrownBudget,
+            Verb::CrownMode,
+            Verb::CrownArchives,
+            Verb::CrownWatches,
+            Verb::CrownLinks,
+        ],
         SettingsSection::Terminal => &[
             Verb::TabTitle,
             Verb::TabTitleNeedsYou,
@@ -6132,6 +6234,7 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
         Verb::BoardWorkspace => Value::Switch(c.board_worktree),
         Verb::CrownArchives => Value::Switch(c.crown_archives),
         Verb::CrownWatches => Value::Switch(c.crown_watches),
+        Verb::CrownLinks => Value::Door(or(&c.crown_links, "none").into()),
         Verb::TabTitle => Value::Choice {
             options: &["off", "project", "mesimon ∙ project"],
             at: match c.tab_title_word {
@@ -6291,6 +6394,8 @@ pub fn prompt_of(verb: Verb) -> Option<crate::prompts::AgentPrompt> {
         Verb::PromptMerged => Some(AgentPrompt::Merged),
         Verb::PromptNote => Some(AgentPrompt::NoteUpdated),
         Verb::PromptCrownWake => Some(AgentPrompt::CrownWake),
+        Verb::PromptBoardAsk => Some(AgentPrompt::BoardAsk),
+        Verb::PromptBoardReply => Some(AgentPrompt::BoardReply),
         _ => None,
     }
 }
@@ -8025,6 +8130,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::Sharing => SHARING,
         Scope::Tiers => TIERS,
         Scope::TierEdit => TIER_EDIT,
+        Scope::Boards => BOARDS,
         Scope::Usage => USAGE,
         Scope::Brief => BRIEF,
         Scope::Releases => RELEASES,
@@ -8332,7 +8438,7 @@ mod tests {
         // One rewritten: that row and the door both say so, and the other
         // two still stand on mesimon's words.
         ctx.prompts.set(AgentPrompt::Merged, Some("done, {branch} is in".into()));
-        assert_eq!(value(door.verb, &ctx), Some(Value::Door("1 of 4 yours".into())));
+        assert_eq!(value(door.verb, &ctx), Some(Value::Door("1 of 6 yours".into())));
         let rows = prompt_items(&ctx);
         assert_eq!((rows[1].label)(&ctx), "Merged notice: your words");
         assert!((rows[1].detail)(&ctx).ends_with("done, {branch} is in"));
@@ -8419,6 +8525,7 @@ mod tests {
                 Scope::Tour => 33,
                 Scope::Setup => 34,
                 Scope::Arcade => 35,
+                Scope::Boards => 36,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -10539,7 +10646,13 @@ mod tests {
             ),
             (
                 SettingsSection::Crown,
-                vec![Verb::CrownBudget, Verb::CrownMode, Verb::CrownArchives, Verb::CrownWatches],
+                vec![
+                    Verb::CrownBudget,
+                    Verb::CrownMode,
+                    Verb::CrownArchives,
+                    Verb::CrownWatches,
+                    Verb::CrownLinks,
+                ],
             ),
         ] {
             let c = Ctx { settings_section: section, ..ctx.clone() };

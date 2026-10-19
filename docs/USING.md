@@ -497,6 +497,24 @@ you, and the crown cannot answer, park or merge it. Tell the crown to wait for a
 and ends its turn instead of polling, which would hold the merge train. While the row is off, the
 crown is refused in words that name it, and says so to you. Turned off, every watch ends.
 
+**Settings › Crown › Reaches boards** links this board with another mesimon board on the same
+machine, so the two crowns can talk. The list shows the boards whose daemon is up right now, by
+name and folder, with who wears the crown there; Enter on one links it, and a board that is not
+open is linked by typing its folder. A link works both ways and shows on both boards, so one
+pick is the whole setup; Enter twice on a linked board unlinks it for both. From then on the
+header names each linked board after the merge word, quietly. The crown here can send words to
+the crown there with `ask_board`, naming the board: the words land on that crown's card as
+`♛ <this board>: …` and reach it as its next prompt once it is idle, wrapped in the **Board
+ask** template (Settings › Agents › Agent prompts), which names the asking board and its crown's
+ticket; where that board is supervised, they wait on the card for `^y` as the crown's asks to
+your agents do. The reply is the same tool back, said by the **Board reply** template, and it
+arrives as the asking crown's next prompt. While words go, a bolt runs from the crown's card up
+to the board's name in the header, which lights in the crown's colour for a few seconds with
+what happened: `sent ask to relay`, `relay asks`, `relay replied`, `replied to relay`. A board
+that is not open, has no crown, or is not linked refuses in words, the header says why, and the
+crown is told to raise its hand for what only you can do. Nothing travels except on your say-so:
+no board is linked by itself, and a link reaches boards on this machine alone.
+
 The crown picks the agent tier for each ticket it files or starts, and it picks by your words.
 Give each tier a description in **Settings › Agents › Tiers**: when to use it, in your own words
 (`docs, renames, one-file fixes`, `cross-crate refactors and anything touching the daemon`). The

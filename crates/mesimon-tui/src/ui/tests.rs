@@ -9147,6 +9147,66 @@ fn a_resting_card_shows_its_agents_new_reply_under_its_title() {
 /// T-783: what went between the crown and an agent rides the receiving
 /// card's line under its title, as a new reply does: the crown's ask on the
 /// worker's card behind the crown's mark, the wake's news on the crown's.
+/// The header names the boards this one reaches (T-733), quietly after the
+/// workflow word, and while words have just gone between the crowns the
+/// name lights with what happened, in the crown's tint; a refusal in the
+/// plain ink. Each name's cell is recorded for the bolt.
+#[test]
+fn the_header_names_linked_boards_and_lights_the_one_words_went_to() {
+    use crate::app::boards::LinkLit;
+    use mesimon_core::command::LinkView;
+    let mut b = fixture(false);
+    b.crown = Some(ulid_n(3));
+    let mut app = app_graphite(b);
+    app.links = vec![
+        LinkView { name: "relay".into(), path: "/code/relay".into() },
+        LinkView { name: "site".into(), path: "/code/site".into() },
+    ];
+    let lines = render(&app, 120, 30);
+    assert!(lines[0].contains(" ∙ relay ∙ site"), "{:?}", lines[0]);
+    golden("board_links_120x30", &lines);
+    assert_eq!(
+        app.spots.borrow().links.iter().map(|(n, ..)| n.as_str()).collect::<Vec<_>>(),
+        ["relay", "site"],
+        "each name's cell, for the bolt"
+    );
+    let (_, x, y) = app.spots.borrow().links[0].clone();
+    assert_eq!(y, 0, "on the header row");
+    assert_eq!(lines[0].chars().nth(x as usize), Some('r'), "{:?}", lines[0]);
+
+    // Lit: the name becomes the words, in the crown's tint.
+    app.link_lit = Some(LinkLit {
+        board: "relay".into(),
+        words: "sent ask to relay".into(),
+        refused: false,
+        seen: (app.now)(),
+    });
+    let lines = render(&app, 120, 30);
+    let bolt = crate::glyphs::bolt(app.theme.glyph_tier());
+    assert!(lines[0].contains(&format!(" ∙ {bolt} sent ask to relay ∙ site")), "{:?}", lines[0]);
+    let buf = cells(&app, 120, 30);
+    let x = lines[0].find("sent ask").unwrap();
+    let x = lines[0][..x].chars().count() as u16;
+    assert_eq!(buf[(x, 0)].fg, app.theme.crown_text().fg.expect("tint"), "the crown's tint");
+    // A refusal lights in the plain ink.
+    app.link_lit = Some(LinkLit {
+        board: "relay".into(),
+        words: "relay is not open".into(),
+        refused: true,
+        seen: (app.now)(),
+    });
+    let lines = render(&app, 120, 30);
+    assert!(lines[0].contains(&format!("{bolt} relay is not open")), "{:?}", lines[0]);
+    let buf = cells(&app, 120, 30);
+    let x = lines[0].find("relay is").unwrap();
+    let x = lines[0][..x].chars().count() as u16;
+    assert_eq!(buf[(x, 0)].fg, app.theme.base().fg.expect("base"));
+    // A row too tight for the names drops them whole and keeps the rest.
+    let lines = render(&app, 70, 30);
+    assert!(!lines[0].contains("relay"), "{:?}", lines[0]);
+    assert!(lines[0].contains("BOARD"), "{:?}", lines[0]);
+}
+
 #[test]
 fn a_resting_card_shows_what_went_between_it_and_the_crown() {
     use mesimon_core::command::CrownSaid;
