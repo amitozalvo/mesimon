@@ -28219,3 +28219,18 @@ peak of 0.7 instead of 0.85, so the crest is brighter than before and still stop
 title (graphite: `8C8880` → about `CDCAC4` at the crest, was `B0ACA3`). Grey on grey still; below
 TrueColor it steps to the terminal's own ink, mono holds still. Test:
 `theme::a_running_pipelines_shimmer_crosses_slowly_then_rests`, now asserting both directions.
+
+## A finished, parked card's title is bare (T-860, 2026-10-19, "too verbose on the board")
+
+**The change.** The summary's underline (T-696) is no longer drawn on a card whose boxes are all
+ticked while no agent seat of the ticket has a pane — parked (`Sleeping`) or gone. A full run on
+every delivered card said nothing the boxes had not already said. A live shell does not count as
+work; a working or waiting agent keeps the full run (the job is told but the agent is still on
+it), and one box reopened brings the underline back. The wave of the tick that completes the
+list still plays (`summary_pulse`), and the row is bare when it has crossed. The rows under an
+open card and the dialog are unchanged.
+
+**Where.** `ui/card.rs::render`'s `finished` filter on `under`. **Test:**
+`test_summary_underline_leaves_a_finished_parked_card`. **Owed:** a CHANGELOG line at the next
+bump — **Changed:** a card whose checklist is all ticked and whose agent is parked no longer
+underlines its title.

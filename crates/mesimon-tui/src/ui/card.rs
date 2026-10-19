@@ -824,8 +824,16 @@ pub(super) fn render(
     // A change plays on the underline even while the rows show (the tick
     // from the dialog lands on the cursor card, which is usually open):
     // the wave crosses, and the row is bare again when it is done.
+    // Every box ticked with no agent at work — parked, or gone — the job
+    // is told and the row is bare (T-860, "too verbose on the board"),
+    // once the last tick's wave has crossed. A shell keeps no job.
+    let finished = |s: &&crate::app::TicketSummary| {
+        s.count.done == s.count.total
+            && !sessions.iter().any(|r| r.kind.is_agent() && r.state.has_pane())
+    };
     let under = summary
         .filter(|s| summary_underline && s.count.total > 0)
+        .filter(|s| !finished(s) || summary_pulse.is_some())
         .filter(|_| !rows_shown || summary_pulse.is_some())
         .filter(|_| !(doomed || trail || attn_card || held || snooze.is_some()))
         .map(|s| s.count);

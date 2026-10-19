@@ -6507,6 +6507,42 @@ fn test_summary_underline_runs_the_done_share_of_the_title() {
     assert!((0..120u16).all(|x| !buf[(x, y)].modifier.contains(Modifier::UNDERLINED)));
 }
 
+/// Every box ticked and the agent parked, the title is bare (T-860); a
+/// working agent keeps the full run, and a live shell keeps nothing.
+#[test]
+fn test_summary_underline_leaves_a_finished_parked_card() {
+    let underlined = |app: &App| {
+        let buf = cells(app, 120, 30);
+        let lines = lines_of(&buf);
+        let y = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card") as u16;
+        (0..120u16).any(|x| buf[(x, y)].modifier.contains(Modifier::UNDERLINED))
+    };
+    let mut app = app_summary();
+    let done = SUMMARY_NOTE.replace("- [ ]", "- [x]");
+    app.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(&done)));
+    app.summary_pulses.clear();
+    assert!(underlined(&app), "all done, the agent working: the run");
+    let mut b = (*app.board).clone();
+    for s in b.sessions.iter_mut().filter(|s| s.ticket == ulid_n(3)) {
+        if s.kind == SessionKind::Claude {
+            s.state = SessionState::Sleeping;
+        }
+    }
+    let mut parked = app_graphite(b.clone());
+    parked.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(&done)));
+    parked.summary_pulses.clear();
+    parked.cursor_col = 1;
+    parked.cursor_row = Some(0);
+    assert!(!underlined(&parked), "all done, the agent parked: bare");
+    // One box open again, the parked card wears it.
+    let mut open = app_graphite(b);
+    open.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(SUMMARY_NOTE)));
+    open.summary_pulses.clear();
+    open.cursor_col = 1;
+    open.cursor_row = Some(0);
+    assert!(underlined(&open), "boxes left, the agent parked: the run");
+}
+
 /// Settings › Appearance gates what the card shows of its summary (T-696):
 /// `full` is the underline and the rows, `hover` the rows under the
 /// selected card's reply alone, `none` nothing — and `^j` still lists it.
