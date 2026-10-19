@@ -2,6 +2,7 @@
   ╭─ SETTINGS ∙ BEHAVIOUR ∙ MACHINE ─────────────────────╮
   │                                                      │
   │  Keep this machine awake   ○ off                     │
+  │  Snake while idle          ● on                      │
   │  Mouse                     ● on                      │
   │  Editor                    auto                      │
   │                                                      │
@@ -13,7 +14,6 @@
   │  Worktrees                 ○ off                     │
   │                                                      │
   │ MERGE                                                │
-  │  Merge into                ● main   ○ pull requests  │
   │                                                      │
   │ the machine sleeps on its own clock, agents or not   │
   ╰──────────── jk select ∙ enter change ∙ b this board ─╯

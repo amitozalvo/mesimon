@@ -422,11 +422,10 @@ impl Scope {
 /// is what proves the table and the handler agree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
-    Games,
-    GameBreaker,
-    GameSnake,
+    /// The idle snake's `^g` (T-870): take the snake from the cpu, or
+    /// hand it back.
+    GameTake,
     GamePause,
-    GameRestart,
     // ---- board sharing (T-334, T-335) ----
     /// The menu row that opens the sharing dialog: identity, this board,
     /// the boards this device belongs to.
@@ -725,6 +724,8 @@ pub enum Verb {
     /// mid-turn (T-288); remembered in `prefs.json`, held by the BOARD, so
     /// the daemon is never told and a closed board sleeps.
     KeepAwake,
+    /// The Settings row for the idle snake (T-870).
+    IdleSnake,
     /// Its five rows. The first is the master switch: off means the board
     /// says nothing out loud, and the other four are not offered.
     NotifyToggle,
@@ -1163,6 +1164,7 @@ impl SettingsSection {
             | Verb::SnoozeQuiet
             | Verb::WeekStart
             | Verb::KeepAwake
+            | Verb::IdleSnake
             | Verb::Mouse
             | Verb::EditorChoice => Self::Behaviour,
             Verb::SystemPrompt
@@ -1633,6 +1635,11 @@ pub struct Ctx {
     /// Hold this machine awake while an agent is mid-turn (T-288) — the
     /// preference; the Settings row flips it.
     pub keep_awake: bool,
+    /// The idle snake (T-870): the preference the Settings row flips, and
+    /// whether a person holds the snake now (its steering keys are theirs)
+    /// rather than the cpu.
+    pub idle_snake: bool,
+    pub game_human: bool,
     /// The header chip the cursor is on, while the header has it.
     pub header_chip: HeaderChip,
     /// Remote Control is on, so the header draws its mark (T-641) and the
@@ -2130,52 +2137,32 @@ static ARCADE: &[Binding] = &[
         keys: &[Key::Esc, Key::Char('q')],
         verb: Verb::Back,
         show: "esc",
-        hint: |_| "board",
+        hint: |_| "stop",
         avail: always,
         class: Class::Plain,
         group: Group::App,
         mutates: false,
         prio: 10,
     },
+    // The idle snake (T-870) plays itself; `^g` is how a person takes it,
+    // and how they hand it back.
+    Binding {
+        keys: &[Key::Ctrl('g')],
+        verb: Verb::GameTake,
+        show: "^g",
+        hint: |c| if c.game_human { "cpu plays" } else { "you play" },
+        avail: always,
+        class: Class::Plain,
+        group: Group::View,
+        mutates: false,
+        prio: 5,
+    },
     Binding {
         keys: &[Key::Space],
         verb: Verb::GamePause,
         show: "space",
         hint: |_| "play/pause",
-        avail: always,
-        class: Class::Plain,
-        group: Group::View,
-        mutates: false,
-        prio: 10,
-    },
-    Binding {
-        keys: &[Key::Char('r')],
-        verb: Verb::GameRestart,
-        show: "r",
-        hint: |_| "restart",
-        avail: always,
-        class: Class::Plain,
-        group: Group::View,
-        mutates: false,
-        prio: 20,
-    },
-    Binding {
-        keys: &[Key::Char('1')],
-        verb: Verb::GameBreaker,
-        show: "1",
-        hint: |_| "breaker",
-        avail: always,
-        class: Class::Plain,
-        group: Group::View,
-        mutates: false,
-        prio: 10,
-    },
-    Binding {
-        keys: &[Key::Char('2')],
-        verb: Verb::GameSnake,
-        show: "2",
-        hint: |_| "snake",
-        avail: always,
+        avail: |c| c.game_human,
         class: Class::Plain,
         group: Group::View,
         mutates: false,
@@ -2195,7 +2182,7 @@ static ARCADE: &[Binding] = &[
         verb: Verb::CursorLeft,
         show: "hjkl",
         hint: |_| "steer",
-        avail: always,
+        avail: |c| c.game_human,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
@@ -2204,17 +2191,6 @@ static ARCADE: &[Binding] = &[
 ];
 
 static BOARD: &[Binding] = &[
-    Binding {
-        keys: &[Key::Ctrl('g')],
-        verb: Verb::Games,
-        show: "^g",
-        hint: |_| "games",
-        avail: |c| !c.practice,
-        class: Class::Plain,
-        group: Group::App,
-        mutates: false,
-        prio: 0,
-    },
     // `,` opens Settings (T-717), the shortcut many apps give their
     // preferences; overlay-only, since the menu's row names it already.
     Binding {
@@ -5031,13 +5007,6 @@ static MENU_ITEMS: &[MenuItem] = &[
         avail: |c| !c.practice,
         key: "",
     },
-    MenuItem {
-        verb: Verb::Games,
-        label: |_| "Games".into(),
-        detail: |_| "Breaker and Snake over the live board".into(),
-        avail: |c| !c.practice,
-        key: "^g",
-    },
     // What this build is, in its own words. Never a
     // suggestion either — the header's update chip is the one that says a
     // NEWER one exists, and this row reads the notes the binary carries.
@@ -5103,6 +5072,23 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
                 "no idle sleep while an agent is mid-turn ∙ only while this board is open".into()
             } else {
                 "the machine sleeps on its own clock, agents or not".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
+    // The idle snake (T-870): after an hour with no key or click, a snake
+    // plays itself in the board's empty cells, and `^g` hands it to the
+    // person. On by default; off is for whoever would rather the board
+    // held still, however long they are away.
+    MenuItem {
+        verb: Verb::IdleSnake,
+        label: |_| "Snake while idle".into(),
+        detail: |c| {
+            if c.idle_snake {
+                "after an hour with no key or click ∙ never while a ticket needs you".into()
+            } else {
+                "the board holds still however long you are away".into()
             }
         },
         avail: always,
@@ -6069,6 +6055,9 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             // does outside its own window while it is open, and dead with
             // the process the same way.
             Verb::KeepAwake,
+            // What the board does with its empty cells while nobody is
+            // at the keys.
+            Verb::IdleSnake,
             // How the board is driven: by keys alone, or the mouse too.
             Verb::Mouse,
             // What `^g` and a file link open.
@@ -6208,6 +6197,7 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
         Verb::NotifySoundNeedsYou => Value::Word(or(c.notify_sound_needs_you, "Glass").into()),
         Verb::NotifySoundDone => Value::Word(or(c.notify_sound_done, "Tink").into()),
         Verb::KeepAwake => Value::Switch(c.keep_awake),
+        Verb::IdleSnake => Value::Switch(c.idle_snake),
         Verb::Mouse => Value::Switch(c.mouse),
         Verb::EditorChoice => Value::Word(or(c.editor_pick, "auto").into()),
         Verb::SnoozeQuiet => pick(&["lit", "quiet"], !c.snooze_needs_you),
@@ -6310,6 +6300,7 @@ pub fn pref_key(verb: Verb) -> Option<PrefKey> {
         Verb::NotifyDockBounce => PrefKey::NotifyDockBounce,
         Verb::NotifyVia => PrefKey::NotifyVia,
         Verb::KeepAwake => PrefKey::KeepAwake,
+        Verb::IdleSnake => PrefKey::IdleSnake,
         Verb::NotifyToggle => PrefKey::Notify,
         Verb::NotifyDone => PrefKey::NotifyDone,
         Verb::NotifyFocused => PrefKey::NotifyFocused,
@@ -8340,7 +8331,9 @@ mod tests {
     #[test]
     fn arcade_keys_are_local_and_do_not_replace_board_navigation() {
         let ctx = Ctx { has_ticket: true, ..Default::default() };
-        assert_eq!(resolve(Scope::Board, Key::Ctrl('g'), &ctx), Some(Verb::Games));
+        // T-870: nothing on the board opens the snake; it comes on its own.
+        assert_eq!(resolve(Scope::Board, Key::Ctrl('g'), &ctx), None);
+        assert!(!MENU_ITEMS.iter().any(|i| i.verb == Verb::GameTake));
         assert_eq!(resolve(Scope::Board, Key::Char('g'), &ctx), Some(Verb::First));
         assert_eq!(resolve(Scope::Board, Key::Char('G'), &ctx), Some(Verb::Last));
         assert_eq!(Scope::Arcade.parent(), None);
@@ -8355,10 +8348,21 @@ mod tests {
             assert_eq!(resolve(Scope::Arcade, key, &ctx), None);
         }
         assert!(bindings(Scope::Arcade).iter().all(|b| !b.mutates));
-        assert_eq!(resolve(Scope::Arcade, Key::Left, &ctx), Some(Verb::CursorLeft));
-        assert_eq!(resolve(Scope::Arcade, Key::Up, &ctx), Some(Verb::CursorUp));
-        assert_eq!(resolve(Scope::Arcade, Key::Space, &ctx), Some(Verb::GamePause));
+        // While the cpu plays, the steering keys are nobody's: `^g` takes
+        // the snake, and only then do they steer and `space` pause.
+        assert_eq!(resolve(Scope::Arcade, Key::Ctrl('g'), &ctx), Some(Verb::GameTake));
+        assert_eq!(hint_for(Scope::Arcade, Verb::GameTake, &ctx), Some(("^g", "you play")));
+        assert_eq!(resolve(Scope::Arcade, Key::Left, &ctx), None);
+        assert_eq!(resolve(Scope::Arcade, Key::Space, &ctx), None);
+        let human = Ctx { game_human: true, ..ctx.clone() };
+        assert_eq!(hint_for(Scope::Arcade, Verb::GameTake, &human), Some(("^g", "cpu plays")));
+        assert_eq!(resolve(Scope::Arcade, Key::Left, &human), Some(Verb::CursorLeft));
+        assert_eq!(resolve(Scope::Arcade, Key::Up, &human), Some(Verb::CursorUp));
+        assert_eq!(resolve(Scope::Arcade, Key::Space, &human), Some(Verb::GamePause));
         assert_eq!(resolve(Scope::Arcade, Key::Esc, &ctx), Some(Verb::Back));
+        assert_eq!(hint_for(Scope::Arcade, Verb::Back, &ctx), Some(("esc", "stop")));
+        assert_eq!(SettingsSection::for_verb(Verb::IdleSnake), SettingsSection::Behaviour);
+        assert_eq!(pref_key(Verb::IdleSnake), Some(PrefKey::IdleSnake));
     }
 
     /// T-674: `c` copies, on the board and on the ticket page alike, and
@@ -10623,6 +10627,7 @@ mod tests {
                 SettingsSection::Behaviour,
                 vec![
                     Verb::KeepAwake,
+                    Verb::IdleSnake,
                     Verb::Mouse,
                     Verb::EditorChoice,
                     Verb::SnoozeQuiet,
@@ -10668,7 +10673,7 @@ mod tests {
         .iter()
         .map(|m| m.verb)
         .collect();
-        assert_eq!(on[9..11], [Verb::MergeTrain, Verb::MergeTrainNotice]);
+        assert_eq!(on[10..12], [Verb::MergeTrain, Verb::MergeTrainNotice]);
         for v in prefs {
             assert!(!verbs.contains(&v), "{v:?} is a preference and belongs in Settings");
         }
@@ -11330,6 +11335,7 @@ mod tests {
             Verb::TabSubtitle,
             Verb::TabIcon,
             Verb::KeepAwake,
+            Verb::IdleSnake,
             Verb::SnoozeQuiet,
             Verb::WeekStart,
             Verb::MergeTrain,

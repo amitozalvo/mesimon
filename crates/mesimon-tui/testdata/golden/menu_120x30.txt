@@ -4,7 +4,8 @@
 
    Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y
 
-   Keymap validator       >╭─ MENU ─────────────────────────────────────────────────────────╮
+   Keymap validator       >1y    ⠋ Adopt drawer import  >1y    x Flaky e2e on runner  >1y
+                           ╭─ MENU ─────────────────────────────────────────────────────────╮
                            │   External sessions                                            │
                            │     agent sessions in this repo that mesimon did not start     │
                            │   Archived tickets                                             │
@@ -15,13 +16,12 @@
                            │     theme, notifications, agents, crown, usage                 │
                            │   Guided tour                                                  │
                            │     every move, shown and tried on a practice board            │
-                           │   Games                                                     ^g │
-                           │     Breaker and Snake over the live board                      │
                            │   Release notes                                                │
                            │     what changed in each version, newest first                 │
                            │   Quit mesimon                                               q │
                            │     sessions keep running                                      │
                            ╰───────────────────────── jk select ∙ enter choose ∙ esc close ─╯
+
 
 
 

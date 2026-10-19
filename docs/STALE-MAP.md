@@ -28618,3 +28618,52 @@ raises its hand naming `rig-peer` (`crown_hand:rig-peer`, T-862's rule).
 **Owed:** a CHANGELOG line at the next bump — **Added:** Settings › Crown › Reaches boards links
 two mesimon boards on one machine so their crowns can ask each other; the header names the
 linked boards and lights with what went between them.
+
+## The snake comes out on its own, and nothing opens it (T-870, 2026-10-19)
+
+T-823's two games, their menu row and the board's `^g` are gone. What remains is Ticket
+Snake, and it is a screensaver: after an hour with no key, paste or click (`App::last_input`,
+stamped in `on_event` for everything but focus and resize; `App::idle_after`, an hour unless
+`lib.rs::run` read `MESIMON_IDLE_SNAKE_MS`), on a calm board — nothing needs you, the daemon
+answers, the terminal is focused and not under `MIN_W`x`MIN_H` (`App::too_small`, set by
+`ui::draw`), the board screen with no dialog, no tour, no practice board — `App::drive_arcade`
+seats an `Arcade` and the cpu plays it. **An agent working is not the person at the keys**:
+the clock reads input alone, so a board whose tickets are busy still gets its snake.
+
+**The cpu** (`Snake::cpu_dir`): the shortest path to the snack when the snake can still
+reach its own tail after eating there (the walk is simulated, head first, and the tail
+checked from the new head), else the step that leaves the longest way round to the tail,
+else any free step. The neck is in every blocked set, so it never reverses. Tests: 4,000
+steps on an open 60x20 field without a loss and past 100 points; 3,000 around four cards. A
+lost round stays two seconds (`REPLAY_AFTER`) and starts over at zero; the best survives.
+
+**Holds and stops.** The cpu's snake stops outright — the board is the board again — the
+moment a ticket needs you or the daemon is down (`drive_arcade`, before `observe`), and does
+not come back while that holds. It pauses, and resumes on its own, while the terminal is
+unfocused (`App::focused`, from the focus events), too small, or under the help card
+(`Arcade::drive`'s `hold`). A person's snake keeps T-823's pauses, every one waiting for
+`space`. `esc`/`q`, a card click and the wheel stop it as before.
+
+**`^g` is the handover**, both ways, inside `Scope::Arcade` only (`Verb::GameTake`; the
+Board binding and the menu row are deleted, `Verb::Games`/`GameBreaker`/`GameSnake`/
+`GameRestart` with them). The steering keys and `space` are gated on `Ctx::game_human`, so
+they are inert and unhinted while the cpu plays; the footer reads `^g you play ∙ esc stop ∙
+? keys`, and `^g cpu plays` once taken. A person's lost round offers `space for another`.
+
+**The switch** is `PrefKey::IdleSnake` (`idle_snake`, on by default, machine-only: whether a
+person wants their board to play while they are away is theirs), the Behaviour row `Snake
+while idle` beside `Keep this machine awake`; off also stops a snake that is out. The row
+makes Behaviour one longer, so at 120x30 it scrolls by one (`settings_behaviour_120x30_end`).
+
+**Breaker is deleted**, not kept behind a key: with nothing opening the arcade by hand it had
+no road, and the user chose Snake. `arcade.rs` lost its half, `Kind`, and the breaker tests;
+the `arcade_breaker_120x30` golden is gone. Help goldens lost the `^g games` row; the menu
+goldens the Games row.
+
+**Tests.** `arcade`: the handover, the cpu's survival on open and carded fields, no reversal,
+the replay, a person's lost round, holds, the path walker. `ui::tests`:
+`the_snake_comes_out_idle_on_a_calm_board_and_nowhere_else` (the hour, the menu, focus,
+daemon down, a lit ticket, a ticket lighting mid-round, a key resetting the clock, `esc`, the
+switch) and T-823's tests rewritten for one game. Keymap: `arcade_keys_are_local…` says `^g`
+on the board is nothing and the steering keys are the person's alone. No e2e and no rig: the
+daemon, the wire and what an agent is told are untouched.

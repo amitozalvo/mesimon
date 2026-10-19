@@ -2,9 +2,10 @@
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    0
 
-   Decay treatments       >╭─ MENU ─────────────────────────────────────────────────────────╮
-                           │ SUGGESTED                                                      │
-   Keymap validator       >│ ◦ Install v0.1.0-alpha.5                                       │
+   Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y
+                           ╭─ MENU ─────────────────────────────────────────────────────────╮
+   Keymap validator       >│ SUGGESTED                                                      │
+                           │ ◦ Install v0.1.0-alpha.5                                       │
                            │     downloads and verifies it ∙ nothing restarts yet           │
                            │                                                                │
                            │   External sessions                                            │
@@ -17,13 +18,12 @@
                            │     theme, notifications, agents, crown, usage                 │
                            │   Guided tour                                                  │
                            │     every move, shown and tried on a practice board            │
-                           │   Games                                                     ^g │
-                           │     Breaker and Snake over the live board                      │
                            │   Release notes                                                │
                            │     what changed in each version, newest first                 │
                            │   Quit mesimon                                               q │
                            │     sessions keep running                                      │
                            ╰───────────────────────── jk select ∙ enter choose ∙ esc close ─╯
+
 
 
  Install v0.1.0-alpha.5 ∙ downloads and verifies it ∙ nothing restarts yet

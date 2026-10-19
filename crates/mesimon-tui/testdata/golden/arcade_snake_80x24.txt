@@ -1,5 +1,5 @@
  BOARD   mesimon › kanban-tui  !1    7 tickets
- Ticket Snake  0 pts  best 0  board resized; space to continue
+ Ticket Snake  0 pts  best 0
    TODO                           2    IN PROGRESS                   2   2   1
 
    Decay treatments             >1y    ⠋ Fix OSC-11 detection      >1y   R   D
@@ -21,4 +21,4 @@
                                                           oo@
 
  T-1 Decay treatments ∙ created >1y ago
- PLAY  hjkl steer ∙ space play/pause ∙ 1 breaker ∙ 2 snake   esc board ∙ ? keys
+ PLAY  ^g you play                                            esc stop ∙ ? keys

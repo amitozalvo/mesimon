@@ -12605,18 +12605,21 @@ fn the_board_recedes_behind_a_cards_dialog() {
     assert_eq!(after[(36, fix)].bg, before[(36, fix)].bg, "lit, as the cursor's card");
 }
 
-// T-823: the games share the board, not a frozen picture of it.
+// T-823: the snake shares the board, not a frozen picture of it. T-870: it
+// comes out on its own; a test seats it the way `App::drive_arcade` does.
 fn open_arcade(app: &mut App) {
+    *app.arcade.borrow_mut() = Some(crate::arcade::Arcade::new(app.board.needs_you_tickets()));
+}
+
+fn ctrl_g(app: &mut App) {
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     app.handle_key(KeyCode::Char('g'), KeyModifiers::CONTROL).unwrap();
 }
 
 #[test]
-fn golden_arcade_breaker_and_snake() {
+fn golden_arcade_snake() {
     let mut app = app_graphite(fixture(true));
     open_arcade(&mut app);
-    golden("arcade_breaker_120x30", &render(&app, 120, 30));
-    press(&mut app, '2');
     app.arcade.borrow_mut().as_mut().unwrap().seed_for_test(42);
     golden("arcade_snake_120x30", &render(&app, 120, 30));
     golden("arcade_snake_80x24", &render(&app, 80, 24));
@@ -12637,32 +12640,25 @@ fn arcade_preserves_every_card_cell_and_the_header_in_every_profile() {
                 let before = cells(&app, w, h);
                 let cards = app.spots.borrow().cards.clone();
                 open_arcade(&mut app);
-                for kind in ['1', '2'] {
-                    press(&mut app, kind);
-                    let after = cells(&app, w, h);
-                    for card in &cards {
-                        for y in card.y..card.y + card.rows {
-                            for x in card.x..card.x + card.width {
-                                assert_eq!(
-                                    before[(x, y)],
-                                    after[(x, y)],
-                                    "{flavor:?} {profile:?} {kind} card at {x},{y}"
-                                );
-                            }
+                let after = cells(&app, w, h);
+                for card in &cards {
+                    for y in card.y..card.y + card.rows {
+                        for x in card.x..card.x + card.width {
+                            assert_eq!(
+                                before[(x, y)],
+                                after[(x, y)],
+                                "{flavor:?} {profile:?} card at {x},{y}"
+                            );
                         }
                     }
+                }
+                for x in 0..w {
+                    assert_eq!(before[(x, 0)], after[(x, 0)]);
+                }
+                for y in 2..h - 2 {
                     for x in 0..w {
-                        assert_eq!(before[(x, 0)], after[(x, 0)]);
-                    }
-                    for y in 2..h - 2 {
-                        for x in 0..w {
-                            if before[(x, y)].symbol() != " " {
-                                assert_eq!(
-                                    before[(x, y)],
-                                    after[(x, y)],
-                                    "existing ink at {x},{y}"
-                                );
-                            }
+                        if before[(x, y)].symbol() != " " {
+                            assert_eq!(before[(x, y)], after[(x, y)], "existing ink at {x},{y}");
                         }
                     }
                 }
@@ -12684,13 +12680,15 @@ fn arcade_input_cannot_mutate_tickets_or_start_agents_and_escape_restores_naviga
     render(&app, 120, 30);
     let cursor = (app.cursor_col, app.cursor_row);
     sent.borrow_mut().clear();
-    for c in ['1', '2', ' ', 'h', 'j', 'k', 'l', 'r', 'c', 'x', 'd', '>', '<', 'm', 'a', 'n'] {
+    ctrl_g(&mut app);
+    assert!(app.ctx().game_human);
+    for c in [' ', 'h', 'j', 'k', 'l', 'r', 'c', 'x', 'd', '>', '<', 'm', 'a', 'n', '1', '2'] {
         press(&mut app, c);
     }
     app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
     assert_eq!(app.scope(), Scope::Arcade);
     assert_eq!((app.cursor_col, app.cursor_row), cursor);
-    assert!(sent.borrow().is_empty(), "games sent requests: {:?}", sent.borrow());
+    assert!(sent.borrow().is_empty(), "the snake sent requests: {:?}", sent.borrow());
     app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
     assert_eq!(app.scope(), Scope::Board);
     press(&mut app, 'l');
@@ -12699,11 +12697,10 @@ fn arcade_input_cannot_mutate_tickets_or_start_agents_and_escape_restores_naviga
 
 #[test]
 fn arcade_shows_live_board_changes_without_interrupting_play() {
-    use mesimon_core::keymap::Verb;
     let mut app = app_graphite(fixture(false));
     open_arcade(&mut app);
     render(&app, 120, 30);
-    app.arcade.borrow_mut().as_mut().unwrap().key(Verb::GamePause);
+    app.drive_arcade(std::time::Instant::now());
     assert!(app.arcade.borrow().as_ref().unwrap().playing());
     app.board_mut().tickets[0].title = "A fresh title while playing".into();
     let live = render(&app, 120, 30).join("\n");
@@ -12717,39 +12714,126 @@ fn arcade_shows_live_board_changes_without_interrupting_play() {
 
 #[test]
 fn arcade_keeps_playing_through_every_phase_of_a_card_move() {
-    use mesimon_core::keymap::Verb;
-    for kind in ['1', '2'] {
-        let mut app = app_gliding(0);
-        open_arcade(&mut app);
-        press(&mut app, kind);
+    let mut app = app_gliding(0);
+    open_arcade(&mut app);
+    render(&app, 120, 30);
+    app.drive_arcade(std::time::Instant::now());
+    for ms in (0..=crate::glide::GLIDE_MS + 500).step_by(50) {
+        app.glides[0].start = mesimon_core::clock::now_ms() - ms;
         render(&app, 120, 30);
-        app.arcade.borrow_mut().as_mut().unwrap().key(Verb::GamePause);
-        for ms in (0..=crate::glide::GLIDE_MS + 500).step_by(50) {
-            app.glides[0].start = mesimon_core::clock::now_ms() - ms;
-            render(&app, 120, 30);
-            assert!(app.arcade.borrow().as_ref().unwrap().playing(), "game {kind} at {ms}ms");
-        }
+        assert!(app.arcade.borrow().as_ref().unwrap().playing(), "at {ms}ms");
     }
 }
 
 #[test]
 fn arcade_help_and_mouse_exit_use_the_same_keys() {
-    use mesimon_core::keymap::{Scope, Verb};
+    use mesimon_core::keymap::Scope;
     use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
     let mut app = app_graphite(fixture(false));
     open_arcade(&mut app);
     render(&app, 120, 30);
-    app.arcade.borrow_mut().as_mut().unwrap().key(Verb::GamePause);
+    app.drive_arcade(std::time::Instant::now());
+    assert!(app.arcade.borrow().as_ref().unwrap().playing());
     press(&mut app, '?');
     assert!(app.help);
+    app.drive_arcade(std::time::Instant::now());
     assert!(!app.arcade.borrow().as_ref().unwrap().playing());
     press(&mut app, '?');
+    app.drive_arcade(std::time::Instant::now());
+    assert!(app.arcade.borrow().as_ref().unwrap().playing(), "help closed, the cpu plays on");
     let lines = render(&app, 120, 30);
-    let x = lines[29].find("esc board").expect("exit hint") as u16;
+    assert!(lines[29].contains("^g you play"), "{}", lines[29]);
+    let x = lines[29].find("esc stop").expect("exit hint") as u16;
     app.prefs.mouse = true;
     for kind in [MouseEventKind::Down(MouseButton::Left), MouseEventKind::Up(MouseButton::Left)] {
         app.on_mouse(MouseEvent { kind, column: x, row: 29, modifiers: KeyModifiers::NONE })
             .unwrap();
     }
     assert_eq!(app.scope(), Scope::Board);
+}
+
+/// T-870: the snake comes out after the idle hour on a calm board, and
+/// only there; a key resets the clock without stopping a snake that is
+/// out; `esc` stops it; the Settings switch holds it off.
+#[test]
+fn the_snake_comes_out_idle_on_a_calm_board_and_nowhere_else() {
+    use mesimon_core::keymap::{Key, Scope, Verb};
+    use ratatui::crossterm::event::{Event as TermEvent, KeyCode, KeyModifiers};
+    use std::time::{Duration, Instant};
+    let mut app = app_graphite(fixture(false));
+    let now = Instant::now();
+    app.drive_arcade(now);
+    assert!(app.arcade.borrow().is_none(), "an hour has not passed");
+    assert_eq!(app.idle_after, Duration::from_secs(3600));
+    app.idle_after = Duration::ZERO;
+    // Not on a dialog, not unfocused, not while a ticket needs you.
+    app.mode = Mode::Menu { idx: 0 };
+    app.drive_arcade(now);
+    assert!(app.arcade.borrow().is_none(), "the menu is open");
+    app.mode = Mode::Normal;
+    app.focused = false;
+    app.drive_arcade(now);
+    assert!(app.arcade.borrow().is_none(), "nobody is looking");
+    app.focused = true;
+    app.daemon_down = true;
+    app.drive_arcade(now);
+    assert!(app.arcade.borrow().is_none(), "the board is cut off");
+    app.daemon_down = false;
+    let mut lit = app_graphite(fixture(true));
+    lit.idle_after = Duration::ZERO;
+    lit.drive_arcade(now);
+    assert!(lit.arcade.borrow().is_none(), "a ticket needs you");
+    // A calm board: out it comes, the cpu's, and the board's keys are off.
+    app.drive_arcade(now);
+    assert!(app.arcade.borrow().is_some());
+    assert_eq!(app.scope(), Scope::Arcade);
+    assert!(app.arcade.borrow().as_ref().unwrap().cpu());
+    render(&app, 120, 30);
+    app.drive_arcade(now);
+    assert!(app.arcade.borrow().as_ref().unwrap().playing());
+    // A ticket needing you stops the cpu's snake outright.
+    app.board_mut().sessions[2].state = SessionState::RequiresAction { reason: Reason::Permission };
+    app.drive_arcade(now);
+    assert!(app.arcade.borrow().is_none(), "a ticket needs you: the board is the board again");
+    app.drive_arcade(now);
+    assert!(app.arcade.borrow().is_none(), "and it stays off while the ticket does");
+    app.board_mut().sessions[2].state = SessionState::Running;
+    // Looking away holds it; looking back lifts the hold.
+    app.drive_arcade(now);
+    assert!(app.arcade.borrow().is_some());
+    render(&app, 120, 30);
+    app.on_event(TermEvent::FocusLost).unwrap();
+    app.drive_arcade(now);
+    assert!(!app.arcade.borrow().as_ref().unwrap().playing());
+    app.on_event(TermEvent::FocusGained).unwrap();
+    app.drive_arcade(now);
+    assert!(app.arcade.borrow().as_ref().unwrap().playing());
+    // A key is the person: the clock restarts, the snake stays out.
+    app.idle_after = Duration::from_secs(3600);
+    app.handle_key(KeyCode::Char('?'), KeyModifiers::NONE).unwrap();
+    app.handle_key(KeyCode::Char('?'), KeyModifiers::NONE).unwrap();
+    assert!(app.arcade.borrow().is_some());
+    assert!(now.saturating_duration_since(app.last_input) < Duration::from_secs(1));
+    // `esc` stops it, and the clock is the keypress's.
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    assert!(app.arcade.borrow().is_none());
+    assert_eq!(app.scope(), Scope::Board);
+    app.drive_arcade(Instant::now());
+    assert!(app.arcade.borrow().is_none(), "the esc was a key");
+    // The Settings switch: off holds it off, and stops one that is out.
+    app.idle_after = Duration::ZERO;
+    app.drive_arcade(Instant::now());
+    assert!(app.arcade.borrow().is_some());
+    let ctx = app.ctx();
+    app.dispatch(Verb::IdleSnake, Key::Enter, Scope::Menu, &ctx).unwrap();
+    assert!(!app.prefs.idle_snake);
+    assert!(app.arcade.borrow().is_none());
+    assert!(app.status.contains("holds still"), "{}", app.status);
+    app.drive_arcade(Instant::now());
+    assert!(app.arcade.borrow().is_none());
+    let ctx = app.ctx();
+    app.dispatch(Verb::IdleSnake, Key::Enter, Scope::Menu, &ctx).unwrap();
+    assert!(app.prefs.idle_snake);
+    app.drive_arcade(Instant::now());
+    assert!(app.arcade.borrow().is_some());
 }

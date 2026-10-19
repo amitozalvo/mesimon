@@ -2,7 +2,7 @@
 
    TOD╭─ SETTINGS ∙ THIS BOARD ──────────────────────────────────────────────────────────────────────────────────╮   0
       │                                                                                                          │
-   Dec│  Theme               Keep this machine awake   ○ off                                          inherited  │
+   Dec│  Theme               Snake while idle          ● on                                             machine  │
       │                      Mouse                     ● on                                             machine  │
    Key│  Appearance          Editor                    auto                                             machine  │
       │                                                                                                          │

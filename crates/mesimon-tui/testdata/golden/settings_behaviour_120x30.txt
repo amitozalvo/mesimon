@@ -3,26 +3,26 @@
    TOD╭─ SETTINGS ∙ MACHINE ─────────────────────────────────────────────────────────────────────────────────────╮   0
       │                                                                                                          │
    Dec│  Theme               Keep this machine awake   ○ off                                                     │
-      │                      Mouse                     ● on                                                      │
-   Key│  Appearance          Editor                    auto                                                      │
+      │                      Snake while idle          ● on                                                      │
+   Key│  Appearance          Mouse                     ● on                                                      │
+      │                      Editor                    auto                                                      │
+      │  Notifications                                                                                           │
+      │                     SNOOZE                                                                               │
+      │▎ Behaviour           Comes back                ● lit    ○ quiet                                          │
+      │                      Week starts on            Monday                                                    │
+      │  Agents                                                                                                  │
+      │                     TICKETS                                                                              │
+      │  Crown               Worktrees                 ○ off                                                     │
       │                                                                                                          │
-      │  Notifications      SNOOZE                                                                               │
-      │                      Comes back                ● lit    ○ quiet                                          │
-      │▎ Behaviour           Week starts on            Monday                                                    │
+      │  Terminal           MERGE                                                                                │
+      │                      Merge into                ● main   ○ pull requests                                  │
+      │  Usage               Reviewed pull requests    ● on                                                      │
       │                                                                                                          │
-      │  Agents             TICKETS                                                                              │
-      │                      Worktrees                 ○ off                                                     │
-      │  Crown                                                                                                   │
-      │                     MERGE                                                                                │
-      │  Terminal            Merge into                ● main   ○ pull requests                                  │
-      │                      Reviewed pull requests    ● on                                                      │
-      │  Usage                                                                                                   │
-      │                     REMOTE                                                                               │
-      │  About               Fetch from the remote     ● off    ○ 1 min           ○ 5 min   ○ 15 min             │
+      │  About              REMOTE                                                                               │
+      │                      Fetch from the remote     ● off    ○ 1 min           ○ 5 min   ○ 15 min             │
       │                                                                                                          │
       │                     AUTO MERGE                                                                           │
       │                      Auto merge                ● on                                                      │
-      │                      Tells the agent           ● on                                                      │
       │                                                                                                          │
       │                     the machine sleeps on its own clock, agents or not                                   │
       ╰───────────────────────────────────────────────── jk select ∙ enter change ∙ b this board ∙ esc sections ─╯

@@ -381,6 +381,10 @@ pub(crate) struct Prefs {
     /// thing an update starts doing. Held only while a board is open, and
     /// only where `caffeine::find` found a rung.
     pub keep_awake: bool,
+    /// A snake plays itself in the board's empty cells after an hour with
+    /// no key or click (T-870). ON by default: it draws in cells nothing
+    /// else uses, sends nothing, and stops at the first key.
+    pub idle_snake: bool,
     /// The board says it out loud (T-282): an OS banner and a sound when an
     /// agent needs you. OFF by default and deliberately — the board is quiet
     /// on purpose, and a channel out is a thing the user asks for, never a
@@ -500,6 +504,7 @@ impl Default for Prefs {
             tab_subtitle: true,
             tab_icon: true,
             keep_awake: false,
+            idle_snake: true,
             notify: true,
             notify_done: true,
             notify_focused: false,
@@ -549,6 +554,7 @@ const TAB_ICON_KEY: &str = PrefKey::TabIcon.name();
 const NOTIFY_DOCK_BOUNCE_KEY: &str = PrefKey::NotifyDockBounce.name();
 const NOTIFY_VIA_KEY: &str = PrefKey::NotifyVia.name();
 const KEEP_AWAKE_KEY: &str = PrefKey::KeepAwake.name();
+const IDLE_SNAKE_KEY: &str = PrefKey::IdleSnake.name();
 const NOTIFY_KEY: &str = PrefKey::Notify.name();
 const NOTIFY_DONE_KEY: &str = PrefKey::NotifyDone.name();
 const NOTIFY_FOCUSED_KEY: &str = PrefKey::NotifyFocused.name();
@@ -738,6 +744,7 @@ impl Prefs {
             PrefKey::TabSubtitle => onoff(self.tab_subtitle),
             PrefKey::TabIcon => onoff(self.tab_icon),
             PrefKey::KeepAwake => onoff(self.keep_awake),
+            PrefKey::IdleSnake => onoff(self.idle_snake),
             PrefKey::Notify => onoff(self.notify),
             PrefKey::NotifyDone => onoff(self.notify_done),
             PrefKey::NotifyFocused => onoff(self.notify_focused),
@@ -815,6 +822,7 @@ impl Prefs {
         doc.insert(TAB_ICON_KEY.into(), Value::from(self.tab_icon));
         doc.insert(NOTIFY_DOCK_BOUNCE_KEY.into(), Value::from(self.notify_dock_bounce));
         doc.insert(KEEP_AWAKE_KEY.into(), Value::from(self.keep_awake));
+        doc.insert(IDLE_SNAKE_KEY.into(), Value::from(self.idle_snake));
         doc.insert(NOTIFY_KEY.into(), Value::from(self.notify));
         doc.insert(NOTIFY_DONE_KEY.into(), Value::from(self.notify_done));
         doc.insert(NOTIFY_FOCUSED_KEY.into(), Value::from(self.notify_focused));
@@ -1217,6 +1225,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let mouse = flag(MOUSE_KEY, true);
     let new_replies = flag(NEW_REPLIES_KEY, true);
     let keep_awake = doc.get(KEEP_AWAKE_KEY).and_then(Value::as_bool).unwrap_or(false);
+    let idle_snake = flag(IDLE_SNAKE_KEY, true);
     let notify = doc.get(NOTIFY_KEY).and_then(Value::as_bool).unwrap_or(true);
     let notify_done = doc.get(NOTIFY_DONE_KEY).and_then(Value::as_bool).unwrap_or(true);
     let notify_focused = doc.get(NOTIFY_FOCUSED_KEY).and_then(Value::as_bool).unwrap_or(false);
@@ -1294,6 +1303,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         tab_subtitle,
         tab_icon,
         keep_awake,
+        idle_snake,
         notify,
         notify_done,
         notify_focused,
@@ -1852,6 +1862,26 @@ mod tests {
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["new_replies"], false);
         assert!(!PrefKey::NewReplies.board_overridable());
+    }
+
+    /// The idle snake (T-870): absent is on, an off round-trips, and a
+    /// board cannot take it — whether a person wants their board to play
+    /// while they are away is theirs, not the board's.
+    #[test]
+    fn idle_snake_defaults_on_and_round_trips() {
+        let p = scratch("idlesnake");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","light":"chalk"}"#).unwrap();
+        let mut l = load(&p);
+        assert!(l.prefs.idle_snake, "absent is the default: on");
+        assert_eq!(l.prefs.word(PrefKey::IdleSnake), "on");
+        l.prefs.idle_snake = false;
+        save(&p, &l.prefs).unwrap();
+        let l = load(&p);
+        assert!(!l.prefs.idle_snake);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["idle_snake"], false);
+        assert!(!PrefKey::IdleSnake.board_overridable());
     }
 
     /// The mouse (T-716): absent is on, an off round-trips, and a board

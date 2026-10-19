@@ -123,7 +123,9 @@ fn draw_screen(f: &mut Frame, app: &App) {
 
     // Live-resize floor (07 §2.4): a notice, never a broken layout.
     let area = f.area();
-    if !app.is_practice() && (area.width < MIN_W || area.height < MIN_H) {
+    let too_small = !app.is_practice() && (area.width < MIN_W || area.height < MIN_H);
+    app.too_small.set(too_small);
+    if too_small {
         if let Some(game) = app.arcade.borrow_mut().as_mut() {
             game.pause("terminal too small");
         }

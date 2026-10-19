@@ -240,27 +240,27 @@ does not stop your agents** — that is the point of the daemon.
 The footer names the main keys for whatever you are looking at; `?` opens the complete key
 reference for the current screen.
 
-## Games while agents work
+## A snake while you are away
 
-`ctrl-g` on the board, or **Games** in the `esc` menu, opens Board Breaker.
-`1` chooses Breaker and `2` chooses Ticket Snake. `space` starts or pauses,
-`r` restarts, and `esc` returns to the board. Use the arrow keys or `hjkl`
-to steer; Breaker uses left and right. `?` pauses and shows the controls.
+After an hour with no key, paste or click, a snake comes out in the board's empty
+cells and plays itself. Agents working is not you at the keys, so their progress
+never holds it off. It never comes out while a ticket needs you, while the board
+is disconnected, over a dialog, or while the terminal is unfocused or too small,
+and a ticket raising its hand sends it away at once. `esc` stops it; a click on a
+card or a scroll does too.
 
-Breaker has three balls: aim rebounds with the edge of the paddle, hit cards
-for bonus points, and clear the small bricks to advance a wave. Consecutive
-hits build a multiplier up to five. Snake eats `*` snacks, grows and gradually
-speeds up; avoid its tail, the cards and the screen edges. Scores and bests
-last while the games are open.
+`^g` hands the snake to you: the arrow keys or `hjkl` steer, `space` pauses or
+starts another round, `^g` again hands it back, and `?` shows the keys. The snake
+eats `*` snacks, grows and gradually speeds up; avoid its tail, the cards and the
+screen edges. Scores and bests last while it is out.
 
-The games occupy empty space around the cards. Tickets, agent states and the
-header keep updating. Moving cards leave the round running; only covered
-pieces move to nearby empty space, preserving Snake's length and Breaker's
-remaining targets, combo and lives. A terminal resize, newly raised attention
-item, lost terminal focus or disconnected board pauses play. If cards leave
-too little room, the game waits with its progress intact and continues when
-space returns. Click a card or scroll to leave the game, then use the board
-normally.
+The snake occupies empty space around the cards. Tickets, agent states and the
+header keep updating. Moving cards leave the round running; only covered pieces
+move to nearby empty space, preserving the snake's length. If cards leave too
+little room, it waits with its progress intact and continues when space returns.
+
+**Settings › Behaviour › Snake while idle** turns it off. It is the machine's
+setting, not a board's.
 
 ## Descriptions, notes and links
 

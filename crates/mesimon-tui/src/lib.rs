@@ -234,6 +234,12 @@ pub fn run(repo_root: &Path) -> Result<()> {
     app.clock = localtime::at;
     // Whether a ticket may grow its own shell (T-300) — same rule again.
     app.ticket_shells = ticket_shells();
+    // How long the board waits for a key before its snake comes out
+    // (T-870): an hour, or `MESIMON_IDLE_SNAKE_MS` for whoever wants to
+    // see it sooner. Read here, so no test app reads the environment.
+    if let Some(ms) = std::env::var("MESIMON_IDLE_SNAKE_MS").ok().and_then(|v| v.parse().ok()) {
+        app.idle_after = std::time::Duration::from_millis(ms);
+    }
     // Remote Control is in every build (T-672). Board sharing (T-335) stays
     // behind `MESIMON_TEAMS=1` (T-653), and Remote Control does not bring it
     // along (`mesimon_core::team::enabled` says why).

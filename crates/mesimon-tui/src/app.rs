@@ -1473,6 +1473,18 @@ pub enum Doomed {
 
 pub struct App {
     pub(crate) arcade: std::cell::RefCell<Option<crate::arcade::Arcade>>,
+    /// The idle snake's clock (T-870): when a key, a paste or the mouse last
+    /// came, and how long without one before the snake comes out. An hour,
+    /// except where `lib.rs::run` read `MESIMON_IDLE_SNAKE_MS`; a test sets
+    /// it to zero.
+    pub(crate) last_input: Instant,
+    pub(crate) idle_after: Duration,
+    /// Whether the terminal says somebody is looking — true until it says
+    /// otherwise, since a terminal that never reports focus never will.
+    pub(crate) focused: bool,
+    /// The last frame found the terminal under `MIN_W`x`MIN_H` (`ui::draw`
+    /// sets it): the snake holds, and does not start.
+    pub(crate) too_small: std::cell::Cell<bool>,
     pending_paste: Option<crate::image_paste::Pending>,
     pub client: Box<dyn Transport>,
     pub repo_root: PathBuf,
@@ -2070,7 +2082,7 @@ pub struct App {
     /// of everything else (`osc.rs`).
     reply_swallow: crate::osc::ReplySwallow,
     /// Daemon connection lost: keep the last board, re-dial on a slow cadence.
-    daemon_down: bool,
+    pub(crate) daemon_down: bool,
     last_reconnect: Option<Instant>,
 }
 
@@ -2136,6 +2148,10 @@ impl App {
             team_code_draft: String::new(),
             team_drafts_seeded: false,
             arcade: std::cell::RefCell::new(None),
+            last_input: Instant::now(),
+            idle_after: crate::arcade::IDLE_AFTER,
+            focused: true,
+            too_small: std::cell::Cell::new(false),
             pending_paste: None,
             join_watch: None,
             pending_switch: None,
@@ -3579,10 +3595,7 @@ impl App {
         // The loop redraws once per tick, so the poll timeout is the frame
         // rate: 100 ms paces the spinner, and a panel in motion gets a
         // shorter one for the few frames it takes to settle.
-        if let Some(game) = self.arcade.borrow_mut().as_mut() {
-            game.observe(self.board.needs_you_tickets(), self.daemon_down);
-            game.tick(Instant::now());
-        }
+        self.drive_arcade(Instant::now());
         let playing = self.arcade.borrow().as_ref().is_some_and(|g| g.playing());
         let frame = if playing || self.animating() { 16 } else { 100 };
         let read = |wait: Duration| -> Result<Option<TermEvent>> {
@@ -3627,6 +3640,11 @@ impl App {
 
     /// One terminal event; returns whether the screen changed.
     pub(crate) fn on_event(&mut self, ev: TermEvent) -> Result<bool> {
+        // A key, a paste or the mouse is the person (T-870); the terminal
+        // saying whether they are looking is not.
+        if !matches!(ev, TermEvent::FocusGained | TermEvent::FocusLost | TermEvent::Resize(..)) {
+            self.last_input = Instant::now();
+        }
         let key = match ev {
             TermEvent::Key(key) => key,
             // Bracketed paste (armed by `lib.rs::init_terminal`): the whole
@@ -3638,10 +3656,12 @@ impl App {
             // `lib.rs::init_terminal`). From the first one of these on, it is
             // the only source the presence rule consults.
             TermEvent::FocusGained => {
+                self.focused = true;
                 self.saw_focus(true);
                 return Ok(false);
             }
             TermEvent::FocusLost => {
+                self.focused = false;
                 if let Some(game) = self.arcade.borrow_mut().as_mut() {
                     game.pause("paused while away");
                 }
@@ -3833,6 +3853,57 @@ impl App {
     /// double-click opens — and a click off a dialog is its Esc. The wheel
     /// walks what is under it; a move only moves the hover. Returns
     /// whether the screen changed.
+    /// The idle snake (T-870). With no game open: after `idle_after` with
+    /// no key, paste or click, on a calm board — nothing needs you, the
+    /// daemon answers, the terminal is focused and big enough, the board
+    /// screen with no dialog, no tour — and while the Settings switch is
+    /// on, a snake comes out and plays itself. An agent working is not the
+    /// person at the keys, so it never holds the snake off. With one open:
+    /// the cpu's stops the moment a ticket needs you or the board is cut
+    /// off (the person's pauses, as before), holds while the terminal is
+    /// unfocused, too small or under the help card, and steps on its own
+    /// clock. A test drives this directly; `tick` calls it every frame.
+    pub(crate) fn drive_arcade(&mut self, now: Instant) {
+        let needs_you = self.board.needs_you_tickets();
+        let calm = needs_you.is_empty() && !self.daemon_down;
+        if self.arcade.borrow().is_none() {
+            let idle = now.saturating_duration_since(self.last_input) >= self.idle_after;
+            if idle
+                && calm
+                && self.prefs.idle_snake
+                && self.focused
+                && !self.help
+                && !self.too_small.get()
+                && self.tour.is_none()
+                && !self.is_practice()
+                && self.scope() == Scope::Board
+            {
+                self.hover.set(None);
+                self.peeked.set(None);
+                *self.arcade.borrow_mut() = Some(crate::arcade::Arcade::new(needs_you));
+            }
+            return;
+        }
+        let mut slot = self.arcade.borrow_mut();
+        let Some(game) = slot.as_mut() else { return };
+        if game.cpu() && !calm {
+            *slot = None;
+            return;
+        }
+        game.observe(needs_you, self.daemon_down);
+        let hold = if !self.focused {
+            Some("paused while away")
+        } else if self.too_small.get() {
+            Some("terminal too small")
+        } else if self.help {
+            Some("paused for help")
+        } else {
+            None
+        };
+        game.drive(hold, now);
+        game.tick(now);
+    }
+
     pub fn on_mouse(&mut self, ev: MouseEvent) -> Result<bool> {
         if !self.prefs.mouse {
             return Ok(false);
@@ -6877,6 +6948,8 @@ impl App {
             notify_via_terminal: self.prefs.notify_via == crate::prefs::NotifyVia::Terminal,
             terminal_posts: self.terminal.poster().is_some(),
             keep_awake: self.prefs.keep_awake,
+            idle_snake: self.prefs.idle_snake,
+            game_human: self.arcade.borrow().as_ref().is_some_and(|g| !g.cpu()),
             header_chip: if self.header_focus { self.header_chip } else { HeaderChip::Git },
             remote_mark: self.control.enabled,
             workflow_mark: self.workflow_mark().is_some(),
@@ -7257,20 +7330,12 @@ impl App {
 
     /// One exhaustive match on [`Verb`]. Adding a binding to the table without
     /// handling it here does not compile.
-    fn dispatch(&mut self, verb: Verb, key: Key, scope: Scope, ctx: &Ctx) -> Result<()> {
+    pub(crate) fn dispatch(&mut self, verb: Verb, key: Key, scope: Scope, ctx: &Ctx) -> Result<()> {
         if verb != Verb::CopyTicket {
             self.copy_cycle = None;
         }
         match verb {
-            Verb::Games => {
-                self.to_board();
-                self.mode = Mode::Normal;
-                self.hover.set(None);
-                self.peeked.set(None);
-                *self.arcade.borrow_mut() =
-                    Some(crate::arcade::Arcade::new(self.board.needs_you_tickets()));
-            }
-            Verb::GameBreaker | Verb::GameSnake | Verb::GamePause | Verb::GameRestart => {
+            Verb::GameTake | Verb::GamePause => {
                 if let Some(game) = self.arcade.borrow_mut().as_mut() {
                     game.key(verb);
                 }
@@ -8331,6 +8396,20 @@ impl App {
                     "the machine stays awake while an agent is mid-turn".to_string()
                 };
                 self.set_pref(&word, |p| p.keep_awake = on);
+            }
+            // T-870. No push: the board drives its own snake, and a
+            // running one stops with the switch.
+            Verb::IdleSnake => {
+                let on = !self.prefs.idle_snake;
+                let word = if on {
+                    "a snake plays after an hour with no key or click"
+                } else {
+                    "the board holds still while you are away"
+                };
+                self.set_pref(word, |p| p.idle_snake = on);
+                if !on {
+                    self.arcade.borrow_mut().take();
+                }
             }
             Verb::WeekStart => {
                 let day = self.prefs.week_start.next();

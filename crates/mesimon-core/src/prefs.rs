@@ -46,6 +46,9 @@ pub enum PrefKey {
     /// iTerm2's tab icon is the shin, resting or needs-you by state.
     TabIcon,
     KeepAwake,
+    /// A snake plays itself over the board after an hour with no key or
+    /// click (T-870). About the person, so the machine's alone.
+    IdleSnake,
     Notify,
     NotifyDone,
     NotifyFocused,
@@ -121,7 +124,7 @@ pub enum PrefKey {
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 44] = [
+    pub const ALL: [PrefKey; 45] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::Theme,
@@ -139,6 +142,7 @@ impl PrefKey {
         PrefKey::TabSubtitle,
         PrefKey::TabIcon,
         PrefKey::KeepAwake,
+        PrefKey::IdleSnake,
         PrefKey::Notify,
         PrefKey::NotifyDone,
         PrefKey::NotifyFocused,
@@ -188,6 +192,7 @@ impl PrefKey {
             PrefKey::TabSubtitle => "tab_subtitle",
             PrefKey::TabIcon => "tab_icon",
             PrefKey::KeepAwake => "keep_awake",
+            PrefKey::IdleSnake => "idle_snake",
             PrefKey::Notify => "notify",
             PrefKey::NotifyDone => "notify_done",
             PrefKey::NotifyFocused => "notify_focused",
@@ -262,6 +267,7 @@ impl PrefKey {
                 | PrefKey::Mouse
                 | PrefKey::CardPrs
                 | PrefKey::Editor
+                | PrefKey::IdleSnake
         )
     }
 
@@ -285,6 +291,7 @@ impl PrefKey {
             PrefKey::TabSubtitle => "tab subtitle",
             PrefKey::TabIcon => "tab icon",
             PrefKey::KeepAwake => "keep awake",
+            PrefKey::IdleSnake => "snake while idle",
             PrefKey::Notify => "notifications",
             PrefKey::NotifyDone => "notify when a turn lands",
             PrefKey::NotifyFocused => "notify while focused",
@@ -371,6 +378,7 @@ mod tests {
                 PrefKey::TabColor,
                 PrefKey::TabSubtitle,
                 PrefKey::TabIcon,
+                PrefKey::IdleSnake,
                 PrefKey::NotifyVia,
                 PrefKey::Peek,
                 PrefKey::CrownLightning,
