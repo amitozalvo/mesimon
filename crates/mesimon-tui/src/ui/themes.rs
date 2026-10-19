@@ -73,8 +73,8 @@ pub(super) fn draw_page(f: &mut Frame, app: &App, area: Rect) {
     // The rows: an inherit row first in board scope (T-361), then every
     // flavor with its ground at the right.
     let rows = app.theme_rows();
-    let shown_at = cursor.unwrap_or_else(|| kept_row(app, slot)).min(rows - 1);
     let kept = kept_row(app, slot);
+    let shown_at = cursor.or(kept).unwrap_or(0).min(rows - 1);
     let list = Rect {
         y: area.y + 2,
         width: LIST_W.min(area.width),
@@ -95,8 +95,8 @@ pub(super) fn draw_page(f: &mut Frame, app: &App, area: Rect) {
         let selected = cursor == Some(i);
         let ramp = if selected { &theme.sel } else { &theme.rest };
         let ground = if selected { theme.selected_row() } else { Style::default() };
-        let mark = if i == kept { format!(" {set} ") } else { "   ".to_string() };
-        let name_style = if selected || i == kept {
+        let mark = if kept == Some(i) { format!(" {set} ") } else { "   ".to_string() };
+        let name_style = if selected || kept == Some(i) {
             Style::default().fg(ramp.base).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(ramp.dim1)
@@ -142,23 +142,14 @@ pub(super) fn draw_page(f: &mut Frame, app: &App, area: Rect) {
 
 /// The row of the pick the slot holds: the board's own in board scope (the
 /// inherit row while it has none), else the machine's, which this board's
-/// own pick may hide (T-746).
-fn kept_row(app: &App, slot: Slot) -> usize {
-    let ground = match slot {
-        Slot::One(g) => g,
-        Slot::Both => app.ground,
-    };
-    let pick = if app.theme_board_scope() {
-        app.board_prefs.flavor(ground)
-    } else {
-        Some(app.machine_prefs.for_ground(ground))
-    };
+/// own pick may hide (T-746). `None` is a machine with no `dark and light`
+/// pick, its two grounds on two themes (T-863): no row is marked.
+fn kept_row(app: &App, slot: Slot) -> Option<usize> {
+    let board = app.theme_board_scope();
+    let pick = if board { app.board_prefs.pick(slot) } else { app.machine_prefs.pick(slot) };
     match pick {
-        Some(f) => {
-            Flavor::ALL.iter().position(|x| *x == f).unwrap_or(0)
-                + usize::from(app.theme_board_scope())
-        }
-        None => 0,
+        Some(f) => Some(Flavor::ALL.iter().position(|x| *x == f).unwrap_or(0) + usize::from(board)),
+        None => board.then_some(0),
     }
 }
 

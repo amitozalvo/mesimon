@@ -9,8 +9,14 @@
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrefKey {
+    /// The theme for a dark terminal and the one for a light terminal: a
+    /// pick of either drops `Theme` (T-863).
     Dark,
     Light,
+    /// One theme for dark and light terminals both (T-863): while it is set
+    /// it is what both grounds wear, and `Dark` and `Light` are kept and not
+    /// worn. A pick here does not change them.
+    Theme,
     SnoozeNeedsYou,
     WeekStart,
     MergeTrain,
@@ -110,9 +116,10 @@ pub enum PrefKey {
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 42] = [
+    pub const ALL: [PrefKey; 43] = [
         PrefKey::Dark,
         PrefKey::Light,
+        PrefKey::Theme,
         PrefKey::SnoozeNeedsYou,
         PrefKey::WeekStart,
         PrefKey::MergeTrain,
@@ -160,6 +167,7 @@ impl PrefKey {
         match self {
             PrefKey::Dark => "dark",
             PrefKey::Light => "light",
+            PrefKey::Theme => "theme",
             PrefKey::SnoozeNeedsYou => "snooze_needs_you",
             PrefKey::WeekStart => "week_start",
             PrefKey::MergeTrain => "merge_train",
@@ -253,6 +261,7 @@ impl PrefKey {
         match self {
             PrefKey::Dark => "dark theme",
             PrefKey::Light => "light theme",
+            PrefKey::Theme => "theme for dark and light",
             PrefKey::SnoozeNeedsYou => "snooze needs-you",
             PrefKey::WeekStart => "week start",
             PrefKey::MergeTrain => "auto merge",
@@ -302,6 +311,7 @@ impl PrefKey {
             self,
             PrefKey::Dark
                 | PrefKey::Light
+                | PrefKey::Theme
                 | PrefKey::TabTitle
                 | PrefKey::TabColor
                 | PrefKey::WeekStart

@@ -28262,3 +28262,35 @@ section says the same to the person. The tool's own description is unchanged: it
 - **Not done**: nothing on the daemon's side raises a hand for the crown. A turn of the crown's
   that ends with words and no hand is not read for intent — the words are the crown's and
   mesimon classifies no transcript (promise 3's spirit: no token added, none read as a command).
+
+## `dark and light` is a pick of its own, and the last pick is worn (T-863, 2026-10-19)
+
+The author: "theme settings 'light and dark' overriding dark / light … if either is changed the
+other shouldn't take effect anymore". `dark and light` wrote the same flavor into both slots, so
+it destroyed the two picks; and a `dark` pick after it left `light` on the shared flavor, so
+`dark and light` kept applying to the ground nobody touched.
+
+**Three picks, the last one worn.** `prefs.json` gains `theme` (`PrefKey::Theme`, board
+overridable): `Prefs::both` / `BoardPrefs::both`. While it is set both grounds wear it
+(`for_ground`), and `dark`/`light` stay in the file, unworn. `set_both` leaves the slots alone;
+`set` / `set_flavor` (a ground's pick) removes `theme`, so the other ground goes back to its own
+pick. On a board the inherit row on a ground clears `theme` too, and inherit on `dark and light`
+clears all three. `overlay` flattens: the view's `dark`/`light` are what each ground wears (the
+board's `both`, else its slot, else the machine's wear) and it carries no `both`.
+
+**The picker opens on the state worn**, a ground while two themes follow the OS, `dark and
+light` while one covers both (T-625's "both first" holds wherever one theme is worn). Tab onto a
+ground lands on that ground's own pick, kept under `both`. The `●` on `dark and light` marks the
+`both` pick, or two equal slots an older build wrote (`Prefs::pick`/`BoardPrefs::pick`); with two
+themes and no `both` pick nothing is marked there.
+
+**Older builds** read only `dark`/`light`, so they wear the kept slot picks while `theme` is
+set, and their merging save keeps `theme`. Pre-v0.1; not migrated.
+
+**Tests.** TUI `tab_cycles_the_state_a_pick_is_for` (rewritten around the ticket's case: a
+`dark` pick after `both` puts `light` back on its own pick, on the machine and on a board),
+prefs `the_last_of_both_and_a_ground_is_worn`; the opening-state picker tests now open on the
+ground where the defaults (graphite, chalk) follow the OS. Goldens unchanged. **Owed:** a
+CHANGELOG line at the next bump — **Fixed:** in Settings › Theme, a theme for dark and light no
+longer overwrites the separate dark and light themes, and picking a dark or light theme
+afterwards stops the shared one from applying.

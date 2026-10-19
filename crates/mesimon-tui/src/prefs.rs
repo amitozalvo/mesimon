@@ -8,6 +8,11 @@
 //! as long as the board is open. The Settings rows edit both slots; a pick
 //! never changes the ground.
 //!
+//! A third pick, `theme`, is one theme for both grounds (T-863), kept apart
+//! from the two slots: whichever was picked last is worn. A `theme` pick
+//! leaves the slots as they were, and a slot's pick drops `theme`, so the
+//! other slot goes back to its own pick, never to the shared one.
+//!
 //! It sits at the state ROOT beside `update-check.json`: one binary per
 //! machine, so one preference per machine, and README promise 1 already
 //! covers `~/.local/state/mesimon/` where `~/.config/` would be a new write
@@ -28,7 +33,7 @@ use mesimon_core::notify::Sound;
 use mesimon_core::prefs::PrefKey;
 use mesimon_core::snooze::Weekday;
 
-use crate::theme::{Flavor, Ground};
+use crate::theme::{Flavor, Ground, Slot};
 
 pub(crate) const SCHEMA: u64 = 1;
 
@@ -307,6 +312,10 @@ impl UsageResets {
 pub(crate) struct Prefs {
     pub dark: Flavor,
     pub light: Flavor,
+    /// The `dark and light` pick (T-863): worn on both grounds while it is
+    /// set, over the two slots. A view from `overlay` carries none: its
+    /// slots are what each ground wears.
+    pub both: Option<Flavor>,
     /// A ticket back from a snooze wears needs-you until looked at (T-74).
     /// On by default; the Esc menu's row flips it. Same file, no schema
     /// move: an absent key reads as the default and a save keeps it.
@@ -470,6 +479,7 @@ impl Default for Prefs {
         Prefs {
             dark: Flavor::Graphite,
             light: Flavor::Chalk,
+            both: None,
             snooze_needs_you: true,
             week_start: Weekday::Monday,
             merge_train: true,
@@ -596,10 +606,23 @@ impl Prefs {
         }
     }
 
+    /// What a ground wears: the `dark and light` pick while there is one,
+    /// else the ground's own slot.
     pub(crate) fn for_ground(&self, g: Ground) -> Flavor {
-        match g {
+        self.both.unwrap_or(match g {
             Ground::Dark => self.dark,
             Ground::Light => self.light,
+        })
+    }
+
+    /// What one of the picker's three states holds: a slot's own pick, kept
+    /// while `both` is worn, or the `both` pick — which two equal slots an
+    /// older build wrote also read as.
+    pub(crate) fn pick(&self, slot: Slot) -> Option<Flavor> {
+        match slot {
+            Slot::One(Ground::Dark) => Some(self.dark),
+            Slot::One(Ground::Light) => Some(self.light),
+            Slot::Both => self.both.or((self.dark == self.light).then_some(self.dark)),
         }
     }
 
@@ -608,9 +631,11 @@ impl Prefs {
     /// ask to follow, and with one for both there is nothing to follow. A
     /// `follow_os` an older build wrote stays in the file, unread.
     pub(crate) fn follows_os(&self) -> bool {
-        self.dark != self.light
+        self.for_ground(Ground::Dark) != self.for_ground(Ground::Light)
     }
 
+    /// A slot's pick: worn on its ground from now on, so a `both` pick
+    /// stops being worn and the other ground goes back to its own (T-863).
     pub(crate) fn set(&mut self, g: Ground, f: Flavor) {
         match g {
             Ground::Dark => self.dark = f,
@@ -619,6 +644,14 @@ impl Prefs {
         // A pick replaces whatever the slot held, a name from a newer build
         // included — this is the one write that outranks it.
         self.doc.insert(g.word().into(), Value::from(f.name()));
+        self.both = None;
+        self.doc.remove(PrefKey::Theme.name());
+    }
+
+    /// The `dark and light` pick: worn on both grounds, the slots kept.
+    pub(crate) fn set_both(&mut self, f: Flavor) {
+        self.both = Some(f);
+        self.doc.insert(PrefKey::Theme.name().into(), Value::from(f.name()));
     }
 
     /// The machine's value overlaid with what one board sets (T-361). The
@@ -627,12 +660,11 @@ impl Prefs {
     /// board's — so the `doc` it carries is the machine's, unused.
     pub(crate) fn overlay(&self, board: &BoardPrefs) -> Prefs {
         let mut p = self.clone();
-        if let Some(f) = board.flavor(Ground::Dark) {
-            p.dark = f;
-        }
-        if let Some(f) = board.flavor(Ground::Light) {
-            p.light = f;
-        }
+        // Each ground's wear, the board's own first, then flattened: the
+        // view's slots are what is worn and it holds no `both`.
+        p.dark = board.for_ground(Ground::Dark).unwrap_or(self.for_ground(Ground::Dark));
+        p.light = board.for_ground(Ground::Light).unwrap_or(self.for_ground(Ground::Light));
+        p.both = None;
         for (key, slot) in [
             (PrefKey::SnoozeNeedsYou, &mut p.snooze_needs_you),
             (PrefKey::MergeTrain, &mut p.merge_train),
@@ -670,6 +702,7 @@ impl Prefs {
         match key {
             PrefKey::Dark => self.dark.name(),
             PrefKey::Light => self.light.name(),
+            PrefKey::Theme => self.both.map_or("", Flavor::name),
             PrefKey::SnoozeNeedsYou => onoff(self.snooze_needs_you),
             PrefKey::WeekStart => self.week_start.name(),
             PrefKey::MergeTrain => onoff(self.merge_train),
@@ -732,6 +765,11 @@ impl Prefs {
             if !foreign {
                 doc.insert(key.into(), Value::from(f.name()));
             }
+        }
+        // `set` took a dropped `both` out of the document; one this build
+        // could not read stays, as a slot's foreign name does.
+        if let Some(f) = self.both {
+            doc.insert(PrefKey::Theme.name().into(), Value::from(f.name()));
         }
         doc.insert(SNOOZE_KEY.into(), Value::from(self.snooze_needs_you));
         doc.insert(MERGE_TRAIN_KEY.into(), Value::from(self.merge_train));
@@ -909,6 +947,30 @@ impl BoardPrefs {
         self.doc.get(g.word()).and_then(Value::as_str).and_then(Flavor::from_name)
     }
 
+    /// This board's `dark and light` pick (T-863).
+    pub(crate) fn both(&self) -> Option<Flavor> {
+        self.doc.get(PrefKey::Theme.name()).and_then(Value::as_str).and_then(Flavor::from_name)
+    }
+
+    /// What this board has a ground wear, or `None` to inherit the machine's.
+    pub(crate) fn for_ground(&self, g: Ground) -> Option<Flavor> {
+        self.both().or(self.flavor(g))
+    }
+
+    /// What this board holds for one of the picker's states: `Prefs::pick`
+    /// on the sparse file, `None` where it inherits.
+    pub(crate) fn pick(&self, slot: Slot) -> Option<Flavor> {
+        match slot {
+            Slot::One(g) => self.flavor(g),
+            Slot::Both => {
+                self.both().or(match (self.flavor(Ground::Dark), self.flavor(Ground::Light)) {
+                    (Some(d), Some(l)) if d == l => Some(d),
+                    _ => None,
+                })
+            }
+        }
+    }
+
     /// A named value's word, as the file spells it (T-739): the caller
     /// parses it, so a word a newer build wrote reads as unset here.
     pub(crate) fn word(&self, key: PrefKey) -> Option<&str> {
@@ -923,6 +985,7 @@ impl BoardPrefs {
         match key {
             PrefKey::Dark => self.flavor(Ground::Dark).is_some(),
             PrefKey::Light => self.flavor(Ground::Light).is_some(),
+            PrefKey::Theme => self.both().is_some(),
             PrefKey::NotifySoundNeedsYou | PrefKey::NotifySoundDone => self.sound(key).is_some(),
             PrefKey::WeekStart
             | PrefKey::StatusTop
@@ -961,8 +1024,16 @@ impl BoardPrefs {
         self.doc.insert(key.name().into(), Value::from(s.key()));
     }
 
+    /// A slot's pick on this board: as on the machine, it drops the board's
+    /// `both` (T-863).
     pub(crate) fn set_flavor(&mut self, g: Ground, f: Flavor) {
         self.doc.insert(g.word().into(), Value::from(f.name()));
+        self.doc.remove(PrefKey::Theme.name());
+    }
+
+    /// This board's `dark and light` pick, its slots kept.
+    pub(crate) fn set_both(&mut self, f: Flavor) {
+        self.doc.insert(PrefKey::Theme.name().into(), Value::from(f.name()));
     }
 
     /// A named value, by its word (T-739).
@@ -1183,6 +1254,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let prefs = Prefs {
         dark: slot("dark", Flavor::Graphite),
         light: slot("light", Flavor::Chalk),
+        both: doc.get(PrefKey::Theme.name()).and_then(Value::as_str).and_then(Flavor::from_name),
         snooze_needs_you,
         week_start,
         merge_train,
@@ -1262,8 +1334,11 @@ pub(crate) fn save(path: &Path, prefs: &Prefs) -> anyhow::Result<()> {
 /// follows it (a subprocess, no tty), so the line says what it would wear.
 pub fn doctor_line() -> String {
     let loaded = load_home();
-    let mut line =
-        format!("dark: {} ∙ light: {}", loaded.prefs.dark.name(), loaded.prefs.light.name());
+    let p = &loaded.prefs;
+    let mut line = match p.both {
+        Some(f) => format!("{} for dark and light", f.name()),
+        None => format!("dark: {} ∙ light: {}", p.dark.name(), p.light.name()),
+    };
     if loaded.prefs.follows_os() {
         line = match crate::appearance::probe() {
             Some(g) => format!("{line} ∙ follows the OS appearance (now {})", g.word()),
@@ -1482,6 +1557,52 @@ mod tests {
         let mut board = BoardPrefs::default();
         board.set_flavor(Ground::Dark, Flavor::Blue);
         assert!(prefs.overlay(&board).follows_os(), "a board's pick reads resolved");
+    }
+
+    /// `dark and light` is a pick of its own (T-863): worn over the two
+    /// slots and leaving them as they were, and dropped by a slot's pick,
+    /// after which the other ground wears its own pick again — on the
+    /// machine's file and on a board's.
+    #[test]
+    fn the_last_of_both_and_a_ground_is_worn() {
+        let p = scratch("both");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&p);
+        let mut prefs = load(&p).prefs;
+        prefs.set(Ground::Light, Flavor::Amber);
+        prefs.set_both(Flavor::Blue);
+        assert_eq!(prefs.for_ground(Ground::Dark), Flavor::Blue);
+        assert_eq!(prefs.for_ground(Ground::Light), Flavor::Blue);
+        assert!(!prefs.follows_os());
+        save(&p, &prefs).unwrap();
+        let back = load(&p).prefs;
+        assert_eq!(
+            (back.both, back.dark, back.light),
+            (Some(Flavor::Blue), Flavor::Graphite, Flavor::Amber)
+        );
+        let mut prefs = back;
+        prefs.set(Ground::Dark, Flavor::Green);
+        assert_eq!(prefs.for_ground(Ground::Light), Flavor::Amber, "its own, not blue");
+        save(&p, &prefs).unwrap();
+        let back = load(&p).prefs;
+        assert_eq!(back.both, None);
+        assert!(std::fs::read_to_string(&p).unwrap().find("\"theme\"").is_none());
+        // A board: its both over the machine's slots, its slot pick drops it.
+        let mut board = BoardPrefs::default();
+        board.set_flavor(Ground::Light, Flavor::Chalk);
+        board.set_both(Flavor::Nord);
+        let view = back.overlay(&board);
+        assert_eq!((view.dark, view.light), (Flavor::Nord, Flavor::Nord));
+        assert!(board.is_set(PrefKey::Theme));
+        board.set_flavor(Ground::Dark, Flavor::Blue);
+        let view = back.overlay(&board);
+        assert_eq!((view.dark, view.light), (Flavor::Blue, Flavor::Chalk));
+        assert!(!board.is_set(PrefKey::Theme));
+        // An older build's two equal slots read as a `both` pick to mark.
+        let mut old = Prefs::default();
+        old.light = old.dark;
+        assert_eq!(old.pick(Slot::Both), Some(Flavor::Graphite));
+        let _ = std::fs::remove_file(&p);
     }
 
     /// The notification group (T-282): every key round-trips, and the file
