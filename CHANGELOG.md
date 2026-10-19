@@ -6,6 +6,50 @@ notes, and the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-beta.10 — 2026-10-19
+
+### Added
+
+- **Two boards on one machine can have their crowns talk to each other.**
+  `Settings › Crown › Reaches boards` links this board with another open
+  board, or one you name by folder; a link works both ways. The board
+  header names each linked board and lights it when the crowns exchange a
+  message.
+- **Pull requests a ticket mentions show on its card, including ones its
+  agent reviewed.** An address under a note's `Summary` heading, or one the
+  agent opened, reviewed or commented on with `gh` or `glab`, is shown on the
+  card and the ticket page and marked as reviewed. A reviewed pull request
+  never holds a merge or a move to DONE. Turn it off with
+  `Settings › Behaviour › Reviewed pull requests`.
+- **`Settings › Behaviour › Editor` picks the editor `Ctrl+G` opens.** `auto`
+  now also finds git's configured editor and VS Code, Cursor, Zed or Sublime,
+  and the board says where the note went while a window editor has it open.
+- **A short welcome animation plays once per machine**, after the installer
+  finishes or before the first board opens. Any key skips it.
+
+### Changed
+
+- **Ticket Snake is now a screensaver, and the games menu is gone.** After an
+  hour with no key or click on a board where no ticket needs you, the snake
+  plays itself; `Esc` stops it and `Ctrl+G` lets you take over. Board Breaker
+  is removed. Turn it off with `Settings › Behaviour › Snake while idle`.
+- **A raised hand's reason shows under the card's title**, in the needs-you
+  colour, on every card with a raised hand.
+- **A raised hand comes down when someone deals with the agent**: when you
+  enter or leave its pane, or when you or the crown put it to sleep. A
+  sleep the board does on its own keeps the hand up.
+- **The crown raises its hand for anything only you can do**, instead of
+  writing it in its pane where the board does not show it.
+- **Remote Control cards follow the board's card layout**, and a narrow card
+  moves a whole word to the next line instead of splitting it.
+
+### Fixed
+
+- **Picking a theme for `dark and light terminals` no longer erases your
+  separate dark and light picks**, and a later pick for one ground is the
+  one worn. The theme picker opens on the theme in use.
+- **A parked card with a finished checklist no longer draws an underline.**
+
 ## v0.1.0-beta.9 — 2026-10-18
 
 ### Added
