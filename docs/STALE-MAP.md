@@ -28363,3 +28363,47 @@ with more than one line box. The README's Remote Control picture (`assets/demo/r
 re-shot (`npm run shot:remote`). **Owed:** a CHANGELOG line at the next bump — **Changed:** in
 Remote Control, a ticket card reads as it does in the terminal: the agent's mark before the
 title, the branch mark and age at the right, and no label splits across lines.
+
+## `^g` finds VS Code, and the editor is a Settings row (T-864, 2026-10-19)
+
+The author: "right now it uses vim / nvim. is there a way to know user is using vscode instead
+and suggest it? maybe also configure in settings?" `^g` ran `$VISUAL`, else `$EDITOR`, else `vi`.
+A bare `EDITOR=code` lost the edit without a word: `code` returns at once, the file read back
+unchanged, and it was deleted under the open tab.
+
+**The ladder (`external::Editors::find`, once per process in `lib.rs::run`):** `$VISUAL`,
+`$EDITOR`, git's `core.editor` (read with `mesimon_daemon::git::git` from the repo, so a repo's
+own setting counts), the editor whose built-in terminal the board runs in, `vi`. That host step
+reads `TERM_PROGRAM` (`vscode` for VS Code and every fork, `zed`) and tells the forks apart by
+`__CFBundleIdentifier` (macOS names the app that started the process) or Cursor's
+`CURSOR_TRACE_ID`; it counts only where that editor is installed. Git's own order puts
+`core.editor` first; it is third here because `$VISUAL`/`$EDITOR` are the general answer and
+`core.editor` is git's, and the Settings row overrides all of it anyway.
+
+**A table of known editors (`external::KNOWN`)** says how each takes a line (`+N`, `file:N`, `-g
+file:N`) and, for a window editor, its wait flag and where its command sits inside its macOS app
+— the app is often installed while `code` was never put on PATH, so "installed" checks PATH,
+then `/Applications` and `~/Applications`, and the command is the quoted path. A window editor
+named without its wait flag gets it (`code` runs as `code --wait`); a link to a file opens in
+one detached (`App::pending_open`), at its line and without the flag, and the board stays up.
+While `^g` waits on a window editor the given-back terminal says `editing in code ∙ close its tab
+to come back to the board` instead of standing blank.
+
+**The Behaviour row `Editor`** (`PrefKey::Editor`, `prefs.json`'s `editor`, machine-only) cycles
+`auto`, then each known editor the machine has. `auto`'s detail names what the ladder found and
+where (`code, from git's core.editor`). A name the table does not know reads as `auto` and
+survives in the file, the week's rule. `mesimon doctor`'s `editor` line names the program and
+whether Settings or which rung chose it.
+
+**Refuted:** suggesting VS Code from "installed" alone — installed is not preferred, so the
+installed list only fills the row and never picks.
+
+**Tests.** `external.rs`: the ladder's five rungs, the wait flag, a pick running the installed
+command, PATH before the app, the host table, and links in both kinds of editor. `app.rs`:
+`the_settings_row_picks_the_editor`, `a_file_link_opens_where_its_editor_lives`. `prefs.rs`:
+`the_editor_pick_defaults_to_auto_and_round_trips`. Behaviour goldens reminted for the new row.
+**Owed:** a CHANGELOG line at the next bump — **Added:** an `Editor` row in Settings ∙ Behaviour
+picks what `^g` and file links open; `auto` now also finds git's editor setting and VS Code, Cursor
+or Zed when the board runs in its terminal. **Fixed:** VS Code, Cursor, Zed or Sublime set as the
+editor without its wait flag no longer lose the edit, and a file link opens in such an editor
+without taking over the board.

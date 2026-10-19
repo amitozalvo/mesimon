@@ -286,12 +286,14 @@ the legacy floor on Shift+Enter's clause — a legacy terminal sends the bare `^
 on `rich_keys`. `^g`'s return is the one road that writes and STAYS (`App::write_note`).
 (STALE-MAP "The grown composer: `^s` keeps the draft, `^S` mints and asks".) **`^g`
 hands the body to the user's own editor** (T-181, 2026-09-03): `$VISUAL`, else `$EDITOR`, else
-`vi`, run through the shell on the terminal the TUI gives back for the duration — the focus
+git's `core.editor`, else the editor whose terminal the board is in, else `vi` (T-864), or the
+Behaviour row's pick (`external::Editors`, `Prefs::editor`); a window editor gets its wait flag
+and opens a file link detached. Run through the shell on the terminal the TUI gives back for the duration — the focus
 handover's road (`tui/src/external.rs`, `lib.rs::event_loop`) — on a 0600 file under
 `<state>/edit/`, gone after. What comes back is SAVED at once on a note (the editor's write is the
 commit, as for a commit message; through `editor_save`, so an emptied note still asks twice) and
 dropped into the draft composing (`^s` still mints). The hint names the program (`^g nvim`);
-`App::editor_word` is set in `lib.rs`, never `App::new`, so no test or golden sees a developer's
+`App::editors` is found in `lib.rs`, never `App::new`, so no test or golden sees a developer's
 `$EDITOR` and the key is inert there. `mesimon doctor` prints an `editor` line. (STALE-MAP "A note
 opens in the user's own editor".) The ticket page draws the description under the identity line and
 lists notes in the rail (`RailRow`); `App::poll_notes` fetches bodies once per `(id, rev)`. **The

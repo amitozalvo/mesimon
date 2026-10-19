@@ -1862,9 +1862,9 @@ pub struct App {
     /// `^g` in the note editor: the body, parked for the main loop to hand
     /// to the user's own editor once the terminal is given back (T-181).
     pub pending_external_edit: Option<crate::external::ExternalEdit>,
-    /// That editor's name for the `^g` hint — `lib.rs` sets it from the
-    /// environment; empty (every test app) leaves the key inert.
-    pub editor_word: &'static str,
+    /// The editors `^g` and a file link can open (T-864) — `lib.rs` finds
+    /// them in the environment; none (every test app) leaves the key inert.
+    pub editors: crate::external::Editors,
     /// What opens a URL or a non-text file (`opener::find`) — `lib.rs` sets
     /// it, never `App::new`, so no test app finds the developer's browser.
     /// None means a link can be copied but not opened.
@@ -1989,7 +1989,7 @@ pub struct App {
     pub icons: Option<crate::title::Icons>,
     /// A ticket may grow its own shell session (T-300) — `lib.rs::run` sets
     /// it from `MESIMON_TICKET_SHELLS`, never `App::new`, the rule
-    /// `editor_word` and `opener` follow, so no test and no golden reads a
+    /// `editors` and `opener` follow, so no test and no golden reads a
     /// developer's environment. False shuts the two doors and nothing else:
     /// a shell already on a ticket is listed, previewed and slept as before.
     pub ticket_shells: bool,
@@ -2187,7 +2187,7 @@ impl App {
             pending_attach: None,
             pending_attach_cwd: None,
             pending_external_edit: None,
-            editor_word: "",
+            editors: crate::external::Editors::default(),
             opener: None,
             pending_open: None,
             pending_gate_then: None,
@@ -5311,6 +5311,16 @@ impl App {
         };
     }
 
+    /// The editor `^g` and a file link open (T-864): the row's pick, else
+    /// the ladder's; `None` in a test app, where nothing was looked for.
+    pub(crate) fn editor(&self) -> Option<crate::external::Resolved> {
+        self.editors.resolve(self.prefs.editor)
+    }
+
+    fn editor_name(&self) -> &'static str {
+        self.editor().map_or("the editor", |e| e.word)
+    }
+
     /// The board-scope twin (T-361): one override changed, the board file
     /// is saved, the resolved view follows.
     fn set_board_pref(&mut self, word: &str, set: impl FnOnce(&mut crate::prefs::BoardPrefs)) {
@@ -6877,7 +6887,10 @@ impl App {
             editor_body: editor.is_some_and(|e| e.focus == Field::Body),
             editor_dirty: editor.is_some_and(|e| e.dirty()),
             editor_cycles: editor.is_some_and(|e| self.note_ring(e).is_some()),
-            editor_word: self.editor_word,
+            editor_word: self.editor().map_or("", |e| e.word),
+            editor_pick: self.prefs.editor.unwrap_or(crate::prefs::AUTO),
+            editor_from: self.editors.source().map_or("", crate::external::Source::words),
+            editor_window: self.editor().is_some_and(|e| e.is_window()),
             rich_keys: self.rich_keys,
             practice: self.practice,
             tour_tryable: self.tour.as_ref().is_some_and(|t| !t.trying && t.lesson().ask.is_some()),
@@ -8107,6 +8120,26 @@ impl App {
                     "the mouse is the terminal's again"
                 };
                 self.set_pref(word, |p| p.mouse = on);
+            }
+            // T-864: `auto`, then each known editor this machine has, and
+            // round. A pick this machine no longer has is still a stop, so
+            // the ring does not jump past it unseen.
+            Verb::EditorChoice => {
+                let mut ring: Vec<Option<&'static str>> = vec![None];
+                ring.extend(self.editors.installed().map(Some));
+                if !ring.contains(&self.prefs.editor) {
+                    ring.push(self.prefs.editor);
+                }
+                let at = ring.iter().position(|p| *p == self.prefs.editor).unwrap_or(0);
+                let pick = ring[(at + 1) % ring.len()];
+                self.machine_prefs.set_editor(pick);
+                self.resolve_prefs();
+                let word = match (pick, self.editor()) {
+                    (None, Some(e)) => format!("^g opens {} (auto)", e.word),
+                    (_, Some(e)) => format!("^g opens {}", e.word),
+                    (_, None) => format!("editor: {}", pick.unwrap_or(crate::prefs::AUTO)),
+                };
+                self.set_pref(&word, |_| {});
             }
             // T-492. No push either: the BOARD writes to its own stdout,
             // and `lib.rs`'s loop reads every one of these each frame — off
@@ -11293,10 +11326,16 @@ impl App {
             Some(Verb::EditorExternal) => {
                 // Parked for the main loop, which owns the terminal; the
                 // editor stays open underneath and `external_edit_done`
-                // takes the text back.
+                // takes the text back. The keymap offers the key only
+                // where an editor was found.
+                let Some(editor) = self.editor() else {
+                    self.mode = Mode::Editor(ed);
+                    return Ok(());
+                };
                 self.pending_external_edit = Some(crate::external::ExternalEdit {
                     text: ed.body.as_str().to_string(),
                     file_name: self.edit_file_name(&ed),
+                    editor,
                 });
                 self.mode = Mode::Editor(ed);
                 return Ok(());
@@ -11413,7 +11452,7 @@ impl App {
             return Ok(());
         };
         match outcome {
-            Err(e) => self.status = format!("{}: {e}", self.editor_word),
+            Err(e) => self.status = format!("{}: {e}", self.editor_name()),
             Ok(Outcome::Unchanged) => self.status = "unchanged".into(),
             Ok(Outcome::Changed(text)) => {
                 let line = ed.body.cursor_line();
@@ -11439,10 +11478,10 @@ impl App {
                     }
                     EditorPurpose::Note { .. } => self.status = "unchanged".into(),
                     EditorPurpose::Compose { .. } => {
-                        self.status = format!("edited in {} ∙ ^s saves", self.editor_word)
+                        self.status = format!("edited in {} ∙ ^s saves", self.editor_name())
                     }
                     EditorPurpose::Ask { .. } => {
-                        self.status = format!("edited in {} ∙ ^s sends", self.editor_word)
+                        self.status = format!("edited in {} ∙ ^s sends", self.editor_name())
                     }
                 }
             }
@@ -13998,12 +14037,17 @@ impl App {
                 }
             }
             LinkTarget::File { path, line } => {
-                if file_is_text(&path) {
-                    let command = crate::external::command();
-                    let word = crate::external::word_of(&command);
-                    self.pending_attach = Some(crate::external::open_argv(&command, &path, line));
-                    self.pending_attach_cwd = path.parent().map(Path::to_path_buf);
-                    self.status = format!("{word} opens {}", link.text);
+                if let Some(editor) = self.editor().filter(|_| file_is_text(&path)) {
+                    // A terminal editor takes the terminal; a window
+                    // editor opens detached and the board stays up.
+                    match editor.open(&path, line) {
+                        crate::external::Open::Here(argv) => {
+                            self.pending_attach = Some(argv);
+                            self.pending_attach_cwd = path.parent().map(Path::to_path_buf);
+                        }
+                        crate::external::Open::Outside(argv) => self.pending_open = Some(argv),
+                    }
+                    self.status = format!("{} opens {}", editor.word, link.text);
                 } else {
                     self.open_outside(path.display().to_string());
                 }
@@ -15827,6 +15871,7 @@ mod tests {
     fn a_text_file_goes_to_the_editor_and_a_binary_to_the_opener() {
         let (mut app, _sent, dir) = app_with_links("file");
         app.opener = Some("open".into());
+        app.editors = crate::external::Editors::of("vi");
         ctrl(&mut app, 'k');
         press(&mut app, 'j');
         press(&mut app, 'j');
@@ -16556,18 +16601,22 @@ mod tests {
     /// this one, so a developer's `$EDITOR` never reaches a golden.
     #[test]
     fn ctrl_g_edits_the_note_outside_and_the_return_saves() {
-        use crate::external::{ExternalEdit, Outcome};
+        use crate::external::{ExternalEdit, Outcome, Resolved};
         let (mut app, sent) = app_with_note();
         press(&mut app, 'n');
         ctrl(&mut app, 'g');
-        assert_eq!(app.pending_external_edit, None, "no editor word: inert");
-        app.editor_word = "nvim";
+        assert_eq!(app.pending_external_edit, None, "no editor found: inert");
+        app.editors = crate::external::Editors::of("nvim");
         app.handle_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
         app.handle_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
         ctrl(&mut app, 'g');
         assert_eq!(
             app.pending_external_edit,
-            Some(ExternalEdit { text: "# Why\n\nbecause".into(), file_name: "T-1.md".into() })
+            Some(ExternalEdit {
+                text: "# Why\n\nbecause".into(),
+                file_name: "T-1.md".into(),
+                editor: Resolved::plain("nvim"),
+            })
         );
         assert!(matches!(app.mode, Mode::Editor(_)), "stays open underneath");
         let before = sent.borrow().len();
@@ -16593,9 +16642,9 @@ mod tests {
     /// the ticket does not exist yet, and `^s` is still its birth.
     #[test]
     fn ctrl_g_while_composing_fills_the_draft_and_mints_nothing() {
-        use crate::external::{ExternalEdit, Outcome};
+        use crate::external::{ExternalEdit, Outcome, Resolved};
         let (mut app, sent) = app_with_note();
-        app.editor_word = "vim";
+        app.editors = crate::external::Editors::of("vim");
         press(&mut app, 'o');
         for c in "Ship it".chars() {
             press(&mut app, c);
@@ -16604,7 +16653,11 @@ mod tests {
         ctrl(&mut app, 'g');
         assert_eq!(
             app.pending_external_edit,
-            Some(ExternalEdit { text: String::new(), file_name: "new-ticket.md".into() })
+            Some(ExternalEdit {
+                text: String::new(),
+                file_name: "new-ticket.md".into(),
+                editor: Resolved::plain("vim"),
+            })
         );
         app.external_edit_done(Ok(Outcome::Changed("the plan".into()))).unwrap();
         let ed = editor(&app);
@@ -23963,6 +24016,62 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         let t = archived_ticket(&mut app, ulid::Ulid(1));
         assert!(t.archived.as_ref().is_some_and(|a| !a.needs_you));
+    }
+
+    /// T-864: the Editor row walks `auto`, then each known editor the
+    /// machine has, and round; `^g` and the row's words follow the pick.
+    #[test]
+    fn the_settings_row_picks_the_editor() {
+        let mut app = app_three_columns();
+        let ctx = app.ctx();
+        assert_eq!((ctx.editor_pick, ctx.editor_word), ("auto", ""), "a test app finds none");
+        app.editors = crate::external::Editors::installing("vim", &["code", "nvim"]);
+        let ctx = app.ctx();
+        assert_eq!(
+            (ctx.editor_word, ctx.editor_from, ctx.editor_window),
+            ("vim", "$EDITOR", false)
+        );
+        let mut walk = Vec::new();
+        for _ in 0..3 {
+            let ctx = app.ctx();
+            app.dispatch(Verb::EditorChoice, Key::Enter, Scope::Settings, &ctx).unwrap();
+            let ctx = app.ctx();
+            walk.push((ctx.editor_pick, ctx.editor_word, ctx.editor_window));
+        }
+        assert_eq!(walk, [("code", "code", true), ("nvim", "nvim", false), ("auto", "vim", false)]);
+        let ctx = app.ctx();
+        app.dispatch(Verb::EditorChoice, Key::Enter, Scope::Settings, &ctx).unwrap();
+        assert_eq!(app.status, "^g opens code for this session");
+        assert_eq!(app.editor().map(|e| e.command), Some("code --wait".into()));
+    }
+
+    /// T-864: a link to a text file opens in a terminal editor on the
+    /// terminal, handed over, and in a window editor detached at its line,
+    /// the board left up.
+    #[test]
+    fn a_file_link_opens_where_its_editor_lives() {
+        let dir = std::env::temp_dir().join(format!("msmn-link-editor-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+        let link = TicketLink {
+            label: None,
+            text: "a.rs:3".into(),
+            target: LinkTarget::File { path: file.clone(), line: Some(3) },
+        };
+        let mut app = app_three_columns();
+        app.editors = crate::external::Editors::of("nvim");
+        app.open_link(link.clone());
+        let argv = app.pending_attach.take().expect("handed over");
+        assert_eq!(&argv[4..], &["+3".to_string(), file.display().to_string()]);
+        assert_eq!(app.pending_open, None);
+        assert_eq!(app.status, "nvim opens a.rs:3");
+        app.editors = crate::external::Editors::of("code");
+        app.open_link(link);
+        let argv = app.pending_open.take().expect("detached");
+        assert_eq!(&argv[3..], &["code".to_string(), "-g".into(), format!("{}:3", file.display())]);
+        assert_eq!(app.pending_attach, None, "the board stays up");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The Settings row cycles the week's first day, the ring's last rung

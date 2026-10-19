@@ -233,7 +233,7 @@ fn environment(repo: &std::path::Path, verbose: bool) -> Section {
     // which ground the terminal is on: doctor runs in pipes.
     records.push(rec(Level::Note, "theme", mesimon_tui::theme_status()));
     // The editor `^g` opens on a note, and which variable chose it.
-    records.push(rec(Level::Note, "editor", mesimon_tui::editor_status()));
+    records.push(rec(Level::Note, "editor", mesimon_tui::editor_status(repo)));
     // What `^k` opens a link with (T-256): the platform's opener, or
     // MESIMON_OPEN's; none is a note, since a link can still be copied.
     records.push(rec(Level::Note, "opener", mesimon_tui::opener_status()));

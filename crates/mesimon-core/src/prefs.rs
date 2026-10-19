@@ -113,10 +113,15 @@ pub enum PrefKey {
     /// `always`, only as `news` until the cursor rests on the card, or
     /// `off`. Per machine, a view preference like the summary's.
     CardPrs,
+    /// The editor `^g` and a link to a file open (T-864): `auto` (the
+    /// ladder: `$VISUAL`, `$EDITOR`, git's `core.editor`, the editor the
+    /// terminal is in, `vi`) or one by name. About the person, so per
+    /// machine.
+    Editor,
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 43] = [
+    pub const ALL: [PrefKey; 44] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::Theme,
@@ -160,6 +165,7 @@ impl PrefKey {
         PrefKey::Mouse,
         PrefKey::FetchEvery,
         PrefKey::CardPrs,
+        PrefKey::Editor,
     ];
 
     /// The JSON key in both files.
@@ -208,6 +214,7 @@ impl PrefKey {
             PrefKey::Mouse => "mouse",
             PrefKey::FetchEvery => "fetch_every",
             PrefKey::CardPrs => "card_prs",
+            PrefKey::Editor => "editor",
         }
     }
 
@@ -223,7 +230,8 @@ impl PrefKey {
     /// card moves' (T-817) for the same reason. The usage line's seven
     /// (T-327) are about the person's subscription,
     /// which is one sign-in whichever board shows it. Who posts the banner
-    /// (T-676) is a question about the terminal, so it is the machine's.
+    /// (T-676) is a question about the terminal, so it is the machine's,
+    /// and the editor (T-864) is the person's.
     pub fn board_overridable(self) -> bool {
         !matches!(
             self,
@@ -253,6 +261,7 @@ impl PrefKey {
                 | PrefKey::NewReplies
                 | PrefKey::Mouse
                 | PrefKey::CardPrs
+                | PrefKey::Editor
         )
     }
 
@@ -302,6 +311,7 @@ impl PrefKey {
             PrefKey::Mouse => "mouse",
             PrefKey::FetchEvery => "fetch from the remote",
             PrefKey::CardPrs => "pull requests on cards",
+            PrefKey::Editor => "editor",
         }
     }
 
@@ -325,6 +335,7 @@ impl PrefKey {
                 | PrefKey::Summary
                 | PrefKey::FetchEvery
                 | PrefKey::CardPrs
+                | PrefKey::Editor
         )
     }
 }
@@ -376,6 +387,7 @@ mod tests {
                 PrefKey::NewReplies,
                 PrefKey::Mouse,
                 PrefKey::CardPrs,
+                PrefKey::Editor,
             ]
         );
     }

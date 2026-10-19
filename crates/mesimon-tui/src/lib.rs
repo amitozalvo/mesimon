@@ -221,9 +221,9 @@ pub fn run(repo_root: &Path) -> Result<()> {
     // Which terminal the tab belongs to (T-492) — set here and never in
     // `App::new`, so no test app reads a developer's terminal.
     app.terminal = title::terminal();
-    // The word the note editor's `^g` hint wears — set here and never in
-    // `App::new`, so no test app ever reads the developer's `$EDITOR`.
-    app.editor_word = external::word();
+    // The editors `^g` and a file link open (T-864) — found here and never
+    // in `App::new`, so no test app ever reads the developer's `$EDITOR`.
+    app.editors = external::Editors::find(&app.repo_root);
     // What `^k` opens a URL with — same rule, same reason.
     app.opener = opener::find();
     // The zone a quota's reset time is told in (T-327) — same rule: a test
@@ -423,6 +423,15 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
             app.saw_board(false);
             restore_terminal()?;
             blank_primary_screen()?;
+            // A window editor leaves this terminal empty while it waits
+            // (T-864): one line says where the note went and what brings
+            // it back.
+            if req.editor.is_window() {
+                println!(
+                    "editing in {} ∙ close its tab to come back to the board",
+                    req.editor.word
+                );
+            }
             let out = external::edit_dir(&app.repo_root).and_then(|d| external::run(&req, &d));
             *terminal = init_terminal()?;
             mouse = Capture::default();

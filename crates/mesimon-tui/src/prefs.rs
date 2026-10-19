@@ -37,6 +37,9 @@ use crate::theme::{Flavor, Ground, Slot};
 
 pub(crate) const SCHEMA: u64 = 1;
 
+/// The editor row's word for the ladder (T-864).
+pub(crate) const AUTO: &str = "auto";
+
 /// A pref's words in one table, in declaration order: `key` (the word in
 /// the file, and the word `doctor` says) and `from_key` back, and with
 /// `ring` the `next` stop Enter cycles to, which is that same order.
@@ -470,6 +473,9 @@ pub(crate) struct Prefs {
     /// A card's second line names its pull requests (T-739); always, by
     /// default.
     pub card_prs: CardPrs,
+    /// The editor `^g` opens (T-864): one by name, or `None` for `auto`,
+    /// the ladder `external::Editors` reads. Per machine.
+    pub editor: Option<&'static str>,
     /// The document as loaded, so a save keeps what it does not understand.
     doc: Map<String, Value>,
 }
@@ -520,6 +526,7 @@ impl Default for Prefs {
             new_replies: true,
             fetch_every: FetchEvery::Off,
             card_prs: CardPrs::Always,
+            editor: None,
             doc: Map::new(),
         }
     }
@@ -566,6 +573,7 @@ const SUMMARY_KEY: &str = PrefKey::Summary.name();
 const NEW_REPLIES_KEY: &str = PrefKey::NewReplies.name();
 const FETCH_EVERY_KEY: &str = PrefKey::FetchEvery.name();
 const CARD_PRS_KEY: &str = PrefKey::CardPrs.name();
+const EDITOR_KEY: &str = PrefKey::Editor.name();
 
 impl Prefs {
     // The three bools are plain fields: `body()` writes every one on each
@@ -587,6 +595,13 @@ impl Prefs {
     pub(crate) fn set_sound_done(&mut self, s: Sound) {
         self.notify_sound_done = s;
         self.doc.insert(NOTIFY_SOUND_DONE_KEY.into(), Value::from(s.key()));
+    }
+
+    /// The editor's pick (T-864) — like the week's day, a name a newer
+    /// build knows survives in the file until a pick here replaces it.
+    pub(crate) fn set_editor(&mut self, pick: Option<&'static str>) {
+        self.editor = pick;
+        self.doc.insert(EDITOR_KEY.into(), Value::from(pick.unwrap_or(AUTO)));
     }
 
     /// The reply row's rung (T-365) — a press replaces whatever the file
@@ -749,6 +764,7 @@ impl Prefs {
             PrefKey::Summary => self.summary.key(),
             PrefKey::FetchEvery => self.fetch_every.key(),
             PrefKey::CardPrs => self.card_prs.key(),
+            PrefKey::Editor => self.editor.unwrap_or(AUTO),
         }
     }
 
@@ -890,6 +906,14 @@ impl Prefs {
             .is_some_and(|s| Weekday::from_key(s).is_none());
         if !foreign {
             doc.insert(WEEK_START_KEY.into(), Value::from(self.week_start.key()));
+        }
+        // The editor's name, the week's rule again.
+        let foreign = doc
+            .get(EDITOR_KEY)
+            .and_then(Value::as_str)
+            .is_some_and(|s| s != AUTO && crate::external::known_word(s).is_none());
+        if !foreign {
+            doc.insert(EDITOR_KEY.into(), Value::from(self.editor.unwrap_or(AUTO)));
         }
         // The reply row's rung, the week's rule again.
         let foreign = doc
@@ -1251,6 +1275,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         .and_then(Value::as_str)
         .and_then(CardPrs::from_key)
         .unwrap_or_default();
+    let editor = doc.get(EDITOR_KEY).and_then(Value::as_str).and_then(crate::external::known_word);
     let prefs = Prefs {
         dark: slot("dark", Flavor::Graphite),
         light: slot("light", Flavor::Chalk),
@@ -1295,6 +1320,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         summary,
         fetch_every,
         card_prs,
+        editor,
         doc,
     };
     if schema > SCHEMA {
@@ -1931,6 +1957,34 @@ mod tests {
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["tab_title"], "badge", "and is not written over");
         assert_eq!(v["tab_color"], "glow");
+    }
+
+    /// The editor's pick (T-864): absent is `auto`, a name round-trips,
+    /// `auto` is written as itself, and a name this build does not know
+    /// reads as `auto` and survives a save of something else.
+    #[test]
+    fn the_editor_pick_defaults_to_auto_and_round_trips() {
+        let p = scratch("editor");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"schema_version":1}"#).unwrap();
+        let mut l = load(&p);
+        assert_eq!(l.prefs.editor, None, "absent is auto");
+        l.prefs.set_editor(Some("code"));
+        save(&p, &l.prefs).unwrap();
+        let mut l = load(&p);
+        assert_eq!(l.prefs.editor, Some("code"));
+        assert_eq!(l.prefs.word(PrefKey::Editor), "code");
+        l.prefs.set_editor(None);
+        save(&p, &l.prefs).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["editor"], "auto");
+        std::fs::write(&p, r#"{"schema_version":1,"editor":"lapce"}"#).unwrap();
+        let mut l = load(&p);
+        assert_eq!(l.prefs.editor, None, "a foreign name reads as auto");
+        l.prefs.mouse = false;
+        save(&p, &l.prefs).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["editor"], "lapce", "and is not written over");
     }
 
     /// The week-start preference: absent is Monday, a pick round-trips as

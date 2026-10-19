@@ -3402,7 +3402,10 @@ mod tests {
             assert!(!back_early.is_empty(), "{flavor:?}: the crest comes back");
             assert!(back_early[0] < back_late[0], "{flavor:?}: then left to right");
             assert!(lit(2 * PR_SHIMMER_MS).is_empty(), "{flavor:?}: off the right edge");
-            assert!(lit(2 * PR_SHIMMER_MS + PR_SHIMMER_REST_MS / 2).is_empty(), "{flavor:?}: rests");
+            assert!(
+                lit(2 * PR_SHIMMER_MS + PR_SHIMMER_REST_MS / 2).is_empty(),
+                "{flavor:?}: rests"
+            );
             for ms in (0..2 * PR_SHIMMER_MS).step_by(100) {
                 for c in 0..N {
                     let fg = t.pr_shimmer(ms, N, c, ink, lift).fg.expect("an ink");

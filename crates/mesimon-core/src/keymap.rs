@@ -534,6 +534,9 @@ pub enum Verb {
     /// The board reads the mouse (T-716): a switch on the Behaviour list,
     /// on by default, per machine.
     Mouse,
+    /// The Behaviour row that cycles the editor `^g` and a link to a file
+    /// open (T-864): `auto`, then each known editor this machine has.
+    EditorChoice,
     // ---- columns (T-117) ----
     /// `O`: a new column after the cursor's, named first in the same dialog.
     AddColumn,
@@ -1135,7 +1138,8 @@ impl SettingsSection {
             | Verb::SnoozeQuiet
             | Verb::WeekStart
             | Verb::KeepAwake
-            | Verb::Mouse => Self::Behaviour,
+            | Verb::Mouse
+            | Verb::EditorChoice => Self::Behaviour,
             Verb::SystemPrompt
             | Verb::McpTools
             | Verb::DefaultTier
@@ -1671,6 +1675,15 @@ pub struct Ctx {
     /// app, so a developer's own `$EDITOR` never reaches a golden), and the
     /// key is inert and unhinted.
     pub editor_word: &'static str,
+    /// The Settings row's pick (T-864): `auto` or an editor's name. Empty
+    /// in a bare `Ctx`, which the row reads as `auto`.
+    pub editor_pick: &'static str,
+    /// Where `auto`'s editor came from (`external::Source::words`), or
+    /// empty where nothing was looked for (every test app).
+    pub editor_from: &'static str,
+    /// The editor opens a window of its own and the board waits for its
+    /// tab to close.
+    pub editor_window: bool,
     // ---- the column under the cursor (T-117) ----
     /// The board cursor rests on a column HEADER — `k` off the top card, or
     /// an empty column, whose only position is its header. No ticket is
@@ -5183,6 +5196,28 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // The editor `^g` hands a note to and a link to a file opens in
+    // (T-864). `auto` is the ladder and says what it found; a name runs
+    // that editor whatever the environment says.
+    MenuItem {
+        verb: Verb::EditorChoice,
+        label: |_| "Editor".into(),
+        detail: |c| {
+            let wait =
+                if c.editor_window { " ∙ the note comes back when its tab closes" } else { "" };
+            if c.editor_word.is_empty() {
+                String::new()
+            } else if or(c.editor_pick, "auto") == "auto" && !c.editor_from.is_empty() {
+                format!("{}, from {}{wait}", c.editor_word, c.editor_from)
+            } else if c.editor_window {
+                wait.trim_start_matches(" ∙ ").into()
+            } else {
+                "opens in this terminal".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
     // The usage line (T-327): what it shows, then what it may use. Every row
     // is a switch or a ring, and nothing is read for a provider that is off.
     MenuItem {
@@ -5909,6 +5944,8 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::KeepAwake,
             // How the board is driven: by keys alone, or the mouse too.
             Verb::Mouse,
+            // What `^g` and a file link open.
+            Verb::EditorChoice,
             Verb::SnoozeQuiet,
             Verb::WeekStart,
             // Where a new ticket works, then the workflow before the two
@@ -6040,6 +6077,7 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
         Verb::NotifySoundDone => Value::Word(or(c.notify_sound_done, "Tink").into()),
         Verb::KeepAwake => Value::Switch(c.keep_awake),
         Verb::Mouse => Value::Switch(c.mouse),
+        Verb::EditorChoice => Value::Word(or(c.editor_pick, "auto").into()),
         Verb::SnoozeQuiet => pick(&["lit", "quiet"], !c.snooze_needs_you),
         Verb::WeekStart => Value::Word(or(c.week_start_word, "Monday").into()),
         Verb::MergeTrain => Value::Switch(c.merge_train),
@@ -6126,6 +6164,7 @@ pub fn pref_key(verb: Verb) -> Option<PrefKey> {
         Verb::CrownLightning => PrefKey::CrownLightning,
         Verb::CardMoves => PrefKey::CardMoves,
         Verb::Mouse => PrefKey::Mouse,
+        Verb::EditorChoice => PrefKey::Editor,
         Verb::TabTitle => PrefKey::TabTitle,
         Verb::TabTitleNeedsYou => PrefKey::TabTitleNeedsYou,
         Verb::TabTitleFocus => PrefKey::TabTitleFocus,
@@ -10447,6 +10486,7 @@ mod tests {
                 vec![
                     Verb::KeepAwake,
                     Verb::Mouse,
+                    Verb::EditorChoice,
                     Verb::SnoozeQuiet,
                     Verb::WeekStart,
                     Verb::BoardWorkspace,
@@ -10483,7 +10523,7 @@ mod tests {
         .iter()
         .map(|m| m.verb)
         .collect();
-        assert_eq!(on[7..9], [Verb::MergeTrain, Verb::MergeTrainNotice]);
+        assert_eq!(on[8..10], [Verb::MergeTrain, Verb::MergeTrainNotice]);
         for v in prefs {
             assert!(!verbs.contains(&v), "{v:?} is a preference and belongs in Settings");
         }
@@ -11159,6 +11199,7 @@ mod tests {
             Verb::UsageCodex,
             Verb::CardCorner,
             Verb::Mouse,
+            Verb::EditorChoice,
         ];
         for item in SETTINGS_ITEMS {
             let expect = prefs.contains(&item.verb);

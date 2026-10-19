@@ -3,6 +3,7 @@
   │                                                      │
   │  Keep this machine awake   ○ off                     │
   │  Mouse                     ● on                      │
+  │  Editor                    auto                      │
   │                                                      │
   │ SNOOZE                                               │
   │  Comes back                ● lit    ○ quiet          │
@@ -13,7 +14,6 @@
   │                                                      │
   │ MERGE                                                │
   │  Merge into                ● main   ○ pull requests  │
-  │                                                      │
   │                                                      │
   │ the machine sleeps on its own clock, agents or not   │
   ╰──────────── jk select ∙ enter change ∙ b this board ─╯
