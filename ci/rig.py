@@ -659,7 +659,12 @@ class Peer:
         self.wire.crown(self.ticket)
         self.crown_key = next(t["short_key"] for t in self.wire.board()["tickets"]
                               if t["id"] == self.ticket)
-        rig.wire.link_board(self.repo)
+        try:
+            rig.wire.link_board(self.repo)
+        except WireError as e:
+            # A run that stopped mid-test left the pair in the file.
+            if "linked already" not in str(e):
+                raise
 
     def fed(self):
         """The peer board's feed since it was laid: the commands."""
@@ -667,15 +672,25 @@ class Peer:
                 if l.get("kind") == "board"]
 
     def reply(self, board, text):
-        """The peer's crown answers the rig's crown: `ask_board` back."""
+        """The peer's crown speaks to the rig's crown: `ask_board`, an ask
+        or the answer to one."""
         return self.wire.ask_board(self.session, board, text)
 
     def stop(self):
-        for attempt in (lambda: self.rig.wire.unlink_board(self.repo), self.wire.shutdown):
-            try:
-                attempt()
-            except (WireError, OSError, ConnectionError):
-                pass
+        """Unlink, then stop: the machine's links file is left as it was."""
+        try:
+            self.rig.wire.unlink_board(self.repo)
+        except (WireError, OSError, ConnectionError):
+            pass
+        self.stop_daemon()
+
+    def stop_daemon(self):
+        """The peer's daemon and tmux go; the link stays (X3: a linked
+        board that is not open)."""
+        try:
+            self.wire.shutdown()
+        except (WireError, OSError, ConnectionError):
+            pass
         deadline = time.time() + 15
         while os.path.exists(self.paths.orch_sock) and time.time() < deadline:
             time.sleep(0.1)
@@ -1532,6 +1547,33 @@ Reply with the single word ready and end your turn."""
             self.peer = Peer(self)
             self.log(f"the peer board {PEER_NAME} is up, crowned by {self.peer.crown_key}, "
                      f"and linked with this board")
+            return True
+        if what == "peer_ask":
+            # X2: the peer's crown asks this board's crown, with nothing
+            # said to it by the rig: the words reach it through the Board
+            # ask template alone, and the step ends when its turn on them
+            # ended.
+            sent_ms = int(time.time() * 1000)
+            words = step.get("text", "which release is tagged on your board? answer with the "
+                                     "version, or that you cannot tell, and end your turn")
+            try:
+                r = self.peer.reply(os.path.basename(self.repo), words)
+                self.log(f"the peer's crown asked: {r.get('road')}")
+            except WireError as e:
+                record["failures"].append(f"the peer's ask: {e}")
+                return False
+            if not self.wait_for("crown", lambda: self.crown_settled(after_ms=sent_ms, quiet=0),
+                                 STEP_TIMEOUT, self.watch):
+                record["failures"].append("the crown did not settle on the peer's ask")
+                return False
+            self.peer_fed = self.peer.fed()
+            self.closed()
+            return True
+        if what == "peer_stop":
+            # X3: the peer's daemon goes and the link stays, so the next ask
+            # finds a linked board that is not open.
+            self.peer.stop_daemon()
+            self.log(f"the peer board {PEER_NAME}'s daemon stopped; the link stands")
             return True
         if what == "peer_reply":
             # X1: the peer's crown answers with ask_board; the words reach
@@ -2645,6 +2687,12 @@ Reply with the single word ready and end your turn."""
         self.start_crown()
         for test in tests:
             self.run_test(test)
+            # The peer board a test laid (T-733) goes with the test, and the
+            # link with it: the next test lays its own.
+            if self.peer:
+                self.peer_fed = self.peer.fed()
+                self.peer.stop()
+                self.peer = None
         self.finish()
         self.table()
 

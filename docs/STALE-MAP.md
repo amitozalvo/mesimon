@@ -28604,10 +28604,16 @@ rows, the Boards scope). TUI: `reaches_boards_door_links_and_unlinks_through_boa
 E2e `boardlink_e2e`: two daemons sharing one HOME, link from one side listed on both, the ask
 landing in the stub pane through the template, the reply read as one on both sides, supervised
 holding for `^y`, no crown and not open refused, unlink for both, the feeds without the words.
-Rig `X1` (`ci/rig.py --only X1`): a `peer_board` step lays `target/rig/rig-peer` with its own
-daemon and a stub crown, links it, and the crown is asked in plain words to have the relay
-released; the checks are `crown_board:ask_board`, `peer_fed:board_ask_received` and the crown's
-`X1 replied:` line repeating the peer's words; `peer_reply` unlinks and stops the peer.
+Rig `X1`–`X3` (`ci/rig.py --only X1,X2,X3`, each passed on Sonnet, claude 2.1.303): a
+`peer_board` step lays `target/rig/rig-peer` with its own daemon and a stub crown and links it;
+the peer goes with its test, link and daemon. X1: the crown, asked in plain words to have the
+relay released, calls `ask_board` once naming `rig-peer` (`crown_board:ask_board`,
+`peer_fed:board_ask_received`), and its `X1 replied:` line repeats the words the peer's crown
+sent back (`peer_reply`). X2: the peer's crown asks first and the rig says nothing to the
+crown; the Board ask template alone has it answer with `ask_board` naming the asking board,
+and the peer's daemon takes the answer. X3: the peer's daemon is stopped with the link kept
+(`peer_stop`); the crown's `ask_board` is refused `is not open`, it does no relay work here and
+raises its hand naming `rig-peer` (`crown_hand:rig-peer`, T-862's rule).
 
 **Owed:** a CHANGELOG line at the next bump — **Added:** Settings › Crown › Reaches boards links
 two mesimon boards on one machine so their crowns can ask each other; the header names the
