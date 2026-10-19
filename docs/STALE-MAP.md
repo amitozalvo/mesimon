@@ -28234,3 +28234,31 @@ open card and the dialog are unchanged.
 `test_summary_underline_leaves_a_finished_parked_card`. **Owed:** a CHANGELOG line at the next
 bump — **Changed:** a card whose checklist is all ticked and whose agent is parked no longer
 underlines its title.
+
+## Every step that is a person's is a hand on the crown's card (T-862, 2026-10-19, "crown just say on the transcript but not notifying with a hand so i miss it sometimes")
+
+The crown's wake words (`mcp::CROWN_WAKES`) named `raise_hand` four times, each for one case:
+a fix outside the brief a worktree cut needs (T-777), a supervised merge (T-744), a plan the
+crown would change (T-582) and a question that is a person's (T-569). Nothing said the rule
+those are instances of, so a crown at the author's work that needed the person to rotate a
+key, approve a thing or run a step ended its turn saying so in its pane, where nobody reads: the
+person watches the board and its attention count, and the card read `idle`.
+
+**Applied.** One clause, `mcp::PERSONS_STEPS`, ends `CROWN_WAKES` after the plans' and the
+questions': whatever is a person's to do — a step no tool of the session takes, a fix outside a
+brief, a decision the crown leaves to them, a merge or an archive that is theirs — is raised
+with `raise_hand` on the crown's own ticket before the turn ends, naming the ticket and the step
+in one line, with the reason a model can act on (the person reads the cards, not the pane; a
+turn that only says so ends unheard and reads as done) and the hand's mechanics (one per ticket,
+the reason replaced by the next, down when the ticket is opened or prompted, which is what
+`agent_raise_hand` does). The four named cases stay where they were. `docs/USING.md`'s crown
+section says the same to the person. The tool's own description is unchanged: it already names
+"a blocker a person has to settle", and the 820-byte cap holds.
+
+- Unit: `the_crown_is_told_every_person_s_step_is_a_hand` (the wake words end on the clause,
+  its phrases, the lint). Rig: `N1` — the worker goes idle, then the crown is told in plain
+  words, naming no tool, that the ticket waits on the person's vault; the check is
+  `crown_hand:vault` and no `ask_agent`.
+- **Not done**: nothing on the daemon's side raises a hand for the crown. A turn of the crown's
+  that ends with words and no hand is not read for intent — the words are the crown's and
+  mesimon classifies no transcript (promise 3's spirit: no token added, none read as a command).

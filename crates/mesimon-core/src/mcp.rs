@@ -99,6 +99,28 @@ macro_rules! persons_plans {
 /// See `persons_plans!`.
 pub const PERSONS_PLANS: &str = persons_plans!();
 
+/// The steps that are a person's, whatever they are (T-862): the clause the
+/// four named cases above are instances of. A crown at the author's work
+/// ended its turns with "the person needs to rotate the key" in its pane,
+/// and the person, who reads the board and not the pane, missed it. The
+/// wake words say each named case's hand; this says the rule once, and
+/// says why in a way a model can act on: the pane is not where the person
+/// looks. `CROWN_WAKES` ends on it, after the plans' and the questions'.
+macro_rules! persons_steps {
+    () => {
+        "Whatever is a person's to do — a step no tool of this session takes, a fix outside a \
+         brief, a decision the crown leaves to them, a merge or an archive that is theirs — is \
+         raised with raise_hand on the crown's own ticket before the turn ends, naming the \
+         ticket and the step in one line. The person reads the board's cards and its attention \
+         count, not this session's pane: a turn that only says so in its words ends unheard \
+         and reads as done. One hand stands per ticket, its reason replaced by the next, and it \
+         comes down when the person opens the ticket or sends it a prompt."
+    };
+}
+
+/// See `persons_steps!`.
+pub const PERSONS_STEPS: &str = persons_steps!();
+
 /// How the crown picks a tier (T-584), as one clause inside `CROWN_WAKES`.
 /// The judgement is the crown's: mesimon scores no ticket's difficulty, and
 /// the words it judges against are the person's own, one description a
@@ -221,7 +243,9 @@ pub const CROWN_WAKES: &str = concat!(
     crown_tiers!(),
     persons_plans!(),
     " ",
-    persons_questions!()
+    persons_questions!(),
+    " ",
+    persons_steps!()
 );
 
 /// What a worker the crown started is told about the board it works on
@@ -2565,7 +2589,12 @@ mod tests {
         ] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
         }
-        assert!(CROWN_WAKES.ends_with(PERSONS_QUESTIONS), "one clause, said once");
+        // T-862: the steps' rule ends the words; the questions' clause is
+        // said once, right before it, after the plans'.
+        assert!(
+            CROWN_WAKES.ends_with(&format!("{PERSONS_QUESTIONS} {PERSONS_STEPS}")),
+            "one clause, said once"
+        );
         assert!(CROWN_WAKES.contains(PERSONS_PLANS), "and the plans' clause before it");
         assert_eq!(lint_tool_text(CROWN_WAKES), Ok(()));
         assert_eq!(lint_tool_text(PERSONS_QUESTIONS), Ok(()));
@@ -2614,6 +2643,27 @@ mod tests {
         assert!(SUMMARY_ABOUT.contains("Only the boxes reach the card"), "{SUMMARY_ABOUT}");
         assert!(!SUMMARY_ABOUT.contains("one-line summary"), "{SUMMARY_ABOUT}");
         assert!(!SUMMARY_ABOUT.contains("plain line alone"), "{SUMMARY_ABOUT}");
+    }
+
+    /// T-862: every step that is a person's is a hand on the crown's own
+    /// ticket, said once as the rule the named cases (a plan, a question, a
+    /// fix outside the brief, a supervised merge) are instances of, with
+    /// why: the person reads the board, not the pane. A crown that only
+    /// said it in its pane was missed.
+    #[test]
+    fn the_crown_is_told_every_person_s_step_is_a_hand() {
+        assert!(CROWN_WAKES.ends_with(PERSONS_STEPS), "the wake words end on the rule");
+        for words in [
+            "Whatever is a person's to do",
+            "a step no tool of this session takes",
+            "raised with raise_hand on the crown's own ticket before the turn ends",
+            "not this session's pane",
+            "ends unheard and reads as done",
+            "One hand stands per ticket",
+        ] {
+            assert!(PERSONS_STEPS.contains(words), "PERSONS_STEPS says {words:?}");
+        }
+        assert_eq!(lint_tool_text(PERSONS_STEPS), Ok(()));
     }
 
     /// T-582: a plan the crown would change stays a person's, said in the

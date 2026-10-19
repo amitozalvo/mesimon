@@ -474,6 +474,13 @@ no commits yet, or the ticket's branch already exists), the crown is told why, i
 card shows, and no agent starts. A fix outside the ticket's brief is yours: the crown raises its
 hand on its own card to say what it is, and starts the agent again once you have made it.
 
+The same holds for anything else only you can do. The crown is told that whatever is yours — a
+step no tool of its takes, a decision it leaves to you, a merge or an archive that is yours — is
+raised on its own card before its turn ends, naming the ticket and the step, because you read the
+board and its attention count, not its pane: a crown that only says so in its session is missed.
+One hand stands on its card at a time, the latest reason showing, and it comes down when you open
+its ticket or send it a prompt.
+
 **Settings › Crown › Archives tickets** (off by default) lets the crown archive a ticket and
 restore an archived one. While it is off, the crown is refused in words that name this row, and it
 moves a finished ticket to DONE instead; you decide when the card leaves the board and when its

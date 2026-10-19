@@ -978,6 +978,23 @@ checks = ["woke:unstarted", "crown_hand:already exists"]
   rig = "free_branch"
 
 [[test]]
+id = "N1"
+title = "N1 · a step only the person can take: do the steps below"
+workspace = "worktree"
+brief = "Reply with the single word done and end your turn. Read no file and run no command."
+expect = "the crown's worker answers and goes idle; the crown is then told, in plain words naming no tool, that the ticket cannot go on until the person rotates the deploy key in their vault, which nothing on the board does. Told only that, the crown raises its hand on its own ticket naming the vault (T-862), so the card lights and the attention count carries it, rather than saying so in its pane alone, and it sends the worker nothing."
+checks = ["road:mod", "started_by_crown", "crown_hand:vault", "not_fed:ask_agent", "replies:done"]
+
+  [[test.steps]]
+  crown = "N1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: N1 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: N1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  crown = "N1: {key} cannot go on until the person rotates the deploy key in their vault, which nothing on this board can do. Handle that, then end your turn with the single line: N1 handled."
+  until = { state = "idle" }
+
+[[test]]
 id = "L1"
 title = "L1 · a worker that hits a usage limit: do the steps below"
 workspace = "worktree"
