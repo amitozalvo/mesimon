@@ -1338,19 +1338,25 @@ fn mix(a: Color, b: Color, k: f32) -> Color {
 }
 
 /// How much of its lift the shimmer's crest gives `cell` of `cells`,
-/// `at_ms` into its clock (T-794): a soft crest crosses the cells in
-/// `PR_SHIMMER_MS`, then rests for `PR_SHIMMER_REST_MS`, again. 0 off the
-/// crest, `PR_SHIMMER_PEAK` on it.
+/// `at_ms` into its clock (T-794): a soft crest crosses the cells right to
+/// left in `PR_SHIMMER_MS`, back left to right in as long (T-858), then
+/// rests for `PR_SHIMMER_REST_MS`, again. 0 off the crest,
+/// `PR_SHIMMER_PEAK` on it.
 fn shimmer_crest(at_ms: u64, cells: usize, cell: usize) -> f32 {
     if cells == 0 {
         return 0.0;
     }
-    let at = at_ms % (PR_SHIMMER_MS + PR_SHIMMER_REST_MS);
-    if at >= PR_SHIMMER_MS {
+    let at = at_ms % (2 * PR_SHIMMER_MS + PR_SHIMMER_REST_MS);
+    if at >= 2 * PR_SHIMMER_MS {
         return 0.0;
     }
-    let t = at as f32 / PR_SHIMMER_MS as f32;
-    let front = -PR_SHIMMER_BAND + (cells as f32 + 2.0 * PR_SHIMMER_BAND) * ease(t);
+    let t = (at % PR_SHIMMER_MS) as f32 / PR_SHIMMER_MS as f32;
+    let span = cells as f32 + 2.0 * PR_SHIMMER_BAND;
+    let front = if at < PR_SHIMMER_MS {
+        cells as f32 + PR_SHIMMER_BAND - span * ease(t)
+    } else {
+        -PR_SHIMMER_BAND + span * ease(t)
+    };
     let d = 1.0 - ((cell as f32 + 0.5) - front).abs() / PR_SHIMMER_BAND;
     if d <= 0.0 {
         return 0.0;
@@ -1398,8 +1404,9 @@ pub(crate) const REPLY_REVEAL_MS: u64 = 1_400;
 /// Cells over which the reply's front fades a cell in.
 const REPLY_REVEAL_FADE: f32 = 10.0;
 /// A running pipeline's words on a card (T-794) wear a slow shimmer: a soft
-/// lift crosses them left to right in this long, then rests for
-/// `PR_SHIMMER_REST_MS`, again for as long as the pipeline runs.
+/// lift crosses them right to left in this long and back left to right in
+/// as long (T-858), then rests for `PR_SHIMMER_REST_MS`, again for as long
+/// as the pipeline runs.
 pub(crate) const PR_SHIMMER_MS: u64 = 2_400;
 const PR_SHIMMER_REST_MS: u64 = 1_600;
 /// How much of its own colour a cell keeps when the board recedes behind
@@ -1407,8 +1414,10 @@ const PR_SHIMMER_REST_MS: u64 = 1_600;
 const RECEDE: f32 = 0.4;
 /// Cells either side of the shimmer's crest that it lifts.
 const PR_SHIMMER_BAND: f32 = 5.0;
-/// How much of `lift` the crest takes over the words' own ink.
-const PR_SHIMMER_PEAK: f32 = 0.85;
+/// How much of `lift` the crest takes over the words' own ink. The card
+/// lifts toward the ramp's base (T-858: "a little more highlighted"), so
+/// the crest stops short of the title's ink.
+const PR_SHIMMER_PEAK: f32 = 0.7;
 /// How much of the crown's tint a crown message's line keeps over the
 /// ground (T-783): the colour reads as the crown's, the weight as a note's.
 const CROWN_QUIET: f32 = 0.7;
@@ -3369,14 +3378,15 @@ mod tests {
     }
 
     /// T-794: a running pipeline's words shimmer — a crest crossing them
-    /// left to right, lifting `ink` toward `lift` and never past it, then a
-    /// rest at `ink`. Grey on grey: no colour of its own. Mono holds still.
+    /// right to left and back left to right (T-858), lifting `ink` toward
+    /// `lift` and never past it, then a rest at `ink`. Grey on grey: no
+    /// colour of its own. Mono holds still.
     #[test]
     fn a_running_pipelines_shimmer_crosses_slowly_then_rests() {
         const N: usize = 16;
         for flavor in Flavor::ALL {
             let t = Theme::new(flavor, Profile::TrueColor);
-            let (ink, lift) = (t.rest.dim2, t.rest.dim1);
+            let (ink, lift) = (t.rest.dim2, t.rest.base);
             let lit = |ms: u64| -> Vec<usize> {
                 (0..N).filter(|&c| t.pr_shimmer(ms, N, c, ink, lift).fg != Some(ink)).collect()
             };
@@ -3385,9 +3395,15 @@ mod tests {
             let late = lit(PR_SHIMMER_MS * 2 / 3);
             assert!(!early.is_empty() && !late.is_empty(), "{flavor:?}: the crest is on");
             assert!(early.len() < N, "{flavor:?}: a crest, not the whole line");
-            assert!(early[0] < late[0], "{flavor:?}: left to right");
-            assert!(lit(PR_SHIMMER_MS + PR_SHIMMER_REST_MS / 2).is_empty(), "{flavor:?}: rests");
-            for ms in (0..PR_SHIMMER_MS).step_by(100) {
+            assert!(early[0] > late[0], "{flavor:?}: right to left first");
+            assert!(lit(PR_SHIMMER_MS).is_empty(), "{flavor:?}: off the left edge");
+            let back_early = lit(PR_SHIMMER_MS + PR_SHIMMER_MS / 3);
+            let back_late = lit(PR_SHIMMER_MS + PR_SHIMMER_MS * 2 / 3);
+            assert!(!back_early.is_empty(), "{flavor:?}: the crest comes back");
+            assert!(back_early[0] < back_late[0], "{flavor:?}: then left to right");
+            assert!(lit(2 * PR_SHIMMER_MS).is_empty(), "{flavor:?}: off the right edge");
+            assert!(lit(2 * PR_SHIMMER_MS + PR_SHIMMER_REST_MS / 2).is_empty(), "{flavor:?}: rests");
+            for ms in (0..2 * PR_SHIMMER_MS).step_by(100) {
                 for c in 0..N {
                     let fg = t.pr_shimmer(ms, N, c, ink, lift).fg.expect("an ink");
                     assert_ne!(fg, t.attn, "{flavor:?}: never the needs-you colour");
@@ -3399,7 +3415,7 @@ mod tests {
                 }
             }
             let mono = Theme::new(flavor, Profile::Mono);
-            for ms in (0..PR_SHIMMER_MS).step_by(100) {
+            for ms in (0..2 * PR_SHIMMER_MS).step_by(100) {
                 assert!((0..N).all(|c| mono.pr_shimmer(ms, N, c, ink, lift).fg == Some(ink)));
             }
         }

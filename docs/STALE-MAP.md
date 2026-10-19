@@ -28208,3 +28208,14 @@ client gives up on counts as its 10 s and reconnects);
 (the recovery and composer roads) and the full suite once, green. **Owed:** a CHANGELOG line
 at the next bump — **Changed:** the board stays quick on a loaded machine: what it reads from
 tmux and the process table runs beside the daemon's writer, not in its way.
+
+## T-858 — the pipeline's shimmer goes there and back, a step brighter (2026-10-19)
+
+The author: "Make pipeline shimmer more noticable. Go rtl then ltr and a little more
+highlighted". `shimmer_crest`'s clock is now two sweeps and a rest: the crest crosses the words
+right to left in `PR_SHIMMER_MS` (2.4 s), back left to right in as long, then rests 1.6 s. The
+card lifts the words' `dim2` toward the ramp's `base` (the title's ink) instead of `dim1`, at a
+peak of 0.7 instead of 0.85, so the crest is brighter than before and still stops short of the
+title (graphite: `8C8880` → about `CDCAC4` at the crest, was `B0ACA3`). Grey on grey still; below
+TrueColor it steps to the terminal's own ink, mono holds still. Test:
+`theme::a_running_pipelines_shimmer_crosses_slowly_then_rests`, now asserting both directions.

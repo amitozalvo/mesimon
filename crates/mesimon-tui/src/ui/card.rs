@@ -948,7 +948,7 @@ pub(super) fn render(
         for g in words.graphemes(true) {
             row.push(Span::styled(
                 g.to_string(),
-                theme.pr_shimmer(ctx.now_ms, cells, at, ramp.dim2, ramp.dim1),
+                theme.pr_shimmer(ctx.now_ms, cells, at, ramp.dim2, ramp.base),
             ));
             at += g.width();
         }
