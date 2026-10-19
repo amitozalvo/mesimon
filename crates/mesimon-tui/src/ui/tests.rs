@@ -596,6 +596,36 @@ fn golden_raised_board_120() {
     golden("board_raised_120x30", &lines);
 }
 
+/// The sentence is every raised card's (T-865), not the cursor card's
+/// alone: a resting card says why under its title, in the needs-you
+/// colour, for as long as the hand is up — and nothing once it is down.
+#[test]
+fn a_resting_raised_card_says_why_in_the_needs_you_colour() {
+    for flavor in Flavor::ALL {
+        let theme = Theme::new(flavor, Profile::TrueColor);
+        let attn = theme.attn;
+        let mut app = App::for_test(fixture_raised(), theme);
+        app.cursor_col = 0; // the cursor is not on the raised card
+        let lines = render(&app, 120, 30);
+        let title = lines.iter().position(|l| l.contains("Grapheme truncation")).unwrap();
+        let x = lines[title + 1].find("Auth0 or cookie?").expect("the reason under the title");
+        let x = lines[title + 1][..x].chars().count() as u16;
+        let buf = cells(&app, 120, 30);
+        assert_eq!(buf[(x, title as u16 + 1)].fg, attn, "{flavor:?}: the reason wears attn");
+    }
+    let mut app = app_graphite(fixture_raised());
+    app.cursor_col = 0;
+    golden("board_raised_resting_120x30", &render(&app, 120, 30));
+    let mut lowered = fixture_raised();
+    for t in &mut lowered.tickets {
+        t.raised = None;
+    }
+    let mut app = app_graphite(lowered);
+    app.cursor_col = 0;
+    let lines = render(&app, 120, 30);
+    assert!(!lines.iter().any(|l| l.contains("Auth0")), "a lowered hand takes its words");
+}
+
 /// The same hand from the ticket page: the state row says who asked, when,
 /// and what they asked. The page is where it is answered, and the mark is
 /// lowered on the way OUT, so the row is still here while it is being read.

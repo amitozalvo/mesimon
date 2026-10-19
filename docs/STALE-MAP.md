@@ -28407,3 +28407,23 @@ picks what `^g` and file links open; `auto` now also finds git's editor setting 
 or Zed when the board runs in its terminal. **Fixed:** VS Code, Cursor, Zed or Sublime set as the
 editor without its wait flag no longer lose the edit, and a file link opens in such an editor
 without taking over the board.
+
+## A raised hand says why on every card (T-865, 2026-10-19)
+
+The agent's sentence (T-107) was drawn on the CURSOR card only, so a lit card told the person
+that somebody was waiting and not what for: they had to open the agent to find out. **Every card
+that wears a raised hand now carries its reason on line 2**, under the title, in the needs-you
+colour (`Theme::attn_text`: the attn hue as ink on the card's own ground, bold where the profile
+has no colour). It is pinned, not faded in: it stands exactly while `Ticket::raised` does, and the
+roads that lower the hand take it off. It holds line 2 over a new reply (T-720), which waits for
+the hand to come down; the PR marks keep their place beside it. It is not drawn on a trail, the
+delete flash or the move ghost. On the cursor card it is the same row it always was (the
+accordion's old raised row is gone, so the snooze preset now reads after it).
+
+The L3 law needed nothing: `attn_stays_on_the_card` already admits the lit card's title row and
+the row under it. A session waiting at a dialog keeps its bare mark; the pane holds that dialog.
+
+**Tests.** `a_resting_raised_card_says_why_in_the_needs_you_colour` (every flavor: the reason's
+cell is `attn`; a lowered hand leaves no words); `board_raised_resting_120x30` golden.
+**Owed:** a CHANGELOG line at the next bump — **Changed:** a card whose agent asked for you shows
+the agent's reason under its title, in the needs-you colour, until the hand is lowered.

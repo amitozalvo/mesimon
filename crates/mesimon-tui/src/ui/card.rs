@@ -972,7 +972,32 @@ pub(super) fn render(
         Line::from(row).style(acc_style)
     };
     let mut drew_line2 = brief_last;
-    if let Some((words, ago, crown)) = fresh.filter(|_| !(open || cursorish || trail || doomed)) {
+    // Why the mark is up (T-107), in the agent's own words, under the title
+    // of every card that wears it (T-865, the author: "right now user has to
+    // go inside the agent to find out what's the matter"): pinned until the
+    // hand comes down, never faded, and in the needs-you colour, the one
+    // demand on the board speaking for itself. It holds line 2 over a new
+    // reply, which is the transcript's and waits; the PR marks keep their
+    // place beside it. Not on a trail, the delete flash or the move ghost,
+    // which say something else.
+    let raised = ticket.raised.as_ref().filter(|_| !(trail || doomed || held));
+    if let Some(r) = raised {
+        let room = if brief_last { 0 } else { brief_room };
+        let words = truncate(&r.reason, t_cells.saturating_sub(glyph_cells + room));
+        let mut row = bar_spans();
+        row.push(Span::raw(" ".repeat(1 + glyph_cells)));
+        row.push(Span::styled(words, theme.attn_text()));
+        let shown = if brief_last { Vec::new() } else { brief.clone() };
+        let used = super::spans_width(&row) + super::spans_width(&shown);
+        row.push(Span::raw(" ".repeat((ctx.width as usize).saturating_sub(used + 1))));
+        row.extend(shown);
+        row.push(Span::raw(" "));
+        lines.push(Line::from(row).style(acc_style));
+        drew_line2 = true;
+    }
+    if let Some((words, ago, crown)) =
+        fresh.filter(|_| !(open || cursorish || trail || doomed || raised.is_some()))
+    {
         use unicode_segmentation::UnicodeSegmentation;
         // The crown's words (T-783) settle in its tint, a reply in the
         // quiet ink.
@@ -1024,11 +1049,6 @@ pub(super) fn render(
     // open on its own ground: the tag row and the reply, on the resting ramp,
     // no surface. The session list, the armed snooze and the owed row stay
     // the cursor card's: they are about the selection, not the ticket.
-    // Why this card is lit, in the agent's own words (T-107). The cursor
-    // card only: every other card wears the bare mark, because a card row is
-    // the scarcest thing on the board and one open card at a time is what
-    // the accordion is for.
-    let raised_row = ticket.raised.as_ref().map(|r| r.reason.as_str());
     // The crown answered this card's question (T-569): `answered by T-411:
     // Okta`, the claude's `detail` past its stop, which the daemon keeps
     // until the next state edge. A claude reaches `Running` or `Idle` only
@@ -1049,7 +1069,6 @@ pub(super) fn render(
             || snooze.is_some()
             || owed_row.is_some()
             || ship_words.is_some()
-            || raised_row.is_some()
             || answered_row.is_some()
             || rows_shown);
     let opened = !selected && meta_row;
@@ -1088,13 +1107,6 @@ pub(super) fn render(
         if let Some(words) = snooze.filter(|_| selected) {
             let words = truncate(words, t_cells.saturating_sub(glyph_cells));
             push(vec![Span::raw(" ".repeat(glyph_cells)), Span::styled(words, faint)]);
-        }
-        // Why the mark is up. A step brighter than the rows either side of
-        // it, because this is the agent's own sentence rather than chrome —
-        // and it is the answer to the question the `!` just asked.
-        if let Some(words) = raised_row.filter(|_| selected) {
-            let words = truncate(words, t_cells.saturating_sub(glyph_cells));
-            push(vec![Span::raw(" ".repeat(glyph_cells)), Span::styled(words, dim)]);
         }
         // What the crown chose for this card's question (T-569), in the
         // board's quiet voice: a decision the person reads, not the agent's
