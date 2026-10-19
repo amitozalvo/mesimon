@@ -1583,7 +1583,11 @@ of an answer to a hand ("run `gcloud auth login`, then tell me"), so the `!` sto
 was visibly working again. The three conditions each exclude a road that is not a person: `Background`
 is a park a teammate's report resumes (T-135), sub-High into `Running` is `SubagentStop`
 correcting a misread tail rather than a new turn, and `RequiresAction` → `Running` is a permission
-dialog resolving mid-turn. Unlike `woke_at` the board
+dialog resolving mid-turn. Since T-861 (2026-10-19) the roads that deal with the AGENT rather
+than the card lower it too: stepping into its pane and out (`FocusStart`, `FocusEnd`), a person's
+or the crown's park (`SleepSession`, `sleep_agent`, the exit park), and the crown being told the
+hand went up (`crownwake::lower_told_hands`, at the wake's delivery); an autosleep, a bulk
+reclaim, a restart's park and a tier relaunch are nobody dealing with it and keep the mark. Unlike `woke_at` the board
 CURSOR lowers nothing (a glance is not an answer) and the page lowers it on the way OUT (clearing
 on arrival would blank the row before it could be read). `train::plan` skips a ticket with a hand
 up on both lists — a person looks before the branch goes anywhere — which also keeps the train's

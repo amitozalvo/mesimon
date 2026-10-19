@@ -2833,6 +2833,12 @@ impl Daemon {
                 if self.focus_held() == Some(Focus::Session(session)) {
                     self.focus = None;
                 }
+                // Coming out of the pane (T-861): the person was inside the
+                // session the mark pointed at, and a hand raised while they
+                // were there has been seen.
+                if self.lower_hand_of(session) {
+                    self.broadcast();
+                }
                 Response::Ok
             }
             Command::OpenTerminal { ticket } => self.open_terminal(ticket, stream),
@@ -2903,6 +2909,8 @@ impl Daemon {
             Command::AcceptTrust { ticket } => self.accept_trust(ticket),
             Command::SleepSession { id } => match self.sleep_one(id, false) {
                 Ok(()) => {
+                    // Parking the agent is being done with its hand (T-861).
+                    self.lower_hand_of(id);
                     self.persist_and_notify();
                     Response::Ok
                 }
@@ -6662,6 +6670,9 @@ impl Daemon {
                     };
                 }
                 self.persist_sessions();
+                // The crown parking its worker is done with the worker's
+                // hand (T-861), as a person's park is.
+                self.lower_hand_on(target);
                 self.feed.board(by.actor(), "sleep_agent", Some(target));
                 self.crown_touched(ticket, target, "parked");
                 self.broadcast();
@@ -7415,6 +7426,7 @@ impl Daemon {
             }
             _ => {
                 self.told_columns();
+                self.lower_told_hands();
                 self.crown_wakes.clear();
                 self.feed.board("automation", "crown_wake_sent", Some(crown));
                 self.crown_said(crown, &news);
@@ -13291,6 +13303,14 @@ impl Daemon {
     /// The same edge from a held dialog into `Running` is the answer given in
     /// the pane (T-611): the turn goes on, so no next turn ever starts.
     ///
+    /// And the roads where somebody deals with the AGENT rather than with
+    /// the card (T-861): a person stepping into its pane or out of it
+    /// (`FocusStart`, `FocusEnd`), a park of theirs or the crown's
+    /// (`SleepSession`, `sleep_agent`, the exit park), and the crown being
+    /// told the hand went up (`lower_told_hands`). An autosleep, a bulk
+    /// reclaim, a restart's park and a tier relaunch are nobody dealing
+    /// with it and keep the mark.
+    ///
     /// The daemon cannot tell its own paste's ack from a line the user typed
     /// (the queued ask states the same limit), so a prompt mesimon delivers
     /// also lowers the hand. The one delivery that would have mattered — the
@@ -13304,6 +13324,16 @@ impl Daemon {
         let t = t.clone();
         let _ = store::save_ticket(&self.paths, &t);
         true
+    }
+
+    /// `lower_hand_on` for a session's ticket (T-861), where the road names
+    /// the agent and not the card. False for a session that is not on the
+    /// board, as for a ticket with no hand up.
+    fn lower_hand_of(&mut self, session: uuid::Uuid) -> bool {
+        match self.board.sessions.iter().find(|s| s.id == session).map(|s| s.ticket) {
+            Some(ticket) => self.lower_hand_on(ticket),
+            None => false,
+        }
     }
 
     /// Take a ticket off the merge train, or put it back (T-227). The flag
@@ -16740,10 +16770,13 @@ impl Daemon {
         if adapter.history_missing(rec) || adapter.conversation_key(rec).is_none() {
             return false;
         }
-        let (sid, transcript) = (rec.sid16(), rec.transcript_path.clone());
+        let (sid, transcript, ticket) = (rec.sid16(), rec.transcript_path.clone(), rec.ticket);
 
         let now = now_ms();
         self.park_record(id, transcript.as_deref(), now);
+        // The person left the session from inside it (T-861): a park of
+        // their own, and the hand comes down with it as it does for `x`.
+        self.lower_hand_on(ticket);
         // No SIGTERM: the process left on its own. The pane is only still
         // standing because remain-on-exit is holding the corpse, so hand it
         // to the same reaper sleep uses rather than killing it inline.
@@ -17082,6 +17115,7 @@ impl Daemon {
         self.focus = Some(FocusHold { what: Focus::Session(session), by: Arc::downgrade(by) });
         let sid16 = rec.sid16();
         let kind = rec.kind;
+        let ticket = rec.ticket;
         let argv = self.backend.attach_argv(&sid16);
         // Breadcrumb leaf: the session's own name when the agent set one
         // (OSC-0 pane title; tmux reports the hostname when it never did),
@@ -17098,6 +17132,12 @@ impl Daemon {
             }
             Err(_) => kind_word.to_string(),
         };
+        // Stepping into the pane is the person taking the question up
+        // (T-861): the mark pointed here, and `!N` keeps counting a card
+        // whose session they are sitting in otherwise.
+        if self.lower_hand_on(ticket) {
+            self.broadcast();
+        }
         self.refresh_status_line();
         Response::Attach { argv }
     }

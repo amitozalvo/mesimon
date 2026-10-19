@@ -1232,7 +1232,9 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
         lines_with(&raised) == 1
     });
     assert_eq!(lines_with("mesimon-secret-73"), 0, "the reason never reaches the crown's pane");
-    assert!(matches!(c.request(Command::LowerHand { id: w1 }), Response::Ok));
+    // Told, the crown holds the question and the worker's hand is down
+    // (T-861): one card asks a person one thing, never two.
+    assert!(!c.board().ticket(w1).unwrap().hand_raised(), "the hand the crown was told of is down");
 
     // ---- a person's ask on the crown goes first; the wake follows ----------
     start(&mut c, sa);
@@ -5718,7 +5720,7 @@ fn the_crown_watches_a_ticket_a_person_started() {
     });
     assert!(lines_with(&worker)[2].starts_with(&format!("{worker} raised its hand")));
     assert!(!std::fs::read_to_string(&got).unwrap().contains("mesimon-probe-94"));
-    assert!(matches!(c.request(Command::LowerHand { id: w }), Response::Ok));
+    assert!(!c.board().ticket(w).unwrap().hand_raised(), "told, the hand is down (T-861)");
     start(&mut c, sa);
     stop(&mut c, sa);
 

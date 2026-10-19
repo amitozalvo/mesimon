@@ -8,6 +8,8 @@
 //! The point of the file is the LIFETIME. Raising is one call; what makes the
 //! mark worth having is that the `Stop` which ends the turn moments later
 //! leaves it standing, and that is a thing only a live daemon can be asked.
+//! And three roads that deal with the agent rather than the card (T-861):
+//! stepping into its pane, stepping out, and parking it.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -299,4 +301,89 @@ fn a_raised_hand_comes_down_with_the_dialog_it_stood_for() {
     );
     wait_until(Duration::from_secs(6), "the refusal lowers the hand", || !raised(&mut c));
     assert!(state_is(&mut c, &SessionState::Running));
+}
+
+/// T-861: a hand comes down when the person deals with the AGENT — steps
+/// into its pane (`FocusStart`), steps out of it (`FocusEnd`, for a hand
+/// raised while they were inside), or parks it (`SleepSession`) — not only
+/// when they deal with the card. An autosleep is nobody dealing with it and
+/// keeps the mark; `autosleep_e2e` has that timer, and this test does not
+/// wait on one.
+#[test]
+fn a_raised_hand_comes_down_when_the_person_steps_in_or_parks_the_agent() {
+    use mesimon_core::board::SessionState;
+    const STUB: &str = "#!/bin/sh\nwhile IFS= read -r line; do :; done\n";
+    let Some(h) =
+        Harness::boot_with_env("raisefocus", Some(STUB), &[("MESIMON_SLEEP_MIN_AGE_MS", "0")])
+    else {
+        return;
+    };
+    let sock = h.paths.orch_sock();
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("raisefocus");
+
+    c.open_to_new("IN PROGRESS");
+    let ticket = match c.request(Command::CreateTicket {
+        column: "IN PROGRESS".into(),
+        title: "pick a login".into(),
+        workspace: None,
+        tier: None,
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("create: {other:?}"),
+    };
+    let sid = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn: {other:?}"),
+    };
+    let mut shim = Shim::start(&sock, sid);
+    shim.rpc("initialize", json!({"protocolVersion": "2025-11-25"}));
+    shim.notify("notifications/initialized");
+    let raised = |c: &mut TestClient| c.board().ticket(ticket).unwrap().hand_raised();
+
+    // ---- stepping into the pane -------------------------------------------
+    shim.call_ok("raise_hand", json!({ "reason": "Auth0, or the session cookie?" }));
+    assert!(raised(&mut c));
+    assert_eq!(c.board().needs_you_count(), 1);
+    assert!(
+        matches!(c.request(Command::FocusStart { session: sid }), Response::Attach { .. }),
+        "the pane is handed over"
+    );
+    assert!(!raised(&mut c), "inside the session, the mark is down");
+    assert_eq!(c.board().needs_you_count(), 0);
+
+    // ---- a hand raised while inside comes down on the way out --------------
+    shim.call_ok("raise_hand", json!({ "reason": "and the cookie's name?" }));
+    assert!(raised(&mut c), "raised while the person is in the pane");
+    assert!(matches!(c.request(Command::FocusEnd { session: sid }), Response::Ok));
+    assert!(!raised(&mut c), "coming out of the session, the mark is down");
+    assert_eq!(c.board().needs_you_count(), 0);
+
+    // ---- parking the agent -------------------------------------------------
+    shim.call_ok("raise_hand", json!({ "reason": "still: Auth0, or the cookie?" }));
+    hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    wait_until(Duration::from_secs(6), "the turn to end", || {
+        c.board()
+            .sessions
+            .iter()
+            .any(|s| s.id == sid && matches!(s.state, SessionState::Idle { .. }))
+    });
+    assert!(raised(&mut c), "a finished turn is still not an answer");
+    assert!(matches!(c.request(Command::SleepSession { id: sid }), Response::Ok));
+    assert!(!raised(&mut c), "parked by the person, the mark is down");
+    assert_eq!(c.board().needs_you_count(), 0);
+    let ticket_file = {
+        let key = c.board().ticket(ticket).unwrap().short_key.clone();
+        h.paths.board_dir.join("board/tickets").join(&key).join("ticket.toml")
+    };
+    let file = std::fs::read_to_string(&ticket_file).unwrap();
+    assert!(!file.contains("[raised]"), "and the file agrees: {file}");
+    wait_until(Duration::from_secs(6), "the session parks", || {
+        c.board().sessions.iter().any(|s| s.id == sid && matches!(s.state, SessionState::Sleeping))
+    });
 }

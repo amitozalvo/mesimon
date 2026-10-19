@@ -1928,6 +1928,25 @@ impl Daemon {
         self.feed.board("automation", "crown_wake_dropped", self.board.crown);
     }
 
+    /// The hands the sentence just told the crown of come down (T-861):
+    /// the crown holds the worker's question from here — it answers the
+    /// worker, which lowers the hand anyway, or raises its own — and a `!`
+    /// that stood on past that was two cards asking a person one thing.
+    /// Only a wake whose cause IS the hand: a question or a plan folded
+    /// over it (`WakeCause`'s order) comes down with its dialog (T-611),
+    /// and a hand folded over a delivery is still the hand.
+    pub(super) fn lower_told_hands(&mut self) {
+        let told: Vec<ulid::Ulid> = self
+            .crown_wakes
+            .iter()
+            .filter(|w| w.cause == WakeCause::Raised)
+            .map(|w| w.worker)
+            .collect();
+        for worker in told {
+            self.lower_hand_on(worker);
+        }
+    }
+
     /// The sentence the crown receives: the board's `crown_wake` template
     /// over every wake owed, in the order they happened, each with what
     /// changed in brackets. A worker's title and a column's name are user

@@ -28294,3 +28294,43 @@ ground where the defaults (graphite, chalk) follow the OS. Goldens unchanged. **
 CHANGELOG line at the next bump — **Fixed:** in Settings › Theme, a theme for dark and light no
 longer overwrites the separate dark and light themes, and picking a dark or light theme
 afterwards stops the shared one from applying.
+
+## A raised hand comes down when somebody deals with the agent (T-861, 2026-10-19, "relax raise hand persistence")
+
+**Seen.** The author stepped into a worker's pane from the board, read the question there, came
+out, and the card kept its `!` and the reason: board Enter never visits the ticket page, and the
+page's departure was the hand's only road down on the person's side. Parking the agent kept it
+too, and a crown told of a worker's hand left two cards lit for one question — the worker's and,
+once the crown escalated, its own.
+
+**Shipped.** Six more erasers for `Ticket.raised`, all `lower_hand_on`'s, none new in kind: the
+hand comes down when somebody deals with the AGENT and not only with the card.
+
+- **In and out of the pane**: `focus_start` lowers it as it hands the attach over, and the
+  `FocusEnd` arm lowers it again on the way out, for a hand raised while the person sat inside.
+  Both broadcast, since neither command is a mutate on its own.
+- **A park of a person's or the crown's**: `SleepSession`, the crown's `sleep_agent`, and
+  `park_on_exit` (Ctrl+C, `/exit`, Ctrl+D are a person leaving from inside). `lower_hand_of`
+  is the session-keyed spelling for the roads that name a session.
+- **The crown told**: `crownwake::lower_told_hands`, in `drain_crown_wakes`' sent arm, lowers
+  every delivered wake whose cause IS `Raised`. The crown holds the question from there — its
+  `ask_agent` would have lowered the hand anyway through `UserPromptSubmit`, and its own
+  `raise_hand` is the one card that should be lit. A question or a plan folded over the hand
+  (`WakeCause`'s order) comes down with its dialog instead (T-611); a hand folded over a delivery
+  is still the hand. The ticket offered a crown tool to lower it as the alternative; automatic
+  needs no tool text, no rig run, and no judgement the crown could forget.
+
+**Kept up, on purpose.** An autosleep (`autosleep_due`), a bulk reclaim, the Esc menu's restart
+park and a tier or plan relaunch all go through `sleep_one` and lower nothing: nobody dealt with
+the question, and a mark that vanished with a timer is one the person learns to distrust (T-107's
+own argument). The board CURSOR still lowers nothing. `train::plan`'s clause is unchanged: the
+train takes the ticket once the crown has been told, as it did the moment the crown answered
+before — the gap between the telling and the answer is new, and a worker whose branch the crown
+should hold off the train is the crown's `merge_ticket`/mode to settle. The tool's description
+("until the ticket is opened or its next prompt arrives") is not reworded: nothing the agent is
+told changed, so no rig run.
+
+**Tests.** `raise_hand_e2e::a_raised_hand_comes_down_when_the_person_steps_in_or_parks_the_agent`
+(FocusStart, FocusEnd with a hand raised inside, SleepSession, the file agreeing), both roads.
+`crown_e2e`'s two hand passages now assert the hand is down once the wake landed, where they
+used to send `LowerHand` by hand.
