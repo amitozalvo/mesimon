@@ -146,12 +146,21 @@ echo "installed $("$PREFIX/mesimon" --version) -> $PREFIX/mesimon"
 
 # A welcome only after a successful install, on a UTF-8 terminal. Piped
 # output and limited terminals keep the ordinary text; no ANSI escapes.
+# The intro (T-869) plays once per machine where the terminal is big enough
+# for it, and carries the ready and next lines itself; everything else (an
+# older mesimon, a machine that has seen it) gets the picture. Its keys come
+# from the terminal, never from this script's pipe.
 case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
   *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) mascot_utf8=yes ;;
   *) mascot_utf8=no ;;
 esac
+welcomed=no
 if [ -t 1 ] && [ "${TERM:-dumb}" != dumb ] && [ "$mascot_utf8" = yes ]; then
-  echo
+  if "$PREFIX/mesimon" --help 2>/dev/null | grep -q '^  mesimon welcome' \
+    && "$PREFIX/mesimon" welcome 2>/dev/null </dev/tty; then
+    welcomed=yes
+  else
+    echo
 # mascot:start
   cat <<'MESIMON_SHIN'
    ████▄  ▄▄▄▄   ████▄
@@ -168,7 +177,8 @@ if [ -t 1 ] && [ "${TERM:-dumb}" != dumb ] && [ "$mascot_utf8" = yes ]; then
    ▀▀██████████████████▀▀
 MESIMON_SHIN
 # mascot:end
-  echo "  mesimon is ready"
+    echo "  mesimon is ready"
+  fi
 fi
 
 case ":$PATH:" in
@@ -186,6 +196,8 @@ case ":$PATH:" in
     ;;
 esac
 
-echo
-echo "next:  mesimon doctor      check your environment"
-echo "       cd <a git repo> && mesimon"
+if [ "$welcomed" = no ]; then
+  echo
+  echo "next:  mesimon doctor      check your environment"
+  echo "       cd <a git repo> && mesimon"
+fi

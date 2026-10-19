@@ -28776,3 +28776,51 @@ client's bug).
   reads the state after the loop, so a pre-check would drop a plan arriving with its stop).
 - The twelfth per-file `create`/`spawn` e2e helper pair (`boardlink_e2e`) and the hand-typed
   `UserPromptSubmit`+`Stop` turn want `TestClient` helpers in `common`.
+
+## The shin wakes up out of משימון, once per machine (T-869, 2026-10-19, the author: "Mesimon starting animation in terminal showing the shin emerging from משימון … Should appear after installation or when starting board for the first time ∙ Think like pixar starting animation with the lamp" and "this needs to run a single time per installation (not including updates) … if they already installed, show them the next time they run mesimon, and that's it")
+
+**What plays** (`crates/mesimon-tui/src/intro.rs`, about 13 s): the word comes up out of the
+ground right to left, the ש stirs and shivers, then breathes in and fills out into the medium
+shin. The morph is a blend of two distance fields (the letter's and the shin's silhouette, one
+stage), the bottom rows leading, so the stems swell, the gaps close from the bottom up and the
+arms slide into the shin's; past 1 the body alone swells a pixel (the arms' heads ran together
+when they swelled too). A wipe was tried first and refuted by the author ("could be more
+seamless"): the arms snapped at its last row. The face then arrives on the finished body, eyes
+shut, and the closing lines come with it ("can mesimon be ready right after the morph?"): it
+wakes, looks at each neighbour, at you, blushes, waves twice, hops with the calm sparkles and
+rests. The letters are drawn in the shin's weight and lit by `creature::light` (the rim light,
+lifted out of `compose` so the letters and the morph share it); the shin's poses are
+`creature::pose` over the engine's own eyes, mouths and inks. Only משימון ships (the author
+picked it over the English version, where the m flips into a ש).
+
+**Where, and once.** `~/.local/state/mesimon/welcomed` (at the state root, beside
+`prefs.json`) is written as it starts, so quitting halfway counts as seen. `install.sh` runs
+`mesimon welcome` after a successful install on a UTF-8 terminal, keys from `/dev/tty` because
+the script itself arrives on stdin: exit 0 means it played inline (ratatui's inline viewport,
+24 rows) with "mesimon is ready" and the `next:` lines in it, and the script then prints
+neither its picture nor its own `next:` lines; exit 1 (seen, too small, no colour) keeps
+today's picture and lines. The script asks `--help` for the command first, so a pinned older
+release never gets an unknown command. A board run on a machine with no marker plays it
+fullscreen before its first frame (`intro::before_board`, after `init_terminal`), then waits
+for a key on the seat's invitation ("enter opens your board"). An update, `U`'s re-exec and
+`brew upgrade` write nothing and ask nothing: the marker outlives the binary. A key during
+play skips to the end; the hint "any key skips" holds the place of the next words, then of the
+prompt. Keys go through `osc::ReplySwallow` first, so a late colour reply skips nothing.
+
+**What waits.** Below 88 columns, or 22 rows on the board (26 under the installer), or on mono,
+nothing plays and nothing is marked: the first terminal that fits plays it (the author chose
+this over a small-shin version). The demo recorder's sandbox HOME is seeded with the marker so
+the README GIFs never show it.
+
+**Tests.** `intro::tests`: goldens `intro-board-end.txt`, `intro-install-end.txt`,
+`intro-morph.txt`; the morph is exactly the letter at 0 and the shin at 1; the words come on
+the first beat after the morph; every frame fits `MIN_COLS`; `install.sh` prints the same
+`next:` lines and runs `mesimon welcome`. Watched by hand in a scratch tmux on a scratch HOME:
+inline play, a key skipping it with nothing left typed, exit 0 then 1 on the second run; the
+board's fullscreen play, a key opening the board, and no intro on the relaunch. Found that way
+and fixed: the board's rest pose was computed eagerly (`unwrap_or`) and overflowed before the
+end.
+
+**Owed:** a CHANGELOG line at the next bump — **Added:** a short animation the first time
+mesimon runs on a machine, after the installer or on the first board: the ש in משימון wakes up
+as the shin. Any key skips it, and it never plays again.

@@ -8,6 +8,7 @@ mod caffeine_watch;
 mod clipboard;
 mod creature;
 mod image_paste;
+mod intro;
 mod keys;
 // Public so an integration test can drive the real connect path (the
 // build-skew daemon restart lives in it); the TUI itself uses it internally.
@@ -100,6 +101,8 @@ pub use detach_guide::run as run_detach_guide;
 /// What `mesimon doctor` says about the note editor's `^g`: which program
 /// opens, and which variable named it.
 pub use external::doctor_line as editor_status;
+/// `mesimon welcome`: the installer's intro (T-869), once per machine.
+pub use intro::welcome_command;
 /// What `mesimon doctor` says about notifications (T-282): whether they
 /// are on, which rungs of the two ladders answered, and both sounds.
 pub use notify::doctor_line as notify_status;
@@ -216,6 +219,9 @@ pub fn run(repo_root: &Path) -> Result<()> {
     // asking before raw mode is on gets a false negative. This is the single
     // gate on every `Key::ShiftEnter` binding.
     app.rich_keys = kitty_keyboard_supported();
+    // The intro (T-869): a machine that never saw it, the installer's or
+    // this, sees it here once, before the board's first frame.
+    intro::before_board(&mut terminal, &app.theme)?;
     // Setup over a board that was just made (T-816), with the prefs and
     // the keys it draws in now known; it may ask git and the forge's CLI.
     app.setup_armed = true;

@@ -70,6 +70,8 @@ fn main() -> Result<()> {
             mesimon_tui::run(&root)
         }
         Some("doctor") => doctor::run(&args[1..]),
+        // The installer's last step (T-869): the intro, once per machine.
+        Some("welcome") => std::process::exit(mesimon_tui::welcome_command()),
         Some("update") => {
             let Some(check_only) = parse_update_args(&args[1..]) else {
                 eprintln!("usage: mesimon update [--check]");
@@ -148,6 +150,8 @@ fn help_text() -> &'static str {
          mesimon state replay <files...>  replay offline state scenarios\n  \
          mesimon state compatibility [claude|codex] <version>   show measured Claude coverage\n  \
          mesimon --version\n\n\
+         run by the installer:\n  \
+         mesimon welcome   the intro after an install; plays once per machine\n\n\
          spawned by Claude Code inside a mesimon session, never run by hand:\n  \
          mesimon hook   observer; reports one event, writes no stdout, exits 0\n  \
          mesimon gate   PreToolUse decider; refuses writes into paths mesimon owns\n  \

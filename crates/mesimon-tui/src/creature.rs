@@ -131,7 +131,7 @@ fn parse(name: &str) -> Body {
 // -- the face and the props -----------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Eyes {
+pub(crate) enum Eyes {
     Open,
     Blink,
     Closed,
@@ -191,7 +191,7 @@ fn eye(size: Size, e: Eyes) -> &'static [&'static str] {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mouth {
+pub(crate) enum Mouth {
     Smile,
     Flat,
     O,
@@ -323,6 +323,19 @@ impl Frame {
         Frame { scene: Some(scene), ..self }
     }
 }
+/// A pose for the intro (T-869), which plays its own clock: a face, where
+/// it looks, and whether the right arm waves and the cheeks show.
+pub(crate) const fn pose(eyes: Eyes, mouth: Mouth, look: i16, wave: bool, blush: bool) -> Frame {
+    Frame { eyes, mouth, look: (look, 0), wave: wave as i16, blush, ..f(100) }
+}
+
+/// A drawing's silhouette: its size, its solid pixels and the row its body
+/// starts at, for a picture that grows into it (the intro's morph).
+pub(crate) fn silhouette(size: Size) -> (i16, i16, &'static [bool], i16) {
+    let b = Body::get(size);
+    (b.w, b.h, &b.solid, b.top)
+}
+
 const fn alarmed(ms: u32) -> Frame {
     f(ms).eyes(Eyes::Wide).mouth(Mouth::O)
 }
@@ -639,7 +652,7 @@ pub(crate) enum Role {
 }
 
 impl Role {
-    fn ink(self, ink: &CreatureInk) -> Color {
+    pub(crate) fn ink(self, ink: &CreatureInk) -> Color {
         match self {
             Role::Hi => ink.hi,
             Role::Body => ink.body,
@@ -675,8 +688,8 @@ struct Mark {
 
 /// One frame, composed: every pixel's role, and the marks.
 pub(crate) struct Picture {
-    w: i16,
-    h: i16,
+    pub(crate) w: i16,
+    pub(crate) h: i16,
     px: Vec<Option<Role>>,
     lift: bool,
     marks: Vec<Mark>,
@@ -684,12 +697,43 @@ pub(crate) struct Picture {
 
 impl Picture {
     /// The role at screen pixel (x, y), the lift applied.
-    fn at(&self, x: i16, y: i16) -> Option<Role> {
+    pub(crate) fn at(&self, x: i16, y: i16) -> Option<Role> {
         let y = y + i16::from(self.lift);
         (x >= 0 && y >= 0 && x < self.w && y < self.h)
             .then(|| self.px[(y * self.w + x) as usize])
             .flatten()
     }
+}
+
+/// Rim light over a grid's `Body` pixels: top and left edges catch it, the
+/// right edge falls away, and an underside below row `top` (the arms are
+/// above it) sits in the deepest shade.
+pub(crate) fn light(grid: &[Option<Role>], w: i16, h: i16, top: i16) -> Vec<Option<Role>> {
+    let solid =
+        |x: i16, y: i16| x >= 0 && y >= 0 && x < w && y < h && grid[(y * w + x) as usize].is_some();
+    let mut px = grid.to_vec();
+    for y in 0..h {
+        for x in 0..w {
+            let i = (y * w + x) as usize;
+            if grid[i] != Some(Role::Body) {
+                continue;
+            }
+            px[i] = Some(if !solid(x, y + 1) {
+                if y >= top {
+                    Role::Deep
+                } else {
+                    Role::Shade
+                }
+            } else if !solid(x, y - 1) || !solid(x - 1, y) {
+                Role::Hi
+            } else if !solid(x + 1, y) {
+                Role::Shade
+            } else {
+                Role::Body
+            });
+        }
+    }
+    px
 }
 
 /// Move the pixels of `rows` whose column passes `cols` by `dx`.
@@ -772,31 +816,7 @@ pub(crate) fn compose(size: Size, fr: &Frame, pad: i16) -> Picture {
         }
     }
 
-    // Rim light: top and left edges catch it, the right edge falls away, and
-    // the body's underside sits in the deepest shade.
-    let solid = |x: i16, y: i16| idx(x, y).is_some_and(|i| grid[i].is_some());
-    let mut px = grid.clone();
-    for y in 0..h {
-        for x in 0..w {
-            let i = (y * w + x) as usize;
-            if grid[i] != Some(Role::Body) {
-                continue;
-            }
-            px[i] = Some(if !solid(x, y + 1) {
-                if y >= b.top {
-                    Role::Deep
-                } else {
-                    Role::Shade
-                }
-            } else if !solid(x, y - 1) || !solid(x - 1, y) {
-                Role::Hi
-            } else if !solid(x + 1, y) {
-                Role::Shade
-            } else {
-                Role::Body
-            });
-        }
-    }
+    let mut px = light(&grid, w, h, b.top);
 
     let mut marks = Vec::new();
     let mut mark = |(col, row): (i16, i16), ch: char, role: Role| {
