@@ -1524,16 +1524,65 @@ select {
 .cards.drop-end::after {
   bottom: -7px;
 }
-/* A card's line (T-510): the tags at the left, the key at the right, as
-   the ticket page's line. */
-.card-line {
+/* A card's face in the TUI card's order (T-855): the agent's mark in a
+   slot of its own, the title, and the worktree mark and the agent's age in
+   the corner; every line under them starts where the title does. A word is
+   never broken: a line too narrow moves a whole one down. */
+.face {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  row-gap: 6px;
+  width: 100%;
+}
+.face-mark {
+  grid-column: 1;
+  grid-row: 1;
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
+  width: 16px;
+  height: 1.3125rem;
+  margin-inline-end: 8px;
+}
+.face > .ticket-title {
+  grid-column: 2;
+  grid-row: 1;
+}
+.card-corner {
+  grid-column: 3;
+  grid-row: 1;
+  align-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 1.3125rem;
+  margin-inline-start: 10px;
+  color: var(--ink3);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.card-corner:empty {
+  display: none;
+}
+.face > .card-line,
+.face > .card-agent,
+.face > .headline {
+  grid-column: 2 / -1;
+}
+/* A card's line (T-510): the tags at the left, the key at the right, as
+   the ticket page's line; on a narrow card the key goes under the tags. */
+.card-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
 }
 .card-line .ticket-meta {
-  margin-left: auto;
+  margin-inline-start: auto;
   flex-wrap: nowrap;
+  white-space: nowrap;
+  overflow-wrap: normal;
 }
 /* The crown (T-623), in the TUI's crown ink (its tag tint 5): never the
    needs-you colour, since the crown is status. */
@@ -1572,10 +1621,16 @@ select {
 }
 .card-agent {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 2px 10px;
   color: var(--ink2);
   font-size: 0.78125rem;
+}
+.card-agent > *,
+.crown-word {
+  white-space: nowrap;
+  overflow-wrap: normal;
 }
 /* Starting an agent from here (T-498, T-510): the ticket page's line
    holds the start, and the receipt follows it until the start takes. */

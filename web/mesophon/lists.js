@@ -173,17 +173,24 @@ function stateWord(agent) {
         : "needs you";
 }
 
-// A ticket, drawn the same wherever it is listed (T-533): the title; its
-// tags, with the key at the right (and the column, where the list around it
-// is not that column); the agent's state and age; and, live, what it is on.
-// An archived ticket (T-665) says so where its column would be.
+// A ticket, drawn the same wherever it is listed (T-533), in the TUI card's
+// order (T-855): the agent's mark, the title, and at the right its worktree
+// mark and the agent's age; the tags, with the key at the right (and the
+// column, where the list around it is not that column); the agent's words
+// and what the crown last did; and, live, what it is on. Each word keeps
+// to one line: a line too narrow sends a whole word to the next. An
+// archived ticket (T-665) says so where its column would be.
 function Face({ store, ticket, board, column, archived }) {
   const agent = ticket.agent;
   const since = stateAge(board, agent);
-  return html`<span class=${`ticket-title${ticket.crown ? " crowned" : ""}`} dir="auto"><${CrownMark} ticket=${ticket} size=${15} />${ticket.title}</span>
-    <span class="card-line"><${Tags} ticket=${ticket} /><span class="ticket-meta"><${CrownWord} board=${board} ticket=${ticket} />${(column || archived) && html`<span class=${archived ? "archived-word" : undefined}>${archived ? "Archived" : ticket.column}</span><span aria-hidden="true">·</span>`}<${WorktreeMark} ticket=${ticket} /><span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span></span>
-    ${agent && html`<span class=${`card-agent${agent.state === "needs attention" ? " attn-ink" : ""}`}><${StateMark} ticket=${ticket} /><span>${agent.provider} · ${stateWord(agent)}${since && ` · ${since}`}</span></span>`}
-    <${Headline} agent=${agent} />`;
+  return html`<span class="face">
+    ${agent && html`<span class="face-mark"><${StateMark} ticket=${ticket} /></span>`}
+    <span class=${`ticket-title${ticket.crown ? " crowned" : ""}`} dir="auto"><${CrownMark} ticket=${ticket} size=${15} />${ticket.title}</span>
+    <span class="card-corner"><${WorktreeMark} ticket=${ticket} />${since && html`<span class="card-age">${since}</span>`}</span>
+    <span class="card-line"><${Tags} ticket=${ticket} /><span class="ticket-meta">${(column || archived) && html`<span class=${archived ? "archived-word" : undefined}>${archived ? "Archived" : ticket.column}</span><span aria-hidden="true">·</span>`}<span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span></span>
+    ${(agent || crownTouch(board, ticket)) && html`<span class="card-agent">${agent && html`<span class=${agent.state === "needs attention" ? "attn-ink" : undefined}>${agent.provider} · ${stateWord(agent)}</span>`}<${CrownWord} board=${board} ticket=${ticket} /></span>`}
+    <${Headline} agent=${agent} />
+  </span>`;
 }
 
 // On a desktop's Board a card drags (T-530): `drag` is its column's drop

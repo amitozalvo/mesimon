@@ -28334,3 +28334,32 @@ told changed, so no rig run.
 (FocusStart, FocusEnd with a hand raised inside, SleepSession, the file agreeing), both roads.
 `crown_e2e`'s two hand passages now assert the hand is down once the wake landed, where they
 used to send `LowerHand` by hand.
+
+## Remote Control's card is the TUI card's order, and no word breaks (T-855, 2026-10-19)
+
+The author, with a phone screenshot: "remote control match cards layout with how terminal renders
+them … right now it's a mess and too many items are overflown". The card's second line held the
+tags, the crown's word with its age, the column, the worktree mark and the key in one flex row;
+`.ticket`'s `overflow-wrap: anywhere` let every item shrink, so `watched · 9m`, `IN PROGRESS` and
+`T-853` each broke over two lines on a 390 px phone.
+
+**The face (`lists.js::Face`) is a grid in the TUI card's order:** the agent's mark in a slot of
+its own before the title (the TUI's state glyph), the title, and in the corner the worktree mark
+and the agent's age (the TUI's `[wt][age]` against the right edge). Under the title, starting
+where it does: the tags with `column · key` at the right; the agent's words with the crown's word
+beside them (the crown touches what the agent does; it was in the key's strip); the headline.
+The age left the agent's words (`claude · working`, no `· 22m`). The phone has no
+`column_since`, so a card with no agent has no age — the TUI's age is time in column, a wire
+field this ticket did not add.
+
+**No word breaks.** Every strip item is `white-space: nowrap`; the tag line and the agent line
+wrap whole items, so on a narrow card `column · key` drops under the tags, right-aligned. The
+tags stay named chips, not the TUI's colour bar: a phone has room for the names and nothing
+else says them on a list.
+
+**Tests.** `ux.test.js`'s card block: the agent's words without the age, `.card-age` beside, and
+a card carrying two tags, the column, the key, a worktree mark and a long title has no text node
+with more than one line box. The README's Remote Control picture (`assets/demo/remote.png`) is
+re-shot (`npm run shot:remote`). **Owed:** a CHANGELOG line at the next bump — **Changed:** in
+Remote Control, a ticket card reads as it does in the terminal: the agent's mark before the
+title, the branch mark and age at the right, and no label splits across lines.
