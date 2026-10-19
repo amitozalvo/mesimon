@@ -1211,7 +1211,7 @@ pub fn merge_why(set: &[Pr]) -> Option<&'static str> {
 /// fold that would read green or none `Unknown` (T-795): unknown is never
 /// green, and a run, a wait or a failure beside it still says itself.
 pub fn pipeline_of(set: &[Pr]) -> Pipeline {
-    let open: Vec<&Pr> = own(set).filter(|p| p.state.is_open()).collect();
+    let open: Vec<&Pr> = set.iter().filter(|p| p.state.is_open()).collect();
     if !open.is_empty() {
         let worst = open.iter().fold(Pipeline::None, |acc, p| acc.worst(p.pipeline.clone()));
         let unread = open.iter().any(|p| p.pipeline == Pipeline::Unknown);
@@ -1248,11 +1248,14 @@ pub fn pipeline_of(set: &[Pr]) -> Pipeline {
 /// create` is not waved through. A set of closed PRs alone is none bound
 /// (T-797): a closed PR has no pipeline to pass. Unknown is never green.
 pub fn entry_refusal(set: Option<&[Pr]>, unread: Option<bool>) -> Option<String> {
-    let set = set.filter(|s| pipelined(s));
+    // The ticket's own PRs alone (T-859), open and merged both: a reviewed
+    // PR's pipeline is another ticket's to pass. `pipeline_of` folds the
+    // whole set for the card's and the feed's word, so the cut is here.
+    let set: Option<Vec<Pr>> = set.filter(|s| pipelined(s)).map(|s| own(s).cloned().collect());
     if set.is_none() && unread == Some(false) {
         return None;
     }
-    match set.map(pipeline_of).unwrap_or(Pipeline::Unknown) {
+    match set.as_deref().map(pipeline_of).unwrap_or(Pipeline::Unknown) {
         Pipeline::Passed => None,
         Pipeline::Unknown => Some("pipeline not read".into()),
         Pipeline::None => Some("no pipeline ran".into()),
@@ -1910,6 +1913,21 @@ mod tests {
         assert_eq!(holding(&set).map(|p| p.number), Some(42));
         assert_eq!(entry_refusal(Some(&set), Some(false)), None, "the own pipeline passed");
         assert_eq!(own(&set).count(), 1);
+        // And once merged: a reviewed merge's passed pipeline does not stand
+        // in for the own merge's failed one (the merged fold is cut too).
+        let mut theirs = pr("o/r", 7, PrState::Merged, "h7", 9);
+        theirs.reviewed = true;
+        theirs.merged_ms = 20;
+        theirs.pipeline = Pipeline::Passed;
+        let mut mine = pr("o/r", 42, PrState::Merged, "h42", 8);
+        mine.merged_ms = 10;
+        mine.pipeline = Pipeline::Failed("deploy".into());
+        let set = ticket_set(vec![theirs, mine]);
+        assert_eq!(
+            entry_refusal(Some(&set), Some(false)).as_deref(),
+            Some("pipeline failed: deploy"),
+            "the own merge alone is judged"
+        );
     }
 
     #[test]

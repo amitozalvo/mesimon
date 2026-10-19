@@ -28715,8 +28715,7 @@ checked against the live code before it was applied; the goldens and the wire ar
   `Result<_, Missing>` and `read_one` calls it; `peer::fresh` for the touch window;
   `ask_archive`/`hold_archive` under `poll_archive` and `lay_archive`; `mark_unsent` gates on
   the pane alone, so T-849's Codex hand-over is a call to it; `session_kind` replaces
-  `is_codex`; `pipeline_of` judges `own(set)` itself, so `entry_refusal` clones nothing;
-  `forge::act_id`/`act_entry` parse the `"<id> <entry>"` act once for core and `cost.rs`.
+  `is_codex`; `forge::act_id`/`act_entry` parse the `"<id> <entry>"` act once for core and `cost.rs`.
 - **Dead code gone:** `Board::drop_archived` (test-only reader after T-842), `Tracked`'s
   `into_inner` and `PartialEq` (its `FromIterator` stays: `for_snapshot` collects through it),
   `take_unfound` (a four-line wrapper of one `extend`), the no-op `drop(spawned)`, the
@@ -28739,7 +28738,11 @@ checked against the live code before it was applied; the goldens and the wire ar
   per frame; the two `want_*` stages iterate instead of collecting a `Vec<String>` to iterate;
   `named_on` no longer allocates a `String` per pending act per transcript line.
 
-**Checked and kept (the reviewers' own verdicts, or mine).** `save_note_with_attachments` is
+**Checked and kept (the reviewers' own verdicts, or mine).** `entry_refusal`'s clone of the
+own set stays: moving `own` into `pipeline_of` cut reviewed PRs from the card's and the
+feed's fold too, and cutting only its open branch let a reviewed merge's passed pipeline
+stand in for the own merge's failed one (the commit's security review caught it; the test
+now pins the merged case). `save_note_with_attachments` is
 not `with_pictures`: it matches links against the raw note text under the note limit, the
 other against `sanitize_prompt`'s cap, and their refusal words differ. `startup_attention`'s
 `folder_trust` is wider than `trust_dialog::codex` on purpose (heading plus "Trust and
