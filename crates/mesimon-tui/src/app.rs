@@ -776,11 +776,16 @@ fn step(idx: usize, n: usize, down: bool) -> usize {
 
 /// A path as a note wrote it, rooted: `~/` through `$HOME`, an absolute
 /// path as is, anything else under `dir`.
+/// `~/…` under `$HOME`: the shell's spelling, which no other process
+/// expands for the board. `None` for any other path, or with no home.
+pub(crate) fn expand_home(path: &str) -> Option<PathBuf> {
+    let rest = path.strip_prefix("~/")?;
+    Some(PathBuf::from(std::env::var_os("HOME")?).join(rest))
+}
+
 fn resolve_link_path(dir: &Path, path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
+    if let Some(home) = expand_home(path) {
+        return home;
     }
     let p = Path::new(path);
     if p.is_absolute() {
@@ -1874,6 +1879,8 @@ pub struct App {
     /// hands out. Rebuilt by `reindex_columns` whenever `board` is
     /// replaced; a test that edits `board.columns` in place calls it too.
     columns_sorted: Vec<String>,
+    /// Which of `columns_sorted` is a spine; see `pinned_columns`.
+    columns_pinned: Vec<bool>,
     /// Where the shin stood in the last frame and what it drew there, for
     /// the scoped block-glyph law (T-451).
     pub mascot: std::cell::RefCell<Option<crate::creature::Drawn>>,
@@ -2098,7 +2105,7 @@ impl App {
         // Before the move: the checker resolves the state root and the
         // staging dir off the same repo path everything else keys on.
         let release = crate::release::ReleaseWatch::new(&repo_root);
-        let columns_sorted = column_names(&snap.board);
+        let (columns_sorted, columns_pinned) = column_index(&snap.board);
         let mut app = Self {
             client,
             repo_root,
@@ -2226,6 +2233,7 @@ impl App {
             selected_text: std::cell::RefCell::new(String::new()),
             frame_ctx: std::cell::RefCell::new(None),
             columns_sorted,
+            columns_pinned,
             mascot: std::cell::RefCell::new(None),
             qr: std::cell::RefCell::new(None),
             creature_clock: Cell::new(None),
@@ -3360,14 +3368,17 @@ impl App {
 
     /// Which of `columns()` are pinned as spines (`Board::column_pinned`),
     /// for the geometry the board and the composer both lay out.
-    pub(crate) fn pinned_columns(&self) -> Vec<bool> {
-        self.board.sorted_columns().iter().map(|c| self.board.column_pinned(c)).collect()
+    /// Cached beside `columns()`: a `when empty` column's state is a scan
+    /// of the tickets, and the two geometry sites ask every frame.
+    pub(crate) fn pinned_columns(&self) -> &[bool] {
+        &self.columns_pinned
     }
 
-    /// Recompute what `columns()` returns from `board`. `absorb` calls it;
-    /// so must anything else that rewrites `board.columns`.
+    /// Recompute what `columns()` and `pinned_columns()` return from
+    /// `board`. `absorb` calls it; so must anything else that rewrites
+    /// `board.columns` or moves a ticket between columns.
     pub(crate) fn reindex_columns(&mut self) {
-        self.columns_sorted = column_names(&self.board);
+        (self.columns_sorted, self.columns_pinned) = column_index(&self.board);
     }
 
     /// This frame's `Ctx` (see the field): built once, on the first read.
@@ -3864,26 +3875,32 @@ impl App {
     /// unfocused, too small or under the help card, and steps on its own
     /// clock. A test drives this directly; `tick` calls it every frame.
     pub(crate) fn drive_arcade(&mut self, now: Instant) {
-        let needs_you = self.board.needs_you_tickets();
-        let calm = needs_you.is_empty() && !self.daemon_down;
         if self.arcade.borrow().is_none() {
+            // The cheap facts first: the board scan runs only on the frame
+            // every one of them holds, not on every frame of a busy board.
             let idle = now.saturating_duration_since(self.last_input) >= self.idle_after;
-            if idle
-                && calm
+            if !(idle
+                && !self.daemon_down
                 && self.prefs.idle_snake
                 && self.focused
                 && !self.help
                 && !self.too_small.get()
                 && self.tour.is_none()
                 && !self.is_practice()
-                && self.scope() == Scope::Board
+                && self.scope() == Scope::Board)
             {
+                return;
+            }
+            let needs_you = self.board.needs_you_tickets();
+            if needs_you.is_empty() {
                 self.hover.set(None);
                 self.peeked.set(None);
                 *self.arcade.borrow_mut() = Some(crate::arcade::Arcade::new(needs_you));
             }
             return;
         }
+        let needs_you = self.board.needs_you_tickets();
+        let calm = needs_you.is_empty() && !self.daemon_down;
         let mut slot = self.arcade.borrow_mut();
         let Some(game) = slot.as_mut() else { return };
         if game.cpu() && !calm {
@@ -6370,18 +6387,30 @@ impl App {
         if self.archive.as_ref().is_some_and(|a| !a.stale) {
             return false;
         }
-        // An older daemon sends every ticket on the snapshot and knows no
-        // such command: what the board has is the whole answer.
-        let Response::Tickets { tickets } = self.req(Command::ArchivedTickets) else {
+        let Some(tickets) = self.ask_archive() else {
+            // What the board has is the whole answer.
             self.archive = Some(HeldArchive { tickets: Vec::new(), stale: false });
             return false;
         };
-        let board = Arc::make_mut(&mut self.board);
-        Self::lay_tickets(board, &tickets);
-        self.archive = Some(HeldArchive { tickets, stale: false });
+        Self::hold_archive(&mut self.archive, Arc::make_mut(&mut self.board), tickets);
         // An open picker ranks what it has: the archived rows join it now.
         self.research(true);
         true
+    }
+
+    /// The archived tickets, asked of the daemon. `None` from an older one,
+    /// which sends every ticket on the snapshot and knows no such command.
+    fn ask_archive(&mut self) -> Option<Vec<Ticket>> {
+        match self.req(Command::ArchivedTickets) {
+            Response::Tickets { tickets } => Some(tickets),
+            _ => None,
+        }
+    }
+
+    /// Hold the asked-for archived tickets, laid into `board`.
+    fn hold_archive(archive: &mut Option<HeldArchive>, board: &mut Board, tickets: Vec<Ticket>) {
+        Self::lay_tickets(board, &tickets);
+        *archive = Some(HeldArchive { tickets, stale: false });
     }
 
     /// Lay the held archived tickets into a snapshot's board (T-842) while
@@ -6394,11 +6423,9 @@ impl App {
             return;
         }
         if self.archive.is_none() {
-            let Response::Tickets { tickets } = self.req(Command::ArchivedTickets) else {
-                return;
-            };
-            Self::lay_tickets(board, &tickets);
-            self.archive = Some(HeldArchive { tickets, stale: false });
+            if let Some(tickets) = self.ask_archive() {
+                Self::hold_archive(&mut self.archive, board, tickets);
+            }
             return;
         }
         let Some(held) = self.archive.as_mut() else { return };
@@ -14460,8 +14487,11 @@ fn fetch(client: &mut dyn Transport) -> Result<Snapshot> {
 
 /// Test-only transport + constructor: canned snapshots, no daemon, no tmux.
 /// `board.columns` in display order, names only (see `App::columns`).
-fn column_names(board: &Board) -> Vec<String> {
-    board.sorted_columns().iter().map(|c| c.name.clone()).collect()
+/// The column names in display order, and which of them is pinned as a
+/// spine (`Board::column_pinned`), for the geometry the board and the
+/// composer both lay out.
+fn column_index(board: &Board) -> (Vec<String>, Vec<bool>) {
+    board.sorted_columns().iter().map(|c| (c.name.clone(), board.column_pinned(c))).unzip()
 }
 
 #[cfg(test)]
@@ -18744,21 +18774,21 @@ mod tests {
     /// on a later snapshot strikes no second time.
     #[test]
     fn a_board_touch_lights_the_header_word_and_strikes_once() {
-        use mesimon_core::command::{BoardTouch, LinkView};
+        use mesimon_core::command::{BoardTouch, LinkView, TouchAction};
         let (mut app, _, _) = app_with_claude(SessionState::Running, false);
         let crown = app.board.tickets[0].id;
         app.board_mut().crown = Some(crown);
         app.links = vec![LinkView { name: "relay".into(), path: "/code/relay".into() }];
         let now = (app.now)();
-        let touch = |action: &str, words: Option<&str>, at_ms| BoardTouch {
+        let touch = |action: TouchAction, words: Option<&str>, at_ms| BoardTouch {
             board: "relay".into(),
             path: "/code/relay".into(),
-            action: action.into(),
+            action,
             words: words.map(str::to_string),
             crown: Some(crown),
             at_ms,
         };
-        app.absorb_board_touches(vec![touch("sent", None, now)]);
+        app.absorb_board_touches(vec![touch(TouchAction::Sent, None, now)]);
         let lit = app.link_lit().expect("lit");
         assert_eq!(
             (lit.board.as_str(), lit.words.as_str(), lit.refused),
@@ -18768,26 +18798,29 @@ mod tests {
         assert!(app.link_strikes[0].up, "words that left go up to the header");
         assert!(app.link_striking(), "and the frame loop runs fast for the bolt");
         // The same touch on the next snapshot: no second bolt.
-        app.absorb_board_touches(vec![touch("sent", None, now)]);
+        app.absorb_board_touches(vec![touch(TouchAction::Sent, None, now)]);
         assert_eq!(app.link_strikes.len(), 1);
         // Words that came strike downward and read as the other board's.
-        app.absorb_board_touches(vec![touch("sent", None, now), touch("received", None, now + 1)]);
+        app.absorb_board_touches(vec![
+            touch(TouchAction::Sent, None, now),
+            touch(TouchAction::Received, None, now + 1),
+        ]);
         assert_eq!(app.link_strikes.len(), 2);
         assert!(!app.link_strikes[1].up);
         assert_eq!(app.link_lit().unwrap().words, "relay asks");
-        app.absorb_board_touches(vec![touch("got_reply", None, now + 2)]);
+        app.absorb_board_touches(vec![touch(TouchAction::GotReply, None, now + 2)]);
         assert_eq!(app.link_lit().unwrap().words, "relay replied");
-        app.absorb_board_touches(vec![touch("replied", None, now + 3)]);
+        app.absorb_board_touches(vec![touch(TouchAction::Replied, None, now + 3)]);
         assert_eq!(app.link_lit().unwrap().words, "replied to relay");
         // A refusal says why, in the plain ink, with no bolt.
         let before = app.link_strikes.len();
-        app.absorb_board_touches(vec![touch("refused", Some("is not open"), now + 4)]);
+        app.absorb_board_touches(vec![touch(TouchAction::Refused, Some("is not open"), now + 4)]);
         let lit = app.link_lit().unwrap();
         assert_eq!((lit.words.as_str(), lit.refused), ("relay is not open", true));
         assert_eq!(app.link_strikes.len(), before);
         // A touch already past its beat — a board opened after it — is quiet.
         app.link_lit = None;
-        app.absorb_board_touches(vec![touch("sent", None, now.saturating_sub(60_000))]);
+        app.absorb_board_touches(vec![touch(TouchAction::Sent, None, now.saturating_sub(60_000))]);
         assert!(app.link_lit().is_none());
     }
 
@@ -23492,6 +23525,7 @@ mod tests {
         board.columns[0].settings.set_collapse(Collapse::WhenEmpty);
         board.tickets.retain(|t| t.column != "todo");
         app.board = std::sync::Arc::new(board);
+        app.reindex_columns();
         assert_eq!(app.pinned_columns(), [true, false, false], "emptied, it folds");
         assert_eq!(App::for_test((*app.board).clone(), theme()).cursor_col, 1, "launch skips it");
     }

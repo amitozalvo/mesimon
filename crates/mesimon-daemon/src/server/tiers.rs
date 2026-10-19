@@ -16,21 +16,24 @@ use mesimon_core::tier::{self, Book, MachineTiers, Tier, TierScope};
 /// once, on the last.
 pub(super) const TIER_SETTLE_MS: u64 = 2_000;
 
-/// `tiers.toml` as this daemon last read it. Every board's daemon shares
-/// the file; one `stat` per look tells whether another board changed it.
-pub(super) struct MachineTierCache {
+/// A machine file (`store::MachineFile`) as this daemon last read it —
+/// `tiers.toml`, `links.toml` (T-733). Every board's daemon shares the
+/// file; one `stat` per look tells whether another board changed it.
+pub(super) struct MachineFileCache<T: store::MachineFile> {
     path: Option<std::path::PathBuf>,
     /// (mtime, length) at the last read; `None` for a file that was absent.
     stamp: Option<(std::time::SystemTime, u64)>,
-    pub(super) tiers: MachineTiers,
+    pub(super) value: T,
     pub(super) notice: Option<Notice>,
     pub(super) barred: bool,
 }
 
-impl MachineTierCache {
+pub(super) type MachineTierCache = MachineFileCache<MachineTiers>;
+
+impl<T: store::MachineFile> MachineFileCache<T> {
     pub(super) fn new(path: Option<std::path::PathBuf>) -> Self {
         let mut cache =
-            Self { path, stamp: None, tiers: MachineTiers::default(), notice: None, barred: false };
+            Self { path, stamp: None, value: T::default(), notice: None, barred: false };
         cache.reload();
         cache
     }
@@ -42,8 +45,8 @@ impl MachineTierCache {
 
     fn reload(&mut self) {
         let Some(path) = self.path.clone() else { return };
-        let loaded = store::load_machine_tiers(&path);
-        self.tiers = loaded.tiers;
+        let loaded = store::load_machine_file::<T>(&path);
+        self.value = loaded.body;
         self.notice = loaded.notice;
         self.barred = loaded.barred;
         self.stamp = self.current_stamp();
@@ -54,22 +57,23 @@ impl MachineTierCache {
         if self.path.is_none() || self.current_stamp() == self.stamp {
             return false;
         }
-        let before = self.tiers.clone();
+        let before = self.value.clone();
         self.reload();
-        self.tiers != before
+        self.value != before
     }
 
-    fn save(&mut self, tiers: MachineTiers) -> Result<(), String> {
+    pub(super) fn save(&mut self, value: T) -> Result<(), String> {
         if self.barred {
-            return Err("tiers.toml could not be read and is being preserved — nothing was \
-                        changed"
-                .into());
+            return Err(format!(
+                "{} could not be read and is being preserved — nothing was changed",
+                T::FILE
+            ));
         }
         let Some(path) = self.path.clone() else {
-            return Err("no state directory for the machine's tiers".into());
+            return Err(format!("no state directory for {}", T::WHAT));
         };
-        store::save_machine_tiers(&path, &tiers).map_err(|e| format!("could not save: {e:#}"))?;
-        self.tiers = tiers;
+        store::save_machine_file(&path, &value).map_err(|e| format!("could not save: {e:#}"))?;
+        self.value = value;
         self.stamp = self.current_stamp();
         Ok(())
     }
@@ -78,7 +82,7 @@ impl MachineTierCache {
 impl Daemon {
     /// The two layers, for one question.
     pub(super) fn tier_book(&self) -> Book<'_> {
-        Book::new(&self.machine_tiers.tiers, &self.board)
+        Book::new(&self.machine_tiers.value, &self.board)
     }
 
     /// Pick up another board's edit of `tiers.toml`: one `stat`, on every
@@ -215,7 +219,7 @@ impl Daemon {
         }
         let taken: Vec<Tier> = match scope {
             TierScope::Machine => {
-                let mut v = self.machine_tiers.tiers.tiers.clone();
+                let mut v = self.machine_tiers.value.tiers.clone();
                 v.extend(self.board.tiers.iter().cloned());
                 v
             }
@@ -234,7 +238,7 @@ impl Daemon {
         }
         match scope {
             TierScope::Machine => {
-                let mut next = self.machine_tiers.tiers.clone();
+                let mut next = self.machine_tiers.value.clone();
                 match next.tiers.iter_mut().find(|x| x.id == t.id) {
                     Some(slot) => *slot = t,
                     None => next.tiers.push(t),
@@ -266,12 +270,12 @@ impl Daemon {
     pub(super) fn delete_tier(&mut self, scope: TierScope, id: String) -> Response {
         match scope {
             TierScope::Machine => {
-                let mut next = self.machine_tiers.tiers.clone();
+                let mut next = self.machine_tiers.value.clone();
                 next.tiers.retain(|t| t.id != id);
                 if next.default_tier.as_deref() == Some(id.as_str()) {
                     next.default_tier = None;
                 }
-                if next == self.machine_tiers.tiers {
+                if next == self.machine_tiers.value {
                     return Response::Ok;
                 }
                 if let Err(message) = self.machine_tiers.save(next) {
@@ -325,7 +329,7 @@ impl Daemon {
         };
         match scope {
             TierScope::Machine => {
-                let mut next = self.machine_tiers.tiers.clone();
+                let mut next = self.machine_tiers.value.clone();
                 match tier::move_tier(&mut next.tiers, &ordered, &id, to) {
                     None => return refused(),
                     Some(false) => return Response::Ok,
@@ -364,9 +368,9 @@ impl Daemon {
         };
         match scope {
             TierScope::Machine => {
-                let mut next = self.machine_tiers.tiers.clone();
+                let mut next = self.machine_tiers.value.clone();
                 next.default_tier = id.filter(|t| t != tier::CLAUDE);
-                if next == self.machine_tiers.tiers {
+                if next == self.machine_tiers.value {
                     return Response::Ok;
                 }
                 if let Err(message) = self.machine_tiers.save(next) {
@@ -538,9 +542,14 @@ impl Daemon {
                 rec.tier_wake = true;
             }
             if let Some(text) = words.map(|w| w.text).filter(|t| !t.is_empty()) {
-                if let Err(message) =
-                    self.park_ask(ticket, QueuedSeat::Wake(id), text, None, false, plan)
-                {
+                if let Err(message) = self.park_ask(
+                    ticket,
+                    QueuedSeat::Wake(id),
+                    text,
+                    super::Asker::Person,
+                    false,
+                    plan,
+                ) {
                     eprintln!("mesimon: the words for the switched codex were lost: {message}");
                 }
                 self.persist_queue();

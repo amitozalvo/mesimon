@@ -349,7 +349,7 @@ fn mac_app(bundle: &str) -> Option<String> {
         .flatten()
         .map(|d| d.join(bundle))
         .find(|p| p.is_file())
-        .map(|p| format!("'{}'", p.display().to_string().replace('\'', "'\\''")))
+        .map(|p| mesimon_core::text::sh_quote(&p.display().to_string()))
 }
 
 /// The editor whose built-in terminal the board runs in: they all say

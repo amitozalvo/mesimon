@@ -21,21 +21,34 @@
 pub const NOT_RECOGNISED: &str = "plan dialog not recognised ∙ enter to attach";
 pub const NOT_AT_DEFAULT: &str = "plan dialog is not at its default ∙ enter to attach";
 
-/// The numbered rows of a native menu: `(number, label, selected)`, in
-/// screen order. A row is `N. label`, selected when it opens with `❯`.
-fn numbered_rows(lines: &[String]) -> Vec<(usize, String, bool)> {
-    let mut rows = Vec::new();
-    for line in lines {
-        let line = line.trim();
-        let (selected, rest) = match line.strip_prefix('❯') {
-            Some(rest) => (true, rest.trim()),
-            None => (false, line),
-        };
-        let Some((number, label)) = rest.split_once(". ") else { continue };
-        let Ok(number) = number.parse::<usize>() else { continue };
-        rows.push((number, label.trim().to_string(), selected));
+/// A row of a native menu, Claude Code's or Codex's: whether the cursor
+/// marker (`❯`, Codex's `›`) is on it, its `N.` number if it carries one,
+/// and its label with both stripped. The one parse of a menu row; the
+/// trust, plan and question dialogs all read it.
+pub(crate) fn menu_row(line: &str) -> (bool, Option<usize>, &str) {
+    let line = line.trim();
+    let (selected, rest) = match line.strip_prefix('❯').or_else(|| line.strip_prefix('›')) {
+        Some(rest) => (true, rest.trim()),
+        None => (false, line),
+    };
+    match rest.split_once(". ") {
+        Some((n, label)) if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => {
+            (selected, n.parse().ok(), label.trim())
+        }
+        _ => (selected, None, rest),
     }
-    rows
+}
+
+/// The numbered rows of a native menu: `(number, label, selected)`, in
+/// screen order. A row is `N. label`, selected when it opens with the marker.
+fn numbered_rows(lines: &[String]) -> Vec<(usize, String, bool)> {
+    lines
+        .iter()
+        .filter_map(|line| {
+            let (selected, number, label) = menu_row(line);
+            Some((number?, label.to_string(), selected))
+        })
+        .collect()
 }
 
 /// Claude Code's plan dialog, at its first row.

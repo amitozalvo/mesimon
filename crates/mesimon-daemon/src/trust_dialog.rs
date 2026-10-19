@@ -87,15 +87,7 @@ const CODEX_NO: &str = "Quit";
 /// A row of a native menu: whether the marker is on it, and its label with
 /// the marker and any `N. ` number stripped.
 fn row(line: &str) -> (bool, &str) {
-    let line = line.trim();
-    let (selected, rest) = match line.strip_prefix('❯').or_else(|| line.strip_prefix('›')) {
-        Some(rest) => (true, rest.trim()),
-        None => (false, line),
-    };
-    let label = match rest.split_once(". ") {
-        Some((n, label)) if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => label.trim(),
-        _ => rest,
-    };
+    let (selected, _, label) = crate::plan_dialog::menu_row(line);
     (selected, label)
 }
 

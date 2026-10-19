@@ -583,13 +583,12 @@ fn named_on(
     pending: &mut Vec<String>,
     pending_act: &mut Vec<String>,
 ) -> mesimon_core::forge::Named {
-    let id_of = |p: &String| p.split(' ').next().unwrap_or_default().to_string();
     if line.contains("gh pr")
         || line.contains("glab mr")
         || line.contains("pr create")
         || line.contains("mr create")
         || pending.iter().any(|id| line.contains(id.as_str()))
-        || pending_act.iter().any(|p| line.contains(id_of(p).as_str()))
+        || pending_act.iter().any(|p| line.contains(mesimon_core::forge::act_id(p)))
     {
         return mesimon_core::forge::pr_line(line, pending, pending_act);
     }

@@ -19,7 +19,7 @@
 use super::*;
 use crate::boards::OpenBoard;
 use crate::strike::LinkStrike;
-use mesimon_core::command::{BoardTouch, LinkView};
+use mesimon_core::command::{BoardTouch, LinkView, TouchAction};
 use mesimon_core::text::scrub_cells;
 
 /// How long a typed folder may be: a path, generously.
@@ -52,16 +52,16 @@ pub(crate) struct LinkLit {
 /// What the header says for a touch: the board's name and what happened.
 fn link_words(t: &BoardTouch) -> String {
     let board = scrub_cells(&t.board, false);
-    match t.action.as_str() {
-        "sent" => format!("sent ask to {board}"),
-        "replied" => format!("replied to {board}"),
-        "received" => format!("{board} asks"),
-        "got_reply" => format!("{board} replied"),
-        "refused" => match &t.words {
+    match t.action {
+        TouchAction::Sent => format!("sent ask to {board}"),
+        TouchAction::Replied => format!("replied to {board}"),
+        TouchAction::Received => format!("{board} asks"),
+        TouchAction::GotReply => format!("{board} replied"),
+        TouchAction::Refused => match &t.words {
             Some(why) => format!("{board} {}", scrub_cells(why, false)),
             None => format!("{board} refused"),
         },
-        _ => board,
+        TouchAction::Unknown => board,
     }
 }
 
@@ -235,9 +235,9 @@ impl App {
             return Ok(());
         }
         // `~` is the shell's, not the daemon's.
-        let path = match (typed.strip_prefix("~/"), std::env::var_os("HOME")) {
-            (Some(rest), Some(home)) => Path::new(&home).join(rest).to_string_lossy().into_owned(),
-            _ => typed,
+        let path = match super::expand_home(&typed) {
+            Some(home) => home.to_string_lossy().into_owned(),
+            None => typed,
         };
         let before = self.links.len();
         self.link(path)?;
@@ -266,13 +266,13 @@ impl App {
             self.link_lit = Some(LinkLit {
                 board: t.board.clone(),
                 words: link_words(t),
-                refused: t.action == "refused",
+                refused: t.action == TouchAction::Refused,
                 seen: now,
             });
-            if t.action != "refused" {
+            if t.action != TouchAction::Refused {
                 self.link_strikes.push(LinkStrike {
                     board: t.board.clone(),
-                    up: matches!(t.action.as_str(), "sent" | "replied"),
+                    up: matches!(t.action, TouchAction::Sent | TouchAction::Replied),
                     crown: t.crown,
                     at_ms: t.at_ms,
                     seen: now,

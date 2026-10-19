@@ -772,7 +772,7 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
         let mut read = false;
         for pr in set.iter_mut().filter(|p| p.forge == Forge::GitLab && p.state.is_open()) {
             let Some(r) = q.repos.iter().find(|r| r.remote.path == pr.repo) else { continue };
-            let head = gitlab_mr(r, pr.number).and_then(|one| {
+            let head = gitlab_mr(r, pr.number).ok().and_then(|one| {
                 read = true;
                 pr.take_read(&one.pr);
                 one.pipeline
@@ -1125,14 +1125,16 @@ pub enum Missing {
     Failed,
 }
 
+/// A forge's "no such PR": gh's two spellings, GitLab's 404.
+fn gone(e: &str) -> bool {
+    e.contains("Could not resolve")
+        || e.contains("no pull requests found")
+        || e.contains("404")
+        || e.contains("Not Found")
+}
+
 /// `one_pr`, saying why it found nothing.
 fn read_one(r: &RepoQuery, number: u64) -> Result<Pr, Missing> {
-    let gone = |e: &str| {
-        e.contains("Could not resolve")
-            || e.contains("no pull requests found")
-            || e.contains("404")
-            || e.contains("Not Found")
-    };
     match r.cli.forge {
         Forge::GitHub => {
             let n = number.to_string();
@@ -1148,15 +1150,7 @@ fn read_one(r: &RepoQuery, number: u64) -> Result<Pr, Missing> {
                 .find(|p| p.number == number)
                 .ok_or(Missing::Failed)
         }
-        Forge::GitLab => {
-            let out = r
-                .api(&format!("projects/{}/merge_requests/{number}", r.project()))
-                .map_err(|e| if gone(&e) { Missing::Gone } else { Missing::Failed })?;
-            forge::parse_glab_mr(&r.remote.path, &out)
-                .filter(|m| m.pr.number == number)
-                .map(|m| m.pr)
-                .ok_or(Missing::Failed)
-        }
+        Forge::GitLab => gitlab_mr(r, number).map(|m| m.pr),
     }
 }
 
@@ -1172,11 +1166,18 @@ pub fn unlisted<'a>(held: &'a [Pr], listed: &[Pr], full: &HashSet<String>) -> Ve
         .collect()
 }
 
-/// One open MR read by itself (T-784, T-787). `None` when the call fails or
-/// says something else: the list's row stands, and the pipeline gate holds it.
-fn gitlab_mr(r: &RepoQuery, iid: u64) -> Option<forge::MrRead> {
-    let out = r.api(&format!("projects/{}/merge_requests/{iid}", r.project())).ok()?;
-    forge::parse_glab_mr(&r.remote.path, &out).filter(|m| m.pr.number == iid)
+/// One MR read by itself (T-784, T-787), saying why it found nothing. On
+/// an open one's pass a miss leaves the list's row standing, and the
+/// pipeline gate holds it.
+fn gitlab_mr(r: &RepoQuery, iid: u64) -> Result<forge::MrRead, Missing> {
+    let out = r.api(&format!("projects/{}/merge_requests/{iid}", r.project())).map_err(|e| {
+        if gone(&e) {
+            Missing::Gone
+        } else {
+            Missing::Failed
+        }
+    })?;
+    forge::parse_glab_mr(&r.remote.path, &out).filter(|m| m.pr.number == iid).ok_or(Missing::Failed)
 }
 
 /// A GitLab commit's newest pipeline, by sha. `Unknown` when the call
@@ -1695,10 +1696,17 @@ impl State {
     /// or the look after that turn found nothing a read could miss
     /// (`unchanged`, T-761). Before the first probe nothing is known and
     /// nothing is fresh: the train waits a bucket.
-    pub fn fresh(&self, ticket: ulid::Ulid, turn_end: u64, opened: &[String]) -> bool {
+    /// `opened` is asked only where the third clause needs it: the tick
+    /// prices every owed ticket by this.
+    pub fn fresh(
+        &self,
+        ticket: ulid::Ulid,
+        turn_end: u64,
+        opened: impl FnOnce() -> Vec<String>,
+    ) -> bool {
         self.none()
             || self.at_ms.get(&ticket).is_some_and(|read_at| *read_at >= turn_end)
-            || self.unchanged(ticket, turn_end, opened)
+            || self.unchanged(ticket, turn_end, &opened())
     }
 
     /// No forge reads this board: every remote parsed to none, or every
@@ -3030,7 +3038,7 @@ mod tests {
         // No forge: every remote parsed to none.
         let mut s = State::default();
         s.remotes.insert(PathBuf::from("/r"), None);
-        assert!(s.fresh(t, 5_000, &[]), "no forge reads this board");
+        assert!(s.fresh(t, 5_000, Vec::new), "no forge reads this board");
         // A forge: nothing read, nothing known.
         let mut s = State::default();
         s.remotes.insert(PathBuf::from("/r"), Some(remote));
@@ -3038,27 +3046,27 @@ mod tests {
             "github.com".into(),
             HostProbe { cli: Some(cli), at: Instant::now(), viewer: None, lost: None },
         );
-        assert!(!s.fresh(t, 5_000, &[]), "never read");
+        assert!(!s.fresh(t, 5_000, Vec::new), "never read");
         // Read before the turn ended, on a basis that had pushed one ref.
         let pushed = vec!["o/r refs/remotes/origin/msmn/T-1 abc".to_string()];
         s.at_ms.insert(t, 4_000);
         s.basis.insert(t, Basis { pushed: Some(pushed.clone()), opened: Vec::new() });
-        assert!(!s.fresh(t, 5_000, &[]), "no look yet: wait for the read");
+        assert!(!s.fresh(t, 5_000, Vec::new), "no look yet: wait for the read");
         // The look after the turn found the same: current, no network.
         s.local.insert(
             t,
             Local { at_ms: 5_100, pushed: Some(pushed.clone()), tail_opened: Some(false) },
         );
-        assert!(s.fresh(t, 5_000, &[]), "nothing pushed, nothing opened");
+        assert!(s.fresh(t, 5_000, Vec::new), "nothing pushed, nothing opened");
         // A URL the read did not have, or a `pr create` in the unread tail.
         let url = "https://github.com/o/r/pull/7".to_string();
-        assert!(!s.fresh(t, 5_000, std::slice::from_ref(&url)), "a PR opened since");
+        assert!(!s.fresh(t, 5_000, || vec![url.clone()]), "a PR opened since");
         s.basis.get_mut(&t).unwrap().opened.push(url.clone());
-        assert!(s.fresh(t, 5_000, std::slice::from_ref(&url)), "that URL the read had");
+        assert!(s.fresh(t, 5_000, || vec![url.clone()]), "that URL the read had");
         s.local.get_mut(&t).unwrap().tail_opened = Some(true);
-        assert!(!s.fresh(t, 5_000, &[]), "a pr create the ledger has not reached");
+        assert!(!s.fresh(t, 5_000, Vec::new), "a pr create the ledger has not reached");
         s.local.get_mut(&t).unwrap().tail_opened = None;
-        assert!(!s.fresh(t, 5_000, &[]), "an unreadable tail is unknown");
+        assert!(!s.fresh(t, 5_000, Vec::new), "an unreadable tail is unknown");
         // Pushed in the turn: waits for a read begun after the turn's end.
         s.local.insert(
             t,
@@ -3068,17 +3076,17 @@ mod tests {
                 tail_opened: Some(false),
             },
         );
-        assert!(!s.fresh(t, 5_000, &[]), "pushed: the read is owed");
+        assert!(!s.fresh(t, 5_000, Vec::new), "pushed: the read is owed");
         s.at_ms.insert(t, 5_000);
-        assert!(s.fresh(t, 5_000, &[]), "a read at the turn's end answers it");
+        assert!(s.fresh(t, 5_000, Vec::new), "a read at the turn's end answers it");
         // A look from before the turn's end proves nothing about it.
         s.at_ms.insert(t, 4_000);
         s.local.insert(t, Local { at_ms: 4_900, pushed: Some(pushed), tail_opened: Some(false) });
-        assert!(!s.fresh(t, 5_000, &[]), "the look predates the turn's end");
+        assert!(!s.fresh(t, 5_000, Vec::new), "the look predates the turn's end");
         // Git could not say what was pushed: unknown, never unchanged.
         s.basis.insert(t, Basis { pushed: None, opened: Vec::new() });
         s.local.insert(t, Local { at_ms: 5_100, pushed: None, tail_opened: Some(false) });
-        assert!(!s.fresh(t, 5_000, &[]));
+        assert!(!s.fresh(t, 5_000, Vec::new));
     }
 
     /// T-810: a PR a backfilled URL names is taken as held the read it
@@ -3127,7 +3135,10 @@ mod tests {
         let mut s = board();
         s.take_probe("github.com".into(), failed());
         assert!(!s.probes["github.com"].reads_nothing());
-        assert!(!s.fresh(t, 5_000, &[]), "a forge that did not answer is no board of no forge");
+        assert!(
+            !s.fresh(t, 5_000, Vec::new),
+            "a forge that did not answer is no board of no forge"
+        );
         assert_eq!(
             s.trouble().as_deref(),
             Some("github.com sign-in: not logged in (gh auth login --hostname github.com)")

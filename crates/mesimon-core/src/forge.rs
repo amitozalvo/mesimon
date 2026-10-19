@@ -1211,7 +1211,7 @@ pub fn merge_why(set: &[Pr]) -> Option<&'static str> {
 /// fold that would read green or none `Unknown` (T-795): unknown is never
 /// green, and a run, a wait or a failure beside it still says itself.
 pub fn pipeline_of(set: &[Pr]) -> Pipeline {
-    let open: Vec<&Pr> = set.iter().filter(|p| p.state.is_open()).collect();
+    let open: Vec<&Pr> = own(set).filter(|p| p.state.is_open()).collect();
     if !open.is_empty() {
         let worst = open.iter().fold(Pipeline::None, |acc, p| acc.worst(p.pipeline.clone()));
         let unread = open.iter().any(|p| p.pipeline == Pipeline::Unknown);
@@ -1248,13 +1248,11 @@ pub fn pipeline_of(set: &[Pr]) -> Pipeline {
 /// create` is not waved through. A set of closed PRs alone is none bound
 /// (T-797): a closed PR has no pipeline to pass. Unknown is never green.
 pub fn entry_refusal(set: Option<&[Pr]>, unread: Option<bool>) -> Option<String> {
-    // The ticket's own PRs alone (T-859): a reviewed PR's pipeline is
-    // another ticket's to pass.
-    let set: Option<Vec<Pr>> = set.filter(|s| pipelined(s)).map(|s| own(s).cloned().collect());
+    let set = set.filter(|s| pipelined(s));
     if set.is_none() && unread == Some(false) {
         return None;
     }
-    match set.as_deref().map(pipeline_of).unwrap_or(Pipeline::Unknown) {
+    match set.map(pipeline_of).unwrap_or(Pipeline::Unknown) {
         Pipeline::Passed => None,
         Pipeline::Unknown => Some("pipeline not read".into()),
         Pipeline::None => Some("no pipeline ran".into()),
@@ -1389,9 +1387,9 @@ fn pr_result(
         pending.remove(at);
         out.opened.extend(pr_urls(text));
     }
-    if let Some(at) = pending_act.iter().position(|p| p.split(' ').next() == Some(id)) {
+    if let Some(at) = pending_act.iter().position(|p| act_id(p) == id) {
         let entry = pending_act.remove(at);
-        let entry = entry.split_once(' ').map(|(_, e)| e.to_string()).unwrap_or_default();
+        let entry = act_entry(&entry).to_string();
         if failed || entry.is_empty() {
             return;
         }
@@ -1406,8 +1404,19 @@ fn pr_result(
     }
 }
 
+/// A pending act is kept as `"<call id> <entry>"` (`pr_call`), in
+/// `costs.json` too: its call id, and its entry.
+pub fn act_id(pending: &str) -> &str {
+    pending.split(' ').next().unwrap_or_default()
+}
+
+pub fn act_entry(pending: &str) -> &str {
+    pending.split_once(' ').map(|(_, e)| e).unwrap_or_default()
+}
+
 /// The `opened here` fact alone, as T-739 read it.
-pub fn pr_create_line(line: &str, pending: &mut Vec<String>) -> Vec<String> {
+#[cfg(test)]
+fn pr_create_line(line: &str, pending: &mut Vec<String>) -> Vec<String> {
     pr_line(line, pending, &mut Vec::new()).opened
 }
 

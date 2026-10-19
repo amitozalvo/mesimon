@@ -37,10 +37,6 @@ impl<T> Tracked<T> {
     pub fn mark_clean(&mut self) {
         self.dirty = false;
     }
-
-    pub fn into_inner(self) -> T {
-        self.value
-    }
 }
 
 impl<T> Deref for Tracked<T> {
@@ -114,12 +110,6 @@ impl<T: Clone> Clone for Tracked<T> {
 impl<T: std::fmt::Debug> std::fmt::Debug for Tracked<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.value.fmt(f)
-    }
-}
-
-impl<T: PartialEq> PartialEq for Tracked<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.value == other.value
     }
 }
 

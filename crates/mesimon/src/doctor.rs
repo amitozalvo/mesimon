@@ -18,9 +18,7 @@
 //! Exit codes (16 §8.2): 0 clean or warnings only, 1 any FAIL, 2 doctor itself
 //! failed.
 
-use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::Command;
 
@@ -266,6 +264,8 @@ fn environment(repo: &std::path::Path, verbose: bool) -> Section {
     // (T-288), and what would do it. A note, like the opener: where nothing
     // answers, the machine sleeps exactly as it always did.
     records.push(rec(Level::Note, "keep awake", mesimon_tui::keep_awake_status()));
+    // Whether the board plays by itself after an idle hour (T-870).
+    records.push(rec(Level::Note, "snake while idle", mesimon_tui::idle_snake_status()));
     // Which of the machine's preferences this repo's board overrides
     // (T-361), and what the machine holds for each.
     records.push(rec(Level::Note, "board prefs", mesimon_tui::board_prefs_status(repo)));
@@ -1157,9 +1157,6 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
 /// must never spawn a daemon, restart one, or change anything it is reporting
 /// on. If nothing is listening, that is the finding.
 fn daemon_hello(sock: &Path) -> Option<(u32, u32, String)> {
-    let stream = UnixStream::connect(sock).ok()?;
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(2))).ok()?;
-    let mut write = stream.try_clone().ok()?;
     let env = mesimon_core::command::Envelope {
         principal: mesimon_core::Principal::Local,
         command: mesimon_core::command::Command::Hello {
@@ -1167,10 +1164,8 @@ fn daemon_hello(sock: &Path) -> Option<(u32, u32, String)> {
             client: format!("mesimon-doctor/{}", env!("CARGO_PKG_VERSION")),
         },
     };
-    writeln!(write, "{}", serde_json::to_string(&env).ok()?).ok()?;
-    let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line).ok()?;
-    match serde_json::from_str::<mesimon_core::command::Response>(&line).ok()? {
+    let read = Some(std::time::Duration::from_secs(2));
+    match mesimon_daemon::oneshot::one_shot(sock, &env, None, read).ok()? {
         mesimon_core::command::Response::Hello { version, daemon_pid, build, .. } => {
             Some((version, daemon_pid, build))
         }

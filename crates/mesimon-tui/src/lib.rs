@@ -108,6 +108,8 @@ pub use opener::doctor_line as opener_status;
 pub use prefs::board_doctor_line as board_prefs_status;
 /// What `mesimon doctor` says about the theme picks (`prefs.rs`).
 pub use prefs::doctor_line as theme_status;
+/// What `mesimon doctor` says about the idle snake (T-870).
+pub use prefs::idle_snake_doctor_line as idle_snake_status;
 /// What `mesimon doctor` says about the board's reply row (T-365).
 pub use prefs::peek_doctor_line as peek_status;
 /// What `mesimon doctor` says about how a snoozed ticket comes back (T-74).

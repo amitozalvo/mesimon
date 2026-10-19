@@ -3445,28 +3445,17 @@ impl Board {
         rec.state.has_pane() || !archived.contains(&rec.ticket)
     }
 
-    /// Drop what the snapshot leaves out, in place: an archived ticket
-    /// (T-842) and a record with no pane on one (T-804). On a board months
+    /// The board as the snapshot sends it, without an archived ticket
+    /// (T-842) or a record with no pane on one (T-804). On a board months
     /// old the records were 614 of 629 and two thirds of every snapshot, and
     /// after that cut the tickets were 690 of 716 and three quarters of
     /// what remained, sent on every push and drawn by nothing on the board.
     /// `Command::ArchivedTickets` is how a client that lists them gets them
     /// and `Command::TicketSessions` how one that shows one gets its
-    /// records. Returns how many tickets are archived, kept or not.
-    pub fn drop_archived(&mut self) -> usize {
-        let archived: std::collections::HashSet<ulid::Ulid> =
-            self.tickets.iter().filter(|t| t.is_archived()).map(|t| t.id).collect();
-        self.sessions.retain(|rec| Self::snapshot_record(rec, &archived));
-        let tickets = std::mem::take(&mut self.tickets);
-        self.tickets = tickets.into_iter().filter(|t| self.snapshot_ticket(t)).collect();
-        archived.len()
-    }
-
-    /// A copy of the board with `drop_archived` applied, cloning only the
-    /// tickets and records it keeps (T-838): the daemon took it per snapshot
-    /// by cloning every record — 641 parked ones, over a megabyte of launch
-    /// argv — and dropping them. Every other field is cloned whole. The
-    /// count beside it is how many tickets are archived.
+    /// records. Only the kept tickets and records are cloned (T-838): the
+    /// daemon took the copy whole — 641 parked records, over a megabyte of
+    /// launch argv — and dropped them. Every other field is cloned whole.
+    /// The count beside it is how many tickets are archived, kept or not.
     pub fn for_snapshot(&self) -> (Board, usize) {
         let archived: std::collections::HashSet<ulid::Ulid> =
             self.tickets.iter().filter(|t| t.is_archived()).map(|t| t.id).collect();
@@ -4246,21 +4235,19 @@ mod tests {
             rec(4, 2, gone),
         ];
         let (copy, counted) = board.for_snapshot();
-        let count = board.drop_archived();
-        let kept: Vec<u128> = board.sessions.iter().map(|s| s.id.as_u128()).collect();
+        let kept: Vec<u128> = copy.sessions.iter().map(|s| s.id.as_u128()).collect();
         assert_eq!(kept, vec![1, 3]);
         // Ticket 2 rides for its open pane, ticket 3 stays home; both count.
-        let tickets: Vec<u128> = board.tickets.iter().map(|t| t.id.0).collect();
+        let tickets: Vec<u128> = copy.tickets.iter().map(|t| t.id.0).collect();
         assert_eq!(tickets, vec![1, 2]);
-        assert_eq!((count, counted), (2, 2));
-        // The copy keeps the same records without cloning the rest (T-838),
-        // and every other field whole.
-        let copied: Vec<u128> = copy.sessions.iter().map(|s| s.id.as_u128()).collect();
-        assert_eq!(copied, kept);
+        assert_eq!(counted, 2);
+        // Every other field rides whole (T-838).
+        board.tickets.retain(|t| tickets.contains(&t.id.0));
+        board.sessions.retain(|s| kept.contains(&s.id.as_u128()));
         assert_eq!(
             serde_json::to_string(&copy).unwrap(),
             serde_json::to_string(&board).unwrap(),
-            "the copy is the dropped board"
+            "the copy is the board less what it leaves out"
         );
     }
 

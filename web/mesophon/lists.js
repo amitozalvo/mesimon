@@ -6,7 +6,7 @@
 import { html, useLayoutEffect, useRef, useState } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
-import { answerable, requestSummary } from "./dialogs.js";
+import { TrustAccept, answerable, requestSummary } from "./dialogs.js";
 import { startWaiting } from "./starts.js";
 import { answerBusy, receiptTick } from "./sessions.js";
 import { RECENT_MS } from "./board.js";
@@ -267,10 +267,7 @@ function NeedCard({ store, ticket, board, live }) {
               onClick=${() => send({ op: "permission", request: permission.request, decision: "allow" })}>Approve once</button>
           </div>`
         : trust
-          ? html`<div class="need-actions">
-            <button type="button" class="btn btn-attn" disabled=${off}
-              onClick=${() => send({ op: "dialog", request: trust.request, response: { answer: "accept" } })}>Yes, I trust this folder</button>
-          </div>`
+          ? html`<div class="need-actions"><${TrustAccept} trust=${trust} off=${off} send=${send} /></div>`
         : dialog?.kind === "plan" || (dialog && !question)
           ? html`<div class="need-actions"><button type="button" class="btn btn-attn" onClick=${() => store.select(ticket.id)}>${dialog.kind === "plan" ? "Review plan" : "Answer in the ticket"}</button></div>`
           : null}

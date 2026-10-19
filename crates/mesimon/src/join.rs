@@ -58,7 +58,7 @@ pub fn run(args: &[String]) -> Result<()> {
 fn shell_word(path: &Path) -> String {
     let text = path.display().to_string();
     if text.chars().any(char::is_whitespace) {
-        format!("'{}'", text.replace('\'', "'\\''"))
+        mesimon_core::text::sh_quote(&text)
     } else {
         text
     }

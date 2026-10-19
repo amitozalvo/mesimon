@@ -1337,12 +1337,7 @@ impl Daemon {
                 // A trust dialog's leave has no hook of its own on Codex, and
                 // on Claude `SessionStart` may follow the composer by a beat
                 // (T-844): the seat moving off the dialog is the answer taken.
-                let trust_taken = self
-                    .control
-                    .dialogs
-                    .get(&id)
-                    .is_some_and(|d| matches!(d.content, api::DialogContent::Trust { .. }))
-                    && !self.dialog_waiting(id);
+                let trust_taken = self.trust_dialog(id).is_some() && !self.dialog_waiting(id);
                 match edge {
                     Some(DialogEdge::Answered | DialogEdge::ModAnswered) => {
                         self.control_settle_dialog(id, pending, "answered", None, "")
@@ -1481,11 +1476,7 @@ impl Daemon {
                     self.control.dialog_deliveries.insert(id, pending);
                 }
                 Err(reason) => {
-                    let reason = if pending.steps > 0 {
-                        format!("{reason}; cursor moved")
-                    } else {
-                        reason.to_string()
-                    };
+                    let reason = walk_reason(reason, pending.steps);
                     self.control_settle_dialog(id, pending, "unknown", Some(reason), &screen);
                 }
             }
@@ -1535,7 +1526,7 @@ impl Daemon {
 
     /// The harness behind a session's pane; a record gone reads as Claude's,
     /// whose shapes refuse any other screen.
-    fn session_kind(&self, id: uuid::Uuid) -> SessionKind {
+    pub(super) fn session_kind(&self, id: uuid::Uuid) -> SessionKind {
         self.board.sessions.iter().find(|s| s.id == id).map_or(SessionKind::Claude, |s| s.kind)
     }
 
@@ -2122,12 +2113,13 @@ impl Daemon {
         };
         // No second browser can answer after this point. Successful transport
         // is not proof Claude executed the tool; report only decision delivery.
-        let sent = match &mut pending.road {
-            PermissionRoad::Hook { stream, .. } => serde_json::to_vec(&decision)
-                .ok()
-                .is_some_and(|bytes| stream.write_all(&bytes).is_ok()),
-            PermissionRoad::Codex => false,
+        // A Codex wait returned above, so the road here is the hook's.
+        let PermissionRoad::Hook { stream, .. } = &mut pending.road else {
+            return Reply::Rejected { message: "permission is no longer pending".into() };
         };
+        let sent = serde_json::to_vec(&decision)
+            .ok()
+            .is_some_and(|bytes| stream.write_all(&bytes).is_ok());
         self.feed.board(
             by.actor(),
             "mesophon_permission_answer",
@@ -2217,11 +2209,7 @@ impl Daemon {
                     self.control.approvals.insert(id, pending);
                 }
                 Err(reason) => {
-                    let reason = if pending.steps > 0 {
-                        format!("{reason}; cursor moved")
-                    } else {
-                        reason.to_string()
-                    };
+                    let reason = walk_reason(reason, pending.steps);
                     self.control_settle_approval(id, pending, "unknown", Some(reason));
                 }
             }
@@ -2280,9 +2268,9 @@ impl Daemon {
             (None, Some((key, _))) => Some(format!("plan:{key}")),
             (None, None) => None,
         };
-        let was = self.control.codex_asks.get(&id).cloned();
-        if was.is_some() && was != current {
-            let was = was.unwrap_or_default();
+        let was =
+            self.control.codex_asks.get(&id).filter(|w| Some(*w) != current.as_ref()).cloned();
+        if let Some(was) = was {
             if self.control.dialogs.get(&id).is_some_and(|d| d.request == was) {
                 self.control.dialogs.remove(&id);
                 self.control.dialog_edges.insert(id, (was.clone(), DialogEdge::Answered));
@@ -2420,16 +2408,30 @@ impl Daemon {
         tags: &[api::TagPick],
         (grant, uploads): (BoardId, Vec<String>),
     ) -> Reply {
+        self.grant_pictures(grant, &uploads, |d, owner, ids| {
+            d.control_create(by, title, description, column, tags, Via::Live(owner, ids))
+        })
+    }
+
+    /// The pictures a phone's command names (T-629, T-670, T-853): this
+    /// grant's uploads by id, handed to `body`, and let go again when the
+    /// body refuses, so a retry uploads afresh. An id that is no upload
+    /// refuses before the body runs.
+    fn grant_pictures(
+        &mut self,
+        grant: BoardId,
+        uploads: &[String],
+        body: impl FnOnce(&mut Self, &crate::attachments::Owner, &[ulid::Ulid]) -> Reply,
+    ) -> Reply {
         let owner = crate::attachments::Owner::Grant(grant.to_hex());
         let ids: Vec<ulid::Ulid> =
             uploads.iter().filter_map(|u| ulid::Ulid::from_string(u).ok()).collect();
         let reply = if ids.len() == uploads.len() {
-            let via = Via::Live(&owner, &ids);
-            self.control_create(by, title, description, column, tags, via)
+            body(self, &owner, &ids)
         } else {
             Reply::Rejected { message: "unknown picture".into() }
         };
-        if matches!(reply, Reply::Rejected { .. }) {
+        if matches!(reply, Reply::Rejected { .. } | Reply::Revoked) {
             self.uploads.discard(&owner, &ids);
         }
         reply
@@ -3184,24 +3186,16 @@ impl Daemon {
         if uploads.is_empty() {
             return send(self, text);
         }
-        let owner = crate::attachments::Owner::Grant(grant.to_hex());
-        let ids: Vec<ulid::Ulid> =
-            uploads.iter().filter_map(|u| ulid::Ulid::from_string(u).ok()).collect();
-        let reply = match ulid::Ulid::from_string(ticket) {
-            Ok(id) if ids.len() == uploads.len() => {
-                let refused = |r: &Reply| matches!(r, Reply::Rejected { .. } | Reply::Revoked);
-                match self.with_pictures(&owner, id, text, &ids, send, refused) {
-                    Ok(reply) => reply,
-                    Err(message) => Reply::Rejected { message },
-                }
+        self.grant_pictures(grant, uploads, |d, owner, ids| {
+            let Ok(id) = ulid::Ulid::from_string(ticket) else {
+                return Reply::Rejected { message: "invalid ticket".into() };
+            };
+            let refused = |r: &Reply| matches!(r, Reply::Rejected { .. } | Reply::Revoked);
+            match d.with_pictures(owner, id, text, ids, send, refused) {
+                Ok(reply) => reply,
+                Err(message) => Reply::Rejected { message },
             }
-            Ok(_) => Reply::Rejected { message: "unknown picture".into() },
-            Err(_) => Reply::Rejected { message: "invalid ticket".into() },
-        };
-        if matches!(reply, Reply::Rejected { .. } | Reply::Revoked) {
-            self.uploads.discard(&owner, &ids);
-        }
-        reply
+        })
     }
 
     /// A note write that links pictures this phone uploaded (T-629): the
@@ -3218,18 +3212,9 @@ impl Daemon {
         rev: Option<u64>,
         (grant, uploads): (BoardId, Vec<String>),
     ) -> Reply {
-        let owner = crate::attachments::Owner::Grant(grant.to_hex());
-        let ids: Vec<ulid::Ulid> =
-            uploads.iter().filter_map(|u| ulid::Ulid::from_string(u).ok()).collect();
-        let reply = if ids.len() == uploads.len() {
-            self.control_write_pictured_inner(by, ticket, note, text, rev, &owner, &ids)
-        } else {
-            Reply::Rejected { message: "unknown picture".into() }
-        };
-        if matches!(reply, Reply::Rejected { .. }) {
-            self.uploads.discard(&owner, &ids);
-        }
-        reply
+        self.grant_pictures(grant, &uploads, |d, owner, ids| {
+            d.control_write_pictured_inner(by, ticket, note, text, rev, owner, ids)
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3459,16 +3444,19 @@ impl Daemon {
         }
     }
 
+    /// The trust dialog projected on `id`'s seat (T-844), if one stands.
+    fn trust_dialog(&self, id: uuid::Uuid) -> Option<&api::Dialog> {
+        self.control
+            .dialogs
+            .get(&id)
+            .filter(|d| matches!(d.content, api::DialogContent::Trust { .. }))
+    }
+
     /// A folder trust dialog read off `id`'s pane (T-844), projected for the
     /// phone's card and the board's `w` while it stands, once per dialog:
     /// a request minted here, since no hook names one. `true` when new.
     pub(super) fn control_offer_trust(&mut self, id: uuid::Uuid, folder: Option<String>) -> bool {
-        if self
-            .control
-            .dialogs
-            .get(&id)
-            .is_some_and(|d| matches!(d.content, api::DialogContent::Trust { .. }))
-        {
+        if self.trust_dialog(id).is_some() {
             return false;
         }
         let request = format!("trust-{}", uuid::Uuid::new_v4().simple());
@@ -3483,11 +3471,7 @@ impl Daemon {
     /// the projection goes. A delivery still walking it settles on its own
     /// (`state_changed`, or `answered` once the seat moved on).
     pub(super) fn control_drop_trust(&mut self, id: uuid::Uuid) -> bool {
-        let trust = self
-            .control
-            .dialogs
-            .get(&id)
-            .is_some_and(|d| matches!(d.content, api::DialogContent::Trust { .. }));
+        let trust = self.trust_dialog(id).is_some();
         if trust {
             self.control.dialogs.remove(&id);
             self.control_changed();
@@ -3514,12 +3498,7 @@ impl Daemon {
             return Response::Err { message: "no trust dialog waiting".into() };
         }
         let id = rec.id;
-        let Some(dialog) = self
-            .control
-            .dialogs
-            .get(&id)
-            .filter(|d| matches!(d.content, api::DialogContent::Trust { .. }))
-        else {
+        let Some(dialog) = self.trust_dialog(id) else {
             return Response::Err { message: crate::trust_dialog::NOT_RECOGNISED.into() };
         };
         if self.control.dialog_deliveries.contains_key(&id) {
@@ -3803,7 +3782,8 @@ impl Daemon {
         text: String,
     ) -> Reply {
         let (ticket, id) = target;
-        if let Err(message) = self.park_ask(ticket, QueuedSeat::Pane(id), text, None, false, false)
+        if let Err(message) =
+            self.park_ask(ticket, QueuedSeat::Pane(id), text, super::Asker::Person, false, false)
         {
             self.control_cancel(id);
             return Reply::Rejected { message };
@@ -4663,16 +4643,21 @@ struct Row {
     text: String,
 }
 
+/// Why a walk stopped, with the keys already sent on record: a receipt
+/// after `steps` keys says the cursor is no longer where the dialog opened.
+fn walk_reason(reason: &str, steps: u8) -> String {
+    if steps > 0 {
+        format!("{reason}; cursor moved")
+    } else {
+        reason.to_string()
+    }
+}
+
 /// A numbered row's parts: whether the cursor `❯` is on it, its number and
 /// the rest of the line.
 fn numbered(line: &str) -> Option<(bool, usize, &str)> {
-    let line = line.trim();
-    let (selected, rest) = match line.strip_prefix('❯').or_else(|| line.strip_prefix('›')) {
-        Some(rest) => (true, rest.trim()),
-        None => (false, line),
-    };
-    let (n, rest) = rest.split_once(". ")?;
-    n.parse::<usize>().ok().map(|n| (selected, n, rest.trim()))
+    let (selected, number, label) = crate::plan_dialog::menu_row(line);
+    Some((selected, number?, label))
 }
 
 /// The dialog's options (T-567): the numbered rows from its last `1.` down
@@ -4705,10 +4690,7 @@ fn dialog_rows_to(screen: &str, footer: &str) -> Option<Vec<Row>> {
             open = true;
             continue;
         }
-        let (selected, rest) = match line.strip_prefix('❯').or_else(|| line.strip_prefix('›')) {
-            Some(rest) => (true, rest.trim()),
-            None => (false, line),
-        };
+        let (selected, _, rest) = crate::plan_dialog::menu_row(line);
         let ticks = rows.last().is_some_and(|r| r.ticked.is_some());
         if ticks && matches!(rest, "Next" | "Submit") {
             rows.push(Row { number: None, selected, ticked: None, text: rest.to_string() });

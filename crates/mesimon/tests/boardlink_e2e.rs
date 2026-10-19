@@ -10,7 +10,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use mesimon_core::board::{CrownMode, SessionKind, SessionState};
-use mesimon_core::command::{AskRoad, BoardTouch, Command, LinkView, Response};
+use mesimon_core::command::{AskRoad, BoardTouch, Command, LinkView, Response, TouchAction};
 use mesimon_core::Principal;
 
 mod common;
@@ -200,12 +200,12 @@ fn two_crowns_reach_each_other_through_one_links_file() {
         Some(format!("→ {name}: mesimon-probe-733 cut the relay release").as_str())
     );
     assert!(
-        touches_of(&mut ca).iter().any(|t| t.action == "sent" && t.path == b_root),
+        touches_of(&mut ca).iter().any(|t| t.action == TouchAction::Sent && t.path == b_root),
         "{:?}",
         touches_of(&mut ca)
     );
     assert!(
-        touches_of(&mut cb).iter().any(|t| t.action == "received" && t.path == a_root),
+        touches_of(&mut cb).iter().any(|t| t.action == TouchAction::Received && t.path == a_root),
         "{:?}",
         touches_of(&mut cb)
     );
@@ -234,8 +234,8 @@ fn two_crowns_reach_each_other_through_one_links_file() {
         text.contains(&format!("The crown of the {name} board replied: mesimon-probe-734")),
         "{text}"
     );
-    assert!(touches_of(&mut ca).iter().any(|t| t.action == "got_reply"));
-    assert!(touches_of(&mut cb).iter().any(|t| t.action == "replied"));
+    assert!(touches_of(&mut ca).iter().any(|t| t.action == TouchAction::GotReply));
+    assert!(touches_of(&mut cb).iter().any(|t| t.action == TouchAction::Replied));
     hook_send(&a.paths.hook_sock(), &sa.to_string(), "UserPromptSubmit", "{}");
     wait_until(std::time::Duration::from_secs(5), "A's queue to clear", || {
         pending_of(&mut ca, Some(ta)).is_empty()
@@ -287,7 +287,7 @@ fn two_crowns_reach_each_other_through_one_links_file() {
         Response::Err { message } => assert!(message.contains("has no crown"), "{message}"),
         other => panic!("no crown: {other:?}"),
     }
-    assert!(touches_of(&mut ca).iter().any(|t| t.action == "refused"));
+    assert!(touches_of(&mut ca).iter().any(|t| t.action == TouchAction::Refused));
 
     // Not open: B's daemon gone, the ask says so and nothing waits.
     let _ = cb.request(Command::Shutdown);

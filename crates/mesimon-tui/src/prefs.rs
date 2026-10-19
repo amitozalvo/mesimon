@@ -643,7 +643,7 @@ impl Prefs {
         match slot {
             Slot::One(Ground::Dark) => Some(self.dark),
             Slot::One(Ground::Light) => Some(self.light),
-            Slot::Both => self.both.or((self.dark == self.light).then_some(self.dark)),
+            Slot::Both => both_of(self.both, Some(self.dark), Some(self.light)),
         }
     }
 
@@ -995,10 +995,7 @@ impl BoardPrefs {
         match slot {
             Slot::One(g) => self.flavor(g),
             Slot::Both => {
-                self.both().or(match (self.flavor(Ground::Dark), self.flavor(Ground::Light)) {
-                    (Some(d), Some(l)) if d == l => Some(d),
-                    _ => None,
-                })
+                both_of(self.both(), self.flavor(Ground::Dark), self.flavor(Ground::Light))
             }
         }
     }
@@ -1099,6 +1096,15 @@ pub(crate) struct LoadedBoard {
 
 /// Where this repo's overrides live, or `None` where the state dir cannot
 /// be derived (the repo path does not resolve).
+/// The `both` pick: the slot itself, or two equal grounds, which is how
+/// an older build wrote one theme for both (T-863).
+fn both_of(both: Option<Flavor>, dark: Option<Flavor>, light: Option<Flavor>) -> Option<Flavor> {
+    both.or(match (dark, light) {
+        (Some(d), Some(l)) if d == l => Some(d),
+        _ => None,
+    })
+}
+
 pub(crate) fn board_prefs_path(repo: &Path) -> Option<PathBuf> {
     mesimon_daemon::Paths::for_repo(repo).ok().map(|p| p.prefs_file())
 }
@@ -1488,6 +1494,16 @@ pub fn peek_doctor_line() -> String {
         "no new one under a resting card"
     };
     format!("{rung} ∙ {fresh} ∙ Settings › Appearance")
+}
+
+/// `mesimon doctor`'s `snake while idle` line (T-870): whether the board
+/// plays by itself after an idle hour.
+pub fn idle_snake_doctor_line() -> String {
+    if load_home().prefs.idle_snake {
+        "on ∙ after an hour with no key or click ∙ never while a ticket needs you".into()
+    } else {
+        "off ∙ the board holds still however long you are away".into()
+    }
 }
 
 /// `mesimon doctor`'s `summary` line (T-696): how a ticket's `Summary`

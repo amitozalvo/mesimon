@@ -101,6 +101,12 @@ pub fn clip_words(s: &str, max: usize) -> String {
 
 /// Trimmed, or `None` when nothing is left — there is no such thing as a
 /// blank tag or an empty prompt.
+/// `s` as one word to a POSIX shell: single-quoted, a quote inside spelled
+/// `'\''`. For a command line a person is shown or a shell is handed.
+pub fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 pub fn nonblank(s: &str) -> Option<String> {
     let t = s.trim();
     (!t.is_empty()).then(|| t.to_string())
@@ -109,6 +115,12 @@ pub fn nonblank(s: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sh_quote_closes_and_reopens_around_a_quote() {
+        assert_eq!(sh_quote("a b"), "'a b'");
+        assert_eq!(sh_quote("it's"), "'it'\\''s'");
+    }
 
     #[test]
     fn hazards_are_scrubbed_from_cells() {

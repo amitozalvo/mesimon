@@ -30,7 +30,6 @@
 //! restarted many times a day during its own development.
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
 use mesimon_core::board::AgentTools;
@@ -106,7 +105,12 @@ pub fn run(args: &[String]) -> ! {
 
 /// One JSON-RPC message in, at most one out. `None` = a notification, which
 /// takes no reply (answering one is a protocol error, not a courtesy).
-fn handle_line(line: &str, sock: &PathBuf, session: uuid::Uuid, tier: AgentTools) -> Option<Value> {
+fn handle_line(
+    line: &str,
+    sock: &std::path::Path,
+    session: uuid::Uuid,
+    tier: AgentTools,
+) -> Option<Value> {
     let msg: Value = serde_json::from_str(line).ok()?;
     let method = msg.get("method").and_then(Value::as_str).unwrap_or_default();
     let params = msg.get("params").cloned().unwrap_or(Value::Null);
@@ -132,12 +136,12 @@ fn handle_line(line: &str, sock: &PathBuf, session: uuid::Uuid, tier: AgentTools
     }
 }
 
-fn call_tool(id: Value, params: &Value, sock: &PathBuf, session: uuid::Uuid) -> Value {
+fn call_tool(id: Value, params: &Value, sock: &std::path::Path, session: uuid::Uuid) -> Value {
     ok(id, tool_result(params, sock, session))
 }
 
 /// One `tools/call`'s `result`: the shim's and the mod's (T-577) alike.
-fn tool_result(params: &Value, sock: &PathBuf, session: uuid::Uuid) -> Value {
+fn tool_result(params: &Value, sock: &std::path::Path, session: uuid::Uuid) -> Value {
     let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
     let call = match mcp::parse_tool_call(name, &args) {
@@ -410,28 +414,21 @@ fn render(resp: Response) -> Value {
 }
 
 /// One request, one connection, one line each way.
-fn ask(sock: &PathBuf, env: &Envelope) -> Result<Response, String> {
-    let stream = UnixStream::connect(sock)
-        .map_err(|e| format!("mesimon daemon is not reachable ({e}); the board may be closed"))?;
+fn ask(sock: &std::path::Path, env: &Envelope) -> Result<Response, String> {
+    use mesimon_daemon::oneshot::{one_shot, Fault};
     let wait = match env.command {
         Command::AgentAnswerTicket { .. } | Command::AgentAcceptPlan { .. } => ANSWER_WAIT_SECS,
         _ => READ_TIMEOUT_SECS,
     };
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(wait)))
-        .map_err(|e| e.to_string())?;
-    let line = serde_json::to_string(env).map_err(|e| e.to_string())?;
-    {
-        let mut w = &stream;
-        writeln!(w, "{line}").map_err(|e| e.to_string())?;
-        w.flush().map_err(|e| e.to_string())?;
-    }
-    let mut reply = String::new();
-    BufReader::new(&stream).read_line(&mut reply).map_err(|e| e.to_string())?;
-    if reply.trim().is_empty() {
-        return Err("mesimon daemon closed the connection without answering".into());
-    }
-    serde_json::from_str(&reply).map_err(|e| format!("unreadable daemon response: {e}"))
+    let read = Some(std::time::Duration::from_secs(wait));
+    one_shot(sock, env, None, read).map_err(|fault| match fault {
+        Fault::Connect(e) => {
+            format!("mesimon daemon is not reachable ({e}); the board may be closed")
+        }
+        Fault::Send(e) | Fault::Receive(e) => e.to_string(),
+        Fault::Closed => "mesimon daemon closed the connection without answering".into(),
+        Fault::Unreadable(e) => format!("unreadable daemon response: {e}"),
+    })
 }
 
 fn text<T: serde::Serialize>(v: &T) -> Value {

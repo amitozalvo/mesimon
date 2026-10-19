@@ -29,12 +29,10 @@
 //! and path) and `board_touches` (what went where in the last ten seconds),
 //! for the header's bolt and its lit word. The feed is the record.
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use mesimon_core::boardlink::{self, Links};
-use mesimon_core::command::{BoardTouch, LinkView};
+use mesimon_core::command::{BoardTouch, LinkView, TouchAction};
 use mesimon_core::prompts::AgentPrompt;
 
 use super::*;
@@ -48,63 +46,7 @@ const PEER_CONNECT_MS: u64 = 1_000;
 /// How long the other daemon may take to answer one ask.
 const PEER_WAIT_MS: u64 = 5_000;
 
-/// `links.toml` as this daemon last read it. Every board's daemon shares
-/// the file; one `stat` per look tells whether another board changed it.
-pub(super) struct MachineLinksCache {
-    path: Option<PathBuf>,
-    stamp: Option<(std::time::SystemTime, u64)>,
-    pub(super) links: Links,
-    pub(super) notice: Option<Notice>,
-    pub(super) barred: bool,
-}
-
-impl MachineLinksCache {
-    pub(super) fn new(path: Option<PathBuf>) -> Self {
-        let mut cache =
-            Self { path, stamp: None, links: Links::default(), notice: None, barred: false };
-        cache.reload();
-        cache
-    }
-
-    fn current_stamp(&self) -> Option<(std::time::SystemTime, u64)> {
-        let meta = std::fs::metadata(self.path.as_ref()?).ok()?;
-        Some((meta.modified().ok()?, meta.len()))
-    }
-
-    fn reload(&mut self) {
-        let Some(path) = self.path.clone() else { return };
-        let loaded = store::load_links(&path);
-        self.links = loaded.links;
-        self.notice = loaded.notice;
-        self.barred = loaded.barred;
-        self.stamp = self.current_stamp();
-    }
-
-    /// Re-read when the file changed since the last look. True when it did.
-    pub(super) fn refresh(&mut self) -> bool {
-        if self.path.is_none() || self.current_stamp() == self.stamp {
-            return false;
-        }
-        let before = self.links.clone();
-        self.reload();
-        self.links != before
-    }
-
-    fn save(&mut self, links: Links) -> std::result::Result<(), String> {
-        if self.barred {
-            return Err("links.toml could not be read and is being preserved — nothing was \
-                        changed"
-                .into());
-        }
-        let Some(path) = self.path.clone() else {
-            return Err("no state directory for the machine's board links".into());
-        };
-        store::save_links(&path, &links).map_err(|e| e.to_string())?;
-        self.links = links;
-        self.stamp = self.current_stamp();
-        Ok(())
-    }
-}
+pub(super) type MachineLinksCache = super::tiers::MachineFileCache<Links>;
 
 /// The words a peer ask carries, kept on the queue entry it became: the
 /// asking board's name, and the crown's words before the template wrapped
@@ -119,30 +61,26 @@ pub(super) struct FromBoard {
 /// one line out, one line back. `Err` is in words a crown can relay, and
 /// a board with no daemon listening reads `is not open`.
 pub(super) fn call_peer(sock: &Path, env: &Envelope) -> std::result::Result<Response, String> {
-    let addr = std::os::unix::net::SocketAddr::from_pathname(sock)
-        .map_err(|e| format!("cannot address its socket: {e}"))?;
-    let stream = UnixStream::connect_addr(&addr).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => {
+    use crate::oneshot::{one_shot, Fault};
+    let write = Some(Duration::from_millis(PEER_CONNECT_MS));
+    let read = Some(Duration::from_millis(PEER_WAIT_MS));
+    one_shot(sock, env, write, read).map_err(|fault| match fault {
+        Fault::Connect(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ) =>
+        {
             "is not open; a board opens when mesimon runs in its folder, and the ask can be \
              made again then"
                 .to_string()
         }
-        _ => format!("could not be reached: {e}"),
-    })?;
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(PEER_CONNECT_MS)));
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(PEER_WAIT_MS)));
-    let mut writer = stream.try_clone().map_err(|e| format!("could not be reached: {e}"))?;
-    let json = serde_json::to_string(env).map_err(|e| e.to_string())?;
-    writeln!(writer, "{json}").map_err(|e| format!("did not take the ask: {e}"))?;
-    let mut line = String::new();
-    BufReader::new(stream)
-        .read_line(&mut line)
-        .map_err(|e| format!("did not answer in time: {e}"))?;
-    if line.trim().is_empty() {
-        return Err("closed the connection without answering".into());
-    }
-    serde_json::from_str::<Response>(&line)
-        .map_err(|e| format!("answered in words this build cannot read: {e}"))
+        Fault::Connect(e) => format!("could not be reached: {e}"),
+        Fault::Send(e) => format!("did not take the ask: {e}"),
+        Fault::Receive(e) => format!("did not answer in time: {e}"),
+        Fault::Closed => "closed the connection without answering".into(),
+        Fault::Unreadable(e) => format!("answered in words this build cannot read: {e}"),
+    })
 }
 
 impl Daemon {
@@ -165,7 +103,7 @@ impl Daemon {
     pub(super) fn links_view(&self) -> Vec<LinkView> {
         let me = self.my_root();
         self.links
-            .links
+            .value
             .partners(&me)
             .into_iter()
             .map(|path| LinkView { name: boardlink::board_name(&path), path })
@@ -185,8 +123,7 @@ impl Daemon {
         if other == me {
             return Response::Err { message: "a board does not reach itself".into() };
         }
-        self.links.refresh();
-        let mut links = self.links.links.clone();
+        let mut links = self.links.value.clone();
         if !links.link(&me, &other) {
             return Response::Err {
                 message: format!("{} is linked already", boardlink::board_name(&other)),
@@ -206,8 +143,7 @@ impl Daemon {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| path.trim().to_string());
         let me = self.my_root();
-        self.links.refresh();
-        let mut links = self.links.links.clone();
+        let mut links = self.links.value.clone();
         if !links.unlink(&me, &other) {
             return Response::Err {
                 message: format!("{} is not linked", boardlink::board_name(&other)),
@@ -237,7 +173,7 @@ impl Daemon {
         }
         let me = self.my_root();
         self.links.refresh();
-        let other = match self.links.links.find(&me, &board) {
+        let other = match self.links.value.find(&me, &board) {
             Ok(p) => p,
             Err(message) => return Response::Err { message },
         };
@@ -266,7 +202,7 @@ impl Daemon {
         };
         match answer {
             Err(why) => {
-                self.board_touched(&other, "refused", Some(why.clone()));
+                self.board_touched(&other, TouchAction::Refused, Some(why.clone()));
                 self.feed.board_outcome("agent", "ask_board", Some(ticket), "refused");
                 self.broadcast();
                 Response::Err { message: format!("{name} {why}") }
@@ -278,7 +214,11 @@ impl Daemon {
                 if !reply {
                     self.asks_out.insert(other.clone(), now_ms());
                 }
-                self.board_touched(&other, if reply { "replied" } else { "sent" }, None);
+                self.board_touched(
+                    &other,
+                    if reply { TouchAction::Replied } else { TouchAction::Sent },
+                    None,
+                );
                 self.crown_said(ticket, &format!("→ {name}: {text}"));
                 self.feed.board_outcome("agent", "ask_board", Some(ticket), road.word());
                 self.broadcast();
@@ -303,7 +243,7 @@ impl Daemon {
         let my_name = boardlink::board_name(&me);
         let from_name = boardlink::board_name(&from);
         self.links.refresh();
-        if !self.links.links.linked(&me, &from) {
+        if !self.links.value.linked(&me, &from) {
             return Response::Err {
                 message: format!(
                     "{my_name} does not reach {from_name}; Settings → Crown → Reaches boards on \
@@ -379,7 +319,11 @@ impl Daemon {
         }
         let road = if held { AskRoad::HeldForPerson } else { AskRoad::Queued };
         self.feed.board_outcome("peer", "board_ask_received", Some(crown), road.word());
-        self.board_touched(&from, if reply { "got_reply" } else { "received" }, None);
+        self.board_touched(
+            &from,
+            if reply { TouchAction::GotReply } else { TouchAction::Received },
+            None,
+        );
         if !reply {
             self.asks_in.insert(from, now_ms());
         }
@@ -400,21 +344,18 @@ impl Daemon {
         words: String,
         from: FromBoard,
     ) -> std::result::Result<(), String> {
-        self.peer_parking = Some(from);
-        let parked = self.park_ask(crown, seat, words, None, false, false);
-        self.peer_parking = None;
-        parked
+        self.park_ask(crown, seat, words, super::Asker::Board(from), false, false)
     }
 
     /// Record that words went to or came from a linked board (T-733), so
     /// the header lights its name and the bolt knows which card.
-    pub(super) fn board_touched(&mut self, path: &str, action: &str, words: Option<String>) {
+    pub(super) fn board_touched(&mut self, path: &str, action: TouchAction, words: Option<String>) {
         let now = now_ms();
-        self.board_touches.retain(|t| now.saturating_sub(t.at_ms) < BOARD_TOUCH_MS);
+        self.board_touches.retain(|t| fresh(t, now));
         self.board_touches.push(BoardTouch {
             board: boardlink::board_name(path),
             path: path.to_string(),
-            action: action.to_string(),
+            action,
             words,
             crown: self.board.crown,
             at_ms: now,
@@ -424,10 +365,11 @@ impl Daemon {
     /// The touches still worth drawing, for the snapshot.
     pub(super) fn recent_board_touches(&self) -> Vec<BoardTouch> {
         let now = now_ms();
-        self.board_touches
-            .iter()
-            .filter(|t| now.saturating_sub(t.at_ms) < BOARD_TOUCH_MS)
-            .cloned()
-            .collect()
+        self.board_touches.iter().filter(|t| fresh(t, now)).cloned().collect()
     }
+}
+
+/// Whether a touch is still worth drawing.
+fn fresh(t: &BoardTouch, now: u64) -> bool {
+    now.saturating_sub(t.at_ms) < BOARD_TOUCH_MS
 }

@@ -619,16 +619,13 @@ pub struct Daemon {
     /// reach the header within the second, not the minute.
     archive_due: bool,
     /// Each ticket's unticked summary boxes as the archive offer last read
-    /// them, under `notes_key` of its notes then (T-840): the offer is
-    /// priced within a second of every broadcast, and read every note of
-    /// every ticket a `requires_ticked` column held each time. A write
-    /// moves the key; `write_note` drops the entry besides.
-    open_box_counts: std::cell::RefCell<HashMap<ulid::Ulid, (u64, usize)>>,
+    /// them (T-840): the offer is priced within a second of every
+    /// broadcast, and read every note of every ticket a `requires_ticked`
+    /// column held each time.
+    open_box_counts: NoteFacts<usize>,
     /// Each ticket's pull requests named under its notes' `Summary`
-    /// headings (T-859), under `notes_key` of its notes when read: the
-    /// forge's query asks every minute, and reads a note again only once
-    /// a write moved the key.
-    summary_prs: std::cell::RefCell<HashMap<ulid::Ulid, (u64, Vec<String>)>>,
+    /// headings (T-859): the forge's query asks every minute.
+    summary_prs: NoteFacts<std::sync::Arc<[String]>>,
     /// The disk the archive offer frees (T-679): the sum of `tree_sizes`
     /// over the trees it would tear down, on the same 1 s bucket.
     archive_bytes: u64,
@@ -803,7 +800,6 @@ pub struct Daemon {
     asks_in: HashMap<String, u64>,
     /// The peer ask `park_ask` is parking right now (T-733), for the entry
     /// it pushes or replaces to carry; `None` at every other call.
-    peer_parking: Option<peer::FromBoard>,
     /// Wakes the crown is owed (T-414, T-469, T-527): one per worker that
     /// delivered, answered the crown's ask, raised its hand or was merged
     /// since the crown's last turn, rendered into ONE sentence when the crown itself
@@ -1386,7 +1382,6 @@ pub fn run(paths: Paths) -> Result<()> {
         board_touches: Vec::new(),
         asks_out: HashMap::new(),
         asks_in: HashMap::new(),
-        peer_parking: None,
         crown_wakes: Default::default(),
         crown_heard: Default::default(),
         crown_recheck: HashMap::new(),
@@ -1650,6 +1645,18 @@ pub fn run(paths: Paths) -> Result<()> {
     let took = d.stop_started.map_or(0, |t| t.elapsed().as_millis());
     d.journal.line(&format!("stopped ∙ shutdown took {took} ms"));
     Ok(())
+}
+
+/// A tick stage, timed (T-856): the slowest is remembered under its name,
+/// so a slow tick's journal line can name the probe that took the second.
+/// `on_tick`'s stages and `on_pane_sampled`'s absorbs ride it alike.
+macro_rules! stage {
+    ($self:ident, $name:literal, $e:expr) => {{
+        let t = Instant::now();
+        let r = $e;
+        $self.note_stage($name, t.elapsed());
+        r
+    }};
 }
 
 impl Daemon {
@@ -3058,21 +3065,12 @@ impl Daemon {
         self.ticks += 1;
         self.team_tick();
         self.control_tick();
-        // Every stage is timed and the slowest remembered, so a slow tick's
-        // journal line can name the probe that took the second.
-        macro_rules! stage {
-            ($name:literal, $e:expr) => {{
-                let t = Instant::now();
-                let r = $e;
-                self.note_stage($name, t.elapsed());
-                r
-            }};
-        }
+        // Every stage is timed and the slowest remembered (`stage!`).
         if self.ticks.is_multiple_of(4) {
-            stage!("expire_grace", self.expire_grace());
-            stage!("sweep_reaping", self.sweep_reaping());
-            stage!("sweep_codex_orphans", self.sweep_codex_orphans());
-            stage!("process_teardowns", self.process_teardowns());
+            stage!(self, "expire_grace", self.expire_grace());
+            stage!(self, "sweep_reaping", self.sweep_reaping());
+            stage!(self, "sweep_codex_orphans", self.sweep_codex_orphans());
+            stage!(self, "process_teardowns", self.process_teardowns());
         }
         self.poll_codex();
         let now = now_ms();
@@ -3084,64 +3082,64 @@ impl Daemon {
         self.want_claude_startup();
         let mut changed = self.drive_codex_inputs(now);
         for (id, change) in fired {
-            changed |= stage!("apply_change", self.apply_change(id, &change, None, None));
+            changed |= stage!(self, "apply_change", self.apply_change(id, &change, None, None));
         }
         // The crown's plan accepts (T-582) answer on the wheel, as the
         // answers' deliveries do: the receipt follows its hook edge closely.
-        changed |= stage!("settle_crown_plans", self.settle_crown_plans());
+        changed |= stage!(self, "settle_crown_plans", self.settle_crown_plans());
         if self.ticks.is_multiple_of(4) {
             self.want_recovery(RecoveryChannel::Startup, now);
             self.want_recovery(RecoveryChannel::Activity, now);
-            changed |= stage!("wake_snoozed", self.wake_snoozed(now / 1000));
-            changed |= stage!("finish_server_restart", self.finish_server_restart());
+            changed |= stage!(self, "wake_snoozed", self.wake_snoozed(now / 1000));
+            changed |= stage!(self, "finish_server_restart", self.finish_server_restart());
             // A blown move fuse that went a window with nothing trying lapses
             // (T-468); its advisory goes with it.
             changed |= self.moves.expire(Instant::now());
             // The queued asks' safety net: the edge above is the road, this
             // is the clock (a paste that never got its ack, a target that
             // went without a state change of its own).
-            changed |= stage!("sweep_queue", self.sweep_queue());
-            changed |= stage!("relaunch_silent_mods", self.relaunch_silent_mods(now));
-            changed |= stage!("rescue_silent_mods", self.rescue_silent_mods(now));
+            changed |= stage!(self, "sweep_queue", self.sweep_queue());
+            changed |= stage!(self, "relaunch_silent_mods", self.relaunch_silent_mods(now));
+            changed |= stage!(self, "rescue_silent_mods", self.rescue_silent_mods(now));
             self.want_owed_screens(now);
-            changed |= stage!("settle_owed", self.settle_owed(now));
-            changed |= stage!("settle_plan_accepts", self.settle_plan_accepts(now));
-            changed |= stage!("service_plan_accepts", self.service_plan_accepts(now));
-            changed |= stage!("service_crown_plans", self.service_crown_plans());
+            changed |= stage!(self, "settle_owed", self.settle_owed(now));
+            changed |= stage!(self, "settle_plan_accepts", self.settle_plan_accepts(now));
+            changed |= stage!(self, "service_plan_accepts", self.service_plan_accepts(now));
+            changed |= stage!(self, "service_crown_plans", self.service_crown_plans());
             self.refresh_machine_tiers();
-            changed |= stage!("drain_tier_switches", self.drain_tier_switches());
-            changed |= stage!("drain_queue", self.drain_queue());
-            changed |= stage!("hear_lingering", self.hear_lingering());
-            changed |= stage!("hear_restored", self.hear_restored());
-            changed |= stage!("hear_merges", self.hear_merges());
-            changed |= stage!("hear_deferred", self.hear_deferred());
-            changed |= stage!("hear_stepped", self.hear_stepped());
-            changed |= stage!("hear_forged", self.hear_forged(HashMap::new()));
-            changed |= stage!("settle_looks", self.settle_looks());
-            changed |= stage!("drain_crown_wakes", self.drain_crown_wakes());
-            stage!("persist_crown", self.persist_crown());
-            changed |= stage!("drive_usage", self.drive_usage(now));
+            changed |= stage!(self, "drain_tier_switches", self.drain_tier_switches());
+            changed |= stage!(self, "drain_queue", self.drain_queue());
+            changed |= stage!(self, "hear_lingering", self.hear_lingering());
+            changed |= stage!(self, "hear_restored", self.hear_restored());
+            changed |= stage!(self, "hear_merges", self.hear_merges());
+            changed |= stage!(self, "hear_deferred", self.hear_deferred());
+            changed |= stage!(self, "hear_stepped", self.hear_stepped());
+            changed |= stage!(self, "hear_forged", self.hear_forged(HashMap::new()));
+            changed |= stage!(self, "settle_looks", self.settle_looks());
+            changed |= stage!(self, "drain_crown_wakes", self.drain_crown_wakes());
+            stage!(self, "persist_crown", self.persist_crown());
+            changed |= stage!(self, "drive_usage", self.drive_usage(now));
             if !self.cost_scanning && (self.cost_due || self.ticks.is_multiple_of(COST_TICKS)) {
-                stage!("queue_cost_scan", self.queue_cost_scan());
+                stage!(self, "queue_cost_scan", self.queue_cost_scan());
             }
             // One candidate scan serves the count and the disk figure.
             if self.archive_due || self.ticks.is_multiple_of(ARCHIVE_TICKS) {
                 self.archive_due = false;
-                let candidates = stage!("archive_figures", self.archive_candidates());
+                let candidates = stage!(self, "archive_figures", self.archive_candidates());
                 if candidates.len() != self.archive_cache {
                     self.archive_cache = candidates.len();
                     changed = true;
                 }
-                changed |= stage!("price_archive", self.price_archive(&candidates));
+                changed |= stage!(self, "price_archive", self.price_archive(&candidates));
             }
         }
         if self.ticks.is_multiple_of(TAIL_POLL_TICKS) {
-            changed |= stage!("poll_tails", self.poll_tails());
-            changed |= stage!("probe_status_files", self.probe_status_files());
+            changed |= stage!(self, "poll_tails", self.poll_tails());
+            changed |= stage!(self, "probe_status_files", self.probe_status_files());
             self.want_panes();
         }
         if self.ticks.is_multiple_of(inactivity_park_ticks()) {
-            changed |= stage!("park_inactive", self.park_inactive(now));
+            changed |= stage!(self, "park_inactive", self.park_inactive(now));
         }
         if self.ticks.is_multiple_of(RSS_TICKS) {
             changed |= self.want_rss();
@@ -3150,14 +3148,14 @@ impl Daemon {
         // e2e), sampled on a worker; the train's pass runs when they land
         // (`on_worktree_flags`), on fresh flags.
         if self.ticks.is_multiple_of(wt_refresh_ticks()) && !self.worktrees.is_empty() {
-            stage!("queue_worktree_flags", self.queue_worktree_flags());
+            stage!(self, "queue_worktree_flags", self.queue_worktree_flags());
         }
         // The CLAUDE.md sample, on the same slow bucket but off the worktree
         // guard: a board with no worktrees still has a CLAUDE.md. Two `stat`s
         // unless something moved, so it costs the same as asking whether to
         // ask.
         if self.ticks.is_multiple_of(wt_refresh_ticks()) {
-            changed |= stage!("claude_md", self.claude_md.refresh(&self.paths.repo_root));
+            changed |= stage!(self, "claude_md", self.claude_md.refresh(&self.paths.repo_root));
         }
         if self.ticks % wt_refresh_ticks() == 1 {
             // The cadence is a pref the person may change while the board
@@ -3178,19 +3176,19 @@ impl Daemon {
             // otherwise fork `git status` per nested repo every bucket, forever,
             // for a header nobody has open. `Subscribe` fires the catch-up.
             if self.git_has_reader() {
-                stage!("queue_git_sample", self.queue_git_sample());
+                stage!(self, "queue_git_sample", self.queue_git_sample());
             }
             // The forge pass (T-739) rides the same bucket, on its own
             // minute: one list call per repository, never per ticket.
-            stage!("queue_forge_sample", self.queue_forge_sample());
+            stage!(self, "queue_forge_sample", self.queue_forge_sample());
         }
         // A turn's end's read held by the floor goes when it passes (T-761).
         if !self.forge.owed.is_empty() {
-            stage!("queue_forge_burst", self.queue_forge_burst());
+            stage!(self, "queue_forge_burst", self.queue_forge_burst());
         }
         // A pipeline in flight is read every 15 s, not on the minute (T-781).
         if self.ticks.is_multiple_of(4) {
-            stage!("queue_forge_busy", self.queue_forge_busy());
+            stage!(self, "queue_forge_busy", self.queue_forge_busy());
         }
         if self.ticks.is_multiple_of(server_guard_ticks()) {
             self.want_guard();
@@ -3199,13 +3197,13 @@ impl Daemon {
         // Every tmux and `ps` read the stages above asked for goes to one
         // worker (T-857); its answers land as `Msg::PaneSampled`, and the
         // stages that read them run there, under their own names.
-        stage!("queue_pane_sample", self.queue_pane_sample());
+        stage!(self, "queue_pane_sample", self.queue_pane_sample());
         if changed {
-            stage!("persist_sessions", self.persist_sessions());
-            stage!("broadcast", self.broadcast());
+            stage!(self, "persist_sessions", self.persist_sessions());
+            stage!(self, "broadcast", self.broadcast());
         }
         // ≤1 write() per wheel bucket, no fsync (14 §1.7).
-        let _ = stage!("feed_flush", self.feed.flush());
+        let _ = stage!(self, "feed_flush", self.feed.flush());
     }
 
     /// The one shutdown road, for `Command::Shutdown` and SIGTERM alike.
@@ -3816,24 +3814,29 @@ impl Daemon {
             ) {
                 continue;
             }
-            let Some(rec) = self
+            // Found by index and borrowed mutably only where something is
+            // written: `Tracked` marks the records on any `&mut` (T-839),
+            // and a report whose sequence has not moved — every tick of an
+            // idle seat — changes nothing.
+            let Some(at) = self
                 .board
                 .sessions
-                .iter_mut()
-                .find(|s| s.id == id && s.kind == SessionKind::Codex && s.holds_process())
+                .iter()
+                .position(|s| s.id == id && s.kind == SessionKind::Codex && s.holds_process())
             else {
                 continue;
             };
-            let valid = snapshot.filter(|s| {
+            let rec = &self.board.sessions[at];
+            let mut valid = snapshot.filter(|s| {
                 s.session == id
                     && Some(s.generation) == rec.codex_generation
                     && (s.stopped
                         || (now.saturating_sub(s.heartbeat_ms) <= 5_000
                             && s.heartbeat_ms <= now + 1_000))
             });
-            if let Some(snapshot) = &valid {
+            if let Some(snapshot) = &mut valid {
                 let plan = snapshot.plan_key.clone().zip(snapshot.plan.clone());
-                asks.push((id, snapshot.request.clone(), plan));
+                asks.push((id, snapshot.request.take(), plan));
             }
             let Some(mut snapshot) = valid else {
                 self.codex_ready.remove(&id);
@@ -3845,10 +3848,13 @@ impl Daemon {
                 {
                     continue;
                 }
-                dirty |= !rec.observation_hold;
-                rec.observation_hold = true;
-                rec.codex_pending_seq = None;
-                if rec.codex_stopping {
+                if !rec.observation_hold || rec.codex_pending_seq.is_some() {
+                    let rec = &mut self.board.sessions[at];
+                    dirty |= !rec.observation_hold;
+                    rec.observation_hold = true;
+                    rec.codex_pending_seq = None;
+                }
+                if self.board.sessions[at].codex_stopping {
                     continue;
                 }
                 if let Some(machine) = self.machines.get_mut(&id) {
@@ -3862,6 +3868,7 @@ impl Daemon {
             if snapshot.sequence < rec.codex_observed_seq {
                 continue;
             }
+            let rec = &mut self.board.sessions[at];
             // T-845: a steer the running turn took is acked by its count,
             // which moves without a new sequence.
             self.codex_steers.insert(id, snapshot.steers);
@@ -4109,15 +4116,8 @@ impl Daemon {
         if !self.ticks.is_multiple_of(4) {
             return;
         }
-        let wanted: Vec<String> = self
-            .board
-            .sessions
-            .iter()
-            .filter(|s| claude_startup_candidate(s))
-            .map(|s| s.sid16())
-            .collect();
-        for sid in wanted {
-            self.pane_due.screen(&sid);
+        for s in self.board.sessions.iter().filter(|s| claude_startup_candidate(s)) {
+            self.pane_due.screen(&s.sid16());
         }
     }
 
@@ -4249,17 +4249,22 @@ impl Daemon {
                 if self.plan_accept.contains_key(&id) {
                     continue;
                 }
-                let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else {
+                let Some(at) = self.board.sessions.iter().position(|s| s.id == id) else {
                     continue;
                 };
+                // `&mut` only on a change: a `Tracked` mark is a save (T-839).
+                let seen = self.board.sessions[at].codex_plan_dialog_seen;
                 if crate::agents::codex::plan_dialog(screen) {
-                    dirty |= !rec.codex_plan_dialog_seen;
-                    rec.codex_plan_dialog_seen = true;
+                    if !seen {
+                        self.board.sessions[at].codex_plan_dialog_seen = true;
+                        dirty = true;
+                    }
                     continue;
                 }
-                if !rec.codex_plan_dialog_seen || !crate::agents::codex::input_ready(screen) {
+                if !seen || !crate::agents::codex::input_ready(screen) {
                     continue;
                 }
+                let rec = &mut self.board.sessions[at];
                 rec.codex_plan_dismissed_turn = rec.codex_turn_id.clone();
                 rec.codex_plan_dialog_seen = false;
                 rec.observation_hold = rec.pending_submit;
@@ -4793,16 +4798,16 @@ impl Daemon {
         self.owed.values().any(|o| o.ticket == ticket && o.ack.word == Ack::QUEUED.word)
     }
 
-    /// Keep what a launch road could not deliver on its Claude seat (T-570),
-    /// for the card, the crown and the seat's Shift+Enter (`resend_unsent`).
-    /// A seat with no pane has nothing to resend into and says so in its
-    /// own state.
+    /// Keep what a launch road could not deliver on its seat (T-570; a
+    /// Codex seat's since T-849), for the card, the crown and the seat's
+    /// Shift+Enter (`resend_unsent`). A seat with no pane has nothing to
+    /// resend into and says so in its own state.
     fn mark_unsent(&mut self, id: uuid::Uuid, words: Option<Parked>) -> bool {
         let Some(Parked { text, brief, .. }) = words else { return false };
         let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else {
             return false;
         };
-        if rec.kind != SessionKind::Claude || !rec.state.has_pane() {
+        if !rec.state.has_pane() {
             return false;
         }
         rec.unsent = Some(mesimon_core::board::Unsent { text, brief });
@@ -4829,14 +4834,7 @@ impl Daemon {
             .collect();
         let mut changed = false;
         for (id, words) in owed {
-            changed |= match self.board.sessions.iter_mut().find(|s| s.id == id) {
-                Some(rec) if rec.kind == SessionKind::Codex && rec.state.has_pane() => {
-                    let Parked { text, brief, .. } = words;
-                    rec.unsent = Some(mesimon_core::board::Unsent { text, brief });
-                    true
-                }
-                _ => self.mark_unsent(id, Some(words)),
-            };
+            changed |= self.mark_unsent(id, Some(words));
         }
         changed
     }
@@ -5389,7 +5387,7 @@ impl Daemon {
     /// replaced did. Not a mod session still waiting on its bridge: its
     /// words go down the bridge, and the paste road asks when it takes them.
     fn want_owed_screens(&mut self, now: u64) {
-        let wanted: Vec<String> = self
+        let due = self
             .owed
             .iter()
             .filter(|(_, o)| {
@@ -5397,11 +5395,9 @@ impl Daemon {
                     && (!o.mod_road || o.bridge_by.is_some_and(|by| by <= now + 1_000))
             })
             .filter_map(|(id, _)| self.board.sessions.iter().find(|s| s.id == *id))
-            .filter(|r| r.kind == SessionKind::Claude && r.state.has_pane())
-            .map(|r| r.sid16())
-            .collect();
-        for sid in wanted {
-            self.pane_due.screen(&sid);
+            .filter(|r| r.kind == SessionKind::Claude && r.state.has_pane());
+        for r in due {
+            self.pane_due.screen(&r.sid16());
         }
     }
 
@@ -6401,7 +6397,9 @@ impl Daemon {
                 let sends = held_because.is_none();
                 let replaced =
                     self.queued.iter().any(|q| q.ticket == target && q.by == Some(ticket));
-                if let Err(message) = self.park_ask(target, seat, text, Some(ticket), false, plan) {
+                if let Err(message) =
+                    self.park_ask(target, seat, text, Asker::Agent(ticket), false, plan)
+                {
                     return Response::Err { message };
                 }
                 let mut held_for_person = !sends;
@@ -7907,18 +7905,11 @@ impl Daemon {
         // checkout ticket's `pr create` included, so its ledger, its
         // Summary and, on a move, its transcripts' tails are read as a
         // worktree ticket's are: one that names none is owed nothing.
-        let (_, theirs) = self.named_prs(id);
+        let NamedPrs { theirs, repo, summary, .. } = self.named_prs(id);
         let hosts = self.forge_hosts();
-        let repo = self.ticket_repo(id);
-        // An entry as the ledger or a tail spells it: a URL, or an act's
-        // number, made an address on the ticket's repository. One of the
-        // reviewed roads is owed only while the board takes them.
+        // One of the reviewed roads is owed only while the board takes them.
         let owed = |entry: &str| {
-            let url = match &repo {
-                Some(r) => mesimon_core::forge::acted_url(entry, r),
-                None => mesimon_core::forge::pr_number_of(entry).map(|_| entry.to_string()),
-            };
-            let Some(url) = url else { return false };
+            let Some(url) = entry_url(entry, repo.as_ref()) else { return false };
             if !self.board.reviewed_prs
                 && theirs.iter().any(|u| mesimon_core::forge::same_url(u, &url))
             {
@@ -7926,7 +7917,7 @@ impl Daemon {
             }
             self.forge_reaches(&url, &hosts) && !(live && self.forge.held_url(id, &url))
         };
-        if self.summary_prs_of(id).iter().any(|u| owed(u)) {
+        if summary.iter().any(|u| owed(u)) {
             return Some(true);
         }
         match read {
@@ -7938,21 +7929,13 @@ impl Daemon {
     /// Every PR a ticket named (T-859), as addresses, and the ones among
     /// them that are not a `pr create`'s: the acts' (`cost::acted_entries`,
     /// each made an address on the ticket's one repository where it names
-    /// none) and the notes' `Summary`'s. The first list is what a forge
-    /// read matches and reads by itself; the second is what reads reviewed
-    /// when found that way, and what the board's switch may keep out.
-    fn named_prs(&self, id: ulid::Ulid) -> (Vec<String>, Vec<String>) {
-        use mesimon_core::forge::{acted_url, pr_number_of, same_url};
+    /// none) and the notes' `Summary`'s.
+    fn named_prs(&self, id: ulid::Ulid) -> NamedPrs {
+        use mesimon_core::forge::same_url;
         let repo = self.ticket_repo(id);
-        let acted: Vec<String> = self
-            .costs
-            .acted_entries(id)
-            .iter()
-            .filter_map(|e| match &repo {
-                Some(r) => acted_url(e, r),
-                None => pr_number_of(e).map(|_| e.clone()),
-            })
-            .collect();
+        let summary = self.summary_prs_of(id);
+        let acted = self.costs.acted_entries(id);
+        let acted = acted.iter().filter_map(|e| entry_url(e, repo.as_ref()));
         let mut all: Vec<String> = Vec::new();
         for url in self.costs.opened_urls(id) {
             if !all.iter().any(|a| same_url(a, &url)) {
@@ -7960,14 +7943,14 @@ impl Daemon {
             }
         }
         let mut theirs = Vec::new();
-        for url in acted.into_iter().chain(self.summary_prs_of(id)) {
+        for url in acted.chain(summary.iter().cloned()) {
             if all.iter().any(|a| same_url(a, &url)) {
                 continue;
             }
             all.push(url.clone());
             theirs.push(url);
         }
-        (all, theirs)
+        NamedPrs { all, theirs, repo, summary }
     }
 
     /// The one repository a ticket's bare PR numbers are on (T-859): its
@@ -7989,25 +7972,20 @@ impl Daemon {
 
     /// The pull requests a ticket's notes name under `Summary` (T-859),
     /// read again only once a write moved `notes_key`.
-    fn summary_prs_of(&self, id: ulid::Ulid) -> Vec<String> {
-        let Some(t) = self.board.ticket(id) else { return Vec::new() };
-        let key = notes_key(&t.notes);
-        if let Some((k, urls)) = self.summary_prs.borrow().get(&id) {
-            if *k == key {
-                return urls.clone();
-            }
-        }
-        let mut urls: Vec<String> = Vec::new();
-        for n in &t.notes {
-            let Ok(body) = store::read_note(&self.paths, &t.short_key, n.id) else { continue };
-            for url in mesimon_core::summary::pr_urls(&body) {
-                if !urls.iter().any(|u| mesimon_core::forge::same_url(u, &url)) {
-                    urls.push(url);
+    fn summary_prs_of(&self, id: ulid::Ulid) -> std::sync::Arc<[String]> {
+        let Some(t) = self.board.ticket(id) else { return Vec::new().into() };
+        self.summary_prs.get_or(id, notes_key(&t.notes), || {
+            let mut urls: Vec<String> = Vec::new();
+            for n in &t.notes {
+                let Ok(body) = store::read_note(&self.paths, &t.short_key, n.id) else { continue };
+                for url in mesimon_core::summary::pr_urls(&body) {
+                    if !urls.iter().any(|u| mesimon_core::forge::same_url(u, &url)) {
+                        urls.push(url);
+                    }
                 }
             }
-        }
-        self.summary_prs.borrow_mut().insert(id, (key, urls.clone()));
-        urls
+            urls.into()
+        })
     }
 
     /// The hosts a forge read reaches (T-797): those of the remotes of the
@@ -9072,7 +9050,7 @@ impl Daemon {
             crown_said: self.crown_said_view(),
             links: self.links_view(),
             board_touches: self.recent_board_touches(),
-            machine_tiers: self.machine_tiers.tiers.clone(),
+            machine_tiers: self.machine_tiers.value.clone(),
             usage: self.usage.view(),
             prs: self.forge_items(),
             forge: self.forge_status(),
@@ -11399,7 +11377,7 @@ impl Daemon {
             .filter(|s| matches!(s.state, SessionState::Idle { .. }))
             .and_then(|s| s.state_changed_at)
             .unwrap_or(0);
-        self.forge.fresh(ticket, turn_end, &self.named_prs(ticket).0)
+        self.forge.fresh(ticket, turn_end, || self.named_prs(ticket).all)
     }
 
     /// The ticket's seat as the train reads it, words owed included: the
@@ -11639,7 +11617,8 @@ impl Daemon {
         let key = t.short_key.clone();
         let now = now_iso();
         let author = by.note_author();
-        self.open_box_counts.get_mut().remove(&ticket);
+        self.open_box_counts.forget(ticket);
+        self.summary_prs.forget(ticket);
         match (note, blank) {
             (None, true) => Response::Err { message: "nothing to save".into() },
             (Some(id), true) => {
@@ -11908,7 +11887,7 @@ impl Daemon {
             // the first goes now and the rest follow as each implementation
             // ends. The column's toggle does not reach it.
             if accept {
-                match self.park_ask(ticket, seat, text, None, true, false) {
+                match self.park_ask(ticket, seat, text, Asker::Person, true, false) {
                     Ok(()) => accepting += 1,
                     Err(message) => {
                         eprintln!("mesimon: column accept could not park: {message}");
@@ -11923,7 +11902,7 @@ impl Daemon {
             // since T-294, which never offers the toggle on that seat.
             let now_anyway = starts && !self.shared_checkout(ticket);
             if queued && !now_anyway {
-                match self.park_ask(ticket, seat, text, None, false, false) {
+                match self.park_ask(ticket, seat, text, Asker::Person, false, false) {
                     Ok(()) => parked.push((ticket, word)),
                     Err(message) => {
                         eprintln!("mesimon: column ask could not park: {message}");
@@ -12034,7 +12013,7 @@ impl Daemon {
             // switch is owed as well, which the relaunch below carries.
             QueuedSeat::Pane(id)
                 if plan
-                    && self.is_codex(id)
+                    && self.session_kind(id) == SessionKind::Codex
                     && !(self.tier_owed(id) && self.session_at_rest(id)) =>
             {
                 match self.codex_park(id, ticket, &text, ack, true) {
@@ -12219,7 +12198,7 @@ impl Daemon {
         plan: bool,
     ) -> Response {
         let word = seat.word();
-        if let Err(message) = self.park_ask(ticket, seat, text, None, accept_plan, plan) {
+        if let Err(message) = self.park_ask(ticket, seat, text, Asker::Person, accept_plan, plan) {
             return Response::Err { message };
         }
         self.drain_queue();
@@ -12254,24 +12233,27 @@ impl Daemon {
     /// with one broadcast, instead of N of each. `enqueue_ask` is this plus
     /// the drain and the receipt.
     ///
-    /// `by` is the crown ticket when the words are its agent's (T-413): the
-    /// entry is then HELD for a person's send — until the crown's handler
-    /// sets `sends` (T-550) — and it may replace only the crown's own
-    /// earlier ask — a person's queued words are never overwritten by an
-    /// agent's. A person's ask replaces either.
+    /// `Asker::Agent` names the crown ticket when the words are its agent's
+    /// (T-413): the entry is then HELD for a person's send — until the
+    /// crown's handler sets `sends` (T-550) — and it may replace only the
+    /// crown's own earlier ask — a person's queued words are never
+    /// overwritten by an agent's. A person's ask replaces either. A linked
+    /// board's (T-733) carries where it came from, and its feed line is
+    /// `park_peer_ask`'s, not a person's `queued_ask`.
     fn park_ask(
         &mut self,
         ticket: ulid::Ulid,
         seat: QueuedSeat,
         text: String,
-        by: Option<ulid::Ulid>,
+        asker: Asker,
         accept_plan: bool,
         plan: bool,
     ) -> Result<(), String> {
-        // A linked board's words (T-733), when `park_peer_ask` is the caller:
-        // the entry carries where they came from, and the feed line is that
-        // handler's, not a person's `queued_ask`.
-        let peer = self.peer_parking.take();
+        let (by, peer) = match asker {
+            Asker::Person => (None, None),
+            Asker::Agent(crown) => (Some(crown), None),
+            Asker::Board(from) => (None, Some(from)),
+        };
         let t = self.open_ticket(ticket).map_err(str::to_string)?;
         if by.is_some() && self.queued.iter().any(|q| q.ticket == ticket && q.by.is_none()) {
             return Err(format!(
@@ -12559,10 +12541,6 @@ impl Daemon {
         }
     }
 
-    fn is_codex(&self, id: uuid::Uuid) -> bool {
-        self.board.sessions.iter().any(|s| s.id == id && s.kind == SessionKind::Codex)
-    }
-
     /// Is this pane's session between turns — idle, not parked in the
     /// background, and not working by any of `quiet`'s signs? What a plan
     /// relaunch waits for; a tier switch reads the wider `session_at_rest`,
@@ -12655,7 +12633,8 @@ impl Daemon {
             // `/plan` and then the paste (T-847), a queued ask's.
             let sent = match seat {
                 seat @ QueuedSeat::Pane(pane)
-                    if (!plan || self.is_codex(pane)) && !self.tier_owed(pane) =>
+                    if (!plan || self.session_kind(pane) == SessionKind::Codex)
+                        && !self.tier_owed(pane) =>
                 {
                     match self.deliver_queued_ask(ticket, seat, text, Ack::QUEUED, plan, false) {
                         Response::Ok => true,
@@ -13255,13 +13234,7 @@ impl Daemon {
         if !self.board.column(&t.column).is_some_and(|c| c.settings.requires_ticked) {
             return false;
         }
-        let key = notes_key(&t.notes);
-        let held = self.open_box_counts.borrow().get(&t.id).copied();
-        let open = match held {
-            Some((k, open)) if k == key => open,
-            _ => self.open_boxes(t.id),
-        };
-        open > 0
+        self.open_box_counts.get_or(t.id, notes_key(&t.notes), || self.count_open_boxes(t)) > 0
     }
 
     /// The boxes still unticked in the ticket's `Summary` sections (T-713),
@@ -13273,16 +13246,19 @@ impl Daemon {
     /// The gates read the disk every time; the count is kept for the offer.
     fn open_boxes(&self, id: ulid::Ulid) -> usize {
         let Some(t) = self.board.ticket(id) else { return 0 };
-        let open = t
-            .notes
+        let open = self.count_open_boxes(t);
+        self.open_box_counts.put(id, notes_key(&t.notes), open);
+        open
+    }
+
+    fn count_open_boxes(&self, t: &Ticket) -> usize {
+        t.notes
             .iter()
             .filter_map(|n| store::read_note(&self.paths, &t.short_key, n.id).ok())
             .map(|body| {
                 mesimon_core::summary::Count::of(&mesimon_core::summary::extract(&body)).open()
             })
-            .sum();
-        self.open_box_counts.borrow_mut().insert(id, (notes_key(&t.notes), open));
-        open
+            .sum()
     }
 
     /// One ticket off the board, whichever gesture asked — `a a` or the
@@ -13732,11 +13708,25 @@ impl Daemon {
     /// `archive_ticket` archives and restores. Judged at each call, so an
     /// off holds from the crown's next one.
     fn set_crown_archives(&mut self, on: bool) -> Response {
+        self.set_board_switch(|b| &mut b.crown_archives, on, |_| {})
+    }
+
+    /// One of the board's switches set by a person (T-590, T-712, T-859):
+    /// refused while the columns file is barred, persisted and announced
+    /// only on a change, with `then` run on that change before the save.
+    fn set_board_switch(
+        &mut self,
+        slot: impl FnOnce(&mut Board) -> &mut bool,
+        on: bool,
+        then: impl FnOnce(&mut Self),
+    ) -> Response {
         if self.columns_barred {
             return Response::Err { message: self.barred_message("columns") };
         }
-        if self.board.crown_archives != on {
-            self.board.crown_archives = on;
+        let slot = slot(&mut self.board);
+        if *slot != on {
+            *slot = on;
+            then(self);
             self.persist_and_notify();
         }
         Response::Ok
@@ -13746,20 +13736,18 @@ impl Daemon {
     /// watches. Judged at each call, and an off ends every watch standing:
     /// the row is the person's stop, not a gate on the next call alone.
     fn set_crown_watches(&mut self, on: bool) -> Response {
-        if self.columns_barred {
-            return Response::Err { message: self.barred_message("columns") };
-        }
-        if self.board.crown_watches != on {
-            self.board.crown_watches = on;
-            if !on && !self.crown_watched.is_empty() {
-                for id in std::mem::take(&mut self.crown_watched) {
-                    self.hold_unwatched_sends(id);
+        self.set_board_switch(
+            |b| &mut b.crown_watches,
+            on,
+            |d| {
+                if !on && !d.crown_watched.is_empty() {
+                    for id in std::mem::take(&mut d.crown_watched) {
+                        d.hold_unwatched_sends(id);
+                    }
+                    d.feed.board("automation", "crown_watch_dropped", d.board.crown);
                 }
-                self.feed.board("automation", "crown_watch_dropped", self.board.crown);
-            }
-            self.persist_and_notify();
-        }
-        Response::Ok
+            },
+        )
     }
 
     /// `Command::SetReviewedPrs` (T-859): whether a PR someone else opened
@@ -13767,14 +13755,7 @@ impl Daemon {
     /// Judged on the next read: an off drops every reviewed PR from the
     /// sets then, since the pass binds nothing it may not.
     fn set_reviewed_prs(&mut self, on: bool) -> Response {
-        if self.columns_barred {
-            return Response::Err { message: self.barred_message("columns") };
-        }
-        if self.board.reviewed_prs != on {
-            self.board.reviewed_prs = on;
-            self.persist_and_notify();
-        }
-        Response::Ok
+        self.set_board_switch(|b| &mut b.reviewed_prs, on, |_| {})
     }
 
     /// Turn the agent tool surface on or off for this board (T-217).
@@ -15157,7 +15138,8 @@ impl Daemon {
         // on the checkout pushes to, and a host a read reaches.
         let root = self.paths.repo_root.clone();
         self.forge.remote(&root, &base);
-        let mut tickets: Vec<(ulid::Ulid, String, Vec<worktree::Leg>)> = Vec::new();
+        // Each ticket with what it names (T-859), read once for the pass.
+        let mut tickets: Vec<(ulid::Ulid, String, Vec<worktree::Leg>, NamedPrs)> = Vec::new();
         for (t, b) in &self.worktrees {
             if b.branch.is_empty()
                 || self.tearing_down.contains(t)
@@ -15165,24 +15147,27 @@ impl Daemon {
             {
                 continue;
             }
-            tickets.push((*t, b.branch.clone(), b.legs(&self.paths.repo_root, &base)));
+            let legs = b.legs(&self.paths.repo_root, &base);
+            tickets.push((*t, b.branch.clone(), legs, self.named_prs(*t)));
         }
         // And every other ticket that named a PR (T-859): one on the
         // checkout, or a binding with no branch yet, whose sessions opened
         // or acted on a PR or whose Summary names one. Asked with no legs:
         // only its addresses bind.
         let asked: std::collections::HashSet<ulid::Ulid> =
-            tickets.iter().map(|(t, _, _)| *t).collect();
+            tickets.iter().map(|(t, ..)| *t).collect();
         let rest: Vec<ulid::Ulid> = self.board.tickets.iter().map(|t| t.id).collect();
         for t in rest {
             if asked.contains(&t)
                 || self.tearing_down.contains(&t)
                 || only.is_some_and(|o| !o.contains(&t))
-                || self.named_prs(t).0.is_empty()
             {
                 continue;
             }
-            tickets.push((t, String::new(), Vec::new()));
+            let named = self.named_prs(t);
+            if !named.all.is_empty() {
+                tickets.push((t, String::new(), Vec::new(), named));
+            }
         }
         if tickets.is_empty() {
             // Every binding still provisioning (no branch yet): asked again
@@ -15204,10 +15189,10 @@ impl Daemon {
         // judged against the board's hosts whatever order the tickets come
         // in (T-797): the pipeline gate waits on exactly these.
         let leg_queries: Vec<Vec<crate::forge::LegQuery>> =
-            tickets.iter().map(|(_, _, legs)| self.forge_legs(legs)).collect();
+            tickets.iter().map(|(_, _, legs, _)| self.forge_legs(legs)).collect();
         let (hosts, _) = self.forge_hosts();
         let mut queries = Vec::new();
-        for ((t, branch, legs), leg_queries) in tickets.iter().zip(leg_queries) {
+        for ((t, branch, legs, named), leg_queries) in tickets.into_iter().zip(leg_queries) {
             // The repositories this ticket's set comes from: a pass that
             // did not hear from every one did not read it (T-795).
             let mut mine: Vec<mesimon_core::forge::Remote> = Vec::new();
@@ -15222,7 +15207,7 @@ impl Daemon {
             // or the checkout's already reaches (the account's own forge),
             // and never a host of its own: the transcript and the note are
             // untrusted text, and no CLI is pointed at a host they name.
-            let (opened, theirs) = self.named_prs(*t);
+            let NamedPrs { all: opened, theirs, .. } = named;
             for url in &opened {
                 if let Some(remote) = mesimon_core::forge::repo_of_url(url) {
                     if hosts.contains(&remote.host) {
@@ -15232,13 +15217,13 @@ impl Daemon {
                 }
             }
             queries.push(crate::forge::TicketQuery {
-                ticket: *t,
-                branch: branch.clone(),
+                ticket: t,
+                branch,
                 legs: leg_queries,
                 opened,
                 theirs,
                 repos: mine,
-                held: self.forge.sets.get(t).cloned().unwrap_or_default(),
+                held: self.forge.sets.get(&t).cloned().unwrap_or_default(),
             });
         }
         // Which CLI reads each host: probed on the worker where unknown or
@@ -15359,14 +15344,6 @@ impl Daemon {
         self.absorb_forge(sample);
     }
 
-    /// The addresses a read answered nothing for (T-859) replace each
-    /// ticket's, on the minute's pass and a turn's end's read alike.
-    fn take_unfound(&mut self, sample: &mut crate::forge::Sample) {
-        for (t, urls) in std::mem::take(&mut sample.unfound) {
-            self.forge.unfound.insert(t, urls);
-        }
-    }
-
     /// A read's repositories' errors replace theirs; one the read left out
     /// (backing off, T-800, or not on a turn's end's read) keeps its own.
     fn forge_errors(&mut self, sample: &crate::forge::Sample) {
@@ -15399,7 +15376,9 @@ impl Daemon {
 
     fn absorb_forge(&mut self, mut sample: crate::forge::Sample) {
         self.forge.last_ms = self.forge.last_ms.max(sample.at_ms);
-        self.take_unfound(&mut sample);
+        // The addresses a read answered nothing for (T-859) replace each
+        // ticket's, on the minute's pass and a turn's end's read alike.
+        self.forge.unfound.extend(std::mem::take(&mut sample.unfound));
         for (host, probe) in sample.probes {
             self.forge.take_probe(host, probe);
         }
@@ -15833,36 +15812,29 @@ impl Daemon {
                 s.took.as_millis()
             ));
         }
-        macro_rules! stage {
-            ($name:literal, $e:expr) => {{
-                let t = Instant::now();
-                let r = $e;
-                self.note_stage($name, t.elapsed());
-                r
-            }};
-        }
         let at = s.at;
         let mut changed = false;
         let mut repaint = false;
-        changed |= stage!("probe_codex_startup", self.probe_codex_startup(&s.screens, at));
-        changed |= stage!("probe_claude_startup", self.probe_claude_startup(&s.screens, at));
+        changed |= stage!(self, "probe_codex_startup", self.probe_codex_startup(&s.screens, at));
+        changed |= stage!(self, "probe_claude_startup", self.probe_claude_startup(&s.screens, at));
         if let Some(facts) = &s.facts {
-            let panes = stage!("refresh_panes", self.absorb_panes(facts, s.rows.as_deref(), at));
+            let panes =
+                stage!(self, "refresh_panes", self.absorb_panes(facts, s.rows.as_deref(), at));
             changed |= panes.changed;
             repaint |= panes.repaint;
             if let Some(rss) = &s.rss {
-                changed |= stage!("refresh_rss", self.absorb_rss(facts, rss));
+                changed |= stage!(self, "refresh_rss", self.absorb_rss(facts, rss));
             }
         }
-        changed |= stage!("probe_spawning", self.absorb_startup(&s.startup, at));
+        changed |= stage!(self, "probe_spawning", self.absorb_startup(&s.startup, at));
         if let Some(activity) = &s.activity {
-            changed |= stage!("probe_activity", self.absorb_activity(activity, at));
+            changed |= stage!(self, "probe_activity", self.absorb_activity(activity, at));
         }
         if let Some(alive) = s.alive {
-            changed |= stage!("guard_server", self.absorb_guard(alive, at));
+            changed |= stage!(self, "guard_server", self.absorb_guard(alive, at));
         }
         if let Some(access) = s.access {
-            changed |= stage!("recheck_server_access", self.absorb_server_access(access));
+            changed |= stage!(self, "recheck_server_access", self.absorb_server_access(access));
         }
         // The newest screen of each pane, for the composer reads; a pane
         // gone takes its screen with it.
@@ -15875,10 +15847,10 @@ impl Daemon {
             }
         }
         if changed {
-            stage!("persist_sessions", self.persist_sessions());
+            stage!(self, "persist_sessions", self.persist_sessions());
         }
         if changed || repaint {
-            stage!("broadcast", self.broadcast());
+            stage!(self, "broadcast", self.broadcast());
         }
     }
 
@@ -17740,6 +17712,72 @@ fn notes_key(notes: &[mesimon_core::board::NoteMeta]) -> u64 {
         (n.id, n.rev, &n.edited_at).hash(&mut h);
     }
     h.finish()
+}
+
+/// A fact derived from a ticket's note bodies, kept under `notes_key` of
+/// its notes when read and read again only once a write moved the key:
+/// the archive offer's open-box count (T-840), the forge's `Summary`
+/// addresses (T-859). `write_note` forgets the ticket's besides.
+struct NoteFacts<T>(std::cell::RefCell<HashMap<ulid::Ulid, (u64, T)>>);
+
+impl<T> Default for NoteFacts<T> {
+    fn default() -> Self {
+        Self(Default::default())
+    }
+}
+
+impl<T: Clone> NoteFacts<T> {
+    /// The fact kept under `key`, or `read` run and kept under it.
+    fn get_or(&self, id: ulid::Ulid, key: u64, read: impl FnOnce() -> T) -> T {
+        if let Some((k, fact)) = self.0.borrow().get(&id) {
+            if *k == key {
+                return fact.clone();
+            }
+        }
+        let fact = read();
+        self.put(id, key, fact.clone());
+        fact
+    }
+
+    fn put(&self, id: ulid::Ulid, key: u64, fact: T) {
+        self.0.borrow_mut().insert(id, (key, fact));
+    }
+
+    fn forget(&mut self, id: ulid::Ulid) {
+        self.0.get_mut().remove(&id);
+    }
+}
+
+/// An entry as the ledger or a tail spells it (T-859) — a URL, or an act's
+/// number — made an address on the ticket's one repository; a bare number
+/// with no such repository names no one.
+fn entry_url(entry: &str, repo: Option<&mesimon_core::forge::Remote>) -> Option<String> {
+    match repo {
+        Some(r) => mesimon_core::forge::acted_url(entry, r),
+        None => mesimon_core::forge::pr_number_of(entry).map(|_| entry.to_string()),
+    }
+}
+
+/// Whose words `park_ask` parks: a person's, the crown's agent's (its
+/// ticket) or a linked board's crown's (T-733).
+enum Asker {
+    Person,
+    Agent(ulid::Ulid),
+    Board(peer::FromBoard),
+}
+
+/// Every PR a ticket named (T-859), as addresses (`named_prs`).
+struct NamedPrs {
+    /// What a forge read matches and reads by itself: the opened, the
+    /// acted on and the `Summary`'s, each once.
+    all: Vec<String>,
+    /// The ones among `all` that are not a `pr create`'s: read as reviewed
+    /// when found that way, and what the board's switch may keep out.
+    theirs: Vec<String>,
+    /// The one repository the ticket's bare numbers are on (`ticket_repo`).
+    repo: Option<mesimon_core::forge::Remote>,
+    /// The `Summary`'s addresses alone (`summary_prs_of`).
+    summary: std::sync::Arc<[String]>,
 }
 
 fn open_boxes_refusal(open: usize, what: &str) -> Option<String> {

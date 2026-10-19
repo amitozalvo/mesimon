@@ -141,11 +141,15 @@ function TrustCard({ ticket, trust, off, send }) {
     <h3 class="attention-head"><${Icon} name="shield" size=${18} cls="attn-ink" /><span>Trust this folder</span></h3>
     ${trust.folder && html`<pre class="attention-code">${trust.folder}</pre>`}
     <p class="attention-note">${harness} asks before it works in a folder for the first time. You started this agent from mesimon; accepting presses Yes in its terminal, as you would there, and it goes on with its brief. To decline, answer in the terminal: No ends the agent.</p>
-    <div class="attention-actions">
-      <button type="button" class="btn btn-attn" disabled=${off}
-        onClick=${() => send({ op: "dialog", request: trust.request, response: { answer: "accept" } })}>Yes, I trust this folder</button>
-    </div>
+    <div class="attention-actions"><${TrustAccept} trust=${trust} off=${off} send=${send} /></div>
   </section>`;
+}
+
+// The one accept of a trust dialog (T-844): the ticket's card and the Now
+// list press the same Yes, with the same frame.
+export function TrustAccept({ trust, off, send }) {
+  return html`<button type="button" class="btn btn-attn" disabled=${off}
+    onClick=${() => send({ op: "dialog", request: trust.request, response: { answer: "accept" } })}>Yes, I trust this folder</button>`;
 }
 
 // Every question of a batch, or one that takes several choices, answered

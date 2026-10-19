@@ -28667,3 +28667,109 @@ daemon down, a lit ticket, a ticket lighting mid-round, a key resetting the cloc
 switch) and T-823's tests rewritten for one game. Keymap: `arcade_keys_are_local…` says `^g`
 on the board is nothing and the steering keys are the person's alone. No e2e and no rig: the
 daemon, the wire and what an agent is told are untouched.
+
+## The sixth simplify pass (T-867, 2026-10-19, "Simplify")
+
+Four reviewers (reuse, simplification, efficiency, altitude) over the 36 commits since T-838
+(`7bbc5b42..`, T-837 to T-870 and T-733), 65 findings, deduped to about 40 applied. Each was
+checked against the live code before it was applied; the goldens and the wire are unchanged
+(every state file and every JSON byte reads as before). Clippy, `cargo ut` and one full
+`nextest` run are green.
+
+**Applied, structure.**
+- **One machine-file road.** `store::load_machine_file`/`save_machine_file` over a
+  `MachineFile` trait (schema, name, what) replace the twin loaders of `tiers.json` and
+  `links.toml`, and `server::tiers::MachineFileCache<T>` replaces `MachineTierCache` and
+  `peer::MachineLinksCache` (the stat-stamp cache was written twice). Every notice's words are
+  unchanged.
+- **One envelope round trip.** `mesimon_daemon::oneshot::one_shot` is the connect, timeouts,
+  write-line, read-line and parse that `peer::call_peer`, the TUI's `boards::hello`,
+  `doctor::daemon_hello` and the shim's `ask` each spelled; each keeps its own timeouts and
+  its failure words.
+- **`park_ask` takes its asker.** `Asker::{Person, Agent(crown), Board(from)}` replaces the
+  `by: Option<Ulid>` argument plus the `peer_parking` field T-733 smuggled `FromBoard` in
+  through (the eighth argument clippy refuses is why the field was there).
+- **`BoardTouch.action` is a `TouchAction` enum** (`snake_case`, `#[serde(other)] Unknown`):
+  the five words were string literals written in `peer.rs` and matched in the TUI.
+- **`NoteFacts<T>`**: the archive offer's open-box count (T-840) and the forge's `Summary`
+  addresses (T-859) were two hand-rolled `RefCell<HashMap<Ulid, (notes_key, T)>>` caches with
+  the same get-or-read; `write_note` forgets both. The addresses are an `Arc<[String]>`, so a
+  hit no longer clones the list.
+- **`NamedPrs`**: `named_prs` returns one struct (`all`, `theirs`, `repo`, `summary`), so
+  `opened_unread` no longer calls `ticket_repo` and `summary_prs_of` again after it, and
+  `forge_query` names each ticket's PRs once per pass instead of twice (three times for the
+  checkout tickets); `entry_url` is the entry-to-address fold that was written twice.
+- **Codex's open requests are one list**: `observation.rs` kept `requests: BTreeMap<id,
+  Reason>` and `asks: Vec<Ask>` in lockstep at five paired sites in `Ledger` and `ChildWork`;
+  `OpenRequest { id, reason, ask }` in insertion order is both (the oldest ask was the first
+  with content already; `attention_reasons` folds by rank, so map order never mattered).
+- **`stage!`** is defined once, taking `self`, instead of twice (`on_tick`, `on_pane_sampled`).
+- **`set_board_switch`** is the one barred-check-compare-persist for the three board switches.
+- **Smaller:** `plan_dialog::menu_row` is the one native-menu row parse (`❯`/`›` marker, `N.`
+  number, label) for the plan, trust and phone dialog readers (four copies, two of them
+  patched for `›` in T-846); `trust_dialog(id)` for the four Trust lookups in `mesophon.rs`;
+  `grant_pictures` for the three picture prologues; `walk_reason` for the dialog walkers'
+  "; cursor moved"; `text::sh_quote` (three copies of the single-quote shell quoting);
+  `mcp::text` (the third `requires a text string` parse); `prefs::both_of` (the "two equal
+  slots read as `both`" rule, twice); `expand_home` (the `~/` arm, twice); `gitlab_mr` returns
+  `Result<_, Missing>` and `read_one` calls it; `peer::fresh` for the touch window;
+  `ask_archive`/`hold_archive` under `poll_archive` and `lay_archive`; `mark_unsent` gates on
+  the pane alone, so T-849's Codex hand-over is a call to it; `session_kind` replaces
+  `is_codex`; `pipeline_of` judges `own(set)` itself, so `entry_refusal` clones nothing;
+  `forge::act_id`/`act_entry` parse the `"<id> <entry>"` act once for core and `cost.rs`.
+- **Dead code gone:** `Board::drop_archived` (test-only reader after T-842), `Tracked`'s
+  `into_inner` and `PartialEq` (its `FromIterator` stays: `for_snapshot` collects through it),
+  `take_unfound` (a four-line wrapper of one `extend`), the no-op `drop(spawned)`, the
+  unreachable `PermissionRoad::Codex` arm in `control_permission_answer`, the redundant
+  `links.refresh()` in `link_board`/`unlink_board` (`handle` refreshed already; the agent road
+  keeps its own, it returns before that line), `pr_create_line` under `#[cfg(test)]`.
+
+**Applied, performance.**
+- **A Codex report that moved nothing marks nothing.** `on_codex_snapshots` took
+  `iter_mut().find` on every seat on every observer report — every tick while a Codex seat is
+  live — and `Tracked`'s `DerefMut` marked the records dirty before the sequence check, so
+  `sessions.json` was serialised and compared again (T-839's 22 ms) to learn nothing moved. It
+  finds by index and takes `&mut` only past the sequence check and in the lost arm only on a
+  change; `probe_codex_startup`'s plan arm the same. The snapshot's request is `take`n, not
+  cloned.
+- `State::fresh` takes `opened` as a closure, asked only in its third clause: the tick priced
+  every owed ticket's named PRs for the clause it rarely reached.
+- `drive_arcade` tests its cheap bools before `needs_you_tickets()` (every frame since T-870);
+  `pinned_columns` is a `Vec<bool>` filled in `reindex_columns`, not a sort plus a ticket scan
+  per frame; the two `want_*` stages iterate instead of collecting a `Vec<String>` to iterate;
+  `named_on` no longer allocates a `String` per pending act per transcript line.
+
+**Checked and kept (the reviewers' own verdicts, or mine).** `save_note_with_attachments` is
+not `with_pictures`: it matches links against the raw note text under the note limit, the
+other against `sanitize_prompt`'s cap, and their refusal words differ. `startup_attention`'s
+`folder_trust` is wider than `trust_dialog::codex` on purpose (heading plus "Trust and
+continue" alone, a wrapped Quit row included). The two dialog walkers share only
+`walk_reason`: the dialog's key block handles seven steps and mutates `pending.walk`, the
+approval's three arms are eight lines, and one body needed an `Option<&mut Walk>` and a
+second refusal path. `mesophon::Agent.trust` beside the dialog's Trust content (older
+browsers) and the TUI's reading of the journal for `daemon slow` are design. `grant_pictures`
+reads an unknown upload before an invalid ticket where both are wrong (one message, both a
+client's bug).
+
+**Found and left open (each a behaviour, wire or design decision):**
+- **A Codex seat's trust dialog is projected and refused.** T-846 routes every dialog through
+  the harness split before the content check, and the Codex arm has no Trust (`codex_takes`,
+  `codex_dialog_shape`), while `probe_codex_startup` still offers a Codex trust dialog to the
+  phone and the board's `w`: the accept answers `shape_unrecognised` and the projection drops.
+  The fix is to dispatch on `DialogContent::Trust` before the harness; `trust_accept_e2e` has
+  no Codex case, so one goes with it.
+- **Two per-tick forks on the writer thread** after T-857: `drive_codex_inputs`
+  (`capture_input_screen` every tick) and `press_steer` on `settle_owed`'s cadence, where the
+  Claude roads ride the pane sampler's `want_*`/`self.screens`. A sample-old screen changes
+  the Codex e2es' timing.
+- `ApprovalDelivery` mirrors `DialogDelivery` with a second walk loop and settle; a Codex
+  approval as a `DialogDelivery` with an answer enum merges two receipts.
+- `TicketQuery.theirs` is a subset of `opened` carried beside it, re-derived per address in
+  `forge::sample`; two disjoint lists, or `(address, reviewed)` pairs.
+- `Response::AgentAskedBoard` mirrors `Response::PeerAsked` (wire names).
+- `lower_hand_*` is remembered at each deliberate park road; a `Park::{Deliberate,
+  Automatic}` on `sleep_one` would lower it in one place.
+- The Codex plan is cloned into `asks` per report whatever the seat's state (the consumer
+  reads the state after the loop, so a pre-check would drop a plan arriving with its stop).
+- The twelfth per-file `create`/`spawn` e2e helper pair (`boardlink_e2e`) and the hand-typed
+  `UserPromptSubmit`+`Stop` turn want `TestClient` helpers in `common`.

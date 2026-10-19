@@ -2477,19 +2477,36 @@ pub struct LinkView {
     pub path: String,
 }
 
+/// What happened between two crowns, the word a `BoardTouch` carries: a
+/// WORD on the wire, so an older client drops one it cannot read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TouchAction {
+    /// This crown asked it.
+    Sent,
+    /// This crown answered its ask.
+    Replied,
+    /// Its crown asked this one.
+    Received,
+    /// Its crown answered this one's ask.
+    GotReply,
+    /// The ask could not go; `words` says why.
+    Refused,
+    /// A newer daemon's word.
+    #[serde(other)]
+    Unknown,
+}
+
 /// Words that went between this board's crown and a linked board's (T-733),
-/// for the header to light: which board, by name and path; what happened,
-/// a WORD — `sent` (this crown asked it), `replied` (this crown answered
-/// its ask), `received` (its crown asked this one), `got_reply` (its crown
-/// answered this one's ask), `refused` (the ask could not go, `words` says
-/// why) — so an older client drops what it cannot read; this board's crown
-/// ticket at the time, the card the bolt leaves from or lands on; and when.
-/// In memory only, pruned after ten seconds; the feed is the record.
+/// for the header to light: which board, by name and path; what happened;
+/// this board's crown ticket at the time, the card the bolt leaves from or
+/// lands on; and when. In memory only, pruned after ten seconds; the feed
+/// is the record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoardTouch {
     pub board: String,
     pub path: String,
-    pub action: String,
+    pub action: TouchAction,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub words: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

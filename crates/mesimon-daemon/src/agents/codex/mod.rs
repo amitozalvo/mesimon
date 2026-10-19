@@ -175,8 +175,7 @@ fn prepare(context: &LaunchContext<'_>, resume: Option<String>) -> Result<Launch
     // Identity and guarded roots are invocation environment, not hook text.
     // Codex 0.153.4 preserves user hooks from both config.toml and hooks.json
     // beside these per-launch entries (bounded runtime probe).
-    let binary = mesimon_bin().display().to_string();
-    let quoted = format!("'{}'", binary.replace('\'', "'\\''"));
+    let quoted = mesimon_core::text::sh_quote(&mesimon_bin().display().to_string());
     let gate = serde_json::to_string(&format!("{quoted} gate --provider codex --from-env"))
         .map_err(|e| e.to_string())?;
     config_flags.extend(["-c".into(), format!("hooks.PreToolUse=[{{matcher=\"^apply_patch$\",hooks=[{{type=\"command\",command={gate},timeout=2}}]}}]")]);

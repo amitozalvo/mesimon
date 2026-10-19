@@ -149,14 +149,29 @@ fn ask_of(
     Some(Ask { id: id.into(), kind })
 }
 
-/// The open asks with `ask` added, newest last, within `MAX_ASKS`.
-fn push_ask(asks: &mut Vec<Ask>, ask: Option<Ask>) {
-    if let Some(ask) = ask {
-        asks.retain(|a| a.id != ask.id);
-        if asks.len() < MAX_ASKS {
-            asks.push(ask);
-        }
-    }
+/// A server request that waits on a person, open until the runtime says
+/// it resolved: why, and the content a card can draw for it (T-846), kept
+/// for the first `MAX_ASKS` open at once. One list, in the order the
+/// requests came, so the oldest ask is the first with content.
+#[derive(Debug)]
+struct OpenRequest {
+    id: String,
+    reason: Reason,
+    ask: Option<Ask>,
+}
+
+/// `id` opened (again): it goes last, with its content where the asks
+/// carried are under `MAX_ASKS`.
+fn open_request(requests: &mut Vec<OpenRequest>, id: String, reason: Reason, ask: Option<Ask>) {
+    requests.retain(|r| r.id != id);
+    let asks = requests.iter().filter(|r| r.ask.is_some()).count();
+    let ask = ask.filter(|_| asks < MAX_ASKS);
+    requests.push(OpenRequest { id, reason, ask });
+}
+
+/// The oldest open request with content: the one a card answers for.
+fn first_ask(requests: &[OpenRequest]) -> Option<Ask> {
+    requests.iter().find_map(|r| r.ask.clone())
 }
 
 fn retire_cancelled_compaction(items: &mut BTreeMap<String, PendingItem>, turn: &Value) {
@@ -176,8 +191,7 @@ fn retire_cancelled_compaction(items: &mut BTreeMap<String, PendingItem>, turn: 
 #[derive(Debug, Default)]
 struct ChildWork {
     known: bool,
-    requests: BTreeMap<String, Reason>,
-    asks: Vec<Ask>,
+    requests: Vec<OpenRequest>,
     work_requests: BTreeSet<String>,
     items: BTreeMap<String, PendingItem>,
     hooks: BTreeSet<String>,
@@ -190,10 +204,10 @@ struct ChildWork {
 /// genuine MCP form also sets waitingOnApproval). Prefer the observed request
 /// kind for display, retaining flags as fallback and independent safety work.
 fn attention_reasons<'a>(
-    requests: &'a BTreeMap<String, Reason>,
+    requests: &'a [OpenRequest],
     flags: &'a [Reason],
 ) -> impl Iterator<Item = &'a Reason> {
-    requests.values().chain(flags.iter().filter(move |_| requests.is_empty()))
+    requests.iter().map(|r| &r.reason).chain(flags.iter().filter(move |_| requests.is_empty()))
 }
 
 impl ChildWork {
@@ -230,8 +244,8 @@ impl ChildWork {
         let params = &frame["params"];
         if let Some(reason) = request_reason(method, params) {
             if let Some(id) = request_id(&frame["id"]) {
-                push_ask(&mut self.asks, ask_of(method, params, &id, &self.items));
-                self.requests.insert(id, reason);
+                let ask = ask_of(method, params, &id, &self.items);
+                open_request(&mut self.requests, id, reason, ask);
             } else {
                 self.uncertain = true;
             }
@@ -254,9 +268,8 @@ impl ChildWork {
             }
             "serverRequest/resolved" => {
                 if let Some(id) = request_id(&params["requestId"]) {
-                    self.requests.remove(&id);
+                    self.requests.retain(|r| r.id != id);
                     self.work_requests.remove(&id);
-                    self.asks.retain(|a| a.id != id);
                 }
             }
             "hook/started" | "hook/completed" => {
@@ -348,10 +361,7 @@ pub struct Ledger {
     saw_compaction: bool,
     saw_task_item: bool,
     retired_turns: BTreeSet<String>,
-    requests: BTreeMap<String, Reason>,
-    /// The content of each request in `requests` that a card can draw
-    /// (T-846), oldest first.
-    asks: Vec<Ask>,
+    requests: Vec<OpenRequest>,
     work_requests: BTreeSet<String>,
     items: BTreeMap<String, PendingItem>,
     hooks: BTreeSet<String>,
@@ -378,8 +388,7 @@ impl Ledger {
             saw_compaction: false,
             saw_task_item: false,
             retired_turns: BTreeSet::new(),
-            requests: BTreeMap::new(),
-            asks: Vec::new(),
+            requests: Vec::new(),
             work_requests: BTreeSet::new(),
             items: BTreeMap::new(),
             hooks: BTreeSet::new(),
@@ -476,11 +485,11 @@ impl Ledger {
     /// The request a card may answer for (T-846): this thread's oldest open
     /// ask, else a known descendant's, whose dialog shows in the same pane.
     fn open_ask(&self) -> Option<Ask> {
-        self.asks.first().cloned().or_else(|| {
+        first_ask(&self.requests).or_else(|| {
             self.child_work
                 .values()
                 .filter(|work| work.known)
-                .find_map(|work| work.asks.first().cloned())
+                .find_map(|work| first_ask(&work.requests))
         })
     }
 
@@ -717,7 +726,6 @@ impl Ledger {
             self.active_turn = None;
             self.runtime_active = false;
             self.requests.clear();
-            self.asks.clear();
             self.work_requests.clear();
             self.items.clear();
             self.hooks.clear();
@@ -805,8 +813,8 @@ impl Ledger {
         }
         if let Some(reason) = request_reason(method, params) {
             if let Some(id) = request_id(&frame["id"]) {
-                push_ask(&mut self.asks, ask_of(method, params, &id, &self.items));
-                self.requests.insert(id, reason);
+                let ask = ask_of(method, params, &id, &self.items);
+                open_request(&mut self.requests, id, reason, ask);
                 if self.terminal_emitted {
                     self.terminal = None;
                     self.terminal_emitted = false;
@@ -857,9 +865,8 @@ impl Ledger {
                 }
                 "serverRequest/resolved" => {
                     if let Some(id) = request_id(&params["requestId"]) {
-                        self.requests.remove(&id);
+                        self.requests.retain(|r| r.id != id);
                         self.work_requests.remove(&id);
-                        self.asks.retain(|a| a.id != id);
                     }
                 }
                 "thread/status/changed" => {

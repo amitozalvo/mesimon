@@ -258,14 +258,15 @@ struct ColumnsFile {
     tiers: Vec<mesimon_core::tier::Tier>,
 }
 
-/// `tiers.toml` with its stamp, the `TicketFile` shape.
-#[derive(Serialize, Deserialize, Default)]
-struct MachineTiersFile {
-    /// First, a scalar, for the `[[tiers]]` reason.
+/// A machine file with its stamp, the `TicketFile` shape: `tiers.toml`
+/// (`MachineTiers`), `links.toml` (`Links`).
+#[derive(Serialize, Deserialize)]
+struct Stamped<T> {
+    /// First, a scalar, for the `[[tiers]]` / `[[pairs]]` reason.
     #[serde(default = "schema_v1")]
     schema_version: u32,
     #[serde(flatten)]
-    tiers: MachineTiers,
+    body: T,
 }
 
 /// `ticket.toml` with its schema stamp. The stamp lives here rather than on
@@ -983,53 +984,82 @@ fn columns_file(paths: &Paths) -> std::path::PathBuf {
     paths.board_dir.join("board/columns.toml")
 }
 
-/// What reading `tiers.toml` found.
+/// `links.toml`'s stamp (T-733): v1 is a `[[pairs]]` list of two paths.
+pub const LINKS_SCHEMA: u32 = 1;
+
+/// One file under the state root that every board's daemon shares —
+/// `tiers.toml` (T-443), `links.toml` (T-733) — under `load_columns`'s
+/// doctrine: its own schema counter, a file from a newer build left
+/// untouched with writes barred, one that does not parse moved aside with
+/// every byte kept.
+pub trait MachineFile:
+    Serialize + serde::de::DeserializeOwned + Default + Clone + PartialEq
+{
+    const SCHEMA: u32;
+    /// The file's name, for a refusal.
+    const FILE: &'static str;
+    /// What the file holds, for the refusal when there is no state root.
+    const WHAT: &'static str;
+}
+
+impl MachineFile for MachineTiers {
+    const SCHEMA: u32 = MACHINE_TIERS_SCHEMA;
+    const FILE: &'static str = "tiers.toml";
+    const WHAT: &'static str = "the machine's tiers";
+}
+
+impl MachineFile for mesimon_core::boardlink::Links {
+    const SCHEMA: u32 = LINKS_SCHEMA;
+    const FILE: &'static str = "links.toml";
+    const WHAT: &'static str = "the machine's board links";
+}
+
+/// What reading a machine file found.
 #[derive(Debug, Default)]
-pub struct MachineTiersLoad {
-    pub tiers: MachineTiers,
+pub struct MachineLoad<T> {
+    pub body: T,
     /// A quarantine or a newer file, for the advisory row.
     pub notice: Option<Notice>,
     /// Writing would destroy bytes we could not read.
     pub barred: bool,
 }
 
-/// Read the machine's tiers. Missing is empty, not an error. A file that
-/// does not parse is moved aside (every byte kept) and reads as empty; one
-/// from a newer build is left alone and bars writes — `load_columns`'s
-/// doctrine, for the one file every board shares.
-pub fn load_machine_tiers(path: &Path) -> MachineTiersLoad {
+/// Read a machine file. Missing is empty, not an error. A file that does
+/// not parse is moved aside (every byte kept) and reads as empty; one from
+/// a newer build is left alone and bars writes.
+pub fn load_machine_file<T: MachineFile>(path: &Path) -> MachineLoad<T> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return MachineTiersLoad::default(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return MachineLoad::default(),
         Err(e) => {
             let notice =
                 Notice::new("quarantined", format!("{} could not be opened", short_name(path)))
                     .with_path(path.display())
                     .with_detail(e.to_string());
-            return MachineTiersLoad { notice: Some(notice), barred: true, ..Default::default() };
+            return MachineLoad { notice: Some(notice), barred: true, ..Default::default() };
         }
     };
     let fault = match toml::from_str::<toml::Value>(&text) {
         Err(e) => e.to_string(),
         Ok(v) => {
             let found = v.get("schema_version").and_then(|s| s.as_integer()).unwrap_or(1);
-            match verdict(found as u32, MACHINE_TIERS_SCHEMA) {
+            match verdict(found as u32, T::SCHEMA) {
                 Verdict::Newer(n) => {
-                    return MachineTiersLoad {
-                        notice: Some(future_notice(path, n, MACHINE_TIERS_SCHEMA)),
+                    return MachineLoad {
+                        notice: Some(future_notice(path, n, T::SCHEMA)),
                         barred: true,
                         ..Default::default()
                     };
                 }
-                Verdict::Load => match v.try_into::<MachineTiersFile>() {
-                    Ok(f) => return MachineTiersLoad { tiers: f.tiers, ..Default::default() },
+                Verdict::Load => match v.try_into::<Stamped<T>>() {
+                    Ok(f) => return MachineLoad { body: f.body, ..Default::default() },
                     Err(e) => e.to_string(),
                 },
             }
         }
     };
     let moved = quarantine(path);
-    MachineTiersLoad {
+    MachineLoad {
         barred: moved.is_none(),
         notice: Some(quarantine_notice(path, moved.as_deref(), fault)),
         ..Default::default()
@@ -1040,89 +1070,16 @@ pub fn load_machine_tiers(path: &Path) -> MachineTiersLoad {
 /// no quarantine, no bar; a file that does not parse reads as `None`.
 pub fn read_machine_tiers(path: &Path) -> Option<MachineTiers> {
     let text = std::fs::read_to_string(path).ok()?;
-    toml::from_str::<MachineTiersFile>(&text).ok().map(|f| f.tiers)
+    toml::from_str::<Stamped<MachineTiers>>(&text).ok().map(|f| f.body)
 }
 
-/// Write the machine's tiers whole, private to the user like the rest of
-/// the state root.
-pub fn save_machine_tiers(path: &Path, tiers: &MachineTiers) -> Result<()> {
+/// Write a machine file whole, private to the user like the rest of the
+/// state root.
+pub fn save_machine_file<T: MachineFile>(path: &Path, body: &T) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let f = MachineTiersFile { schema_version: MACHINE_TIERS_SCHEMA, tiers: tiers.clone() };
-    write_atomic(path, &toml::to_string_pretty(&f)?, PRIVATE)
-}
-
-/// `links.toml`'s stamp (T-733): v1 is a `[[pairs]]` list of two paths.
-pub const LINKS_SCHEMA: u32 = 1;
-
-/// `links.toml` with its stamp, the `MachineTiersFile` shape.
-#[derive(Serialize, Deserialize, Default)]
-struct LinksFile {
-    /// First, a scalar, for the `[[pairs]]` reason.
-    #[serde(default = "schema_v1")]
-    schema_version: u32,
-    #[serde(flatten)]
-    links: mesimon_core::boardlink::Links,
-}
-
-/// `load_links`' answer: the pairs, a notice for the advisory row, and
-/// whether writing would destroy bytes this build could not read.
-#[derive(Default)]
-pub struct LinksLoad {
-    pub links: mesimon_core::boardlink::Links,
-    pub notice: Option<Notice>,
-    pub barred: bool,
-}
-
-/// The machine's board links (T-733), under the ten state files' contract:
-/// an absent file is no links, a newer build's file is kept as it is with
-/// writes barred, and one that does not parse is quarantined.
-pub fn load_links(path: &Path) -> LinksLoad {
-    let text = match std::fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return LinksLoad::default(),
-        Err(e) => {
-            let notice =
-                Notice::new("quarantined", format!("{} could not be opened", short_name(path)))
-                    .with_path(path.display())
-                    .with_detail(e.to_string());
-            return LinksLoad { notice: Some(notice), barred: true, ..Default::default() };
-        }
-    };
-    let fault = match toml::from_str::<toml::Value>(&text) {
-        Err(e) => e.to_string(),
-        Ok(v) => {
-            let found = v.get("schema_version").and_then(|s| s.as_integer()).unwrap_or(1);
-            match verdict(found as u32, LINKS_SCHEMA) {
-                Verdict::Newer(n) => {
-                    return LinksLoad {
-                        notice: Some(future_notice(path, n, LINKS_SCHEMA)),
-                        barred: true,
-                        ..Default::default()
-                    };
-                }
-                Verdict::Load => match v.try_into::<LinksFile>() {
-                    Ok(f) => return LinksLoad { links: f.links, ..Default::default() },
-                    Err(e) => e.to_string(),
-                },
-            }
-        }
-    };
-    let moved = quarantine(path);
-    LinksLoad {
-        barred: moved.is_none(),
-        notice: Some(quarantine_notice(path, moved.as_deref(), fault)),
-        ..Default::default()
-    }
-}
-
-/// Write the machine's board links (T-733), private like `tiers.toml`.
-pub fn save_links(path: &Path, links: &mesimon_core::boardlink::Links) -> Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let f = LinksFile { schema_version: LINKS_SCHEMA, links: links.clone() };
+    let f = Stamped { schema_version: T::SCHEMA, body: body.clone() };
     write_atomic(path, &toml::to_string_pretty(&f)?, PRIVATE)
 }
 
@@ -2808,8 +2765,8 @@ by = "local"
         let dir = std::env::temp_dir().join(format!("msmn-store-tiers-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("tiers.toml");
-        let empty = load_machine_tiers(&path);
-        assert!(empty.tiers.tiers.is_empty() && empty.notice.is_none() && !empty.barred);
+        let empty = load_machine_file::<MachineTiers>(&path);
+        assert!(empty.body.tiers.is_empty() && empty.notice.is_none() && !empty.barred);
 
         let tiers = MachineTiers {
             default_tier: Some("01A".into()),
@@ -2822,18 +2779,18 @@ by = "local"
                 description: "docs, renames, one-file fixes".into(),
             }],
         };
-        save_machine_tiers(&path, &tiers).unwrap();
+        save_machine_file(&path, &tiers).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.starts_with("schema_version = 1\n"), "{text}");
         // T-584: the person's words ride the file, and no schema moves.
         assert!(text.contains("description = \"docs, renames, one-file fixes\""), "{text}");
-        let back = load_machine_tiers(&path);
-        assert_eq!(back.tiers, tiers);
+        let back = load_machine_file::<MachineTiers>(&path);
+        assert_eq!(back.body, tiers);
         assert!(back.notice.is_none() && !back.barred);
 
         std::fs::write(&path, "schema_version = 1\n[[tiers]\n").unwrap();
-        let bad = load_machine_tiers(&path);
-        assert!(bad.tiers.tiers.is_empty() && !bad.barred);
+        let bad = load_machine_file::<MachineTiers>(&path);
+        assert!(bad.body.tiers.is_empty() && !bad.barred);
         assert_eq!(bad.notice.as_ref().map(|n| n.kind.as_str()), Some("quarantined"));
         assert!(!path.exists(), "moved aside");
         let kept = std::fs::read_dir(&dir)
@@ -2843,7 +2800,7 @@ by = "local"
         assert!(kept, "the bytes are kept");
 
         std::fs::write(&path, "schema_version = 99\n").unwrap();
-        let newer = load_machine_tiers(&path);
+        let newer = load_machine_file::<MachineTiers>(&path);
         assert!(newer.barred);
         assert_eq!(newer.notice.as_ref().map(|n| n.kind.as_str()), Some("future_version"));
         assert!(path.exists(), "a newer file is left untouched");

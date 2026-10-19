@@ -1121,6 +1121,15 @@ fn word(args: &Value, name: &str) -> Result<String, String> {
     opt_word(args, name)?.ok_or_else(|| format!("{name} is required"))
 }
 
+/// The `text` a tool carries, untrimmed: words typed on for an agent or a
+/// note, as given.
+fn text(args: &Value, tool: &str) -> Result<String, String> {
+    args.get("text")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| format!("{tool} requires a text string"))
+}
+
 /// `index` and `text` as `answer_agent` takes them (T-569), on the call or
 /// on one of its `answers` (T-571, where `at` names it): a whole number, and
 /// words untrimmed, since they are typed into the dialog as given and the
@@ -1245,23 +1254,14 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
         }),
         "ask_agent" => Ok(ToolCall::AskAgent {
             key: word(args, "key")?,
-            text: args
-                .get("text")
-                .and_then(Value::as_str)
-                .ok_or("ask_agent requires a text string")?
-                .to_string(),
+            text: text(args, "ask_agent")?,
             seen: word(args, "seen")?,
             plan: flag(args, "plan")?,
             deliver: deliver(args)?,
         }),
-        "ask_board" => Ok(ToolCall::AskBoard {
-            board: word(args, "board")?,
-            text: args
-                .get("text")
-                .and_then(Value::as_str)
-                .ok_or("ask_board requires a text string")?
-                .to_string(),
-        }),
+        "ask_board" => {
+            Ok(ToolCall::AskBoard { board: word(args, "board")?, text: text(args, "ask_board")? })
+        }
         "answer_agent" => {
             let (index, text) = one_answer(args, "")?;
             let answers = match args.get("answers") {
@@ -1310,11 +1310,7 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
             key: opt_word(args, "key")?,
         }),
         "write_note" => {
-            let text = args
-                .get("text")
-                .and_then(Value::as_str)
-                .ok_or("write_note requires a text string")?
-                .to_string();
+            let text = text(args, "write_note")?;
             Ok(ToolCall::WriteNote {
                 note: note_id(args, false)?,
                 text,

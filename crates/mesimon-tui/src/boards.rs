@@ -13,8 +13,6 @@
 //! it. Resolved from the machine, so `lib.rs::run` hands `discover` to the
 //! app and a test app lists nothing.
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver};
 use std::time::Duration;
@@ -38,14 +36,11 @@ pub type Scanner = fn(PathBuf) -> Receiver<Vec<OpenBoard>>;
 /// answer comes down the channel once, sorted by name, this board left out.
 pub fn discover(me: PathBuf) -> Receiver<Vec<OpenBoard>> {
     let (tx, rx) = channel();
-    let spawned = std::thread::Builder::new().name("boards".into()).spawn(move || {
+    // No thread: the receiver reads disconnected, which the app takes as an
+    // empty list.
+    let _ = std::thread::Builder::new().name("boards".into()).spawn(move || {
         let _ = tx.send(scan(&me));
     });
-    if spawned.is_err() {
-        // No thread: the receiver reads disconnected, which the app takes as
-        // an empty list.
-        drop(spawned);
-    }
     rx
 }
 
@@ -71,18 +66,13 @@ fn scan(me: &Path) -> Vec<OpenBoard> {
 
 /// One `Hello`, as the TUI's own client speaks it, with short timeouts.
 fn hello(sock: &Path) -> Option<OpenBoard> {
-    let stream = UnixStream::connect(sock).ok()?;
-    stream.set_read_timeout(Some(Duration::from_millis(800))).ok()?;
-    stream.set_write_timeout(Some(Duration::from_millis(300))).ok()?;
-    let mut writer = stream.try_clone().ok()?;
     let env = Envelope {
         principal: Principal::Local,
         command: Command::Hello { version: PROTOCOL_VERSION, client: "mesimon-tui boards".into() },
     };
-    writeln!(writer, "{}", serde_json::to_string(&env).ok()?).ok()?;
-    let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line).ok()?;
-    match serde_json::from_str::<Response>(&line).ok()? {
+    let write = Some(Duration::from_millis(300));
+    let read = Some(Duration::from_millis(800));
+    match mesimon_daemon::oneshot::one_shot(sock, &env, write, read).ok()? {
         Response::Hello { repo_root, crown, .. } => Some(OpenBoard {
             name: mesimon_core::boardlink::board_name(&repo_root),
             path: repo_root,
