@@ -333,6 +333,48 @@ fn a_submit_the_mod_refuses_is_kept_unsent_and_its_resend_goes_down_the_mod() {
     let _ = c.request(Command::KillSession { id: sid });
 }
 
+/// T-879: a seat on the mod road reads idle at its `SessionStart`, a moment
+/// before its mod's bridge first polls; words the queue held for that idle
+/// (a person's queued ask, the crown's wake, a linked board's ask) were
+/// pasted into the composer in that moment. They now wait for the bridge,
+/// and go down it.
+#[test]
+fn a_queued_ask_waits_for_a_late_bridge_and_goes_down_the_mod() {
+    let env = [MOD, ("MESIMON_MOD_BRIDGE_WAIT_MS", "8000")];
+    let Some(h) = Harness::boot_with_env("modlate", Some(READER), &env) else { return };
+    std::fs::write(h.dir.join("mod-late"), "2500").unwrap();
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("modlate");
+    let ticket = ticket_with_brief(&mut c, "late me", "## Brief\n\nnot sent");
+    let sid = spawn(&mut c, ticket, false);
+    assert_eq!(record(&mut c, sid).road, Road::Mod);
+    session_start(&hook_sock, sid);
+    c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    let queued = c.request(Command::PromptSession {
+        ticket,
+        text: "mesimon-late-1 down the mod".into(),
+        queued: true,
+        immediately: false,
+        accept_plan: false,
+        plan: false,
+        tier: None,
+        resend: false,
+        uploads: Vec::new(),
+    });
+    assert!(matches!(queued, Response::Ok | Response::Queued { .. }), "{queued:?}");
+    // Idle, and no bridge yet: nothing is typed into the pane.
+    std::thread::sleep(Duration::from_millis(1000));
+    assert!(!got(&h).contains("mesimon-late-1"), "pasted before the bridge: {}", got(&h));
+    wait_bridge(&h, sid);
+    wait_until(Duration::from_secs(5), "the ask down the mod", || {
+        frames(&h, sid, "submit")
+            .iter()
+            .any(|f| f["text"].as_str().is_some_and(|t| t.contains("mesimon-late-1 down the mod")))
+    });
+    wait_feed(&h, &["\"cmd\":\"prompt_by_mod\""]);
+    let _ = c.request(Command::KillSession { id: sid });
+}
+
 fn read(c: &mut TestClient, session: uuid::Uuid, key: &str) -> AgentTicketView {
     match c.send(Principal::Agent { session }, Command::AgentReadTicket { key: key.into() }) {
         Response::AgentTicket { ticket } => ticket,

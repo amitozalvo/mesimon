@@ -12585,13 +12585,15 @@ impl Daemon {
     /// its composer while background tasks run (T-599,
     /// `quiet::holds_against_words`)? What a queued ask and the crown's wake
     /// read. A tier switch or a plan relaunch keeps `session_idle`: those
-    /// end the pane, and the tasks with it.
+    /// end the pane, and the tasks with it. Not yet while its mod's bridge
+    /// is awaited (`bridge_awaited`, T-879): the words go down it, not
+    /// pasted into the composer, once it polls.
     fn session_takes_words(&self, id: uuid::Uuid) -> bool {
         self.board.sessions.iter().any(|s| {
             s.id == id
                 && matches!(s.state, SessionState::Idle { .. })
                 && !mesimon_core::quiet::holds_against_words(s)
-        })
+        }) && !self.bridge_awaited(id, now_ms())
     }
 
     /// Is this session parked on its plan dialog — the `≡`?
@@ -14458,6 +14460,7 @@ impl Daemon {
             Ok(pane) => rec.pane_key = Some(pane),
             Err(e) => return Response::Err { message: format!("spawn failed: {e}") },
         }
+        self.await_bridge(id, now_ms());
         // Prefill the ticket title into the agent's input box — typed, never
         // submitted; the user edits and presses Enter (zero token injection).
         // Fresh Claude spawns only: resume/wake replay argv elsewhere and must
@@ -16703,6 +16706,7 @@ impl Daemon {
             }
         };
         let now = now_ms();
+        self.await_bridge(id, now);
         let resumed_thread = rec.codex_thread_id.clone();
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
             rec.pane_key = Some(pane);
@@ -17077,6 +17081,7 @@ impl Daemon {
                     Err(e) => return Response::Err { message: format!("wake spawn failed: {e}") },
                 };
                 let now = now_ms();
+                self.await_bridge(id, now);
                 if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                     rec.pane_key = Some(pane);
                     rec.state = SessionState::Running;

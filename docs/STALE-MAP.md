@@ -28871,3 +28871,42 @@ now` reads `woken`, is awake at once, and a `start_agent` after it is refused. R
 ask to a parked worker, `crown:start_agent=1`, a new exact-count form of the `crown:` check)
 passed on Sonnet, claude 2.1.305: one start, one sleep, one ask, the worker answered from its
 conversation.
+
+## Words wait for a mod seat's bridge instead of being pasted (T-879, 2026-10-21, "Crown to crown communication sometimes uses paste instead of plugin path … I think it happens when the main board sends a message")
+
+**What the feeds showed.** No linked boards had ever carried an ask on this machine, so the
+"message from the main board" was the board's own crown wake. Every crown wake and queued ask
+in the boards' feeds was checked for its road (a `prompt_by_mod` beside the `*_sent` line, or
+none: a paste). Hook-set crowns aside, the one mod-road paste was forge-lab's crown on
+2026-10-14: a tier switch relaunched it (`sleep_session`, `resume_session`), the new pane's
+`SessionStart` landed, and 2.3 s later a crown wake for a merged PR went with no
+`prompt_by_mod`, into the composer by paste.
+
+**Why.** `mod_speaks` is true only once the bridge has polled from the record's own pane. A
+pane's `SessionStart` comes in through the mod's relay, and the bridge starts after the mod
+has registered its tools, so a fresh pane can read idle while no bridge has polled yet. The
+same gap opens after a daemon restart, which forgets every bridge until it polls again (at most
+2 s with the bridge's backoff). Launch words already wait for both edges (T-575). The queue and
+the crown wake checked only `session_takes_words`, so anything due in that gap went by paste:
+a person's queued ask, the crown's wake, the crown's asks to a worker, a linked board's ask.
+
+**The fix.** `session_takes_words` (the readiness the queue and `crown_wake_blocked` read) is
+false while `bridge_awaited`: a Claude record on the mod road with a pane, no bridge up, and
+less than a bridge wait (`MOD_BRIDGE_WAIT_MS`, 10 s) since the pane's launch. A pane the daemon
+inherited is timed from the daemon's start. `ModRoad::awaited` is stamped at the three
+pane launches (`spawn_session`, `resume_session_with_cleanup_ack`, `wake_session`) and dropped
+by `mod_forget`. When the bridge polls, the next tick sends the words by `submit`. When it
+does not, the paste road takes them after the wait, as it does for launch words. A prompt sent
+on the spot (`PromptSession` not queued, a send-now) is unchanged: a person who types into a
+pane that is a second old has chosen the moment.
+
+**Tests.** E2e `mod_turns_e2e::a_queued_ask_waits_for_a_late_bridge_and_goes_down_the_mod`
+(the stand-in engine's new `mod-late` switch holds its bridge 2.5 s): a queued ask to an idle
+mod seat is not typed during that gap and goes down as a `submit` once the bridge polls. With
+the gate removed it fails, the words pasted. Both roads of the whole suite are green. No rig
+run: the words and the tools the crown is told about are unchanged, only when the same words
+go and by which road.
+
+**Owed:** a CHANGELOG line at the next bump — **Fixed:** a crown's wake or a queued message
+that came due just after its agent restarted could appear typed into the agent's input box;
+it now waits a moment and arrives as its own message.

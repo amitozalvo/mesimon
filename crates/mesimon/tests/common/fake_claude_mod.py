@@ -32,7 +32,8 @@ and tmux's `TMUX`/`TMUX_PANE`. It does what `register.ts`'s bridge loop does:
   mods: `mod-silent` one that never comes up (the engine exits at once),
   `mod-speaks` an older one (its text is the `--speaks` list), and
   `mod-drop-submit` one whose engine drops every submit (it reports
-  `dropped` and delivers nothing);
+  `dropped` and delivers nothing); and `mod-late` one whose bridge first
+  polls the milliseconds its text names after the engine starts (T-879);
 - respawns a bridge that died, with the mod's backoff, and not one that was
   refused for good (exit 3, `BRIDGE_REFUSED_EXIT`);
 - exits when its parent (the stub, standing in for Claude Code) goes.
@@ -154,6 +155,11 @@ def main():
     threading.Thread(target=watch_parent, daemon=True).start()
     with open(ENGINE_PID, "w") as f:
         f.write(str(os.getpid()))
+    try:
+        with open(os.path.join(HERE, "mod-late")) as f:
+            time.sleep(int(f.read().strip()) / 1000)
+    except (OSError, ValueError):
+        pass
     seen = []
     backoff = 1.0
     while True:

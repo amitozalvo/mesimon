@@ -113,6 +113,12 @@ pub(super) struct ModRoad {
     /// A mods-off verdict this daemon read at start: asked again once, before
     /// its six hours are up (T-598).
     recheck: bool,
+    /// When each pane launched this daemon life began to wait for its
+    /// bridge (T-879): its spawn. A pane the daemon inherited waits from
+    /// `born`, since a restart forgets every bridge until it polls again.
+    awaited: HashMap<uuid::Uuid, u64>,
+    /// This daemon's start, epoch ms.
+    born: u64,
 }
 
 impl ModRoad {
@@ -121,7 +127,7 @@ impl ModRoad {
     pub(super) fn start(paths: &Paths) -> Self {
         let probe = modroad::load_probe(paths);
         let recheck = probe.as_ref().is_some_and(Probe::claude_off);
-        ModRoad { probe, recheck, ..Default::default() }
+        ModRoad { probe, recheck, born: now_ms(), ..Default::default() }
     }
 }
 
@@ -732,6 +738,32 @@ impl Daemon {
             })
     }
 
+    /// A pane was launched for `session` (T-879): a bridge from it is
+    /// awaited from `now`, whichever road the launch took.
+    pub(super) fn await_bridge(&mut self, session: uuid::Uuid, now: u64) {
+        self.modroad.awaited.insert(session, now);
+    }
+
+    /// Whether words for a session on the mod road wait for its bridge
+    /// (T-879): its mod has not polled from this pane yet, and a bridge wait
+    /// has not passed since the pane's launch, or since this daemon started
+    /// for a pane it inherited. The bridge polls moments after the pane's
+    /// `SessionStart`, so a seat can read idle before it; a crown relaunched
+    /// on a tier switch took the next crown wake by paste, into the composer
+    /// the person may be typing in. Past the wait the mod is not coming, and
+    /// the paste road is the road, as for launch words.
+    pub(super) fn bridge_awaited(&self, session: uuid::Uuid, now: u64) -> bool {
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == session) else {
+            return false;
+        };
+        let from = self.modroad.awaited.get(&session).copied().unwrap_or(self.modroad.born);
+        rec.kind == SessionKind::Claude
+            && rec.road == Road::Mod
+            && rec.state.has_pane()
+            && !self.mod_bridged(session)
+            && now < from.saturating_add(mod_bridge_wait_ms())
+    }
+
     /// Whether the session's mod is up and reads `kind` (T-575): its bridge
     /// has polled from the record's own pane and its mod declared the kind.
     /// Every turn road asks this before it leaves the paste road and the
@@ -988,5 +1020,6 @@ impl Daemon {
             reply_now(w.reply, Response::Err { message: "session has no pane".into() });
         }
         self.modroad.bridges.remove(&session);
+        self.modroad.awaited.remove(&session);
     }
 }
