@@ -877,6 +877,8 @@ impl Daemon {
                     "tiers",
                     // Tickets for an away host wait at the relay (T-497).
                     if self.control.mail { "mailbox" } else { "" },
+                    // Words for an agent wait there too (T-881).
+                    if self.control.mail { "mail_prompts" } else { "" },
                 ]
                 .into_iter()
                 .filter(|f| !f.is_empty())
@@ -2920,6 +2922,9 @@ impl Daemon {
         if let Some(api::Letter::Note(note)) = letter {
             return self.control_filed_note(grant, id, note);
         }
+        if let Some(api::Letter::Prompt(prompt)) = letter {
+            return self.control_filed_prompt(grant, id, prompt);
+        }
         let hex = id.to_hex();
         if let Some(t) = self.board.tickets.iter().find(|t| t.envelope.as_deref() == Some(&hex)) {
             return Reply::Created {
@@ -2980,10 +2985,8 @@ impl Daemon {
     /// replayed letter gets the answer it had; an edit whose words the note
     /// already holds was this letter, written before a crash cut its answer.
     fn control_filed_note(&mut self, grant: &Grant, id: ObjectId, note: api::MailNote) -> Reply {
-        if let Some(f) =
-            self.control.stored.as_ref().and_then(|s| s.noted.iter().find(|f| f.envelope == id))
-        {
-            return serde_json::from_value(f.answer.clone()).unwrap_or(Reply::delivery("unknown"));
+        if let Some(answer) = self.control_answered(id) {
+            return answer;
         }
         let by = Principal::Paired { device: grant.device.to_hex(), grant: grant.id.to_hex() };
         let already = self.control_note_body(&note.ticket, note.note.as_deref()).and_then(
@@ -3000,17 +3003,94 @@ impl Daemon {
         let answer = already.unwrap_or_else(|| {
             self.control_write_note(&by, &note.ticket, note.note.as_deref(), note.text, note.rev)
         });
-        if let Some(mut s) = self.control.stored.clone() {
-            let kept = serde_json::to_value(&answer).unwrap_or_default();
-            s.noted.push(NoteFiled { envelope: id, answer: kept });
-            let excess = s.noted.len().saturating_sub(FILED_KEEP);
-            s.noted.drain(..excess);
-            // A failed save costs the replay guard only: an edit is answered
-            // again by its words, a delete by the note being gone.
-            let _ = self.control_save(&s);
-            self.control.stored = Some(s);
+        // A failed save costs the replay guard only: an edit is answered
+        // again by its words, a delete by the note being gone.
+        self.control_keep_answer(id, &answer);
+        answer
+    }
+
+    /// The answer a note's or a prompt's letter already had, if any.
+    fn control_answered(&self, id: ObjectId) -> Option<Reply> {
+        let f = self.control.stored.as_ref()?.noted.iter().find(|f| f.envelope == id)?;
+        Some(serde_json::from_value(f.answer.clone()).unwrap_or(Reply::delivery("unknown")))
+    }
+
+    /// Keep a letter's answer in the ring a replay is answered from.
+    fn control_keep_answer(&mut self, id: ObjectId, answer: &Reply) {
+        let Some(mut s) = self.control.stored.clone() else { return };
+        let kept = serde_json::to_value(answer).unwrap_or_default();
+        s.noted.push(NoteFiled { envelope: id, answer: kept });
+        let excess = s.noted.len().saturating_sub(FILED_KEEP);
+        s.noted.drain(..excess);
+        let _ = self.control_save(&s);
+        self.control.stored = Some(s);
+    }
+
+    // ---- prompts by mail (T-881) ------------------------------------------
+
+    /// Words a phone wrote for a ticket's agent while the terminal was away:
+    /// queued once, as the phone's Queue queues them, on the agent the
+    /// ticket has now. A replayed letter gets the answer it had. The answer
+    /// is kept before the queue is drained, so the words reach the pane
+    /// only once the ring says so; a crash before that replays the letter,
+    /// and a pane ask lives in memory alone, so nothing went twice.
+    fn control_filed_prompt(
+        &mut self,
+        grant: &Grant,
+        id: ObjectId,
+        prompt: api::MailPrompt,
+    ) -> Reply {
+        if let Some(answer) = self.control_answered(id) {
+            return answer;
+        }
+        let by = Principal::Paired { device: grant.device.to_hex(), grant: grant.id.to_hex() };
+        let answer = self.control_mail_prompt(&by, &prompt.ticket, prompt.text);
+        self.control_keep_answer(id, &answer);
+        if let Reply::Delivery { .. } = answer {
+            self.drain_queue();
+            self.broadcast();
         }
         answer
+    }
+
+    /// The gates and the park for one mailed prompt, the words not yet sent.
+    fn control_mail_prompt(&mut self, by: &Principal, ticket: &str, text: String) -> Reply {
+        let reject = |message: &str| Reply::Rejected { message: message.into() };
+        let Some(ticket) = self.control_ticket(ticket) else {
+            return reject("ticket unavailable");
+        };
+        let id = match mail_prompt_seat(&self.board, ticket) {
+            Ok(id) => id,
+            Err(message) => return reject(message),
+        };
+        if authorize(by, &Action::PromptExisting, &Resource::Session { id }).denied() {
+            return Reply::Revoked;
+        }
+        if let Some(message) = self.team_viewer_refusal() {
+            return reject(&message);
+        }
+        if text.len() > mesimon_core::command::PROMPT_MAX_BYTES {
+            return reject("prompt is too long");
+        }
+        let Some(text) = mesimon_core::command::sanitize_prompt(&text) else {
+            return reject("nothing to send");
+        };
+        let replaced = self.queued.iter().find(|q| q.ticket == ticket).map(|q| api::Replaced {
+            by: q
+                .by
+                .and_then(|c| self.board.ticket(c))
+                .map(|c| c.short_key.clone())
+                .or_else(|| q.held.map(|_| "held".into()))
+                .unwrap_or_else(|| "you".into()),
+        });
+        self.forget_queued(ticket, "queued_ask_replaced", "mesophon", "person");
+        if let Err(message) =
+            self.park_ask(ticket, QueuedSeat::Pane(id), text, super::Asker::Person, false, false)
+        {
+            return reject(&message);
+        }
+        self.feed.board(by.actor(), "mesophon_prompt_mail", Some(ticket));
+        Reply::Delivery { status: "queued".into(), reason: None, replaced }
     }
 
     /// One note's metadata and body as they stand, or `None`.
@@ -4094,6 +4174,21 @@ fn seat_refusal(board: &Board, ticket: ulid::Ulid) -> Option<&'static str> {
         None
     } else {
         Some("this ticket already has an agent")
+    }
+}
+
+/// The agent a mailed prompt queues on (T-881): the ticket's pane agent as
+/// it stands when the letter is opened, whichever session the page saw. A
+/// parked or absent agent is refused: a wake or a start from a letter would
+/// launch hours later with nobody watching.
+fn mail_prompt_seat(board: &Board, ticket: ulid::Ulid) -> Result<uuid::Uuid, &'static str> {
+    match board.pane_target(ticket) {
+        Some(rec) if !rec.observe_only() => Ok(rec.id),
+        Some(_) => Err("this ticket's agent is not one mesimon started"),
+        None if board.live_agent(ticket).is_some() => {
+            Err("the agent was asleep: wake it with these words")
+        }
+        None => Err("no agent on this ticket to take them"),
     }
 }
 
@@ -6615,6 +6710,29 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         assert!(seat_refusal(&board, ticket).is_some_and(|m| m.contains("stopping")));
         board.sessions[0] = agent(ticket, SessionKind::Bash, SessionState::Running);
         assert_eq!(seat_refusal(&board, ticket), None);
+    }
+
+    /// A mailed prompt (T-881) queues on the pane agent the ticket has when
+    /// the letter opens, and is refused in words for a parked agent or none.
+    #[test]
+    fn a_mailed_prompt_queues_only_on_an_awake_agent() {
+        use mesimon_core::board::StopReason;
+        let mut board = Board::with_default_columns();
+        let ticket = ulid::Ulid(7);
+        assert_eq!(mail_prompt_seat(&board, ticket), Err("no agent on this ticket to take them"));
+        board.sessions.push(agent(ticket, SessionKind::Claude, SessionState::Sleeping));
+        assert!(mail_prompt_seat(&board, ticket).is_err_and(|m| m.contains("asleep")));
+        for state in
+            [SessionState::Running, SessionState::Idle { stop_reason: StopReason::EndTurn }]
+        {
+            board.sessions[0].state = state;
+            assert_eq!(mail_prompt_seat(&board, ticket), Ok(board.sessions[0].id));
+        }
+        board.sessions[0].kind = SessionKind::Codex;
+        assert_eq!(mail_prompt_seat(&board, ticket), Ok(board.sessions[0].id));
+        assert!(mail_prompt_seat(&board, ulid::Ulid(8)).is_err(), "another ticket's agent");
+        board.sessions[0] = agent(ticket, SessionKind::Bash, SessionState::Running);
+        assert!(mail_prompt_seat(&board, ticket).is_err(), "a shell is no agent");
     }
 
     /// A phone's receipt (T-498) is a clock while the worktree is cut and

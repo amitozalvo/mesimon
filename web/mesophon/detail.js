@@ -12,6 +12,7 @@ import { receiptTick, sentPrompt } from "./sessions.js";
 import { startWaiting } from "./starts.js";
 import { modeHelp, queueWords, sendRefused, waitsOnYou } from "./queue.js";
 import { Chat } from "./transcript.js";
+import { letterWords } from "./letters.js";
 import { swipePanes } from "./swipe.js";
 
 // The pane's width in cells, for drawing its lines as the screen they came
@@ -111,6 +112,10 @@ function Composer({ store, ticket, entry, live }) {
   // that starts no agents from here keeps the field off, as before.
   const starts = store.composerStarts(ticket);
   const startOff = !store.canComposeStart;
+  // The terminal is away (T-881): the words are sealed for the relay and
+  // queue when it is back. One waits per ticket.
+  const mails = !starts && store.mailsPrompt(ticket);
+  const letter = store.letterOf(ticket);
   const acting = entry?.receipt?.waiting && entry.receipt.status !== "queued";
   const queueOff = !live || !agent?.promptable || ticket?.queued == null || !!acting;
   // At a dialog a steer would be its answer (T-568): Steer is off, and the
@@ -122,10 +127,12 @@ function Composer({ store, ticket, entry, live }) {
   const steerOff = waitsOnYou(agent) || switching;
   const mode = steerOff ? "queue" : entry?.mode || "queue";
   const sending = !!entry?.sending;
-  const sendOff = sending || (starts
+  const sendOff = sending || !!letter || (starts
     ? startOff || !entry?.draft.trim()
-    : !live || !agent?.promptable || !!entry?.review || !!entry?.receipt?.waiting ||
-      !!entry?.answer?.waiting || !entry?.draft.trim());
+    : mails
+      ? !entry?.draft.trim()
+      : !live || !agent?.promptable || !!entry?.review || !!entry?.receipt?.waiting ||
+        !!entry?.answer?.waiting || !entry?.draft.trim());
   const fieldOff = sending || (starts ? startOff : !agent);
   // A picture with the words (T-853): offered wherever the words can go,
   // to a host that keeps it with the ticket.
@@ -151,6 +158,16 @@ function Composer({ store, ticket, entry, live }) {
     node.style.height = `${node.scrollHeight}px`;
   }, [entry?.draft]);
   return html`<footer class="composer-area">
+    <section id="letter-row" class="bubble-row" aria-label="Message waiting for your terminal" hidden=${!letter}>
+      <div class="bubble">
+        <pre id="letter-text" dir="auto">${letter?.text || ""}</pre>
+        <p class="bubble-meta"><${Icon} name=${letter?.status === "unknown" ? "shield" : "moon"} size=${13} /><span id="letter-meta">${letter ? letterWords(letter) : ""}</span>${letter
+          && html`<${Tick} state=${letter.status === "local" ? "clock" : letter.status === "relay" ? "one" : ""} />`}</p>
+      </div>
+      <div class="bubble-actions">
+        <button id="letter-back" type="button" class="btn btn-quiet" onClick=${() => store.retractPrompt(letter.id)}>${letter?.status === "unknown" ? "Dismiss" : "Take back"}</button>
+      </div>
+    </section>
     <section id="queued-row" class="bubble-row" aria-label="Queued prompt" hidden=${ticket?.queued == null}>
       <div class="bubble">
         <pre id="queued-text" dir="auto">${ticket?.queued || ""}</pre>
@@ -179,7 +196,7 @@ function Composer({ store, ticket, entry, live }) {
           : "No agent selected"}</p>
       <div class="composer" data-open=${String(open)} data-starts=${String(starts)}>
         <textarea id="prompt" ref=${field} aria-label=${starts ? "First prompt" : "Prompt"} aria-describedby="target" rows="1" dir="auto"
-          placeholder=${agent ? `Message ${agent.provider}…` : starts ? startPlaceholder(store, ticket, asleep) : "No agent to message"}
+          placeholder=${mails ? `Message ${agent.provider} · it waits for your terminal…` : agent ? `Message ${agent.provider}…` : starts ? startPlaceholder(store, ticket, asleep) : "No agent to message"}
           required disabled=${fieldOff}
           value=${entry?.draft || ""} onInput=${(e) => {
             mark(e);
@@ -198,7 +215,11 @@ function Composer({ store, ticket, entry, live }) {
         ${pictures && html`<${PicturePick} id="prompt-picture" draft=${entry} caret=${caret} label="Picture"
           onAdd=${(files, at) => store.addPromptPictures(files, at)} />`}
         <div class="composer-row" hidden=${!open}>
-          ${starts
+          ${mails
+            ? html`<p id="away-what" class="start-what"><${Icon} name="moon" size=${13} /><span>${letter
+                ? "One message waits for this ticket · take it back to change it."
+                : `Waits for your terminal, then queues for ${agent.provider}.`}</span></p>`
+            : starts
             ? html`<p id="start-what" class="start-what"><${Icon} name="play" size=${13} /><span>${asleep
                 ? `Wakes ${ticket.agent.provider}, then says this.`
                 : "Starts an agent on these words."}</span></p>`
@@ -209,17 +230,17 @@ function Composer({ store, ticket, entry, live }) {
             <label class=${`${mode === "steer" ? "on" : ""}${steerOff ? " off" : ""}`}><input type="radio" name="prompt-mode" value="steer"
               checked=${mode === "steer"} disabled=${steerOff} onChange=${() => store.setDelivery("steer")} /><${Icon} name="zap" size=${14} /><span>Steer</span></label>
           </fieldset>`}
-          ${tiers.length > 0 && html`<label class="tier-pick"><span class="sr-only">Agent tier</span>
+          ${tiers.length > 0 && !mails && html`<label class="tier-pick"><span class="sr-only">Agent tier</span>
             <select id="prompt-tier" value=${pick} onChange=${(e) => store.setPromptTier(e.currentTarget.value)}>
               ${tiers.map((t) => html`<option key=${t.id} value=${t.id}>${t.name}</option>`)}
             </select></label>`}
-          ${!starts && html`<p class="mode-help">${modeHelp(mode, agent)}</p>`}
+          ${!starts && !mails && html`<p class="mode-help">${modeHelp(mode, agent)}</p>`}
         </div>
         <button id="send" type="submit" class="send" disabled=${sendOff}
-          aria-label=${starts ? (asleep ? "Wake agent with these words" : "Start agent with these words") : mode === "steer" ? "Send prompt" : "Queue prompt"}>${starts
+          aria-label=${starts ? (asleep ? "Wake agent with these words" : "Start agent with these words") : mails ? "Queue for when your terminal is back" : mode === "steer" ? "Send prompt" : "Queue prompt"}>${starts
             ? html`<${Icon} name="play" size=${18} />`
             : html`<${Icon} name="up" size=${20} width=${2.2} />`}</button>
-        <p id="steer-why" class="steer-why" hidden=${!steerOff || !open}>${switching
+        <p id="steer-why" class="steer-why" hidden=${!steerOff || !open || mails}>${switching
           ? `Restarts on ${store.board?.tierNamed(pick)?.name || pick} when the turn ends, then sends.`
           : "Steer is off while the agent waits on you · answer it first. Queue still works."}</p>
       </div>

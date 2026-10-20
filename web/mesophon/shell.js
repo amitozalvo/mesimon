@@ -7,7 +7,7 @@ import { Shin } from "./shin.js";
 import { swipeAway } from "./swipe.js";
 import { NowList, BoardList, SentList, ColumnTabs, lastSeen } from "./lists.js";
 import { Detail } from "./detail.js";
-import { NewTicket, QuickNew, StartSheet, CardSheet } from "./compose.js";
+import { NewTicket, QuickNew, StartSheet, CardSheet, AwaySheet } from "./compose.js";
 import { NoteSheet } from "./notepad.js";
 
 // Subscribe during the commit, not after paint: a fast boot can emit before
@@ -447,6 +447,7 @@ export function App({ store }) {
     <${NewTicket} store=${store} />
     <${StartSheet} store=${store} />
     <${CardSheet} store=${store} />
+    <${AwaySheet} store=${store} />
     <${NoteSheet} store=${store} />
     <${Settings} store=${store} />
     <${Toast} store=${store} />`;

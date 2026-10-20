@@ -312,21 +312,36 @@ pub struct MailNote {
     pub written_at: u64,
 }
 
+/// Words for a ticket's agent, sealed while the terminal was away (T-881):
+/// queued on its return as the phone's Queue would, never a steer. The
+/// letter says `"kind": "prompt"`; `session` is the agent the page saw, a
+/// hint only, since the words are the ticket's.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MailPrompt {
+    pub ticket: String,
+    #[serde(default)]
+    pub session: Option<String>,
+    pub text: String,
+    #[serde(default)]
+    pub written_at: u64,
+}
+
 /// What a sealed letter carries.
 #[derive(Clone, Debug)]
 pub enum Letter {
     Ticket(MailTicket),
     Note(MailNote),
+    Prompt(MailPrompt),
 }
 
-/// Read an opened letter: a note edit when it says so, else a ticket. An
-/// older host reads a note's letter as a ticket with no title and refuses
-/// it, so it never files one as the other.
+/// Read an opened letter: a note edit or a prompt when it says so, else a
+/// ticket. An older host reads either as a ticket with no title and
+/// refuses it, so it never files one as the other.
 pub fn read_letter(body: serde_json::Value) -> Option<Letter> {
-    if body.get("kind").and_then(serde_json::Value::as_str) == Some("note") {
-        serde_json::from_value(body).ok().map(Letter::Note)
-    } else {
-        serde_json::from_value(body).ok().map(Letter::Ticket)
+    match body.get("kind").and_then(serde_json::Value::as_str) {
+        Some("note") => serde_json::from_value(body).ok().map(Letter::Note),
+        Some("prompt") => serde_json::from_value(body).ok().map(Letter::Prompt),
+        _ => serde_json::from_value(body).ok().map(Letter::Ticket),
     }
 }
 
@@ -1097,6 +1112,13 @@ mod tests {
             (Some("01K"), Some(3), "new words")
         );
         assert!(read_letter(serde_json::json!({"kind": "note", "text": "no ticket"})).is_none());
+        let prompt = serde_json::json!({"kind": "prompt", "ticket": "01J", "session": "5f",
+            "text": "carry on", "written_at": 5});
+        let Some(Letter::Prompt(p)) = read_letter(prompt) else { panic!("prompt") };
+        assert_eq!((p.ticket.as_str(), p.text.as_str()), ("01J", "carry on"));
+        assert!(read_letter(serde_json::json!({"kind": "prompt", "ticket": "01J"})).is_none());
+        let body = serde_json::json!({"kind": "prompt", "ticket": "01J", "text": "x"});
+        assert!(serde_json::from_value::<MailTicket>(body).is_err());
         // What an older host does with a note's letter: no title, no ticket.
         let body = serde_json::json!({"kind": "note", "ticket": "01J", "text": "x"});
         assert!(serde_json::from_value::<MailTicket>(body).is_err());

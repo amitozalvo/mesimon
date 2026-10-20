@@ -68,8 +68,8 @@ shows every ticket by column: one column at a time on a phone, all of them side 
 side on a wide screen. The status pill says whether the board is live. When it is not, the
 page says which hop is out of reach (this browser, the relay, or your terminal),
 keeps showing the board as it last saw it, or as your terminal last left it at the
-relay when that is newer, marked as not live, and disables answers and prompts until
-the terminal is back.
+relay when that is newer, marked as not live, and disables answers until the terminal
+is back. A prompt to an awake agent can still be written then (see below).
 
 ## While your terminal is away
 
@@ -83,8 +83,8 @@ only a copy your terminal sealed.
 
 When the page finds your terminal out of reach, it reads that copy: the board, a
 ticket's notes and the conversation's newest page, each marked **As of** the time your
-terminal wrote it. Earlier parts of the conversation, the agent's screen, answers and
-prompts wait for your terminal. The copy is read again each time the page opens while
+terminal wrote it. Earlier parts of the conversation, the agent's screen and answers
+wait for your terminal. The copy is read again each time the page opens while
 your terminal is away; the notes and the conversation in it are not kept in this
 browser.
 
@@ -96,6 +96,26 @@ turning it on writes them again. Revoking a browser deletes its copy, and disabl
 Remote Control deletes all of them. Done while the relay is out of reach, each of these
 takes effect as soon as your terminal reaches it again. A relay older than this version
 keeps no copy.
+
+### Prompts while your terminal is away
+
+A prompt to an agent that was awake when your terminal was last live can still be
+sent. The first time, a sheet says where it goes and asks once more; after that it goes
+when you press send. It is sealed so only your terminal can read it, and waits above the
+composer:
+
+- **A clock**: in this browser, because this browser or the relay is out of reach. It
+  goes out by itself when they are back, reloads included.
+- **One tick**: at the relay, waiting for your terminal. **Take back** deletes it there
+  and puts the words back in the box.
+
+When your terminal is back, the words are queued for the ticket's agent, as **Queue**
+queues them: they go when its turn ends, and the queued row shows them meanwhile. They
+take the place of words already queued on that ticket, and the message says whose. If
+the agent is asleep or gone by then, the terminal refuses them and the words come back to
+the box. A ticket holds one such prompt at a time, and it is delivered at most once.
+A parked agent cannot be woken this way, and a prompt with pictures needs the terminal
+live. A terminal older than this version never offers it.
 
 ## Filing a ticket
 
@@ -360,15 +380,16 @@ revoke it there.
 The daemon stores `mesophon.json` (mode 0600) in its existing per-board state
 directory, containing the opaque board identity, the device grants, whether the board
 keeps a copy at the relay, and the ids of the
-tickets it filed most recently from the relay, with their keys, and of the note edits it
-answered most recently, with their answers. After Remote Control is disabled, and until
+tickets it filed most recently from the relay, with their keys, and of the note edits and
+prompts it answered most recently, with their answers. After Remote Control is disabled, and until
 the relay has heard the board has no browsers left, `mesophon-retired.json` (mode 0600)
 holds that board's identity and its host's. A ticket filed from the
 relay also records that id in its own `ticket.toml`, and, once it is picked up, when and
 how (`[picked]`: opened at the desk or an agent started). Pairing
 secrets and delivery receipts live in memory. The browser stores device keys,
 credentials, remembered grants and, per grant, the last board it saw, the tickets
-it sent, and the notes it read and the note edits it sent, in IndexedDB. The remembered board holds ticket keys, titles, columns (with
+it sent, the notes it read and the note edits it sent, and the prompts waiting for an
+away terminal (with their words, until it answers), in IndexedDB. The remembered board holds ticket keys, titles, columns (with
 their descriptions), tags, the board’s tag names, agent states and when each agent
 entered its state; never output, an agent’s step or reply line, prompt or queued text,
 tool input or dialog content. The Sent list keeps every ticket still on its way (sealed,
@@ -381,7 +402,7 @@ name, author and time, and the bodies read; a note edit is kept, with its words,
 terminal answers it. Revocation and **Forget this browser** delete all three, and forgetting one board deletes its own. The page’s service worker keeps a
 copy of the page’s own files (HTML, scripts, styles, fonts, icons and the Wasm module)
 in the browser’s Cache Storage, and nothing of the board. The conversation, the screen and unsent prompts remain in memory. The relay routes encrypted content and stores routing metadata for
-Mesophon, plus the tickets and note edits that wait for an away terminal and the terminal’s answers:
+Mesophon, plus the tickets, note edits and prompts that wait for an away terminal and the terminal’s answers:
 sealed, with the board, device and ticket ids, deleted after 30 days; and each paired
 browser's copy of the board, its notes and the newest pages of its conversations, sealed
 to that browser and kept by slot, deleted after 7 days without a refresh. Browser assets are served by the relay, so the relay’s web

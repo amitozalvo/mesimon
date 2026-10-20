@@ -3066,6 +3066,27 @@ dialog.compose::backdrop {
   color: var(--ink);
   font-weight: 600;
 }
+/* The away sheet's three steps (T-881): where the words wait, when. */
+.away-steps {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.away-steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: var(--ink2);
+  font-size: 0.9375rem;
+  line-height: 1.45;
+}
+.away-steps .icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--ink3);
+}
 .compose-body textarea {
   min-height: 112px;
   resize: vertical;

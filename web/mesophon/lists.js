@@ -297,7 +297,11 @@ function Asleep({ store }) {
       </div>
     </div>
     <p class="hero-body">${link === "asleep"
-      ? "Your Mac may be asleep, or mesimon isn’t running. This is the board as it was then. Answering, prompting and sending tickets need your terminal back."
+      ? `Your Mac may be asleep, or mesimon isn’t running. This is the board as it was then. ${store.collects
+        ? store.active?.mailPrompts
+          ? "Tickets and messages to awake agents wait for it; answering and starting agents need it back."
+          : "Tickets wait for it; answering and prompting need it back."
+        : "Answering, prompting and sending tickets need your terminal back."}`
       : "This browser can’t reach the relay right now. This is the board as it was when it last could."}</p>
   </section>`;
 }

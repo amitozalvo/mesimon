@@ -140,6 +140,20 @@ function fixture() {
           socket.message({ kind: "receipt", board: "board-a", receipt: { id, sealed: true, answer: m.answer } });
         return;
       }
+      // Words for an agent (T-881): queued on its ticket, as the host's
+      // queued ask, or refused where no awake agent can take them.
+      if (body.kind === "prompt") {
+        this.mailedPrompts.push(body);
+        const t = this.tickets.find((x) => x.id === body.ticket);
+        if (t?.agent && t.agent.state !== "sleeping") {
+          t.queued = body.text;
+          m.answer = { result: "delivery", status: "queued" };
+        } else m.answer = { result: "rejected", message: "the agent was asleep: wake it with these words" };
+        m.sent = true;
+        for (const socket of this.mailboxes())
+          socket.message({ kind: "receipt", board: "board-a", receipt: { id, sealed: true, answer: m.answer } });
+        return;
+      }
       const n = Object.values(this.mail).filter((x) => x.answer && x.answer.result === "created").length + 1;
       const ticket = { id: `mailed-${n}`, key: `T-${199 + n}`, title: body.title, column: body.column || "TODO", agent: null };
       this.tickets.push(ticket);
@@ -153,6 +167,7 @@ function fixture() {
     notes: {},
     noteWrites: [],
     told: [],
+    mailedPrompts: [],
     noteRow(n) {
       return { id: n.id, name: n.name, by: n.by, at: n.at, rev: n.rev };
     },
@@ -2580,6 +2595,137 @@ async function shelfFlow(browser, engineName, size, viewport) {
   }
 }
 
+// Words for an agent while the terminal is away (T-881): the first send
+// explains where they go, they wait sealed with Take back, survive a
+// reload, queue on the agent when the terminal is back, and come back to
+// the box when the agent is gone by then.
+async function mailPromptFlow(browser, engineName, size, viewport) {
+  const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
+  await context.addInitScript(fixture);
+  await context.addInitScript(() => window.fixture.features.push("mail_prompts"));
+  await context.route("**/pkg/mesimon_web.js", (route) =>
+    route.fulfill({ contentType: "text/javascript", body: fakeCrypto }),
+  );
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  const toast = (text) => until(page, (text) => document.querySelector("#toast").textContent.includes(text), text);
+  const shot = (name) =>
+    page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-${name}.png`) });
+  const open = async (id) => {
+    if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
+    await page.locator(`.ticket[data-id="${id}"]`).locator("visible=true").first().click();
+  };
+  const away = () =>
+    page.evaluate(() => {
+      fixture.refuse = true;
+      fixture.channel()?.close();
+    });
+  const sheet = page.locator("#away-sheet");
+  const letter = page.locator("#letter-row");
+  try {
+    await page.goto(origin);
+    await until(page, () => !document.querySelector("#pair").disabled);
+    await page.getByLabel("Pairing code", { exact: true }).fill("fixture-pair-code");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    await away();
+    await until(page, () => document.querySelector("#shell").dataset.link === "asleep");
+    await open("ticket-0");
+    assert.match(await page.locator("#prompt").getAttribute("placeholder"), /waits for your terminal/);
+    await page.locator("#prompt").fill("Written while away");
+    assert.match(await page.locator("#away-what").textContent(), /Waits for your terminal, then queues for claude/);
+
+    // The first send explains, and Cancel sends nothing.
+    await page.locator("#send").click();
+    await sheet.waitFor({ state: "visible" });
+    assert.match(await sheet.textContent(), /Your terminal is out of reach/);
+    assert.match(await sheet.textContent(), /queued for claude on T-0/);
+    await shot("away-sheet");
+    await sheet.getByRole("button", { name: "Cancel" }).click();
+    await sheet.waitFor({ state: "hidden" });
+    assert.equal(await page.evaluate(() => fixture.deposits.length), 0);
+    assert.equal(await page.locator("#prompt").inputValue(), "Written while away");
+    await page.locator("#send").click();
+    await sheet.waitFor({ state: "visible" });
+    await page.locator("#away-send").click();
+    await sheet.waitFor({ state: "hidden" });
+    await letter.waitFor({ state: "visible" });
+    await until(page, () => /at the relay/.test(document.querySelector("#letter-meta").textContent));
+    const sealed = await page.evaluate(() => fixture.deposits.at(-1));
+    assert.deepEqual([sealed.kind, sealed.ticket, sealed.session, sealed.text],
+      ["prompt", "ticket-0", "session-0", "Written while away"]);
+    assert.equal(await page.locator("#letter-text").textContent(), "Written while away");
+    assert.equal(await page.locator("#prompt").inputValue(), "");
+    await page.locator("#prompt").fill("A second one");
+    assert(await page.locator("#send").isDisabled(), "one message waits per ticket");
+    await shot("away-letter");
+
+    // Take back: the relay lets it go and the words are in the box again,
+    // beside what was typed since.
+    await page.locator("#letter-back").click();
+    await letter.waitFor({ state: "hidden" });
+    await toast("Taken back");
+    assert.equal(await page.locator("#returned-text").textContent(), "Written while away");
+    await page.locator("#prompt").fill("Written while away");
+    // Explained once: the next one goes at once.
+    await page.locator("#send").click();
+    await letter.waitFor({ state: "visible" });
+    assert(await sheet.isHidden());
+
+    // A reload keeps it on its way, once it is on disk.
+    await until(
+      page,
+      () =>
+        new Promise((resolve) => {
+          const open = indexedDB.open("mesophon", 1);
+          open.onsuccess = () => {
+            const get = open.result.transaction("device").objectStore("device").get("prompts:board-a");
+            get.onsuccess = () => resolve((get.result?.items || []).some((i) => i.status === "relay"));
+          };
+        }),
+    );
+    await page.reload();
+    await open("ticket-0");
+    await letter.waitFor({ state: "visible" });
+    await until(page, () => /at the relay/.test(document.querySelector("#letter-meta").textContent));
+
+    // The terminal is back: queued on the agent, and the queued row holds it.
+    await page.evaluate(() => {
+      fixture.refuse = false;
+      fixture.collect();
+    });
+    await toast("Queued for claude on T-0");
+    await letter.waitFor({ state: "hidden" });
+    await until(page, () => document.querySelector("#queued-text")?.textContent === "Written while away");
+    assert.deepEqual(await page.evaluate(() => fixture.mailedPrompts.map((p) => p.text)),
+      ["Written while away"], "the withdrawn letter never reached the terminal");
+
+    // Away again, and the agent parked by then: the words come back.
+    await away();
+    await until(page, () => document.querySelector("#shell").dataset.link === "asleep");
+    await page.locator("#prompt").fill("For a parked agent");
+    await page.locator("#send").click();
+    await letter.waitFor({ state: "visible" });
+    await page.evaluate(() => {
+      fixture.tickets[0].agent.state = "sleeping";
+      fixture.refuse = false;
+      fixture.collect();
+    });
+    await toast("Not queued: the agent was asleep");
+    await letter.waitFor({ state: "hidden" });
+    assert.equal(await page.locator("#prompt").inputValue(), "For a parked agent");
+    assert.deepEqual(errors, []);
+    console.log(`${engineName} ${size}: words for an away terminal explained, sealed, taken back, kept, queued and given back`);
+  } catch (error) {
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-mail-prompt-failure.png`) });
+    throw error;
+  } finally {
+    await page.evaluate(() => localStorage.clear()).catch(() => {});
+    await context.close();
+  }
+}
+
 async function batchFlow(browser, engineName, size, viewport) {
   const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
   await context.addInitScript(fixture);
@@ -4033,6 +4179,7 @@ try {
         await notesFlow(browser, engineName, size, viewport);
         await chatFlow(browser, engineName, size, viewport);
         await shelfFlow(browser, engineName, size, viewport);
+        await mailPromptFlow(browser, engineName, size, viewport);
       }
       await pairLinkFlow(browser, engineName);
       await backFlow(browser, engineName);

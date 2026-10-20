@@ -708,6 +708,44 @@ test("the crown's words name whose agent did what, and a word it does not know a
   assert.equal(crownSentence({ action: "accepted plan" }), "The crown accepted this agent’s plan");
   assert.equal(crownSentence({ action: "levitated", by: "T-9" }), "T-9’s agent levitated");
 });
+test("words for an away terminal wait one per ticket, keep their seal only while local (T-881)", async () => {
+  const { PromptMail, letterWords } = await import("./letters.js");
+  const mail = new PromptMail();
+  const envelope = { id: "letter-1", wrapped: {}, record: {} };
+  const item = mail.add("board", { ticket: "a", key: "T-1", session: "s1", provider: "claude", text: "carry on" }, envelope, 1);
+  assert.equal(item.id, "letter-1", "the relay's id is the item's");
+  assert.equal(mail.of("board", "a"), item);
+  assert.equal(mail.of("board-b", "a"), undefined, "another board's ticket");
+  assert.deepEqual(mail.waiting("board"), [item]);
+  assert.match(letterWords(item), /this browser/);
+  assert.deepEqual(mail.stored("board")[0].envelope, envelope, "a reload can still send it");
+  mail.deposited(item);
+  assert.deepEqual([item.status, item.envelope], ["relay", undefined]);
+  assert.deepEqual(mail.atRelay("board"), [item]);
+  assert.match(letterWords(item), /relay/);
+  assert.equal(mail.stored("board")[0].envelope, undefined);
+  const lost = mail.add("board", { ticket: "b", key: "T-2", text: "lost" }, { id: "letter-2" }, 2);
+  mail.deposited(lost);
+  mail.gone(lost);
+  assert.equal(lost.status, "unknown");
+  assert.match(letterWords(lost), /unknown/);
+  const reloaded = new PromptMail();
+  reloaded.restore("board", [
+    ...JSON.parse(JSON.stringify(mail.stored("board"))),
+    { id: "letter-3", ticket: "c", text: "sealed copy lost", status: "local", at: 3 },
+    { id: "letter-4", ticket: "a", text: "a second for a", status: "relay", at: 4 },
+    { id: "letter-5", ticket: "d", text: "settled", status: "queued", at: 5 },
+  ]);
+  assert.deepEqual(
+    reloaded.forBoard("board").map((i) => [i.ticket, i.status, i.provider]),
+    [["a", "relay", "claude"], ["b", "unknown", ""], ["c", "unknown", ""]],
+  );
+  mail.remove("letter-1");
+  assert.equal(mail.of("board", "a"), undefined);
+  mail.purge("board");
+  assert.deepEqual(mail.forBoard("board"), []);
+});
+
 test("a start goes clock to two ticks, settles once, and never crosses boards", async () => {
   const { Starts, startWaiting } = await import("./starts.js");
   const starts = new Starts();

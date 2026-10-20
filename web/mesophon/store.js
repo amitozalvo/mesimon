@@ -4,7 +4,7 @@
 import { Connection } from "./connection.js";
 import { BoardState } from "./board.js";
 import { Sessions, answerBusy, dropPictures, landed } from "./sessions.js";
-import { sendRefused, waitsOnYou } from "./queue.js";
+import { replacedWords, sendRefused, waitsOnYou } from "./queue.js";
 import { Sent } from "./sent.js";
 import { Mailbox } from "./mailbox.js";
 import { Starts, startWaiting } from "./starts.js";
@@ -14,6 +14,7 @@ import { showAlert, clearAlerts } from "./awareness.js";
 import { insertToken, linked, nextNumber, picture, pieceOf, unlinked, withoutPicture } from "./pictures.js";
 import { mergePage, tailAsk } from "./transcript.js";
 import { Peeks, shelfItem } from "./shelf.js";
+import { PromptMail } from "./letters.js";
 
 const narrow = () => matchMedia("(max-width: 700px)").matches;
 const receiptOps = ["prompt", "send_now", "take_back", "permission", "dialog", "status"];
@@ -23,6 +24,15 @@ export const DESCRIPTION_MAX_BYTES = 32 * 1024;
 export const PROMPT_MAX_BYTES = 4096;
 // The longest envelope the relay keeps (control::MAIL_BYTES).
 const MAIL_BYTES = 128 * 1024;
+// This browser was told once where words for an away terminal go (T-881).
+const AWAY_EXPLAINED = "mesophon-away-explained";
+function awayExplained() {
+  try {
+    return localStorage.getItem(AWAY_EXPLAINED) === "1";
+  } catch {
+    return false;
+  }
+}
 const sentContext = (item) => `sent:${item.id}`;
 const startContext = (ticket) => `start:${ticket}`;
 // The tier a start or a prompt carries (T-643): a pick this ticket may make
@@ -124,6 +134,11 @@ export class Store {
     this.pane = undefined;
     this.toast = undefined;
     this.depositing = new Set(); // ids handed to the mailbox socket, unanswered
+    // Words for agents sealed while the terminal is away (T-881), and the
+    // sheet that says so before the first one goes ({ ticket }).
+    this.promptMail = new PromptMail();
+    this.promptsLoaded = new Set(); // boards whose stored letters are read
+    this.awayAsk = undefined;
     // The shelf (T-698): the boards this away spell asked the relay about.
     this.peeks = new Peeks();
     // True when this page came from the service worker's kept copy (T-497):
@@ -211,6 +226,8 @@ export class Store {
     this.noteBooks.delete(board);
     this.noteMail.purge(board);
     this.notesLoaded.delete(board);
+    this.promptMail.purge(board);
+    this.promptsLoaded.delete(board);
     if (this.noteDraft?.board === board) this.noteDraft = undefined;
     this.reading = undefined;
     return this.storage?.dropBoards(board).catch(() => {});
@@ -267,6 +284,28 @@ export class Store {
         this.status = "Could not save notes in this browser. They may be lost on reload.";
         this.emit();
       });
+  }
+
+  async restorePrompts(board) {
+    if (!board || this.promptsLoaded.has(board)) return;
+    this.promptsLoaded.add(board);
+    let saved;
+    try {
+      saved = await this.storage.readPrompts(board);
+    } catch {
+      return;
+    }
+    if (!this.promptsLoaded.has(board)) return;
+    this.promptMail.restore(board, saved?.items);
+    if (this.active?.pin.board === board && this.mailbox?.ready) this.mailReady();
+    this.sync();
+  }
+  persistPrompts(board = this.active?.pin.board) {
+    if (!board || !this.storage) return;
+    this.storage.savePrompts(board, { items: this.promptMail.stored(board) }).catch(() => {
+      this.status = "Could not save your waiting messages in this browser. They may be lost on reload.";
+      this.emit();
+    });
   }
 
   // ---- navigation --------------------------------------------------------
@@ -1032,13 +1071,14 @@ export class Store {
     this.depositing.clear();
     const board = this.active?.pin.board;
     if (!board || !this.sent) return;
-    const asked = [...this.sent.forBoard(board), ...this.noteMail.forBoard(board)]
+    const asked = [...this.sent.forBoard(board), ...this.noteMail.forBoard(board), ...this.promptMail.forBoard(board)]
       .filter((i) => i.status === "relay")
       .map((i) => i.id)
       .slice(-128);
     this.mailbox.send({ kind: "sync", board, ids: asked });
     for (const item of this.sent.waiting(board)) this.deposit(item);
     for (const item of this.noteMail.waiting(board)) this.deposit(item);
+    for (const item of this.promptMail.waiting(board)) this.deposit(item);
     this.peeks.again(board);
     this.peekShelf();
     this.emit();
@@ -1098,6 +1138,8 @@ export class Store {
   onMail(wire) {
     const note = wire.id && this.noteMail.get(wire.id);
     if (note) return this.onNoteMail(wire, note);
+    const letter = wire.id && this.promptMail.get(wire.id);
+    if (letter) return this.onPromptMail(wire, letter);
     const item = wire.id && this.sent.get(wire.id);
     if (wire.kind === "deposited" && item) {
       this.depositing.delete(item.id);
@@ -1131,10 +1173,13 @@ export class Store {
       } else this.say("Too late to take back: your terminal has it.");
     } else if (wire.kind === "mailbox" && wire.board === this.active?.pin.board) {
       for (const state of wire.items || []) {
-        const mine = this.sent.get(state.id) || this.noteMail.get(state.id);
+        const mine = this.sent.get(state.id) || this.noteMail.get(state.id) || this.promptMail.get(state.id);
         if (!mine) continue;
         if (state.stage === "answered" && state.receipt) this.onReceipt(mine, state.receipt);
-        else if (state.stage === "gone" && this.noteMail.get(mine.id)) {
+        else if (state.stage === "gone" && this.promptMail.get(mine.id)) {
+          this.promptMail.gone(mine);
+          this.persistPrompts(mine.board);
+        } else if (state.stage === "gone" && this.noteMail.get(mine.id)) {
           this.noteMail.gone(mine);
           this.persistNotes(mine.board);
         } else if (state.stage === "gone") {
@@ -1145,7 +1190,8 @@ export class Store {
     } else if (wire.kind === "shelf" && wire.board === this.active?.pin.board) {
       this.onShelf(wire.items);
     } else if (wire.kind === "receipt" && wire.board === this.active?.pin.board) {
-      const mine = wire.receipt?.id && (this.sent.get(wire.receipt.id) || this.noteMail.get(wire.receipt.id));
+      const id = wire.receipt?.id;
+      const mine = id && (this.sent.get(id) || this.noteMail.get(id) || this.promptMail.get(id));
       if (mine) this.onReceipt(mine, wire.receipt);
     }
     this.emit();
@@ -1160,6 +1206,7 @@ export class Store {
       return;
     }
     if (this.noteMail.get(item.id)) this.onNoteReply(item.id, body);
+    else if (this.promptMail.get(item.id)) this.onPromptReply(item, body);
     else this.onSentReply(item.id, body);
   }
   // Take a ticket back before the host has it: in this browser at once, at
@@ -1844,6 +1891,7 @@ export class Store {
     if (!this.board) this.restoreBoard(chosen);
     this.restoreSent(chosen.pin.board);
     this.restoreNotes(chosen.pin.board);
+    this.restorePrompts(chosen.pin.board);
     this.reading = undefined;
     this.noteDraft = undefined;
     this.sync();
@@ -1867,6 +1915,9 @@ export class Store {
     this.noteBooks.clear();
     this.noteMail = new NoteMail();
     this.notesLoaded.clear();
+    this.promptMail = new PromptMail();
+    this.promptsLoaded.clear();
+    this.awayAsk = undefined;
     this.reading = this.noteDraft = undefined;
     this.composer = emptyDraft(undefined);
     this.active = this.board = this.entry = this.returnBoard = undefined;
@@ -1937,12 +1988,14 @@ export class Store {
     const starts = !!this.connection.features?.includes("start");
     const notes = !!this.connection.features?.includes("notes");
     const filedPictures = !!this.connection.features?.includes("filed_pictures");
+    const mailPrompts = !!this.connection.features?.includes("mail_prompts");
     if (!!chosen.collects !== collects || !!chosen.starts !== starts || !!chosen.notes !== notes
-      || !!chosen.filedPictures !== filedPictures) {
+      || !!chosen.filedPictures !== filedPictures || !!chosen.mailPrompts !== mailPrompts) {
       chosen.collects = collects;
       chosen.starts = starts;
       chosen.notes = notes;
       chosen.filedPictures = filedPictures;
+      chosen.mailPrompts = mailPrompts;
       this.persist();
     }
     this.board = this.boards.get(chosen.pin.board);
@@ -1952,6 +2005,7 @@ export class Store {
     if (!this.board) this.restoreBoard(chosen);
     this.restoreSent(chosen.pin.board);
     this.restoreNotes(chosen.pin.board);
+    this.restorePrompts(chosen.pin.board);
     this.sync();
     this.refresh();
     this.receipts();
@@ -2178,6 +2232,7 @@ export class Store {
     const entry = this.entry;
     const agent = this.board?.current?.agent;
     if (!entry?.draft.trim() || entry.sending) return;
+    if (this.mailsPrompt(this.board?.current)) return this.mailPrompt(entry);
     const starts = this.composerStarts(this.board?.current);
     if (!starts && (!this.live || !agent?.promptable ||
       entry.review || entry.receipt?.waiting || entry.answer?.waiting))
@@ -2241,6 +2296,157 @@ export class Store {
       // The pick is the ticket's now; the next board says so.
       entry.tier = undefined;
     } else entry.delivery = "Delivery unknown. Check the agent before sending again.";
+    this.sync();
+  }
+
+  // ---- words while the terminal is away (T-881) ---------------------------
+  // Whether the composer seals its words for the relay: the terminal is out
+  // of reach, it collected mail and took words for agents when last live,
+  // and the ticket's agent was awake then. A parked agent wakes from a live
+  // page only: a wake hours later, with nobody watching, is not asked for.
+  mailsPrompt(ticket) {
+    const agent = ticket?.agent;
+    return !this.live && this.collects && !!this.active?.mailPrompts && !!agent && agent.state !== "sleeping";
+  }
+  // The ticket's letter on its way, or lost: one at a time, as the host
+  // keeps one queued ask per ticket.
+  letterOf(ticket) {
+    return ticket && this.active ? this.promptMail.of(this.active.pin.board, ticket.id) : undefined;
+  }
+  mailPrompt(entry) {
+    const ticket = this.board?.current;
+    if (!this.mailsPrompt(ticket) || this.letterOf(ticket)) return;
+    if (entry.pictures.length) {
+      entry.delivery = "Pictures need your terminal online.";
+      this.sync();
+      return;
+    }
+    // The first one says where the words go, and when, before they go.
+    if (!awayExplained()) {
+      this.awayAsk = { ticket: ticket.id };
+      this.emit();
+      return;
+    }
+    this.sealPrompt(entry, ticket);
+  }
+  confirmAway() {
+    const ask = this.awayAsk;
+    this.awayAsk = undefined;
+    try {
+      localStorage.setItem(AWAY_EXPLAINED, "1");
+    } catch {
+      /* Explained again next time. */
+    }
+    const ticket = this.board?.current;
+    if (ask && ticket?.id === ask.ticket && this.entry) this.sealPrompt(this.entry, ticket);
+    this.sync();
+  }
+  closeAway() {
+    this.awayAsk = undefined;
+    this.emit();
+  }
+  sealPrompt(entry, ticket) {
+    const text = entry.draft;
+    if (!text.trim() || this.letterOf(ticket)) return;
+    if (new TextEncoder().encode(text).length > PROMPT_MAX_BYTES) {
+      entry.delivery = "Prompt must fit in 4096 UTF-8 bytes.";
+      this.sync();
+      return;
+    }
+    const { session, provider } = ticket.agent;
+    let envelope;
+    try {
+      const body = { kind: "prompt", ticket: ticket.id, session, text, written_at: Date.now() };
+      envelope = JSON.parse(this.crypto.mail(JSON.stringify(this.active.pin), JSON.stringify(body)));
+    } catch {
+      entry.delivery = "Could not seal the message in this browser.";
+      this.sync();
+      return;
+    }
+    const board = this.active.pin.board;
+    const item = this.promptMail.add(board, { ticket: ticket.id, key: ticket.key, session, provider, text }, envelope);
+    entry.draft = "";
+    entry.delivery = "";
+    this.persistPrompts(board);
+    if (!this.deposit(item))
+      this.say(
+        this.link === "nonet"
+          ? "Saved in this browser. It goes out when you’re back online."
+          : "Saved in this browser. It goes out when the relay answers.",
+        "clock",
+      );
+    this.sync();
+  }
+  // The words go back to the ticket's box, beside a draft written since.
+  giveBack(item) {
+    const ticket = this.boards.get(item.board)?.tickets.find((t) => t.id === item.ticket);
+    const entry = ticket && this.sessions.get(item.board, ticket);
+    if (entry) this.sessions.retain(entry, item.text, item.session);
+  }
+  onPromptMail(wire, item) {
+    if (wire.kind === "deposited") {
+      this.depositing.delete(item.id);
+      const before = item.status;
+      this.promptMail.deposited(item);
+      if (before !== item.status) {
+        this.persistPrompts(item.board);
+        if (!this.live) this.say("Waits at the relay for your terminal.", "one");
+      }
+    } else if (wire.kind === "refused") {
+      this.depositing.delete(item.id);
+      // Transient: it stays in this browser and goes again with the socket.
+      if (wire.code === "unavailable") return;
+      this.promptMail.remove(item.id);
+      this.giveBack(item);
+      this.persistPrompts(item.board);
+      this.say(wire.code === "capacity"
+        ? "Not sent: too much waits at the relay. Your words are back in the box."
+        : "Not sent: the relay did not keep it. Your words are back in the box.");
+    } else if (wire.kind === "withdrawn") {
+      if (wire.removed) {
+        this.promptMail.remove(item.id);
+        this.giveBack(item);
+        this.persistPrompts(item.board);
+        this.say("Taken back. Your words are in the box.");
+      } else this.say("Too late to take back: your terminal has it.");
+    }
+    this.sync();
+  }
+  // The terminal's sealed answer: queued, and the ticket's queued row holds
+  // the words from here; or refused, and the box holds them again.
+  onPromptReply(item, body) {
+    const queued = body?.result === "delivery" && body.status === "queued";
+    const refused = body?.result === "rejected" || body?.result === "revoked";
+    if (queued || refused) this.promptMail.remove(item.id);
+    else item.status = "unknown";
+    if (queued) {
+      const replaced = replacedWords(body.replaced);
+      this.say(`Queued for ${item.provider || "the agent"} on ${item.key}.${replaced ? ` ${replaced}` : ""}`, "two");
+      if (this.live) this.refresh();
+    } else if (refused) {
+      this.giveBack(item);
+      const why = body.result === "revoked" ? "this browser may no longer prompt it" : body.message || "your terminal refused it";
+      this.say(`Not queued: ${why}. Your words are back in the box.`);
+    }
+    this.persistPrompts(item.board);
+    this.sync();
+  }
+  // Take a letter back before the terminal has it, or let a lost one go.
+  retractPrompt(id) {
+    const item = this.promptMail.get(id);
+    if (!item) return;
+    if (item.status === "relay") {
+      if (!this.mailbox?.send({ kind: "withdraw", board: this.active.pin.board, id }))
+        this.say("Taking it back needs the relay. Try again when you’re back online.");
+      this.emit();
+      return;
+    }
+    this.promptMail.remove(id);
+    if (item.status === "local") {
+      this.giveBack(item);
+      this.say("Taken back. It never left this browser.");
+    }
+    this.persistPrompts(item.board);
     this.sync();
   }
 

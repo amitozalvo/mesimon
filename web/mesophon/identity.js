@@ -1,9 +1,9 @@
 // Device keys and paired boards share one atomic IndexedDB record. Beside it,
 // per grant: the last board it saw (titles, columns, tags and agent states,
 // never output, prompts or tool input), the tickets this browser sent it, and
-// the notes it read and the edits it sent (T-532). Revoke and forget drop all
-// three.
-const remembered = ["board:", "sent:", "notes:"];
+// the notes it read and the edits it sent (T-532), and the words for its
+// agents waiting for the terminal (T-881). Revoke and forget drop them all.
+const remembered = ["board:", "sent:", "notes:", "prompts:"];
 
 export async function openIdentity() {
   const db = await new Promise((resolve, reject) => {
@@ -31,6 +31,9 @@ export async function openIdentity() {
     readNotes: (board) => run("readonly", (s) => s.get(`notes:${board}`)),
     saveNotes: (board, value) =>
       run("readwrite", (s) => s.put(value, `notes:${board}`)),
+    readPrompts: (board) => run("readonly", (s) => s.get(`prompts:${board}`)),
+    savePrompts: (board, value) =>
+      run("readwrite", (s) => s.put(value, `prompts:${board}`)),
     // One board's memory, or every board's when none is named.
     dropBoards: (board) =>
       run("readwrite", (s) => {

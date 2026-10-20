@@ -28977,3 +28977,52 @@ row, is not a hit (one line is what the picker can show, and the rule is one sen
 note names on the snapshot are not searched apart from their bodies (the name is the body's
 first line, so it is covered); the phone's search is unchanged.
 
+## Remote Control queues a prompt while the terminal is away (T-881, 2026-10-21, "Allow to queue messages from remote control if offline ∙ Maybe add a popup so user will understand")
+
+**Built: a third letter kind.** A prompt written while the terminal is out of reach is sealed
+for the relay's mailbox as T-497's tickets and T-532's note edits are: the letter's JSON says
+`"kind": "prompt"` with `ticket`, `session` (a hint only) and `text`
+(`mesophon::MailPrompt`, `Letter::Prompt`). No crypto, Wasm or relay change: the relay keeps
+it under the same caps and cannot read it. An older host reads it as a ticket with no title
+and refuses it, and the page sends one only to a host whose last handshake said
+`mail_prompts` (offered beside `mailbox`, remembered on the identity's board entry as
+`mailPrompts`). Prompts go through the mailbox only while the terminal is away; live, the
+live op with its steer, tiers, pictures and receipts is unchanged.
+
+**Decided: it is a Queue, never a steer, and only on an awake agent.** On collection the host
+parks the words as the ticket's queued ask (`park_ask`, `QueuedSeat::Pane`, `Asker::Person`)
+on the pane agent the ticket has then, whichever session the page saw
+(`mail_prompt_seat`), authorized as `PromptExisting` on that session; words already queued
+on the ticket are replaced and the receipt says whose, as the live Queue does. A parked
+agent or none is refused, and the words go back to the box: a wake from a letter would
+launch hours later with nobody watching. The page offers the road only where the remembered
+board shows an agent not sleeping.
+
+**Exactly once:** the answer goes in `Stored.noted` (the ring T-532's note letters use, now
+`control_answered`/`control_keep_answer`) before the queue drains, so the words reach the
+pane only after the ring says so. A crash before that replays the letter, and a pane ask is
+memory-only, so nothing goes twice; a crash after it can lose the queued words, never repeat
+them.
+
+**The page** (`letters.js`, `PromptMail`; kept at `prompts:<grant>` in IndexedDB beside
+`notes:`, dropped by revoke and forget): one letter per ticket, a clock in this browser, one
+tick at the relay with **Take back** (the mailbox's `withdraw`), and on the host's sealed
+receipt gone (the queued row now shows the words) or refused (`Sessions::retain` puts the
+words back, beside a newer draft). A letter the relay lost reads "Delivery unknown" with
+**Dismiss**, since it may have arrived. **The popup asked for is the away sheet**
+(`AwaySheet`): the first send while away explains in three lines where the words wait, when
+they reach the agent and that they can be taken back, Cancel sending nothing; it is said
+once per browser (`localStorage`, a per-viewer convenience). After that the composer's own
+line and placeholder say it. The away hero now says messages wait when the host takes them.
+
+Tests: `a_letter_is_a_note_only_when_it_says_so` (core, the prompt's kind),
+`a_mailed_prompt_queues_only_on_an_awake_agent` (daemon), a state test for `PromptMail`, and
+the UX suite's `mailPromptFlow` in Chromium and WebKit at three sizes (the sheet and its
+Cancel, sealed with the session, one per ticket, Take back beside a newer draft, kept across
+a reload, queued on return with the queued row showing it, given back for a parked agent).
+**Not verified:** the relay's acceptance tests (no relay change; letters are opaque to it), a
+physical phone, the hosted relay.
+
+**Owed:** a CHANGELOG line at the next bump — **Added:** Remote Control can send a prompt
+while your terminal is out of reach: it waits sealed at the relay, and is queued for the agent
+when the terminal is back. The first time, a sheet explains where it goes.

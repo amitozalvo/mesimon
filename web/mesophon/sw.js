@@ -23,6 +23,7 @@ const PAGE = [
   "./html.js",
   "./icons.js",
   "./identity.js",
+  "./letters.js",
   "./lists.js",
   "./mailbox.js",
   "./markdown.js",

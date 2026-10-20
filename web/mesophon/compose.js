@@ -250,6 +250,56 @@ export function StartSheet({ store }) {
   </dialog>`;
 }
 
+// Before the first message to an agent while the terminal is away (T-881):
+// where the words wait, when they reach the agent, and that they can be
+// taken back until then. Said once in this browser.
+export function AwaySheet({ store }) {
+  const ref = useRef();
+  const ask = store.awayAsk;
+  const ticket = ask && store.board?.tickets.find((t) => t.id === ask.ticket);
+  useLayoutEffect(() => {
+    const dialog = ref.current;
+    if (!dialog) return;
+    if (ask && ticket && !dialog.open) dialog.showModal();
+    if ((!ask || !ticket) && dialog.open) dialog.close();
+  });
+  if (!ask || !ticket?.agent) return html`<dialog id="away-sheet" class="compose" ref=${ref}></dialog>`;
+  const who = ticket.agent.provider;
+  return html`<dialog id="away-sheet" class="compose" ref=${ref} aria-labelledby="away-heading"
+      onCancel=${(e) => {
+        e.preventDefault();
+        store.closeAway();
+      }}
+      onClose=${() => store.closeAway()}
+      onClick=${(e) => {
+        if (e.target === e.currentTarget) store.closeAway();
+      }}>
+    <form class="compose-form" onSubmit=${(e) => {
+      e.preventDefault();
+      store.confirmAway();
+    }}>
+      <header class="compose-head">
+        <button type="button" class="btn btn-quiet" onClick=${() => store.closeAway()}>Cancel</button>
+        <h2 id="away-heading">Your terminal is out of reach</h2>
+        <span></span>
+      </header>
+      <div class="compose-body">
+        <p>Your message can wait for it, sealed so only your terminal can read it.</p>
+        <ol class="away-steps">
+          <li><${Icon} name="lock" size=${16} /><span>Now it waits in this browser, then at the relay.</span></li>
+          <li><${Icon} name="terminal" size=${16} /><span>When your terminal is back, it is queued for ${who} on ${ticket.key}.</span></li>
+          <li><${Icon} name="hourglass" size=${16} /><span>${who} reads it once its turn ends, as Queue does.</span></li>
+        </ol>
+        <p class="field-note">You can take it back until your terminal has it. If ${who} is gone by then, the words come back here.</p>
+      </div>
+      <footer class="compose-foot">
+        <button id="away-send" type="submit" class="btn btn-pri compose-send">
+          <${Icon} name="moon" size=${18} /><span>Queue for later</span></button>
+      </footer>
+    </form>
+  </dialog>`;
+}
+
 // Where a ticket's next agent works (T-642), the TUI's Shift+Tab: its own
 // worktree or the shared checkout, open until an agent stands in it or its
 // worktree is cut, and then said rather than offered.
