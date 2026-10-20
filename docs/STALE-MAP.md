@@ -28991,11 +28991,16 @@ live op with its steer, tiers, pictures and receipts is unchanged.
 
 **Decided: it is a Queue, never a steer, and only on an awake agent.** On collection the host
 parks the words as the ticket's queued ask (`park_ask`, `QueuedSeat::Pane`, `Asker::Person`)
-on the pane agent the ticket has then, whichever session the page saw
-(`mail_prompt_seat`), authorized as `PromptExisting` on that session; words already queued
-on the ticket are replaced and the receipt says whose, as the live Queue does. A parked
-agent or none is refused, and the words go back to the box: a wake from a letter would
-launch hours later with nobody watching. The page offers the road only where the remembered
+on the ticket's pane agent, and only when it is the session the page wrote to
+(`mail_prompt_seat`, as the live prompt's `control_target` binds it; a wake keeps the id),
+authorized as `PromptExisting` on that session. Words for one conversation never land in
+another: a ticket whose agent was replaced since refuses them, and the page gives them back
+for review ("Session changed"). As the live Queue, words still going into the pane
+(`parked`, `steering`, `pending_submit`) refuse it, and words already queued on the ticket
+are replaced with the receipt saying whose. A parked agent or none is refused too: a wake
+from a letter would launch hours later with nobody watching. (The session binding and the
+going-in refusal were added after a review of the first commit; not a permission gap, since
+a paired browser may prompt any agent on the board, but a wrong-conversation delivery.) The page offers the road only where the remembered
 board shows an agent not sleeping.
 
 **Exactly once:** the answer goes in `Stored.noted` (the ring T-532's note letters use, now

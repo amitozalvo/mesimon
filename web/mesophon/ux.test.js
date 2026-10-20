@@ -145,7 +145,9 @@ function fixture() {
       if (body.kind === "prompt") {
         this.mailedPrompts.push(body);
         const t = this.tickets.find((x) => x.id === body.ticket);
-        if (t?.agent && t.agent.state !== "sleeping") {
+        if (t?.agent && t.agent.session !== body.session)
+          m.answer = { result: "rejected", message: "the ticket has another agent now: read the words again before sending" };
+        else if (t?.agent && t.agent.state !== "sleeping") {
           t.queued = body.text;
           m.answer = { result: "delivery", status: "queued" };
         } else m.answer = { result: "rejected", message: "the agent was asleep: wake it with these words" };
@@ -2715,6 +2717,26 @@ async function mailPromptFlow(browser, engineName, size, viewport) {
     await toast("Not queued: the agent was asleep");
     await letter.waitFor({ state: "hidden" });
     assert.equal(await page.locator("#prompt").inputValue(), "For a parked agent");
+
+    // Away again, and a new agent on the ticket by then: words for the old
+    // conversation never reach it, and come back for review.
+    await page.evaluate(() => (fixture.tickets[0].agent.state = "working"));
+    await until(page, () => document.querySelector("#connection").textContent === "Connected");
+    await away();
+    await until(page, () => document.querySelector("#shell").dataset.link === "asleep");
+    await page.locator("#prompt").fill("For the old conversation");
+    await page.locator("#send").click();
+    await letter.waitFor({ state: "visible" });
+    await page.evaluate(() => {
+      fixture.tickets[0].agent.session = "session-0b";
+      fixture.refuse = false;
+      fixture.collect();
+    });
+    await toast("Not queued: the ticket has another agent now");
+    await letter.waitFor({ state: "hidden" });
+    assert(!(await page.evaluate(() => fixture.tickets[0].queued || "")).includes("old conversation"));
+    await until(page, () => /Session changed/.test(document.querySelector("#session-warning")?.textContent || "")
+      && !document.querySelector("#session-warning").hidden);
     assert.deepEqual(errors, []);
     console.log(`${engineName} ${size}: words for an away terminal explained, sealed, taken back, kept, queued and given back`);
   } catch (error) {

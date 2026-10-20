@@ -3044,7 +3044,8 @@ impl Daemon {
             return answer;
         }
         let by = Principal::Paired { device: grant.device.to_hex(), grant: grant.id.to_hex() };
-        let answer = self.control_mail_prompt(&by, &prompt.ticket, prompt.text);
+        let target = (prompt.ticket.as_str(), prompt.session.as_deref());
+        let answer = self.control_mail_prompt(&by, target, prompt.text);
         self.control_keep_answer(id, &answer);
         if let Reply::Delivery { .. } = answer {
             self.drain_queue();
@@ -3054,12 +3055,17 @@ impl Daemon {
     }
 
     /// The gates and the park for one mailed prompt, the words not yet sent.
-    fn control_mail_prompt(&mut self, by: &Principal, ticket: &str, text: String) -> Reply {
+    fn control_mail_prompt(
+        &mut self,
+        by: &Principal,
+        (ticket, session): (&str, Option<&str>),
+        text: String,
+    ) -> Reply {
         let reject = |message: &str| Reply::Rejected { message: message.into() };
         let Some(ticket) = self.control_ticket(ticket) else {
             return reject("ticket unavailable");
         };
-        let id = match mail_prompt_seat(&self.board, ticket) {
+        let id = match mail_prompt_seat(&self.board, ticket, session) {
             Ok(id) => id,
             Err(message) => return reject(message),
         };
@@ -3075,6 +3081,14 @@ impl Daemon {
         let Some(text) = mesimon_core::command::sanitize_prompt(&text) else {
             return reject("nothing to send");
         };
+        // As the live Queue: words already going into the pane are not
+        // replaced by a letter.
+        if self.parked(id)
+            || self.steering(id)
+            || self.board.sessions.iter().any(|s| s.id == id && s.pending_submit)
+        {
+            return reject("a prompt is already going in to this agent");
+        }
         let replaced = self.queued.iter().find(|q| q.ticket == ticket).map(|q| api::Replaced {
             by: q
                 .by
@@ -4177,12 +4191,21 @@ fn seat_refusal(board: &Board, ticket: ulid::Ulid) -> Option<&'static str> {
     }
 }
 
-/// The agent a mailed prompt queues on (T-881): the ticket's pane agent as
-/// it stands when the letter is opened, whichever session the page saw. A
+/// The agent a mailed prompt queues on (T-881): the ticket's pane agent when
+/// the letter is opened, and only when it is the session the page wrote to,
+/// as the live prompt's `control_target` binds it: words for one
+/// conversation never land in another. A wake keeps the session's id. A
 /// parked or absent agent is refused: a wake or a start from a letter would
 /// launch hours later with nobody watching.
-fn mail_prompt_seat(board: &Board, ticket: ulid::Ulid) -> Result<uuid::Uuid, &'static str> {
+fn mail_prompt_seat(
+    board: &Board,
+    ticket: ulid::Ulid,
+    session: Option<&str>,
+) -> Result<uuid::Uuid, &'static str> {
     match board.pane_target(ticket) {
+        Some(rec) if session.and_then(|s| uuid::Uuid::parse_str(s).ok()) != Some(rec.id) => {
+            Err("the ticket has another agent now: read the words again before sending")
+        }
         Some(rec) if !rec.observe_only() => Ok(rec.id),
         Some(_) => Err("this ticket's agent is not one mesimon started"),
         None if board.live_agent(ticket).is_some() => {
@@ -6719,20 +6742,29 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         use mesimon_core::board::StopReason;
         let mut board = Board::with_default_columns();
         let ticket = ulid::Ulid(7);
-        assert_eq!(mail_prompt_seat(&board, ticket), Err("no agent on this ticket to take them"));
+        let seat =
+            |board: &Board, ticket, session: &str| mail_prompt_seat(board, ticket, Some(session));
+        let none = uuid::Uuid::nil().to_string();
+        assert_eq!(seat(&board, ticket, &none), Err("no agent on this ticket to take them"));
         board.sessions.push(agent(ticket, SessionKind::Claude, SessionState::Sleeping));
-        assert!(mail_prompt_seat(&board, ticket).is_err_and(|m| m.contains("asleep")));
+        let own = board.sessions[0].id.to_string();
+        assert!(seat(&board, ticket, &own).is_err_and(|m| m.contains("asleep")));
         for state in
             [SessionState::Running, SessionState::Idle { stop_reason: StopReason::EndTurn }]
         {
             board.sessions[0].state = state;
-            assert_eq!(mail_prompt_seat(&board, ticket), Ok(board.sessions[0].id));
+            assert_eq!(seat(&board, ticket, &own), Ok(board.sessions[0].id));
         }
+        // Written to another conversation, or to none: never this one's.
+        assert!(seat(&board, ticket, &none).is_err_and(|m| m.contains("another agent")));
+        assert!(mail_prompt_seat(&board, ticket, None).is_err());
+        assert!(seat(&board, ticket, "not a uuid").is_err());
         board.sessions[0].kind = SessionKind::Codex;
-        assert_eq!(mail_prompt_seat(&board, ticket), Ok(board.sessions[0].id));
-        assert!(mail_prompt_seat(&board, ulid::Ulid(8)).is_err(), "another ticket's agent");
+        assert_eq!(seat(&board, ticket, &own), Ok(board.sessions[0].id));
+        assert!(seat(&board, ulid::Ulid(8), &own).is_err(), "another ticket's agent");
         board.sessions[0] = agent(ticket, SessionKind::Bash, SessionState::Running);
-        assert!(mail_prompt_seat(&board, ticket).is_err(), "a shell is no agent");
+        let shell = board.sessions[0].id.to_string();
+        assert!(seat(&board, ticket, &shell).is_err(), "a shell is no agent");
     }
 
     /// A phone's receipt (T-498) is a clock while the worktree is cut and

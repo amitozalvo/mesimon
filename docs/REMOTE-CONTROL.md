@@ -112,8 +112,8 @@ composer:
 When your terminal is back, the words are queued for the ticket's agent, as **Queue**
 queues them: they go when its turn ends, and the queued row shows them meanwhile. They
 take the place of words already queued on that ticket, and the message says whose. If
-the agent is asleep or gone by then, the terminal refuses them and the words come back to
-the box. A ticket holds one such prompt at a time, and it is delivered at most once.
+the agent is asleep or gone by then, another agent has taken the ticket, or other words
+are still going in to it, the terminal refuses them and the words come back to the box. A ticket holds one such prompt at a time, and it is delivered at most once.
 A parked agent cannot be woken this way, and a prompt with pictures needs the terminal
 live. A terminal older than this version never offers it.
 
