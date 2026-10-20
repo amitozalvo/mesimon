@@ -28847,3 +28847,27 @@ draws from 60 columns, and the row needs 52.
 **Owed:** a CHANGELOG line at the next bump — **Changed:** the board header shows how many
 boards this one is linked to, instead of their names; a board's name shows there only while its
 crown and this one are exchanging a message.
+
+## ask_agent's receipt says the words woke a parked agent (T-880, 2026-10-21, the author: "Tell the crown queueing words to agents woke them up ∙ They attempt to start_agent after ask_agent. Ask agent response should let the crown know it was successful and woke the agent so that the crown would stop doing it")
+
+**What was wrong.** Words for a parked worker are its wake (`QueuedSeat::Wake`): the queue, or
+a `deliver now`, resumes the agent in its conversation with them. The receipt said only
+`road: queued` (or `sent_now`), which a crown read as "delivered later, agent still asleep",
+and it called `start_agent` after the ask. That start either met `already has an agent` or,
+while the words still waited on a busy checkout, woke the agent without them.
+
+**What shipped.** `Response::AgentAsked` carries `wake: Option<AskWake>` (`#[serde(default)]`,
+absent for a pane): `woken` when the words already went and the seat is no longer asleep (or
+its resume waits on the worktree), `when_sent` while they wait (for the checkout, the budget,
+or a person's `^y`). A wake that failed says neither; the feed's `queued_wake_failed` has it.
+The shim renders `wake` plus `wake_about`, a sentence naming the ticket that says start_agent
+is not needed. `CROWN_WAKES` gains one clause next to the start_agent-wakes sentence: ask_agent's
+words to a parked agent wake it as well, as they are sent, so no start_agent follows them.
+
+**Tests.** `an_ask_receipt_says_the_words_woke_a_parked_agent` (render);
+`the_crown_sends_its_asks_to_the_agents_it_started` asserts `when_sent` on the budget-held and
+checkout-queued asks, `None` on a pane, and a new block: a parked worker asked with `deliver
+now` reads `woken`, is awake at once, and a `start_agent` after it is refused. Rig R8 (bare
+ask to a parked worker, `crown:start_agent=1`, a new exact-count form of the `crown:` check)
+passed on Sonnet, claude 2.1.305: one start, one sleep, one ask, the worker answered from its
+conversation.

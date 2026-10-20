@@ -22,7 +22,7 @@ use mesimon_core::board::{
 use mesimon_core::command::{
     AgentAutomoveView, AgentBackgroundView, AgentBoardView, AgentMergeView, AgentNeedsYouView,
     AgentQuestionView, AgentRepoView, AgentStateView, AgentTagView, AgentTicketRow,
-    AgentTicketView, AskRoad, Command, CrownTouch, Deliver, DiffTarget, Envelope, Event,
+    AgentTicketView, AskRoad, AskWake, Command, CrownTouch, Deliver, DiffTarget, Envelope, Event,
     ExternalItem, GraceItem, MergeOutcome, Notice, Pending, PendingAction, Resources, Response,
     TerminalItem, WorktreeItem, WorktreeRepoItem, PROTOCOL_VERSION,
 };
@@ -6397,6 +6397,10 @@ impl Daemon {
                 let sends = held_because.is_none();
                 let replaced =
                     self.queued.iter().any(|q| q.ticket == target && q.by == Some(ticket));
+                let asleep = match seat {
+                    QueuedSeat::Wake(id) => Some(id),
+                    _ => None,
+                };
                 if let Err(message) =
                     self.park_ask(target, seat, text, Asker::Agent(ticket), false, plan)
                 {
@@ -6460,6 +6464,21 @@ impl Daemon {
                     }
                     AskRoad::HeldForPerson => {}
                 }
+                // A parked agent's words are its wake (T-880): gone from the
+                // queue and the seat no longer asleep (or its resume waiting
+                // on the worktree) is woken; still queued wakes it when sent.
+                // A wake that failed says neither, and the feed has it.
+                let wake = asleep.and_then(|id| {
+                    if self.queued.iter().any(|q| q.ticket == target && q.by == Some(ticket)) {
+                        Some(AskWake::WhenSent)
+                    } else if !matches!(self.seat_of(target), QueuedSeat::Wake(_))
+                        || self.pending_resumes.iter().any(|p| p.session == id)
+                    {
+                        Some(AskWake::Woken)
+                    } else {
+                        None
+                    }
+                });
                 // The stamp is read after: a wake moves the agent's state,
                 // which the stamp covers.
                 self.broadcast();
@@ -6470,6 +6489,7 @@ impl Daemon {
                     held_for_person,
                     held_because,
                     road: Some(road),
+                    wake,
                 }
             }
             // The crown's answer (T-569): a question an agent the crown

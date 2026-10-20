@@ -33,7 +33,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
 use mesimon_core::board::AgentTools;
-use mesimon_core::command::{AskRoad, Command, Envelope, Response};
+use mesimon_core::command::{AskRoad, AskWake, Command, Envelope, Response};
 use mesimon_core::mcp::{self, ToolCall};
 use mesimon_core::Principal;
 use serde_json::{json, Value};
@@ -338,7 +338,10 @@ fn render(resp: Response) -> Value {
                  next prompt once idle, beginning with the board's name"
             ),
         })),
-        Response::AgentAsked { key, replaced, seen, held_for_person, held_because, road } => {
+        // `wake` (T-880): words to a parked agent are its wake, said
+        // outright, because a crown that read `queued` there took the agent
+        // for still asleep and called start_agent after it.
+        Response::AgentAsked { key, replaced, seen, held_for_person, held_because, road, wake } => {
             let mut body = json!({
                 "key": key,
                 "replaced": replaced,
@@ -351,6 +354,20 @@ fn render(resp: Response) -> Value {
             }
             if let Some(why) = held_because {
                 body["held_because"] = json!(why);
+            }
+            if let Some(wake) = wake {
+                body["wake"] = json!(wake.word());
+                body["wake_about"] = json!(match wake {
+                    AskWake::Woken => format!(
+                        "{key}'s agent was asleep, and these words woke it in its conversation: \
+                         it is awake now, start_agent is not needed, and the turn that takes \
+                         them wakes this session at its end"
+                    ),
+                    AskWake::WhenSent => format!(
+                        "{key}'s agent is asleep, and these words wake it in its conversation \
+                         when they are sent: start_agent is not needed for it"
+                    ),
+                });
             }
             text(&body)
         }
@@ -637,6 +654,7 @@ mod tests {
                 held_for_person,
                 held_because: None,
                 road,
+                wake: None,
             });
             assert_eq!(v["isError"], false);
             serde_json::from_str::<Value>(v["content"][0]["text"].as_str().unwrap()).unwrap()
@@ -648,6 +666,33 @@ mod tests {
         assert_eq!(body(true, None)["road"], "held_for_person");
         assert_eq!(body(false, None)["road"], "queued");
         assert_eq!(body(false, None)["wakes"], mcp::CROWN_WAKES);
+        assert!(body(false, None).get("wake").is_none(), "a pane's ask wakes nothing");
+    }
+
+    /// T-880: words to a parked agent say they are its wake, so the crown
+    /// does not call start_agent after them.
+    #[test]
+    fn an_ask_receipt_says_the_words_woke_a_parked_agent() {
+        let body = |wake| {
+            let v = render(Response::AgentAsked {
+                key: "T-7".into(),
+                replaced: false,
+                seen: None,
+                held_for_person: false,
+                held_because: None,
+                road: Some(AskRoad::Queued),
+                wake: Some(wake),
+            });
+            serde_json::from_str::<Value>(v["content"][0]["text"].as_str().unwrap()).unwrap()
+        };
+        let woken = body(AskWake::Woken);
+        assert_eq!(woken["wake"], "woken");
+        let about = woken["wake_about"].as_str().unwrap();
+        assert!(about.contains("woke it") && about.contains("start_agent is not needed"), "{about}");
+        let later = body(AskWake::WhenSent);
+        assert_eq!(later["wake"], "when_sent");
+        let about = later["wake_about"].as_str().unwrap();
+        assert!(about.contains("when they are sent") && about.contains("start_agent"), "{about}");
     }
 
     /// Shift+Enter on a start that landed thirty seconds later.

@@ -210,7 +210,9 @@ pub const CROWN_WAKES: &str = concat!(
      checkout_held_by), and a ticket with a worktree or a parked agent keeps the workspace it \
      has. A started agent's first prompt is its ticket's title and description, so the \
      brief is what it works from. start_agent on a ticket whose agent the crown started and \
-     parked wakes that agent, conversation kept, in the workspace it was parked in. A worker \
+     parked wakes that agent, conversation kept, in the workspace it was parked in. ask_agent's \
+     words to such a parked agent wake it as well, as they are sent (the receipt's wake: woken, \
+     or when_sent), so no start_agent follows them. A worker \
      stopped on a question or a \
      plan reads needs-you, and \
      get_ticket on its ticket carries it (needs_you: the reason, the request, and the \

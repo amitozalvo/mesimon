@@ -45,6 +45,7 @@
 #              cwd:<worktree|checkout>, first_prompt, words:<w1,w2,...> (the
 #              card words seen, in order), hooks:<E1,E2,...> (hook frames the
 #              daemon ingested), mod_alone, claude_road_mod, crown:<cmd>
+#              (with `=N`, exactly N of them, T-880)
 #              (a feed line of the crown's), pings, reply:<word> (the
 #              worker's last answer, from its transcript), doctor:<words>,
 #              final:<word>, board_fed:<cmd> (a board line about no
@@ -187,6 +188,28 @@ checks = ["road:mod", "plugin_dir", "words:working,idle,sleeping,working,idle", 
 
   [[test.steps]]
   crown = "R5, its agent is done: do three things in order. Call sleep_agent for {key}. Then call start_agent for {key} with workspace worktree again, which wakes the parked agent. Then call ask_agent for {key} with the text: Which word were you asked to remember? Reply with that word alone and end your turn. Then end your turn with the single line: R5 asked. When the board wakes you because {key}'s agent answered, end your turn with the single line: R5 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
+id = "R8"
+title = "R8 · words to a parked agent are its wake: do the steps below"
+workspace = "worktree"
+brief = "Remember the word kiwi. Reply with the single word done and end your turn. Read no file and run no command."
+expect = "the crown parks its done worker with sleep_agent; then, asked only to put a question to it, it calls ask_agent and no start_agent, because the receipt says the words woke the parked agent (wake: woken, T-880). The worker wakes in its conversation and answers kiwi; start_agent is fed once, for the first start alone."
+checks = ["started_by_crown", "words:working,idle,sleeping,working,idle", "crown:sleep_agent", "crown:ask_agent", "crown:start_agent=1", "reply:kiwi"]
+
+  [[test.steps]]
+  crown = "R8: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: R8 started. When the board wakes you for {key}, end your turn with the single line: R8 ready."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  crown = "R8, its agent is done: call sleep_agent for {key}, then end your turn with the single line: R8 parked."
+  until = { state = "sleeping" }
+
+  [[test.steps]]
+  crown = "R8: ask {key}'s agent which word it was asked to remember, to be answered with that word alone, then end your turn with the single line: R8 asked. When the board wakes you because {key}'s agent answered, end your turn with the single line: R8 seen."
   until = { stops = 1, state = "idle" }
   wake = true
 

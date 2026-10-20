@@ -2122,7 +2122,9 @@ pub enum Response {
     /// them once the agent is idle. A daemon from before T-550 sends no
     /// flag and always held, so the flag's default is true. `road` names
     /// the road in one word (T-600); a daemon from before it sends none,
-    /// and `AskRoad::of` reads it from the flag.
+    /// and `AskRoad::of` reads it from the flag. `wake` is set when the
+    /// agent was asleep (T-880): the words woke it, or wake it when they
+    /// are sent, so the crown does not reach for `start_agent` as well.
     AgentAsked {
         key: String,
         #[serde(default)]
@@ -2135,6 +2137,8 @@ pub enum Response {
         held_because: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         road: Option<AskRoad>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wake: Option<AskWake>,
     },
     /// AgentAskBoard's receipt (T-733): which board took the words, by
     /// name; the road they took on that board (queued for its crown's idle,
@@ -2817,6 +2821,28 @@ impl AskRoad {
             AskRoad::SentImmediately => "sent_immediately",
             AskRoad::Queued => "queued",
             AskRoad::HeldForPerson => "held_for_person",
+        }
+    }
+}
+
+/// What the crown's `ask_agent` words do to an agent that was asleep
+/// (T-880): a crown read `queued` on a parked worker as "still asleep" and
+/// called `start_agent` after it, so the receipt says the wake outright.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AskWake {
+    /// The words went, and woke the parked agent with them.
+    Woken,
+    /// The words wait (for the checkout, or a person's send), and wake
+    /// the parked agent when they go.
+    WhenSent,
+}
+
+impl AskWake {
+    pub fn word(self) -> &'static str {
+        match self {
+            AskWake::Woken => "woken",
+            AskWake::WhenSent => "when_sent",
         }
     }
 }

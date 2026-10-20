@@ -25,7 +25,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use mesimon_core::board::{CrownMode, MergeInto, SessionKind, SessionState, WorkspaceStrategy};
-use mesimon_core::command::{AgentTicketView, AskRoad, Command, CrownTouch, Deliver, Response};
+use mesimon_core::command::{AgentTicketView, AskRoad, AskWake, Command, CrownTouch, Deliver, Response};
 use mesimon_core::Principal;
 use serde_json::json;
 
@@ -691,9 +691,10 @@ fn the_crown_lets_one_agent_edit_the_others() {
     }
     // The ask: held on B's card, authored by A, delivered to nobody.
     let seen_after = match ask(&mut c, sa, &kb, "mesimon-probe-62 commit it", bv.seen) {
-        Response::AgentAsked { key, replaced, seen, held_for_person, held_because, road } => {
+        Response::AgentAsked { key, replaced, seen, held_for_person, held_because, road, wake } => {
             assert_eq!(key, kb);
             assert!(!replaced);
+            assert_eq!(wake, None, "B's agent has a pane: the words wake nothing");
             // T-550: a person started B's agent, so the board holds it
             // for them whatever the crown's mode, and says so.
             assert!(held_for_person);
@@ -2649,7 +2650,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     assert!(!landed(&format!("{kp} \"the person's own\"")), "a person's agent wakes nobody");
     start(&mut c, sa);
     stop(&mut c, sa);
-    let ask = |c: &mut TestClient, key: &str, text: &str| {
+    let ask_as = |c: &mut TestClient, key: &str, text: &str, deliver: Deliver| {
         let v = read(c, sa, key).unwrap();
         match c.send(
             Principal::Agent { session: sa },
@@ -2658,14 +2659,18 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
                 text: text.into(),
                 seen: v.seen,
                 plan: false,
-                deliver: Deliver::Idle,
+                deliver,
             },
         ) {
-            Response::AgentAsked { held_for_person, held_because, .. } => {
-                (held_for_person, held_because.unwrap_or_default())
+            Response::AgentAsked { held_for_person, held_because, wake, .. } => {
+                (held_for_person, held_because.unwrap_or_default(), wake)
             }
             other => panic!("ask_agent {key}: {other:?}"),
         }
+    };
+    let ask = |c: &mut TestClient, key: &str, text: &str| {
+        let (held, why, _) = ask_as(c, key, text, Deliver::Idle);
+        (held, why)
     };
     let row = |c: &mut TestClient, t: ulid::Ulid| {
         pending_of(c, Some(t)).into_iter().find(|p| p.is_queued_ask() && !p.in_flight)
@@ -2837,8 +2842,10 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     });
     start(&mut c, sa);
     stop(&mut c, sa);
-    let (held, why) = ask(&mut c, &kw, "mesimon-probe-96 wake for this");
+    let (held, why, wake) = ask_as(&mut c, &kw, "mesimon-probe-96 wake for this", Deliver::Idle);
     assert!(held && why.contains("budget is spent") && why.contains(&kw2), "{why}");
+    // T-880: the receipt says the words are W's wake, a person's send away.
+    assert_eq!(wake, Some(AskWake::WhenSent));
     settle();
     assert_eq!(c.board().live_agent(w).unwrap().state, SessionState::Sleeping, "nobody woke it");
     assert!(matches!(
@@ -2863,8 +2870,9 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     // With a seat free, the words go — and while they wait on the checkout
     // (the crown mid-turn holds it), the wake holds the seat they need.
     start(&mut c, sa);
-    let (held, why) = ask(&mut c, &kw, "mesimon-probe-97 wake for this");
+    let (held, why, wake) = ask_as(&mut c, &kw, "mesimon-probe-97 wake for this", Deliver::Idle);
     assert!(!held, "{why}");
+    assert_eq!(wake, Some(AskWake::WhenSent), "queued on the checkout, the wake is still owed");
     let r = row(&mut c, w).expect("the wake waits on the checkout");
     assert!(r.sends && r.action == mesimon_core::command::PendingAction::Wake, "{r:?}");
     match start_agent(&mut c, &kw3, "worktree") {
@@ -2882,6 +2890,32 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     hook_send(&hook_sock, &ws.to_string(), "SessionStart", r#"{"source":"resume"}"#);
     wait_until(std::time::Duration::from_secs(15), "the parked words to land", || {
         landed("mesimon-probe-97 wake for this")
+    });
+    start(&mut c, ws);
+    stop(&mut c, ws);
+
+    // ---- words sent now to a parked worker are its wake (T-880) -------------
+    // The receipt says the agent woke, so the crown calls no start_agent.
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentSleepTicket { key: kw.clone(), seen: v.seen },
+    ) {
+        Response::AgentTicket { .. } => {}
+        other => panic!("sleep_agent again: {other:?}"),
+    }
+    c.await_state(ws, "sleeping", |s| *s == SessionState::Sleeping);
+    let (held, why, wake) = ask_as(&mut c, &kw, "mesimon-probe-97b woken by words", Deliver::Now);
+    assert!(!held, "{why}");
+    assert_eq!(wake, Some(AskWake::Woken));
+    assert_ne!(c.board().live_agent(w).unwrap().state, SessionState::Sleeping, "awake now");
+    match start_agent(&mut c, &kw, "shared_checkout") {
+        Response::Err { message } => assert!(message.contains("already has an agent"), "{message}"),
+        other => panic!("a start after the words woke it: {other:?}"),
+    }
+    hook_send(&hook_sock, &ws.to_string(), "SessionStart", r#"{"source":"resume"}"#);
+    wait_until(std::time::Duration::from_secs(15), "the waking words to land", || {
+        landed("mesimon-probe-97b woken by words")
     });
     start(&mut c, ws);
     stop(&mut c, ws);

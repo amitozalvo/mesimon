@@ -2275,7 +2275,10 @@ Reply with the single word ready and end your turn."""
                 seen = [l for l in feed_all(self.paths) if l.get("cmd") == "claude_road:mod"]
                 check(c, seen, f"claude_road:mod ({seen[-1].get('outcome')})" if seen else "never written")
             elif name == "crown":
-                check(c, arg in crown_cmds, f"{arg}×{crown_cmds.count(arg)}")
+                # `crown:<cmd>=N` (T-880): exactly N of them, not at least one.
+                cmd, _, times = arg.partition("=")
+                n = crown_cmds.count(cmd)
+                check(c, n == int(times) if times else n > 0, f"{cmd}×{n}")
             elif name == "crown_board":
                 # A board line of the crown's own ticket (T-733): its ask to
                 # a linked board is about no ticket here.
