@@ -77,6 +77,24 @@ fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
         c.request(Command::ReadNote { ticket, note: ulid::Ulid::nil() }),
         "no such note",
     );
+    // Several at once (T-882), the picker's road: the bodies it could read,
+    // each at its rev; a ref naming no note is left out, never an error.
+    use mesimon_core::command::NoteRef;
+    match c.request(Command::ReadNotes {
+        notes: vec![
+            NoteRef { ticket, note: desc },
+            NoteRef { ticket, note: ulid::Ulid::nil() },
+            NoteRef { ticket: ulid::Ulid::nil(), note: desc },
+        ],
+    }) {
+        Response::Notes { notes } => {
+            assert_eq!(notes.len(), 1, "{notes:?}");
+            assert_eq!(notes[0].note, desc);
+            assert_eq!(notes[0].rev, 1);
+            assert_eq!(notes[0].text, body);
+        }
+        other => panic!("{other:?}"),
+    }
     // Blank on a fresh note is nothing to save; the agent forms need an
     // agent.
     err_containing(

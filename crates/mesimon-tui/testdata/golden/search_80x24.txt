@@ -2,9 +2,9 @@
 
    TODO                           2    IN PROGRESS                   2   2   0
    ╭─ SEARCH ∙ 2/7 ─────────────────────────────────────────────────────────╮
-   │ › ac                                                                   │D
+   │ › en                                                                   │D
    │                                                                        │O
-   │ T-5   Grapheme truncation                                REVIEW        │N
+   │ T-1   Decay treatments                                   TODO          │N
    │ T-7   Painted accent bar                                 DONE archived │E
    │                                                                        │
    │                                                                        │

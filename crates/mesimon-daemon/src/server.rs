@@ -2756,6 +2756,7 @@ impl Daemon {
                 Draft { column, title, workspace, text, uploads, tags, tier },
             ),
             Command::ReadNote { ticket, note } => self.read_note(ticket, note),
+            Command::ReadNotes { notes } => self.read_notes(&notes),
             Command::TicketSessions { ticket } => self.ticket_sessions(ticket),
             Command::ArchivedTickets => self.archived_tickets(),
             Command::WriteNote { ticket, note, text, rev } => {
@@ -11595,6 +11596,23 @@ impl Daemon {
             }
             Err(e) => Response::Err { message: format!("could not read the note: {e}") },
         }
+    }
+
+    /// `Command::ReadNotes` (T-882): the picker's corpus. A ref naming no
+    /// ticket, no note or no file is skipped, not an error — the picker
+    /// searches what it gets, and one missing body is not a reason to hand
+    /// it nothing.
+    fn read_notes(&self, refs: &[mesimon_core::command::NoteRef]) -> Response {
+        let notes = refs
+            .iter()
+            .filter_map(|r| {
+                let t = self.board.ticket(r.ticket)?;
+                let meta = t.note(r.note)?;
+                let text = store::read_note(&self.paths, &t.short_key, r.note).ok()?;
+                Some(mesimon_core::command::NoteBody { note: r.note, rev: meta.rev, text })
+            })
+            .collect();
+        Response::Notes { notes }
     }
 
     /// Create, replace or (blank text on an existing note) delete a note.

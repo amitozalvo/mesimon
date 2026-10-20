@@ -28910,3 +28910,70 @@ go and by which road.
 **Owed:** a CHANGELOG line at the next bump — **Fixed:** a crown's wake or a queued message
 that came due just after its agent restarted could appear typed into the agent's input box;
 it now waits a moment and arrives as its own message.
+
+## The search finds words and note lines, in any case (T-882, 2026-10-21, user: "the search is not really finding things ∙ I'm trying to find the promo codes precreated for friends. (it's on a note on a ticket already archived) but I can't find it. i think it's also case sensitive which it shouldnt be and also it scores things wrongly.")
+
+Three complaints, three causes, measured on the author's board (749 tickets, 703 notes,
+19,000 lines) before anything was changed:
+
+- **Not finding it.** The codes were on two note bodies (T-514, T-515) whose titles say
+  "access codes" and "registration gate", and T-349 searched the row alone — key, title,
+  column, tags — and recorded "note BODIES are not searched" as deliberate. `promo`, `friends`
+  and `codes` could not reach them from the picker at all.
+- **Case sensitive.** Smart case: a capital anywhere in the query made it case-sensitive, so
+  `Promo` returned 8 rows and `promo` 224, two different searches for one word. A title's
+  capital is not something a reader remembers.
+- **Scoring wrongly.** Fuzzy by default. `promo` matched 224 of 749 cards on scattered
+  letters and ranked "Design Shin's Garden: grow a personal world…" first at 87; `codes`
+  matched 262. fzf's v2 scoring is right for a file path typed as an abbreviation and wrong
+  for a board whose reader types words: a word either is in the title or it is not.
+
+**The grammar is now fzf's `--exact` mode** (`search::atoms`): a bare word is a substring,
+`'word` is the one that goes fuzzy (fzf's "unquote"), `^`, `$` and `!` keep their meaning,
+and every atom is `CaseMatching::Ignore` with `Normalization::Smart` (`cafe` finds `café`).
+`nucleo-matcher` stays: its `Atom.kind` is public, so the parse is its own with the default
+kind flipped, and the indices, the scoring among substring hits (word-boundary bonus, so
+`friends` ranks "friends computer…" over "share this project with friends") and the row
+split are unchanged. After: `promo` 8 hits, `Promo` the same 8, `codes` 11.
+
+**Notes are searched by the line, and the line is drawn.** A ticket whose row does not match
+is a hit when one line of one of its notes holds the whole query — grep's rule, two words on
+two lines are not a match — and the `Hit` carries that line as an `Excerpt` (which note, the
+line, the indices). The picker draws it as a second row under the ticket's: the title column's
+indent, the rail's note mark, the line lit the way a title is, opened near its first match
+behind `…` when it is long (`Field::windowed`, so what lit is on the screen), and the preview
+bolds that note among the ticket's note rows. The row's own fields stay unlit — nothing in
+them matched. Inside a tier, row hits rank above note hits: the ticket's name outranks a line
+somebody wrote under it. `!foo` alone asks nothing of the notes (every line lacks something).
+
+**The bodies ride one wire command, once.** `Command::ReadNotes { notes: Vec<NoteRef> }` →
+`Response::Notes` (each body with its `rev`; a ref naming no ticket, note or file is left out,
+never an error). The picker's `Corpus` (`App::poll_bodies`) asks on the first keystroke for
+every note of every ticket it ranks — the archive too while `tab` has it in — and on every
+snapshot after only for the notes whose `rev` moved, dropping the ones whose ticket left the
+board; a note the daemon left out is held empty at the rev asked, so it is not asked again
+until it changes. One round-trip for a board's worth (1.7 MB here), and a keystroke never
+waits on the wire — T-349's "no index, no wire" holds for the ranking. An older daemon
+refuses the command and the picker searches rows alone, asking again after 30 s. Agents may
+not send it (`agent_allows`); the e2e is in `notes_e2e`.
+
+**The precheck is the matcher's own fold.** Every line is kept beside a copy folded through
+`nucleo_matcher::chars::to_lower_case` then `::normalize`, and so is each positive contiguous
+needle; a line whose folded copy does not `contain` every needle is refused before the matcher
+is asked, which is a necessary condition under exactly the flags the atoms carry. Debug build,
+the author's board, per keystroke: a miss was 155 ms through the matcher alone and is 5 ms
+with the precheck; `the` (484 hits, every one scored) 42 ms; release 10 ms before the precheck.
+`how_long_the_notes_take` prints the synthetic figures beside `how_long_a_big_board_takes`.
+
+Goldens: `search_120x30` and `search_80x24` moved from `ac` to `en` — `ac` fuzzy-matched
+"Gr-a-pheme trun-c-ation" and now reaches "accent" alone, which lost the two-tier picture the
+golden is for; `en` is in "treatments" and "accent" and nowhere else. New: `search_note_120x30`
+(a title hit, a live note hit with its line, an archived note hit with a long line opened near
+the match). The T-349 block above stands as the record of what fuzzy and smart case were
+chosen for; this block is why they went.
+
+Not done: a query whose words fall on different lines of a note, or across a note and the
+row, is not a hit (one line is what the picker can show, and the rule is one sentence); the
+note names on the snapshot are not searched apart from their bodies (the name is the body's
+first line, so it is covered); the phone's search is unchanged.
+

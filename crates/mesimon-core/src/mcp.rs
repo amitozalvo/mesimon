@@ -1605,6 +1605,7 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::SaveNoteWithAttachments { .. }
         | Command::CreateTicketWithNote { .. }
         | Command::ReadNote { .. }
+        | Command::ReadNotes { .. }
         | Command::TicketSessions { .. }
         | Command::ArchivedTickets
         | Command::WriteNote { .. }
@@ -3462,6 +3463,7 @@ mod tests {
             Command::NoteToAgent { ticket: t, note: t },
             // The ticket-addressed forms; the agent forms are the tier.
             Command::ReadNote { ticket: t, note: t },
+            Command::ReadNotes { notes: vec![crate::command::NoteRef { ticket: t, note: t }] },
             Command::TicketSessions { ticket: t },
             Command::ArchivedTickets,
             Command::WriteNote { ticket: t, note: None, text: "x".into(), rev: None },

@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui   6 tickets
+
+   TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    0
+
+   P╭─ SEARCH ∙ 3/7 ───────────────────────────────────────────────────────────╮╭─ T-1 ────────────────────────────╮
+    │ › peek                                                                   ││  Peek decay treatments       >1y │
+   K│                                                                          ││                                  │
+    │ T-1   Peek decay treatments                                TODO          ││ TODO for >1y                     │
+    │ T-3   Fix OSC-11 detection                                 IN PROGRESS   ││                                  │
+    │       ≡ 3. watch the peek                                                ││                                  │
+    │ T-7   Painted accent bar                                   DONE archived ││                                  │
+    │       ≡ …which is where the peek is, so the row opens near it.           ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    ╰── enter go to ticket ∙ ^n ^p select ∙ tab live tickets only ∙ esc close ─╯╰──────────────────────────────────╯
+
+
+
+ SEARCH

@@ -131,7 +131,11 @@ latest reply under its card, `,` opens Settings, `q` quits.
 `/` searches. Type any part of a ticket's title, its key, its column or a tag it wears and the
 list narrows as you go; `ctrl-n` / `ctrl-p` walk it, `enter` puts the cursor on that card, `esc`
 leaves the board where it was. Archived tickets are in the list, ranked under every live one and
-marked; `tab` takes them out again.
+marked; `tab` takes them out again. Case never matters. Each word you type must appear whole
+somewhere on the row, or together on one line of one of the ticket's notes: a ticket found by a
+note shows that line under its row, with the words lit, and its preview marks the note. `'word`
+matches the letters scattered instead, `!word` leaves a ticket out, and `^word` and `word$`
+anchor at the row's ends.
 
 ![Typing csv into the search picker narrows fifteen tickets to one, and enter puts the cursor on its card](../assets/demo/search.gif)
 

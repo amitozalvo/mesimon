@@ -23,6 +23,14 @@
 //! Narrow terminals drop the preview rather than squeeze it: two panes at 40
 //! cells each are two unreadable panes, and the list is the half that answers
 //! the question.
+//!
+//! A hit found in a note rather than its row (T-882) is two rows: the row,
+//! unlit, and under it the note line the query landed on, with the note
+//! mark the ticket page's rail uses and the matched characters lit the same
+//! way. The line opens near its first match when it is long
+//! (`Field::windowed`), so what lit is on the screen and not past its edge.
+//! The preview on the right bolds the note it came from among the ticket's
+//! note rows, which is the hand that says "in here".
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -162,36 +170,58 @@ fn draw_list(f: &mut Frame, app: &App, s: &Search, area: Rect) -> Option<(u16, u
     }
 
     // Keep the cursor row on screen: the window follows the cursor, never
-    // the other way round, so `^n` at the bottom edge scrolls by one.
+    // the other way round, so `^n` at the bottom edge scrolls by one. A hit
+    // from a note is two rows tall (T-882), so the window is measured in
+    // rows and holds whole hits.
     let rows = body.height as usize;
+    let tall = |h: &Hit| 1 + usize::from(h.excerpt.is_some());
     let mut top = s.top.get().min(s.hits.len().saturating_sub(1));
     if s.idx < top {
         top = s.idx;
-    } else if rows > 0 && s.idx >= top + rows {
-        top = s.idx + 1 - rows;
+    } else {
+        while top < s.idx && s.hits[top..=s.idx].iter().map(tall).sum::<usize>() > rows {
+            top += 1;
+        }
     }
     s.top.set(top);
+    let mut shown_n = 0;
+    let mut used = 0;
+    for h in &s.hits[top..] {
+        if used + tall(h) > rows {
+            break;
+        }
+        used += tall(h);
+        shown_n += 1;
+    }
+    // The cursor's own hit is drawn even where only its first row fits.
+    let shown_n = shown_n.max(1);
 
     // One column geometry for the whole list, measured off the rows that
     // will actually be drawn: ragged columns are what make a list of short
     // strings unreadable, and every row here is mostly short strings.
-    let shown = s.hits.iter().skip(top).take(rows);
+    let shown = s.hits.iter().skip(top).take(shown_n);
     let key_w = shown.clone().map(|h| h.key.text.width()).max().unwrap_or(4).clamp(4, 8);
     let trail_cap = (w / 3).max(6);
     let trail_w = shown.clone().map(|h| h.trail.text.width()).max().unwrap_or(0).min(trail_cap);
     let title_w = w.saturating_sub(1 + key_w + 2 + 1 + trail_w + 1);
 
-    let lines: Vec<Line> = shown
-        .enumerate()
-        .map(|(i, hit)| row(theme, hit, top + i == s.idx, w, key_w, title_w, trail_w))
-        .collect();
-    f.render_widget(Paragraph::new(lines), body);
-    // Each drawn row is the mouse's to pick (T-716).
+    let mut lines: Vec<Line> = Vec::new();
+    // Each drawn row is the mouse's to pick (T-716): both rows of a note hit
+    // are the hit's.
     let mut hits = app.hits.borrow_mut();
-    for i in 0..rows.min(s.hits.len() - top) {
-        let y = body.y + i as u16;
+    for (i, hit) in shown.enumerate() {
+        let selected = top + i == s.idx;
+        let y = body.y + lines.len() as u16;
+        lines.push(row(theme, hit, selected, w, key_w, title_w, trail_w));
         hits.record(Rect { y, height: 1, ..body }, crate::mouse::Target::Row(top + i));
+        if let Some(ex) = &hit.excerpt {
+            let y = body.y + lines.len() as u16;
+            lines.push(excerpt_row(theme, &ex.line, selected, w, 1 + key_w + 2));
+            hits.record(Rect { y, height: 1, ..body }, crate::mouse::Target::Row(top + i));
+        }
     }
+    drop(hits);
+    f.render_widget(Paragraph::new(lines), body);
     Some(cursor)
 }
 
@@ -251,6 +281,34 @@ fn row(
         trail_w,
         Style::default().fg(ink.dim3),
         Style::default().fg(ink.dim1).add_modifier(Modifier::BOLD),
+    ));
+    let used: usize = super::spans_width(&spans);
+    spans.push(Span::raw(" ".repeat(w.saturating_sub(used))));
+    Line::from(spans).style(row_style)
+}
+
+/// The second row of a note hit (T-882): under the title, the note mark and
+/// the line the query landed on, opened near its first match when the line
+/// is longer than the room. Lit the way the title is, a step down at rest,
+/// so the eye reads it as the row's reason and not a second title.
+fn excerpt_row(
+    theme: &Theme,
+    line: &Field,
+    selected: bool,
+    w: usize,
+    indent: usize,
+) -> Line<'static> {
+    let ink = if selected { &theme.sel } else { &theme.rest };
+    let row_style = if selected { theme.selected_row() } else { Style::default() };
+    let mark = crate::glyphs::note_mark(theme.glyph_tier());
+    let lead = format!("{}{mark} ", " ".repeat(indent));
+    let room = w.saturating_sub(lead.width());
+    let mut spans = vec![Span::styled(lead, Style::default().fg(ink.dim3))];
+    spans.extend(painted(
+        &line.windowed(room),
+        room,
+        Style::default().fg(ink.dim2),
+        Style::default().fg(ink.base).add_modifier(Modifier::BOLD),
     ));
     let used: usize = super::spans_width(&spans);
     spans.push(Span::raw(" ".repeat(w.saturating_sub(used))));
@@ -379,6 +437,8 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
             theme.dim2(),
         )));
     }
+    // The note a hit was found in (T-882) is bold among the rows below.
+    let found_in = hit.excerpt.as_ref().map(|e| e.note);
     if !ticket.notes.is_empty() && lines.len() + 3 <= inner.height as usize {
         let tier = theme.glyph_tier();
         lines.push(Line::from(""));
@@ -402,8 +462,13 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
             let budget = w.saturating_sub(4 + tail.width() + 1);
             let head = format!(" {} {}", crate::glyphs::note_mark(tier), truncate(label, budget));
             let used = head.width() + tail.width() + 1;
+            let head_style = if found_in == Some(n.id) {
+                theme.dim1().add_modifier(Modifier::BOLD)
+            } else {
+                theme.dim1()
+            };
             lines.push(Line::from(vec![
-                Span::styled(head, theme.dim1()),
+                Span::styled(head, head_style),
                 Span::raw(" ".repeat(w.saturating_sub(used))),
                 Span::styled(tail, theme.dim3()),
             ]));

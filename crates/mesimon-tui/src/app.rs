@@ -23,7 +23,8 @@ use mesimon_core::board::{
     Ticket, WorkspaceStrategy,
 };
 use mesimon_core::command::{
-    Command, DiffTarget, ExternalItem, GraceItem, MergeOutcome, Resources, Response, WorktreeItem,
+    Command, DiffTarget, ExternalItem, GraceItem, MergeOutcome, NoteRef, Resources, Response,
+    WorktreeItem,
 };
 use mesimon_core::keymap::{self, Ctx, HeaderChip, Key, Scope, Verb};
 use mesimon_core::prefs::PrefKey;
@@ -1155,6 +1156,23 @@ impl TicketLink {
     }
 }
 
+/// The picker's note corpus (T-882): every note body on the board as the
+/// search reads it, keyed by note id and held with the `rev` it was read
+/// at, so a snapshot carrying a newer one reads as stale. Not `notes` (the
+/// ticket page's cache of a few whole bodies): this is the board's worth,
+/// scrubbed and split into lines once, and it is what `Searcher::rank`
+/// looks in when a row did not match. A note the daemon could not read is
+/// held empty at the rev asked, so it is not asked for again until it
+/// changes.
+#[derive(Default)]
+pub struct Corpus(std::collections::HashMap<ulid::Ulid, (u64, mesimon_core::search::Body)>);
+
+impl mesimon_core::search::Bodies for Corpus {
+    fn body(&self, note: ulid::Ulid) -> Option<&mesimon_core::search::Body> {
+        self.0.get(&note).map(|(_, body)| body)
+    }
+}
+
 /// One note's body as last fetched (`Command::ReadNote`). Keyed on the
 /// note's `rev`, so a snapshot carrying a newer one reads as stale.
 pub struct NoteText {
@@ -1430,6 +1448,10 @@ const EDITOR_PAGE: usize = 20;
 const NOTE_RETRY: Duration = Duration::from_secs(2);
 /// How many note bodies the TUI keeps; past it the oldest attempt goes.
 const NOTE_CACHE_MAX: usize = 64;
+
+/// How long the picker waits before asking a daemon that refused
+/// `ReadNotes` (one older than T-882) for the corpus again.
+const CORPUS_BACKOFF: Duration = Duration::from_secs(30);
 /// How many lines to ask for — more than the zone can hold at any sane
 /// height, so the draw does the trimming and a resize needs no refetch.
 const SHELL_TAIL_LINES: u16 = 60;
@@ -1728,6 +1750,11 @@ pub struct App {
     /// — and sillier still on every `App` a test builds, which is why it is
     /// lazy rather than a constructor field.
     searcher: std::cell::RefCell<Option<mesimon_core::search::Searcher>>,
+    /// The picker's note corpus (T-882), filled by `poll_bodies`.
+    corpus: Corpus,
+    /// When a daemon last refused `ReadNotes`; asked again after
+    /// `CORPUS_BACKOFF`, never on every keystroke.
+    corpus_refused: Option<Instant>,
     /// A quick-tag digit holds the card it tagged open for a moment (the
     /// ticket it landed on, and when). The stripe is one cell at rest and
     /// carries no words — it can say "two tags, these hues" and nothing
@@ -2175,6 +2202,8 @@ impl App {
             peek_all: false,
             peek_cache: crate::peek::PeekCache::default(),
             searcher: std::cell::RefCell::new(None),
+            corpus: Corpus::default(),
+            corpus_refused: None,
             tag_flash: None,
             tier_flash: None,
             refused: None,
@@ -11427,6 +11456,52 @@ impl App {
         Ok(())
     }
 
+    /// The picker's corpus (T-882), kept level with the board: every note of
+    /// every ticket the picker ranks (`archived` widens it to the archive)
+    /// that the corpus lacks or holds at an older `rev` is asked for in one
+    /// `ReadNotes`, and a note whose ticket left the board is dropped. The
+    /// steady state sends nothing: a keystroke walks the metadata and finds
+    /// it all held. A daemon that knows no such command (older than this
+    /// build) is asked again after `CORPUS_BACKOFF`; until then the picker
+    /// searches rows alone, as it always did.
+    fn poll_bodies(&mut self, archived: bool) {
+        let mut wanted: Vec<(NoteRef, u64)> = Vec::new();
+        let mut on_board: std::collections::HashSet<ulid::Ulid> = Default::default();
+        for t in self.board.tickets.iter() {
+            for n in &t.notes {
+                on_board.insert(n.id);
+                let held = self.corpus.0.get(&n.id).is_some_and(|(rev, _)| *rev == n.rev);
+                if !held && (archived || !t.is_archived()) {
+                    wanted.push((NoteRef { ticket: t.id, note: n.id }, n.rev));
+                }
+            }
+        }
+        self.corpus.0.retain(|id, _| on_board.contains(id));
+        if wanted.is_empty() || self.corpus_refused.is_some_and(|t| t.elapsed() < CORPUS_BACKOFF) {
+            return;
+        }
+        let refs = wanted.iter().map(|(r, _)| *r).collect();
+        match self.req(Command::ReadNotes { notes: refs }) {
+            Response::Notes { notes } => {
+                // Every note asked for gets an entry at the rev asked: one
+                // the daemon left out is not asked again until it changes.
+                for (r, rev) in wanted {
+                    self.corpus.0.insert(r.note, (rev, Default::default()));
+                }
+                for n in notes {
+                    self.remember_body(n.note, n.rev, &n.text);
+                }
+                self.corpus_refused = None;
+            }
+            _ => self.corpus_refused = Some(Instant::now()),
+        }
+    }
+
+    /// One note's body into the picker's corpus, as a fetch lands it.
+    pub(crate) fn remember_body(&mut self, id: ulid::Ulid, rev: u64, text: &str) {
+        self.corpus.0.insert(id, (rev, mesimon_core::search::Body::new(text)));
+    }
+
     /// Re-rank the picker against the board as it stands.
     ///
     /// `keep` holds the cursor on the SAME TICKET across the pass, which is
@@ -11444,10 +11519,15 @@ impl App {
             return;
         };
         let held = keep.then(|| s.selected().map(|h| h.id)).flatten();
+        // The notes are looked in once something is typed (T-882): fetched
+        // whole the first time, then only the ones a snapshot shows edited.
+        if !s.query.as_str().trim().is_empty() {
+            self.poll_bodies(s.archived);
+        }
         s.hits = {
             let mut cell = self.searcher.borrow_mut();
             let searcher = cell.get_or_insert_with(mesimon_core::search::Searcher::new);
-            searcher.rank(&self.board, s.query.as_str(), s.archived)
+            searcher.rank(&self.board, s.query.as_str(), s.archived, &self.corpus)
         };
         // Nothing typed: the pages opened this run, newest first, instead of
         // the whole board (T-355). The rank pass still decides what is IN —

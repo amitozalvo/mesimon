@@ -5,13 +5,21 @@
 //!
 //! **The matcher is `nucleo-matcher`, not ours.** It is the engine behind
 //! Helix's picker: fzf's v2 scoring (Smith-Waterman with the word-boundary,
-//! camelCase and path-separator bonuses), smart case, unicode normalisation,
-//! and — the part that is hard to write and easy to get subtly wrong — the
-//! match *indices*, so the picker can underline the characters the query
-//! actually landed on. `Pattern::parse` also gives fzf's query grammar for
-//! free, which is the one grammar a reader who reaches for `/` already knows:
-//! space-separated words are ANDed, `'foo` is a literal substring, `^foo` and
-//! `foo$` anchor, and `!foo` excludes.
+//! camelCase and path-separator bonuses), unicode normalisation, and — the
+//! part that is hard to write and easy to get subtly wrong — the match
+//! *indices*, so the picker can underline the characters the query actually
+//! landed on.
+//!
+//! **A word is a substring, and case never matters** (T-882). The grammar is
+//! fzf's `--exact` mode: space-separated words are ANDed, each one must
+//! appear whole somewhere in the row, `^foo` and `foo$` anchor, `!foo`
+//! excludes, and `'foo` is the one that goes fuzzy (fzf's "unquote"). Fuzzy
+//! by default was the T-349 call and it was wrong for a board: `promo` over
+//! 749 cards matched 224 of them on scattered letters and ranked "Design
+//! Shin's Garden" first, and smart case made `Promo` and `promo` two
+//! different searches. A reader typing into `/` types words, not
+//! abbreviations of file paths, and a word either is in the title or it is
+//! not.
 //!
 //! **The row IS the haystack.** A hit is scored against the exact text the
 //! picker draws — key, title, column, tags — so a highlighted character is
@@ -20,6 +28,16 @@
 //! fields split out rather than one string: matching wants them joined,
 //! drawing wants them apart, and splitting the indices at the join is cheaper
 //! and more honest than matching three times.
+//!
+//! **A note is searched by the line, and the line is drawn** (T-882). A
+//! ticket whose row does not match is still a hit when one line of one of
+//! its notes does — the whole query on that one line, grep's rule — and the
+//! hit carries that line as an [`Excerpt`] the picker draws under the row,
+//! lit where the words landed, so the rule above holds: what explains the
+//! hit is on the screen. The bodies are not on the snapshot; the picker
+//! fetches them (`App::poll_bodies`) and hands them in as [`Bodies`]. Row
+//! hits rank above note hits inside a tier: the ticket's name outranks a
+//! line somebody wrote under it.
 //!
 //! **Archived tickets rank below live ones, never among them** (user, T-349).
 //! A hard tier rather than a score penalty: a penalty makes "where did that
@@ -31,9 +49,11 @@
 //! a board is tens to hundreds of cards of a few dozen characters each, and
 //! `how_long_a_big_board_takes` measures a DEBUG build ranking 500 of them at
 //! 0.8 ms for an empty query, 1.0 ms for one word and 3.1 ms for three — a
-//! release build being several times under that again. A real board is an
-//! order of magnitude smaller than the fixture, so the whole pass costs less
-//! than the frame it is drawn into.
+//! release build being several times under that again. The notes are the
+//! bigger haystack (the author's board: 703 notes, 18,500 lines, 1.7 MB):
+//! `how_long_the_notes_take` puts a debug build at 10 ms for a word on no
+//! line, 25 ms for one on every line and 54 ms for three on every line —
+//! paid only once the row pass missed, and on a keystroke, never a frame.
 //!
 //! That budget is what buys the two behaviours above it: the list re-ranks on
 //! every keystroke rather than filtering the last result (a filter cannot
@@ -41,13 +61,15 @@
 //! every snapshot, so a card an agent moved or archived under an open picker
 //! cannot leave a row that sends Enter somewhere that is no longer there.
 
-use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+use std::collections::HashMap;
+
+use nucleo_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 
 use crate::board::{Board, Ticket};
 
 /// A query that matches a ticket's short key outright wins its tier. Typing
-/// `T-3` is a jump, not a search, and `T-3` fuzzy-matches `T-349` too.
+/// `T-3` is a jump, not a search, and `T-3` substring-matches `T-34` too.
 const EXACT_KEY: u32 = 1_000_000;
 
 /// One field of a row: the text, and which of ITS characters matched.
@@ -58,11 +80,107 @@ pub struct Field {
     pub matched: Vec<u32>,
 }
 
+/// The mark a windowed excerpt opens with: one character, never lit.
+pub const CUT: char = '…';
+
 impl Field {
     /// Is the character at `i` (a char offset) one the query matched?
     pub fn is_match(&self, i: usize) -> bool {
         self.matched.binary_search(&(i as u32)).is_ok()
     }
+
+    /// This field cut to open near its first match, for a line too long for
+    /// its column: a note line can run to hundreds of characters with the
+    /// word at the end, and a row that shows its first `width` characters
+    /// shows a line with nothing lit on it. Untouched when the first match
+    /// already sits inside the first `width` characters; otherwise the text
+    /// restarts about a third of the way before the match, at a word
+    /// boundary where one is near, behind a [`CUT`] mark that is not part
+    /// of the haystack and never lights.
+    pub fn windowed(&self, width: usize) -> Field {
+        let Some(&first) = self.matched.first() else { return self.clone() };
+        let first = first as usize;
+        if first + 1 < width {
+            return self.clone();
+        }
+        let mut start = first.saturating_sub(width / 3);
+        let chars: Vec<char> = self.text.chars().collect();
+        if let Some(space) = (start..first.min(start + 12)).find(|&i| chars[i] == ' ') {
+            start = space + 1;
+        }
+        let text = std::iter::once(CUT).chain(chars[start..].iter().copied()).collect();
+        let matched = self
+            .matched
+            .iter()
+            .filter(|&&i| i as usize >= start)
+            .map(|&i| i - start as u32 + 1)
+            .collect();
+        Field { text, matched }
+    }
+}
+
+/// One note's body as the search reads it: its lines, scrubbed for cells
+/// once at the fetch rather than on every keystroke, blank lines dropped.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Body {
+    lines: Vec<Line>,
+}
+
+/// One line of a note, with the copy the precheck reads: every character
+/// through [`fold`], so a plain `contains` of the folded needle can refuse
+/// the line before the matcher is asked. The fold is the matcher's own
+/// lowercasing and normalisation, so a line it refuses is one the matcher
+/// would have refused: a necessary condition, never the verdict. On the
+/// author's board (19,000 lines) it took a debug build's note pass from
+/// 150 ms a keystroke to a few.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Line {
+    text: String,
+    folded: String,
+}
+
+/// A character as the matcher compares it under `CaseMatching::Ignore` and
+/// `Normalization::Smart`: lowercased, then its diacritics shed (`É` → `e`).
+fn fold(c: char) -> char {
+    nucleo_matcher::chars::normalize(nucleo_matcher::chars::to_lower_case(c))
+}
+
+impl Body {
+    pub fn new(text: &str) -> Self {
+        let lines = text
+            .lines()
+            .map(|l| crate::text::scrub_cells(l, false).trim().to_string())
+            .filter(|l| !l.is_empty())
+            .map(|text| Line { folded: text.chars().map(fold).collect(), text })
+            .collect();
+        Self { lines }
+    }
+}
+
+/// Where the ranker finds a note's body by its id. The picker's cache
+/// (`App::bodies`); `()` for a caller with none, which searches rows alone.
+pub trait Bodies {
+    fn body(&self, note: ulid::Ulid) -> Option<&Body>;
+}
+
+impl Bodies for () {
+    fn body(&self, _: ulid::Ulid) -> Option<&Body> {
+        None
+    }
+}
+
+impl Bodies for HashMap<ulid::Ulid, Body> {
+    fn body(&self, note: ulid::Ulid) -> Option<&Body> {
+        self.get(&note)
+    }
+}
+
+/// The note line a hit was found on, when its row was not where the query
+/// landed: which note, and the line with the matched characters marked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Excerpt {
+    pub note: ulid::Ulid,
+    pub line: Field,
 }
 
 /// One row of the picker.
@@ -76,6 +194,8 @@ pub struct Hit {
     /// that say where a card is without leaving the picker, and that a query
     /// can name: `review feature` narrows to exactly that.
     pub trail: Field,
+    /// The note line that matched, for a hit whose row did not (T-882).
+    pub excerpt: Option<Excerpt>,
     pub archived: bool,
     pub score: u32,
 }
@@ -86,6 +206,9 @@ pub struct Hit {
 pub struct Searcher {
     matcher: Matcher,
     pattern: Pattern,
+    /// The pattern's positive, contiguous needles, folded: what a note line
+    /// must contain whole before the matcher is asked.
+    needles: Vec<String>,
     /// `Utf32Str`'s scratch, reused across every haystack in a pass.
     buf: Vec<char>,
     indices: Vec<u32>,
@@ -97,11 +220,41 @@ impl Default for Searcher {
     }
 }
 
+/// The query's words as atoms, in fzf's exact mode: a bare word is a
+/// substring, `'word` is fuzzy, and `^`, `$` and `!` keep their meaning.
+/// Case is ignored on every atom — `Promo`, `promo` and `PROMO` are one
+/// search — and so is a word's normalisation (`é` finds `e`).
+fn atoms(query: &str) -> Vec<Atom> {
+    query
+        .split_whitespace()
+        .filter_map(|word| {
+            let atom = match word.strip_prefix('\'') {
+                Some(rest) => Atom::new(
+                    rest,
+                    CaseMatching::Ignore,
+                    Normalization::Smart,
+                    AtomKind::Fuzzy,
+                    false,
+                ),
+                None => {
+                    let mut atom = Atom::parse(word, CaseMatching::Ignore, Normalization::Smart);
+                    if atom.kind == AtomKind::Fuzzy {
+                        atom.kind = AtomKind::Substring;
+                    }
+                    atom
+                }
+            };
+            (!atom.needle_text().is_empty()).then_some(atom)
+        })
+        .collect()
+}
+
 impl Searcher {
     pub fn new() -> Self {
         Self {
             matcher: Matcher::new(Config::DEFAULT),
             pattern: Pattern::default(),
+            needles: Vec::new(),
             buf: Vec::new(),
             indices: Vec::new(),
         }
@@ -114,10 +267,26 @@ impl Searcher {
     /// newest archive first. That is not a special case in here; it is what
     /// `Pattern` with no atoms does, and leaning on it is what keeps "open
     /// the picker" and "clear the query" the same screen.
-    pub fn rank(&mut self, board: &Board, query: &str, archived: bool) -> Vec<Hit> {
-        self.pattern.reparse(query, CaseMatching::Smart, Normalization::Smart);
+    pub fn rank(
+        &mut self,
+        board: &Board,
+        query: &str,
+        archived: bool,
+        bodies: &dyn Bodies,
+    ) -> Vec<Hit> {
+        self.pattern.atoms = atoms(query);
+        self.needles = self
+            .pattern
+            .atoms
+            .iter()
+            .filter(|a| !a.negative && a.kind != AtomKind::Fuzzy)
+            .map(|a| a.needle_text().chars().map(fold).collect::<String>())
+            .collect();
         let trimmed = query.trim();
-        let mut out: Vec<(bool, u32, usize, Hit)> = Vec::new();
+        // The notes are asked only for a query that names something: `!foo`
+        // alone matches every line that lacks it, which is every ticket.
+        let notes = self.pattern.atoms.iter().any(|a| !a.negative);
+        let mut out: Vec<(bool, bool, u32, usize, Hit)> = Vec::new();
 
         // Board order is the tie-break, so it is also the enumeration order:
         // live cards column by column, then the archived list as the archived
@@ -126,15 +295,20 @@ impl Searcher {
         let live: Vec<&Ticket> = columns.iter().flat_map(|c| board.column_tickets(c)).collect();
         let rest: Vec<&Ticket> = if archived { board.archived_tickets() } else { Vec::new() };
         for (rank, t) in live.into_iter().chain(rest).enumerate() {
-            if let Some(hit) = self.score(t, trimmed) {
-                out.push((hit.archived, hit.score, rank, hit));
+            let hit =
+                self.score(t, trimmed).or_else(|| notes.then(|| self.excerpt(t, bodies)).flatten());
+            if let Some(hit) = hit {
+                out.push((hit.archived, hit.excerpt.is_some(), hit.score, rank, hit));
             }
         }
-        // Archived below live; inside a tier, score first and board order
+        // Archived below live; inside a tier, the rows the query landed on
+        // before the notes it landed in; then score first and board order
         // second — so an empty query is the board, and equal scores never
         // shuffle between frames.
-        out.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
-        out.into_iter().map(|(_, _, _, hit)| hit).collect()
+        out.sort_by(|a, b| {
+            a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(b.2.cmp(&a.2)).then(a.3.cmp(&b.3))
+        });
+        out.into_iter().map(|(_, _, _, _, hit)| hit).collect()
     }
 
     fn score(&mut self, ticket: &Ticket, query: &str) -> Option<Hit> {
@@ -175,10 +349,59 @@ impl Searcher {
             key: Field { matched: cut(0, key_len), text: key },
             title: Field { matched: cut(title_at, title_at + title_len), text: title },
             trail: Field { matched: cut(trail_at, trail_at + trail.chars().count()), text: trail },
+            excerpt: None,
             archived: ticket.is_archived(),
             score: score + exact_key_bonus(ticket, query),
         };
         Some(hit)
+    }
+
+    /// The ticket as a note hit: the best-scoring line across its notes,
+    /// each line judged whole against the pattern. The row's fields are
+    /// unlit — nothing in them matched, and a highlight that is not a match
+    /// would be a lie the eye catches.
+    fn excerpt(&mut self, ticket: &Ticket, bodies: &dyn Bodies) -> Option<Hit> {
+        let mut best: Option<(u32, ulid::Ulid, &str)> = None;
+        for meta in &ticket.notes {
+            let Some(body) = bodies.body(meta.id) else { continue };
+            for line in &body.lines {
+                if !self.needles.iter().all(|n| line.folded.contains(n.as_str())) {
+                    continue;
+                }
+                let Some(score) =
+                    self.pattern.score(Utf32Str::new(&line.text, &mut self.buf), &mut self.matcher)
+                else {
+                    continue;
+                };
+                if best.is_none_or(|(s, _, _)| score > s) {
+                    best = Some((score, meta.id, line.text.as_str()));
+                }
+            }
+        }
+        let (score, note, line) = best?;
+        self.indices.clear();
+        self.pattern.indices(
+            Utf32Str::new(line, &mut self.buf),
+            &mut self.matcher,
+            &mut self.indices,
+        );
+        self.indices.sort_unstable();
+        self.indices.dedup();
+        Some(Hit {
+            id: ticket.id,
+            key: Field { text: ticket.short_key.clone(), matched: Vec::new() },
+            title: Field {
+                text: crate::text::scrub_cells(&ticket.title, false),
+                matched: Vec::new(),
+            },
+            trail: Field { text: trail_of(ticket), matched: Vec::new() },
+            excerpt: Some(Excerpt {
+                note,
+                line: Field { text: line.to_string(), matched: self.indices.clone() },
+            }),
+            archived: ticket.is_archived(),
+            score,
+        })
     }
 }
 
@@ -187,8 +410,7 @@ impl Searcher {
 /// `feature` and `archived` filters without a grammar to learn.
 fn trail_of(ticket: &Ticket) -> String {
     // The column in the register the board draws it in, so the word in the
-    // row is the word on the screen behind it. Smart case keeps a lowercase
-    // query matching it (`todo` finds `TODO`).
+    // row is the word on the screen behind it.
     let mut parts: Vec<String> = vec![ticket.column.to_uppercase()];
     parts.extend(ticket.tags.iter().map(|t| t.name.clone()));
     if ticket.is_archived() {
@@ -210,6 +432,7 @@ fn exact_key_bonus(ticket: &Ticket, query: &str) -> u32 {
 mod tests {
     use super::*;
     use crate::board::{Archived, Board, Column, TagRef, Ticket};
+    use std::collections::HashMap;
 
     fn ulid_n(n: u128) -> ulid::Ulid {
         ulid::Ulid::from(n)
@@ -270,7 +493,7 @@ mod tests {
     #[test]
     fn an_empty_query_is_the_board_in_board_order() {
         let mut s = Searcher::new();
-        let hits = s.rank(&board(), "", true);
+        let hits = s.rank(&board(), "", true, &());
         assert_eq!(keys(&hits), ["T-1", "T-2", "T-3"]);
         assert!(hits.iter().all(|h| h.score == 0));
         assert!(hits.iter().all(|h| h.key.matched.is_empty() && h.title.matched.is_empty()));
@@ -279,7 +502,7 @@ mod tests {
     #[test]
     fn a_query_matches_across_the_fields_it_draws() {
         let mut s = Searcher::new();
-        let hits = s.rank(&board(), "auth", true);
+        let hits = s.rank(&board(), "auth", true, &());
         assert_eq!(keys(&hits), ["T-1", "T-3"]);
         // The highlight lands on the title, at the characters the eye sees.
         let t3 = hits.iter().find(|h| h.key.text == "T-3").expect("T-3");
@@ -292,12 +515,12 @@ mod tests {
         let mut b = board();
         b.tickets[0].tags.push(TagRef { name: "FEATURE".into(), group: 1 });
         let mut s = Searcher::new();
-        assert_eq!(keys(&s.rank(&b, "review", true)), ["T-2", "T-3"]);
+        assert_eq!(keys(&s.rank(&b, "review", true, &())), ["T-2", "T-3"]);
         // The row says the column the way the board does.
-        assert!(s.rank(&b, "review", true)[0].trail.text.starts_with("REVIEW"));
-        assert_eq!(keys(&s.rank(&b, "feature", true)), ["T-1"]);
+        assert!(s.rank(&b, "review", true, &())[0].trail.text.starts_with("REVIEW"));
+        assert_eq!(keys(&s.rank(&b, "feature", true, &())), ["T-1"]);
         // Two words are ANDed, fzf's rule and telescope's.
-        assert_eq!(keys(&s.rank(&b, "auth review", true)), ["T-3"]);
+        assert_eq!(keys(&s.rank(&b, "auth review", true, &())), ["T-3"]);
     }
 
     #[test]
@@ -307,8 +530,8 @@ mod tests {
         let mut s = Searcher::new();
         // `T-3` fuzzy-matches `T-34` too, and it is the earlier card; the
         // ticket the reader NAMED is still first.
-        assert_eq!(s.rank(&b, "T-3", true)[0].key.text, "T-3");
-        assert_eq!(s.rank(&b, "t-3", true)[0].key.text, "T-3");
+        assert_eq!(s.rank(&b, "T-3", true, &())[0].key.text, "T-3");
+        assert_eq!(s.rank(&b, "t-3", true, &())[0].key.text, "T-3");
     }
 
     #[test]
@@ -318,15 +541,15 @@ mod tests {
         let mut s = Searcher::new();
         // T-3's title is the better match for `auth`, and it still comes
         // second: the tier outranks the score.
-        let hits = s.rank(&b, "auth", true);
+        let hits = s.rank(&b, "auth", true, &());
         assert_eq!(keys(&hits), ["T-1", "T-3"]);
         assert!(hits[1].archived);
         assert!(hits[1].trail.text.ends_with("archived"));
         // And the word is searchable, which is the filter with no grammar.
-        assert_eq!(keys(&s.rank(&b, "archived", true)), ["T-3"]);
+        assert_eq!(keys(&s.rank(&b, "archived", true, &())), ["T-3"]);
         // Excluded, it is not there at all.
-        assert_eq!(keys(&s.rank(&b, "auth", false)), ["T-1"]);
-        assert!(s.rank(&b, "archived", false).is_empty());
+        assert_eq!(keys(&s.rank(&b, "auth", false, &())), ["T-1"]);
+        assert!(s.rank(&b, "archived", false, &()).is_empty());
     }
 
     #[test]
@@ -334,8 +557,8 @@ mod tests {
         let mut b = board();
         b.tickets[1].archived = Some(archived("@1757030400", Some("@1758326400")));
         let mut s = Searcher::new();
-        assert_eq!(keys(&s.rank(&b, "snoozed", true)), ["T-2"]);
-        assert!(s.rank(&b, "archived", true).is_empty());
+        assert_eq!(keys(&s.rank(&b, "snoozed", true, &())), ["T-2"]);
+        assert!(s.rank(&b, "archived", true, &()).is_empty());
     }
 
     #[test]
@@ -343,18 +566,155 @@ mod tests {
         let mut b = board();
         b.tickets.push(ticket(4, "T-4", "Authorise the webhook", "TODO"));
         let mut s = Searcher::new();
-        // A literal substring: `auth` fuzzy-matches "Authorise" anyway, so
-        // the anchor is what tells the two apart.
-        assert_eq!(keys(&s.rank(&b, "'middleware", true)), ["T-3"]);
-        // And the exclusion.
-        let hits = s.rank(&b, "auth !middleware", true);
+        // The exclusion, and the anchor.
+        let hits = s.rank(&b, "auth !middleware", true, &());
         assert_eq!(keys(&hits), ["T-1", "T-4"]);
+        assert_eq!(keys(&s.rank(&b, "^t-4", true, &())), ["T-4"]);
+        // `$` anchors on the row's end, and the row ends in the trail.
+        assert_eq!(keys(&s.rank(&b, "todo$", true, &())), ["T-1", "T-4"]);
+    }
+
+    /// A word is a substring (T-882): `fat` is not in "Fix auth redirect",
+    /// however many of its letters are, and `'fat` is the one that asks for
+    /// them scattered. Fuzzy by default matched 224 of 749 real cards on
+    /// `promo` and ranked a garden first.
+    #[test]
+    fn a_word_is_a_substring_and_a_quote_makes_it_fuzzy() {
+        let mut s = Searcher::new();
+        assert!(s.rank(&board(), "fat", true, &()).is_empty());
+        assert_eq!(keys(&s.rank(&board(), "'fat", true, &())), ["T-1"]);
+        // A fuzzy word still lights the characters it landed on.
+        let hit = &s.rank(&board(), "'fat", true, &())[0];
+        assert_eq!(hit.title.matched.len(), 3, "{:?}", hit.title);
+    }
+
+    /// Case never matters (T-882): smart case made `Promo` and `promo` two
+    /// searches, and a title's capital is not something a reader remembers.
+    #[test]
+    fn case_never_matters() {
+        let mut s = Searcher::new();
+        for q in ["auth", "Auth", "AUTH", "aUtH"] {
+            assert_eq!(keys(&s.rank(&board(), q, true, &())), ["T-1", "T-3"], "{q}");
+        }
+        assert_eq!(keys(&s.rank(&board(), "Review", true, &())), ["T-2", "T-3"]);
+    }
+
+    fn bodies() -> HashMap<ulid::Ulid, Body> {
+        let mut m = HashMap::new();
+        m.insert(
+            ulid_n(90),
+            Body::new(
+                "# Built\n\nFive never-expiring codes minted, labelled `friend-1` … `friend-5`.\n",
+            ),
+        );
+        m.insert(ulid_n(91), Body::new("Repro\n\n1. open the board\n2. press p\n"));
+        m
+    }
+
+    fn noted() -> Board {
+        let mut b = board();
+        let meta = |n: u128| crate::board::NoteMeta {
+            id: ulid_n(n),
+            name: String::new(),
+            rev: 1,
+            created_at: "@1".into(),
+            created_by: "local".into(),
+            edited_at: "@1".into(),
+            edited_by: "local".into(),
+        };
+        b.tickets[1].notes.push(meta(90));
+        b.tickets[1].notes.push(meta(91));
+        b
+    }
+
+    /// A ticket is a hit when one line of one of its notes holds the whole
+    /// query (T-882), and the hit carries that line, lit where the words
+    /// landed, so the picker can show why the row is there.
+    #[test]
+    fn a_note_line_is_a_hit_and_the_hit_carries_the_line() {
+        let b = noted();
+        let mut s = Searcher::new();
+        let hits = s.rank(&b, "friend codes", true, &bodies());
+        assert_eq!(keys(&hits), ["T-2"]);
+        let ex = hits[0].excerpt.as_ref().expect("an excerpt");
+        assert_eq!(ex.note, ulid_n(90));
+        assert!(ex.line.text.starts_with("Five never-expiring codes"), "{:?}", ex.line.text);
+        assert!(ex.line.is_match(ex.line.text.find("codes").unwrap()));
+        assert!(ex.line.is_match(ex.line.text.find("friend").unwrap()));
+        // The row itself is unlit: nothing in it matched.
+        assert!(hits[0].title.matched.is_empty() && hits[0].trail.matched.is_empty());
+        // Two words on two different lines are not one line: grep's rule.
+        assert!(s.rank(&b, "friend board", true, &bodies()).is_empty());
+        // Without bodies, no excerpt and no hit.
+        assert!(s.rank(&b, "friend", true, &()).is_empty());
+    }
+
+    /// The precheck is the matcher's own fold: an ASCII word finds its
+    /// accented spelling on a note line, in any case, as the matcher would.
+    #[test]
+    fn the_note_precheck_refuses_nothing_the_matcher_takes() {
+        let mut b = noted();
+        b.tickets[1].notes.push(crate::board::NoteMeta {
+            id: ulid_n(92),
+            name: String::new(),
+            rev: 1,
+            created_at: "@1".into(),
+            created_by: "local".into(),
+            edited_at: "@1".into(),
+            edited_by: "local".into(),
+        });
+        let mut bodies = bodies();
+        bodies.insert(ulid_n(92), Body::new("Le CAFÉ du coin, ouvert tôt.\n"));
+        let mut s = Searcher::new();
+        for q in ["cafe", "Café", "CAFÉ du", "tot"] {
+            let hits = s.rank(&b, q, true, &bodies);
+            assert_eq!(keys(&hits), ["T-2"], "{q}");
+            assert_eq!(hits[0].excerpt.as_ref().map(|e| e.note), Some(ulid_n(92)), "{q}");
+        }
+    }
+
+    /// Inside a tier the rows the query landed on come before the notes it
+    /// landed in, whatever the scores say.
+    #[test]
+    fn a_row_hit_outranks_a_note_hit() {
+        let mut b = noted();
+        b.tickets[2].title = "The board".into();
+        let mut s = Searcher::new();
+        let hits = s.rank(&b, "board", true, &bodies());
+        assert_eq!(keys(&hits), ["T-3", "T-2"]);
+        assert!(hits[0].excerpt.is_none() && hits[1].excerpt.is_some());
+        // An exclusion alone asks nothing of the notes: every line lacks
+        // something, and that is not a reason to list every ticket.
+        let hits = s.rank(&b, "!auth", true, &bodies());
+        assert_eq!(keys(&hits), ["T-2", "T-3"]);
+        assert!(hits.iter().all(|h| h.excerpt.is_none()));
+    }
+
+    /// A long line opens near its first match, behind the cut mark, and the
+    /// indices move with the text; a short one is left as it is.
+    #[test]
+    fn a_windowed_field_opens_near_its_first_match() {
+        let text = "one two three four five six seven eight nine ten eleven twelve thirteen";
+        let at = text.find("twelve").unwrap() as u32;
+        let f = Field { text: text.into(), matched: (at..at + 6).collect() };
+        let w = f.windowed(30);
+        assert!(w.text.starts_with(CUT), "{:?}", w.text);
+        // Restarted at a word boundary, the cut mark in front of it.
+        assert!(w.text[CUT.len_utf8()..].starts_with("eleven twelve"), "{:?}", w.text);
+        let lit: String =
+            w.text.chars().enumerate().filter(|(i, _)| w.is_match(*i)).map(|(_, c)| c).collect();
+        assert_eq!(lit, "twelve");
+        assert!(!w.is_match(0), "the cut mark is never lit");
+        // Fits: untouched.
+        assert_eq!(f.windowed(80), f);
+        let none = Field { text: text.into(), matched: Vec::new() };
+        assert_eq!(none.windowed(10), none);
     }
 
     #[test]
     fn a_query_nothing_matches_is_empty_and_not_everything() {
         let mut s = Searcher::new();
-        assert!(s.rank(&board(), "zzzzzz", true).is_empty());
+        assert!(s.rank(&board(), "zzzzzz", true, &()).is_empty());
     }
 
     #[test]
@@ -362,7 +722,7 @@ mod tests {
         let mut b = board();
         b.tickets[0].title = "Fix auth\nredirect".into();
         let mut s = Searcher::new();
-        let hits = s.rank(&b, "auth", true);
+        let hits = s.rank(&b, "auth", true, &());
         assert!(!hits[0].title.text.contains('\n'), "{:?}", hits[0].title.text);
     }
 
@@ -385,13 +745,52 @@ mod tests {
             let t0 = std::time::Instant::now();
             let mut hits = 0;
             for _ in 0..100 {
-                hits = s.rank(&b, q, true).len();
+                hits = s.rank(&b, q, true, &()).len();
             }
             println!(
                 "{:>14} {:>5} hits {:>8.1}µs",
                 format!("{q:?}"),
                 hits,
                 t0.elapsed().as_micros() as f64 / 100.0
+            );
+        }
+    }
+
+    /// The notes' pass: the author's board's shape (700 notes, 18,500
+    /// lines), every line judged, printed like the one above.
+    #[test]
+    #[ignore = "prints a timing; run with --ignored"]
+    fn how_long_the_notes_take() {
+        let mut b = board();
+        b.tickets.clear();
+        let mut bodies = HashMap::new();
+        let line = "The daemon reads the transcript tail and the hook frames land as signals.\n";
+        for n in 0..700u128 {
+            let mut t = ticket(n + 10, &format!("T-{n}"), "Fix the auth redirect loop", "TODO");
+            t.notes.push(crate::board::NoteMeta {
+                id: ulid_n(n + 5000),
+                name: String::new(),
+                rev: 1,
+                created_at: "@1".into(),
+                created_by: "local".into(),
+                edited_at: "@1".into(),
+                edited_by: "local".into(),
+            });
+            bodies.insert(ulid_n(n + 5000), Body::new(&line.repeat(26)));
+            b.tickets.push(t);
+        }
+        let mut s = Searcher::new();
+        for q in ["promo", "transcript", "hook frames land", "zzzz"] {
+            let t0 = std::time::Instant::now();
+            let mut hits = 0;
+            for _ in 0..20 {
+                hits = s.rank(&b, q, true, &bodies).len();
+            }
+            println!(
+                "{:>20} {:>5} hits {:>8.1}µs",
+                format!("{q:?}"),
+                hits,
+                t0.elapsed().as_micros() as f64 / 20.0
             );
         }
     }

@@ -81,6 +81,21 @@ pub struct Envelope {
     pub command: Command,
 }
 
+/// One note named across the wire: the ticket it is on and its id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoteRef {
+    pub ticket: ulid::Ulid,
+    pub note: ulid::Ulid,
+}
+
+/// One note's body as `ReadNotes` answers it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoteBody {
+    pub note: ulid::Ulid,
+    pub rev: u64,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Command {
@@ -432,6 +447,14 @@ pub enum Command {
     /// the archived list, the picker and a page on one ask for them, whole,
     /// newest archive first.
     ArchivedTickets,
+    /// Several notes' bodies at once (T-882): the picker's corpus, asked for
+    /// when `/` is first typed into and again for the notes a snapshot shows
+    /// edited since. One round-trip for a board's worth, so a keystroke
+    /// never waits on the wire. A note that cannot be read is left out of
+    /// the answer, never an error: the picker searches what it has.
+    ReadNotes {
+        notes: Vec<NoteRef>,
+    },
     /// Create (`note: None`) or replace (`Some`) a note on a ticket — the
     /// whole file, never a section (docs/13 §13.3: prose is an opaque blob).
     /// Blank text on an existing note deletes it. The daemon mints the id,
@@ -1438,6 +1461,7 @@ impl Command {
             | TerminalTail { .. }
             | FocusQuiet
             | ReadNote { .. }
+            | ReadNotes { .. }
             | TicketSessions { .. }
             | ArchivedTickets
             | AgentGetTicket
@@ -2004,6 +2028,11 @@ pub enum Response {
     Note {
         text: String,
         meta: crate::board::NoteMeta,
+    },
+    /// ReadNotes' answer (T-882): the bodies it could read, each with the
+    /// `rev` the caller keys its cache on.
+    Notes {
+        notes: Vec<NoteBody>,
     },
     /// Receipt for one accepted upload chunk, including the first minted ID.
     AttachmentUploaded {

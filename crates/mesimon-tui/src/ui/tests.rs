@@ -8158,7 +8158,7 @@ fn test_no_banned_sgr() {
                 // — a prompt, painted highlight runs, and a whole card
                 // rendered inside a second frame.
                 let sp =
-                    searching(App::for_test(fixture_archived(), Theme::new(flavor, profile)), "ac");
+                    searching(App::for_test(fixture_archived(), Theme::new(flavor, profile)), "en");
                 assert!(
                     render(&sp, 120, 30).iter().any(|l| l.contains("SEARCH ∙ 2/7")),
                     "the picker must be ON SCREEN, or this law does not bite"
@@ -8435,7 +8435,7 @@ fn test_no_drawn_structure() {
             // it — and every box glyph on either must be a recorded
             // perimeter, which is the whole reason it uses `dialog::frame`
             // rather than a rule of its own.
-            let sp = searching(app_graphite(fixture_archived()), "ac");
+            let sp = searching(app_graphite(fixture_archived()), "en");
             let lines = sweep(&sp);
             assert!(
                 lines.iter().any(|l| l.contains("SEARCH ∙ 2/7")),
@@ -10463,9 +10463,11 @@ fn searching(mut app: App, query: &str) -> App {
 /// characters lifted onto the value ramp, and the cursor row's own card in
 /// the frame beside it. T-7 is archived, so the list also shows the tier —
 /// a live card first, the archived one under it with the word that says so.
+/// `en` is in "treatments" and "accent" and nowhere else (T-882: a word is
+/// a substring, so `ac` no longer reaches "Grapheme truncation").
 #[test]
 fn golden_search_120() {
-    let app = searching(app_graphite(fixture_archived()), "ac");
+    let app = searching(app_graphite(fixture_archived()), "en");
     golden("search_120x30", &render(&app, 120, 30));
 }
 
@@ -10481,8 +10483,44 @@ fn golden_search_open_120() {
 /// bottom edge drops keys from the end the way every other footer does.
 #[test]
 fn golden_search_narrow_80() {
-    let app = searching(app_graphite(fixture_archived()), "ac");
+    let app = searching(app_graphite(fixture_archived()), "en");
     golden("search_80x24", &render(&app, 80, 24));
+}
+
+/// A hit found in a note (T-882): T-3's row does not say `peek`, its second
+/// note does, so the row is unlit and the note line sits under it with the
+/// word lit, and the preview bolds that note among T-3's rows. The archived
+/// T-7 matches on a note too and keeps its tier under the live card; T-1
+/// matches on its title and comes before both.
+#[test]
+fn golden_search_note_120() {
+    let mut b = fixture_archived();
+    for (id, n) in [(3u128, 90u128), (7, 91)] {
+        if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(id)) {
+            t.notes.push(note_meta(n, "Repro steps", "local"));
+        }
+    }
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(1)) {
+        t.title = "Peek decay treatments".into();
+    }
+    let mut app = app_graphite(b);
+    app.remember_body(ulid_n(90), 1, SECOND_NOTE);
+    app.remember_body(
+        ulid_n(91),
+        1,
+        "A long first line that runs well past the width of the list before it says the word, \
+         which is where the peek is, so the row opens near it.",
+    );
+    let app = searching(app, "peek");
+    let lines = render(&app, 120, 30);
+    let keys: Vec<&str> = match &app.mode {
+        Mode::Search(s) => s.hits.iter().map(|h| h.key.text.as_str()).collect(),
+        _ => unreachable!(),
+    };
+    assert_eq!(keys, ["T-1", "T-3", "T-7"]);
+    assert!(lines.iter().any(|l| l.contains("3. watch the peek")), "the note line is drawn");
+    assert!(lines.iter().any(|l| l.contains("…")), "the long line opens near its match");
+    golden("search_note_120x30", &lines);
 }
 
 /// A query nothing matches says so in a sentence, and names the half of the
@@ -12052,7 +12090,7 @@ fn the_search_picker_takes_clicks_on_both_halves() {
     let mut app = app_graphite(fixture(false));
     app.mode = Mode::Search(crate::app::Search::new());
     if let Mode::Search(s) = &mut app.mode {
-        s.hits = mesimon_core::search::Searcher::new().rank(&app.board, "", true);
+        s.hits = mesimon_core::search::Searcher::new().rank(&app.board, "", true, &());
     }
     let lines = render(&app, 120, 30);
     let (second, id) = match &app.mode {

@@ -393,6 +393,18 @@ impl World {
                     _ => refuse("no such note"),
                 }
             }
+            // The picker's corpus (T-882): the bodies the toy holds, as the
+            // daemon would answer, so a search in the tour reaches the notes.
+            Command::ReadNotes { notes } => Response::Notes {
+                notes: notes
+                    .iter()
+                    .filter_map(|r| {
+                        let meta = self.board.ticket(r.ticket)?.note(r.note)?;
+                        let text = self.notes.get(&r.note)?.clone();
+                        Some(mesimon_core::command::NoteBody { note: r.note, rev: meta.rev, text })
+                    })
+                    .collect(),
+            },
             Command::WriteNote { ticket, note, text, .. }
             | Command::SaveNoteWithAttachments { ticket, note, text, .. } => {
                 self.write_note(ticket, note, text)
