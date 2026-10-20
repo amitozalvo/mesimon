@@ -28824,3 +28824,26 @@ end.
 **Owed:** a CHANGELOG line at the next bump — **Added:** a short animation the first time
 mesimon runs on a machine, after the installer or on the first board: the ש in משימון wakes up
 as the shin. Any key skips it, and it never plays again.
+
+## The header counts the linked boards (T-878, 2026-10-21, "Crown connected boards should show N boards": "Instead of the literal list of boards. Only when messages flow, show the relevant board in blue with what happened like now")
+
+**What changed.** T-733's header wrote every linked board's name after the workflow word
+(` ∙ relay ∙ site`). It now writes their count, ` ∙ 2 boards` (` ∙ 1 board`), in the same quiet
+ink, and only while words go between the crowns does the count give its place to what happened
+with the one board, as before: `↯ sent ask to relay` in the crown's tint for `LINK_LIT_MS`, a
+refusal in the plain ink. The names stay in `Settings › Crown › Reaches boards`.
+
+**The bolt.** With one word on the row there is one end: `links_mark` records every linked
+board's name at that word's cell, so `strike.rs`'s lookup by name is unchanged and a bolt for
+any board lands on the count or on the lit words. A lit board that is no longer linked lights
+nothing, as before.
+
+**Tests.** `ui::tests::the_header_counts_linked_boards_and_lights_what_words_did` (renamed from
+`…names_linked_boards…`): the count, no names, `1 board`, every board's end on the same cell,
+the lit words in the tint, the refusal in base, the lit words dropped on a 60-column row; the
+golden `board_links_120x30` reminted (one header line). The quiet count always fits: the board
+draws from 60 columns, and the row needs 52.
+
+**Owed:** a CHANGELOG line at the next bump — **Changed:** the board header shows how many
+boards this one is linked to, instead of their names; a board's name shows there only while its
+crown and this one are exchanging a message.

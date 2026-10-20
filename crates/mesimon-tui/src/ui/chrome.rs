@@ -147,8 +147,8 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
         let mut flow_w = super::spans_width(&flow);
         let flow_n = flow.len();
         spans.extend(flow);
-        // The boards this one reaches (T-733), after the workflow: each
-        // name, and the one words just went to or came from lit with them.
+        // The boards this one reaches (T-733), after the workflow: their
+        // count, or what words just did with one of them (T-878).
         // Dropped whole on a row that cannot hold them, before the workflow
         // word shortens.
         let links_at = spans.len();
@@ -226,7 +226,7 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
                 .filter(|c| c.2 > 0)
                 .map(|(chip, x, w)| (chip, area.x.saturating_add(x as u16), w as u16)),
         );
-        // Each linked board's name, for the bolt to or from it (T-733).
+        // The boards' word, for the bolt to or from any of them (T-733).
         if links_w > 0 {
             let links_x = marks_at + marks_w + flow_w;
             app.spots.borrow_mut().links.extend(
@@ -332,34 +332,33 @@ fn workflow_mark(app: &App, short: bool) -> Vec<Span<'static>> {
     vec![Span::styled(" ∙ ".to_string(), theme.dim3()), Span::styled(word.to_string(), style)]
 }
 
-/// The boards this one reaches (T-733), each ` ∙ name` in the quiet ink, and
-/// the one words just went to or came from lit with what happened, in the
-/// crown's tint, for `LINK_LIT_MS`: `↯ sent ask to relay`, `↯ relay asks`,
-/// `↯ relay replied`, `↯ replied to relay`; a refusal's why in the plain
-/// ink. Returns the spans and each name's cell offset into them, where a
-/// bolt leaves from or lands.
+/// The boards this one reaches (T-733), counted: ` ∙ 2 boards` in the quiet
+/// ink (T-878, the author: "N boards" over the list of names). While words
+/// have just gone to or come from one, the count gives its place to what
+/// happened, in the crown's tint, for `LINK_LIT_MS`: `↯ sent ask to relay`,
+/// `↯ relay asks`, `↯ relay replied`, `↯ replied to relay`; a refusal's why
+/// in the plain ink. Returns the spans and, for every linked board, the cell
+/// offset where a bolt to or from it leaves or lands: the one word's.
 fn links_mark(app: &App) -> (Vec<Span<'static>>, Vec<(String, usize)>) {
     let theme = &app.theme;
-    let lit = app.link_lit();
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut offsets: Vec<(String, usize)> = Vec::new();
-    let mut w = 0usize;
-    for l in &app.links {
-        spans.push(Span::styled(" ∙ ".to_string(), theme.dim3()));
-        w += 3;
-        offsets.push((l.name.clone(), w));
-        let word = match lit.filter(|x| x.board == l.name) {
-            Some(x) => {
-                let word = format!("{} {}", crate::glyphs::bolt(theme.glyph_tier()), x.words);
-                let style = if x.refused { theme.base() } else { theme.crown_text() };
-                Span::styled(word, style)
-            }
-            None => Span::styled(mesimon_core::text::scrub_cells(&l.name, false), theme.dim2()),
-        };
-        w += word.content.width();
-        spans.push(word);
+    let n = app.links.len();
+    if n == 0 {
+        return (Vec::new(), Vec::new());
     }
-    (spans, offsets)
+    let lit = app.link_lit().filter(|x| app.links.iter().any(|l| l.name == x.board));
+    let word = match lit {
+        Some(x) => {
+            let word = format!("{} {}", crate::glyphs::bolt(theme.glyph_tier()), x.words);
+            let style = if x.refused { theme.base() } else { theme.crown_text() };
+            Span::styled(word, style)
+        }
+        None => {
+            let noun = if n == 1 { "board" } else { "boards" };
+            Span::styled(format!("{n} {noun}"), theme.dim2())
+        }
+    };
+    let offsets = app.links.iter().map(|l| (l.name.clone(), 3)).collect();
+    (vec![Span::styled(" ∙ ".to_string(), theme.dim3()), word], offsets)
 }
 
 /// What the branch name keeps of itself while the row is tight: `main` whole,
