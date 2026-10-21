@@ -120,6 +120,16 @@ const CROWN_TOUCH_MS: u64 = 10_000;
 const CROWN_TOUCH_KEPT_MS: u64 = 3_600_000;
 const GATE_SESSION: &str = "msmn-gate";
 
+/// Who a park is for (T-874). A deliberate one is somebody dealing with the
+/// agent (a person's `x`, the crown's `sleep_agent`, leaving the session), and
+/// its raised hand comes down with it (T-861); an automatic one is the
+/// daemon's own and leaves the hand up.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Park {
+    Deliberate,
+    Automatic,
+}
+
 /// Who holds the exclusive focus token (D22): a ticket's session, or the
 /// project's terminal (T-273) — a named tmux session on the private server
 /// that belongs to no ticket, like the gate's.
@@ -2973,10 +2983,8 @@ impl Daemon {
             // The board's `w` on a trust dialog (T-844): the walk Remote
             // Control's card asks for, from the terminal.
             Command::AcceptTrust { ticket } => self.accept_trust(ticket),
-            Command::SleepSession { id } => match self.sleep_one(id, false) {
+            Command::SleepSession { id } => match self.sleep_one(id, false, Park::Deliberate) {
                 Ok(()) => {
-                    // Parking the agent is being done with its hand (T-861).
-                    self.lower_hand_of(id);
                     self.persist_and_notify();
                     Response::Ok
                 }
@@ -3725,7 +3733,7 @@ impl Daemon {
             }
         }
         for id in &paned {
-            if let Err(why) = self.sleep_one(*id, false) {
+            if let Err(why) = self.sleep_one(*id, false, Park::Automatic) {
                 self.journal.line(&format!("server restart: session {id} did not park: {why}"));
             }
         }
@@ -6742,15 +6750,12 @@ impl Daemon {
                 };
                 // A working worker is refused in the words a person's `z`
                 // reads over the same seat (`still_awake`), behind its key.
-                if let Err(why) = self.sleep_one(sid, false) {
+                if let Err(why) = self.sleep_one(sid, false, Park::Deliberate) {
                     return Response::Err {
                         message: format!("{key}: {}", mesimon_core::quiet::still_awake(kind, &why)),
                     };
                 }
                 self.persist_sessions();
-                // The crown parking its worker is done with the worker's
-                // hand (T-861), as a person's park is.
-                self.lower_hand_on(target);
                 self.feed.board(by.actor(), "sleep_agent", Some(target));
                 self.crown_touched(ticket, target, "parked");
                 self.broadcast();
@@ -13435,7 +13440,7 @@ impl Daemon {
         for (sid, _) in &awake {
             // Judged eligible a moment ago on this same thread; a refusal
             // here would be a record that vanished between the two loops.
-            let _ = self.sleep_one(*sid, false);
+            let _ = self.sleep_one(*sid, false, Park::Automatic);
         }
         if !awake.is_empty() {
             self.persist_sessions();
@@ -16853,7 +16858,7 @@ impl Daemon {
                 continue;
             }
             let ticket = rec.ticket;
-            if self.sleep_one(id, false).is_ok() {
+            if self.sleep_one(id, false, Park::Automatic).is_ok() {
                 self.feed.board("automation", rule, Some(ticket));
                 changed = true;
             }
@@ -16907,6 +16912,7 @@ impl Daemon {
         &mut self,
         id: uuid::Uuid,
         enforce_floor: bool,
+        park: Park,
     ) -> std::result::Result<(), String> {
         let now = now_ms();
         let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
@@ -16946,7 +16952,7 @@ impl Daemon {
         // there is genuinely no conversation to resume the wake mints a fresh
         // one under a new uuid rather than losing anything. The other sleep
         // road never said it, so one gesture answered two ways.
-        self.park_record(id, transcript.as_deref(), now);
+        self.park_record(id, transcript.as_deref(), now, park);
         let _ = self.backend.signal_session(&sid);
         self.reaping.insert(sid, Instant::now() + REAP_GRACE);
         // The user parked the claude an ask was waiting for: a queued ask
@@ -16962,7 +16968,7 @@ impl Daemon {
     /// it belongs to the agent's own store, and this is our copy), the
     /// record parked with its Codex input forgotten, and the machine
     /// re-minted `Sleeping` so the pane's death echo cannot undo it.
-    fn park_record(&mut self, id: uuid::Uuid, transcript: Option<&str>, now: u64) {
+    fn park_record(&mut self, id: uuid::Uuid, transcript: Option<&str>, now: u64, park: Park) {
         if let Some(t) = transcript {
             let dir = self.paths.transcripts_dir();
             if std::fs::create_dir_all(&dir).is_ok() {
@@ -16992,6 +16998,9 @@ impl Daemon {
             rec.detail = None;
         }
         self.machines.insert(id, Machine::new(SessionState::Sleeping, now));
+        if park == Park::Deliberate {
+            self.lower_hand_of(id);
+        }
         self.recovery.remove(&id);
     }
 
@@ -17039,13 +17048,11 @@ impl Daemon {
         if adapter.history_missing(rec) || adapter.conversation_key(rec).is_none() {
             return false;
         }
-        let (sid, transcript, ticket) = (rec.sid16(), rec.transcript_path.clone(), rec.ticket);
+        let (sid, transcript) = (rec.sid16(), rec.transcript_path.clone());
 
         let now = now_ms();
-        self.park_record(id, transcript.as_deref(), now);
-        // The person left the session from inside it (T-861): a park of
-        // their own, and the hand comes down with it as it does for `x`.
-        self.lower_hand_on(ticket);
+        // The person left the session from inside it: a park of their own.
+        self.park_record(id, transcript.as_deref(), now, Park::Deliberate);
         // No SIGTERM: the process left on its own. The pane is only still
         // standing because remain-on-exit is holding the corpse, so hand it
         // to the same reaper sleep uses rather than killing it inline.
@@ -17135,7 +17142,7 @@ impl Daemon {
         let mut slept = 0;
         let mut skipped = 0;
         for id in candidates {
-            match self.sleep_one(id, true) {
+            match self.sleep_one(id, true, Park::Automatic) {
                 Ok(()) => slept += 1,
                 Err(_) => skipped += 1,
             }

@@ -533,7 +533,7 @@ impl Daemon {
             };
         }
         let codex = self.board.sessions.iter().any(|s| s.id == id && s.kind == SessionKind::Codex);
-        if let Err(message) = self.sleep_one(id, false) {
+        if let Err(message) = self.sleep_one(id, false, super::Park::Automatic) {
             return Response::Err { message: format!("could not park for {why}: {message}") };
         }
         self.feed.board(actor, if plan { "plan_relaunch" } else { "tier_switch" }, Some(ticket));

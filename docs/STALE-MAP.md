@@ -29168,3 +29168,16 @@ fails it. No wire or schema change, no rig (no agent's words moved).
 **Owed:** a CHANGELOG line at the next bump — **Fixed:** Accepting a Codex agent's folder-trust
 question from the board (`w`) or from Remote Control now works; it used to say the dialog could
 not be accepted.
+
+## T-874 — a deliberate park lowers the hand inside `sleep_one`
+
+T-861's "a raised hand comes down when somebody deals with the agent" was remembered at each
+park road. `sleep_one` and `park_record` now take a `Park::{Deliberate, Automatic}` and lower
+the hand inside on `Deliberate`: a person's `SleepSession`, the crown's `sleep_agent` and the
+exit park (`park_on_exit`) pass it and lost their own `lower_hand_*` call. Everything else
+passes `Automatic` — `park_inactive`, the Codex idle audit, the server-restart repark, the
+sleep-all sweep and the plan/tier relaunch park — exactly as before (none lowered a hand).
+A shell's close returns before `park_record`, so it lowers nothing, as before.
+`FocusStart`/`FocusEnd` (a person at the pane, not a park) and `crownwake`'s told-hand
+lowering stay where they are. No behaviour change; `raise_hand_e2e`, `crown_e2e` and the full
+suite are green.
