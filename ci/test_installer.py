@@ -3,6 +3,7 @@
 import errno
 import hashlib
 import io
+import json
 import os
 from pathlib import Path
 import pty
@@ -17,7 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class InstallerWelcome(unittest.TestCase):
-    def install(self, *, tty=True, locale="en_US.UTF-8", term="xterm-256color", broken=False):
+    def install(self, *, tty=True, locale="en_US.UTF-8", term="xterm-256color", broken=False,
+                listing=None, version="v0.0.0-test"):
         with tempfile.TemporaryDirectory(prefix="msmn-installer-") as tmp:
             root = Path(tmp)
             commands = root / "commands"
@@ -35,8 +37,8 @@ class InstallerWelcome(unittest.TestCase):
             command("curl", '''while [ "$#" -gt 0 ]; do
   case "$1" in -o) out="$2"; shift 2 ;; *) url="$1"; shift ;; esac
 done
+case "$url" in *api.github.com*) cat "$FIXTURE_LISTING"; exit 0 ;; esac
 case "$url" in *.sha256) cp "$FIXTURE_ASSET.sha256" "$out" ;; *) cp "$FIXTURE_ASSET" "$out" ;; esac''')
-            version = "v0.0.0-test"
             name = f"mesimon-{version}-x86_64-unknown-linux-musl"
             archive = root / (name + ".tar.gz")
             binary = b"#!/bin/sh\necho mesimon-test\n" + (b"exit 1\n" if broken else b"")
@@ -50,6 +52,10 @@ case "$url" in *.sha256) cp "$FIXTURE_ASSET.sha256" "$out" ;; *) cp "$FIXTURE_AS
             env = dict(os.environ, PATH=str(commands) + ":/usr/bin:/bin", LC_ALL=locale,
                        TERM=term, PREFIX=str(root / "install with spaces"), FIXTURE_ASSET=str(archive))
             args = ["sh", str(ROOT / "install.sh"), "--version", version]
+            if listing is not None:
+                (root / "listing.json").write_text(listing)
+                env["FIXTURE_LISTING"] = str(root / "listing.json")
+                args = args[:2]
             if tty:
                 master, slave = pty.openpty()
                 try:
@@ -114,6 +120,37 @@ case "$url" in *.sha256) cp "$FIXTURE_ASSET.sha256" "$out" ;; *) cp "$FIXTURE_AS
         self.assertNotIn("█", output)
         self.assertNotIn("mesimon is ready", output)
         self.assertIn("would not run", output)
+
+
+class InstallerVersion(unittest.TestCase):
+    """The tag installed with no --version is the highest listed, not the first."""
+
+    install = InstallerWelcome.install
+
+    # The order GitHub listed on 2026-10-19 (T-877): beta.9 and beta.10 sat on
+    # one commit of the releases repo, and beta.10 came back third.
+    TAGS = ["v0.1.0-beta.9", "v0.1.0-beta.8", "v0.1.0-beta.10", "v0.1.0-beta.7", "v0.1.0-beta.6"]
+
+    def listing(self, indent):
+        return json.dumps([
+            {"tag_name": tag, "draft": False, "prerelease": True,
+             "body": 'notes quoting "tag_name": "v9.9.9"',
+             "assets": [{"name": f"mesimon-{tag}-x86_64-unknown-linux-musl.tar.gz"}]}
+            for tag in self.TAGS
+        ], indent=indent)
+
+    def test_the_highest_tag_is_installed_wherever_it_is_listed(self):
+        for indent in [2, None]:
+            with self.subTest(pretty=indent is not None):
+                output = self.install(tty=False, listing=self.listing(indent),
+                                      version="v0.1.0-beta.10")
+                self.assertIn("downloading mesimon-v0.1.0-beta.10-x86_64-unknown-linux-musl", output)
+                self.assertIn("checksum ok", output)
+
+    def test_an_empty_listing_installs_nothing(self):
+        with self.assertRaises(AssertionError) as failed:
+            self.install(tty=False, listing="[]")
+        self.assertIn("could not find a published release", str(failed.exception))
 
 
 if __name__ == "__main__":

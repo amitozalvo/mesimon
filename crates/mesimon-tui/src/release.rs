@@ -496,27 +496,31 @@ fn curl(args: &[&str]) -> Option<std::process::Output> {
 fn fetch_latest_tag() -> Option<String> {
     // NOT `/releases/latest` — that endpoint skips prereleases and every alpha
     // is one, so it answers 404 until the first stable build. The list
-    // endpoint is newest-first and includes them. Same trap, same note, as
-    // `install.sh`.
+    // endpoint includes them, in an order `latest_tag` does not trust. Same
+    // trap, same note, as `install.sh`.
     let url = format!("https://api.github.com/repos/{DIST_REPO}/releases?per_page=5");
     let out =
         curl(&["--max-time", API_TIMEOUT_SECS, "-H", "Accept: application/vnd.github+json", &url])?;
     latest_tag(&String::from_utf8_lossy(&out.stdout))
 }
 
-/// The newest published tag in a GitHub releases listing. Drafts are skipped
-/// belt-and-braces: an unauthenticated request is never shown one, but the
-/// asset a draft names does not exist, so an offer built on it could only
-/// fail.
+/// The highest version among the published tags of a GitHub releases
+/// listing, never the first one listed: the list is ordered by the date of
+/// the commit each tag names, and two releases on one commit come back in
+/// either order (T-877: beta.10 was listed third and no board offered it).
+/// Drafts are skipped belt-and-braces: an unauthenticated request is never
+/// shown one, but the asset a draft names does not exist, so an offer built
+/// on it could only fail. A tag that is no version orders nothing, so it is
+/// never the pick.
 fn latest_tag(body: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(body).ok()?;
     v.as_array()?
         .iter()
-        .find(|r| !r.get("draft").and_then(|d| d.as_bool()).unwrap_or(false))
-        .and_then(|r| r.get("tag_name"))
-        .and_then(|t| t.as_str())
-        .filter(|t| !t.is_empty())
-        .map(str::to_string)
+        .filter(|r| !r.get("draft").and_then(|d| d.as_bool()).unwrap_or(false))
+        .filter_map(|r| r.get("tag_name")?.as_str())
+        .filter_map(|t| Some((Version::parse(t.trim_start_matches('v')).ok()?, t)))
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, t)| t.to_string())
 }
 
 // ---- taking the offer ------------------------------------------------------
@@ -783,8 +787,28 @@ mod tests {
         assert!(!newer_than("", "0.1.0"));
     }
 
+    /// The listing GitHub gave on 2026-10-19, when beta.9 and beta.10 sat on
+    /// one commit of the releases repo and beta.10 came back third.
     #[test]
-    fn the_newest_published_tag_is_the_first_non_draft() {
+    fn the_newest_published_tag_is_the_highest_not_the_first() {
+        let body = r#"[
+            {"tag_name": "v0.1.0-beta.9", "draft": false, "prerelease": true},
+            {"tag_name": "v0.1.0-beta.8", "draft": false, "prerelease": true},
+            {"tag_name": "v0.1.0-beta.10", "draft": false, "prerelease": true},
+            {"tag_name": "v0.1.0-beta.7", "draft": false, "prerelease": true},
+            {"tag_name": "v0.1.0-beta.6", "draft": false, "prerelease": true}
+        ]"#;
+        assert_eq!(latest_tag(body).as_deref(), Some("v0.1.0-beta.10"));
+        // A release outranks its prereleases wherever it is listed, and a
+        // tag that is no version is passed over rather than picked.
+        let body = r#"[
+            {"tag_name": "v0.1.0-rc.2"}, {"tag_name": "nightly"}, {"tag_name": "v0.1.0"}
+        ]"#;
+        assert_eq!(latest_tag(body).as_deref(), Some("v0.1.0"));
+    }
+
+    #[test]
+    fn a_draft_is_never_the_newest() {
         let body = r#"[
             {"tag_name": "v0.1.0-alpha.9", "draft": true},
             {"tag_name": "v0.1.0-alpha.5", "draft": false, "prerelease": true},

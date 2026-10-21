@@ -72,13 +72,47 @@ command -v claude >/dev/null 2>&1 || {
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
+# The highest of the tags on stdin, one per line, by semver precedence: the
+# numbers, then a prerelease below its release, its dot-separated fields
+# compared as numbers when both are digits and as text otherwise. A tag that
+# is no version is skipped. Plain awk, because `sort -V` is missing from
+# busybox and ranks v0.1.0 below v0.1.0-beta.1 in GNU's.
+highest_tag() {
+  awk '
+    function cmp(a, b,   x, y, xs, ys, n, m, i, p, q) {
+      sub(/^v/, "", a); sub(/^v/, "", b)
+      p = index(a, "-"); q = index(b, "-")
+      x = p ? substr(a, 1, p - 1) : a; y = q ? substr(b, 1, q - 1) : b
+      split(x, xs, "."); split(y, ys, ".")
+      for (i = 1; i <= 3; i++) if (xs[i] + 0 != ys[i] + 0) return xs[i] + 0 < ys[i] + 0 ? -1 : 1
+      if (!p || !q) return (!p) - (!q)
+      n = split(substr(a, p + 1), xs, "."); m = split(substr(b, q + 1), ys, ".")
+      for (i = 1; i <= n && i <= m; i++) {
+        if (xs[i] == ys[i]) continue
+        if (xs[i] ~ /^[0-9]+$/ && ys[i] ~ /^[0-9]+$/) return xs[i] + 0 < ys[i] + 0 ? -1 : 1
+        if (xs[i] ~ /^[0-9]+$/) return -1
+        if (ys[i] ~ /^[0-9]+$/) return 1
+        return xs[i] < ys[i] ? -1 : 1
+      }
+      return n < m ? -1 : n > m
+    }
+    /^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/ {
+      if (best == "" || cmp($0, best) > 0) best = $0
+    }
+    END { if (best != "") print best }
+  '
+}
+
 if [ -z "$VERSION" ]; then
   # NOT /releases/latest — that endpoint skips prereleases, and every alpha is
-  # one, so it would 404 until the first stable build. The list endpoint is
-  # newest-first and includes them.
+  # one, so it would 404 until the first stable build. The list endpoint
+  # includes them, ordered by the date of the commit each tag names, which two
+  # releases can share: beta.10 came back third on 2026-10-19. So every tag is
+  # read, and the highest is the one installed, never the first.
   VERSION="$(curl -fsSL "https://api.github.com/repos/$REPO/releases" 2>/dev/null \
-    | grep -m1 '"tag_name"' \
-    | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+    | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | sed -E 's/.*"([^"]*)"$/\1/' \
+    | highest_tag)"
   [ -n "$VERSION" ] || die "could not find a published release on $REPO" \
     "check https://github.com/$REPO/releases"
 fi

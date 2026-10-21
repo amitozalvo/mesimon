@@ -363,9 +363,26 @@ awk -v want="## $tag" '
 step "build mesimon.dev"
 ci/site.sh
 
+# GitHub lists a repo's releases by the date of the commit each tag names, not
+# by when they were published, and two releases on one commit come back in
+# either order (T-877: beta.10 was tagged on beta.9's commit, came back third,
+# and every reader that took the first entry stayed on beta.9). So each tag
+# names a commit of its own: LATEST, one line naming the tag, is committed to
+# $DIST_REPO's main first, and the release is created on that commit.
+printf '%s\n' "$tag" > dist/LATEST
+publish_order() {
+  echo "  1. commit LATEST ($tag) to $DIST_REPO's main; the tag is created on that commit"
+  echo "  2. refuse if that commit is the one the release listed first already names"
+  echo "  3. gh release create $tag --target <that commit>, with the assets"
+  echo "  4. $tag must come back first in releases?per_page=3"
+  echo "  5. sync install.sh, the README and mesimon.dev; bump the Homebrew tap"
+}
+
 if [ "$DRY_RUN" = "1" ]; then
   step "dry run — nothing published"
   echo "artifacts in dist/, notes in dist/notes.md, the tap's formula in dist/mesimon.rb, the site in dist/site"
+  echo "publishing would:"
+  publish_order
   echo "publish with: ci/release.sh"
   exit 0
 fi
@@ -393,12 +410,35 @@ sha=$(git rev-parse HEAD)
   echo "Built from \`$SRC_REPO\` at \`${sha:0:7}\`."
 } >> dist/notes.md
 
+publish_order
+step "mark $tag on $DIST_REPO's main"
+ci/publish-file.sh "$DIST_REPO" dist/LATEST LATEST "release $tag"
+branch=$(gh api "repos/$DIST_REPO" --jq .default_branch)
+target=$(gh api "repos/$DIST_REPO/commits/$branch" --jq .sha)
+listed=$(gh api "repos/$DIST_REPO/releases?per_page=1" --jq '.[0].tag_name // empty')
+if [ -n "$listed" ]; then
+  [ "$(gh api "repos/$DIST_REPO/commits/$listed" --jq .sha)" != "$target" ] || \
+    die "$tag would share a commit with $listed, and GitHub could list $listed first" \
+        "check LATEST on $DIST_REPO's main: it should name $tag"
+fi
+
 gh release create "$tag" \
   --repo "$DIST_REPO" \
+  --target "$target" \
   --title "$tag" \
   --notes-file dist/notes.md \
   --prerelease \
   "${assets[@]}"
+
+# Asked, not assumed: a board or an install.sh from before T-877 takes the
+# first entry. The release is out by now, so a wrong order is reported at the
+# end rather than stopping the syncs below.
+first=""
+for _ in 1 2 3 4 5; do
+  first=$(gh api "repos/$DIST_REPO/releases?per_page=3" --jq '.[0].tag_name // empty' || true)
+  [ "$first" = "$tag" ] && break
+  sleep 2
+done
 
 # Keep the public repo's install.sh and README in step with what was just
 # released — the curl one-liner reads them straight off its main branch, which
@@ -418,6 +458,13 @@ publish_file "$TAP_REPO" dist/mesimon.rb Formula/mesimon.rb
 
 echo
 echo "published $tag"
+if [ "$first" != "$tag" ]; then
+  echo
+  echo "error: GitHub lists ${first:-nothing} first, not $tag: a board or an install.sh from" >&2
+  echo "  before T-877 takes the first entry and will not see $tag" >&2
+  echo "  check: gh api 'repos/$DIST_REPO/releases?per_page=3' --jq '.[].tag_name'" >&2
+  exit 1
+fi
 echo
 echo "share this line:"
 echo "  curl -fsSL https://mesimon.dev/install.sh | sh"

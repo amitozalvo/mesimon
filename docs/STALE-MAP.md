@@ -29105,3 +29105,41 @@ the hand is down it's not reading as 'used to be' raised hand").** Two changes:
   reason still fits behind `needs you ∙ `. `raise_hand`'s description is unchanged.
 - **A lowered hand is the needs-you colour faded half way to the ground** (`Theme::attn_faded`,
   `LOWERED_KEEP` 0.5), never attn itself; with no RGB ground to fade into it is `dim2`, as before.
+
+## The newest release is the highest tag, not the first listed (T-877, 2026-10-21, "Update check and install.sh offer the release GitHub lists first, not the newest")
+
+v0.1.0-beta.10 shipped on 2026-10-19 and no Mac saw it: the board offered no update and
+`install.sh` installed beta.9. **Cause:** `GET /repos/<dist>/releases` orders by a release's
+`created_at`, which is the date of the commit its tag names, not when it was published, and
+`ci/release.sh` ran `gh release create` (tag on the releases repo's main head) *before* syncing
+`install.sh` and the site there. With nothing changed in that repo since the last release, the new
+tag landed on the previous one's commit (beta.9 and beta.10 both on `3116ed33`) and GitHub broke
+the tie with beta.9 first: the listing read beta.9, beta.8, beta.10, beta.7, beta.6. beta.11 sits
+on beta.10's commit too, and is listed first only by that same tie-break.
+
+**Every reader picks the highest version, never the first entry.** `release.rs::latest_tag` takes
+the max by `semver::Version` over the non-draft tags (a tag that is no version is passed over);
+`install.sh` reads every `"tag_name"` with `grep -o` and keeps the highest through a POSIX awk
+semver compare (`highest_tag`). Not `sort -V`: busybox may lack it, and GNU's ranks `v0.1.0`
+below `v0.1.0-beta.1`. The old `grep -m1 | sed` had a second bug the test found: on a one-line
+JSON body its greedy `.*` took the *last* tag.
+
+**Each release names a commit of its own**, so readers already in the field (who still take the
+first entry) see it first. Syncing `install.sh` before the create would not have been enough:
+beta.10's case was exactly a release where nothing in the repo changed. So `release.sh` commits
+`LATEST` (one line, the tag) to the releases repo's default branch first, refuses if that branch's
+head is still the commit the first-listed release names, creates the release with `--target`
+that commit, and then asks `releases?per_page=3` (five tries) for the new tag first, reporting
+a wrong order at the end with exit 1 rather than stopping the syncs. Pages serves `LATEST` at
+mesimon.dev/LATEST as a side effect; nothing reads it. A dry run prints this order.
+
+**Tests:** `the_newest_published_tag_is_the_highest_not_the_first` (the real listing, and a
+release above its prereleases with a non-version tag in between), `a_draft_is_never_the_newest`;
+`ci/test_installer.py`'s `InstallerVersion` installs beta.10 from that listing in pretty and
+one-line JSON (red on the old script: beta.9 and beta.6) and installs nothing from `[]`. The
+awk was run on macOS's bwk awk only; busybox's and mawk's ride `ci/test-linux.sh` when Docker is
+back. The publish half cannot run outside a real release (it needs the tag at HEAD and writes to
+GitHub); its dry-run block was run alone.
+
+**Owed:** a CHANGELOG line at the next bump — **Fixed:** The update check and the installer now
+pick the newest release even when GitHub lists an older one first.
