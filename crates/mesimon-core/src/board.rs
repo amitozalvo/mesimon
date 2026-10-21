@@ -1902,10 +1902,10 @@ pub fn sanitize_environment(raw: &str) -> Option<String> {
 }
 
 /// The longest a raised hand's reason may be, in bytes (T-107). One line on
-/// the cursor card and one clause on the ticket page's state row — the mark
-/// is a POINTER and the transcript is the record, so the bound is a card
-/// row's worth of words rather than a note's.
-pub const RAISE_REASON_MAX_BYTES: usize = 160;
+/// a card, cut to its column, and read whole on the board's hand row (T-888),
+/// which wraps it: a short paragraph, since the mark is a POINTER and the
+/// transcript is the record. 160 until T-888, which cut real asks mid-clause.
+pub const RAISE_REASON_MAX_BYTES: usize = 400;
 
 /// The daemon-side boundary for a raised hand's reason: agent text on a card
 /// row, `sanitize_title`'s rule at a card row's size. Only ever removes.

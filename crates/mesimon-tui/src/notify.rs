@@ -122,7 +122,7 @@ use crate::opener::launch;
 /// bounded here rather than trusted: the title is a directory name, the
 /// subtitle carries a ticket's own title and the body can carry an agent's
 /// own sentence. Wide enough that a raised hand's full
-/// `board::RAISE_REASON_MAX_BYTES` (160) still arrives with `needs you ∙ ` in
+/// `board::RAISE_REASON_MAX_BYTES` (400) still arrives with `needs you ∙ ` in
 /// front of it — the words are why the banner was worth sending.
 ///
 /// It is the BACKSTOP, not the shape: `core::notify` already clips a title
@@ -130,7 +130,7 @@ use crate::opener::launch;
 /// read by a person. This one is a byte cap on what leaves the process, and
 /// the folded line a one-field rung gets is bounded by construction, being
 /// two already-capped fields with a separator between them.
-const MAX_FIELD: usize = 240;
+const MAX_FIELD: usize = 440;
 
 /// Where the freedesktop sound theme keeps the three events six names
 /// collapse to (`core::notify::Sound::event_freedesktop`).

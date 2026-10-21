@@ -602,7 +602,13 @@ fn golden_raised_board_120() {
 #[test]
 fn the_cursor_cards_hand_is_read_whole_above_its_name() {
     let long = "Two ways to keep the session: an Auth0 tenant with its hosted login, or \
-                a signed cookie the daemon mints. Which one should the board use?";
+                a signed cookie the daemon mints. The tenant costs a monthly plan and a \
+                redirect on every phone pairing; the cookie costs a key rotation we would \
+                own and a migration for the boards already paired. Both pass the current \
+                tests. Which one should the board use, and should the old pairings be \
+                kept or asked to pair again?";
+    assert!(long.len() <= mesimon_core::board::RAISE_REASON_MAX_BYTES, "{}", long.len());
+    assert!(long.len() > 360, "the test is about a reason near the cap");
     let mut b = fixture_raised();
     b.tickets.iter_mut().find(|t| t.id == ulid_n(5)).unwrap().raised.as_mut().unwrap().reason =
         long.into();
@@ -629,7 +635,7 @@ fn the_cursor_cards_hand_is_read_whole_above_its_name() {
 }
 
 /// A lowered hand keeps its words on the hand row for a few minutes
-/// (T-888), behind `¡` and in the quiet ink: the pane that lowered it was
+/// (T-888), behind `¡` and in the needs-you colour faded: the pane that lowered it was
 /// where the person went to answer, not where they read it.
 #[test]
 fn a_lowered_hand_stays_quiet_on_the_hand_row() {
@@ -656,6 +662,8 @@ fn a_lowered_hand_stays_quiet_on_the_hand_row() {
         for x in 0..120u16 {
             assert_ne!(buf[(x, row as u16)].fg, attn, "{flavor:?}: a lowered hand is calm");
         }
+        let faded = app.theme.attn_faded().fg.expect("a colour");
+        assert_eq!(buf[(3, row as u16)].fg, faded, "{flavor:?}: in needs-you, faded");
         assert!(!lines[0].contains("!1"), "{flavor:?}: and is not counted");
         app.lowered.get_mut(&ulid_n(5)).unwrap().at_ms -= crate::app::LOWERED_HAND_MS;
         let lines = render(&app, 120, 30);

@@ -1326,6 +1326,9 @@ const fn hex(rgb: u32) -> Color {
     Color::Rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
 }
 
+/// How much of the needs-you colour a lowered hand keeps (T-888).
+const LOWERED_KEEP: f32 = 0.5;
+
 /// `a` weighted `k` against `b`, channel by channel. Only two RGB colours
 /// have a halfway; anything else is `a` from the half up and `b` below it.
 fn mix(a: Color, b: Color, k: f32) -> Color {
@@ -2328,6 +2331,19 @@ impl Theme {
         match shimmer_crest(now_ms, cells, cell) {
             k if k > 0.0 => Style::default().fg(mix(lift, ink, k)),
             _ => still,
+        }
+    }
+
+    /// A lowered hand's words (T-888): the needs-you colour faded half way
+    /// to the ground, so it reads as the hand that WAS up and is no longer
+    /// the one saturated colour. Without a known ground to fade into it is
+    /// the grey ramp's middle step, never attn itself.
+    pub fn attn_faded(&self) -> Style {
+        match (self.attn, self.bg) {
+            (Color::Rgb(..), Some(Color::Rgb(..))) => {
+                Style::default().fg(self.toward_ground(self.attn, LOWERED_KEEP))
+            }
+            _ => self.dim2(),
         }
     }
 

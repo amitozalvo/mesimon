@@ -104,7 +104,7 @@ fn a_raised_hand_outlives_the_turn_and_is_lowered_by_the_person_or_the_next_turn
     // ---- the words are the board's, not the agent's ----------------------
     // Sanitized and capped at the boundary, and the receipt says what was
     // kept — a control character never reaches a card row.
-    let long = "x".repeat(400);
+    let long = "x".repeat(1000);
     let r = shim.call_ok("raise_hand", json!({ "reason": format!("a\tb\u{7}c {long}") }));
     let kept = r["reason"].as_str().unwrap();
     assert!(kept.len() <= mesimon_core::board::RAISE_REASON_MAX_BYTES, "{}", kept.len());

@@ -29095,3 +29095,13 @@ no e2e, no rig.
 **Owed:** a CHANGELOG line at the next bump — **Added:** When an agent raises its hand, the
 board shows its whole message above the selected card's name; after the hand is lowered the
 message stays, greyed, for five minutes.
+
+**Follow-up, same day (the author, on the shipped row: "it's truncated as well down there … when
+the hand is down it's not reading as 'used to be' raised hand").** Two changes:
+- **`RAISE_REASON_MAX_BYTES` is 400, was 160.** The row wrapped what it got, but the daemon had
+  already cut the sentence at 160 bytes. 400 is a short paragraph, at most six rows on an
+  80-column board (`HAND_ROWS_MAX` 6); the card still cuts to its column. Older builds read a
+  longer reason unchanged. The banner backstop (`notify::MAX_FIELD`) rose to 440 so the whole
+  reason still fits behind `needs you ∙ `. `raise_hand`'s description is unchanged.
+- **A lowered hand is the needs-you colour faded half way to the ground** (`Theme::attn_faded`,
+  `LOWERED_KEEP` 0.5), never attn itself; with no RGB ground to fade into it is `dim2`, as before.

@@ -638,15 +638,15 @@ pub(super) fn hover_line(app: &App, width: usize) -> Option<Line<'static>> {
 }
 
 /// The most rows the hand row takes. A reason is capped at
-/// `RAISE_REASON_MAX_BYTES`, so three rows hold it whole on any board
-/// wide enough to draw one.
-const HAND_ROWS_MAX: usize = 3;
+/// `RAISE_REASON_MAX_BYTES` (400), so six rows hold it whole on an
+/// 80-column board.
+const HAND_ROWS_MAX: usize = 6;
 
 /// The cursor card's raised hand, in full (T-888), on the rows above
 /// `hover_line`: a card cuts the agent's sentence to its column, and the
 /// pane holds it inside a tool call, so neither reads it. `!` and the words
 /// in the needs-you colour while the hand is up; once it comes down, the
-/// same words behind `¡` in the quiet ink for `LOWERED_HAND_MS`, and then
+/// same words behind `¡` in that colour faded for `LOWERED_HAND_MS`, and then
 /// nothing. Wrapped to the frame and empty when there is nothing to say,
 /// so the board gives up rows only to a hand. At rest only, as the row it
 /// stands on.
@@ -661,7 +661,7 @@ pub(super) fn hand_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let (mark, style) = if up {
         ('!', theme.attn_text())
     } else {
-        (crate::glyphs::lowered_mark(theme.glyph_tier()), theme.dim2())
+        (crate::glyphs::lowered_mark(theme.glyph_tier()), theme.attn_faded())
     };
     // ` ! ` before the words, one cell of page padding after them.
     let wrapped = crate::peek::wrap(reason, width.saturating_sub(4), HAND_ROWS_MAX);
