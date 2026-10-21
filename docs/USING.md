@@ -411,6 +411,12 @@ prompt box is never replaced: the words are then sent `now` instead. A queued pr
 the ticket page; Ctrl+Y sends it now and Ctrl+U takes it back for editing. Remote Control
 defaults to Queue and offers the same two actions.
 The queue holds one prompt per ticket in memory; daemon restarts discard it.
+Words that begin with `!` are a shell command for Claude Code's prompt box, as when you type
+`!` in its pane: from the ask field or from Remote Control they are typed into the box, which
+runs them in its bash mode and shows the agent the output — the road for a step auto mode
+refuses the agent, such as a deploy. The box takes a `!` line only while it is empty, so one is
+refused while a draft sits in the agent's own prompt box, and the card spins on the command
+while it runs.
 
 ## The crown: one agent runs the board
 

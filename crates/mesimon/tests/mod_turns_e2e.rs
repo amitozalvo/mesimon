@@ -211,6 +211,18 @@ fn a_mod_launch_takes_its_whole_prompt_with_no_composer_and_a_live_prompt_likewi
         got(&h).contains("/mesimon-probe-cmd now")
     });
     assert_eq!(frames(&h, sid, "submit").len(), 2, "no submit for a command");
+
+    // A shell line (T-876) is for the box too: the engine would take it
+    // from a submit as a prompt the model reads, so it is typed, and the
+    // box runs it in bash mode. No hook fires for one, so its ack is the
+    // screen's; this stub paints no composer, and the paste's own clock
+    // says `paste_unacked` as it does for the slash command above.
+    assert!(matches!(prompt(&mut c, ticket, "!echo mesimon-probe-876", false), Response::Ok));
+    wait_until(Duration::from_secs(5), "the shell line typed into the pane", || {
+        got(&h).contains("!echo mesimon-probe-876")
+    });
+    assert_eq!(frames(&h, sid, "submit").len(), 2, "no submit for a shell line");
+    wait_feed(&h, &["\"cmd\":\"shell_sent\""]);
     let _ = c.request(Command::KillSession { id: sid });
 }
 

@@ -369,6 +369,30 @@ def iso_ms(stamp):
         return None
 
 
+def tagged(rows, tag):
+    """What a transcript's user rows hold inside `<tag>…</tag>`, in order:
+    Claude Code records a `!` line and its output as such rows (T-707)."""
+    out = []
+    for row in rows:
+        if row.get("type") != "user":
+            continue
+        for t in texts(row):
+            head, sep, rest = t.partition(f"<{tag}>")
+            if sep and not head.strip():
+                out.append(rest.split(f"</{tag}>", 1)[0])
+    return out
+
+
+def shell_lines(rows):
+    """The `!` lines that ran in the box, as the transcript records them."""
+    return tagged(rows, "bash-input")
+
+
+def shell_outputs(rows):
+    """What those lines printed."""
+    return tagged(rows, "bash-stdout")
+
+
 def replies(rows):
     """The assistant's text replies, in order."""
     out = []
@@ -1437,6 +1461,27 @@ Reply with the single word ready and end your turn."""
             self.wait_for("crown", lambda: self.crown_settled(after_ms=after, quiet=0) if wake
                           else self.crown_settled(), STEP_TIMEOUT, self.watch)
             return True
+        if what == "shell":
+            # The person's `!` line to the idle worker (T-876): the ask
+            # field's words, sent now. The board types them into the box,
+            # which runs them in bash mode; no hook fires for the line, so
+            # the step ends on the board's own receipt (`shell_sent`) and
+            # the turn Claude Code runs on the output is the next step's.
+            mark = len(self.feed_lines)
+            try:
+                r = self.wire.prompt(test["ticket"], step["text"], queued=False)
+            except WireError as e:
+                record["failures"].append(f"the person's shell line: {e}")
+                return False
+            self.log(f"the person's shell line to {test['key']}: {r.get('resp')}")
+            sent = self.wait_for("the board to type the shell line", lambda: any(
+                l.get("kind") == "board" and l.get("cmd") == "shell_sent"
+                and l.get("ticket") == test["ticket"] for l in self.feed_lines[mark:]),
+                30, self.watch)
+            if not sent:
+                record["failures"].append("the board never typed the shell line")
+                return False
+            return True
         if what == "picture_ask":
             # The person's words with a picture (T-853): a solid PNG of
             # `color` staged as the desk's `^v` stages one, then the words,
@@ -2476,6 +2521,16 @@ Reply with the single word ready and end your turn."""
             elif name == "reply":
                 said = last_reply(rows)
                 check(c, arg.lower() in said.lower(), f"said {said[:60]!r}")
+            elif name == "shell":
+                # A `!` line ran in the worker's bash mode (T-876): its
+                # transcript holds the line as Claude Code records one
+                # (`<bash-input>`), never as a prompt the model was sent.
+                ran = shell_lines(rows)
+                check(c, arg in ran, " → ".join(repr(r[:40]) for r in ran) or "no shell line ran")
+            elif name == "shell_out":
+                outs = shell_outputs(rows)
+                check(c, any(arg in o for o in outs),
+                      " → ".join(repr(o[:40]) for o in outs) or "no shell output")
             elif name == "doctor":
                 check(c, arg in (record["doctor"] or ""), record["doctor"] or "no line")
             elif name == "final":

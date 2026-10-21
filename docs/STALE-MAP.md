@@ -29181,3 +29181,66 @@ A shell's close returns before `park_record`, so it lowers nothing, as before.
 `FocusStart`/`FocusEnd` (a person at the pane, not a park) and `crownwake`'s told-hand
 lowering stay where they are. No behaviour change; `raise_hand_e2e`, `crown_e2e` and the full
 suite are green.
+
+## A `!` line from the phone or the ask field runs in Claude Code's shell (T-876, 2026-10-21, "`!` shell commands sent from Remote Control arrive as plain text")
+
+**Asked.** On the beta.10 release ticket the author sent `! cd ~/Documents/code/mesimon-relay &&
+deploy/ship.sh all` from Remote Control to a Claude agent; it reached the agent as a sentence,
+the agent tried to run it with its Bash tool and auto mode refused it. A denial only a person at
+the terminal lifts (a production deploy, self-modification) had no road from the phone.
+
+**Measured first, in a scratch Claude Code 2.1.306 under a private tmux.** The ticket's leads
+were half right. (1) The mod road is the bug: `$.prompt.submit` refuses only a text beginning with
+`/` (the engine's own words name the slash alone, and list "bash mode" among the inputs that
+never go through `prompt.submit`), so a `!` line goes down as a prompt the model reads — which is
+what the author saw, their board on the mod road. (2) The paste road already works: a bracketed
+paste of `!echo x` into an empty box switches it into bash mode (the row reads `! echo x`, the
+footer `! for shell mode`) and a separate Enter runs it, for a short line, a 1,200-character
+line (a `[Pasted text #1]` chip, still run) and a two-line paste (both lines run). No separate
+`!` keypress is needed. (3) Mid-turn, Enter and the send-now keys alike queue the line (`Press up
+to edit queued messages`) and it runs when the turn ends. (4) As T-707 measured on 2.1.295: no
+`UserPromptSubmit` for the line; the transcript gets `<bash-input>` and `<bash-stdout>` rows when
+it ends, and a model turn on the output follows, ending in a `Stop` (3 s after a quick `echo`).
+
+**Built.** `road::is_command` now reads a leading `!` as it reads a leading `/`
+(`road::is_shell`), so a shell line keeps the paste road on every Claude session — the mod's
+`submit` and its `fill` both skip it — and the keys are the ones every prompt gets: the paste,
+then the Enter. What changed around the keys: **the receipt.** A pasted shell line is owed as a
+paste is (`Owed.shell`), but no hook will ack it, so `settle_owed` asks the sampler for the pane's
+screen each cadence and acks when a sample stamped `SHELL_RENDER_MS` (300 ms) after the Enter
+reads the composer empty (`composer::read` now knows the `!` glyph of a box in bash mode, so the
+line still in the box reads `Holding`, never `Absent`). The ack is the entry's own word
+(`prompt_submitted`, `queued_ask_delivered`); the paste itself is fed `shell_sent`. A pasted
+shell line is **never kept unsent**: on the wake road the presses that run out, or a pane that
+stops being pressable, drop the entry with `paste_unacked`, since the line may well be running
+with its echo scrolled off — the person's screen says, the board cannot. And a shell line into a
+box that holds a draft is refused (`the prompt box holds text ∙ a `!` line runs only from an
+empty box`): `!` switches the mode only from an empty box, and after a draft the line would ride
+to the model as the draft's tail, the failure this closes by another door. The screen is read
+once at that edge (a fork, as `codex_steer`'s), and a screen that cannot be read refuses nothing.
+
+**Refuted.** A `!` keypress of its own before the paste (the ticket's lead): the box reads the
+`!` off a paste, measured. Acking off the `Stop` of the output's turn: it comes minutes after a
+long command and, pasted mid-turn, the running turn's `Stop` would ack a line merely queued; the
+screen says it in a second. Re-pressing Enter into a box still holding the line on the idle-pane
+road: a prompt's paste has no retry there either (T-5 measured the separate Enter reliable), and
+parity keeps one road.
+
+**Tests.** `road.rs`: `a_shell_line_is_words_the_box_runs`. `composer.rs`:
+`a_box_in_bash_mode_is_the_composer`, from the measured screens. `shell_line_e2e`: the ask
+field's `!` line reaches the stub as one line with no mod `submit` (the mod pass records every
+frame), is fed `shell_sent` and acked off the screen with no hook sent and no `paste_unacked`;
+queued, the same; to a parked agent it wakes it, goes in at the composer, the presses stop on the
+screen's ack and the seat never reads unsent; and a box holding a draft refuses it while a prompt
+rides the draft as before. `mod_turns_e2e` has the shell line beside the slash command on the
+explicit mod road. The rig's **P7** sends `!echo mesimon-rig-876` to an idle Sonnet worker on
+the mod road (rig step `shell`, checks `shell:` and `shell_out:` off the transcript's
+`<bash-input>`/`<bash-stdout>` rows); its first run passed on 2.1.306 and found that the output
+turn's `Stop` wakes no crown — no prompt began the turn, so the record never left idle and the
+`Stop` is no finished-turn edge, the same as T-707's "the state does not move". `docs/USING.md`
+says what a `!` line is from the ask field and the phone.
+
+**Owed:** a CHANGELOG line at the next bump — **Fixed:** A message that begins with `!`, sent
+from Remote Control or the board's ask field, now runs as a shell command in Claude Code's
+prompt box (its bash mode) and the agent reads the output; it used to reach the agent as a
+sentence, which auto mode then refused to run.

@@ -210,6 +210,11 @@ const SUBSCRIBER_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// startup — well past the ~1 s at which a fresh pane starts reading.
 const SUBMIT_RETRY_MS: u64 = 500;
 const SUBMIT_ATTEMPTS: u8 = 10;
+/// How long after a shell line's Enter a sample of the pane is believed
+/// (T-876): Claude Code repaints within tens of milliseconds of a key, and
+/// a screen captured before it did still shows the empty box the line was
+/// pasted into.
+const SHELL_RENDER_MS: u64 = 300;
 /// How long words parked for a Claude pane wait for its composer to paint
 /// (T-570), from the `SessionStart` edge or a resend. The presses start
 /// counting only once the paste is in, so this is the startup's own budget:
@@ -2015,6 +2020,14 @@ struct Owed {
     /// read before the pane came up, or before the Ctrl+C, is not the box
     /// the words go into.
     screen_after: u64,
+    /// The words are a shell line (`road::is_shell`, T-876): Claude Code
+    /// runs one in its bash mode and fires no `UserPromptSubmit` for it, so
+    /// the ack is the screen's — the box reading empty on a sample after
+    /// the Enter (`SHELL_RENDER_MS` later: a sample stamped before the box
+    /// repainted still shows it empty). A pasted shell line is never kept
+    /// unsent: nothing says whether the box took it, and the person's own
+    /// screen does.
+    shell: bool,
 }
 
 impl Owed {
@@ -2038,6 +2051,7 @@ impl Owed {
             asked: None,
             steer: None,
             screen_after: now_ms(),
+            shell: false,
         }
     }
 
@@ -2061,6 +2075,7 @@ impl Owed {
             asked: None,
             steer: None,
             screen_after: now,
+            shell: false,
         }
     }
 
@@ -5462,6 +5477,29 @@ impl Daemon {
                 changed = true;
             }
         }
+        // A pasted shell line's receipt (T-876): the box reads empty on a
+        // sample from after its Enter had time to paint. The sampler is
+        // asked for the next screen each time, as the composer wait is.
+        let shells: Vec<(uuid::Uuid, String, u64)> = self
+            .owed
+            .iter()
+            .filter(|(_, o)| o.shell && o.parked.is_none())
+            .filter_map(|(id, o)| {
+                let rec = self.board.sessions.iter().find(|s| s.id == *id)?;
+                Some((*id, rec.sid16(), o.screen_after + SHELL_RENDER_MS))
+            })
+            .collect();
+        for (id, sid16, after) in shells {
+            use crate::agents::claude::composer::{self, Composer};
+            self.pane_due.screen(&sid16);
+            let taken = matches!(
+                self.screens.get(&sid16),
+                Some((at, screen)) if *at >= after && composer::read(screen) == Composer::Empty
+            );
+            if taken {
+                changed |= self.ack_owed(id);
+            }
+        }
         let due: Vec<uuid::Uuid> = self
             .owed
             .iter()
@@ -5502,10 +5540,13 @@ impl Daemon {
             if !rec.pressable() {
                 let ticket = rec.ticket;
                 let claude = rec.kind == SessionKind::Claude;
-                let words = self.drop_owed(id).and_then(|o| o.sent.or(o.parked));
+                let owed = self.drop_owed(id);
+                let pasted_shell = owed.as_ref().is_some_and(|o| o.shell && o.parked.is_none());
+                let words = owed.and_then(|o| o.sent.or(o.parked));
                 // A Claude seat stopped by a startup modal still has a pane
-                // to resend into once the dialog is answered (T-570).
-                if claude {
+                // to resend into once the dialog is answered (T-570). A
+                // shell line already in the box is not resent (T-876).
+                if claude && !pasted_shell {
                     self.mark_unsent(id, words);
                 }
                 self.feed.board("daemon", "prompt_submit_abandoned", Some(ticket));
@@ -5603,6 +5644,15 @@ impl Daemon {
                         let _ = self.backend.send_enter(&sid16);
                     } else {
                         let _ = self.backend.paste_text(&sid16, &text);
+                        // A shell line at a wake (T-876): its receipt is the
+                        // box reading empty after these keys, never a hook.
+                        if road::is_shell(&text) {
+                            if let Some(owed) = self.owed.get_mut(&id) {
+                                owed.shell = true;
+                                owed.screen_after = now_ms();
+                            }
+                            self.feed.board("daemon", "shell_sent", Some(ticket));
+                        }
                         // The brief went in with the first prompt: this
                         // session has read its ticket, whatever it does with
                         // the tools.
@@ -5619,11 +5669,18 @@ impl Daemon {
                 }
             }
             if left <= 1 {
-                let words = self.drop_owed(id).and_then(|o| o.sent.or(o.parked));
-                if claude {
+                let owed = self.drop_owed(id);
+                let shell = owed.as_ref().is_some_and(|o| o.shell);
+                let words = owed.and_then(|o| o.sent.or(o.parked));
+                // A shell line's presses ran out with the box never read
+                // empty (T-876): the line may well be running, its echo
+                // scrolled off, so it is neither kept unsent nor called
+                // unsent — the ack that never came is said, as a paste's.
+                if claude && !shell {
                     self.mark_unsent(id, words);
                 }
-                self.feed.board("daemon", "prompt_submit_gave_up", Some(ticket));
+                let word = if shell { "paste_unacked" } else { "prompt_submit_gave_up" };
+                self.feed.board("daemon", word, Some(ticket));
                 changed = true;
             } else if let Some(owed) = self.owed.get_mut(&id) {
                 owed.presses = left - 1;
@@ -11183,6 +11240,22 @@ impl Daemon {
             return self.codex_park(id, ticket, text, ack, false);
         }
         let immediately = immediately && !self.session_idle(id);
+        // A shell line (T-876) is the box's: `!` switches Claude Code into
+        // bash mode only from an empty box, and into one holding a draft
+        // the line would be the draft's tail, sent to the model as words.
+        // The screen says which box this is, read now, at this edge; a
+        // screen that cannot be read refuses nothing.
+        let shell = road::is_shell(text);
+        if shell {
+            use crate::agents::claude::composer::{self, Composer};
+            if let Ok(screen) = self.backend.capture_input_screen(&sid) {
+                if composer::read(&screen) == Composer::Holding {
+                    return Err(
+                        "the prompt box holds text ∙ a `!` line runs only from an empty box".into(),
+                    );
+                }
+            }
+        }
         // Immediately on the mod road (T-601): the words into the empty
         // composer by the mod's `fill`, then the keys, on its `filled`.
         if immediately && self.mod_speaks(id, "fill") && !road::is_command(text) {
@@ -11214,7 +11287,14 @@ impl Daemon {
         } else {
             self.backend.paste_text(&sid, text).map_err(|e| format!("could not deliver: {e}"))?;
         }
-        self.owed.insert(id, Owed::pasted(ticket, ack, now_ms()));
+        // Stamped after the keys went in: a shell line's receipt is a
+        // sample of the box from after them (T-876).
+        let mut owed = Owed::pasted(ticket, ack, now_ms());
+        owed.shell = shell;
+        self.owed.insert(id, owed);
+        if shell {
+            self.feed.board("daemon", "shell_sent", Some(ticket));
+        }
         Ok(())
     }
 

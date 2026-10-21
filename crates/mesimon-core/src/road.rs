@@ -218,14 +218,27 @@ pub const MOD_USAGE: &str = "ModUsage";
 /// runs. Only the feed reads it.
 pub const GATE_DENIED: &str = "GateDenied";
 
-/// Whether words are a slash command for Claude Code's prompt box (`/exit`,
-/// `/compact`, a skill's `/name`): its first character, past blanks, is a
-/// slash. The engine rejects one as a plugin's `$.prompt.submit`, which
-/// takes prompts the model reads, not commands for the box (measured on
-/// 2.1.287, T-575), so such words keep the paste road on every Claude
-/// session: typed, then Enter, exactly as a person runs them.
+/// Whether words are a command for Claude Code's prompt box rather than a
+/// prompt for the model: a slash command (`/exit`, `/compact`, a skill's
+/// `/name`) or a shell line (`!echo hi`, its bash mode, T-876). The engine
+/// rejects a slash command as a plugin's `$.prompt.submit`, which takes
+/// prompts the model reads (measured on 2.1.287, T-575), and takes a shell
+/// line as one: `! deploy/ship.sh all` submitted by a mod reached the agent
+/// as a sentence, and auto mode refused it the command (T-876, 2.1.306). So
+/// such words keep the paste road on every Claude session: typed, then
+/// Enter, exactly as a person runs them; the box reads the `!` from a
+/// bracketed paste as it reads it typed (measured, 2.1.306, `is_shell`).
 pub fn is_command(text: &str) -> bool {
-    text.trim_start().starts_with('/')
+    text.trim_start().starts_with('/') || is_shell(text)
+}
+
+/// Whether words are a shell line for Claude Code's prompt box: its first
+/// character, past blanks, is `!`. The box runs one in its bash mode and
+/// fires no `UserPromptSubmit` for it (T-707; 2.1.306 again: a `Stop` comes
+/// at the end of the turn that reads the output), so the paste of one is
+/// acked off the screen and never kept unsent (`Daemon::settle_owed`).
+pub fn is_shell(text: &str) -> bool {
+    text.trim_start().starts_with('!')
 }
 
 /// The kinds of [`ModCommand`] a mod declares it speaks, by the word it
@@ -385,6 +398,18 @@ mod tests {
         assert!(!is_command("exit"));
         assert!(!is_command("run /usr/bin/true"));
         assert!(!is_command(""));
+    }
+
+    /// T-876: a `!` line is the box's too, and the shell's alone.
+    #[test]
+    fn a_shell_line_is_words_the_box_runs() {
+        assert!(is_shell("!echo hi"));
+        assert!(is_shell("  ! cd ~/relay && deploy/ship.sh all"));
+        assert!(is_command("!echo hi"));
+        assert!(!is_shell("echo hi!"));
+        assert!(!is_shell("a ! b"));
+        assert!(!is_shell("/exit"));
+        assert!(!is_shell(""));
     }
 
     #[test]

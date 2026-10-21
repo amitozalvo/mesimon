@@ -79,7 +79,10 @@
 #              the ticket's agent last launched on; the rig lays `rig-alt`
 #              beside its own `rig`, the same model, for L2),
 #              crown_line:<prefix>:<word> (T-810: the crown's last line
-#              beginning <prefix> holds <word>, or with `!<word>` does not).
+#              beginning <prefix> holds <word>, or with `!<word>` does not),
+#              shell:<line> / shell_out:<text> (T-876: the worker's
+#              transcript records <line> as a `!` line that ran in its box,
+#              and some such line printed <text>).
 #   siblings   more tickets the test files beside its own ({key2}, {key3}
 #              in a step), each with the same brief and every check run on
 #              each.
@@ -92,6 +95,8 @@
 #              the worker's unsent words), `picture_ask` (T-853: a solid PNG
 #              of `color` uploaded and sent with `text`, whose `{link}` is
 #              the picture's `[Image #1](mesimon-attachment:<id>)`),
+#              `shell` (T-876: the person's `!` line, `text`, to the idle
+#              worker; the step ends on the board's `shell_sent`),
 #              `restart_drop_mod` (the daemon
 #              again with MESIMON_MOD_DIR naming a copy of the mod whose first
 #              submit in each session is dropped). `prs_board` (T-810) sets
@@ -326,6 +331,27 @@ checks = ["road:mod", "fed:prompt_by_mod", "not_fed:prompt_by_paste", "prompts:2
   crown = "P2, the person has sent {key} a second prompt: when the board wakes you for {key}, end your turn with the single line: P2 seen."
   until = { stops = 1, state = "idle" }
   wake = true
+
+[[test]]
+id = "P7"
+title = "P7 · a `!` line from the person runs in the worker's shell, on the mod road"
+workspace = "worktree"
+brief = "Reply with the single word ready and end your turn. Read no file and run no command."
+expect = "the crown starts the worker; once it is idle the person sends `!echo mesimon-rig-876` from the ask field (Remote Control's road is the same): it never goes down the mod as a prompt (one prompt_by_mod, the start's), the board types it into the box (shell_sent) and acks it off the screen (no paste_unacked), Claude Code runs it in bash mode, and its transcript records the line as a shell line with its output, never as a prompt the model was sent; the turn Claude Code runs on the output ends with a Stop and wakes nobody (no prompt began it, so the record never left idle)."
+checks = ["road:mod", "started_by_crown", "fed:prompt_by_mod", "fed:shell_sent", "not_fed:paste_unacked", "not_fed:prompt_submit_unreceived", "shell:echo mesimon-rig-876", "shell_out:mesimon-rig-876", "replies:ready"]
+
+  [[test.steps]]
+  crown = "P7: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: P7 started. When the board wakes you for {key}, end your turn with the single line: P7 ready."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "shell"
+  text = "!echo mesimon-rig-876"
+
+  [[test.steps]]
+  crown = "P7, the person ran a shell command in {key}'s pane; the board does not wake you for it. End your turn with the single line: P7 seen. Call no tool."
+  until = { stops = 1, state = "idle" }
 
 [[test]]
 id = "P3"

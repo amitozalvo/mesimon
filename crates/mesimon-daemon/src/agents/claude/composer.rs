@@ -20,6 +20,13 @@
 //! the person's settings, and the composed spawn's box always holds the
 //! typed title, so requiring it would risk a brief that never goes, on a
 //! screen whose input loop is already up.
+//!
+//! In bash mode (T-876) the row's glyph is `!` in place of `❯`: a `!` typed
+//! or pasted into the empty box switches the mode, and the row reads
+//! `! echo hi` with `! for shell mode` in the footer (measured, 2.1.306).
+//! Enter runs the line, the box reads `❯ ` again and the line's echo and
+//! output sit above it. That empty box is the only receipt a shell line
+//! gets, since no hook fires for one (T-707).
 
 use mesimon_backend_tmux::InputScreen;
 
@@ -36,6 +43,8 @@ pub enum Composer {
 }
 
 const PROMPT: char = '❯';
+/// The row's glyph in bash mode (T-876).
+const SHELL: char = '!';
 const RULE: char = '─';
 /// The shortest run of `─` read as a rule. Claude draws it across the pane,
 /// so anything this short is something else.
@@ -46,13 +55,16 @@ fn is_rule(line: &str) -> bool {
     line.chars().count() >= RULE_MIN && line.chars().all(|c| c == RULE)
 }
 
-/// Read the composer off a captured screen: the bottom-most `❯` row with a
-/// rule directly above it and a rule somewhere below it.
+/// Read the composer off a captured screen: the bottom-most `❯` (or, in
+/// bash mode, `!`) row with a rule directly above it and a rule somewhere
+/// below it.
 pub fn read(screen: &InputScreen) -> Composer {
     let lines = &screen.lines;
     for (row, line) in lines.iter().enumerate().rev() {
         let body = line.trim_start();
-        let Some(rest) = body.strip_prefix(PROMPT) else { continue };
+        let Some(rest) = body.strip_prefix(PROMPT).or_else(|| body.strip_prefix(SHELL)) else {
+            continue;
+        };
         if row == 0 || !is_rule(&lines[row - 1]) {
             continue;
         }
@@ -144,6 +156,23 @@ mod tests {
         assert_eq!(read(&screen(&half, None)), Composer::Absent);
         // A short dash run is not the composer's rule.
         assert_eq!(read(&screen("───\n❯ \n───", None)), Composer::Absent);
+    }
+
+    /// T-876: the box in bash mode, as 2.1.306 draws it after a `!` paste.
+    #[test]
+    fn a_box_in_bash_mode_is_the_composer() {
+        let shell = composer("", &[]).replace("❯ ", "! echo mesimon-876-a");
+        assert_eq!(read(&screen(&shell, Some((20, 5)))), Composer::Holding);
+        // A long line is a paste chip in the box, still held.
+        let chip = composer("", &[]).replace("❯ ", "! [Pasted text #1]");
+        assert_eq!(read(&screen(&chip, Some((18, 5)))), Composer::Holding);
+        // The mode entered and nothing typed yet.
+        let bare = composer("", &[]).replace("❯ ", "! ");
+        assert_eq!(read(&screen(&bare, Some((2, 5)))), Composer::Empty);
+        // Run: the box reads `❯ ` again, the line's echo above it is not a box.
+        let ran =
+            format!("! echo mesimon-876-a\n  ⎿  mesimon-876-a\n⏺ echo ran.\n{}", composer("", &[]));
+        assert_eq!(read(&screen(&ran, Some((2, 8)))), Composer::Empty);
     }
 
     #[test]
