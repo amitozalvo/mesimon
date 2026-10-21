@@ -2,7 +2,7 @@
 
    TOD╭─ SETTINGS ∙ MACHINE ─────────────────────────────────────────────────────────────────────────────────────╮   0
       │                                                                                                          │
-   Dec│  Theme               Snake while idle          ● on                                                      │
+   Dec│  Theme               Snake while idle          ○ off                                                     │
       │                      Mouse                     ● on                                                      │
    Key│  Appearance          Editor                    auto                                                      │
       │                                                                                                          │

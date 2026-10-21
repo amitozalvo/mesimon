@@ -2,7 +2,7 @@
   ╭─ SETTINGS ∙ BEHAVIOUR ∙ MACHINE ─────────────────────╮
   │                                                      │
   │  Keep this machine awake   ○ off                     │
-  │  Snake while idle          ● on                      │
+  │  Snake while idle          ○ off                     │
   │  Mouse                     ● on                      │
   │  Editor                    auto                      │
   │                                                      │

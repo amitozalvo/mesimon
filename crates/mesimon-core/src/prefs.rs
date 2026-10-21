@@ -47,7 +47,8 @@ pub enum PrefKey {
     TabIcon,
     KeepAwake,
     /// A snake plays itself over the board after an hour with no key or
-    /// click (T-870). About the person, so the machine's alone.
+    /// click (T-870), only once the person turns it on (T-884). About the
+    /// person, so the machine's alone.
     IdleSnake,
     Notify,
     NotifyDone,
@@ -192,7 +193,7 @@ impl PrefKey {
             PrefKey::TabSubtitle => "tab_subtitle",
             PrefKey::TabIcon => "tab_icon",
             PrefKey::KeepAwake => "keep_awake",
-            PrefKey::IdleSnake => "idle_snake",
+            PrefKey::IdleSnake => "snake_while_idle",
             PrefKey::Notify => "notify",
             PrefKey::NotifyDone => "notify_done",
             PrefKey::NotifyFocused => "notify_focused",

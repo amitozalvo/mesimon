@@ -5079,8 +5079,8 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     },
     // The idle snake (T-870): after an hour with no key or click, a snake
     // plays itself in the board's empty cells, and `^g` hands it to the
-    // person. On by default; off is for whoever would rather the board
-    // held still, however long they are away.
+    // person. Off by default (T-884): the board starts no game by itself,
+    // so on is for whoever wants it to play while they are away.
     MenuItem {
         verb: Verb::IdleSnake,
         label: |_| "Snake while idle".into(),

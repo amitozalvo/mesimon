@@ -246,8 +246,9 @@ reference for the current screen.
 
 ## A snake while you are away
 
-After an hour with no key, paste or click, a snake comes out in the board's empty
-cells and plays itself. Agents working is not you at the keys, so their progress
+With **Settings › Behaviour › Snake while idle** turned on, after an hour with no
+key, paste or click, a snake comes out in the board's empty cells and plays
+itself. It is off unless you turn it on. Agents working is not you at the keys, so their progress
 never holds it off. It never comes out while a ticket needs you, while the board
 is disconnected, over a dialog, or while the terminal is unfocused or too small,
 and a ticket raising its hand sends it away at once. `esc` stops it; a click on a
@@ -263,8 +264,8 @@ header keep updating. Moving cards leave the round running; only covered pieces
 move to nearby empty space, preserving the snake's length. If cards leave too
 little room, it waits with its progress intact and continues when space returns.
 
-**Settings › Behaviour › Snake while idle** turns it off. It is the machine's
-setting, not a board's.
+Snake while idle is the machine's setting, not a board's; turning it off also
+stops a snake that is out.
 
 ## Descriptions, notes and links
 

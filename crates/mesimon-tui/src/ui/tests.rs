@@ -12802,7 +12802,9 @@ fn arcade_help_and_mouse_exit_use_the_same_keys() {
 
 /// T-870: the snake comes out after the idle hour on a calm board, and
 /// only there; a key resets the clock without stopping a snake that is
-/// out; `esc` stops it; the Settings switch holds it off.
+/// out; `esc` stops it; the Settings switch holds it off. T-884: the
+/// switch is off until the person turns it on, so out of the box the
+/// board starts no game however long it sits.
 #[test]
 fn the_snake_comes_out_idle_on_a_calm_board_and_nowhere_else() {
     use mesimon_core::keymap::{Key, Scope, Verb};
@@ -12810,9 +12812,15 @@ fn the_snake_comes_out_idle_on_a_calm_board_and_nowhere_else() {
     use std::time::{Duration, Instant};
     let mut app = app_graphite(fixture(false));
     let now = Instant::now();
+    assert_eq!(app.idle_after, Duration::from_secs(3600));
+    app.idle_after = Duration::ZERO;
+    app.drive_arcade(now);
+    assert!(!app.prefs.idle_snake);
+    assert!(app.arcade.borrow().is_none(), "nobody turned it on");
+    app.seed_pref(|p| p.idle_snake = true);
+    app.idle_after = Duration::from_secs(3600);
     app.drive_arcade(now);
     assert!(app.arcade.borrow().is_none(), "an hour has not passed");
-    assert_eq!(app.idle_after, Duration::from_secs(3600));
     app.idle_after = Duration::ZERO;
     // Not on a dialog, not unfocused, not while a ticket needs you.
     app.mode = Mode::Menu { idx: 0 };
@@ -12828,6 +12836,7 @@ fn the_snake_comes_out_idle_on_a_calm_board_and_nowhere_else() {
     assert!(app.arcade.borrow().is_none(), "the board is cut off");
     app.daemon_down = false;
     let mut lit = app_graphite(fixture(true));
+    lit.seed_pref(|p| p.idle_snake = true);
     lit.idle_after = Duration::ZERO;
     lit.drive_arcade(now);
     assert!(lit.arcade.borrow().is_none(), "a ticket needs you");

@@ -29031,3 +29031,23 @@ physical phone, the hosted relay.
 **Owed:** a CHANGELOG line at the next bump — **Added:** Remote Control can send a prompt
 while your terminal is out of reach: it waits sealed at the relay, and is queued for the agent
 when the terminal is back. The first time, a sheet explains where it goes.
+
+## The snake waits to be asked (T-884, 2026-10-21, "Stop games from running automatically")
+
+T-870's idle snake was on by default, so every board started a game by itself after an idle
+hour. **`Snake while idle` is now off by default**: the board starts no game unless the person
+turns that row on. Everything T-870 built behind the switch is unchanged.
+
+**The key moved, on purpose.** `Prefs::body` writes every flag on every save, so any save from
+v0.1.0-beta.10 or .11 wrote `"idle_snake": true` whether or not the person touched the row; a
+flipped default alone would have left the snake on for all of them. `PrefKey::IdleSnake`'s
+JSON name is now `snake_while_idle`, `"idle_snake"` is never read, and a save removes it
+(`IDLE_SNAKE_RETIRED_KEY`). A person who had turned it off loses nothing; one who wants it
+turns it on once more. A downgrade reads the dropped key as absent, which there is on.
+
+**Tests:** `idle_snake_defaults_off_and_round_trips` (the old key ignored and dropped, an on
+round-trips); `the_snake_comes_out_idle_on_a_calm_board_and_nowhere_else` first proves no snake
+with the switch untouched and an expired clock, then seeds it on. TUI-only: no e2e, no rig.
+
+**Owed:** a CHANGELOG line at the next bump — **Changed:** The idle snake no longer starts on
+its own; turn it on with `Settings › Behaviour › Snake while idle`.

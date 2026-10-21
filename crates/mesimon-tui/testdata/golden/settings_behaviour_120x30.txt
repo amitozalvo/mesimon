@@ -3,7 +3,7 @@
    TOD╭─ SETTINGS ∙ MACHINE ─────────────────────────────────────────────────────────────────────────────────────╮   0
       │                                                                                                          │
    Dec│  Theme               Keep this machine awake   ○ off                                                     │
-      │                      Snake while idle          ● on                                                      │
+      │                      Snake while idle          ○ off                                                     │
    Key│  Appearance          Mouse                     ● on                                                      │
       │                      Editor                    auto                                                      │
       │  Notifications                                                                                           │

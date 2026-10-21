@@ -382,8 +382,8 @@ pub(crate) struct Prefs {
     /// only where `caffeine::find` found a rung.
     pub keep_awake: bool,
     /// A snake plays itself in the board's empty cells after an hour with
-    /// no key or click (T-870). ON by default: it draws in cells nothing
-    /// else uses, sends nothing, and stops at the first key.
+    /// no key or click (T-870). OFF by default (T-884): a game is a thing
+    /// the person asks for, never a thing the board starts by itself.
     pub idle_snake: bool,
     /// The board says it out loud (T-282): an OS banner and a sound when an
     /// agent needs you. OFF by default and deliberately — the board is quiet
@@ -504,7 +504,7 @@ impl Default for Prefs {
             tab_subtitle: true,
             tab_icon: true,
             keep_awake: false,
-            idle_snake: true,
+            idle_snake: false,
             notify: true,
             notify_done: true,
             notify_focused: false,
@@ -555,6 +555,10 @@ const NOTIFY_DOCK_BOUNCE_KEY: &str = PrefKey::NotifyDockBounce.name();
 const NOTIFY_VIA_KEY: &str = PrefKey::NotifyVia.name();
 const KEEP_AWAKE_KEY: &str = PrefKey::KeepAwake.name();
 const IDLE_SNAKE_KEY: &str = PrefKey::IdleSnake.name();
+/// T-870's key for the snake switch. Every save from that build wrote its
+/// `true` whether or not the person chose it, so it is never read: the
+/// switch moved to a new key (T-884), and a save drops this one.
+const IDLE_SNAKE_RETIRED_KEY: &str = "idle_snake";
 const NOTIFY_KEY: &str = PrefKey::Notify.name();
 const NOTIFY_DONE_KEY: &str = PrefKey::NotifyDone.name();
 const NOTIFY_FOCUSED_KEY: &str = PrefKey::NotifyFocused.name();
@@ -822,6 +826,7 @@ impl Prefs {
         doc.insert(TAB_ICON_KEY.into(), Value::from(self.tab_icon));
         doc.insert(NOTIFY_DOCK_BOUNCE_KEY.into(), Value::from(self.notify_dock_bounce));
         doc.insert(KEEP_AWAKE_KEY.into(), Value::from(self.keep_awake));
+        doc.remove(IDLE_SNAKE_RETIRED_KEY);
         doc.insert(IDLE_SNAKE_KEY.into(), Value::from(self.idle_snake));
         doc.insert(NOTIFY_KEY.into(), Value::from(self.notify));
         doc.insert(NOTIFY_DONE_KEY.into(), Value::from(self.notify_done));
@@ -1231,7 +1236,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let mouse = flag(MOUSE_KEY, true);
     let new_replies = flag(NEW_REPLIES_KEY, true);
     let keep_awake = doc.get(KEEP_AWAKE_KEY).and_then(Value::as_bool).unwrap_or(false);
-    let idle_snake = flag(IDLE_SNAKE_KEY, true);
+    let idle_snake = flag(IDLE_SNAKE_KEY, false);
     let notify = doc.get(NOTIFY_KEY).and_then(Value::as_bool).unwrap_or(true);
     let notify_done = doc.get(NOTIFY_DONE_KEY).and_then(Value::as_bool).unwrap_or(true);
     let notify_focused = doc.get(NOTIFY_FOCUSED_KEY).and_then(Value::as_bool).unwrap_or(false);
@@ -1880,23 +1885,25 @@ mod tests {
         assert!(!PrefKey::NewReplies.board_overridable());
     }
 
-    /// The idle snake (T-870): absent is on, an off round-trips, and a
-    /// board cannot take it — whether a person wants their board to play
-    /// while they are away is theirs, not the board's.
+    /// The idle snake (T-870): absent is off (T-884), T-870's unasked
+    /// `idle_snake: true` reads as absent and a save drops it, an on
+    /// round-trips, and a board cannot take it — whether a person wants
+    /// their board to play while they are away is theirs, not the board's.
     #[test]
-    fn idle_snake_defaults_on_and_round_trips() {
+    fn idle_snake_defaults_off_and_round_trips() {
         let p = scratch("idlesnake");
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","light":"chalk"}"#).unwrap();
+        std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","idle_snake":true}"#).unwrap();
         let mut l = load(&p);
-        assert!(l.prefs.idle_snake, "absent is the default: on");
-        assert_eq!(l.prefs.word(PrefKey::IdleSnake), "on");
-        l.prefs.idle_snake = false;
+        assert!(!l.prefs.idle_snake, "absent is the default: off; the old key is not read");
+        assert_eq!(l.prefs.word(PrefKey::IdleSnake), "off");
+        l.prefs.idle_snake = true;
         save(&p, &l.prefs).unwrap();
         let l = load(&p);
-        assert!(!l.prefs.idle_snake);
+        assert!(l.prefs.idle_snake);
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
-        assert_eq!(v["idle_snake"], false);
+        assert_eq!(v["snake_while_idle"], true);
+        assert!(v.get("idle_snake").is_none(), "a save drops the old key");
         assert!(!PrefKey::IdleSnake.board_overridable());
     }
 

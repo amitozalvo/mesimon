@@ -2,7 +2,7 @@
 
    TOD╭─ SETTINGS ∙ THIS BOARD ──────────────────────────────────────────────────────────────────────────────────╮   0
       │                                                                                                          │
-   Dec│  Theme               Snake while idle          ● on                                             machine  │
+   Dec│  Theme               Snake while idle          ○ off                                            machine  │
       │                      Mouse                     ● on                                             machine  │
    Key│  Appearance          Editor                    auto                                             machine  │
       │                                                                                                          │
