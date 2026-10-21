@@ -182,6 +182,10 @@ impl Daemon {
         let Some(text) = mesimon_core::command::sanitize_prompt(&text) else {
             return Response::Err { message: "nothing to send".into() };
         };
+        // A shell line is a person's alone (T-876), on either board.
+        if mesimon_core::road::is_shell(&text) {
+            return Response::Err { message: mesimon_core::road::SHELL_LINE_REFUSED.into() };
+        }
         let (crown_key, crown_title) = match self.board.ticket(ticket) {
             Some(t) => (t.short_key.clone(), t.title.clone()),
             None => return Response::Err { message: "no such ticket".into() },
@@ -284,6 +288,11 @@ impl Daemon {
         let Some(text) = mesimon_core::command::sanitize_prompt(&text) else {
             return Response::Err { message: "nothing to send".into() };
         };
+        // A shell line is a person's alone (T-876): refused here whatever
+        // the asking daemon's build let through.
+        if mesimon_core::road::is_shell(&text) {
+            return Response::Err { message: mesimon_core::road::SHELL_LINE_REFUSED.into() };
+        }
         if self.queued.iter().any(|q| q.ticket == crown && q.by.is_none() && q.from_board.is_none())
         {
             return Response::Err {

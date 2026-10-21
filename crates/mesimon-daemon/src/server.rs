@@ -6278,6 +6278,10 @@ impl Daemon {
                 if title.trim().is_empty() {
                     return Response::Err { message: "title is empty".into() };
                 }
+                // The title leads the brief a start types (T-876).
+                if title.starts_with('!') {
+                    return Response::Err { message: road::SHELL_TITLE_REFUSED.into() };
+                }
                 if let err @ Response::Err { .. } = self.with_ticket(target, |t| t.title = title) {
                     return err;
                 }
@@ -6422,6 +6426,12 @@ impl Daemon {
                 let Some(text) = mesimon_core::command::sanitize_prompt(&text) else {
                     return Response::Err { message: "nothing to send".into() };
                 };
+                // A shell line is a person's alone (T-876): in the worker's
+                // pane it would run with no permission check, the crown's
+                // own included.
+                if road::is_shell(&text) {
+                    return Response::Err { message: road::SHELL_LINE_REFUSED.into() };
+                }
                 // `now` and `immediately` (T-600, T-601) are the person's
                 // sends, refused where theirs are: at a dialog, whose keys a
                 // paste would answer; with plan mode mid-turn, which starts
@@ -7646,6 +7656,11 @@ impl Daemon {
                 Err(message) => return Response::Err { message },
             },
         };
+        // The title leads the brief a start types (T-876): an agent's may
+        // not begin with `!`, which would run the rest as a shell line.
+        if title.trim_start().starts_with('!') {
+            return Response::Err { message: road::SHELL_TITLE_REFUSED.into() };
+        }
         // One mint (T-243): a description the daemon would refuse refuses the
         // ticket with it, so the receipt never has to say "created, but".
         let mint = Mint {
@@ -12377,6 +12392,11 @@ impl Daemon {
             Asker::Agent(crown) => (Some(crown), None),
             Asker::Board(from) => (None, Some(from)),
         };
+        // A shell line is a person's alone (T-876); every agent road refuses
+        // it before here, and the queue is the one road they share.
+        if (by.is_some() || peer.is_some()) && road::is_shell(&text) {
+            return Err(road::SHELL_LINE_REFUSED.into());
+        }
         let t = self.open_ticket(ticket).map_err(str::to_string)?;
         if by.is_some() && self.queued.iter().any(|q| q.ticket == ticket && q.by.is_none()) {
             return Err(format!(

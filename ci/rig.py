@@ -2531,6 +2531,9 @@ Reply with the single word ready and end your turn."""
                 outs = shell_outputs(rows)
                 check(c, any(arg in o for o in outs),
                       " → ".join(repr(o[:40]) for o in outs) or "no shell output")
+            elif name == "no_shell":
+                ran = shell_lines(rows)
+                check(c, not ran, " → ".join(repr(r[:40]) for r in ran) or "no shell line ran")
             elif name == "doctor":
                 check(c, arg in (record["doctor"] or ""), record["doctor"] or "no line")
             elif name == "final":

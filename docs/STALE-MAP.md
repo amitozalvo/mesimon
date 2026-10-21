@@ -29240,7 +29240,27 @@ turn's `Stop` wakes no crown — no prompt began the turn, so the record never l
 `Stop` is no finished-turn edge, the same as T-707's "the state does not move". `docs/USING.md`
 says what a `!` line is from the ask field and the phone.
 
+**Closed after the merge, on the security review's finding: a shell line is a person's alone.**
+The first cut read any `!`-leading text as a shell line, whoever wrote it, which handed an agent
+principal a shell in another pane with no permission check — the worker's classifier never sees
+a `!` line, and the crown's own never saw it either. The hole was older on the hooks road (a
+crown's `ask_agent "!…"` was pasted there before this ticket, and a crown's `create_ticket` title
+beginning with `!` is typed into the box by the composed spawn), and this ticket had widened it
+to the mod road. Closed at every agent road: the crown's `ask_agent` (`AgentAskTicket`), a
+linked board's ask at both ends (`agent_ask_board`, `peer_ask`) and the queue's `park_ask` for
+any asker but a person refuse a `!` line with `road::SHELL_LINE_REFUSED`; an agent's
+`create_ticket` and `rename_ticket` refuse a title beginning with `!` with
+`road::SHELL_TITLE_REFUSED`. And `road::is_shell` skips no blank: a person's words arrive
+trimmed (`sanitize_prompt`), a brief's description rides under a blank line, so a description
+beginning with `!` is words (it goes down the mod as a submit, where the model reads it), never
+the shell's. A slash command from the crown stays as it was (T-575; the rig's R6 sends `/exit`):
+it stays inside Claude Code's own box and dialogs, where a `!` line is the person's shell.
+`shell_line_e2e::an_agent_s_shell_line_and_shell_title_are_refused` pins the five refusals and
+that a person's queued `!` line still goes; the rig's **P8** has the crown try one and relay the
+refusal.
+
 **Owed:** a CHANGELOG line at the next bump — **Fixed:** A message that begins with `!`, sent
 from Remote Control or the board's ask field, now runs as a shell command in Claude Code's
 prompt box (its bash mode) and the agent reads the output; it used to reach the agent as a
-sentence, which auto mode then refused to run.
+sentence, which auto mode then refused to run. Only a person can send one: the crown's
+`ask_agent` refuses it.

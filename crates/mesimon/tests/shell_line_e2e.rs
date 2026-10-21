@@ -241,3 +241,126 @@ fn a_shell_line_into_a_box_holding_a_draft_is_refused() {
     wait_line(&h, "mesimon-876-words");
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
 }
+
+/// A shell line is a person's alone: the crown's `ask_agent` with one is
+/// refused before anything is queued or pasted, and so is a title beginning
+/// with `!` from an agent's `create_ticket` or `rename_ticket`, since a start
+/// types the title into the box. In a worker's pane the line would run with
+/// no permission check at all, the crown's own included.
+#[test]
+fn an_agent_s_shell_line_and_shell_title_are_refused() {
+    use mesimon_core::command::{AgentTicketView, Deliver};
+    use mesimon_core::Principal;
+    let Some(h) = Harness::boot("shell-agent", Some(STUB)) else { return };
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("shell-agent");
+    let mut ticket = |title: &str| match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: title.into(),
+        workspace: None,
+        tier: None,
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("create: {other:?}"),
+    };
+    let a = ticket("the crown");
+    let b = ticket("the worker");
+    let spawn = |c: &mut TestClient, t: ulid::Ulid| match c.request(Command::SpawnSession {
+        ticket: t,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn: {other:?}"),
+    };
+    let sa = spawn(&mut c, a);
+    let sb = spawn(&mut c, b);
+    for s in [sa, sb] {
+        hook_send_with(&hook_sock, &s.to_string(), "SessionStart", Some("startup"), "{}");
+        c.await_state(s, "idle", |st| matches!(st, SessionState::Idle { .. }));
+        // On the mod pass a launch is still coming up until its bridge
+        // polls, and the queue holds the checkout for it.
+        if test_road() == "mod" {
+            let pid = h.dir.join(format!("mod-bridge-{s}.pid"));
+            wait_until(Duration::from_secs(10), "the mod's bridge", || pid.exists());
+        }
+    }
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    let kb = c.board().ticket(b).unwrap().short_key.clone();
+    let seen = match c
+        .send(Principal::Agent { session: sa }, Command::AgentReadTicket { key: kb.clone() })
+    {
+        Response::AgentTicket { ticket: AgentTicketView { seen, .. } } => seen,
+        other => panic!("get_ticket: {other:?}"),
+    };
+    for deliver in [Deliver::Idle, Deliver::Now] {
+        match c.send(
+            Principal::Agent { session: sa },
+            Command::AgentAskTicket {
+                key: kb.clone(),
+                text: "!echo mesimon-876-crown".into(),
+                seen: seen.clone(),
+                plan: false,
+                deliver,
+            },
+        ) {
+            Response::Err { message } => {
+                assert!(message.contains("begins with `!`"), "{message}");
+                assert!(message.contains("only a person"), "{message}");
+            }
+            other => panic!("the crown's shell line must be refused ({deliver:?}): {other:?}"),
+        }
+    }
+    // The queue is the one road every asker shares: a person's shell line
+    // parks there as any ask does.
+    match c.request(Command::PromptSession {
+        ticket: b,
+        text: "!echo mesimon-876-person".into(),
+        queued: true,
+        immediately: false,
+        accept_plan: false,
+        plan: false,
+        tier: None,
+        resend: false,
+        uploads: Vec::new(),
+    }) {
+        // Taken: delivered at the idle, or parked for the checkout's quiet.
+        Response::Ok | Response::Queued { .. } => {}
+        other => panic!("a person's queued shell line: {other:?}"),
+    }
+    wait_line(&h, "!echo mesimon-876-person");
+    assert!(!got(&h).contains("mesimon-876-crown"), "{:?}", got(&h));
+    assert_eq!(feed_count(&h, "shell_sent", b), 1);
+
+    // A title the agent sets may not begin with `!` either way.
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentCreateTicket {
+            title: "!rm -rf mesimon-876".into(),
+            column: Some("TODO".into()),
+            description: None,
+            tags: Vec::new(),
+            idempotency_key: None,
+            tier: None,
+            workspace: Some("worktree".into()),
+        },
+    ) {
+        Response::Err { message } => {
+            assert!(message.contains("title that begins with `!`"), "{message}")
+        }
+        other => panic!("a shell title filed by the crown must be refused: {other:?}"),
+    }
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentRenameTicket { key: kb.clone(), title: " !rm -rf mesimon-876".into(), seen },
+    ) {
+        Response::Err { message } => {
+            assert!(message.contains("title that begins with `!`"), "{message}")
+        }
+        other => panic!("a shell title renamed by the crown must be refused: {other:?}"),
+    }
+    assert_eq!(c.board().ticket(b).unwrap().title, "the worker");
+    assert!(c.board().tickets.iter().all(|t| !t.title.starts_with('!')));
+    assert!(matches!(c.request(Command::Shutdown), Response::Ok));
+}

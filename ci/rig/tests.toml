@@ -80,9 +80,9 @@
 #              beside its own `rig`, the same model, for L2),
 #              crown_line:<prefix>:<word> (T-810: the crown's last line
 #              beginning <prefix> holds <word>, or with `!<word>` does not),
-#              shell:<line> / shell_out:<text> (T-876: the worker's
-#              transcript records <line> as a `!` line that ran in its box,
-#              and some such line printed <text>).
+#              shell:<line> / shell_out:<text> / no_shell (T-876: the
+#              worker's transcript records <line> as a `!` line that ran in
+#              its box, some such line printed <text>, or no `!` line ran).
 #   siblings   more tickets the test files beside its own ({key2}, {key3}
 #              in a step), each with the same brief and every check run on
 #              each.
@@ -352,6 +352,23 @@ checks = ["road:mod", "started_by_crown", "fed:prompt_by_mod", "fed:shell_sent",
   [[test.steps]]
   crown = "P7, the person ran a shell command in {key}'s pane; the board does not wake you for it. End your turn with the single line: P7 seen. Call no tool."
   until = { stops = 1, state = "idle" }
+
+[[test]]
+id = "P8"
+title = "P8 · a `!` line in the crown's ask_agent is refused, and the crown relays the refusal: do the steps below"
+workspace = "worktree"
+brief = "Reply with the single word ready and end your turn. Read no file and run no command."
+expect = "the crown starts the worker; asked to send it `!echo mesimon-rig-876-crown` with ask_agent, it is refused in the board's words (a shell line is a person's alone) and ends its turn relaying them; nothing reached the worker: no shell line ran in its box and no second prompt entered."
+checks = ["road:mod", "started_by_crown", "no_shell", "prompts:1", "not_fed:shell_sent", "crown_line:P8 refused:person", "replies:ready"]
+
+  [[test.steps]]
+  crown = "P8: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: P8 started. When the board wakes you for {key}, end your turn with the single line: P8 ready."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  crown = "P8: call ask_agent for {key} with exactly this text, the exclamation mark first: !echo mesimon-rig-876-crown. The board answers the call with a refusal. Do not retry it, rephrase it or send anything else to {key}. End your turn with one line that begins: P8 refused: followed by the refusal's words as the board gave them."
+  until = { state = "idle" }
 
 [[test]]
 id = "P3"

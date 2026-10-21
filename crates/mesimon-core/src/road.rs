@@ -232,14 +232,37 @@ pub fn is_command(text: &str) -> bool {
     text.trim_start().starts_with('/') || is_shell(text)
 }
 
-/// Whether words are a shell line for Claude Code's prompt box: its first
-/// character, past blanks, is `!`. The box runs one in its bash mode and
-/// fires no `UserPromptSubmit` for it (T-707; 2.1.306 again: a `Stop` comes
-/// at the end of the turn that reads the output), so the paste of one is
-/// acked off the screen and never kept unsent (`Daemon::settle_owed`).
+/// Whether words are a shell line for Claude Code's prompt box: their first
+/// character is `!`. The box runs one in its bash mode, as the person's own
+/// shell with no permission check, and fires no `UserPromptSubmit` for it
+/// (T-707; 2.1.306 again: a `Stop` comes at the end of the turn that reads
+/// the output), so the paste of one is acked off the screen and never kept
+/// unsent (`Daemon::settle_owed`).
+///
+/// **A shell line is a person's alone.** Their words reach the daemon
+/// trimmed (`command::sanitize_prompt`), so no blank is skipped here: a
+/// brief's description rides under a blank line (`Daemon::launch_words`)
+/// and never reads as one, and the title that leads a brief is refused a
+/// `!` when an agent sets it. An agent's ask is refused one outright
+/// ([`SHELL_LINE_REFUSED`]): the crown's `ask_agent`, a linked board's ask
+/// and the queue's park all say so, since a line in a worker's shell would
+/// run with neither the worker's permission check nor the crown's.
 pub fn is_shell(text: &str) -> bool {
-    text.trim_start().starts_with('!')
+    text.starts_with('!')
 }
+
+/// Why an agent's words beginning with `!` are refused (T-876): the one
+/// sentence `ask_agent`, `ask_board` and a peer's ask answer with.
+pub const SHELL_LINE_REFUSED: &str = "refused: a line that begins with `!` runs in the agent's \
+                                      pane as a shell command, with no permission check, and \
+                                      only a person sends one; ask in words, or raise_hand \
+                                      names the command for the person to run";
+
+/// Why an agent's title beginning with `!` is refused (T-876): typed into
+/// the box when the ticket's agent starts, it would run as a shell line.
+pub const SHELL_TITLE_REFUSED: &str = "refused: a title that begins with `!` would run as a \
+                                       shell command when the ticket's agent starts; only a \
+                                       person sets one";
 
 /// The kinds of [`ModCommand`] a mod declares it speaks, by the word it
 /// passes its bridge (`mesimon mod-bridge --speaks ping,submit,answer,fill`):
@@ -404,12 +427,17 @@ mod tests {
     #[test]
     fn a_shell_line_is_words_the_box_runs() {
         assert!(is_shell("!echo hi"));
-        assert!(is_shell("  ! cd ~/relay && deploy/ship.sh all"));
+        assert!(is_shell("! cd ~/relay && deploy/ship.sh all"));
         assert!(is_command("!echo hi"));
         assert!(!is_shell("echo hi!"));
         assert!(!is_shell("a ! b"));
         assert!(!is_shell("/exit"));
         assert!(!is_shell(""));
+        // A person's words arrive trimmed; a brief's description rides under
+        // a blank line, and a `!` there is words, never the shell's.
+        assert!(!is_shell("  !echo hi"));
+        assert!(!is_shell("\n\n!rm -rf ~"));
+        assert!(!is_command("\n\n!rm -rf ~"));
     }
 
     #[test]
