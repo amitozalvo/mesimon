@@ -1910,6 +1910,8 @@ async function editFlow(browser, engineName, size, viewport) {
     });
     await until(page, () => document.querySelector("#crown-line")?.textContent.includes("T-0’s agent moved this ticket · 2m ago"));
     assert.equal(await page.locator('.ticket.card[data-id="ticket-3"] .crown-word').textContent(), "moved · 2m");
+    // On the key's line, before the key, never a line of its own (T-886).
+    assert.equal(await page.locator('.ticket.card[data-id="ticket-3"] .ticket-meta').textContent(), "moved · 2m·T-3");
     // A phone draws one column at a time, and the crown's is the other one.
     if (size !== "phone")
       assert.equal(await page.locator('.ticket.card[data-id="ticket-0"] .ticket-title.crowned > .crown-mark:first-child').count(), 1);
@@ -3353,7 +3355,6 @@ try {
           );
           // The age stands in the card's corner, as the TUI's (T-855), and
           // the agent's state is its mark, never words (T-886).
-          assert.equal(await page.locator('.ticket[data-id="ticket-0"] .card-agent').count(), 0);
           assert.equal(await page.locator('.ticket[data-id="ticket-0"] .spin').count(), 1);
           assert.equal(await page.locator('.ticket[data-id="ticket-0"] .card-age').textContent(), "5m");
           assert.equal(await page.locator('.ticket[data-id="ticket-4"] .headline').textContent(), "Fixed, and three tests pass.");
@@ -3390,20 +3391,28 @@ try {
           assert.equal(await page.locator('.need .ticket[data-id="ticket-1"] .tag').textContent(), "FEATURE");
           assert.equal(await page.locator('.need .ticket[data-id="ticket-1"] .mark-attn').count(), 1);
           // No word on a card breaks across lines (T-855): the tags, the
-          // column, the key, the corner and the crown's words each keep to
-          // one, on a card that carries all of them at once.
+          // crown's word, the column, the key and the corner each keep to
+          // one, on a card that carries all of them at once, and the key's
+          // line stays inside the card (T-886).
           const title0 = await page.evaluate(() => fixture.tickets[0].title);
           await page.evaluate(() => {
             Object.assign(fixture.tickets[0], {
               title: "pictures inside ask agent prompt, and the ones a phone sends",
               tags: [{ group: 1, name: "IMPROVEMENT", tint: 0 }, { group: 3, name: "REMOTE CONTROL", tint: 2 }],
               workspace: { kind: "worktree", branch: "msmn/T-0-pictures", state: "behind" },
+              crowned: { action: "moved", by: "T-3", at: Date.now() - 120000 },
             });
             fixture.update();
           });
           await page.locator('#tickets .ticket[data-id="ticket-0"] .wt-mark').waitFor();
+          await page.locator('#tickets .ticket[data-id="ticket-0"] .ticket-meta .crown-word').waitFor();
+          assert.ok(
+            await page.locator('#tickets .ticket[data-id="ticket-0"]').evaluate((card) =>
+              card.querySelector(".ticket-meta").getBoundingClientRect().right <= card.getBoundingClientRect().right),
+            "the key's line ran out of the card",
+          );
           const broken = await page.locator('#tickets .ticket[data-id="ticket-0"]').evaluate((card) =>
-            [...card.querySelectorAll(".tag, .ticket-meta, .card-corner, .card-agent > *")].flatMap((el) => {
+            [...card.querySelectorAll(".tag, .ticket-meta, .card-corner")].flatMap((el) => {
               const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
               const words = [];
               for (let n = walk.nextNode(); n; n = walk.nextNode()) {
@@ -3417,7 +3426,7 @@ try {
           );
           assert.deepEqual(broken, [], "a word on a card wrapped onto a second line");
           await page.evaluate((title) => {
-            Object.assign(fixture.tickets[0], { title, tags: [{ group: 1, name: "BUG", tint: 0 }], workspace: undefined });
+            Object.assign(fixture.tickets[0], { title, tags: [{ group: 1, name: "BUG", tint: 0 }], workspace: undefined, crowned: undefined });
             fixture.update();
           }, title0);
           await until(page, () => !document.querySelector('#tickets .ticket[data-id="ticket-0"] .wt-mark'));

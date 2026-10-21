@@ -29069,6 +29069,13 @@ Mesophon-only: no e2e, no rig.
 **Owed:** a CHANGELOG line at the next bump — **Changed:** Remote Control's cards no longer
 spell the agent's state ("claude · working"); the card's mark shows it.
 
+**Follow-up, the crown's word on the key's line (2026-10-21).** With the agent's words gone,
+`.card-agent` held only the crown's touch (`moved · 2m`), a whole line for one word. The
+author asked for it beside the key: it now opens `.ticket-meta`, `moved · 2m · T-3` (the
+column between, where the list shows it), and `.card-agent` is gone from the page and the
+stylesheet. The meta line does not wrap, so the UX suite's no-wrap card now carries a crown
+touch too and checks that the key's line stays inside the card at every size.
+
 ## A raised hand is read whole on the board (T-888, 2026-10-21, "Hand raised should be shown on board")
 
 The card cuts an agent's `raise_hand` sentence to its column (T-865), and in the pane the words
