@@ -217,14 +217,18 @@ fn draw_screen(f: &mut Frame, app: &App) {
         return;
     }
 
+    // The cursor card's hand (T-888): rows only while there is one.
+    let hand = chrome::hand_lines(app, f.area().width as usize);
+    let hand_rows = hand.len() as u16;
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // header
-            Constraint::Length(1), // breathing row (06 §5.5 — chrome never touches content)
-            Constraint::Min(3),    // columns
-            Constraint::Length(1), // grace / ghost row
-            Constraint::Length(1), // status / footer
+            Constraint::Length(1),         // header
+            Constraint::Length(1),         // breathing row (06 §5.5 — chrome never touches content)
+            Constraint::Min(3),            // columns
+            Constraint::Length(hand_rows), // hand
+            Constraint::Length(1),         // grace / ghost row
+            Constraint::Length(1),         // status / footer
         ])
         .split(f.area());
 
@@ -237,8 +241,11 @@ fn draw_screen(f: &mut Frame, app: &App) {
     crate::glide::draw(f, app, outer[2]);
     // Behind a card's dialog the rest of the board recedes (T-817).
     board::recede(f, app, outer[2]);
-    chrome::draw_advisory(f, outer[3], app);
-    chrome::draw_footer(f, outer[4], app);
+    if !hand.is_empty() {
+        f.render_widget(Paragraph::new(hand), outer[3]);
+    }
+    chrome::draw_advisory(f, outer[4], app);
+    chrome::draw_footer(f, outer[5], app);
     // The composer, grown: a dialog over the cards. The column headers stay
     // above it, a margin of board around it and the footer under it, so the
     // board is still the room.
@@ -249,7 +256,7 @@ fn draw_screen(f: &mut Frame, app: &App) {
     // vocabulary is the user's own and a one-line hint cannot show it.
     if app.tag_armed.is_some() {
         tagpicker::draw(f, f.area(), app);
-        chrome::draw_footer(f, outer[4], app);
+        chrome::draw_footer(f, outer[5], app);
     }
     if let Mode::External { idx } = &app.mode {
         dialog::draw_drawer(f, app, *idx);

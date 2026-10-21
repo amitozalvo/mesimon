@@ -637,6 +637,44 @@ pub(super) fn hover_line(app: &App, width: usize) -> Option<Line<'static>> {
     ]))
 }
 
+/// The most rows the hand row takes. A reason is capped at
+/// `RAISE_REASON_MAX_BYTES`, so three rows hold it whole on any board
+/// wide enough to draw one.
+const HAND_ROWS_MAX: usize = 3;
+
+/// The cursor card's raised hand, in full (T-888), on the rows above
+/// `hover_line`: a card cuts the agent's sentence to its column, and the
+/// pane holds it inside a tool call, so neither reads it. `!` and the words
+/// in the needs-you colour while the hand is up; once it comes down, the
+/// same words behind `¡` in the quiet ink for `LOWERED_HAND_MS`, and then
+/// nothing. Wrapped to the frame and empty when there is nothing to say,
+/// so the board gives up rows only to a hand. At rest only, as the row it
+/// stands on.
+pub(super) fn hand_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    let at_rest = matches!(app.screen, Screen::Board) && matches!(app.mode, Mode::Normal);
+    if !at_rest || app.header_focus || app.tag_armed.is_some() {
+        return Vec::new();
+    }
+    let Some(ticket) = app.selected_ticket() else { return Vec::new() };
+    let Some((reason, up)) = app.hand_words(ticket) else { return Vec::new() };
+    let theme = &app.theme;
+    let (mark, style) = if up {
+        ('!', theme.attn_text())
+    } else {
+        (crate::glyphs::lowered_mark(theme.glyph_tier()), theme.dim2())
+    };
+    // ` ! ` before the words, one cell of page padding after them.
+    let wrapped = crate::peek::wrap(reason, width.saturating_sub(4), HAND_ROWS_MAX);
+    wrapped
+        .into_iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let lead = if i == 0 { format!(" {mark} ") } else { "   ".to_string() };
+            Line::from(vec![Span::styled(lead, style), Span::styled(row, style)])
+        })
+        .collect()
+}
+
 /// Bindings as hint spans — `key` in `ink.base` + bold (06 §5.1 clause 3:
 /// bold is sanctioned on the footer's key names), its word in `ink.dim2`,
 /// `∙` between in `ink.dim3` — filled greedily to `budget` cells in the

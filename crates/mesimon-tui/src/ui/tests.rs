@@ -596,6 +596,73 @@ fn golden_raised_board_120() {
     golden("board_raised_120x30", &lines);
 }
 
+/// The cursor card's hand, whole, above the row that names the card
+/// (T-888): a card cuts the sentence to its column, the hand row wraps it
+/// to the frame, in the needs-you colour while the hand is up.
+#[test]
+fn the_cursor_cards_hand_is_read_whole_above_its_name() {
+    let long = "Two ways to keep the session: an Auth0 tenant with its hosted login, or \
+                a signed cookie the daemon mints. Which one should the board use?";
+    let mut b = fixture_raised();
+    b.tickets.iter_mut().find(|t| t.id == ulid_n(5)).unwrap().raised.as_mut().unwrap().reason =
+        long.into();
+    for flavor in Flavor::ALL {
+        let theme = Theme::new(flavor, Profile::TrueColor);
+        let attn = theme.attn;
+        let mut app = App::for_test(b.clone(), theme);
+        app.cursor_col = 2;
+        app.cursor_row = Some(0);
+        let lines = render(&app, 80, 30);
+        let name = lines.iter().position(|l| l.contains("T-5 Grapheme")).expect("the hover row");
+        let first = lines.iter().position(|l| l.starts_with(" ! Two ways")).expect("the hand row");
+        assert!(first < name, "{flavor:?}: the hand sits above the card's name");
+        let said: Vec<&str> = lines[first..name].iter().map(|l| l[3..].trim_end()).collect();
+        assert_eq!(said.join(" "), long, "{flavor:?}: every word, wrapped");
+        let buf = cells(&app, 80, 30);
+        assert_eq!(buf[(3, first as u16)].fg, attn, "{flavor:?}: the words wear attn");
+    }
+    // Off the card, no row: the board keeps its rows.
+    let mut app = app_graphite(b);
+    app.cursor_col = 0;
+    let lines = render(&app, 80, 30);
+    assert!(!lines.iter().any(|l| l.starts_with(" ! ")), "{lines:?}");
+}
+
+/// A lowered hand keeps its words on the hand row for a few minutes
+/// (T-888), behind `¡` and in the quiet ink: the pane that lowered it was
+/// where the person went to answer, not where they read it.
+#[test]
+fn a_lowered_hand_stays_quiet_on_the_hand_row() {
+    let mut lowered = fixture_raised();
+    for t in &mut lowered.tickets {
+        t.raised = None;
+    }
+    for flavor in Flavor::ALL {
+        let theme = Theme::new(flavor, Profile::TrueColor);
+        let attn = theme.attn;
+        let mut app = App::for_test(lowered.clone(), theme);
+        app.cursor_col = 2;
+        app.cursor_row = Some(0);
+        app.lowered.insert(
+            ulid_n(5),
+            crate::app::LoweredHand {
+                reason: "Auth0 or cookie?".into(),
+                at_ms: mesimon_core::clock::now_ms(),
+            },
+        );
+        let lines = render(&app, 120, 30);
+        let row = lines.iter().position(|l| l.starts_with(" ¡ Auth0 or cookie?")).expect("kept");
+        let buf = cells(&app, 120, 30);
+        for x in 0..120u16 {
+            assert_ne!(buf[(x, row as u16)].fg, attn, "{flavor:?}: a lowered hand is calm");
+        }
+        assert!(!lines[0].contains("!1"), "{flavor:?}: and is not counted");
+        app.lowered.get_mut(&ulid_n(5)).unwrap().at_ms -= crate::app::LOWERED_HAND_MS;
+        let lines = render(&app, 120, 30);
+        assert!(!lines.iter().any(|l| l.contains("Auth0")), "{flavor:?}: until it is old");
+    }
+}
+
 /// The sentence is every raised card's (T-865), not the cursor card's
 /// alone: a resting card says why under its title, in the needs-you
 /// colour, for as long as the hand is up — and nothing once it is down.

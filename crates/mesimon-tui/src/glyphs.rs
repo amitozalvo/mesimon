@@ -212,6 +212,17 @@ pub(crate) fn idle_mark(tier: Tier) -> char {
     }
 }
 
+/// A hand that came down (T-888): `¡` U+00A1, the needs-you `!` turned
+/// over, on the hand row while the lowered words stay. ASCII `i`, the same
+/// stroke with its dot on top.
+pub(crate) fn lowered_mark(tier: Tier) -> char {
+    if tier == Tier::Ascii {
+        'i'
+    } else {
+        '¡'
+    }
+}
+
 /// The suggestion mark. NOT a chevron: `›` reads as "you are here" — every
 /// terminal prompt has trained that — and a suggestion is the opposite, an
 /// offer you have not taken. NOT `◊` either: a full-height diamond outline is

@@ -1498,6 +1498,17 @@ pub enum Doomed {
     Column(String),
 }
 
+/// How long a lowered hand's words stay on the hand row (T-888): long
+/// enough to read them after stepping out of the pane that lowered it.
+pub(crate) const LOWERED_HAND_MS: u64 = 5 * 60 * 1000;
+
+/// A hand that came down (T-888): its words, and when the board saw it go.
+#[derive(Debug, Clone)]
+pub(crate) struct LoweredHand {
+    pub(crate) reason: String,
+    pub(crate) at_ms: u64,
+}
+
 pub struct App {
     pub(crate) arcade: std::cell::RefCell<Option<crate::arcade::Arcade>>,
     /// The idle snake's clock (T-870): when a key, a paste or the mouse last
@@ -1834,6 +1845,12 @@ pub struct App {
     /// and the picker's preview ask `TicketSessions` for the one they show
     /// (`poll_held`), and `absorb` lays them back into every board after.
     pub(crate) held: Option<Held>,
+    /// Hands that came down while this board watched (T-888), by ticket:
+    /// the words and when the snapshot that lowered them landed. The hand
+    /// row keeps them, quiet, for [`LOWERED_HAND_MS`]: a hand comes down the
+    /// moment someone deals with the agent — its pane entered, a prompt
+    /// sent, its page left — which is before the words were always read.
+    pub(crate) lowered: std::collections::HashMap<ulid::Ulid, LoweredHand>,
     /// The archived tickets while something shows them (T-842): the
     /// archived list, the picker ranking them, or the page on one. The
     /// snapshot leaves every archived ticket out, so `poll_archive` asks
@@ -2244,6 +2261,7 @@ impl App {
             summary_jump: Cell::new(None),
             summary_pulses: std::collections::HashMap::new(),
             held: None,
+            lowered: std::collections::HashMap::new(),
             archive: None,
             archived: snap.archived,
             burnt: Vec::new(),
@@ -3118,6 +3136,7 @@ impl App {
         self.archived = archived;
         self.lay_archive(&mut board);
         self.lay_held(&mut board);
+        self.note_lowered_hands(&board);
         self.board = Arc::new(board);
         self.reindex_columns();
         self.grace = grace;
@@ -6383,6 +6402,34 @@ impl App {
             self.status = message;
         }
         self.refresh()
+    }
+
+    /// Remember every hand `next` lowers (T-888): up on the board this one
+    /// replaces, down on `next`. Raised again, gone from the board, or past
+    /// [`LOWERED_HAND_MS`], it is forgotten.
+    fn note_lowered_hands(&mut self, next: &Board) {
+        let now = mesimon_core::clock::now_ms();
+        self.lowered.retain(|id, l| {
+            now.saturating_sub(l.at_ms) < LOWERED_HAND_MS
+                && next.ticket(*id).is_some_and(|t| !t.hand_raised())
+        });
+        for t in &self.board.tickets {
+            let Some(r) = t.raised.as_ref() else { continue };
+            if next.ticket(t.id).is_some_and(|n| !n.hand_raised()) {
+                self.lowered.insert(t.id, LoweredHand { reason: r.reason.clone(), at_ms: now });
+            }
+        }
+    }
+
+    /// The hand the cursor card's hand row shows (T-888): up, or lowered
+    /// within [`LOWERED_HAND_MS`] — its words and whether it is still up.
+    pub(crate) fn hand_words<'a>(&'a self, ticket: &'a Ticket) -> Option<(&'a str, bool)> {
+        if let Some(r) = ticket.raised.as_ref() {
+            return Some((&r.reason, true));
+        }
+        let l = self.lowered.get(&ticket.id)?;
+        let fresh = mesimon_core::clock::now_ms().saturating_sub(l.at_ms) < LOWERED_HAND_MS;
+        fresh.then_some((&l.reason, false))
     }
 
     /// How many tickets are archived: the daemon's count (T-842), or what
@@ -24468,6 +24515,16 @@ mod tests {
         assert!(!app.board.ticket(ulid::Ulid(1)).unwrap().hand_raised(), "read, and lowered");
         assert!(app.board.ticket(ulid::Ulid(2)).unwrap().hand_raised(), "the other is untouched");
         assert_eq!(app.board.needs_you_count(), 1);
+        // The words outlive the hand on the hand row (T-888), quietly, and
+        // only the lowered one's: the other is still up.
+        let one = app.board.ticket(ulid::Ulid(1)).unwrap().clone();
+        assert_eq!(app.hand_words(&one), Some(("which auth provider?", false)));
+        let two = app.board.ticket(ulid::Ulid(2)).unwrap().clone();
+        assert_eq!(app.hand_words(&two), Some(("which auth provider?", true)));
+        assert_eq!(app.lowered.len(), 1);
+        // Past the window they are gone.
+        app.lowered.get_mut(&ulid::Ulid(1)).unwrap().at_ms -= LOWERED_HAND_MS;
+        assert_eq!(app.hand_words(&one), None);
     }
 
     /// The Settings row writes the preference and tells no daemon — the

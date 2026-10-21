@@ -29068,3 +29068,30 @@ Mesophon-only: no e2e, no rig.
 
 **Owed:** a CHANGELOG line at the next bump — **Changed:** Remote Control's cards no longer
 spell the agent's state ("claude · working"); the card's mark shows it.
+
+## A raised hand is read whole on the board (T-888, 2026-10-21, "Hand raised should be shown on board")
+
+The card cuts an agent's `raise_hand` sentence to its column (T-865), and in the pane the words
+sit inside an MCP call, so a long ask was read nowhere. **The cursor card's hand now has rows of
+its own above the row that names the card** (`chrome::hand_lines`, between the columns and the
+advisory row): `!` and the sentence in the needs-you colour, wrapped to the frame, at most three
+rows (a reason is capped at 160 bytes). The board gives up rows only while there is a hand to
+show, and only at rest, under the same conditions as `hover_line`.
+
+**A lowered hand keeps its words for five minutes** (`LOWERED_HAND_MS`), behind `¡` (ASCII `i`)
+in `dim2`, never attn and never counted: a hand comes down the moment someone deals with the
+agent (pane entered, prompt sent, page left, T-861), which is often before the words were read.
+The memory is the TUI's alone (`App::lowered`, filled by `note_lowered_hands` on every absorb by
+comparing the old board with the new): no wire or schema change, and a TUI restart forgets it,
+which costs at most five minutes of a quiet line. The clock starts when the board saw the hand
+go, not when the daemon lowered it.
+
+**Tests:** `the_cursor_cards_hand_is_read_whole_above_its_name` (every word across the wrap, attn,
+no row off the card), `a_lowered_hand_stays_quiet_on_the_hand_row` (no attn, no `!1`, gone after
+the window), and `a_raised_hand_survives_the_board_and_is_lowered_by_leaving_its_page` now walks
+the absorb road into `App::lowered`. `board_raised_120x30` reminted with the new row. TUI-only:
+no e2e, no rig.
+
+**Owed:** a CHANGELOG line at the next bump — **Added:** When an agent raises its hand, the
+board shows its whole message above the selected card's name; after the hand is lowered the
+message stays, greyed, for five minutes.
