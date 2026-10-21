@@ -158,39 +158,23 @@ function StateMark({ ticket }) {
   return html`<span class="mark mark-idle" aria-hidden="true"></span>`;
 }
 
-// What a needs-you agent needs, in the words a person would use; any other
-// agent's own state word.
-function stateWord(agent) {
-  if (agent.state !== "needs attention") return agent.state;
-  return agent.permission
-    ? "needs approval"
-    : agent.trust
-      ? "asks for trust"
-    : agent.dialog?.kind === "plan"
-      ? "has a plan"
-      : agent.dialog
-        ? "has a question"
-        : "needs you";
-}
-
 // A ticket, drawn the same wherever it is listed (T-533), in the TUI card's
 // order (T-855): the agent's mark, the title, and at the right its worktree
 // mark and the agent's age; the tags, with the key at the right (and the
-// column, where the list around it is not that column); the agent's words
-// and what the crown last did; and, live, what it is on. Each word keeps
-// to one line: a line too narrow sends a whole word to the next. An
-// archived ticket (T-665) says so where its column would be. A working
-// agent has no words: its spinner says it (T-886).
+// column, where the list around it is not that column); what the crown last
+// did; and, live, what it is on. The agent's state is its mark and the
+// card's ink, never words (T-886). Each word keeps to one line: a line too
+// narrow sends a whole word to the next. An archived ticket (T-665) says so
+// where its column would be.
 function Face({ store, ticket, board, column, archived }) {
   const agent = ticket.agent;
   const since = stateAge(board, agent);
-  const words = agent && agent.state !== "working";
   return html`<span class="face">
     ${agent && html`<span class="face-mark"><${StateMark} ticket=${ticket} /></span>`}
     <span class=${`ticket-title${ticket.crown ? " crowned" : ""}`} dir="auto"><${CrownMark} ticket=${ticket} size=${15} />${ticket.title}</span>
     <span class="card-corner"><${WorktreeMark} ticket=${ticket} />${since && html`<span class="card-age">${since}</span>`}</span>
     <span class="card-line"><${Tags} ticket=${ticket} /><span class="ticket-meta">${(column || archived) && html`<span class=${archived ? "archived-word" : undefined}>${archived ? "Archived" : ticket.column}</span><span aria-hidden="true">·</span>`}<span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span></span>
-    ${(words || crownTouch(board, ticket)) && html`<span class="card-agent">${words && html`<span class=${agent.state === "needs attention" ? "attn-ink" : undefined}>${agent.provider} · ${stateWord(agent)}</span>`}<${CrownWord} board=${board} ticket=${ticket} /></span>`}
+    ${crownTouch(board, ticket) && html`<span class="card-agent"><${CrownWord} board=${board} ticket=${ticket} /></span>`}
     <${Headline} agent=${agent} />
   </span>`;
 }

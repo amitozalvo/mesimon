@@ -29052,17 +29052,19 @@ with the switch untouched and an expired clock, then seeds it on. TUI-only: no e
 **Owed:** a CHANGELOG line at the next bump — **Changed:** The idle snake no longer starts on
 its own; turn it on with `Settings › Behaviour › Snake while idle`.
 
-## A working card has no agent words (T-886, 2026-10-21, "Don't render \"claude * working\" on remote control tickets")
+## A card has no agent words (T-886, 2026-10-21, "Don't render \"claude * working\" on remote control tickets")
 
-Remote Control's card drew `claude · working` under the tags while its mark was already the
-spinner, which says the same. **The card's agent line is now left out while the agent is
-`working`**: the spinner says it, and what it is on stays in the headline below. Every other
-state keeps its words (`claude · idle`, `codex · needs approval`, `starting`, `sleeping`), and
-a crown touch still draws the line alone. The ticket page's screen-reader word is unchanged.
+Remote Control's card drew `claude · working` (or `· idle`, `· needs approval`, …) under the
+tags, while its mark (spinner, idle dot, needs-you dot) and the needs-you card's ink already say
+the state. **The card's agent words are gone in every state**: a first cut kept them for every
+state but `working`, and the author's answer was that the card's mark and style say the others
+too. The `.card-agent` line now carries the crown's touch alone, and only when there is one;
+what the agent is on stays in the headline below. The ticket page's screen-reader word, the
+needs-you list's `need-line` and the dialogs are unchanged.
 
-**Tests:** the UX suite asserts no `.card-agent` on a working card; the Sent card and the
-no-wrap check now hold an idle agent so their words are still drawn. Mesophon-only: no e2e,
-no rig.
+**Tests:** the UX suite asserts the mark instead of the words (the spinner on a working card,
+`mark-idle`, a needs-you card's `mark-attn`) and no `.card-agent` without a crown touch.
+Mesophon-only: no e2e, no rig.
 
 **Owed:** a CHANGELOG line at the next bump — **Changed:** Remote Control's cards no longer
-say "claude · working" under a spinning agent.
+spell the agent's state ("claude · working"); the card's mark shows it.

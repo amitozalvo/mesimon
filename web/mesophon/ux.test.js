@@ -741,12 +741,12 @@ async function ticketFlow(browser, engineName, size, viewport) {
     await page.evaluate(() => {
       const t = fixture.tickets.find((t) => t.id === "mailed-1");
       t.column = "DONE";
-      t.agent = { session: "mailed-agent", provider: "claude", state: "idle", promptable: true };
+      t.agent = { session: "mailed-agent", provider: "claude", state: "working", promptable: true };
       fixture.update();
     });
     await until(page, () =>
       /DONE/.test(document.querySelector('.sent-item .ticket.card[data-id="mailed-1"] .ticket-meta')?.textContent || ""));
-    assert.match(await landedCard.textContent(), /claude · idle/);
+    assert.equal(await landedCard.locator(".spin").count(), 1);
     assert.match(await status("landed").first().textContent(), /Landed as T-200 in TODO/);
     await shot("sent-live-card");
     // Archived, it stays in Sent and says so, and opens nothing.
@@ -3352,11 +3352,12 @@ try {
             document.querySelector('.ticket[data-id="ticket-0"] .headline-step')?.textContent.includes("cargo test"),
           );
           // The age stands in the card's corner, as the TUI's (T-855), and
-          // a working agent's spinner is its only word (T-886).
+          // the agent's state is its mark, never words (T-886).
           assert.equal(await page.locator('.ticket[data-id="ticket-0"] .card-agent').count(), 0);
+          assert.equal(await page.locator('.ticket[data-id="ticket-0"] .spin').count(), 1);
           assert.equal(await page.locator('.ticket[data-id="ticket-0"] .card-age').textContent(), "5m");
           assert.equal(await page.locator('.ticket[data-id="ticket-4"] .headline').textContent(), "Fixed, and three tests pass.");
-          assert.equal(await page.locator('.ticket[data-id="ticket-4"] .card-agent').textContent(), "claude · idle");
+          assert.equal(await page.locator('.ticket[data-id="ticket-4"] .mark-idle').count(), 1);
           assert.equal(await page.locator('.ticket[data-id="ticket-4"] .card-age').textContent(), "40m");
           // Now lists a stopped agent for an hour (T-560); the Board, always.
           assert.equal(
@@ -3387,9 +3388,9 @@ try {
           assert.equal(await page.locator('.ticket[data-id="ticket-0"] .tag').textContent(), "BUG");
           assert.equal(await page.locator('.ticket[data-id="ticket-0"] .ticket-meta').textContent(), "IN PROGRESS·T-0");
           assert.equal(await page.locator('.need .ticket[data-id="ticket-1"] .tag').textContent(), "FEATURE");
-          assert.equal(await page.locator('.need .ticket[data-id="ticket-1"] .card-agent').textContent(), "codex · needs you");
+          assert.equal(await page.locator('.need .ticket[data-id="ticket-1"] .mark-attn').count(), 1);
           // No word on a card breaks across lines (T-855): the tags, the
-          // column, the key, the corner and the agent's words each keep to
+          // column, the key, the corner and the crown's words each keep to
           // one, on a card that carries all of them at once.
           const title0 = await page.evaluate(() => fixture.tickets[0].title);
           await page.evaluate(() => {
@@ -3397,12 +3398,10 @@ try {
               title: "pictures inside ask agent prompt, and the ones a phone sends",
               tags: [{ group: 1, name: "IMPROVEMENT", tint: 0 }, { group: 3, name: "REMOTE CONTROL", tint: 2 }],
               workspace: { kind: "worktree", branch: "msmn/T-0-pictures", state: "behind" },
-              agent: { ...fixture.tickets[0].agent, state: "idle" },
             });
             fixture.update();
           });
           await page.locator('#tickets .ticket[data-id="ticket-0"] .wt-mark').waitFor();
-          await page.locator('#tickets .ticket[data-id="ticket-0"] .card-agent').waitFor();
           const broken = await page.locator('#tickets .ticket[data-id="ticket-0"]').evaluate((card) =>
             [...card.querySelectorAll(".tag, .ticket-meta, .card-corner, .card-agent > *")].flatMap((el) => {
               const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
@@ -3418,10 +3417,7 @@ try {
           );
           assert.deepEqual(broken, [], "a word on a card wrapped onto a second line");
           await page.evaluate((title) => {
-            Object.assign(fixture.tickets[0], {
-              title, tags: [{ group: 1, name: "BUG", tint: 0 }], workspace: undefined,
-              agent: { ...fixture.tickets[0].agent, state: "working" },
-            });
+            Object.assign(fixture.tickets[0], { title, tags: [{ group: 1, name: "BUG", tint: 0 }], workspace: undefined });
             fixture.update();
           }, title0);
           await until(page, () => !document.querySelector('#tickets .ticket[data-id="ticket-0"] .wt-mark'));
@@ -3474,7 +3470,7 @@ try {
             assert.deepEqual(await anatomy(), inNow);
           }
           assert.equal(await page.locator('.ticket[data-id="ticket-0"] .ticket-meta').textContent(), "T-0");
-          assert.equal(await page.locator('.ticket[data-id="ticket-6"] .card-agent').textContent(), "claude · idle");
+          assert.equal(await page.locator('.ticket[data-id="ticket-6"] .mark-idle').count(), 1);
           assert.equal(await page.locator('.ticket[data-id="ticket-6"] .card-age').textContent(), "2h");
           await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-board.png`) });
           await mode("agents");
