@@ -6,6 +6,32 @@ notes, and the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-beta.11 — 2026-10-21
+
+### Added
+
+- **Remote Control in a browser can send a prompt while the terminal is
+  away.** The prompt waits, with `Take back`, until the terminal is reachable
+  again, and then joins the agent's queue as a queued prompt from the phone
+  would. A sleeping agent, or one replaced since you wrote, refuses it and
+  the words come back to the box.
+
+### Changed
+
+- **`/` search matches the words you type, in any case, and searches notes.**
+  A word matches as written instead of as scattered letters (`'word` keeps
+  the loose match). A ticket also matches when one line of its notes holds
+  the whole query; that line shows under the row with the match lit.
+- **The board header counts linked boards**, and names one only while the
+  crowns are exchanging a message with it.
+
+### Fixed
+
+- **A message to an agent that is just starting no longer gets pasted into
+  its box.** Queued prompts and the crown's messages now wait until
+  the agent can take them.
+- **The crown no longer tries to start an agent its message already woke.**
+
 ## v0.1.0-beta.10 — 2026-10-19
 
 ### Added
