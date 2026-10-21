@@ -6278,8 +6278,9 @@ impl Daemon {
                 if title.trim().is_empty() {
                     return Response::Err { message: "title is empty".into() };
                 }
-                // The title leads the brief a start types (T-876).
-                if title.starts_with('!') {
+                // The title leads the brief a start types (T-876): judged as
+                // stored, after the scrub, as `mint_full` judges a filing.
+                if mesimon_core::board::shell_title(&title) {
                     return Response::Err { message: road::SHELL_TITLE_REFUSED.into() };
                 }
                 if let err @ Response::Err { .. } = self.with_ticket(target, |t| t.title = title) {
@@ -7656,13 +7657,9 @@ impl Daemon {
                 Err(message) => return Response::Err { message },
             },
         };
-        // The title leads the brief a start types (T-876): an agent's may
-        // not begin with `!`, which would run the rest as a shell line.
-        if title.trim_start().starts_with('!') {
-            return Response::Err { message: road::SHELL_TITLE_REFUSED.into() };
-        }
         // One mint (T-243): a description the daemon would refuse refuses the
-        // ticket with it, so the receipt never has to say "created, but".
+        // ticket with it, so the receipt never has to say "created, but"; a
+        // title beginning with `!` is refused there too (T-876).
         let mint = Mint {
             column: column.clone(),
             title,
@@ -10390,6 +10387,12 @@ impl Daemon {
         let title = mesimon_core::board::sanitize_title(&title);
         if title.trim().is_empty() {
             return Err("a ticket needs a title".into());
+        }
+        // The title leads the brief a start types (T-876): one an agent
+        // files may not begin with `!`, which would run the rest as a shell
+        // line. Judged on the stored form, after the scrub.
+        if !by.is_human() && mesimon_core::board::shell_title(&title) {
+            return Err(road::SHELL_TITLE_REFUSED.into());
         }
         for (i, tag) in tags.iter().enumerate() {
             if !(1..=10).contains(&tag.group) {
@@ -13270,8 +13273,13 @@ impl Daemon {
         else {
             return;
         };
-        let Some(title) =
-            self.board.ticket(rec.ticket).map(|t| t.title.trim()).filter(|t| !t.is_empty())
+        // A title that begins with `!` is not typed (T-876): the box would
+        // run it, and the start that typed it was refused for the same.
+        let Some(title) = self
+            .board
+            .ticket(rec.ticket)
+            .map(|t| t.title.trim())
+            .filter(|t| !t.is_empty() && !mesimon_core::board::shell_title(t))
         else {
             return;
         };
@@ -14482,6 +14490,20 @@ impl Daemon {
         if self.team_content_only() {
             return Response::Err {
                 message: "this board has no repository on this machine — open it where the code is"
+                    .into(),
+            };
+        }
+        // A Claude start types the title into the empty box, or leads the
+        // brief with it, and a first `!` is the box's bash mode (T-876): the
+        // rest of the title would run as a shell command. Refused whoever
+        // set the title — an agent's is refused at the filing, and this is
+        // the backstop for every road, a person's own `!!! urgent` included.
+        if kind == SessionKind::Claude
+            && self.board.ticket(ticket).is_some_and(|t| mesimon_core::board::shell_title(&t.title))
+        {
+            return Response::Err {
+                message: "the title begins with `!`, which Claude Code's prompt box runs as a \
+                          shell command once it is typed in; rename the ticket first"
                     .into(),
             };
         }

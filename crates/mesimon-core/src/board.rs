@@ -1771,6 +1771,17 @@ pub fn sanitize_title(raw: &str) -> String {
     cap_bytes(&scrub_cells(raw, false), TITLE_MAX_BYTES).to_string()
 }
 
+/// Whether a STORED title is one Claude Code's box would read as a shell
+/// line (T-876): a start types the title, trimmed, into the empty box, and
+/// a brief leads with it (`Daemon::launch_words`), where a first `!` is the
+/// box's bash mode and the rest of the title runs as a command. Judged on
+/// the form the board keeps, never the raw one a request carried:
+/// `sanitize_title` removes a format hazard and turns a tab into a blank,
+/// so `\u{200B}!rm` stored is `!rm`, and ` !rm` stored is typed as `!rm`.
+pub fn shell_title(stored: &str) -> bool {
+    stored.trim_start().starts_with('!')
+}
+
 /// The longest a note may be, in bytes. A note is a markdown file the
 /// ticket page renders and an agent reads whole through one tool call; a
 /// document past this belongs in the repo, not on a card. Bounded here and
@@ -4631,6 +4642,20 @@ mod tests {
     /// gauntlet as peek text: a terminal-vs-unicode-width disagreement there
     /// strands a `selected_bg` cell past the card edge that the diff never
     /// repaints.
+    /// T-876: the shell-title check reads the stored form, so what the
+    /// scrub removes cannot hide a `!` from it.
+    #[test]
+    fn a_shell_title_is_judged_as_stored() {
+        assert!(shell_title("!rm -rf ~"));
+        assert!(shell_title("  ! rm -rf ~"));
+        assert!(!shell_title("fix the build!"));
+        assert!(!shell_title(""));
+        // A zero-width space or a tab before the `!` goes in the scrub.
+        assert!(shell_title(&sanitize_title("\u{200B}!rm -rf ~")));
+        assert!(shell_title(&sanitize_title("\u{200B} !rm -rf ~")));
+        assert!(shell_title(&sanitize_title("\t!rm -rf ~")));
+    }
+
     #[test]
     fn sanitize_title_caps_without_splitting_a_character() {
         // A pasted document: bounded, and the cut never lands inside a

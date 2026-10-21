@@ -418,7 +418,8 @@ refuses the agent, such as a deploy. The box takes a `!` line only while it is e
 refused while a draft sits in the agent's own prompt box, and the card spins on the command
 while it runs. Only you send one: a `!` line in the crown's `ask_agent`, or in a linked board's
 ask, is refused, as is a ticket title an agent sets that begins with `!`, since a start types the
-title into the box.
+title into the box. For the same reason a Claude agent is not started on any ticket whose title
+begins with `!`; rename it first.
 
 ## The crown: one agent runs the board
 

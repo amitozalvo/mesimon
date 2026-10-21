@@ -551,11 +551,13 @@ impl Daemon {
                     // title for the person to edit, and a fresh pane gets it
                     // again (typed, never submitted).
                     None if fresh && !conversed => {
+                        // Never one beginning with `!` (T-876): the box
+                        // would run it as a shell command.
                         let title = self
                             .board
                             .ticket(ticket)
                             .map(|t| t.title.trim().to_string())
-                            .filter(|t| !t.is_empty());
+                            .filter(|t| !t.is_empty() && !mesimon_core::board::shell_title(t));
                         let sid16 =
                             self.board.sessions.iter().find(|s| s.id == id).map(|s| s.sid16());
                         if let (Some(title), Some(sid16)) = (title, sid16) {

@@ -29264,7 +29264,15 @@ the shell's. A slash command from the crown stays as it was (T-575; the rig's R6
 it stays inside Claude Code's own box and dialogs, where a `!` line is the person's shell.
 `shell_line_e2e::an_agent_s_shell_line_and_shell_title_are_refused` pins the five refusals and
 that a person's queued `!` line still goes; the rig's **P8** has the crown try one and relay the
-refusal.
+refusal. **The review's second pass found a validator differential in the title checks**: they
+read the raw title where the board stores `sanitize_title`'s, and the scrub removes a format
+hazard (`\u{200B}!rm` stored is `!rm`) and turns a tab into a blank. Now one predicate,
+`board::shell_title`, reads the STORED form (`trim_start`, as a start types the title and as
+`launch_words` leads with it), in `mint_full` for every non-human principal and in the agent's
+rename; and the backstop is the start itself: `spawn_session` refuses a Claude start on any
+ticket whose title begins with `!`, whoever set it (a person's `!!! urgent` would otherwise run
+`!! urgent` in their shell), and the two wake roads that retype a title skip one. The e2e's
+titles carry the zero-width space.
 
 **Owed:** a CHANGELOG line at the next bump — **Fixed:** A message that begins with `!`, sent
 from Remote Control or the board's ask field, now runs as a shell command in Claude Code's

@@ -333,11 +333,13 @@ fn an_agent_s_shell_line_and_shell_title_are_refused() {
     assert!(!got(&h).contains("mesimon-876-crown"), "{:?}", got(&h));
     assert_eq!(feed_count(&h, "shell_sent", b), 1);
 
-    // A title the agent sets may not begin with `!` either way.
+    // A title the agent sets may not begin with `!` either way — judged as
+    // the board stores it: the zero-width space here goes in the scrub, so
+    // a check on the raw title would pass what the start then types.
     match c.send(
         Principal::Agent { session: sa },
         Command::AgentCreateTicket {
-            title: "!rm -rf mesimon-876".into(),
+            title: "\u{200B}!rm -rf mesimon-876".into(),
             column: Some("TODO".into()),
             description: None,
             tags: Vec::new(),
@@ -353,7 +355,11 @@ fn an_agent_s_shell_line_and_shell_title_are_refused() {
     }
     match c.send(
         Principal::Agent { session: sa },
-        Command::AgentRenameTicket { key: kb.clone(), title: " !rm -rf mesimon-876".into(), seen },
+        Command::AgentRenameTicket {
+            key: kb.clone(),
+            title: "\u{200B} !rm -rf mesimon-876".into(),
+            seen,
+        },
     ) {
         Response::Err { message } => {
             assert!(message.contains("title that begins with `!`"), "{message}")
@@ -362,5 +368,28 @@ fn an_agent_s_shell_line_and_shell_title_are_refused() {
     }
     assert_eq!(c.board().ticket(b).unwrap().title, "the worker");
     assert!(c.board().tickets.iter().all(|t| !t.title.starts_with('!')));
+
+    // A person's own `!` title is theirs to file, and the backstop is the
+    // start: a Claude agent is refused on it, since the start would type the
+    // title into the box and run the rest.
+    let urgent = match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "!!! urgent mesimon-876".into(),
+        workspace: None,
+        tier: None,
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("a person's title: {other:?}"),
+    };
+    match c.request(Command::SpawnSession {
+        ticket: urgent,
+        kind: SessionKind::Claude,
+        submit_prompt: true,
+        plan: false,
+    }) {
+        Response::Err { message } => assert!(message.contains("begins with `!`"), "{message}"),
+        other => panic!("a start on a `!` title must be refused: {other:?}"),
+    }
+    assert!(c.board().sessions.iter().all(|s| s.ticket != urgent));
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
 }
