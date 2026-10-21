@@ -29051,3 +29051,18 @@ with the switch untouched and an expired clock, then seeds it on. TUI-only: no e
 
 **Owed:** a CHANGELOG line at the next bump — **Changed:** The idle snake no longer starts on
 its own; turn it on with `Settings › Behaviour › Snake while idle`.
+
+## A working card has no agent words (T-886, 2026-10-21, "Don't render \"claude * working\" on remote control tickets")
+
+Remote Control's card drew `claude · working` under the tags while its mark was already the
+spinner, which says the same. **The card's agent line is now left out while the agent is
+`working`**: the spinner says it, and what it is on stays in the headline below. Every other
+state keeps its words (`claude · idle`, `codex · needs approval`, `starting`, `sleeping`), and
+a crown touch still draws the line alone. The ticket page's screen-reader word is unchanged.
+
+**Tests:** the UX suite asserts no `.card-agent` on a working card; the Sent card and the
+no-wrap check now hold an idle agent so their words are still drawn. Mesophon-only: no e2e,
+no rig.
+
+**Owed:** a CHANGELOG line at the next bump — **Changed:** Remote Control's cards no longer
+say "claude · working" under a spinning agent.

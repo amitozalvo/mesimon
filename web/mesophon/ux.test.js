@@ -741,12 +741,12 @@ async function ticketFlow(browser, engineName, size, viewport) {
     await page.evaluate(() => {
       const t = fixture.tickets.find((t) => t.id === "mailed-1");
       t.column = "DONE";
-      t.agent = { session: "mailed-agent", provider: "claude", state: "working", promptable: true };
+      t.agent = { session: "mailed-agent", provider: "claude", state: "idle", promptable: true };
       fixture.update();
     });
     await until(page, () =>
       /DONE/.test(document.querySelector('.sent-item .ticket.card[data-id="mailed-1"] .ticket-meta')?.textContent || ""));
-    assert.match(await landedCard.textContent(), /claude · working/);
+    assert.match(await landedCard.textContent(), /claude · idle/);
     assert.match(await status("landed").first().textContent(), /Landed as T-200 in TODO/);
     await shot("sent-live-card");
     // Archived, it stays in Sent and says so, and opens nothing.
@@ -3351,8 +3351,9 @@ try {
           await until(page, () =>
             document.querySelector('.ticket[data-id="ticket-0"] .headline-step')?.textContent.includes("cargo test"),
           );
-          // The age stands in the card's corner, as the TUI's (T-855).
-          assert.equal(await page.locator('.ticket[data-id="ticket-0"] .card-agent').textContent(), "claude · working");
+          // The age stands in the card's corner, as the TUI's (T-855), and
+          // a working agent's spinner is its only word (T-886).
+          assert.equal(await page.locator('.ticket[data-id="ticket-0"] .card-agent').count(), 0);
           assert.equal(await page.locator('.ticket[data-id="ticket-0"] .card-age').textContent(), "5m");
           assert.equal(await page.locator('.ticket[data-id="ticket-4"] .headline').textContent(), "Fixed, and three tests pass.");
           assert.equal(await page.locator('.ticket[data-id="ticket-4"] .card-agent').textContent(), "claude · idle");
@@ -3396,10 +3397,12 @@ try {
               title: "pictures inside ask agent prompt, and the ones a phone sends",
               tags: [{ group: 1, name: "IMPROVEMENT", tint: 0 }, { group: 3, name: "REMOTE CONTROL", tint: 2 }],
               workspace: { kind: "worktree", branch: "msmn/T-0-pictures", state: "behind" },
+              agent: { ...fixture.tickets[0].agent, state: "idle" },
             });
             fixture.update();
           });
           await page.locator('#tickets .ticket[data-id="ticket-0"] .wt-mark').waitFor();
+          await page.locator('#tickets .ticket[data-id="ticket-0"] .card-agent').waitFor();
           const broken = await page.locator('#tickets .ticket[data-id="ticket-0"]').evaluate((card) =>
             [...card.querySelectorAll(".tag, .ticket-meta, .card-corner, .card-agent > *")].flatMap((el) => {
               const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
@@ -3415,7 +3418,10 @@ try {
           );
           assert.deepEqual(broken, [], "a word on a card wrapped onto a second line");
           await page.evaluate((title) => {
-            Object.assign(fixture.tickets[0], { title, tags: [{ group: 1, name: "BUG", tint: 0 }], workspace: undefined });
+            Object.assign(fixture.tickets[0], {
+              title, tags: [{ group: 1, name: "BUG", tint: 0 }], workspace: undefined,
+              agent: { ...fixture.tickets[0].agent, state: "working" },
+            });
             fixture.update();
           }, title0);
           await until(page, () => !document.querySelector('#tickets .ticket[data-id="ticket-0"] .wt-mark'));

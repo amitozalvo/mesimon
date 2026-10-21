@@ -179,16 +179,18 @@ function stateWord(agent) {
 // column, where the list around it is not that column); the agent's words
 // and what the crown last did; and, live, what it is on. Each word keeps
 // to one line: a line too narrow sends a whole word to the next. An
-// archived ticket (T-665) says so where its column would be.
+// archived ticket (T-665) says so where its column would be. A working
+// agent has no words: its spinner says it (T-886).
 function Face({ store, ticket, board, column, archived }) {
   const agent = ticket.agent;
   const since = stateAge(board, agent);
+  const words = agent && agent.state !== "working";
   return html`<span class="face">
     ${agent && html`<span class="face-mark"><${StateMark} ticket=${ticket} /></span>`}
     <span class=${`ticket-title${ticket.crown ? " crowned" : ""}`} dir="auto"><${CrownMark} ticket=${ticket} size=${15} />${ticket.title}</span>
     <span class="card-corner"><${WorktreeMark} ticket=${ticket} />${since && html`<span class="card-age">${since}</span>`}</span>
     <span class="card-line"><${Tags} ticket=${ticket} /><span class="ticket-meta">${(column || archived) && html`<span class=${archived ? "archived-word" : undefined}>${archived ? "Archived" : ticket.column}</span><span aria-hidden="true">·</span>`}<span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span></span>
-    ${(agent || crownTouch(board, ticket)) && html`<span class="card-agent">${agent && html`<span class=${agent.state === "needs attention" ? "attn-ink" : undefined}>${agent.provider} · ${stateWord(agent)}</span>`}<${CrownWord} board=${board} ticket=${ticket} /></span>`}
+    ${(words || crownTouch(board, ticket)) && html`<span class="card-agent">${words && html`<span class=${agent.state === "needs attention" ? "attn-ink" : undefined}>${agent.provider} · ${stateWord(agent)}</span>`}<${CrownWord} board=${board} ticket=${ticket} /></span>`}
     <${Headline} agent=${agent} />
   </span>`;
 }
