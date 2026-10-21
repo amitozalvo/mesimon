@@ -656,7 +656,9 @@ closed pull request has no pipeline to pass. These column settings and **Setting
 Pull requests on cards** do nothing on a board that merges into main, and their rows say so.
 Without `gh` or `glab`, **Settings › Behaviour › Fetch from the remote** alone makes a merged PR
 read merged once fetched. A crown hears what the forge says of the
-tickets it started or watches: it is woken when a pipeline fails or passes, a job waits on a
+tickets it started or watches, and of a ticket with no agent that carries a pull request (one
+the crown opened itself and named under the ticket's Summary), while **Watches tickets** is on:
+it is woken when a pipeline fails or passes, a job waits on a
 person, the merge reaches an environment, a conflict comes or clears, or a review approves or
 asks for changes, and when a later pull request merges on a ticket whose branch already
 landed. A pull request first seen already passed, failed, waiting, in conflict or reviewed says

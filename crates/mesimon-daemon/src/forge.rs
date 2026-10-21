@@ -1838,6 +1838,15 @@ impl State {
         self.sets.get(&ticket).is_some_and(|s| forge::own(s).next().is_some())
     }
 
+    /// Any PR bound to the ticket, the ticket's own or one it reviewed
+    /// (T-890): what the crown follows on a ticket with no agent. A PR the
+    /// crown opened itself and named under the ticket's `Summary` is read
+    /// by itself and binds reviewed (T-859), and its edges are the ticket's
+    /// all the same.
+    pub fn carries_pr(&self, ticket: ulid::Ulid) -> bool {
+        self.sets.get(&ticket).is_some_and(|s| !s.is_empty())
+    }
+
     /// Whether the ticket's reads ever held the PR a printed URL names
     /// (T-797): in any state, a closed one included, and one a later list
     /// no longer shows. `held` holds every PR of every set.

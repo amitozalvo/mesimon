@@ -4007,3 +4007,238 @@ fn a_cli_never_signed_in_is_trouble_with_its_fix() {
     let _ = c.request(Command::Shutdown);
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
+
+/// T-890: a worker the crown started, delivered and parked, whose PR a
+/// person squash-merges on the forge with the base never fetched here:
+/// the crown hears `merged` once, awake or across a daemon restart.
+fn parked_squash_merge(name: &str, restart: bool) {
+    let (stub_dir, path_var) = gh_stub(name);
+    let prs_file = stub_dir.join("prs.json");
+    write(&prs_file, "[]");
+    let Some(h) = Harness::boot_with_env(
+        name,
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs_file.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client(name);
+    through_prs(&mut c);
+    let k = crowned(&h, &mut c);
+    let got = h.dir.join("got.txt");
+    let kw = c.board().ticket(k.worker).unwrap().short_key.clone();
+    // The worker's PR opens, its pipeline running: bound, no wake.
+    let running =
+        r#"[{"__typename":"CheckRun","name":"test","status":"IN_PROGRESS","conclusion":null}]"#;
+    write(&prs_file, &open_pr_json(&k.branch, &k.tip, running, "MERGEABLE", "REVIEW_REQUIRED"));
+    wait_until(Duration::from_secs(20), "the PR to bind", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == k.worker && p.number == 42)
+    });
+    // The crown parks its worker, as a crown does once a delivery is heard.
+    let seen = match c
+        .send(Principal::Agent { session: k.crown }, Command::AgentReadTicket { key: kw.clone() })
+    {
+        Response::AgentTicket { ticket } => ticket.seen,
+        other => panic!("read: {other:?}"),
+    };
+    match c.send(
+        Principal::Agent { session: k.crown },
+        Command::AgentSleepTicket { key: kw.clone(), seen },
+    ) {
+        Response::AgentTicket { .. } => {}
+        other => panic!("sleep_agent: {other:?}"),
+    }
+    wait_until(Duration::from_secs(10), "the worker to park", || {
+        c.board().live_agent(k.worker).is_some_and(|s| s.state == SessionState::Sleeping)
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(wakes(&h, k.worker, "merged"), 0);
+    // A squash on the forge: the merge commit is none of the branch's, and
+    // the base here never fetches it.
+    let merged = pr_json(&k.branch, &k.tip, "MERGED", Some("feedf00dfeedf00dfeedf00dfeedf00dfeedf00d"), None);
+    if restart {
+        drop(c);
+        h.restart_after(|| write(&prs_file, &merged));
+        c = h.client(&format!("{name}-2"));
+    } else {
+        write(&prs_file, &merged);
+    }
+    wait_until(Duration::from_secs(30), "the PR to read merged", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == k.worker && p.state == "merged")
+    });
+    wait_until(Duration::from_secs(30), "the merge's wake", || {
+        wakes(&h, k.worker, "merged") == 1
+    });
+    std::thread::sleep(Duration::from_millis(2500));
+    let all = std::fs::read_to_string(&got).unwrap_or_default();
+    assert!(all.contains(&format!("{} merged (", k.named)), "{all}");
+    assert_eq!(wakes(&h, k.worker, "merged"), 1, "{all}");
+    let _ = (&hook_sock, &k.ws, &k.path);
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+#[test]
+fn a_parked_workers_squash_merge_wakes_the_crown() {
+    parked_squash_merge("forge_park_merge", false);
+}
+
+#[test]
+fn a_parked_workers_squash_merge_in_a_restarts_gap_wakes_the_crown() {
+    parked_squash_merge("forge_park_restart", true);
+}
+
+/// T-890: a pull request on a ticket with no agent is the crown's to
+/// follow, behind Watches tickets. The crown did the work itself and named
+/// the PR under the ticket's Summary (bound reviewed, read by itself): its
+/// merge is a `forge` wake. A worktree ticket whose agent is gone lands by
+/// the flags' road and reaches an environment by the forge's, heard the
+/// same way; while the row is off, nothing is said.
+#[test]
+fn a_pull_request_on_a_ticket_with_no_agent_wakes_the_crown() {
+    let (stub_dir, path_var) = gh_stub("forge-orphan");
+    let prs_file = stub_dir.join("prs.json");
+    let deploys = stub_dir.join("deploys.json");
+    write(&prs_file, "[]");
+    write(&deploys, "[]");
+    let head = "ab".repeat(20);
+    let view = stub_dir.join("view.42.json");
+    write(&view, &numbered_pr(42, "feature/crown", &head, false));
+    let Some(h) = Harness::boot_with_env(
+        "forge_orphan",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs_file.display().to_string()),
+            ("MSMN_GH_DEPLOYS", &deploys.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("forge_orphan");
+    through_prs(&mut c);
+    // A column waits on staging, so the pass asks for deployments.
+    let mut done = c.board().column("DONE").unwrap().settings.clone();
+    done.arrives_on = Arrival::Deployed;
+    done.arrives_env = Some("staging".into());
+    assert!(matches!(
+        c.request(Command::SetColumnSettings { name: "DONE".into(), settings: done }),
+        Response::Ok
+    ));
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    let create = |c: &mut TestClient, title: &str| match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: title.into(),
+        workspace: None,
+        tier: None,
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("create: {other:?}"),
+    };
+    // The crown, idle.
+    let a = create(&mut c, "coordinate");
+    let sa = match c.request(Command::SpawnSession {
+        ticket: a,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn: {other:?}"),
+    };
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(Duration::from_millis(500));
+    turn(&mut c, &hook_sock, sa);
+
+    // ---- a ticket with no agent, its PR named under its Summary ----------
+    let b = create(&mut c, "named");
+    let kb = c.board().ticket(b).unwrap().short_key.clone();
+    match c.request(Command::WriteNote {
+        ticket: b,
+        note: None,
+        text: "# Done by the crown\n\n## Summary\n- https://github.com/example/forge/pull/42\n"
+            .into(),
+        rev: None,
+    }) {
+        Response::NoteWritten { .. } => {}
+        other => panic!("note: {other:?}"),
+    }
+    wait_until(Duration::from_secs(20), "the Summary's PR to bind", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == b && p.number == 42 && p.reviewed)
+    });
+    assert!(c.board().live_agent(b).is_none(), "no agent on the ticket");
+    // A first read is a baseline; the merge after it is the crown's news.
+    std::thread::sleep(Duration::from_millis(1500));
+    let named_b = format!("{kb} \"named\" has news from the forge (");
+    assert!(lines_with(&named_b).is_empty(), "{}", lines_with("").join("\n"));
+    write(&view, &numbered_pr(42, "feature/crown", &head, true));
+    wait_until(Duration::from_secs(20), "the named PR's merge wake", || {
+        lines_with(&named_b).iter().any(|l| l.contains("merged #42)"))
+    });
+    turn(&mut c, &hook_sock, sa);
+
+    // ---- a worktree ticket whose agent went ------------------------------
+    let (o, so, branch, path) = ready(&mut c, "orphan");
+    let ko = c.board().ticket(o).unwrap().short_key.clone();
+    let wt = wait_attached(&mut c, o);
+    assert_eq!(wt.branch, branch);
+    let tip = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
+    write(&prs_file, &format!("[{}]", numbered_pr(43, &branch, &tip, false)));
+    wait_until(Duration::from_secs(20), "the worktree's PR to bind", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == o && p.number == 43)
+    });
+    let named_o = format!("{ko} \"orphan\"");
+    let _ = c.request(Command::KillSession { id: so });
+    wait_until(Duration::from_secs(15), "the agent to go", || c.board().live_agent(o).is_none());
+
+    // ---- the row off: a merge read then is nobody's -----------------------
+    assert!(matches!(c.request(Command::SetCrownWatches { on: false }), Response::Ok));
+    write(&prs_file, &format!("[{}]", numbered_pr(43, &branch, &tip, true)));
+    wait_until(Duration::from_secs(20), "the orphan's PR to read merged", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == o && p.state == "merged")
+    });
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(lines_with(&named_o).is_empty(), "the row is off: {}", lines_with("").join("\n"));
+
+    // ---- the row on: its deployment is the crown's ------------------------
+    assert!(matches!(c.request(Command::SetCrownWatches { on: true }), Response::Ok));
+    write(&deploys, &format!(r#"[{{"id":7,"sha":"{tip}","environment":"staging"}}]"#));
+    wait_until(Duration::from_secs(20), "the orphan's deployment wake", || {
+        lines_with(&named_o).iter().any(|l| l.contains("deployed to staging #43)"))
+    });
+    turn(&mut c, &hook_sock, sa);
+    std::thread::sleep(Duration::from_millis(1500));
+    let all = std::fs::read_to_string(&got).unwrap_or_default();
+    assert_eq!(wakes(&h, b, "forge"), 1, "{all}");
+    assert_eq!(wakes(&h, o, "forge"), 1, "{all}");
+    // The merge read while the row was off was no wake: the deployment's
+    // line says the state the crown never heard, `merge_state merged`.
+    assert_eq!(wakes(&h, o, "merged") + wakes(&h, o, "delivered"), 0, "{all}");
+    assert_eq!(lines_with(&named_o).len(), 1, "{all}");
+    assert_eq!(c.board().ticket(o).unwrap().column, "DONE", "the arrival rule took it");
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}

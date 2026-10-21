@@ -87,7 +87,10 @@
 //! and the watch ends at the merge; its question and its plan stay the
 //! person's (the crown cannot answer a person's agent), and so does its
 //! lingering: the crown's words do reach a watched agent (T-734), but a
-//! person's agent's background tasks are the person's to end.
+//! person's agent's background tasks are the person's to end. Behind the
+//! same switch, a ticket with no agent that carries a pull request is heard
+//! for the forge's news and its merge (`unattended_pr`, T-890): the crown's
+//! own work, named on the ticket it was for, has no worker to be heard by.
 //! `crown_hears` is the one claim.
 //!
 //! **A turn's end waits for its forge read (T-773).** A turn that pushed or
@@ -1027,12 +1030,30 @@ impl Daemon {
             && self.crown_watched.contains(&worker)
     }
 
-    /// The crown is owed the worker's news: it started the worker, or it
-    /// watches the ticket (T-712). The one claim every wake but an answer
-    /// makes — `note_crown_wake` narrows a watch to what a person's agent
-    /// gives the crown to act on.
+    /// The crown is owed the worker's news: it started the worker, it
+    /// watches the ticket (T-712), or the ticket has no agent and carries
+    /// a pull request (`unattended_pr`, T-890). The one claim every wake
+    /// but an answer makes — `note_crown_wake` narrows a watch to what a
+    /// person's agent gives the crown to act on.
     fn crown_hears(&self, worker: ulid::Ulid, crown: ulid::Ulid) -> bool {
-        self.started_by_crown(worker, crown) || self.watched_by_crown(worker, crown)
+        self.started_by_crown(worker, crown)
+            || self.watched_by_crown(worker, crown)
+            || self.unattended_pr(worker, crown)
+    }
+
+    /// A pull request on a ticket with no agent (T-890): the crown did the
+    /// work itself and named the PR on the ticket it was for, or the
+    /// worker's seat went before the PR landed. No agent on the board is
+    /// owed the forge's news for it, so the crown is, as for a ticket it
+    /// watches, behind the same switch (`crown_watches`), and never for its
+    /// own ticket. A parked agent holds its seat, so its ticket is heard by
+    /// provenance as before.
+    fn unattended_pr(&self, ticket: ulid::Ulid, crown: ulid::Ulid) -> bool {
+        ticket != crown
+            && self.board.crown_watches
+            && self.board.crown_holder().is_some_and(|t| t.id == crown)
+            && self.board.live_agent(ticket).is_none()
+            && self.forge.carries_pr(ticket)
     }
 
     /// The words just pasted or parked on `ticket`'s claude were asked for

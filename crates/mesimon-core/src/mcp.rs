@@ -241,7 +241,9 @@ pub const CROWN_WAKES: &str = concat!(
      words reach its agent as they reach one the crown started; its question or plan stays the \
      person's, and the board sends its agent nothing else. Asked to wait for such a ticket, the crown \
      watches it and ends its turn: a loop that polls keeps this session busy, which holds the \
-     merge train and the wake itself. \
+     merge train and the wake itself. A ticket with no agent that carries a pull request (one \
+     this session opened and named under its Summary) wakes this session for the forge's news \
+     and the merge the same way, with no watch asked. \
      Another board on this machine, where a person linked the two (list_board's \
      linked_boards; empty means none), has a crown of its own that ask_board reaches, \
      naming the board: the words land on that crown's card and reach it as its next prompt \

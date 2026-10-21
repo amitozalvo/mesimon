@@ -29279,3 +29279,37 @@ from Remote Control or the board's ask field, now runs as a shell command in Cla
 prompt box (its bash mode) and the agent reads the output; it used to reach the agent as a
 sentence, which auto mode then refused to run. Only a person can send one: the crown's
 `ask_agent` refuses it.
+
+## A pull request on a ticket with no agent is the crown's to hear (T-890, 2026-10-22, "crown not notified when pull request of a ticket it ran got merged")
+
+**Why.** On the author's work board the crown did a ticket's work itself, opened the PR and put
+it on the ticket; nobody started an agent there. The forge read the merge and the card updated,
+and the crown heard nothing. Every crown wake makes one claim, `crown_hears` (T-712): the
+worker was started by THIS crown (`started_by_crown`, which reads a record that holds the
+agent seat) or the crown watches the ticket. A ticket with no agent record passes neither, so
+`hear_forge` dropped the forge's `merged !N` and `hear_merges` (a tip PR's merge, the flags'
+road) judged it `started: false`. The same hole took a worker whose seat went before its PR
+landed (a crash, a kill): `holds_agent_seat` is false on an `Exited` record. The two e2es
+written first for the suspected roads (a parked worker's squash merge, awake and across a
+restart) passed and stay as `forge_e2e::a_parked_workers_squash_merge_*`.
+
+**The clause.** `crownwake::unattended_pr`: the ticket is not the crown's own, `crown_watches`
+is on, the crown is worn, `Board::live_agent` finds no record (a parked one holds its seat, so
+its ticket is still heard by provenance), and the ticket carries a PR (`forge::State::carries_pr`,
+own or reviewed: a PR the crown opened and named under the ticket's `Summary` is read by itself
+and binds reviewed, T-859, and its edges are the ticket's). `crown_hears` is the one claim, so
+`hear_forge`, `hear_merges`, the restart's look and the hold for a merge step all take it. The
+switch is the watch's (T-732, on by default; "guards the crown's turns"): off, nothing is said,
+and an edge read while off is not said later. A merge the crown never heard of reads as a first
+line (`merge_state merged` in the state, a `delivered` or `forge` cause), as a watched ticket's
+does. No new state, nothing in `crown.json`.
+
+**Words.** `CROWN_WAKES` gained one sentence after the watch's; USING.md's forge paragraph names
+the case. No rig test: the wake's words and roads are unchanged, only who receives them
+(T-816's rule).
+
+**Tests.** `forge_e2e::a_pull_request_on_a_ticket_with_no_agent_wakes_the_crown`: a Summary-named
+PR on a ticket with no agent is a baseline on its first read and its merge one `forge` wake
+(`merged #42`); a worktree ticket's PR binds unheard while a person's agent holds the seat, the
+agent killed and the row off its merge is nobody's, and the row on its deployment is one `forge`
+wake carrying `merge_state merged` and the arrival's `column DONE`.
