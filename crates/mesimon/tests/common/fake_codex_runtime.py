@@ -62,6 +62,13 @@ while not stopping:
                 pasted=False;pending=pending[6:];continue
             if pending.startswith(b'\x1b') and len(pending)<6: break
             byte,pending=pending[:1],pending[1:]
+            # Codex's folder trust dialog (T-871): Enter on it starts Codex
+            # at its composer, no turn begun; `.trusted` marks the accept.
+            if byte in (b'\n',b'\r') and not pasted and 'Trust this folder?' in shown[0]:
+                typed=b''
+                (root/(config['session']+'.trusted')).write_text('1')
+                render('Synthetic provider fixture\r\n› \r\nanything the user wants',[2,1])
+                continue
             # Mid-turn the composer echoes what is pasted, so its cursor
             # leaves the prompt's start: what a steer's Enter is gated on.
             if pasted and state.get('state')=='running':

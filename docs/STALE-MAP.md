@@ -29143,3 +29143,28 @@ GitHub); its dry-run block was run alone.
 
 **Owed:** a CHANGELOG line at the next bump — **Fixed:** The update check and the installer now
 pick the newest release even when GitHub lists an older one first.
+
+## A Codex seat's folder trust is accepted from the board and the phone (T-871, 2026-10-21, "A Codex seat's folder-trust dialog is accepted from the board and the phone")
+
+Found by the sixth simplify pass (T-867). The Codex startup probe offers its `Trust this
+folder?` dialog to the phone's card and the board's `w` (T-844), but T-846's per-harness split
+sent every dialog on a Codex seat to Codex's own shapes, which knew no trust dialog: `w` walked
+nothing (`shape_unrecognised`, the card read NOT_ACCEPTED) and a phone's accept was refused
+("this dialog shape is not verified"). **A trust dialog now never reaches the split**:
+`codex_shapes(kind, dialog)` is true for a Codex seat's dialog *but* the trust one, and the
+three split points ask it (`dialog_step_for`, `dialog_shape_for`, the phone's `codex_takes`
+admission in `control_dialog_answer`). The trust walk (`trust_step`, `trust_dialog::read_text`)
+already read both harnesses' dialogs; the delivery already settled on the seat leaving the
+dialog (`trust_taken`), which is Codex's only edge. Kept to the dispatch: the dialog and
+approval walks' merge is T-873's.
+
+**Tests:** `a_trust_dialog_walks_to_yes_and_takes_no_refusal` now walks a Codex seat through
+`dialog_step_for` / `dialog_shape_for` (the old asserts called Claude's `dialog_step` directly,
+which is why nothing caught it). `trust_accept_e2e` has a Codex case: the synthetic runtime
+paints Codex 0.163's dialog and, on Enter, its composer (`fake_codex_runtime.py`, `.trusted`);
+`w` sends one Enter, the feed says `answered`, the prompt goes in once. Reverting the predicate
+fails it. No wire or schema change, no rig (no agent's words moved).
+
+**Owed:** a CHANGELOG line at the next bump — **Fixed:** Accepting a Codex agent's folder-trust
+question from the board (`w`) or from Remote Control now works; it used to say the dialog could
+not be accepted.

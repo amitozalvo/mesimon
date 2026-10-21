@@ -1264,7 +1264,7 @@ impl Daemon {
         let Some(dialog) = self.control.dialogs.get(&id).filter(|d| d.request == request) else {
             return Reply::Rejected { message: "dialog changed; check the pane".into() };
         };
-        let codex = self.session_kind(id) == SessionKind::Codex;
+        let codex = codex_shapes(self.session_kind(id), dialog);
         if dialog_plan(dialog, &response).is_none() || (codex && !codex_takes(dialog, &response)) {
             return Reply::Rejected {
                 message: "this dialog shape is not verified; answer in the pane".into(),
@@ -4959,6 +4959,13 @@ fn reads_answer(question: &api::Question, answer: &api::QuestionAnswer, drawn: &
     }
 }
 
+/// Whether `dialog` on a `kind` seat takes Codex's own shapes (T-846): every
+/// Codex dialog but the folder trust, whose walk (`trust_step`, from
+/// `trust_dialog::read_text`) reads Claude Code's and Codex's alike (T-871).
+fn codex_shapes(kind: SessionKind, dialog: &api::Dialog) -> bool {
+    kind == SessionKind::Codex && !matches!(dialog.content, api::DialogContent::Trust { .. })
+}
+
 /// `dialog_step` for the harness whose pane shows the dialog (T-846):
 /// Claude Code's measured shapes, or Codex's.
 fn dialog_step_for(
@@ -4968,17 +4975,19 @@ fn dialog_step_for(
     screen: &str,
     walk: &Walk,
 ) -> Result<DialogStep, Miss> {
-    match kind {
-        SessionKind::Codex => codex_dialog_step(dialog, response, screen),
-        _ => dialog_step(dialog, response, screen, walk),
+    if codex_shapes(kind, dialog) {
+        codex_dialog_step(dialog, response, screen)
+    } else {
+        dialog_step(dialog, response, screen, walk)
     }
 }
 
 /// `dialog_shape` for the harness whose pane shows the dialog (T-846).
 fn dialog_shape_for(kind: SessionKind, dialog: &api::Dialog, screen: &str) -> bool {
-    match kind {
-        SessionKind::Codex => codex_dialog_shape(dialog, screen),
-        _ => dialog_shape(dialog, screen),
+    if codex_shapes(kind, dialog) {
+        codex_dialog_shape(dialog, screen)
+    } else {
+        dialog_shape(dialog, screen)
     }
 }
 
@@ -5029,8 +5038,8 @@ fn codex_dialog_shape(dialog: &api::Dialog, screen: &str) -> bool {
                 && squeezed.contains("entertosubmitanswer")
         }
         api::DialogContent::Plan { .. } => crate::agents::codex::plan_dialog(&input_screen(screen)),
-        // Claude Code's folder trust dialog (T-844) is never projected for a
-        // Codex seat, whose trust is `startup_attention`'s.
+        // The folder trust dialog never reaches Codex's shapes: `codex_shapes`
+        // leaves it to the trust walk both harnesses share (T-871).
         api::DialogContent::Trust { .. } => false,
     }
 }
@@ -5425,7 +5434,7 @@ mod tests {
     /// The folder trust dialog's accept (T-844): its own arrows toward the
     /// Yes row and Enter on it, read off the screen each time; a refusal is
     /// no answer of the board's, and an unmarked or unknown screen sends
-    /// nothing. Codex's dialog walks the same way.
+    /// nothing. Codex's dialog walks the same way, on a Codex seat too.
     #[test]
     fn a_trust_dialog_walks_to_yes_and_takes_no_refusal() {
         let trust = api::Dialog {
@@ -5464,6 +5473,19 @@ mod tests {
         assert_eq!(dialog_step(&trust, &accept, codex, &Walk::default()), Ok(DialogStep::Submit));
         let on_quit = codex.replace("› 1.", "  1.").replace("  2. Quit", "› 2. Quit");
         assert_eq!(dialog_step(&trust, &accept, &on_quit, &Walk::default()), Ok(DialogStep::Up));
+        // A Codex seat's dialog takes that same walk through the harness
+        // split (T-871): Codex's own shapes know no trust dialog.
+        assert!(!codex_shapes(SessionKind::Codex, &trust));
+        assert_eq!(
+            dialog_step_for(SessionKind::Codex, &trust, &accept, codex, &Walk::default()),
+            Ok(DialogStep::Submit)
+        );
+        assert_eq!(
+            dialog_step_for(SessionKind::Codex, &trust, &accept, &on_quit, &Walk::default()),
+            Ok(DialogStep::Up)
+        );
+        assert!(dialog_shape_for(SessionKind::Codex, &trust, codex));
+        assert!(!dialog_shape_for(SessionKind::Codex, &trust, "› Ask Codex to do anything"));
         // The agent starting is the dialog's edge; no tool frame is about it.
         let frame = |event: &str, payload: serde_json::Value| HookFrame {
             session: "s".into(),
