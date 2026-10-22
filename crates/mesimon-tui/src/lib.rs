@@ -101,7 +101,7 @@ pub use detach_guide::run as run_detach_guide;
 /// What `mesimon doctor` says about the note editor's `^g`: which program
 /// opens, and which variable named it.
 pub use external::doctor_line as editor_status;
-/// `mesimon welcome`: the installer's intro (T-869), once per machine.
+/// `mesimon welcome`: an older installer's intro, which plays nothing now (T-903).
 pub use intro::welcome_command;
 /// What `mesimon doctor` says about notifications (T-282): whether they
 /// are on, which rungs of the two ladders answered, and both sounds.

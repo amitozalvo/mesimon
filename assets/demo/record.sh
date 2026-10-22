@@ -104,8 +104,10 @@ unset TMUX TMUX_PANE
 export HOME=$SANDBOX/home
 export SHELL=/bin/sh
 export MESIMON_CLAUDE_HOME=$HOME/.claude
-# The intro (T-869) is a first run's, not a demo's: this HOME has seen it.
-mkdir -p "$HOME/.local/state/mesimon" && : >"$HOME/.local/state/mesimon/welcomed"
+# The intro (T-869) is a first run's, not a demo's: this HOME has seen it,
+# in the words the marker has said since T-903 (an empty one plays it).
+mkdir -p "$HOME/.local/state/mesimon" \
+  && echo "skipped board demo" >"$HOME/.local/state/mesimon/welcomed"
 if [ -n "$KEY_FILE" ]; then
     # A pane's environment is what `$SHELL -l` exports (the daemon asks it,
     # daemon/src/shellenv.rs), so the sandbox's login profile signs claude

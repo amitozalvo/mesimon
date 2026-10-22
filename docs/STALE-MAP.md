@@ -30021,3 +30021,53 @@ default. "Too late to take back", "Unsending needs the relay" and "Editing needs
 show in Sent, where their buttons are. Test: `mailPromptFlow` in `web/mesophon/ux.test.js` opens
 Sent before a relay refusal and before a host refusal, waits for each reason's toast, and finds
 the words back in the box.
+
+## The intro is the first board's alone, and its marker says it was seen (T-903, 2026-10-22, "The intro hangs the installer in Terminal.app and cmux, Ctrl+C dead")
+
+An install from cmux or the stock Terminal.app stopped where the intro should play: no output,
+Ctrl+C dead. A coworker hit it in cmux.
+
+**The cause, measured in a pty.** `install.sh` ran `mesimon welcome </dev/tty`, and T-869's
+inline road built a ratatui `Viewport::Inline`, which asks the cursor position at once (CSI 6n).
+crossterm 0.29 (no `use-dev-tty`) reads keys and replies from stdin through mio's kqueue, and on
+macOS kqueue refuses the `/dev/tty` vnode that `</dev/tty` opens (the pty's own device, which a
+shell normally hands a program, works). The event source never starts, every `poll_internal`
+fails, and `read_position_raw` loops on `Err(_) => {}` with no deadline: one core at 98%, in
+raw mode, so Ctrl+C was a byte nobody read. A terminal's answer made no difference: the pty
+test hung the same with every query answered. Not the OS appearance probe or the colour query
+(both bounded, and with the OS answering the terminal is not asked); `sample` put the spin in
+`poll_internal<CursorPositionFilter>`. An inline-only cost: the board's road is fullscreen
+and its stdin is the pty itself.
+
+**Now.**
+- `install.sh` runs no part of mesimon's terminal UI: it prints the picture (UTF-8 and tty
+  guards kept) and the `next:` lines, always. `ci/test_installer.py` gives the installer a pty
+  as its controlling terminal and a fake binary that lists `welcome` in `--help` and records a
+  run of it; the old script fails that test.
+- `mesimon welcome` stays for an older `install.sh`, plays nothing and exits 1 (that script then
+  prints its picture), and is off `--help`, which that script greps before calling it.
+- The intro plays on the first board only (`intro::before_board`), and its road asks the
+  terminal nothing. Its closing clear was `Terminal::clear`, which asks the cursor position too
+  (a 2 s wait on a terminal that never answers); a fullscreen `resize` clears the same and asks
+  nothing. A key read error ends it unmarked instead of failing the board. Ctrl+C ends it at
+  once; any other key skips to its end as before, where a key opens the board.
+- **The marker means seen**: `played board <version>` when it reached its end, `skipped board
+  <version>` when a key cut it short, written at that moment and never before it starts, so a
+  killed run plays again. **A marker in the old format (`mesimon <version>`, or empty) reads as
+  unseen**: it was written before the intro played, and the hung install wrote it too, so
+  nothing in it says the person saw anything. Everyone who saw the intro at install sees it
+  once more on their next board; the author accepted that as the only way to reach the person
+  whose install hung. The demo recorder seeds the new words.
+
+The board's own terminal queries before the intro (the kitty-keyboard probe and
+`init_terminal`'s `Terminal::clear`, crossterm's 2 s bound each) are unchanged; they are the
+board's start, as fast as before on a terminal that answers.
+
+Tests: `only_a_marker_that_says_how_it_was_seen_is_believed`; and
+`the_board_road_asks_the_terminal_nothing_and_a_key_ends_it`, which runs the board's road in a
+child of the test binary inside a pty that answers nothing: a frame comes, the old marker is
+still there before a key, Ctrl+C ends it inside 2 s marked `skipped`, a plain key shows the end
+and the next ends it, left alone (at 20× pace) it marks `played`, and the child wrote no query
+(CSI 6n, OSC 10/11, DA1, CSI ? u). Putting `Terminal::clear` back, or reading Ctrl+C as a
+skip, fails it. `intro-install-end.txt` is gone with the inline road; the board's goldens are
+unchanged.

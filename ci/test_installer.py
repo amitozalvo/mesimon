@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline installer welcome checks; installs only a fake binary into a temp dir."""
 import errno
+import fcntl
 import hashlib
 import io
 import json
@@ -11,6 +12,7 @@ import select
 import subprocess
 import tarfile
 import tempfile
+import termios
 import time
 import unittest
 
@@ -41,7 +43,11 @@ case "$url" in *api.github.com*) cat "$FIXTURE_LISTING"; exit 0 ;; esac
 case "$url" in *.sha256) cp "$FIXTURE_ASSET.sha256" "$out" ;; *) cp "$FIXTURE_ASSET" "$out" ;; esac''')
             name = f"mesimon-{version}-x86_64-unknown-linux-musl"
             archive = root / (name + ".tar.gz")
-            binary = b"#!/bin/sh\necho mesimon-test\n" + (b"exit 1\n" if broken else b"")
+            # An older mesimon listed `welcome` in --help; it is recorded if run.
+            binary = (b"#!/bin/sh\n"
+                      b"case \"$1\" in --help) echo '  mesimon welcome   the intro' ;;\n"
+                      b"  welcome) echo ran >> \"$WELCOME_LOG\" ;; esac\n"
+                      b"echo mesimon-test\n" + (b"exit 1\n" if broken else b""))
             with tarfile.open(archive, "w:gz") as tar:
                 entry = tarfile.TarInfo(name + "/mesimon")
                 entry.size, entry.mode = len(binary), 0o755
@@ -50,7 +56,8 @@ case "$url" in *.sha256) cp "$FIXTURE_ASSET.sha256" "$out" ;; *) cp "$FIXTURE_AS
                 hashlib.sha256(archive.read_bytes()).hexdigest() + "  " + archive.name + "\n"
             )
             env = dict(os.environ, PATH=str(commands) + ":/usr/bin:/bin", LC_ALL=locale,
-                       TERM=term, PREFIX=str(root / "install with spaces"), FIXTURE_ASSET=str(archive))
+                       TERM=term, PREFIX=str(root / "install with spaces"), FIXTURE_ASSET=str(archive),
+                       WELCOME_LOG=str(root / "welcome.log"))
             args = ["sh", str(ROOT / "install.sh"), "--version", version]
             if listing is not None:
                 (root / "listing.json").write_text(listing)
@@ -59,8 +66,14 @@ case "$url" in *.sha256) cp "$FIXTURE_ASSET.sha256" "$out" ;; *) cp "$FIXTURE_AS
             if tty:
                 master, slave = pty.openpty()
                 try:
+                    # The pty is the installer's terminal, so its `/dev/tty` is this one.
+                    def own_terminal():
+                        os.setsid()
+                        fcntl.ioctl(1, termios.TIOCSCTTY, 0)
+
                     process = subprocess.Popen(args, env=env, stdin=subprocess.DEVNULL,
-                                               stdout=slave, stderr=slave)
+                                               stdout=slave, stderr=slave,
+                                               preexec_fn=own_terminal)
                     deadline = time.monotonic() + 15
                     os.set_blocking(master, False)
                     data = bytearray()
@@ -93,6 +106,8 @@ case "$url" in *.sha256) cp "$FIXTURE_ASSET.sha256" "$out" ;; *) cp "$FIXTURE_AS
                 result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=15)
                 output = result.stdout + result.stderr
             self.assertEqual(result.returncode == 0, not broken, output)
+            # The intro is the first board's (T-903): the installer never runs it.
+            self.assertFalse((root / "welcome.log").exists(), "the installer ran mesimon welcome")
             return output
 
     def test_utf8_terminal_gets_the_resting_mascot_after_success(self):

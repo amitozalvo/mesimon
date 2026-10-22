@@ -1,23 +1,29 @@
 //! The intro (T-869): the ש in משימון takes a breath, fills out into the
 //! shin, wakes, looks at its neighbours and then at you, waves and hops.
-//! A person sees it once per machine: under the installer's output when it
-//! installs mesimon (`mesimon welcome`, inline), or else on the first board
-//! this machine opens (fullscreen, before the board). A marker file under
-//! the state root says it was seen; an update is not an installation and
-//! asks nothing. A terminal too narrow or too short for the word, or one
+//! A person sees it once per machine, on the first board this machine
+//! opens (fullscreen, before the board). A marker file under the state root
+//! says it was seen to its end or skipped by a key; a run that never got
+//! that far marks nothing and plays again. An update is not an installation
+//! and asks nothing. A terminal too narrow or too short for the word, or one
 //! with no colour, plays nothing and marks nothing, so a wider one plays it.
+//!
+//! The installer played it inline until T-903: ratatui's inline viewport
+//! asks the cursor position, and under `install.sh`'s `</dev/tty` macOS
+//! cannot watch that descriptor, so crossterm's read for the answer spun
+//! forever in raw mode, Ctrl+C a key nobody read. The road here asks the
+//! terminal nothing.
 //!
 //! The letters are drawn here in the shin's own weight and rim light; the
 //! shin itself is `creature.rs`'s, face and inks included.
 
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use ratatui::backend::Backend;
 use ratatui::buffer::Buffer;
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::Terminal;
@@ -375,20 +381,13 @@ fn beat_at(beats: &[Beat], ms: u64) -> Option<Beat> {
 
 // -- one frame ------------------------------------------------------------------
 
-/// Where the intro plays: under the installer's output, or before a board.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Place {
-    Install,
-    Board,
-}
-
 /// Five rows of headroom for the hop, eight for the word and three for the
 /// ן's stem, a blank, and the closing lines under it.
 const HEAD: u16 = 5;
 const LINE_A: u16 = 17;
 const LINE_B: u16 = 19;
-/// The installer's hint, once its lines are up: where the prompt comes back.
-const PROMPT: u16 = 22;
+/// The rows it draws in, centred on the board's screen.
+const ROWS: u16 = LINE_B + 1;
 /// The word's width in pixels (one per column), the letter standing.
 fn word_width() -> i16 {
     WORD.iter().map(|g| Glyph::of(g).w).sum::<i16>() + GAP * (WORD.len() as i16 - 1)
@@ -397,30 +396,12 @@ fn word_width() -> i16 {
 /// sparkles, and a margin.
 const MIN_COLS: u16 = 88;
 
-impl Place {
-    fn rows(self) -> u16 {
-        match self {
-            Place::Install => PROMPT + 1,
-            Place::Board => LINE_B + 1,
-        }
-    }
-
-    /// Room for the whole of it: below this nothing plays and nothing is
-    /// marked, so a bigger terminal plays it.
-    pub(crate) fn fits(self, cols: u16, rows: u16) -> bool {
-        cols >= MIN_COLS
-            && match self {
-                Place::Install => rows >= self.rows() + 3,
-                Place::Board => rows >= self.rows() + 2,
-            }
-    }
+/// Room for the whole of it: below this nothing plays and nothing is
+/// marked, so a bigger terminal plays it.
+fn fits(cols: u16, rows: u16) -> bool {
+    cols >= MIN_COLS && rows >= ROWS + 2
 }
 
-/// The installer's closing lines, word for word what `install.sh` prints
-/// when no intro plays (`install_sh_says_the_same_next_lines`).
-const READY: &str = "mesimon is ready";
-const NEXT: [&str; 2] =
-    ["next:  mesimon doctor      check your environment", "       cd <a git repo> && mesimon"];
 const TAGLINE: &str = "a terminal kanban board that runs your coding agents";
 const OPENS: &str = "enter opens your board";
 const SKIPS: &str = "any key skips";
@@ -446,20 +427,10 @@ impl Canvas {
     }
 }
 
-/// Draw `beat` into `area` (for the board, the block centred in it).
-fn render(
-    buf: &mut Buffer,
-    area: Rect,
-    place: Place,
-    beat: &Beat,
-    theme: &Theme,
-    ink: &CreatureInk,
-) {
-    let rows = place.rows();
-    let top = match place {
-        Place::Install => area.y + 1,
-        Place::Board => area.y + area.height.saturating_sub(rows) / 2,
-    };
+/// Draw `beat` into `area`, the block centred in it.
+fn render(buf: &mut Buffer, area: Rect, beat: &Beat, theme: &Theme, ink: &CreatureInk) {
+    let rows = ROWS;
+    let top = area.y + area.height.saturating_sub(rows) / 2;
     let mut cv = Canvas {
         w: area.width as i16,
         h: rows as i16 * 2,
@@ -555,63 +526,66 @@ fn render(
     };
     let centre = |s: &str| (area.width.saturating_sub(s.chars().count() as u16)) / 2;
     if beat.tail >= 1 {
-        let first = if place == Place::Install { READY } else { TAGLINE };
-        text(buf, centre(first), LINE_A, first, theme.base());
+        text(buf, centre(TAGLINE), LINE_A, TAGLINE, theme.base());
     }
     if beat.tail >= 3 {
-        match place {
-            Place::Install => {
-                text(buf, 2, LINE_B, NEXT[0], theme.dim2());
-                text(buf, 2, LINE_B + 1, NEXT[1], theme.dim2());
-            }
-            Place::Board => text(buf, centre(OPENS), LINE_B, OPENS, theme.dim3()),
-        }
+        text(buf, centre(OPENS), LINE_B, OPENS, theme.dim3());
     }
-    // The hint holds the place of what comes next: the words, then the
-    // prompt. On the board, once its words are up, enter is the way on.
-    if beat.skip && beat.fade > 0.0 {
-        if beat.tail == 0 {
-            text(buf, centre(SKIPS), LINE_A, SKIPS, theme.dim3());
-        } else if place == Place::Install {
-            text(buf, 0, PROMPT, SKIPS, theme.dim3());
-        }
+    // The hint holds the place of the words; once they are up, enter is the
+    // way on.
+    if beat.skip && beat.fade > 0.0 && beat.tail == 0 {
+        text(buf, centre(SKIPS), LINE_A, SKIPS, theme.dim3());
     }
 }
 
 // -- playing it -------------------------------------------------------------------
 
-/// Play the storyboard on `term`. A key skips to its end; on the board the
-/// shin then keeps the seat's invitation until a key opens the board, and
-/// under the installer the last frame stays. Returns the area it drew in.
+/// How the person saw it: to its last frame, or cut short by a key. Either
+/// is seen, and the marker says which.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Seen {
+    Played,
+    Skipped,
+}
+
+/// Ctrl+C, which raw mode turns into a key: the way out, at once.
+fn is_interrupt(&(code, mods): &crate::osc::RawKey) -> bool {
+    code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL)
+}
+
+/// Play the storyboard on `term`, `pace` times as fast as it was cut. A key
+/// skips to its end, where the shin keeps the seat's invitation until a key
+/// opens the board; Ctrl+C opens it at once. The marker is written the
+/// moment it is seen, so a run killed before that plays again.
 fn play<B: Backend<Error = io::Error>>(
     term: &mut Terminal<B>,
-    place: Place,
     theme: &Theme,
     ink: &CreatureInk,
-) -> io::Result<Rect> {
+    marker: &Path,
+    pace: u64,
+) -> io::Result<()> {
     let beats = storyboard();
     let end = total(&beats);
     let last = *beats.last().expect("a storyboard has beats");
     let start = Instant::now();
     let mut ahead = 0u64;
+    let mut seen = None;
     // A late answer to the colour query is the one thing on stdin that is
     // not a person, and it must not skip anything.
     let mut swallow = crate::osc::ReplySwallow::default();
-    let mut area = Rect::default();
     loop {
-        let ms = start.elapsed().as_millis() as u64 + ahead;
-        let beat = beat_at(&beats, ms).unwrap_or_else(|| match place {
-            Place::Install => last,
-            Place::Board => {
-                Beat { hero: Hero::Shin(*creature::frame_at(Anim::Seat, ms - end)), ..last }
-            }
+        let ms = start.elapsed().as_millis() as u64 * pace + ahead;
+        let beat = beat_at(&beats, ms).unwrap_or_else(|| Beat {
+            hero: Hero::Shin(*creature::frame_at(Anim::Seat, ms - end)),
+            ..last
         });
         term.draw(|f| {
-            area = f.area();
-            render(f.buffer_mut(), area, place, &beat, theme, ink);
+            let area = f.area();
+            render(f.buffer_mut(), area, &beat, theme, ink);
         })?;
-        if ms >= end && place == Place::Install {
-            return Ok(area);
+        if ms >= end && seen.is_none() {
+            seen = Some(Seen::Played);
+            mark(marker, Seen::Played);
         }
         if !event::poll(Duration::from_millis(25))? {
             continue;
@@ -620,15 +594,20 @@ fn play<B: Backend<Error = io::Error>>(
         if key.kind != KeyEventKind::Press {
             continue;
         }
-        if let crate::osc::Feed::Pass(keys) = swallow.feed(key.code, key.modifiers) {
-            if keys.is_empty() {
-                continue;
-            }
-            if ms >= end {
-                return Ok(area);
-            }
-            ahead = end.saturating_sub(start.elapsed().as_millis() as u64);
+        let crate::osc::Feed::Pass(keys) = swallow.feed(key.code, key.modifiers) else {
+            continue;
+        };
+        if keys.is_empty() {
+            continue;
         }
+        if seen.is_none() {
+            seen = Some(Seen::Skipped);
+            mark(marker, Seen::Skipped);
+        }
+        if ms >= end || keys.iter().any(is_interrupt) {
+            return Ok(());
+        }
+        ahead = end.saturating_sub(start.elapsed().as_millis() as u64 * pace);
     }
 }
 
@@ -640,25 +619,38 @@ fn marker_path() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".local/state/mesimon/welcomed"))
 }
 
-/// Marked before it plays: a person who quits halfway has seen it. A marker
-/// that cannot be written plays it again next time, which is the lesser
-/// harm.
-fn mark(path: &Path) {
+/// `played board <version>` or `skipped board <version>`: where it was seen
+/// and how. A marker that cannot be written plays it again next time, which
+/// is the lesser harm.
+fn mark(path: &Path, how: Seen) {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let _ = std::fs::write(path, format!("mesimon {}\n", env!("CARGO_PKG_VERSION")));
+    let how = match how {
+        Seen::Played => "played",
+        Seen::Skipped => "skipped",
+    };
+    let _ = std::fs::write(path, format!("{how} board {}\n", env!("CARGO_PKG_VERSION")));
+}
+
+/// Whether the marker says it was seen. Before T-903 it read `mesimon
+/// <version>` and was written before the intro played, so an install whose
+/// intro hung counted as seen; that marker is not believed, and everyone
+/// who had one sees it once more on the next board.
+fn seen(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .is_ok_and(|s| matches!(s.split_whitespace().next(), Some("played" | "skipped")))
 }
 
 /// Whether this machine is still to see it, and in this terminal.
-fn due(place: Place, theme: &Theme) -> Option<(PathBuf, CreatureInk)> {
+fn due(theme: &Theme) -> Option<(PathBuf, CreatureInk)> {
     let path = marker_path()?;
-    if path.exists() || !io::stdout().is_terminal() {
+    if seen(&path) || !io::stdout().is_terminal() {
         return None;
     }
     let ink = theme.creature_ink(false)?;
     let (cols, rows) = ratatui::crossterm::terminal::size().ok()?;
-    place.fits(cols, rows).then_some((path, ink))
+    fits(cols, rows).then_some((path, ink))
 }
 
 /// The board's turn, before its first frame: the intro fullscreen, once.
@@ -666,49 +658,32 @@ pub(crate) fn before_board<B: Backend<Error = io::Error>>(
     term: &mut Terminal<B>,
     theme: &Theme,
 ) -> io::Result<()> {
-    let Some((path, ink)) = due(Place::Board, theme) else { return Ok(()) };
-    mark(&path);
-    term.hide_cursor()?;
-    play(term, Place::Board, theme, &ink)?;
-    term.clear()
+    road(term, theme, 1)
 }
 
-/// `mesimon welcome`, run by the installer after a successful install: the
-/// intro inline under its output. Exits 0 when it played (the installer
-/// then prints neither its picture nor its `next:` lines, which the intro
-/// carries), 1 when it did not.
+fn road<B: Backend<Error = io::Error>>(
+    term: &mut Terminal<B>,
+    theme: &Theme,
+    pace: u64,
+) -> io::Result<()> {
+    let Some((path, ink)) = due(theme) else { return Ok(()) };
+    term.hide_cursor()?;
+    // A terminal it cannot read keys from ends it unmarked; the board's own
+    // loop is what says so.
+    let _ = play(term, theme, &ink, &path, pace);
+    // Not `Terminal::clear`, which asks the terminal where its cursor is
+    // and waits up to 2 s on one that never answers: a fullscreen resize
+    // clears the same and asks nothing.
+    let size = term.size()?;
+    term.resize(Rect::new(0, 0, size.width, size.height))
+}
+
+/// `mesimon welcome`, which an `install.sh` from before T-903 runs after an
+/// install, though only while `--help` lists it, which it no longer does.
+/// The intro is the first board's alone now, so this plays nothing and
+/// exits 1, and that installer prints its own picture and `next:` lines.
 pub fn welcome_command() -> i32 {
-    use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
-    let loaded = crate::prefs::load_home();
-    let known = loaded.prefs.follows_os().then(crate::appearance::probe).flatten();
-    let detected = crate::detect::detect(known);
-    let flavor = detected.forced.unwrap_or(loaded.prefs.for_ground(detected.ground));
-    let theme = Theme::new(flavor, detected.profile);
-    let Some((path, ink)) = due(Place::Install, &theme) else { return 1 };
-    mark(&path);
-    let played = (|| -> io::Result<()> {
-        enable_raw_mode()?;
-        let backend = ratatui::backend::CrosstermBackend::new(io::stdout());
-        let opts = ratatui::TerminalOptions {
-            viewport: ratatui::Viewport::Inline(Place::Install.rows() + 1),
-        };
-        let mut term = Terminal::with_options(backend, opts)?;
-        term.hide_cursor()?;
-        let area = play(&mut term, Place::Install, &theme, &ink);
-        // The prompt comes back on the row the hint held.
-        if let Ok(a) = &area {
-            term.set_cursor_position(Position::new(0, a.bottom().saturating_sub(1)))?;
-        }
-        term.show_cursor()?;
-        io::stdout().flush()?;
-        area.map(drop)
-    })();
-    let _ = disable_raw_mode();
-    if played.is_ok() {
-        0
-    } else {
-        1
-    }
+    1
 }
 
 #[cfg(test)]
@@ -716,12 +691,12 @@ mod tests {
     use super::*;
     use crate::theme::{Flavor, Profile};
 
-    fn screen(place: Place, beat: &Beat, w: u16, h: u16) -> String {
+    fn screen(beat: &Beat, w: u16, h: u16) -> String {
         let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
         let ink = theme.creature_ink(false).expect("truecolor draws the shin");
         let area = Rect::new(0, 0, w, h);
         let mut buf = Buffer::empty(area);
-        render(&mut buf, area, place, beat, &theme, &ink);
+        render(&mut buf, area, beat, &theme, &ink);
         (0..h)
             .map(|y| {
                 let row: String = (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect();
@@ -746,11 +721,10 @@ mod tests {
     fn the_word_ends_with_the_shin_in_it_where_the_letter_stood() {
         let beats = storyboard();
         let last = *beats.last().expect("beats");
-        golden("intro-board-end.txt", &screen(Place::Board, &last, 100, 24));
-        golden("intro-install-end.txt", &screen(Place::Install, &last, 100, 24));
+        golden("intro-board-end.txt", &screen(&last, 100, 24));
         // Mid-breath: the letter half way to the shin.
         let mid = beats.iter().find(|b| matches!(b.hero, Hero::Morph(t) if t == 0.5));
-        golden("intro-morph.txt", &screen(Place::Board, mid.expect("a mid-morph beat"), 100, 24));
+        golden("intro-morph.txt", &screen(mid.expect("a mid-morph beat"), 100, 24));
     }
 
     #[test]
@@ -787,27 +761,233 @@ mod tests {
 
     #[test]
     fn it_plays_only_where_the_word_fits() {
-        assert!(Place::Board.fits(MIN_COLS, 22));
-        assert!(!Place::Board.fits(MIN_COLS - 1, 40));
-        assert!(!Place::Board.fits(120, 21));
-        assert!(Place::Install.fits(MIN_COLS, 26));
-        assert!(!Place::Install.fits(MIN_COLS, 25));
+        assert!(fits(MIN_COLS, 22));
+        assert!(!fits(MIN_COLS - 1, 40));
+        assert!(!fits(120, 21));
         // Every frame keeps the word, its nudge and its sparkles on screen.
         for b in storyboard() {
-            let s = screen(Place::Board, &b, MIN_COLS, 22);
+            let s = screen(&b, MIN_COLS, 22);
             assert!(s.lines().all(|l| l.chars().count() <= MIN_COLS as usize));
         }
         assert!(word_width() + 6 <= MIN_COLS as i16);
     }
 
+    /// The installer prints its picture and never plays the intro (T-903).
     #[test]
-    fn install_sh_says_the_same_next_lines() {
+    fn install_sh_never_runs_the_intro() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../install.sh");
         let sh = std::fs::read_to_string(path).expect("install.sh");
-        for line in NEXT.iter().chain([&READY]) {
-            assert!(sh.contains(line), "install.sh no longer prints {line:?}");
+        assert!(!sh.contains("welcome"), "install.sh runs `mesimon welcome`");
+        assert!(sh.contains("mesimon doctor"), "install.sh prints its next lines");
+        assert_eq!(welcome_command(), 1, "an older install.sh prints its picture");
+    }
+
+    /// The marker says how it was seen; the one an install wrote before
+    /// T-903 said nothing of the kind and was written before the intro
+    /// played, so it is not believed and that machine sees it once more.
+    #[test]
+    fn only_a_marker_that_says_how_it_was_seen_is_believed() {
+        let dir = std::env::temp_dir().join(format!("msmn-intro-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("state/welcomed");
+        assert!(!seen(&path), "no marker: due");
+        std::fs::create_dir_all(dir.join("state")).expect("dir");
+        std::fs::write(&path, "mesimon 0.1.0-beta.11\n").expect("old marker");
+        assert!(!seen(&path), "the old marker: due once more");
+        std::fs::write(&path, "").expect("empty marker");
+        assert!(!seen(&path), "an empty marker: due");
+        mark(&path, Seen::Played);
+        assert!(seen(&path));
+        let v = env!("CARGO_PKG_VERSION");
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), format!("played board {v}\n"));
+        std::fs::remove_dir_all(dir.join("state")).expect("rm");
+        mark(&path, Seen::Skipped);
+        assert!(seen(&path), "mark makes its directory");
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), format!("skipped board {v}\n"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The pty test's child: the board's road on the terminal it was born
+    /// on, at the pace its parent names. Inert unless that test spawned it.
+    #[test]
+    #[ignore = "run by the_board_road_asks_the_terminal_nothing, inside its pty"]
+    fn pty_child() {
+        let Some(pace) = std::env::var("INTRO_PTY_PACE").ok().and_then(|p| p.parse().ok()) else {
+            return;
+        };
+        use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+        enable_raw_mode().expect("raw mode");
+        let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+        let mut term = Terminal::new(crate::quiet::Quiet::new(io::stdout())).expect("terminal");
+        road(&mut term, &theme, pace).expect("the road");
+        disable_raw_mode().expect("cooked mode");
+    }
+
+    /// A child running the board's road in a pty this test holds, which
+    /// answers nothing the child asks: the terminal of T-903's hang.
+    struct Pty {
+        master: std::fs::File,
+        child: std::process::Child,
+        out: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+        home: PathBuf,
+        born: Instant,
+    }
+
+    impl Pty {
+        fn spawn(pace: u64, old_marker: bool) -> Pty {
+            use std::os::fd::{FromRawFd, OwnedFd};
+            use std::os::unix::process::CommandExt;
+            let home = std::env::temp_dir().join(format!("msmn-intro-{}", uuid::Uuid::new_v4()));
+            let marker = home.join(".local/state/mesimon/welcomed");
+            std::fs::create_dir_all(marker.parent().expect("dir")).expect("home");
+            if old_marker {
+                std::fs::write(&marker, "mesimon 0.1.0-beta.11\n").expect("old marker");
+            }
+            let (mut m, mut s) = (0, 0);
+            let (name, termp, winp) =
+                (std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
+            assert_eq!(unsafe { libc::openpty(&mut m, &mut s, name, termp, winp) }, 0, "openpty");
+            let ws = libc::winsize { ws_row: 40, ws_col: 100, ws_xpixel: 0, ws_ypixel: 0 };
+            assert_eq!(unsafe { libc::ioctl(s, libc::TIOCSWINSZ, &ws) }, 0, "winsize");
+            let master = unsafe { std::fs::File::from_raw_fd(m) };
+            let slave = unsafe { OwnedFd::from_raw_fd(s) };
+            let tty = || std::process::Stdio::from(slave.try_clone().expect("slave"));
+            let mut cmd =
+                std::process::Command::new(mesimon_core::exe::current_exe().expect("exe"));
+            cmd.args(["--exact", "intro::tests::pty_child", "--ignored", "--nocapture"])
+                .env("INTRO_PTY_PACE", pace.to_string())
+                .env("HOME", &home)
+                .stdin(tty())
+                .stdout(tty())
+                .stderr(tty());
+            // Its own session with the pty as its terminal, as a shell gives
+            // a board: a Ctrl+C not read as a key would be a SIGINT.
+            unsafe {
+                cmd.pre_exec(|| {
+                    if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let child = cmd.spawn().expect("spawn the child");
+            drop(cmd);
+            drop(slave);
+            let out = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let (mut reader, sink) = (master.try_clone().expect("master"), out.clone());
+            std::thread::spawn(move || {
+                use std::io::Read;
+                let mut buf = [0u8; 8192];
+                while let Ok(n @ 1..) = reader.read(&mut buf) {
+                    sink.lock().expect("out").extend_from_slice(&buf[..n]);
+                }
+            });
+            Pty { master, child, out, home, born: Instant::now() }
         }
-        assert!(sh.contains("mesimon\" welcome"), "install.sh runs the intro");
+
+        fn has(&self, what: &str) -> bool {
+            let out = self.out.lock().expect("out");
+            out.windows(what.len()).any(|w| w == what.as_bytes())
+        }
+
+        /// Waits for `what` on the screen, up to `within`.
+        fn shows(&self, what: &str, within: Duration) -> bool {
+            let until = Instant::now() + within;
+            while Instant::now() < until {
+                if self.has(what) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            false
+        }
+
+        fn press(&mut self, bytes: &[u8]) {
+            io::Write::write_all(&mut self.master, bytes).expect("type");
+        }
+
+        fn marker(&self) -> Option<String> {
+            std::fs::read_to_string(self.home.join(".local/state/mesimon/welcomed")).ok()
+        }
+
+        /// Waits for the child to exit, up to `within`; kills it after.
+        fn ends(&mut self, within: Duration) -> bool {
+            let until = Instant::now() + within;
+            while Instant::now() < until {
+                if let Some(st) = self.child.try_wait().expect("wait") {
+                    assert!(st.success(), "the child failed: {st}");
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            false
+        }
+
+        /// It asked the terminal nothing: no cursor position, no colour,
+        /// no device attributes, no keyboard protocol.
+        fn asked_nothing(&self) {
+            for query in ["\x1b[6n", "\x1b]11;?", "\x1b]10;?", "\x1b[c", "\x1b[?u"] {
+                assert!(!self.has(query), "the road asked the terminal {query:?}");
+            }
+        }
+    }
+
+    impl Drop for Pty {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            let _ = std::fs::remove_dir_all(&self.home);
+        }
+    }
+
+    /// T-903: on a terminal that answers nothing the board's road draws at
+    /// once, marks nothing before it is seen, and a key ends it at once,
+    /// Ctrl+C included; left alone, it plays to its end and marks that.
+    #[test]
+    fn the_board_road_asks_the_terminal_nothing_and_a_key_ends_it() {
+        let v = env!("CARGO_PKG_VERSION");
+        let soon = Duration::from_secs(2);
+        // The bound on its first frame is the child's own start, a test
+        // binary's exec; the road itself waits on nothing.
+        let first = Duration::from_secs(10);
+        let shin = "▀";
+
+        // Ctrl+C mid-play, on a machine whose install wrote the old marker.
+        let mut p = Pty::spawn(1, true);
+        assert!(p.shows(shin, first), "no frame in {:?}", p.born.elapsed());
+        assert_eq!(p.marker().as_deref(), Some("mesimon 0.1.0-beta.11\n"), "marked before seen");
+        p.press(b"\x03");
+        let pressed = Instant::now();
+        assert!(p.ends(soon), "Ctrl+C left it playing");
+        assert!(pressed.elapsed() < soon);
+        assert_eq!(p.marker(), Some(format!("skipped board {v}\n")));
+        p.asked_nothing();
+
+        // Any other key skips to the words, and the next opens the board.
+        let mut p = Pty::spawn(1, false);
+        assert!(p.shows(shin, first), "no frame in {:?}", p.born.elapsed());
+        assert_eq!(p.marker(), None, "marked before seen");
+        p.press(b"x");
+        assert!(p.shows("opens", soon), "a key did not skip to the end");
+        assert_eq!(p.marker(), Some(format!("skipped board {v}\n")));
+        assert!(!p.ends(Duration::ZERO), "the board's invitation waits for a key");
+        p.press(b"\r");
+        assert!(p.ends(soon), "enter left the intro up");
+        p.asked_nothing();
+
+        // Left alone it ends on its own and marks it played (twenty times
+        // its pace), then the seat waits for a key.
+        let mut p = Pty::spawn(20, false);
+        let played = Some(format!("played board {v}\n"));
+        let until = Instant::now() + first + Duration::from_millis(total(&storyboard()) / 20);
+        while p.marker() != played && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(p.marker(), played, "not marked played in {:?}", p.born.elapsed());
+        assert!(p.shows("opens", soon), "its end is not on screen");
+        assert!(!p.ends(Duration::ZERO), "the board's invitation waits for a key");
+        p.press(b"q");
+        assert!(p.ends(soon), "a key left the intro up");
+        p.asked_nothing();
     }
 
     #[test]
