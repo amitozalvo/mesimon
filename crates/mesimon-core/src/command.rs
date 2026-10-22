@@ -1683,6 +1683,29 @@ mod meta_tests {
         assert_eq!(m, Meta { action: Action::Mutate, logged: false, subject: None });
     }
 
+    /// The two board-ask answers share one struct and keep their bytes
+    /// (T-875): the receipt's fields sit beside `board`, flat, as when each
+    /// variant spelled its own.
+    #[test]
+    fn board_ask_answers_keep_their_bytes() {
+        let asked = PeerAnswer { road: AskRoad::Queued, crown: "T-1".into(), reply: true };
+        let peer = serde_json::to_string(&Response::PeerAsked(asked.clone())).unwrap();
+        assert_eq!(peer, r#"{"resp":"peer_asked","road":"queued","crown":"T-1","reply":true}"#);
+        let mine = Response::AgentAskedBoard { board: "web".into(), asked };
+        let line = serde_json::to_string(&mine).unwrap();
+        assert_eq!(
+            line,
+            r#"{"resp":"agent_asked_board","board":"web","road":"queued","crown":"T-1","reply":true}"#
+        );
+        // An older daemon's answer without `reply` still reads.
+        let bare = r#"{"resp":"peer_asked","road":"held_for_person","crown":"T-2"}"#;
+        let Response::PeerAsked(p) = serde_json::from_str(bare).unwrap() else { panic!() };
+        assert_eq!((p.road, p.reply), (AskRoad::HeldForPerson, false));
+        let back: Response = serde_json::from_str(&line).unwrap();
+        let Response::AgentAskedBoard { board, asked } = back else { panic!() };
+        assert_eq!((board.as_str(), asked.crown.as_str(), asked.reply), ("web", "T-1", true));
+    }
+
     /// The column ask's receipt from a daemon that knows fewer of its
     /// fields still parses: every count defaults to zero (T-378).
     #[test]
@@ -2170,25 +2193,16 @@ pub enum Response {
         wake: Option<AskWake>,
     },
     /// AgentAskBoard's receipt (T-733): which board took the words, by
-    /// name; the road they took on that board (queued for its crown's idle,
-    /// or held for a person's `^y` there); the key of the crown that will
-    /// read them; and whether the board read them as a reply to an ask that
-    /// crown had made here.
+    /// name, and the peer's answer beside it, flattened, so the bytes are
+    /// the four fields side by side (T-875). Its `reply` is this board's
+    /// reading: whether the words answer an ask the other crown made here.
     AgentAskedBoard {
         board: String,
-        road: AskRoad,
-        crown: String,
-        #[serde(default)]
-        reply: bool,
+        #[serde(flatten)]
+        asked: PeerAnswer,
     },
-    /// PeerAsk's answer (T-733), daemon to daemon: the road the words took
-    /// on the receiving board and the key of the crown that will read them.
-    PeerAsked {
-        road: AskRoad,
-        crown: String,
-        #[serde(default)]
-        reply: bool,
-    },
+    /// PeerAsk's answer (T-733), daemon to daemon.
+    PeerAsked(PeerAnswer),
     /// AgentAnswerTicket's receipt (T-569), sent once the delivery settles:
     /// `outcome` is `answered` only when the dialog's own hook edge came,
     /// `input_sent` when the keys went in and no edge followed inside the
@@ -2507,6 +2521,19 @@ pub struct CrownSaid {
 /// How much of a crown message rides the snapshot (T-783): more than a
 /// card is wide, so the card cuts it, never the wire.
 pub const CROWN_SAID_BYTES: usize = 240;
+
+/// Where another board put a crown's words (T-733): the road they took
+/// there (queued for its crown's idle, or held for a person's `^y`), the
+/// key of the crown that will read them, and whether they were read as a
+/// reply to an ask that crown had made. `PeerAsked` carries it daemon to
+/// daemon and `AgentAskedBoard` to the asking crown (T-875).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerAnswer {
+    pub road: AskRoad,
+    pub crown: String,
+    #[serde(default)]
+    pub reply: bool,
+}
 
 /// One board this board reaches (T-733): its name, the directory's, which
 /// the header and `ask_board` spell, and its repository's canonical path,

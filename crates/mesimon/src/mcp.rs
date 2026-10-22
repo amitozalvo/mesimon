@@ -33,7 +33,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
 use mesimon_core::board::AgentTools;
-use mesimon_core::command::{AskRoad, AskWake, Command, Envelope, Response};
+use mesimon_core::command::{AskRoad, AskWake, Command, Envelope, PeerAnswer, Response};
 use mesimon_core::mcp::{self, ToolCall};
 use mesimon_core::Principal;
 use serde_json::{json, Value};
@@ -328,16 +328,18 @@ fn render(resp: Response) -> Value {
         // send was held.
         // The crown's ask to another board (T-733): where the words went,
         // how they wait there, who reads them, and where the answer lands.
-        Response::AgentAskedBoard { board, road, crown, reply } => text(&json!({
-            "board": board,
-            "road": road.word(),
-            "crown": crown,
-            "reply": reply,
-            "answer": format!(
-                "{board}'s crown answers with ask_board; its words arrive as this session's \
-                 next prompt once idle, beginning with the board's name"
-            ),
-        })),
+        Response::AgentAskedBoard { board, asked: PeerAnswer { road, crown, reply } } => {
+            text(&json!({
+                "board": board,
+                "road": road.word(),
+                "crown": crown,
+                "reply": reply,
+                "answer": format!(
+                    "{board}'s crown answers with ask_board; its words arrive as this session's \
+                     next prompt once idle, beginning with the board's name"
+                ),
+            }))
+        }
         // `wake` (T-880): words to a parked agent are its wake, said
         // outright, because a crown that read `queued` there took the agent
         // for still asleep and called start_agent after it.

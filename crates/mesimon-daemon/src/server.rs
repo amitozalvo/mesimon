@@ -8083,21 +8083,19 @@ impl Daemon {
         let summary = self.summary_prs_of(id);
         let acted = self.costs.acted_entries(id);
         let acted = acted.iter().filter_map(|e| entry_url(e, repo.as_ref()));
-        let mut all: Vec<String> = Vec::new();
+        let mut created: Vec<String> = Vec::new();
         for url in self.costs.opened_urls(id) {
-            if !all.iter().any(|a| same_url(a, &url)) {
-                all.push(url);
+            if !created.iter().any(|a| same_url(a, &url)) {
+                created.push(url);
             }
         }
-        let mut theirs = Vec::new();
+        let mut theirs: Vec<String> = Vec::new();
         for url in acted.chain(summary.iter().cloned()) {
-            if all.iter().any(|a| same_url(a, &url)) {
-                continue;
+            if !created.iter().chain(&theirs).any(|a| same_url(a, &url)) {
+                theirs.push(url);
             }
-            all.push(url.clone());
-            theirs.push(url);
         }
-        NamedPrs { all, theirs, repo, summary }
+        NamedPrs { created, theirs, repo, summary }
     }
 
     /// The one repository a ticket's bare PR numbers are on (T-859): its
@@ -11571,7 +11569,7 @@ impl Daemon {
             .filter(|s| matches!(s.state, SessionState::Idle { .. }))
             .and_then(|s| s.state_changed_at)
             .unwrap_or(0);
-        self.forge.fresh(ticket, turn_end, || self.named_prs(ticket).all)
+        self.forge.fresh(ticket, turn_end, || self.named_prs(ticket).into_all())
     }
 
     /// The ticket's seat as the train reads it, words owed included: the
@@ -15331,7 +15329,7 @@ impl Daemon {
         self.board.ticket(ticket).is_some()
             && !self.tearing_down.contains(&ticket)
             && (self.worktrees.get(&ticket).is_some_and(|b| !b.branch.is_empty())
-                || !self.named_prs(ticket).all.is_empty())
+                || !self.named_prs(ticket).is_empty())
     }
 
     /// The forge is asked about `ticket` now (T-895): owed from this
@@ -15469,7 +15467,7 @@ impl Daemon {
                 continue;
             }
             let named = self.named_prs(t);
-            if !named.all.is_empty() {
+            if !named.is_empty() {
                 tickets.push((t, String::new(), Vec::new(), named));
             }
         }
@@ -15511,8 +15509,8 @@ impl Daemon {
             // or the checkout's already reaches (the account's own forge),
             // and never a host of its own: the transcript and the note are
             // untrusted text, and no CLI is pointed at a host they name.
-            let NamedPrs { all: opened, theirs, .. } = named;
-            for url in &opened {
+            let NamedPrs { created, theirs, .. } = named;
+            for url in created.iter().chain(&theirs) {
                 if let Some(remote) = mesimon_core::forge::repo_of_url(url) {
                     if hosts.contains(&remote.host) {
                         mine.push(remote.clone());
@@ -15524,7 +15522,7 @@ impl Daemon {
                 ticket: t,
                 branch,
                 legs: leg_queries,
-                opened,
+                created,
                 theirs,
                 repos: mine,
                 held: self.forge.sets.get(&t).cloned().unwrap_or_default(),
@@ -18072,18 +18070,32 @@ enum Asker {
     Board(peer::FromBoard),
 }
 
-/// Every PR a ticket named (T-859), as addresses (`named_prs`).
+/// Every PR a ticket named (T-859), as addresses (`named_prs`), in two
+/// lists that share none (T-875): together what a forge read matches and
+/// reads by itself.
 struct NamedPrs {
-    /// What a forge read matches and reads by itself: the opened, the
-    /// acted on and the `Summary`'s, each once.
-    all: Vec<String>,
-    /// The ones among `all` that are not a `pr create`'s: read as reviewed
-    /// when found that way, and what the board's switch may keep out.
+    /// The URLs its `pr create`s printed.
+    created: Vec<String>,
+    /// The acted on and the `Summary`'s, the rest: read as reviewed when
+    /// found that way, and what the board's switch may keep out.
     theirs: Vec<String>,
     /// The one repository the ticket's bare numbers are on (`ticket_repo`).
     repo: Option<mesimon_core::forge::Remote>,
     /// The `Summary`'s addresses alone (`summary_prs_of`).
     summary: std::sync::Arc<[String]>,
+}
+
+impl NamedPrs {
+    fn is_empty(&self) -> bool {
+        self.created.is_empty() && self.theirs.is_empty()
+    }
+
+    /// Both lists as one, the `pr create`s' first.
+    fn into_all(self) -> Vec<String> {
+        let mut all = self.created;
+        all.extend(self.theirs);
+        all
+    }
 }
 
 fn open_boxes_refusal(open: usize, what: &str) -> Option<String> {

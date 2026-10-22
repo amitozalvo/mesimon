@@ -311,6 +311,32 @@ impl TestClient {
         }
     }
 
+    /// A ticket on TODO in the board's default workspace (T-875).
+    pub fn create_ticket(&mut self, title: &str) -> ulid::Ulid {
+        match self.request(Command::CreateTicket {
+            column: "TODO".into(),
+            title: title.into(),
+            workspace: None,
+            tier: None,
+        }) {
+            Response::Created { id, .. } => id,
+            other => panic!("create: {other:?}"),
+        }
+    }
+
+    /// A Claude session on `ticket`, its launch words unsent (T-875).
+    pub fn spawn_claude(&mut self, ticket: ulid::Ulid) -> uuid::Uuid {
+        match self.request(Command::SpawnSession {
+            ticket,
+            kind: mesimon_core::board::SessionKind::Claude,
+            submit_prompt: false,
+            plan: false,
+        }) {
+            Response::Spawned { id, .. } => id,
+            other => panic!("spawn: {other:?}"),
+        }
+    }
+
     /// A fresh snapshot's board.
     pub fn board(&mut self) -> Board {
         board_of(self.request(Command::Snapshot))
@@ -721,6 +747,16 @@ impl Harness {
     /// here and restarts.
     pub fn set_env(&self, key: &str, value: impl AsRef<std::ffi::OsStr>) {
         self.fixture.set_env(key, value);
+    }
+
+    /// One turn of `sid`, by its hooks: a prompt, `running`, a `Stop`,
+    /// and back to idle (T-875).
+    pub fn one_turn(&self, c: &mut TestClient, sid: uuid::Uuid) {
+        let hook_sock = self.paths.hook_sock();
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
     }
 
     pub fn client(&self, name: &str) -> TestClient {

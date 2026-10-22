@@ -9,8 +9,10 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use mesimon_core::board::{CrownMode, SessionKind, SessionState};
-use mesimon_core::command::{AskRoad, BoardTouch, Command, LinkView, Response, TouchAction};
+use mesimon_core::board::CrownMode;
+use mesimon_core::command::{
+    AskRoad, BoardTouch, Command, LinkView, PeerAnswer, Response, TouchAction,
+};
 use mesimon_core::Principal;
 
 mod common;
@@ -18,30 +20,6 @@ use common::*;
 
 const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
                     printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
-
-fn create(c: &mut TestClient, title: &str) -> ulid::Ulid {
-    match c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: title.into(),
-        workspace: None,
-        tier: None,
-    }) {
-        Response::Created { id, .. } => id,
-        other => panic!("create: {other:?}"),
-    }
-}
-
-fn spawn(c: &mut TestClient, ticket: ulid::Ulid) -> uuid::Uuid {
-    match c.request(Command::SpawnSession {
-        ticket,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn: {other:?}"),
-    }
-}
 
 fn links_of(c: &mut TestClient) -> Vec<LinkView> {
     match c.request(Command::Snapshot) {
@@ -73,16 +51,6 @@ fn ask_board(c: &mut TestClient, from: uuid::Uuid, board: &str, text: &str) -> R
     )
 }
 
-/// An idle stub crown: its first turn opened and closed through the real
-/// hook binary, so the queue sends to it.
-fn settle_idle(h: &Harness, c: &mut TestClient, sid: uuid::Uuid) {
-    let hook_sock = h.paths.hook_sock();
-    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-    c.await_state(sid, "running", |s| *s == SessionState::Running);
-    hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-    c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-}
-
 #[test]
 fn two_crowns_reach_each_other_through_one_links_file() {
     let Some(a) = Harness::boot("linka", Some(STUB)) else { return };
@@ -102,15 +70,15 @@ fn two_crowns_reach_each_other_through_one_links_file() {
     };
 
     // Each board: a ticket whose agent wears the crown, idle.
-    let ta = create(&mut ca, "Core release");
-    let sa = spawn(&mut ca, ta);
+    let ta = ca.create_ticket("Core release");
+    let sa = ca.spawn_claude(ta);
     assert!(matches!(ca.request(Command::CrownTicket { id: ta }), Response::Ok));
-    let tb = create(&mut cb, "Relay release");
-    let sb = spawn(&mut cb, tb);
+    let tb = cb.create_ticket("Relay release");
+    let sb = cb.spawn_claude(tb);
     assert!(matches!(cb.request(Command::CrownTicket { id: tb }), Response::Ok));
     let kb = cb.board().ticket(tb).unwrap().short_key.clone();
-    settle_idle(&a, &mut ca, sa);
-    settle_idle(&b, &mut cb, sb);
+    a.one_turn(&mut ca, sa);
+    b.one_turn(&mut cb, sb);
     let b_root = b.repo.canonicalize().unwrap().to_string_lossy().into_owned();
     let a_root = a.repo.canonicalize().unwrap().to_string_lossy().into_owned();
     // Both fixtures name their repository `repo`: the name is the
@@ -175,7 +143,7 @@ fn two_crowns_reach_each_other_through_one_links_file() {
     // The ask: A's crown to B's. B is autonomous and its crown idle, so the
     // words go by the queue at once, through the Board ask template.
     let road = match ask_board(&mut ca, sa, &name, "mesimon-probe-733 cut the relay release") {
-        Response::AgentAskedBoard { board, road, crown, reply } => {
+        Response::AgentAskedBoard { board, asked: PeerAnswer { road, crown, reply } } => {
             assert_eq!(board, name);
             assert_eq!(crown, kb);
             assert!(!reply);
@@ -220,7 +188,7 @@ fn two_crowns_reach_each_other_through_one_links_file() {
 
     // The reply: B's crown asks A's back; both sides read it as the reply.
     match ask_board(&mut cb, sb, &name, "mesimon-probe-734 relay is live") {
-        Response::AgentAskedBoard { reply, road, .. } => {
+        Response::AgentAskedBoard { asked: PeerAnswer { reply, road, .. }, .. } => {
             assert!(reply, "an open ask from A makes this a reply");
             assert_eq!(road, AskRoad::Queued);
         }
@@ -268,7 +236,7 @@ fn two_crowns_reach_each_other_through_one_links_file() {
         Response::Ok
     ));
     match ask_board(&mut ca, sa, &name, "mesimon-probe-735 held") {
-        Response::AgentAskedBoard { road, .. } => assert_eq!(road, AskRoad::HeldForPerson),
+        Response::AgentAskedBoard { asked, .. } => assert_eq!(asked.road, AskRoad::HeldForPerson),
         other => panic!("the held ask: {other:?}"),
     }
     std::thread::sleep(std::time::Duration::from_millis(800));

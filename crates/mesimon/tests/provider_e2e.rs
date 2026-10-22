@@ -161,18 +161,6 @@ fn select(c: &mut TestClient, provider: AgentProvider) {
     assert_eq!(c.board().agent_provider, provider);
 }
 
-fn spawn(c: &mut TestClient, ticket: ulid::Ulid) -> uuid::Uuid {
-    match c.request(Command::SpawnSession {
-        ticket,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        response => panic!("spawn agent: {response:?}"),
-    }
-}
-
 /// An archived ticket's parked record is off the snapshot (T-804), and
 /// asked for by its ticket.
 fn session(c: &mut TestClient, id: uuid::Uuid) -> SessionRecord {
@@ -190,11 +178,11 @@ fn project_switches_preserve_old_running_and_sleeping_sessions_and_scoped_tools(
     let mut c = h.client();
     assert_eq!(c.board().agent_provider, AgentProvider::ClaudeCode);
     let a = ticket(&mut c, "old Claude", None);
-    let claude = spawn(&mut c, a);
+    let claude = c.spawn_claude(a);
     h.claude_idle(&mut c, claude);
     select(&mut c, AgentProvider::Codex);
     let b = ticket(&mut c, "new Codex", None);
-    let codex = spawn(&mut c, b);
+    let codex = c.spawn_claude(b);
     h.codex_ready(&mut c, codex);
     assert!(!h.repo.join(".codex").exists(), "shared checkout is not ours to prepare");
     let native_before = session(&mut c, codex);
@@ -279,7 +267,7 @@ fn project_switches_preserve_old_running_and_sleeping_sessions_and_scoped_tools(
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
         .any(|v| v["resume"] == thread));
     let d = ticket(&mut c, "new Claude again", None);
-    let new_claude = spawn(&mut c, d);
+    let new_claude = c.spawn_claude(d);
     assert_eq!(session(&mut c, new_claude).kind, SessionKind::Claude);
     c = h.restart(&mut c);
     assert_eq!(c.board().agent_provider, AgentProvider::ClaudeCode);
@@ -304,7 +292,7 @@ fn column_autosleep_parks_codex_only_when_observed_quiet_and_resumes_its_thread(
     let mut ids = Vec::new();
     for title in ["quiet", "held", "working"] {
         let t = ticket(&mut c, title, None);
-        let id = spawn(&mut c, t);
+        let id = c.spawn_claude(t);
         h.codex_ready(&mut c, id);
         ids.push(id);
     }
@@ -647,7 +635,7 @@ fn queued_start_keeps_first_provider_even_when_its_words_are_replaced() {
     let Some(h) = Fixture::boot("providerqueue") else { return };
     let mut c = h.client();
     let holder = ticket(&mut c, "holder", None);
-    let id = spawn(&mut c, holder);
+    let id = c.spawn_claude(holder);
     h.claude_idle(&mut c, id);
     h.claude_start(&mut c, id);
     select(&mut c, AgentProvider::Codex);
@@ -785,7 +773,7 @@ fn lost_codex_observation_holds_the_checkout_and_recovers_without_duplicate_subm
         response => panic!("old client must be refused before provider snapshots: {response:?}"),
     }
     let holder = ticket(&mut c, "Codex observed", None);
-    let id = spawn(&mut c, holder);
+    let id = c.spawn_claude(holder);
     h.codex_ready(&mut c, id);
     h.control(id, json!({"publish":false}));
     c.await_state(id, "lost observation", |s| matches!(s, SessionState::Unknown { .. }));
@@ -825,7 +813,7 @@ fn sleeping_codex_holds_checkout_and_refuses_wake_until_worker_stops() {
     let mut c = h.client();
     select(&mut c, AgentProvider::Codex);
     let holder = ticket(&mut c, "stop owns checkout", None);
-    let id = spawn(&mut c, holder);
+    let id = c.spawn_claude(holder);
     h.codex_ready(&mut c, id);
     h.control(id, json!({"stop_delay":2}));
     std::thread::sleep(Duration::from_millis(250));
@@ -865,7 +853,7 @@ fn killed_codex_keeps_agent_seat_until_its_server_cleanup_is_acknowledged() {
     let mut c = h.client();
     select(&mut c, AgentProvider::Codex);
     let ticket = ticket(&mut c, "one agent until cleanup", None);
-    let id = spawn(&mut c, ticket);
+    let id = c.spawn_claude(ticket);
     h.codex_ready(&mut c, id);
     h.control(id, json!({"stop_delay":2}));
     std::thread::sleep(Duration::from_millis(250));
@@ -885,7 +873,7 @@ fn killed_codex_keeps_agent_seat_until_its_server_cleanup_is_acknowledged() {
     wait_until(Duration::from_secs(10), "killed Codex server cleanup", || {
         !session(&mut c, id).codex_stopping
     });
-    let replacement = spawn(&mut c, ticket);
+    let replacement = c.spawn_claude(ticket);
     assert_eq!(session(&mut c, replacement).kind, SessionKind::Claude);
     assert_eq!(
         c.board()
@@ -910,7 +898,7 @@ fn a_deleted_tickets_crashed_codex_record_is_released_once_no_known_owner_remain
     let mut c = h.client();
     select(&mut c, AgentProvider::Codex);
     let holder = ticket(&mut c, "crashed runtime on a deleted ticket", None);
-    let id = spawn(&mut c, holder);
+    let id = c.spawn_claude(holder);
     h.codex_ready(&mut c, id);
     h.control(id, json!({"stop_ack": false}));
     std::thread::sleep(Duration::from_millis(250));
@@ -1062,7 +1050,7 @@ fn daemon_handover_keeps_sent_codex_prompt_held_without_pressing_enter_again() {
     let mut c = h.client();
     select(&mut c, AgentProvider::Codex);
     let ticket = ticket(&mut c, "original title", None);
-    let id = spawn(&mut c, ticket);
+    let id = c.spawn_claude(ticket);
     h.codex_ready(&mut c, id);
     h.control(id, json!({"ack":false}));
     std::thread::sleep(Duration::from_millis(250));
@@ -1136,7 +1124,7 @@ fn a_steer_goes_into_a_running_codex_turn_and_is_acked_by_the_runtime() {
     let mut c = h.client();
     select(&mut c, AgentProvider::Codex);
     let ticket = ticket(&mut c, "a long turn", None);
-    let id = spawn(&mut c, ticket);
+    let id = c.spawn_claude(ticket);
     h.codex_ready(&mut c, id);
     h.control(id, json!({"state":{"state":"running"},"turn_id":"long-turn"}));
     c.await_state(id, "the turn running", |s| *s == SessionState::Running);
@@ -1169,7 +1157,7 @@ fn a_codex_dialog_refuses_a_steer_in_the_boards_words() {
     let mut c = h.client();
     select(&mut c, AgentProvider::Codex);
     let ticket = ticket(&mut c, "a turn with a dialog", None);
-    let id = spawn(&mut c, ticket);
+    let id = c.spawn_claude(ticket);
     h.codex_ready(&mut c, id);
     h.control(
         id,
@@ -1199,7 +1187,7 @@ fn an_unacked_codex_steer_is_pressed_once_and_given_up() {
     let mut c = h.client();
     select(&mut c, AgentProvider::Codex);
     let ticket = ticket(&mut c, "a turn that never says", None);
-    let id = spawn(&mut c, ticket);
+    let id = c.spawn_claude(ticket);
     h.codex_ready(&mut c, id);
     h.control(id, json!({"state":{"state":"running"},"turn_id":"quiet-turn","steer_ack":false}));
     c.await_state(id, "the turn running", |s| *s == SessionState::Running);
@@ -1226,7 +1214,7 @@ fn daemon_handover_restores_a_codex_turn_held_by_its_own_work() {
     let mut c = h.client();
     select(&mut c, AgentProvider::Codex);
     let ticket = ticket(&mut c, "a long test run", None);
-    let id = spawn(&mut c, ticket);
+    let id = c.spawn_claude(ticket);
     h.codex_ready(&mut c, id);
     h.control(id, json!({"state":{"state":"running"},"turn_id":"long-turn","hold":true}));
     c.await_state(id, "the turn running", |s| *s == SessionState::Running);
@@ -1246,7 +1234,7 @@ fn a_codex_seat_held_past_its_turn_and_its_release_reach_the_journal() {
     let mut c = h.client();
     select(&mut c, AgentProvider::Codex);
     let ticket = ticket(&mut c, "a turn that ended", None);
-    let id = spawn(&mut c, ticket);
+    let id = c.spawn_claude(ticket);
     h.codex_ready(&mut c, id);
     let since = mesimon_core::clock::now_ms() - 61_000;
     h.control(
@@ -1292,7 +1280,7 @@ fn daemon_handover_keeps_unpasted_codex_words_and_sends_them_once() {
     let mut c = h.client();
     select(&mut c, AgentProvider::Codex);
     let ticket = ticket(&mut c, "title only", None);
-    let id = spawn(&mut c, ticket);
+    let id = c.spawn_claude(ticket);
     h.codex_ready(&mut c, id);
     h.control(id, json!({"hold":true}));
     wait_until(Duration::from_secs(10), "observation gates input", || {
@@ -1338,7 +1326,7 @@ fn resumed_codex_reports_native_trust_without_fresh_prefill_and_recovers_to_idle
     let mut c = h.client();
     select(&mut c, AgentProvider::Codex);
     let ticket = ticket(&mut c, "wake trust fixture", None);
-    let id = spawn(&mut c, ticket);
+    let id = c.spawn_claude(ticket);
     h.codex_ready(&mut c, id);
     let thread = session(&mut c, id).codex_thread_id;
     assert!(matches!(c.request(Command::SleepSession { id }), Response::Ok));
@@ -1387,7 +1375,7 @@ fn uncertain_cleanup_requires_new_human_acknowledgement_and_retains_old_evidence
     let mut c = h.client();
     select(&mut c, AgentProvider::Codex);
     let holder = ticket(&mut c, "unknown descendants hold checkout", None);
-    let id = spawn(&mut c, holder);
+    let id = c.spawn_claude(holder);
     h.codex_ready(&mut c, id);
     let old = session(&mut c, id);
     h.control(id, json!({"stop_delay": 1, "stop_ack": false}));
@@ -1540,7 +1528,7 @@ fn a_codex_tier_switch_parks_waits_for_the_stop_and_wakes_on_the_new_tier() {
     ));
     select(&mut c, AgentProvider::Codex);
     let t = ticket(&mut c, "codex switch", None);
-    let id = spawn(&mut c, t);
+    let id = c.spawn_claude(t);
     h.codex_ready(&mut c, id);
     let thread = session(&mut c, id).codex_thread_id.clone();
     assert!(thread.is_some(), "a thread to resume");
@@ -1607,7 +1595,7 @@ fn a_codex_question_is_carried_to_the_board_and_answered_by_keys_until_resolved(
     select(&mut c, AgentProvider::ClaudeCode);
     let crown = ticket(&mut c, "coordinate", None);
     let worker = ticket(&mut c, "mesimon-probe-846 codex worker", None);
-    let sa = spawn(&mut c, crown);
+    let sa = c.spawn_claude(crown);
     assert!(matches!(c.request(Command::CrownTicket { id: crown }), Response::Ok));
     h.claude_idle(&mut c, sa);
     select(&mut c, AgentProvider::Codex);
@@ -1871,7 +1859,7 @@ fn a_codex_pane_asked_in_plan_mode_waits_its_idle_and_types_plan_without_a_relau
     let mut c = h.client();
     select(&mut c, AgentProvider::Codex);
     let t = ticket(&mut c, "pane plan", None);
-    let id = spawn(&mut c, t);
+    let id = c.spawn_claude(t);
     h.codex_ready(&mut c, id);
     h.control(id, json!({"state":{"state":"running"},"turn_id":"synthetic-busy"}));
     c.await_state(id, "a turn running", |s| *s == SessionState::Running);
@@ -1903,7 +1891,7 @@ fn a_parked_codex_seat_wakes_into_plan_mode_before_its_words() {
     let mut c = h.client();
     select(&mut c, AgentProvider::Codex);
     let t = ticket(&mut c, "wake plan", None);
-    let id = spawn(&mut c, t);
+    let id = c.spawn_claude(t);
     h.codex_ready(&mut c, id);
     assert!(matches!(c.request(Command::SleepSession { id }), Response::Ok));
     wait_until(Duration::from_secs(10), "the stop confirmed", || {

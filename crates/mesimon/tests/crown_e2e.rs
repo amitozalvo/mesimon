@@ -34,30 +34,6 @@ use serde_json::json;
 mod common;
 use common::*;
 
-fn create(c: &mut TestClient, title: &str) -> ulid::Ulid {
-    match c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: title.into(),
-        workspace: None,
-        tier: None,
-    }) {
-        Response::Created { id, .. } => id,
-        other => panic!("create: {other:?}"),
-    }
-}
-
-fn spawn(c: &mut TestClient, ticket: ulid::Ulid) -> uuid::Uuid {
-    match c.request(Command::SpawnSession {
-        ticket,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn: {other:?}"),
-    }
-}
-
 fn key_of(c: &mut TestClient, id: ulid::Ulid) -> String {
     c.board().ticket(id).unwrap().short_key.clone()
 }
@@ -106,12 +82,12 @@ fn the_crown_lets_one_agent_edit_the_others() {
     let sock = h.paths.orch_sock();
     let mut c = h.client("crown");
 
-    let a = create(&mut c, "triage the board");
-    let b = create(&mut c, "fix the thing");
-    let d = create(&mut c, "later");
+    let a = c.create_ticket("triage the board");
+    let b = c.create_ticket("fix the thing");
+    let d = c.create_ticket("later");
     let (ka, kb, kd) = (key_of(&mut c, a), key_of(&mut c, b), key_of(&mut c, d));
-    let sa = spawn(&mut c, a);
-    let sb = spawn(&mut c, b);
+    let sa = c.spawn_claude(a);
+    let sb = c.spawn_claude(b);
 
     // ---- uncrowned: another ticket is refused, and the refusal teaches ----
     let refusal = read(&mut c, sa, &kb).expect_err("no crown yet");
@@ -452,9 +428,9 @@ fn the_crown_lets_one_agent_edit_the_others() {
     // A repository, so a start can cut a worktree (T-583: B, a person's
     // agent, already works on the checkout).
     init_repo(&h.repo, "a.txt", "hello\n");
-    let e1 = create(&mut c, "first start");
-    let e2 = create(&mut c, "second start");
-    let e3 = create(&mut c, "third start");
+    let e1 = c.create_ticket("first start");
+    let e2 = c.create_ticket("second start");
+    let e3 = c.create_ticket("third start");
     let (k1, k2, k3) = (key_of(&mut c, e1), key_of(&mut c, e2), key_of(&mut c, e3));
     let start_in = |c: &mut TestClient, key: &str, seen: Option<String>, workspace: &str| {
         c.send(
@@ -604,7 +580,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     wait_until(std::time::Duration::from_secs(15), "E3's worktree start to land", || {
         c.board().live_agent(e3).is_some()
     });
-    let e5 = create(&mut c, "parked start");
+    let e5 = c.create_ticket("parked start");
     let k5 = key_of(&mut c, e5);
     assert!(matches!(
         c.request(Command::SetWorkspace { id: e5, workspace: Some(WorkspaceStrategy::Worktree) }),
@@ -642,7 +618,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
 
     // A budget of zero turns the road off, in words.
     assert!(matches!(c.request(Command::SetCrownBudget { budget: 0 }), Response::Ok));
-    let e4 = create(&mut c, "never started");
+    let e4 = c.create_ticket("never started");
     let k4 = key_of(&mut c, e4);
     let v4 = read(&mut c, sa, &k4).unwrap();
     match start(&mut c, &k4, v4.seen) {
@@ -908,7 +884,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     // A sessionless ticket in the template's DONE column (reclaim on) is what
     // the offer prices; taking the offer archives it and the crown goes with
     // it — the one road that had skipped the drop.
-    let e = create(&mut c, "shipped");
+    let e = c.create_ticket("shipped");
     assert!(matches!(c.request(Command::CrownTicket { id: e }), Response::Ok));
     assert!(matches!(
         c.request(Command::MoveTicket { id: e, column: "DONE".into(), before: None }),
@@ -988,10 +964,10 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     // before asserting that nothing did.
     let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
 
-    let a = create(&mut c, "coordinate");
-    let w1 = create(&mut c, "mesimon-probe-71 worker");
+    let a = c.create_ticket("coordinate");
+    let w1 = c.create_ticket("mesimon-probe-71 worker");
     let (ka, kw1) = (key_of(&mut c, a), key_of(&mut c, w1));
-    let sa = spawn(&mut c, a);
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     // The stub emits no `SessionStart`, so the crown sits at `Spawning` —
     // WORKING — until a turn is walked through it.
@@ -1148,7 +1124,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
 
     // ---- two deliveries while the crown works: one row, one sentence ------
     start(&mut c, sa);
-    let w2 = create(&mut c, "mesimon-probe-72 worker");
+    let w2 = c.create_ticket("mesimon-probe-72 worker");
     let kw2 = key_of(&mut c, w2);
     // T-583: a second crown worker on the checkout W1 holds is refused, by
     // name; W2 works in a worktree of its own instead.
@@ -1506,14 +1482,14 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
         c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
     };
 
-    let a = create(&mut c, "coordinate");
-    let w = create(&mut c, "mesimon-probe-81 landing");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-81 landing");
     let kw = key_of(&mut c, w);
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
     ));
-    let sa = spawn(&mut c, a);
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     // A person sends the crown's ask here (step 2): supervised, so the
     // queue does not send it first (autonomous by default since T-610).
@@ -1781,14 +1757,14 @@ fn a_hand_merge_wakes_the_crown_that_started_the_worker() {
         c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
     };
 
-    let a = create(&mut c, "coordinate");
-    let w = create(&mut c, "mesimon-probe-91 merged by hand");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-91 merged by hand");
     let kw = key_of(&mut c, w);
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
     ));
-    let sa = spawn(&mut c, a);
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, sa);
@@ -1950,14 +1926,14 @@ fn a_merge_while_the_daemon_is_down_wakes_the_crown_after_the_restart() {
         c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
     };
 
-    let a = create(&mut c, "coordinate");
-    let w = create(&mut c, "mesimon-probe-92 merged while down");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-92 merged while down");
     let kw = key_of(&mut c, w);
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
     ));
-    let sa = spawn(&mut c, a);
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, sa);
@@ -2090,11 +2066,11 @@ fn owed_across_a_restart(name: &str, took: bool) {
             .collect()
     };
 
-    let a = create(&mut c, "coordinate");
+    let a = c.create_ticket("coordinate");
     let title = "mesimon-probe-722 owed across a restart";
-    let w = create(&mut c, title);
+    let w = c.create_ticket(title);
     let kw = key_of(&mut c, w);
-    let sa = spawn(&mut c, a);
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
     hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
@@ -2206,11 +2182,11 @@ fn a_turn_thinking_across_a_restart_is_not_heard_as_finished() {
             .collect()
     };
 
-    let a = create(&mut c, "coordinate");
+    let a = c.create_ticket("coordinate");
     let title = "mesimon-probe-731 thinking across a restart";
-    let w = create(&mut c, title);
+    let w = c.create_ticket(title);
     let kw = key_of(&mut c, w);
-    let sa = spawn(&mut c, a);
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
     hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
@@ -2340,11 +2316,11 @@ fn a_worker_mid_turn_across_a_restart_delivers_at_its_real_end() {
             .collect()
     };
 
-    let a = create(&mut c, "coordinate");
+    let a = c.create_ticket("coordinate");
     let title = "mesimon-probe-756 mid-turn across a restart";
-    let w = create(&mut c, title);
+    let w = c.create_ticket(title);
     let kw = key_of(&mut c, w);
-    let sa = spawn(&mut c, a);
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
     hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
@@ -2470,11 +2446,11 @@ fn a_held_delivery_waits_for_a_worker_unknown_across_a_restart() {
         c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
     };
 
-    let a = create(&mut c, "coordinate");
+    let a = c.create_ticket("coordinate");
     let title = "mesimon-probe-776 unknown across a restart";
-    let w = create(&mut c, title);
+    let w = c.create_ticket(title);
     let kw = key_of(&mut c, w);
-    let sa = spawn(&mut c, a);
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, sa);
@@ -2590,14 +2566,14 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
         touches(c).into_iter().find(|x| x.ticket == t).map(|x| x.action)
     };
 
-    let a = create(&mut c, "coordinate");
-    let p = create(&mut c, "the person's own");
-    let w = create(&mut c, "mesimon-probe-91 worker");
-    let w2 = create(&mut c, "second worker");
-    let w3 = create(&mut c, "third worker");
+    let a = c.create_ticket("coordinate");
+    let p = c.create_ticket("the person's own");
+    let w = c.create_ticket("mesimon-probe-91 worker");
+    let w2 = c.create_ticket("second worker");
+    let w3 = c.create_ticket("third worker");
     let (kp, kw, kw2, kw3) =
         (key_of(&mut c, p), key_of(&mut c, w), key_of(&mut c, w2), key_of(&mut c, w3));
-    let sa = spawn(&mut c, a);
+    let sa = c.spawn_claude(a);
     // The person's own agent works in a worktree, so the crown's W may take
     // the checkout beside the crown (T-583: a start there is refused while
     // another ticket's agent holds it).
@@ -2857,9 +2833,9 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     assert!(matches!(c.request(Command::SetCrownBudget { budget: 2 }), Response::Ok));
     // Words that would wake W onto a checkout another ticket's agent holds
     // wait for a person (T-583), as a start there would be refused.
-    let q = create(&mut c, "the person's on the checkout");
+    let q = c.create_ticket("the person's on the checkout");
     let kq = key_of(&mut c, q);
-    let sq = spawn(&mut c, q);
+    let sq = c.spawn_claude(q);
     let (held, why) = ask(&mut c, &kw, "mesimon-probe-96b wake onto a held checkout");
     assert!(held && why.contains("parked on the shared checkout"), "{why}");
     assert!(why.contains(&format!("{kq} (")) && why.contains("works on this checkout"), "{why}");
@@ -3002,10 +2978,10 @@ fn the_crown_sends_now_into_a_working_turn() {
         });
     };
 
-    let a = create(&mut c, "coordinate");
-    let w = create(&mut c, "mesimon-probe-81 worker");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-81 worker");
     let kw = key_of(&mut c, w);
-    let sa = spawn(&mut c, a);
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     assert!(matches!(
         c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
@@ -3232,10 +3208,10 @@ fn the_crown_sends_immediately_into_a_working_turn() {
         });
     };
 
-    let a = create(&mut c, "coordinate");
-    let w = create(&mut c, "mesimon-probe-71 worker");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-71 worker");
     let kw = key_of(&mut c, w);
-    let sa = spawn(&mut c, a);
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     assert!(matches!(
         c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
@@ -3425,14 +3401,14 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
         c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
     };
 
-    let a = create(&mut c, "coordinate");
-    let w = create(&mut c, "mesimon-probe-92 on the train");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-92 on the train");
     let kw = key_of(&mut c, w);
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
     ));
-    let sa = spawn(&mut c, a);
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, sa);
@@ -3593,14 +3569,14 @@ fn the_merged_wake_waits_for_the_notice_turn() {
         c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
     };
 
-    let a = create(&mut c, "coordinate");
-    let w = create(&mut c, "mesimon-probe-96 notified");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-96 notified");
     let kw = key_of(&mut c, w);
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
     ));
-    let sa = spawn(&mut c, a);
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, sa);
@@ -3761,11 +3737,11 @@ fn the_crown_reads_a_worker_s_question_and_cannot_talk_over_it() {
     };
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_question");
-    let a = create(&mut c, "coordinate");
-    let w = create(&mut c, "the worker");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("the worker");
     let kw = key_of(&mut c, w);
-    let sa = spawn(&mut c, a);
-    let sw = spawn(&mut c, w);
+    let sa = c.spawn_claude(a);
+    let sw = c.spawn_claude(w);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
     hook_send(&hook_sock, &sw.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
@@ -3945,12 +3921,12 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
         .to_string()
     };
 
-    let a = create(&mut c, "coordinate");
-    let p = create(&mut c, "the person's own");
-    let w = create(&mut c, "mesimon-probe-569 worker");
+    let a = c.create_ticket("coordinate");
+    let p = c.create_ticket("the person's own");
+    let w = c.create_ticket("mesimon-probe-569 worker");
     let (ka, kp, kw) = (key_of(&mut c, a), key_of(&mut c, p), key_of(&mut c, w));
-    let sa = spawn(&mut c, a);
-    let sp = spawn(&mut c, p);
+    let sa = c.spawn_claude(a);
+    let sp = c.spawn_claude(p);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
     for s in [sa, sp] {
@@ -4220,10 +4196,10 @@ fn the_crown_answers_a_batch_one_answer_per_question() {
         hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
         c.await_state(sid, "running", |s| *s == SessionState::Running);
     };
-    let a = create(&mut c, "coordinate");
-    let w = create(&mut c, "mesimon-probe-571 worker");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-571 worker");
     let (ka, kw) = (key_of(&mut c, a), key_of(&mut c, w));
-    let sa = spawn(&mut c, a);
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     assert!(matches!(
         c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
@@ -4451,12 +4427,12 @@ fn the_crown_accepts_a_plan_by_default() {
         c.await_state(sid, "on its plan", at_plan);
     };
 
-    let a = create(&mut c, "coordinate");
-    let p = create(&mut c, "the person's own");
-    let w = create(&mut c, "mesimon-probe-582 worker");
+    let a = c.create_ticket("coordinate");
+    let p = c.create_ticket("the person's own");
+    let w = c.create_ticket("mesimon-probe-582 worker");
     let (ka, kp, kw) = (key_of(&mut c, a), key_of(&mut c, p), key_of(&mut c, w));
-    let sa = spawn(&mut c, a);
-    let sp = spawn(&mut c, p);
+    let sa = c.spawn_claude(a);
+    let sp = c.spawn_claude(p);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
     for s in [sa, sp] {
@@ -4719,12 +4695,12 @@ fn the_crown_picks_a_tier_by_the_persons_words() {
         argv.iter().position(|a| a == name).and_then(|at| argv.get(at + 1).cloned())
     };
 
-    let a = create(&mut c, "coordinate");
-    let w = create(&mut c, "split the writer");
-    let p = create(&mut c, "a person's own");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("split the writer");
+    let p = c.create_ticket("a person's own");
     let (kw, kp) = (key_of(&mut c, w), key_of(&mut c, p));
-    let sa = spawn(&mut c, a);
-    let sp = spawn(&mut c, p);
+    let sa = c.spawn_claude(a);
+    let sp = c.spawn_claude(p);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
 
     // ---- list_board: the tiers in the list's order, the person's words on each
@@ -4910,14 +4886,14 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
         });
     };
 
-    let a = create(&mut c, "coordinate");
-    let w = create(&mut c, "mesimon-probe-94 waits in the background");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-94 waits in the background");
     let kw = key_of(&mut c, w);
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
     ));
-    let sa = spawn(&mut c, a);
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     assert!(matches!(
         c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
@@ -5090,14 +5066,14 @@ fn the_crown_merges_where_the_train_will_not() {
         c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
     };
 
-    let a = create(&mut c, "coordinate");
-    let w = create(&mut c, "mesimon-probe-97 merged by the crown");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-97 merged by the crown");
     let (ka, kw) = (key_of(&mut c, a), key_of(&mut c, w));
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
     ));
-    let sa = spawn(&mut c, a);
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, sa);
@@ -5407,9 +5383,9 @@ fn a_hand_merge_of_a_crown_started_worker_tells_it_by_itself() {
         c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
     };
 
-    let a = create(&mut c, "coordinate");
-    let w = create(&mut c, "mesimon-probe-98 told by the board");
-    let p = create(&mut c, "mesimon-probe-99 a person's own");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-98 told by the board");
+    let p = c.create_ticket("mesimon-probe-99 a person's own");
     let kw = key_of(&mut c, w);
     for id in [w, p] {
         assert!(matches!(
@@ -5417,7 +5393,7 @@ fn a_hand_merge_of_a_crown_started_worker_tells_it_by_itself() {
             Response::Ok
         ));
     }
-    let sa = spawn(&mut c, a);
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, sa);
@@ -5606,14 +5582,14 @@ fn the_crown_watches_a_ticket_a_person_started() {
     // give both time to land before asserting that nothing did.
     let settle = || std::thread::sleep(std::time::Duration::from_millis(2500));
 
-    let a = create(&mut c, "coordinate");
-    let w = create(&mut c, "mesimon-probe-93 watched");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-93 watched");
     let (ka, kw) = (key_of(&mut c, a), key_of(&mut c, w));
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
     ));
-    let sa = spawn(&mut c, a);
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, sa);
@@ -5906,10 +5882,10 @@ fn a_crown_start_whose_worktree_cannot_be_cut_wakes_the_crown_with_why() {
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_unstarted");
     let got = h.dir.join("got.txt");
-    let a = create(&mut c, "coordinate");
-    let w = create(&mut c, "mesimon-probe-777 worker");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-777 worker");
     let kw = key_of(&mut c, w);
-    let sa = spawn(&mut c, a);
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
     hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
@@ -5972,10 +5948,10 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
         hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
         c.await_state(sid, "running", |s| *s == SessionState::Running);
     };
-    let a = create(&mut c, "coordinate");
-    let w = create(&mut c, "mesimon-probe-802 worker");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-802 worker");
     let kw = key_of(&mut c, w);
-    let sa = spawn(&mut c, a);
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, sa);
@@ -6144,10 +6120,10 @@ fn the_crown_answers_a_codex_worker_s_question() {
         )
     };
 
-    let a = create(&mut c, "coordinate");
-    let w = create(&mut c, "mesimon-probe-846 worker");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-846 worker");
     let (ka, kw) = (key_of(&mut c, a), key_of(&mut c, w));
-    let sa = spawn(&mut c, a);
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, sa);

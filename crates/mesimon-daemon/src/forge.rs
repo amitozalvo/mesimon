@@ -225,13 +225,12 @@ pub struct TicketQuery {
     /// (T-859), which is asked about for the PRs it named alone.
     pub branch: String,
     pub legs: Vec<LegQuery>,
-    /// Every PR the ticket named, as an address: the URLs its `pr create`s
-    /// printed (T-739), the ones its acts were about and the ones its
-    /// notes' `Summary` holds (T-859). One a list of the account's own
-    /// does not name is read by itself.
-    pub opened: Vec<String>,
-    /// The part of `opened` that is not a `pr create`'s (T-859): a PR found
-    /// among these by itself alone is someone else's, and reads reviewed.
+    /// The URLs the ticket's `pr create`s printed (T-739), as addresses.
+    pub created: Vec<String>,
+    /// The other PRs it named, none of them in `created` (T-859, T-875):
+    /// the ones its acts were about and the ones its notes' `Summary`
+    /// holds. A PR found among these by itself alone is someone else's,
+    /// and reads reviewed.
     pub theirs: Vec<String>,
     /// Every repository the ticket's set can come from: its legs' remotes
     /// and the ones its sessions' URLs name (T-795).
@@ -239,6 +238,15 @@ pub struct TicketQuery {
     /// The ticket's set as the board holds it: a PR in it a full list did
     /// not name is read by itself (`unlisted`, T-800).
     pub held: Vec<Pr>,
+}
+
+impl TicketQuery {
+    /// Every PR the ticket named, each with whether it is someone else's
+    /// (`theirs`), the `pr create`s' first. One a list of the account's
+    /// own does not name is read by itself.
+    pub fn named(&self) -> impl Iterator<Item = (&String, bool)> {
+        self.created.iter().map(|u| (u, false)).chain(self.theirs.iter().map(|u| (u, true)))
+    }
 }
 
 /// A host to probe on this pass: the candidate CLIs in the order to try.
@@ -687,8 +695,8 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
     for t in &q.tickets {
         out.repos_of.insert(t.ticket, t.repos.clone());
         let legs: Vec<Vec<Moved>> = t.legs.iter().map(|l| reflog(&l.dir)).collect();
-        out.basis
-            .insert(t.ticket, Basis { pushed: pushed(&t.legs, &legs), opened: t.opened.clone() });
+        let opened = t.named().map(|(u, _)| u.clone()).collect();
+        out.basis.insert(t.ticket, Basis { pushed: pushed(&t.legs, &legs), opened });
         logs.push(legs);
     }
     let mut prs: Vec<Pr> = Vec::new();
@@ -726,7 +734,7 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
                     (l.repo_paths.clone(), wrote)
                 })
                 .collect(),
-            opened: t.opened.clone(),
+            opened: t.named().map(|(u, _)| u.clone()).collect(),
         };
         let mut bound: Vec<Pr> = prs.iter().filter(|p| forge::binds(p, &facts)).cloned().collect();
         // A PR a full list cut off is read by itself, and keeps its last
@@ -754,7 +762,7 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
         // where the read fails; one that answers nothing is `unfound`, and
         // owed no further read. Found only this way and not a `pr create`'s,
         // it is someone else's: reviewed.
-        for url in &t.opened {
+        for (url, theirs) in t.named() {
             let named = |p: &Pr| {
                 forge::same_url(&p.url, url)
                     || forge::repo_of_url(url).is_some_and(|r| {
@@ -765,7 +773,6 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
             if bound.iter().any(named) {
                 continue;
             }
-            let theirs = t.theirs.iter().any(|u| forge::same_url(u, url));
             if theirs && !q.others {
                 continue;
             }
@@ -3537,7 +3544,7 @@ mod tests {
                 dir: dir.clone(),
                 base_oid: base.clone(),
             }],
-            opened: Vec::new(),
+            created: Vec::new(),
             theirs: Vec::new(),
             repos: Vec::new(),
             held: Vec::new(),

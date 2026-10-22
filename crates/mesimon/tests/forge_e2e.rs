@@ -2371,14 +2371,6 @@ fn gh_stub(name: &str) -> (PathBuf, String) {
     (stub_dir, path_var)
 }
 
-/// One turn of a session, by its hooks, ending idle.
-fn turn(c: &mut TestClient, hook_sock: &Path, sid: uuid::Uuid) {
-    hook_send(hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-    c.await_state(sid, "running", |s| *s == SessionState::Running);
-    hook_send(hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-    c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-}
-
 /// A crown, idle, and a worker it started on a worktree with one commit,
 /// its delivery heard: the crown's session, the worker's ticket and
 /// session, the worktree's branch and path, its tip, and the worker as the
@@ -2394,7 +2386,6 @@ struct Crowned {
 }
 
 fn crowned(h: &Harness, c: &mut TestClient) -> Crowned {
-    let hook_sock = h.paths.hook_sock();
     let got = h.dir.join("got.txt");
     let create = |c: &mut TestClient, title: &str| match c.request(Command::CreateTicket {
         column: "TODO".into(),
@@ -2419,7 +2410,7 @@ fn crowned(h: &Harness, c: &mut TestClient) -> Crowned {
     };
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(Duration::from_millis(500));
-    turn(c, &hook_sock, sa);
+    h.one_turn(c, sa);
     let seen = match c
         .send(Principal::Agent { session: sa }, Command::AgentReadTicket { key: kw.clone() })
     {
@@ -2451,11 +2442,11 @@ fn crowned(h: &Harness, c: &mut TestClient) -> Crowned {
     git(&path, &["commit", "-qm", "work"]);
     let tip = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
     let named = format!("{kw} \"forge worker\"");
-    turn(c, &hook_sock, ws);
+    h.one_turn(c, ws);
     wait_until(Duration::from_secs(10), "the delivery's wake", || {
         std::fs::read_to_string(&got).is_ok_and(|t| t.contains(&format!("{named} delivered")))
     });
-    turn(c, &hook_sock, sa);
+    h.one_turn(c, sa);
     Crowned { crown: sa, worker: w, ws, branch: wt.branch, path, tip, named }
 }
 
@@ -2499,7 +2490,6 @@ fn a_freshly_bound_prs_state_is_news_and_its_merge_comes_before_its_deployment()
     };
     init_repo(&h.repo, "a.txt", "hello\n");
     git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("forge_fresh");
     through_prs(&mut c);
     // A column waits on staging, so the pass asks for deployments.
@@ -2532,7 +2522,7 @@ fn a_freshly_bound_prs_state_is_news_and_its_merge_comes_before_its_deployment()
             .iter()
             .any(|l| l.contains("pipeline passed #42)"))
     });
-    turn(&mut c, &hook_sock, k.crown);
+    h.one_turn(&mut c, k.crown);
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(wakes(&h, k.worker, "forge"), 1, "{}", std::fs::read_to_string(&got).unwrap());
     assert_eq!(lines_with("pipeline passed #42").len(), 1);
@@ -2546,7 +2536,7 @@ fn a_freshly_bound_prs_state_is_news_and_its_merge_comes_before_its_deployment()
     let line = lines_with("deployed to staging #42").remove(0);
     assert!(line.contains(&format!("{} merged (", k.named)), "{line}");
     assert!(line.contains("merged #42, deployed to staging #42)"), "{line}");
-    turn(&mut c, &hook_sock, k.crown);
+    h.one_turn(&mut c, k.crown);
     // The flags' wake on the tick found the merge told.
     std::thread::sleep(Duration::from_millis(2000));
     let all = std::fs::read_to_string(&got).unwrap();
@@ -2603,7 +2593,6 @@ fn a_later_deploy_carrying_every_merged_mr_moves_the_ticket_to_prod() {
     };
     init_repo(&h.repo, "a.txt", "hello\n");
     git(&h.repo, &["remote", "add", "origin", "https://gitlab.example.com/lab/forge-lab-api.git"]);
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("forge_batch");
     through_prs(&mut c);
     // A PROD column a ticket arrives in once production runs its merges.
@@ -2660,7 +2649,7 @@ fn a_later_deploy_carrying_every_merged_mr_moves_the_ticket_to_prod() {
     wait_until(Duration::from_secs(20), "the merged wake", || {
         !lines_with(&format!("{} merged (", k.named)).is_empty()
     });
-    turn(&mut c, &hook_sock, k.crown);
+    h.one_turn(&mut c, k.crown);
     let runs = |sha: &str, at: &str| {
         write(
             &deploys.with_extension("production"),
@@ -2680,7 +2669,7 @@ fn a_later_deploy_carrying_every_merged_mr_moves_the_ticket_to_prod() {
     assert!(deployed(&mut c, 15).is_empty(), "the deployed commit is older than !15's merge");
     assert!(lines_with("deployed to production !15").is_empty());
     assert_ne!(column(&mut c), "PROD", "!15 is not on production");
-    turn(&mut c, &hook_sock, k.crown);
+    h.one_turn(&mut c, k.crown);
 
     // ---- production runs !14's merge commit, which carries both ------------
     runs(m14, "2026-10-15T10:02:16Z");
@@ -2693,7 +2682,7 @@ fn a_later_deploy_carrying_every_merged_mr_moves_the_ticket_to_prod() {
         !lines_with("deployed to production !15").is_empty()
     });
     assert_eq!(lines_with("deployed to production !13").len(), 1, "!13 is said once");
-    turn(&mut c, &hook_sock, k.crown);
+    h.one_turn(&mut c, k.crown);
 
     // ---- a rollback: off both rows, and the card stays ----------------------
     runs(&base, "2026-10-15T11:00:00Z");
@@ -2766,7 +2755,7 @@ fn a_conflict_said_before_a_restart_says_its_clear_after_it() {
     });
     write(&prs_file, &pr("CONFLICTING"));
     wait_until(Duration::from_secs(20), "the conflict's wake", || said("conflict #42)") == 1);
-    turn(&mut c, &hook_sock, k.crown);
+    h.one_turn(&mut c, k.crown);
     wait_until(Duration::from_secs(10), "forge.json to hold the conflict said", conflict_kept);
 
     // D1: a restart with the conflict standing. The first read after it
@@ -2774,7 +2763,7 @@ fn a_conflict_said_before_a_restart_says_its_clear_after_it() {
     drop(c);
     h.restart_after(|| {});
     let mut c = h.client("forge_clear-2");
-    turn(&mut c, &hook_sock, k.crown);
+    h.one_turn(&mut c, k.crown);
     wait_until(Duration::from_secs(20), "the first live read", || sampled(&mut c) > 0);
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(wakes(&h, k.worker, "forge"), 1, "{}", std::fs::read_to_string(&got).unwrap());
@@ -2796,7 +2785,7 @@ fn a_conflict_said_before_a_restart_says_its_clear_after_it() {
     wait_until(Duration::from_secs(10), "the clear's line", || said("conflict cleared #42)") == 1);
     let line = line_with("conflict cleared #42)");
     assert!(line.contains("column TODO, conflict cleared #42)"), "{line}");
-    turn(&mut c, &hook_sock, k.crown);
+    h.one_turn(&mut c, k.crown);
 
     // Said again, and cleared while the daemon is down: the first read
     // after the restart says the clear. The column was told: not again.
@@ -2806,12 +2795,12 @@ fn a_conflict_said_before_a_restart_says_its_clear_after_it() {
     });
     let line = line_with("conflict #42)");
     assert!(!line.contains("column"), "{line}");
-    turn(&mut c, &hook_sock, k.crown);
+    h.one_turn(&mut c, k.crown);
     wait_until(Duration::from_secs(10), "forge.json to hold it", conflict_kept);
     drop(c);
     h.restart_after(|| write(&prs_file, &pr("MERGEABLE")));
     let mut c = h.client("forge_clear-3");
-    turn(&mut c, &hook_sock, k.crown);
+    h.one_turn(&mut c, k.crown);
     // Owed across the restart, the line says so last.
     wait_until(Duration::from_secs(20), "the clear's wake after the restart", || {
         said("conflict cleared #42, after a restart)") == 1
@@ -3068,7 +3057,6 @@ fn a_turn_end_wake_waits_for_the_turns_forge_read() {
     };
     init_repo(&h.repo, "a.txt", "hello\n");
     git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("forge_wait");
     through_prs(&mut c);
     let k = crowned(&h, &mut c);
@@ -3091,7 +3079,7 @@ fn a_turn_end_wake_waits_for_the_turns_forge_read() {
     git(&k.path, &["update-ref", &format!("refs/remotes/origin/{}", k.branch), &k.tip]);
     write(&prs_file, &open_pr_json(&k.branch, &k.tip, "[]", "MERGEABLE", "REVIEW_REQUIRED"));
     let ended = std::time::Instant::now();
-    turn(&mut c, &hook_sock, k.ws);
+    h.one_turn(&mut c, k.ws);
     wait_until(Duration::from_secs(30), "the turn's wake", || !lines_with(&finished).is_empty());
     let waited = ended.elapsed();
     let prs = match c
@@ -3107,7 +3095,7 @@ fn a_turn_end_wake_waits_for_the_turns_forge_read() {
     assert!(waited < Duration::from_secs(16), "the wait is bounded: {waited:?}");
 
     // One wake for that turn: the read's opening said nothing of its own.
-    turn(&mut c, &hook_sock, k.crown);
+    h.one_turn(&mut c, k.crown);
     std::thread::sleep(Duration::from_millis(3000));
     let all = std::fs::read_to_string(&got).unwrap();
     assert_eq!(wakes(&h, k.worker, "finished"), 1, "{all}");
@@ -3165,7 +3153,7 @@ fn an_opening_read_mid_turn_rides_the_turns_wake() {
     wait_until(Duration::from_secs(20), "the turn's wake", || all().contains(&finished));
     let line = all().lines().find(|l| l.contains(&finished)).unwrap().to_string();
     assert!(line.contains("opened #42"), "{line}");
-    turn(&mut c, &hook_sock, k.crown);
+    h.one_turn(&mut c, k.crown);
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(all().matches("opened #42").count(), 1, "{}", all());
     let _ = std::fs::remove_dir_all(&stub_dir);
@@ -3200,7 +3188,6 @@ fn a_ticket_whose_work_went_through_a_pr_is_never_the_trains() {
     let repo = h.repo.clone();
     init_repo(&repo, "a.txt", "hello\n");
     git(&repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("forge-carried");
     through_prs(&mut c);
     assert!(matches!(
@@ -3229,8 +3216,8 @@ fn a_ticket_whose_work_went_through_a_pr_is_never_the_trains() {
         prs.iter().any(|p| p.ticket == id && p.number == 42 && p.state == "merged")
             && prs.iter().any(|p| p.ticket == gamma && p.number == 43 && p.state == "closed")
     });
-    turn(&mut c, &hook_sock, sid);
-    turn(&mut c, &hook_sock, gsid);
+    h.one_turn(&mut c, sid);
+    h.one_turn(&mut c, gsid);
     wait_until(Duration::from_secs(10), "the turns' ends to land both in REVIEW", || {
         let b = c.board();
         [id, gamma].iter().all(|t| b.ticket(*t).is_some_and(|t| t.column == "REVIEW"))
@@ -3295,7 +3282,7 @@ fn a_ticket_whose_work_went_through_a_pr_is_never_the_trains() {
     // train lands nothing, `get_ticket` says the forge, and `m` asks for a
     // PR.
     let (beta, bsid, _, _) = ready(&mut c, "beta");
-    turn(&mut c, &hook_sock, bsid);
+    h.one_turn(&mut c, bsid);
     wait_until(Duration::from_secs(10), "beta's turn's end to land it in REVIEW", || {
         c.board().ticket(beta).is_some_and(|t| t.column == "REVIEW")
     });
@@ -3918,9 +3905,9 @@ fn a_pr_opened_before_the_ledger_looked_binds_quietly_after_the_backfill() {
         &format!(r#"{{"session_id":"x","transcript_path":"{}"}}"#, transcript.display()),
     );
     // A turn's end is what has the ledger read; the crown takes its wake.
-    turn(&mut c, &hook_sock, k.ws);
+    h.one_turn(&mut c, k.ws);
     std::thread::sleep(Duration::from_millis(1500));
-    turn(&mut c, &hook_sock, k.crown);
+    h.one_turn(&mut c, k.crown);
     let costs = h.paths.costs_file();
     wait_until(Duration::from_secs(20), "the ledger to read the transcript", || {
         std::fs::read_to_string(&costs).is_ok_and(|t| t.contains("pull/42"))
@@ -4152,7 +4139,6 @@ fn a_pull_request_on_a_ticket_with_no_agent_wakes_the_crown() {
     };
     init_repo(&h.repo, "a.txt", "hello\n");
     git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("forge_orphan");
     through_prs(&mut c);
     // A column waits on staging, so the pass asks for deployments.
@@ -4194,7 +4180,7 @@ fn a_pull_request_on_a_ticket_with_no_agent_wakes_the_crown() {
     };
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(Duration::from_millis(500));
-    turn(&mut c, &hook_sock, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- a ticket with no agent, its PR named under its Summary ----------
     let b = create(&mut c, "named");
@@ -4221,7 +4207,7 @@ fn a_pull_request_on_a_ticket_with_no_agent_wakes_the_crown() {
     wait_until(Duration::from_secs(20), "the named PR's merge wake", || {
         lines_with(&named_b).iter().any(|l| l.contains("merged #42)"))
     });
-    turn(&mut c, &hook_sock, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- a worktree ticket whose agent went ------------------------------
     let (o, so, branch, path) = ready(&mut c, "orphan");
@@ -4252,7 +4238,7 @@ fn a_pull_request_on_a_ticket_with_no_agent_wakes_the_crown() {
     wait_until(Duration::from_secs(20), "the orphan's deployment wake", || {
         lines_with(&named_o).iter().any(|l| l.contains("deployed to staging #43)"))
     });
-    turn(&mut c, &hook_sock, sa);
+    h.one_turn(&mut c, sa);
     std::thread::sleep(Duration::from_millis(1500));
     let all = std::fs::read_to_string(&got).unwrap_or_default();
     assert_eq!(wakes(&h, b, "forge"), 1, "{all}");
@@ -4374,7 +4360,7 @@ fn a_deploy_to_an_earlier_environment_never_moves_the_card_back() {
     wait_until(Duration::from_secs(20), "the merged wake", || {
         !lines_with(&format!("{} merged (", k.named)).is_empty()
     });
-    turn(&mut c, &hook_sock, k.crown);
+    h.one_turn(&mut c, k.crown);
     let runs = |env: &str, sha: &str, at: &str| {
         write(
             &deploys.with_extension(env),
@@ -4544,7 +4530,7 @@ fn a_summary_address_and_news_on_a_warm_pull_request_are_read_within_seconds() {
     let heard = reviewed.elapsed();
     eprintln!("T-895 warm review: the crown heard it {heard:?} after the forge changed");
     assert!(heard < Duration::from_secs(5), "the crown heard the review {heard:?} after it");
-    turn(&mut c, &hook_sock, k.crown);
+    h.one_turn(&mut c, k.crown);
     assert_eq!(wakes(&h, b, "forge"), 1);
 
     // ---- the window closes: the minute alone reads it -------------------
@@ -4577,7 +4563,7 @@ fn a_summary_address_and_news_on_a_warm_pull_request_are_read_within_seconds() {
         other => panic!("spawn: {other:?}"),
     };
     std::thread::sleep(Duration::from_millis(500));
-    turn(&mut c, &hook_sock, ps);
+    h.one_turn(&mut c, ps);
     // The crown watches it (T-712), so its turns' ends are the crown's.
     let seen = match c
         .send(Principal::Agent { session: k.crown }, Command::AgentReadTicket { key: kp.clone() })

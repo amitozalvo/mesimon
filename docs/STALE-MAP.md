@@ -29717,3 +29717,32 @@ a scratch repo's `orch.sock`: one Hello for two asks, none for Subscribe, one mo
 a hang-up). **Owed:** a CHANGELOG line at the next bump — **Changed:** the board no longer
 freezes while the daemon is slow to answer a refresh; keys and the spinner keep going and the
 board lands when it comes.
+
+## Wire twins and e2e helpers left by the sixth simplify pass (T-875, 2026-10-22)
+
+Three leftovers the sixth simplify pass (T-867) named and did not take, because each touches a
+wire name or a test shape.
+
+- **`PeerAnswer` is the one board-ask answer.** `Response::PeerAsked` (daemon to daemon) and
+  `Response::AgentAskedBoard` (to the asking crown) spelled `road`, `crown` and `reply` twice,
+  and `agent_ask_board` took one apart to build the other. Now `PeerAsked(PeerAnswer)` and
+  `AgentAskedBoard { board, #[serde(flatten)] asked: PeerAnswer }`: **the wire bytes are the
+  same** (`command::tests::board_ask_answers_keep_their_bytes` pins both lines and an older
+  daemon's answer without `reply`), and `ask_board`'s text is unchanged, so no rig run. The
+  receipt's `reply` stays this board's own reading (`PeerAnswer { reply, ..asked }`), not the
+  peer's.
+- **A ticket's PR addresses are two lists that share none.** `TicketQuery` carries `created`
+  (the `pr create`s' URLs) and `theirs` (acted on, the `Summary`'s), and
+  `TicketQuery::named()` yields each with whether it is someone else's, the `pr create`s' first
+  — the order `opened` had. `forge::sample` no longer asks `theirs` per address. `NamedPrs`
+  builds the same two lists (`is_empty`, `into_all` for `forge_fresh`); T-895's
+  `forge_names` and `opened_unread` behave as before.
+- **E2e helpers in `tests/common/mod.rs`:** `TestClient::create_ticket(title)` (TODO, the
+  board's default workspace), `TestClient::spawn_claude(ticket)` (launch words unsent) and
+  `Harness::one_turn(c, sid)` (`UserPromptSubmit`, running, `Stop`, idle). Migrated:
+  `boardlink_e2e`, `crown_e2e` and `provider_e2e`'s `create`/`spawn` pairs, `boardlink_e2e`'s
+  `settle_idle` and `forge_e2e`'s module `turn`. **Left as they are**, the diff not a line
+  each: helpers with another column, workspace or tier (`column_e2e`, `duplicate_e2e`,
+  `tier_e2e`), a spawn that submits or returns the ticket too (`mod_turns_e2e`,
+  `mod_bridge_e2e`, `state_lab_e2e`), `mcp_e2e`'s `turn` (Stop first, then a prompt) and the
+  local `turn`s inside `forge_e2e`'s tests. New tests use the common three.

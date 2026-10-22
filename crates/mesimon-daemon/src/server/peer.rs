@@ -32,7 +32,7 @@
 use std::path::Path;
 
 use mesimon_core::boardlink::{self, Links};
-use mesimon_core::command::{BoardTouch, LinkView, TouchAction};
+use mesimon_core::command::{BoardTouch, LinkView, PeerAnswer, TouchAction};
 use mesimon_core::prompts::AgentPrompt;
 
 use super::*;
@@ -199,7 +199,7 @@ impl Daemon {
             command: Command::PeerAsk { crown_key, crown_title, text: text.clone() },
         };
         let answer = match call_peer(&sock, &env) {
-            Ok(Response::PeerAsked { road, crown, .. }) => Ok((road, crown)),
+            Ok(Response::PeerAsked(asked)) => Ok(asked),
             Ok(Response::Err { message }) => Err(message),
             Ok(_) => Err("answered in words this build cannot read".to_string()),
             Err(why) => Err(why),
@@ -211,7 +211,7 @@ impl Daemon {
                 self.broadcast();
                 Response::Err { message: format!("{name} {why}") }
             }
-            Ok((road, crown)) => {
+            Ok(asked) => {
                 // Answering an ask that board made here is a reply; the
                 // next words from there answer this one.
                 let reply = self.asks_in.remove(&other).is_some();
@@ -224,9 +224,9 @@ impl Daemon {
                     None,
                 );
                 self.crown_said(ticket, &format!("→ {name}: {text}"));
-                self.feed.board_outcome("agent", "ask_board", Some(ticket), road.word());
+                self.feed.board_outcome("agent", "ask_board", Some(ticket), asked.road.word());
                 self.broadcast();
-                Response::AgentAskedBoard { board: name, road, crown, reply }
+                Response::AgentAskedBoard { board: name, asked: PeerAnswer { reply, ..asked } }
             }
         }
     }
@@ -340,7 +340,7 @@ impl Daemon {
             self.drain_queue();
         }
         self.broadcast();
-        Response::PeerAsked { road, crown: key, reply }
+        Response::PeerAsked(PeerAnswer { road, crown: key, reply })
     }
 
     /// `park_ask` for a peer's words: the entry carries where they came
