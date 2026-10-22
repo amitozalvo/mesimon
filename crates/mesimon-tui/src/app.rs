@@ -619,6 +619,15 @@ pub(crate) struct HeldArchive {
     stale: bool,
 }
 
+/// How often a tick looks for the snapshot in flight (T-911): its answer
+/// is drawn at most this long after it lands, and each look renders a frame
+/// (~3 ms on a 40-ticket board), writing only what changed.
+pub(crate) const SNAPSHOT_FRAME: Duration = Duration::from_millis(8);
+
+/// How long an ask is looked for at `SNAPSHOT_FRAME`: a daemon slower than
+/// this is waited for at the idle pace, not rendered for every 8 ms.
+pub(crate) const SNAPSHOT_SOON: Duration = Duration::from_secs(1);
+
 /// A change this board sent and the daemon took (T-910, T-911), as it sent
 /// it. Held in `App::laid` until the first board asked after it lands.
 #[derive(Debug, Clone, PartialEq)]
@@ -629,41 +638,6 @@ pub(crate) enum Edit {
     Tag { ticket: ulid::Ulid, group: u8, name: Option<String> },
     /// A registry tag's tint.
     TagColor { group: u8, name: String, color: u8 },
-    /// `ticket`'s tier pick, as the daemon stores it (`Book::stored_pick`).
-    Tier { ticket: ulid::Ulid, tier: Option<String> },
-    /// A column's whole settings struct.
-    Column { name: String, settings: ColumnSettings },
-    /// One of the board's own settings.
-    Board(BoardSetting),
-}
-
-/// A board setting a Settings row sets by itself (T-911).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum BoardSetting {
-    CrownBudget(u8),
-    CrownMode(mesimon_core::board::CrownMode),
-    MergeInto(mesimon_core::board::MergeInto),
-    CrownArchives(bool),
-    ReviewedPrs(bool),
-    CrownWatches(bool),
-    McpTools(bool),
-    Workspace(WorkspaceStrategy),
-}
-
-impl BoardSetting {
-    /// The command that sets it.
-    fn command(self) -> Command {
-        match self {
-            BoardSetting::CrownBudget(budget) => Command::SetCrownBudget { budget },
-            BoardSetting::CrownMode(mode) => Command::SetCrownMode { mode },
-            BoardSetting::MergeInto(into) => Command::SetMergeInto { into },
-            BoardSetting::CrownArchives(on) => Command::SetCrownArchives { on },
-            BoardSetting::ReviewedPrs(on) => Command::SetReviewedPrs { on },
-            BoardSetting::CrownWatches(on) => Command::SetCrownWatches { on },
-            BoardSetting::McpTools(on) => Command::SetMcpTools { on },
-            BoardSetting::Workspace(workspace) => Command::SetBoardWorkspace { workspace },
-        }
-    }
 }
 
 /// An `Edit` and `need`, the count of the first board asked after it: the
@@ -689,29 +663,6 @@ impl Edit {
             Edit::TagColor { group, name, color } => {
                 let _ = board.set_tag_color(*group, name, *color);
             }
-            Edit::Tier { ticket, tier } => {
-                if let Some(t) = board.ticket_mut(*ticket) {
-                    t.tier = tier.clone();
-                }
-            }
-            Edit::Column { name, settings } => {
-                if let Some(c) = board.column_mut(name) {
-                    c.settings = settings.clone();
-                }
-            }
-            Edit::Board(s) => match *s {
-                BoardSetting::CrownBudget(v) => board.crown_budget = v,
-                BoardSetting::CrownMode(v) => board.crown_mode = v,
-                BoardSetting::MergeInto(v) => board.merge_into = v,
-                BoardSetting::CrownArchives(v) => board.crown_archives = v,
-                BoardSetting::ReviewedPrs(v) => board.reviewed_prs = v,
-                BoardSetting::CrownWatches(v) => board.crown_watches = v,
-                BoardSetting::McpTools(v) => board.mcp_tools = v,
-                // As the daemon stores it: shared is no word.
-                BoardSetting::Workspace(v) => {
-                    board.workspace = (v != WorkspaceStrategy::SharedCheckout).then_some(v)
-                }
-            },
         }
     }
 }
@@ -2273,6 +2224,8 @@ pub struct App {
     /// at a time: a push or a key that wants the board while one is out
     /// sets `snapshot_wanted`, and the landing asks once more.
     snapshot_rx: Option<(u64, Receiver<Result<Response>>)>,
+    /// When the ask in flight went (`frame_wait`).
+    snapshot_asked_at: Instant,
     snapshot_wanted: bool,
     /// Every snapshot asked, counted (T-812 review): `landing` is the count
     /// the displayed board was asked at, `need_seq` the count a board must
@@ -2510,6 +2463,7 @@ impl App {
             daemon_down: false,
             last_reconnect: None,
             snapshot_rx: None,
+            snapshot_asked_at: Instant::now(),
             snapshot_wanted: false,
             snapshot_sent: 1,
             landing: 1,
@@ -3199,7 +3153,6 @@ impl App {
     fn lay(&mut self, edit: Edit) {
         edit.lay(Arc::make_mut(&mut self.board));
         self.laid.push(Laid { edit, need: self.snapshot_sent + 1 });
-        // A column's collapse is its pin.
         self.reindex_columns();
     }
 
@@ -3229,6 +3182,7 @@ impl App {
     /// One ask on the lane, counted.
     fn send_snapshot(&mut self) {
         self.snapshot_sent += 1;
+        self.snapshot_asked_at = Instant::now();
         self.snapshot_rx = Some((self.snapshot_sent, self.client.snapshot_detached()));
     }
 
@@ -4093,18 +4047,31 @@ impl App {
         }
         // Setup's practice board and its probe (T-816).
         dirty |= self.tick_setup()?;
-        // The loop redraws once per tick, so the poll timeout is the frame
-        // rate: 100 ms paces the spinner, and a panel in motion gets a
-        // shorter one for the few frames it takes to settle.
         self.drive_arcade(Instant::now());
-        let playing = self.arcade.borrow().as_ref().is_some_and(|g| g.playing());
-        let frame = if playing || self.animating() { 16 } else { 100 };
         let read = |wait: Duration| -> Result<Option<TermEvent>> {
             Ok(if event::poll(wait)? { Some(event::read()?) } else { None })
         };
-        match self.next_event(Duration::from_millis(frame), read)? {
+        match self.next_event(self.frame_wait(), read)? {
             Some(ev) => Ok(self.on_event(ev)? || dirty),
             None => Ok(dirty),
+        }
+    }
+
+    /// How long a tick waits for the terminal. The loop redraws once per
+    /// tick, so this is the frame rate: 100 ms paces the spinner, and a
+    /// panel in motion gets 16 ms for the few frames it takes to settle.
+    /// A snapshot in flight gets `SNAPSHOT_FRAME` (T-911): nothing wakes
+    /// the terminal's poll when the lane answers, so at 100 ms a key's
+    /// board landed up to 100 ms after it was in, on a ~15 ms round trip.
+    /// Past `SNAPSHOT_SOON` the daemon is slow, and the idle pace waits.
+    pub(crate) fn frame_wait(&self) -> Duration {
+        let playing = self.arcade.borrow().as_ref().is_some_and(|g| g.playing());
+        if self.snapshot_rx.is_some() && self.snapshot_asked_at.elapsed() < SNAPSHOT_SOON {
+            SNAPSHOT_FRAME
+        } else if playing || self.animating() {
+            Duration::from_millis(16)
+        } else {
+            Duration::from_millis(100)
         }
     }
 
@@ -8551,96 +8518,143 @@ impl App {
             // in `key_input` and `key_editor`.
             Verb::TierNext => self.cycle_tier()?,
             Verb::CrownBudget => {
-                self.set_board(|b| {
-                    BoardSetting::CrownBudget(match b.crown_budget {
-                        0 => 1,
-                        1 => 2,
-                        2 => 3,
-                        3..=4 => 5,
-                        5..=7 => 8,
-                        _ => 0,
-                    })
-                })?;
+                if !self.catch_up()? {
+                    return Ok(());
+                }
+                let budget = match self.board.crown_budget {
+                    0 => 1,
+                    1 => 2,
+                    2 => 3,
+                    3..=4 => 5,
+                    5..=7 => 8,
+                    _ => 0,
+                };
+                match self.client.request(Command::SetCrownBudget { budget })? {
+                    Response::Err { message } => self.status = message,
+                    _ => self.refresh_soon()?,
+                }
             }
             Verb::CrownMode => {
-                let set = self.set_board(|b| BoardSetting::CrownMode(b.crown_mode.toggled()))?;
-                if let Some(BoardSetting::CrownMode(mode)) = set {
-                    // The reach (T-550, T-569, T-582, T-610): which
-                    // agents take its words and its answers, and that
-                    // a person's agent never does.
-                    self.status = if mode.sends() {
-                        "crown autonomous ∙ agents it started take its asks and its answers"
-                            .into()
-                    } else {
-                        "crown supervised ∙ its asks wait for ^y, every question and plan for you"
-                            .into()
-                    };
+                if !self.catch_up()? {
+                    return Ok(());
+                }
+                let mode = self.board.crown_mode.toggled();
+                match self.client.request(Command::SetCrownMode { mode })? {
+                    Response::Err { message } => self.status = message,
+                    _ => {
+                        self.refresh_soon()?;
+                        // The reach (T-550, T-569, T-582, T-610): which
+                        // agents take its words and its answers, and that
+                        // a person's agent never does.
+                        self.status = if mode.sends() {
+                            "crown autonomous ∙ agents it started take its asks and its answers"
+                                .into()
+                        } else {
+                            "crown supervised ∙ its asks wait for ^y, every question and plan for you"
+                                .into()
+                        };
+                    }
                 }
             }
             // Where the board's worktree branches land (T-810): board state
             // like the crown's mode, so it goes to the daemon and comes back
             // on the snapshot.
             Verb::MergeInto => {
-                let set = self.set_board(|b| BoardSetting::MergeInto(b.merge_into.toggled()))?;
-                if let Some(BoardSetting::MergeInto(into)) = set {
-                    self.status = if into.pull_requests() {
-                        "merge into pull requests ∙ branches land on the forge, which the board now reads"
-                            .into()
-                    } else {
-                        "merge into main ∙ the merge train and m land branches, and no forge is read"
-                            .into()
-                    };
+                if !self.catch_up()? {
+                    return Ok(());
+                }
+                let into = self.board.merge_into.toggled();
+                match self.client.request(Command::SetMergeInto { into })? {
+                    Response::Err { message } => self.status = message,
+                    _ => {
+                        self.refresh_soon()?;
+                        self.status = if into.pull_requests() {
+                            "merge into pull requests ∙ branches land on the forge, which the board now reads"
+                                .into()
+                        } else {
+                            "merge into main ∙ the merge train and m land branches, and no forge is read"
+                                .into()
+                        };
+                    }
                 }
             }
             Verb::CrownArchives => {
-                let set = self.set_board(|b| BoardSetting::CrownArchives(!b.crown_archives))?;
-                if let Some(BoardSetting::CrownArchives(on)) = set {
-                    // Who takes a card off the board (T-590).
-                    self.status = if on {
-                        "crown archives on ∙ it may archive and restore tickets".into()
-                    } else {
-                        "crown archives off ∙ it may not archive or restore tickets".into()
-                    };
+                if !self.catch_up()? {
+                    return Ok(());
+                }
+                let on = !self.board.crown_archives;
+                match self.client.request(Command::SetCrownArchives { on })? {
+                    Response::Err { message } => self.status = message,
+                    _ => {
+                        self.refresh_soon()?;
+                        // Who takes a card off the board (T-590).
+                        self.status = if on {
+                            "crown archives on ∙ it may archive and restore tickets".into()
+                        } else {
+                            "crown archives off ∙ it may not archive or restore tickets".into()
+                        };
+                    }
                 }
             }
             Verb::ReviewedPrs => {
-                let set = self.set_board(|b| BoardSetting::ReviewedPrs(!b.reviewed_prs))?;
-                if let Some(BoardSetting::ReviewedPrs(on)) = set {
-                    // Whose pull requests a ticket carries (T-859).
-                    self.status = if on {
-                        "reviewed pull requests on ∙ a PR the agent reviewed or named in its \
-                         Summary is the ticket's too"
-                            .into()
-                    } else {
-                        "reviewed pull requests off ∙ a ticket's PRs are the ones this \
-                         account opened"
-                            .into()
-                    };
+                if !self.catch_up()? {
+                    return Ok(());
+                }
+                let on = !self.board.reviewed_prs;
+                match self.client.request(Command::SetReviewedPrs { on })? {
+                    Response::Err { message } => self.status = message,
+                    _ => {
+                        self.refresh_soon()?;
+                        // Whose pull requests a ticket carries (T-859).
+                        self.status = if on {
+                            "reviewed pull requests on ∙ a PR the agent reviewed or named in its \
+                             Summary is the ticket's too"
+                                .into()
+                        } else {
+                            "reviewed pull requests off ∙ a ticket's PRs are the ones this \
+                             account opened"
+                                .into()
+                        };
+                    }
                 }
             }
             Verb::CrownWatches => {
-                let set = self.set_board(|b| BoardSetting::CrownWatches(!b.crown_watches))?;
-                if let Some(BoardSetting::CrownWatches(on)) = set {
-                    // Whose tickets wake the crown (T-712).
-                    self.status = if on {
-                        "crown watches on ∙ a ticket it watches wakes it as its own workers do"
-                            .into()
-                    } else {
-                        "crown watches off ∙ it hears only of the agents it started".into()
-                    };
+                if !self.catch_up()? {
+                    return Ok(());
+                }
+                let on = !self.board.crown_watches;
+                match self.client.request(Command::SetCrownWatches { on })? {
+                    Response::Err { message } => self.status = message,
+                    _ => {
+                        self.refresh_soon()?;
+                        // Whose tickets wake the crown (T-712).
+                        self.status = if on {
+                            "crown watches on ∙ a ticket it watches wakes it as its own workers do"
+                                .into()
+                        } else {
+                            "crown watches off ∙ it hears only of the agents it started".into()
+                        };
+                    }
                 }
             }
             Verb::McpTools => {
-                let set = self.set_board(|b| BoardSetting::McpTools(!b.mcp_tools))?;
-                if let Some(BoardSetting::McpTools(on)) = set {
-                    // Says the reach, not just the state: a user who
-                    // turns the tools off and watches a running agent go
-                    // on using them has been told wrong.
-                    self.status = if on {
-                        "agent tools on ∙ new sessions and wakes get them".into()
-                    } else {
-                        "agent tools off ∙ new sessions and wakes lose them".into()
-                    };
+                if !self.catch_up()? {
+                    return Ok(());
+                }
+                let on = !self.board.mcp_tools;
+                match self.client.request(Command::SetMcpTools { on })? {
+                    Response::Err { message } => self.status = message,
+                    _ => {
+                        self.refresh_soon()?;
+                        // Says the reach, not just the state: a user who
+                        // turns the tools off and watches a running agent go
+                        // on using them has been told wrong.
+                        self.status = if on {
+                            "agent tools on ∙ new sessions and wakes get them".into()
+                        } else {
+                            "agent tools off ∙ new sessions and wakes lose them".into()
+                        };
+                    }
                 }
             }
             // The brief's switch, from Settings (T-224): board state like the
@@ -9456,7 +9470,7 @@ impl App {
             // the board does, so the row steps to the other one and back
             // to saying nothing.
             Verb::ColumnWorkspace => {
-                if !self.catch_up_column()? {
+                if !self.catch_up()? {
                     return Ok(());
                 }
                 let board = self.board.workspace.unwrap_or(WorkspaceStrategy::SharedCheckout);
@@ -9477,14 +9491,14 @@ impl App {
             // The next value is computed off the board (T-812 re-review):
             // caught up first, not only inside `set_column`.
             Verb::ColumnOnWorking => {
-                if !self.catch_up_column()? {
+                if !self.catch_up()? {
                     return Ok(());
                 }
                 let next = self.next_column_target(|s| s.on_working.clone());
                 self.set_column(|s| s.on_working = next)?;
             }
             Verb::ColumnOnDone => {
-                if !self.catch_up_column()? {
+                if !self.catch_up()? {
                     return Ok(());
                 }
                 let next = self.next_column_target(|s| s.on_done.clone());
@@ -9502,7 +9516,7 @@ impl App {
             // T-739. The ring's `deployed to` stop is not sent on its own: it
             // opens the environment's field, and Enter there sends both.
             Verb::ColumnArrives => {
-                if !self.catch_up_column()? {
+                if !self.catch_up()? {
                     return Ok(());
                 }
                 let Some(col) = self.dialog_column() else { return Ok(()) };
@@ -9536,15 +9550,20 @@ impl App {
             // Where a ticket nothing else chose works (T-816): board state,
             // to the daemon and back on the snapshot.
             Verb::BoardWorkspace => {
-                let set = self.set_board(|b| {
-                    BoardSetting::Workspace(if b.workspace == Some(WorkspaceStrategy::Worktree) {
-                        WorkspaceStrategy::SharedCheckout
-                    } else {
-                        WorkspaceStrategy::Worktree
-                    })
-                })?;
-                if let Some(BoardSetting::Workspace(workspace)) = set {
-                    self.status = format!("new tickets work in a {}", workspace.word());
+                if !self.catch_up()? {
+                    return Ok(());
+                }
+                let workspace = if self.board.workspace == Some(WorkspaceStrategy::Worktree) {
+                    WorkspaceStrategy::SharedCheckout
+                } else {
+                    WorkspaceStrategy::Worktree
+                };
+                match self.client.request(Command::SetBoardWorkspace { workspace })? {
+                    Response::Err { message } => self.status = message,
+                    _ => {
+                        self.refresh_soon()?;
+                        self.status = format!("new tickets work in a {}", workspace.word());
+                    }
                 }
             }
             Verb::AdoptObserve => self.adopt_external(false)?,
@@ -10326,60 +10345,20 @@ impl App {
     }
 
     /// One column setting changed from the dialog: the whole struct goes to
-    /// the daemon (one validation site for the two rule targets), and what
-    /// it took is laid on the board until its snapshot lands (T-911); a
-    /// refusal flips nothing.
+    /// the daemon (one validation site for the two rule targets) and the row
+    /// relabels off the snapshot — nothing local is flipped.
     fn set_column(&mut self, f: impl FnOnce(&mut ColumnSettings)) -> Result<()> {
         // The settings as the daemon has them (T-812 review): the whole
         // struct goes, so a second edit before the first's board lands
-        // would otherwise send the first's setting back off. The first's
-        // is laid on the board (T-911), so the second reads it there.
-        if !self.catch_up_column()? {
+        // would otherwise send the first's setting back off.
+        if !self.catch_up()? {
             return Ok(());
         }
         let Some(col) = self.dialog_column() else { return Ok(()) };
         let name = col.name.clone();
         let mut settings = col.settings.clone();
         f(&mut settings);
-        let command = Command::SetColumnSettings { name: name.clone(), settings: settings.clone() };
-        match self.req(command) {
-            Response::Err { message } => self.status = message,
-            _ => self.lay(Edit::Column { name, settings }),
-        }
-        self.refresh_soon()
-    }
-
-    /// One of the board's settings, stepped from its value by `next` and
-    /// laid once the daemon takes it (T-911): `catch_up` first, unless this
-    /// board laid that setting and its board is still out. What was set,
-    /// or `None` when nothing was (a refusal is in the status).
-    fn set_board(&mut self, next: impl Fn(&Board) -> BoardSetting) -> Result<Option<BoardSetting>> {
-        let kind = std::mem::discriminant(&next(&self.board));
-        let laid = |e: &Edit| matches!(e, Edit::Board(s) if std::mem::discriminant(s) == kind);
-        if !self.catch_up_unless_laid(laid)? {
-            return Ok(None);
-        }
-        let setting = next(&self.board);
-        match self.client.request(setting.command())? {
-            Response::Err { message } => {
-                self.status = message;
-                Ok(None)
-            }
-            _ => {
-                self.lay(Edit::Board(setting));
-                self.refresh_soon()?;
-                Ok(Some(setting))
-            }
-        }
-    }
-
-    /// `catch_up` for the dialog's column, unless this board laid its
-    /// settings and their board is still out (`catch_up_unless_laid`).
-    fn catch_up_column(&mut self) -> Result<bool> {
-        let on = self.dialog_column().map(|c| c.name.clone());
-        self.catch_up_unless_laid(
-            |e| matches!(e, Edit::Column { name, .. } if Some(name) == on.as_ref()),
-        )
+        self.send(Command::SetColumnSettings { name, settings })
     }
 
     /// The next target for a `move to` rule: through the other columns in
@@ -13233,12 +13212,10 @@ impl App {
     fn apply_tag(&mut self, group: u8, name: Option<String>) -> Result<()> {
         let ticket = self.tag_armed.as_ref().and_then(|a| a.ticket);
         match ticket {
-            Some(id) => {
-                match self.req(Command::SetTag { id, group, name: name.clone() }) {
-                    Response::Err { message } => self.status = message,
-                    _ => self.lay(Edit::Tag { ticket: id, group, name }),
-                }
-            }
+            Some(id) => match self.req(Command::SetTag { id, group, name: name.clone() }) {
+                Response::Err { message } => self.status = message,
+                _ => self.lay(Edit::Tag { ticket: id, group, name }),
+            },
             None => {
                 if let Some(tags) = self.compose_tags_mut() {
                     tags.retain(|t| t.group != group);
@@ -16871,8 +16848,7 @@ mod tests {
 
     /// Two column edits before the first's board lands (T-812 review): the
     /// second reads the first's answer, not the board it was drawn from,
-    /// so the whole struct it sends keeps the first's setting. The first is
-    /// laid on the board (T-911), so the second reads it without a wait.
+    /// so the whole struct it sends keeps the first's setting.
     #[test]
     fn a_column_edit_reads_the_edit_before_it() {
         let (mut app, _) = App::for_test_logged(board_three_columns(), theme(), false);
@@ -16883,22 +16859,15 @@ mod tests {
         hold.borrow_mut().pushes = 1;
         app.pump().unwrap();
         assert!(app.snapshot_in_flight(), "an ask out, older than both edits");
-        // The first edit waits for the board the push wanted.
         release_late(&hold, LATE);
         app.set_column(|s| s.requires_merge = true).unwrap();
-        assert_eq!(hold.borrow().asks, 2, "the push's, then the edit's");
+        release_late(&hold, LATE);
         app.set_column(|s| s.requires_pipeline = true).unwrap();
-        assert_eq!(hold.borrow().asks, 2, "the second waited on nothing");
-        let todo = app.board.sorted_columns()[0].settings.clone();
-        assert!(todo.requires_merge && todo.requires_pipeline, "both drawn at once: {todo:?}");
-        release(&hold);
-        app.pump().unwrap();
         release(&hold);
         app.pump().unwrap();
         let todo = app.board.sorted_columns()[0].settings.clone();
         assert!(todo.requires_merge, "the first edit survived the second: {todo:?}");
         assert!(todo.requires_pipeline, "{todo:?}");
-        assert!(app.laid.is_empty());
     }
 
     /// `u` after a delete restores the ticket just deleted (T-812 review):
@@ -17050,6 +17019,27 @@ mod tests {
         assert!(app.status.contains("merge before DONE"), "refused: {}", app.status);
         assert!(app.laid.is_empty());
         assert_eq!(drawn_at(&app, ulid::Ulid(1)), ("todo".into(), 0));
+    }
+
+    /// A tick looks for a snapshot in flight every few milliseconds
+    /// (T-911), so a key's board is drawn when it lands, not up to 100 ms
+    /// later; with none out, the board idles at the spinner's pace.
+    #[test]
+    fn a_tick_looks_for_the_board_in_flight_soon() {
+        let (mut app, _) = App::for_test_logged(board_three_columns(), theme(), false);
+        assert_eq!(app.frame_wait(), Duration::from_millis(100), "nothing out");
+        let hold = slow(&mut app);
+        app.refresh_soon().unwrap();
+        assert!(app.snapshot_in_flight());
+        assert_eq!(app.frame_wait(), SNAPSHOT_FRAME);
+        assert!(SNAPSHOT_FRAME <= Duration::from_millis(10));
+        // A daemon that does not answer is waited for at the idle pace.
+        app.snapshot_asked_at = Instant::now() - SNAPSHOT_SOON - Duration::from_millis(1);
+        assert_eq!(app.frame_wait(), Duration::from_millis(100), "a slow daemon");
+        release(&hold);
+        app.pump().unwrap();
+        assert!(!app.snapshot_in_flight());
+        assert_eq!(app.frame_wait(), Duration::from_millis(100), "landed: back to idle");
     }
 
     /// A board whose group 1 names three tags, the cursor on ticket 1.
@@ -17225,16 +17215,10 @@ mod tests {
         let hold = slow(&mut app);
         hold.borrow_mut().pushes = 1;
         app.pump().unwrap();
-        // The first press waits for the board the push wanted; the second
-        // steps from the first, laid on the card (T-911), and waits on
-        // nothing.
         release_late(&hold, LATE);
         app.cycle_tier().unwrap();
+        release_late(&hold, LATE);
         app.cycle_tier().unwrap();
-        assert_eq!(app.tiers().of_ticket(id).id, twice, "two steps at once");
-        assert_eq!(hold.borrow().asks, 2, "the push's and the first press's");
-        release(&hold);
-        app.pump().unwrap();
         release(&hold);
         app.pump().unwrap();
         assert_eq!(app.tiers().of_ticket(id).id, twice, "two steps, not one");
@@ -17267,8 +17251,6 @@ mod tests {
 
     /// The column rings compute their next value off the board (T-812
     /// re-review): two quick presses step twice, not to the same value.
-    /// The first waits for the board the push wanted; every one after it
-    /// steps from the settings laid before it (T-911) and waits on nothing.
     #[test]
     fn column_rings_step_twice_while_the_board_lands_late() {
         use mesimon_core::board::Arrival;
@@ -17279,15 +17261,13 @@ mod tests {
         let hold = slow(&mut app);
         hold.borrow_mut().pushes = 1;
         app.pump().unwrap();
-        release_late(&hold, LATE);
         for verb in [Verb::ColumnOnWorking, Verb::ColumnOnDone, Verb::ColumnArrives] {
             for _ in 0..2 {
+                // Each press waits on the ask the one before it sent.
+                release_late(&hold, LATE);
                 app.dispatch(verb, Key::Enter, Scope::ColumnSettings, &app.ctx()).unwrap();
             }
         }
-        assert_eq!(hold.borrow().asks, 2, "the push's and the first press's; nothing waited");
-        release(&hold);
-        app.pump().unwrap();
         release(&hold);
         app.pump().unwrap();
         let todo = app.board.sorted_columns()[0].settings.clone();
