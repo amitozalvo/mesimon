@@ -9864,6 +9864,24 @@ fn workflow_mark_shortens_on_a_tight_row() {
     assert!(!narrow[0].contains("pull requests"), "{}", narrow[0]);
 }
 
+/// The linked boards' count is a chip (T-905): a click steps onto it, it
+/// draws selected there, and a second click opens the Reaches boards list.
+#[test]
+fn links_count_is_a_chip_a_click_opens() {
+    use mesimon_core::command::LinkView;
+    let mut app = app_graphite(fixture(false));
+    app.links = vec![LinkView { name: "relay".into(), path: "/code/relay".into() }];
+    let lines = render(&app, 120, 30);
+    let at = spot_of(&lines, "1 board");
+    click(&mut app, at);
+    assert!(app.header_focus);
+    assert_eq!(app.header_chip, mesimon_core::keymap::HeaderChip::Links);
+    let lit = cells(&app, 120, 30);
+    assert!(lit[at].modifier.contains(Modifier::BOLD), "drawn selected");
+    click(&mut app, at);
+    assert_eq!(app.mode, Mode::Boards { idx: 0, typing: None, armed: false });
+}
+
 /// The mark lights for a beat after its workflow acts, on the injected
 /// clock, then settles: `base` lit, `dim2` at rest, `dim3` offline, never
 /// `attn`, and the board asks no faster frames for it.

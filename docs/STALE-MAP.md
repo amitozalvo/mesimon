@@ -30071,3 +30071,20 @@ and the next ends it, left alone (at 20× pace) it marks `played`, and the child
 (CSI 6n, OSC 10/11, DA1, CSI ? u). Putting `Terminal::clear` back, or reading Ctrl+C as a
 skip, fails it. `intro-install-end.txt` is gone with the inline road; the board's goldens are
 unchanged.
+
+## The linked boards' count is a header chip (T-905, 2026-10-22, "allow to enter the shared boards settings from the title")
+
+The top row's ` ∙ N boards` (T-733, T-878) was the one mark the header's cursor could not stand
+on. It is now `HeaderChip::Links`, the last chip, after the workflow's: present while the board
+reaches another (`Ctx::links_mark`), named `boards` in `h`/`l`'s hints, and its Enter
+(`reaches boards`) opens the Reaches boards list, as Remote Control's chip opens its dialog.
+Opened from the chip, Esc puts the cursor back on it (`App::boards_from_header`, the
+`remote_from_header` rule); opened from Settings, Esc still lands on the door. A click steps onto
+it and a second click is its Enter, like every chip. On a row too tight for the count, the
+count is still dropped whole, except while the cursor stands on it. While words light it
+(`↯ relay asks`) the selected chip takes the selected ink, as the workflow's lit word does.
+
+Tests: `header_links_chip_is_the_last_and_opens_reaches_boards` (keymap),
+`links_chip_opens_reaches_boards_and_esc_returns_to_it` (app),
+`links_count_is_a_chip_a_click_opens` (render). No golden changed: a golden is drawn with the
+cursor on the board.

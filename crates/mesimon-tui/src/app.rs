@@ -1648,6 +1648,9 @@ pub struct App {
     /// Remote Control's dialog was opened by the header's `remote` chip
     /// (T-666), so Esc puts the cursor back on the chip, not in the menu.
     remote_from_header: bool,
+    /// The Reaches boards list was opened by the header's boards count
+    /// (T-905): Esc puts the cursor back on the chip, not in Settings.
+    boards_from_header: bool,
     /// The license key dialog (T-647), one level under the sharing dialog's
     /// `Sign in` or `Signed in as …`: `sharing_rows` is its rows while set.
     pub key_dialog: bool,
@@ -2202,6 +2205,7 @@ impl App {
             control: snap.mesophon,
             mesophon_dialog: false,
             remote_from_header: false,
+            boards_from_header: false,
             key_dialog: false,
             mesophon_available: false,
             theme,
@@ -7308,6 +7312,7 @@ impl App {
             header_chip: if self.header_focus { self.header_chip } else { HeaderChip::Git },
             remote_mark: self.control.enabled,
             workflow_mark: self.workflow_mark().is_some(),
+            links_mark: !self.links.is_empty(),
             // False where no keeper was ever built (every test app), which
             // is what keeps a golden on the row's plain words.
             keep_awake_barred: self.caffeine.as_ref().is_some_and(|k| !k.possible()),
@@ -9773,6 +9778,11 @@ impl App {
                     self.return_to_settings(Verb::MergeInto);
                     Ok(())
                 }
+                HeaderChip::Links if !self.links.is_empty() => {
+                    self.open_boards_list();
+                    self.boards_from_header = true;
+                    Ok(())
+                }
                 _ => self.open_checkout_diff(),
             },
             Scope::Ticket => {
@@ -9999,6 +10009,11 @@ impl App {
             Scope::Usage => self.return_to_settings(Verb::Usage),
             Scope::Prompts => self.return_to_settings(Verb::AgentPrompts),
             Scope::Tiers => self.return_to_settings(Verb::Tiers),
+            // Opened by the header's chip (T-905): back onto it.
+            Scope::Boards if self.boards_from_header => {
+                self.boards_from_header = false;
+                self.mode = Mode::Normal;
+            }
             Scope::Boards => self.return_to_settings(Verb::CrownLinks),
             // Back to the list, on the tier the page was about.
             Scope::TierEdit => {
@@ -24605,6 +24620,41 @@ mod tests {
         );
         app.mode = Mode::Normal;
         app.automation.merge_train = false;
+        app.settle_header();
+        assert_eq!(app.header_chip, HeaderChip::Remote);
+    }
+
+    /// T-905: the linked boards' count is the top row's last chip; Enter on
+    /// it opens the Reaches boards list, Esc lands back on the chip, and the
+    /// chip hands the cursor back when the last link goes.
+    #[test]
+    fn links_chip_opens_reaches_boards_and_esc_returns_to_it() {
+        use mesimon_core::command::LinkView;
+        let mut app = app_three_columns();
+        app.control.enabled = true;
+        app.links = vec![LinkView { name: "relay".into(), path: "/code/relay".into() }];
+        press(&mut app, 'k');
+        press(&mut app, 'k');
+        assert_eq!(app.header_chip, HeaderChip::Remote);
+        press(&mut app, 'l');
+        assert_eq!(app.header_chip, HeaderChip::Links);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Boards { idx: 0, typing: None, armed: false });
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.scope(), Scope::Header, "back on the chip");
+        assert_eq!(app.header_chip, HeaderChip::Links);
+        // From Settings the list still goes back to its door.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.open_boards_list();
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(
+            matches!(app.mode, Mode::Settings { idx } if idx == app.settings_row(Verb::CrownLinks)),
+            "{:?}",
+            app.mode
+        );
+        app.mode = Mode::Normal;
+        app.links.clear();
         app.settle_header();
         assert_eq!(app.header_chip, HeaderChip::Remote);
     }

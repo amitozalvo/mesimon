@@ -137,6 +137,7 @@ impl App {
     /// `lib.rs::run` set; a test app has none and lists nothing open.
     pub(super) fn open_boards_list(&mut self) {
         self.mode = Mode::Boards { idx: 0, typing: None, armed: false };
+        self.boards_from_header = false;
         match self.board_scanner {
             Some(scan) => {
                 self.open_boards = None;

@@ -1010,8 +1010,9 @@ impl Group {
 
 /// A chip on the board's own top row (T-305), left to right as drawn: the
 /// checkout's git clause, the keep-awake mark, Remote Control's mark (T-666),
-/// the board's merge workflow (T-811). Each is there only while its fact
-/// holds, so the header's `h` and `l` step to the nearest chip that is drawn.
+/// the board's merge workflow (T-811), the boards this one reaches (T-905).
+/// Each is there only while its fact holds, so the header's `h` and `l` step
+/// to the nearest chip that is drawn.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum HeaderChip {
     #[default]
@@ -1019,11 +1020,17 @@ pub enum HeaderChip {
     Awake,
     Remote,
     Workflow,
+    Links,
 }
 
 impl HeaderChip {
-    pub const ALL: [HeaderChip; 4] =
-        [HeaderChip::Git, HeaderChip::Awake, HeaderChip::Remote, HeaderChip::Workflow];
+    pub const ALL: [HeaderChip; 5] = [
+        HeaderChip::Git,
+        HeaderChip::Awake,
+        HeaderChip::Remote,
+        HeaderChip::Workflow,
+        HeaderChip::Links,
+    ];
 
     /// Whether the header draws this chip now.
     pub fn present(self, c: &Ctx) -> bool {
@@ -1032,6 +1039,7 @@ impl HeaderChip {
             HeaderChip::Awake => c.keep_awake,
             HeaderChip::Remote => c.remote_mark,
             HeaderChip::Workflow => c.workflow_mark,
+            HeaderChip::Links => c.links_mark,
         }
     }
 
@@ -1052,6 +1060,7 @@ impl HeaderChip {
             HeaderChip::Awake => "keep awake",
             HeaderChip::Remote => "remote control",
             HeaderChip::Workflow => "merge into",
+            HeaderChip::Links => "boards",
         }
     }
 }
@@ -1648,6 +1657,9 @@ pub struct Ctx {
     /// The board names its merge workflow on its top row (T-811): pull
     /// requests, or main while the merge train is armed.
     pub workflow_mark: bool,
+    /// This board reaches another (T-733), so the header counts them and
+    /// the count is a chip (T-905).
+    pub links_mark: bool,
     /// And whether anything on this machine CAN hold it: false where the
     /// ladder found no rung, or `MESIMON_CAFFEINATE=off` said not to. False
     /// in a bare `Ctx` and in every test app, where no keeper was ever
@@ -7168,12 +7180,14 @@ static SUMMARY: &[Binding] = &[
 /// cursor column keeps its painted band, and `j` walks straight back into it.
 ///
 /// Left/right step between the drawn chips (`HeaderChip`): the git clause,
-/// the wake indicator, Remote Control's mark, the merge workflow's. Past the
+/// the wake indicator, Remote Control's mark, the merge workflow's, the
+/// linked boards' count. Past the
 /// last chip either way they step down onto the column under it (T-681): a
 /// sideways press never strands the cursor up here, where `j` is easy to
 /// miss; silent there, because `j`'s hint already names the way down. Enter
 /// opens the checkout diff, the keep-awake settings row, Remote Control's
-/// dialog or the Merge into row; `k` stays inert above the top row.
+/// dialog, the Merge into row or the Reaches boards list; `k` stays inert
+/// above the top row.
 static HEADER: &[Binding] = &[
     Binding {
         keys: &[Key::Char('h'), Key::Left],
@@ -7217,6 +7231,7 @@ static HEADER: &[Binding] = &[
             HeaderChip::Awake => "keep awake settings",
             HeaderChip::Remote => "remote control",
             HeaderChip::Workflow => "merge into settings",
+            HeaderChip::Links => "reaches boards",
         },
         avail: |c| c.header_chip.present(c),
         class: Class::Plain,
@@ -10350,6 +10365,24 @@ mod tests {
         let off = Ctx { workflow_mark: false, ..flow };
         assert_eq!(resolve(Scope::Header, Key::Enter, &off), None);
         assert_eq!(SettingsSection::for_verb(Verb::MergeInto), SettingsSection::Behaviour);
+    }
+
+    /// T-905: the linked boards' count is the top row's last chip, after the
+    /// workflow's, and its Enter opens the Reaches boards list.
+    #[test]
+    fn header_links_chip_is_the_last_and_opens_reaches_boards() {
+        let all =
+            Ctx { git_repo: true, workflow_mark: true, links_mark: true, ..Default::default() };
+        let flow = Ctx { header_chip: HeaderChip::Workflow, ..all.clone() };
+        assert_eq!(hint_for(Scope::Header, Verb::CursorRight, &flow), Some(("l", "boards")));
+        let links = Ctx { header_chip: HeaderChip::Links, ..all.clone() };
+        assert_eq!(hint_for(Scope::Header, Verb::CursorLeft, &links), Some(("h", "merge into")));
+        assert_eq!(hint_for(Scope::Header, Verb::CursorRight, &links), None, "the right edge");
+        assert_eq!(hint_for(Scope::Header, Verb::Act, &links), Some(("enter", "reaches boards")));
+        let alone = Ctx { workflow_mark: false, ..links.clone() };
+        assert_eq!(hint_for(Scope::Header, Verb::CursorLeft, &alone), Some(("h", "repository")));
+        let off = Ctx { links_mark: false, ..links };
+        assert_eq!(resolve(Scope::Header, Key::Enter, &off), None);
     }
 
     /// Archiving takes two presses; restoring takes one. The chord tail binds

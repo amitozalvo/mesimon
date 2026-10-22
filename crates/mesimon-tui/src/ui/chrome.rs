@@ -150,7 +150,7 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
         // The boards this one reaches (T-733), after the workflow: their
         // count, or what words just did with one of them (T-878).
         // Dropped whole on a row that cannot hold them, before the workflow
-        // word shortens.
+        // word shortens, unless the header's cursor stands on them (T-905).
         let links_at = spans.len();
         let (links, link_offsets) = links_mark(app);
         let mut links_w = super::spans_width(&links);
@@ -177,7 +177,7 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
         }
         // What the board is, on the left. What it offers, on the right.
         let mut used: usize = super::spans_width(&spans);
-        if links_n > 0 && used + 1 > area.width as usize {
+        if links_n > 0 && used + 1 > area.width as usize && !header_on(app, HeaderChip::Links) {
             spans.splice(links_at..links_at + links_n, []);
             used -= links_w;
             links_w = 0;
@@ -219,6 +219,7 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
             (HeaderChip::Remote, marks_at + awake_w, marks_w - awake_w),
             // The mark's ` ∙ ` is the gap, not the chip.
             (HeaderChip::Workflow, marks_at + marks_w + 3, flow_w.saturating_sub(3)),
+            (HeaderChip::Links, marks_at + marks_w + flow_w + 3, links_w.saturating_sub(3)),
         ];
         app.spots.borrow_mut().chips.extend(
             cells
@@ -346,17 +347,21 @@ fn links_mark(app: &App) -> (Vec<Span<'static>>, Vec<(String, usize)>) {
         return (Vec::new(), Vec::new());
     }
     let lit = app.link_lit().filter(|x| app.links.iter().any(|l| l.name == x.board));
-    let word = match lit {
+    let (word, style, bright) = match lit {
         Some(x) => {
             let word = format!("{} {}", crate::glyphs::bolt(theme.glyph_tier()), x.words);
             let style = if x.refused { theme.base() } else { theme.crown_text() };
-            Span::styled(word, style)
+            (word, style, true)
         }
         None => {
             let noun = if n == 1 { "board" } else { "boards" };
-            Span::styled(format!("{n} {noun}"), theme.dim2())
+            (format!("{n} {noun}"), theme.dim2(), false)
         }
     };
+    // A chip the header's cursor stands on (T-905), as the workflow's is.
+    let style =
+        if header_on(app, HeaderChip::Links) { selected_chip(theme, style, bright) } else { style };
+    let word = Span::styled(word, style);
     let offsets = app.links.iter().map(|l| (l.name.clone(), 3)).collect();
     (vec![Span::styled(" ∙ ".to_string(), theme.dim3()), word], offsets)
 }
