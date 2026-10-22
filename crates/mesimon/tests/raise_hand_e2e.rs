@@ -62,12 +62,20 @@ fn a_raised_hand_outlives_the_turn_and_is_lowered_by_the_person_or_the_next_turn
     let mut shim = Shim::start(&sock, sid);
     shim.rpc("initialize", json!({"protocolVersion": "2025-11-25"}));
     shim.notify("notifications/initialized");
-    assert_eq!(c.board().needs_you_count(), 0, "nothing needs anybody yet");
+    assert_eq!(
+        c.board().needs_you_count(mesimon_core::clock::now_ms()),
+        0,
+        "nothing needs anybody yet"
+    );
 
     let r = shim.call_ok("raise_hand", json!({ "reason": "Auth0, or the session cookie?" }));
     assert_eq!(r["reason"], "Auth0, or the session cookie?");
     let board = c.board();
-    assert_eq!(board.needs_you_count(), 1, "the header's count sees it");
+    assert_eq!(
+        board.needs_you_count(mesimon_core::clock::now_ms()),
+        1,
+        "the header's count sees it"
+    );
     let t = board.ticket(ticket).unwrap();
     assert!(t.hand_raised());
     let raised = t.raised.as_ref().unwrap();
@@ -109,7 +117,11 @@ fn a_raised_hand_outlives_the_turn_and_is_lowered_by_the_person_or_the_next_turn
     let kept = r["reason"].as_str().unwrap();
     assert!(kept.len() <= mesimon_core::board::RAISE_REASON_MAX_BYTES, "{}", kept.len());
     assert!(!kept.contains('\u{7}'), "{kept}");
-    assert_eq!(c.board().needs_you_count(), 1, "raising again replaces, never stacks");
+    assert_eq!(
+        c.board().needs_you_count(mesimon_core::clock::now_ms()),
+        1,
+        "raising again replaces, never stacks"
+    );
     // An empty reason is refused where the model can read it.
     let msg = shim.call_err("raise_hand", json!({ "reason": "   " }));
     assert!(msg.contains("reason"), "{msg}");
@@ -117,7 +129,7 @@ fn a_raised_hand_outlives_the_turn_and_is_lowered_by_the_person_or_the_next_turn
     // ---- the person lowers it ---------------------------------------------
     assert!(matches!(c.request(Command::LowerHand { id: ticket }), Response::Ok));
     assert!(!c.board().ticket(ticket).unwrap().hand_raised());
-    assert_eq!(c.board().needs_you_count(), 0);
+    assert_eq!(c.board().needs_you_count(mesimon_core::clock::now_ms()), 0);
     // And doing it twice is a no-op, so the TUI may send it on every
     // departure from a ticket page.
     assert!(matches!(c.request(Command::LowerHand { id: ticket }), Response::Ok));
@@ -131,7 +143,7 @@ fn a_raised_hand_outlives_the_turn_and_is_lowered_by_the_person_or_the_next_turn
     wait_until(Duration::from_secs(6), "the prompt lowers the hand", || {
         !c.board().ticket(ticket).unwrap().hand_raised()
     });
-    assert_eq!(c.board().needs_you_count(), 0);
+    assert_eq!(c.board().needs_you_count(mesimon_core::clock::now_ms()), 0);
 
     // ---- and so does a turn that starts without one ----------------------
     // The `!` bash road (T-311): a bash command typed in Claude Code puts its
@@ -162,7 +174,7 @@ fn a_raised_hand_outlives_the_turn_and_is_lowered_by_the_person_or_the_next_turn
     wait_until(Duration::from_secs(6), "the new turn lowers the hand", || {
         !c.board().ticket(ticket).unwrap().hand_raised()
     });
-    assert_eq!(c.board().needs_you_count(), 0);
+    assert_eq!(c.board().needs_you_count(mesimon_core::clock::now_ms()), 0);
     assert!(
         c.board()
             .sessions
@@ -198,7 +210,11 @@ fn a_raised_hand_outlives_the_turn_and_is_lowered_by_the_person_or_the_next_turn
             .any(|s| s.id == sid && matches!(s.state, mesimon_core::board::SessionState::Sleeping))
     });
     assert!(matches!(c.request(Command::ArchiveTicket { id: ticket }), Response::Ok));
-    assert_eq!(c.board().needs_you_count(), 0, "an archived ticket needs nobody");
+    assert_eq!(
+        c.board().needs_you_count(mesimon_core::clock::now_ms()),
+        0,
+        "an archived ticket needs nobody"
+    );
     match c.send(
         Principal::Agent { session: sid },
         Command::AgentRaiseHand { reason: "hello?".into() },
@@ -286,7 +302,7 @@ fn a_raised_hand_comes_down_with_the_dialog_it_stood_for() {
     hook_send(&hook_sock, &s, "PostToolUse", &question("toolu_q1"));
     wait_until(Duration::from_secs(6), "the answer lowers the hand", || !raised(&mut c));
     assert!(state_is(&mut c, &SessionState::Running), "and the turn goes on");
-    assert_eq!(c.board().needs_you_count(), 0);
+    assert_eq!(c.board().needs_you_count(mesimon_core::clock::now_ms()), 0);
 
     // ---- or refuses it: the agent's next own call -------------------------
     shim.call_ok("raise_hand", json!({ "reason": "which one, then?" }));
@@ -349,20 +365,20 @@ fn a_raised_hand_comes_down_when_the_person_steps_in_or_parks_the_agent() {
     // ---- stepping into the pane -------------------------------------------
     shim.call_ok("raise_hand", json!({ "reason": "Auth0, or the session cookie?" }));
     assert!(raised(&mut c));
-    assert_eq!(c.board().needs_you_count(), 1);
+    assert_eq!(c.board().needs_you_count(mesimon_core::clock::now_ms()), 1);
     assert!(
         matches!(c.request(Command::FocusStart { session: sid }), Response::Attach { .. }),
         "the pane is handed over"
     );
     assert!(!raised(&mut c), "inside the session, the mark is down");
-    assert_eq!(c.board().needs_you_count(), 0);
+    assert_eq!(c.board().needs_you_count(mesimon_core::clock::now_ms()), 0);
 
     // ---- a hand raised while inside comes down on the way out --------------
     shim.call_ok("raise_hand", json!({ "reason": "and the cookie's name?" }));
     assert!(raised(&mut c), "raised while the person is in the pane");
     assert!(matches!(c.request(Command::FocusEnd { session: sid }), Response::Ok));
     assert!(!raised(&mut c), "coming out of the session, the mark is down");
-    assert_eq!(c.board().needs_you_count(), 0);
+    assert_eq!(c.board().needs_you_count(mesimon_core::clock::now_ms()), 0);
 
     // ---- parking the agent -------------------------------------------------
     shim.call_ok("raise_hand", json!({ "reason": "still: Auth0, or the cookie?" }));
@@ -376,7 +392,7 @@ fn a_raised_hand_comes_down_when_the_person_steps_in_or_parks_the_agent() {
     assert!(raised(&mut c), "a finished turn is still not an answer");
     assert!(matches!(c.request(Command::SleepSession { id: sid }), Response::Ok));
     assert!(!raised(&mut c), "parked by the person, the mark is down");
-    assert_eq!(c.board().needs_you_count(), 0);
+    assert_eq!(c.board().needs_you_count(mesimon_core::clock::now_ms()), 0);
     let ticket_file = {
         let key = c.board().ticket(ticket).unwrap().short_key.clone();
         h.paths.board_dir.join("board/tickets").join(&key).join("ticket.toml")

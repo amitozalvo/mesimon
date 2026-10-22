@@ -135,6 +135,21 @@ impl FeedWriter {
         }));
     }
 
+    /// Who requested which shell; capture contents never enter the feed.
+    pub fn shell_read(
+        &mut self,
+        reader: uuid::Uuid,
+        shell: uuid::Uuid,
+        ticket: Option<ulid::Ulid>,
+        allowed: bool,
+    ) {
+        self.push(json!({
+            "kind": "board", "actor": "agent", "cmd": "agent_read_shell",
+            "session": reader, "shell": shell, "ticket": ticket,
+            "outcome": if allowed { "ok" } else { "refused" },
+        }));
+    }
+
     /// One board mutation.
     pub fn board(&mut self, actor: &str, cmd: &str, ticket: Option<ulid::Ulid>) {
         self.push(json!({

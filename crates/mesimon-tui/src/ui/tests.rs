@@ -4705,7 +4705,7 @@ fn golden_unsent_open_120() {
         "the resend key under the words:\n{}",
         lines.join("\n")
     );
-    assert_eq!(app.board.needs_you_count(), 1, "the header counts it");
+    assert_eq!(app.board.needs_you_count(mesimon_core::clock::now_ms()), 1, "the header counts it");
     golden("board_unsent_open_120x30", &lines);
 }
 
@@ -4757,7 +4757,7 @@ fn golden_trust_open_120() {
         "off the footer:\n{}",
         lines.join("\n")
     );
-    assert_eq!(app.board.needs_you_count(), 1, "the header counts it");
+    assert_eq!(app.board.needs_you_count(mesimon_core::clock::now_ms()), 1, "the header counts it");
     golden("board_trust_open_120x30", &lines);
 }
 
@@ -12832,7 +12832,9 @@ fn the_board_recedes_behind_a_cards_dialog() {
 // T-823: the snake shares the board, not a frozen picture of it. T-870: it
 // comes out on its own; a test seats it the way `App::drive_arcade` does.
 fn open_arcade(app: &mut App) {
-    *app.arcade.borrow_mut() = Some(crate::arcade::Arcade::new(app.board.needs_you_tickets()));
+    *app.arcade.borrow_mut() = Some(crate::arcade::Arcade::new(
+        app.board.needs_you_tickets(mesimon_core::clock::now_ms()),
+    ));
 }
 
 fn ctrl_g(app: &mut App) {

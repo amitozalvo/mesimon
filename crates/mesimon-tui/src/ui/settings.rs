@@ -665,7 +665,7 @@ fn tab(app: &App, width: usize) -> Option<Preview<'_>> {
     Some(Preview {
         height: 4,
         draw: Box::new(move |f, at| {
-            let now = app.board.needs_you_count();
+            let now = app.board.needs_you_count(mesimon_core::clock::now_ms());
             let working =
                 app.board.sessions.iter().filter(|s| crate::glyphs::is_working(s)).count();
             draw_tab(f, app, Rect { width: TAB_W as u16, ..at }, now, working, "now");

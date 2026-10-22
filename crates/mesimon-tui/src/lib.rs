@@ -10,6 +10,9 @@ mod creature;
 mod image_paste;
 mod intro;
 mod keys;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod test_support;
 // Public so an integration test can drive the real connect path (the
 // build-skew daemon restart lives in it); the TUI itself uses it internally.
 mod arcade;

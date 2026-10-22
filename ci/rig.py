@@ -2570,6 +2570,29 @@ Reply with the single word ready and end your turn."""
             elif name == "reply":
                 said = last_reply(rows)
                 check(c, arg.lower() in said.lower(), f"said {said[:60]!r}")
+            elif name == "shell_workflow":
+                said = last_reply(rows)
+                try:
+                    answer, _ = json.JSONDecoder().raw_decode(said[said.index("{"):])
+                except (ValueError, TypeError):
+                    answer = {}
+                expected = {"evidence": "review-evidence-904", "capture_requires_send": True,
+                            "escape_discards": True, "capture_grants_live_reads": False,
+                            "capture_starts_agent": False, "live_reads_available_in_tui": False}
+                ok = all(type(answer.get(k)) is type(v) and answer.get(k) == v for k, v in expected.items())
+                ran = [n for n, _ in tool_inputs(rows) if n in ("Bash", "Write", "Edit", "Agent")]
+                check(c, ok and not ran, f"workflow {answer}; execution tools {ran}")
+            elif name == "shell_close_pending":
+                shells = [s for s in board.get("sessions", []) if s.get("ticket") == tid and s.get("kind") == "bash"]
+                pending = [s for s in shells if s.get("shell_close_request")]
+                alive = pending and all(self.tmux("display-message", "-p", "-t", sid16(s["id"]), "#{pane_dead}").stdout.strip() == "0" for s in pending)
+                crown = self.agent_of(board, self.crown)
+                since = record.get("t0_ms", 0)
+                crown_rows = [r for r in (transcript(crown) if crown else []) if (iso_ms(r.get("timestamp") or "") or 0) >= since]
+                calls = tool_calls(crown_rows)
+                read = any(n == "mcp__mesimon__read_shell" and result and not result.get("is_error") for n, result in calls)
+                ran = [n for n, _ in tool_inputs(crown_rows) if n in ("Bash", "Write", "Edit", "Agent")]
+                check(c, alive and read and not ran, f"{len(pending)} live shells await confirmation; crown read={read}, execution tools={ran}")
             elif name == "shell":
                 # A `!` line ran in the worker's bash mode (T-876): its
                 # transcript holds the line as Claude Code records one

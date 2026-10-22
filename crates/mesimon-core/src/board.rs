@@ -3413,7 +3413,7 @@ impl Board {
     /// claude is also at a permission prompt is one ticket needing one
     /// person, and counting it twice made `!N` a number nothing on screen
     /// could be matched against.
-    pub fn needs_you_tickets(&self) -> std::collections::HashSet<ulid::Ulid> {
+    pub fn needs_you_tickets(&self, now: u64) -> std::collections::HashSet<ulid::Ulid> {
         crate::attention::attention_queue(self)
             .iter()
             .map(|s| s.ticket)
@@ -3427,7 +3427,7 @@ impl Board {
                         s.kind == SessionKind::Bash
                             && s.state.has_pane()
                             && s.shell_close_request.as_ref().is_some_and(|q| {
-                                q.expires_ms > crate::clock::now_ms()
+                                q.expires_ms > now
                                     && self.crown_holder().map(|t| t.id) == Some(q.crown)
                             })
                     })
@@ -3439,8 +3439,8 @@ impl Board {
     /// The `!N` count: tickets needing the user, counted once each. The
     /// header chip and the tmux status line both read this, so the number is
     /// one number.
-    pub fn needs_you_count(&self) -> usize {
-        self.needs_you_tickets().len()
+    pub fn needs_you_count(&self, now: u64) -> usize {
+        self.needs_you_tickets(now).len()
     }
 
     /// Sessions of the ticket that hold (or should hold) a pane. The archive
@@ -3654,11 +3654,11 @@ mod tests {
         let back: SessionRecord = serde_json::from_value(wire).unwrap();
         assert_eq!(back.unsent, rec.unsent);
         board.sessions.push(rec);
-        assert_eq!(board.needs_you_count(), 1);
+        assert_eq!(board.needs_you_count(0), 1);
         assert_eq!(board.unsent_tickets().len(), 1);
         board.sessions[0].state = SessionState::Sleeping;
         assert_eq!(board.sessions[0].state_word(), "sleeping", "no pane, no resend");
-        assert_eq!(board.needs_you_count(), 0);
+        assert_eq!(board.needs_you_count(0), 0);
     }
 
     #[test]
@@ -4393,7 +4393,7 @@ mod tests {
         b.tickets.push(t);
         b.tickets.push(w);
         assert_eq!(b.woke_tickets().len(), 1, "an archived ticket never counts, a woke one does");
-        assert_eq!(b.needs_you_count(), 1);
+        assert_eq!(b.needs_you_count(0), 1);
         assert_eq!(stamp_secs("@7"), Some(7));
     }
 
@@ -4429,14 +4429,14 @@ mod tests {
         let mut b = Board::default();
         b.tickets.push(t);
         assert_eq!(b.raised_tickets().len(), 1);
-        assert_eq!(b.needs_you_count(), 1);
+        assert_eq!(b.needs_you_count(0), 1);
 
         // An archived ticket is off the board, so its hand is not counted —
         // `woke_tickets`' rule, and the reason `agent_raise_hand` refuses one.
         b.tickets[0].archived =
             Some(Archived { at: "@1".into(), by: "local".into(), until: None, needs_you: false });
         assert!(b.raised_tickets().is_empty());
-        assert_eq!(b.needs_you_count(), 0);
+        assert_eq!(b.needs_you_count(0), 0);
     }
 
     /// `!N` counts TICKETS, not roads to them: a ticket that is both back
@@ -4451,8 +4451,38 @@ mod tests {
         b.tickets.push(t);
         assert_eq!(b.woke_tickets().len(), 1);
         assert_eq!(b.raised_tickets().len(), 1);
-        assert_eq!(b.needs_you_count(), 1, "one ticket, one person, one number");
+        assert_eq!(b.needs_you_count(0), 1, "one ticket, one person, one number");
         assert_eq!(stamp_secs("7"), None);
+    }
+
+    #[test]
+    fn shell_close_attention_expires_at_the_injected_time() {
+        let mut b = Board::default();
+        b.tickets.push(ticket(1, "TODO", "crown"));
+        b.crown = Some(ulid::Ulid(1));
+        let mut shell = SessionRecord::new(
+            uuid::Uuid::nil(),
+            SessionKind::Bash,
+            ulid::Ulid(1),
+            vec!["sh".into()],
+            "/".into(),
+            SessionState::Running,
+        );
+        shell.shell_shared = true;
+        b.sessions.push(shell.clone());
+        assert_eq!(b.needs_you_count(9), 0, "sharing alone never asks for attention");
+        b.sessions.clear();
+        shell.shell_close_request = Some(ShellCloseRequest {
+            id: uuid::Uuid::nil(),
+            crown: ulid::Ulid(1),
+            pane: "1:%1".into(),
+            expires_ms: 10,
+        });
+        b.sessions.push(shell);
+        assert_eq!(b.needs_you_count(9), 1);
+        assert_eq!(b.needs_you_count(10), 0);
+        b.crown = None;
+        assert_eq!(b.needs_you_count(9), 0);
     }
 
     /// The registry is board-level and persisted: a group's vocabulary is

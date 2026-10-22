@@ -726,8 +726,8 @@ impl TmuxBackend {
         Ok((tail, cols))
     }
 
-    /// Bounded physical scrollback for explicitly shared shell output. Blank lines stay.
-    pub fn capture_shell(&self, pane: &str) -> Result<(String, bool)> {
+    /// Bounded physical scrollback for a shell capture. Blank lines stay.
+    pub fn capture_shell(&self, pane: &str) -> Result<(String, bool, bool)> {
         let out = self.run(&[
             "capture-pane",
             "-p",
@@ -740,13 +740,16 @@ impl TmuxBackend {
             "-p",
             "-t",
             pane,
-            "#{alternate_on}",
+            "#{alternate_on}:#{history_size}",
         ])?;
-        let (text, alternate) = out
+        let (text, metadata) = out
             .trim_end_matches('\n')
             .rsplit_once('\n')
             .context("missing shell capture metadata")?;
-        Ok((text.to_owned(), alternate == "1"))
+        let (alternate, history) =
+            metadata.split_once(':').context("invalid shell capture metadata")?;
+        let history: usize = history.parse().context("invalid shell history size")?;
+        Ok((text.to_owned(), alternate == "1", alternate != "1" && history > 200))
     }
 
     /// Exact client presence; malformed activity timestamps cannot look detached.

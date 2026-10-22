@@ -335,3 +335,31 @@ fn a_restart_reclaims_a_tree_whose_archived_work_landed_meanwhile() {
         feed_count(&h, "worktree_torn_down", id) == 1
     });
 }
+
+#[test]
+fn archive_reclaims_a_worktree_with_its_idle_terminal_open() {
+    let Some(h) = Harness::boot_with_env("arch-terminal", Some(STUB), &[("SHELL", "/bin/sh")])
+    else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let mut c = h.client("arch-terminal");
+    let (id, sid, branch, path) = ready(&mut c, "terminal");
+    quiet(&mut c, id, sid);
+    merge(&mut c, id);
+    assert!(matches!(
+        c.request(Command::OpenTerminal { ticket: Some(id) }),
+        Response::Attach { .. }
+    ));
+    assert!(matches!(c.request(Command::TerminalEnd), Response::Ok));
+    let terminal = format!("msmn-term-{id}");
+    assert!(matches!(c.request(Command::ArchiveTicket { id }), Response::Ok));
+    wait_until(Duration::from_secs(20), "archive closes terminal and reclaims worktree", || {
+        !path.exists() && !branch_exists(&h.repo, &branch) && wt_of(&mut c, id).is_none()
+    });
+    let panes = tmux(&h.paths.tmux_sock())
+        .args(["list-panes", "-a", "-F", "#{session_name}"])
+        .output()
+        .unwrap();
+    assert!(!String::from_utf8_lossy(&panes.stdout).lines().any(|name| name == terminal));
+}

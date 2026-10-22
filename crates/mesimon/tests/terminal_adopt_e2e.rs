@@ -18,6 +18,16 @@ use std::time::Duration;
 use mesimon_core::board::{SessionKind, SessionState};
 use mesimon_core::command::{Command, Response, TerminalItem};
 
+struct BoardTransport(TestClient);
+impl mesimon_tui::client::Transport for BoardTransport {
+    fn request(&mut self, command: Command) -> anyhow::Result<Response> {
+        Ok(self.0.request(command))
+    }
+    fn poll_event(&mut self) -> bool {
+        false
+    }
+}
+
 /// Every pane on the private server: `(session name, current command, dead)`.
 fn list_panes(sock: &Path) -> Vec<(String, String, bool)> {
     let out = tmux(sock)
@@ -200,29 +210,52 @@ fn shell_output_is_shared_scoped_revocable_and_close_is_human_confirmed() {
     let stranger = c.spawn_claude(outsider);
     let owner_key = c.board().ticket(owner).unwrap().short_key.clone();
     assert!(matches!(c.request(Command::CrownTicket { id: crown }), Response::Ok));
+    let view = c.send(Principal::Agent { session: worker }, Command::AgentGetTicket);
+    let Response::AgentTicket { ticket: view } = view else { panic!("get_ticket: {view:?}") };
+    let json = serde_json::to_value(view).unwrap();
+    let ticket = &json;
+    for field in ["shells", "shells_about", "terminal_open"] {
+        assert!(ticket.get(field).is_none(), "unused shell feature leaked {field}: {json}");
+    }
     assert!(matches!(
         c.request(Command::OpenTerminal { ticket: Some(owner) }),
         Response::Attach { .. }
     ));
     assert!(matches!(c.request(Command::TerminalEnd), Response::Ok));
-    err_containing(
-        c.request(Command::SnoozeTicket {
-            id: owner,
-            until: mesimon_core::clock::now_secs() + 600,
-            needs_you: false,
-        }),
-        "terminal still open",
-    );
-    let shell = match c.request(Command::AdoptTerminal { ticket: owner }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("{other:?}"),
-    };
+    // One Shift+Enter adopts and captures; Esc discards the editor without sharing.
+    let preview = mesimon_tui::test_support::capture_then_cancel(
+        Box::new(BoardTransport(h.client("capture-unadopted"))),
+        h.repo.clone(),
+        owner,
+        None,
+    )
+    .unwrap();
+    assert!(preview.starts_with("Terminal output"));
+    let shell = c
+        .board()
+        .sessions
+        .iter()
+        .find(|s| s.ticket == owner && s.kind == SessionKind::Bash)
+        .unwrap()
+        .id;
     let sid = shell.simple().to_string()[..16].to_owned();
     let read = |key| Command::AgentReadShell { shell, key };
     let as_worker = Principal::Agent { session: worker };
     let as_crown = Principal::Agent { session: coordinator };
     let as_stranger = Principal::Agent { session: stranger };
     err_containing(c.send(as_worker.clone(), read(None)), "no shared shell");
+    // The adopted row takes the same actual keys, with no sharing command.
+    mesimon_tui::test_support::capture_then_cancel(
+        Box::new(BoardTransport(h.client("capture-adopted"))),
+        h.repo.clone(),
+        owner,
+        Some(shell),
+    )
+    .unwrap();
+    assert!(!c.board().sessions.iter().find(|s| s.id == shell).unwrap().shell_shared);
+    err_containing(c.send(as_worker.clone(), read(None)), "no shared shell");
+    err_containing(c.send(as_crown.clone(), read(Some(owner_key.clone()))), "no shared shell");
+
     assert!(matches!(
         c.request(Command::ShareShell { session: shell, shared: true }),
         Response::Ok
@@ -241,6 +274,19 @@ fn shell_output_is_shared_scoped_revocable_and_close_is_human_confirmed() {
         c.send(as_crown.clone(), read(Some(owner_key.clone()))),
         Response::ShellOutput { .. }
     ));
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    wait_until(Duration::from_secs(5), "metadata-only shell read on the feed", || {
+        let feed = std::fs::read_to_string(&feed_path).unwrap_or_default();
+        assert!(!feed.contains("shell-share-marker"));
+        feed.lines().filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok()).any(
+            |line| {
+                line["cmd"] == "agent_read_shell"
+                    && line["session"] == worker.to_string()
+                    && line["shell"] == shell.to_string()
+                    && line["outcome"] == "ok"
+            },
+        )
+    });
     err_containing(c.send(as_stranger.clone(), read(None)), "no shared shell");
     assert!(matches!(c.send(as_stranger, read(Some(owner_key.clone()))), Response::Err { .. }));
     for command in [
@@ -257,15 +303,6 @@ fn shell_output_is_shared_scoped_revocable_and_close_is_human_confirmed() {
     ));
     err_containing(c.send(as_worker.clone(), read(None)), "no shared shell");
     err_containing(c.send(as_crown.clone(), read(Some(owner_key.clone()))), "no shared shell");
-    err_containing(c.request(Command::ArchiveTicket { id: owner }), "shell still open");
-    err_containing(
-        c.request(Command::SnoozeTicket {
-            id: owner,
-            until: mesimon_core::clock::now_secs() + 600,
-            needs_you: false,
-        }),
-        "shell still open",
-    );
     assert!(matches!(
         c.send(as_worker, Command::AgentRequestCloseShell { shell, key: owner_key.clone() }),
         Response::Err { .. }
@@ -314,7 +351,15 @@ fn shell_output_is_shared_scoped_revocable_and_close_is_human_confirmed() {
     wait_until(Duration::from_secs(10), "shell busy", || {
         c.board().sessions.iter().any(|s| s.id == shell && s.foreground.is_some())
     });
-    err_containing(c.request(confirm.clone()), "live children");
+    err_containing(c.request(confirm.clone()), "busy");
+    let busy = c.send(as_crown.clone(), request.clone());
+    match busy {
+        Response::Err { message } => {
+            assert!(message.contains("busy"));
+            assert!(!message.contains("sleep"));
+        }
+        other => panic!("{other:?}"),
+    }
     assert!(
         c.board().sessions.iter().any(|s| s.id == shell),
         "failed confirmation leaves shell alive"
@@ -363,4 +408,65 @@ fn shell_output_is_shared_scoped_revocable_and_close_is_human_confirmed() {
     ));
     assert!(!c.board().sessions.iter().any(|s| s.id == shell));
     assert!(matches!(c.send(as_crown, read(Some(owner_key))), Response::Err { .. }));
+}
+
+#[test]
+fn idle_terminals_and_adopted_shells_do_not_hold_lifecycle_actions() {
+    let Some(h) = Harness::boot_with_env("shell-lifecycle", None, &[("SHELL", "/bin/sh")]) else {
+        return;
+    };
+    let mut c = h.client("shell-lifecycle");
+    let sock = h.paths.tmux_sock();
+    for adopted in [false, true] {
+        for archive in [false, true] {
+            let ticket = c.create_ticket("idle terminal");
+            assert!(matches!(
+                c.request(Command::OpenTerminal { ticket: Some(ticket) }),
+                Response::Attach { .. }
+            ));
+            assert!(matches!(c.request(Command::TerminalEnd), Response::Ok));
+            if adopted {
+                assert!(matches!(
+                    c.request(Command::AdoptTerminal { ticket }),
+                    Response::Spawned { .. }
+                ));
+                let shell = c.board().sessions.iter().find(|s| s.ticket == ticket).unwrap().clone();
+                // Both actions retain the ordinary live-child refusal and leave the pane standing.
+                send_keys(&sock, &shell.sid16(), &["sleep 30", "Enter"]);
+                wait_until(Duration::from_secs(10), "shell's live child", || {
+                    c.board().sessions.iter().any(|s| s.id == shell.id && s.foreground.is_some())
+                });
+                let cmd = if archive {
+                    Command::ArchiveTicket { id: ticket }
+                } else {
+                    Command::SnoozeTicket {
+                        id: ticket,
+                        until: mesimon_core::clock::now_secs() + 600,
+                        needs_you: false,
+                    }
+                };
+                err_containing(c.request(cmd), "live children");
+                assert!(!c.board().ticket(ticket).unwrap().is_archived());
+                send_keys(&sock, &shell.sid16(), &["C-c"]);
+                wait_until(Duration::from_secs(10), "idle shell", || {
+                    c.board().sessions.iter().any(|s| s.id == shell.id && s.foreground.is_none())
+                });
+            }
+            let cmd = if archive {
+                Command::ArchiveTicket { id: ticket }
+            } else {
+                Command::SnoozeTicket {
+                    id: ticket,
+                    until: mesimon_core::clock::now_secs() + 600,
+                    needs_you: false,
+                }
+            };
+            let response = c.request(cmd);
+            assert!(
+                matches!(response, Response::Ok),
+                "adopted={adopted}, archive={archive}: {response:?}"
+            );
+            assert!(!c.board().sessions.iter().any(|s| s.ticket == ticket));
+        }
+    }
 }

@@ -48,7 +48,7 @@ impl Daemon {
             .ok_or("no live shell on this ticket")?;
         let name = format!("={}:0.0", rec.sid16());
         let key = self.backend.pane_key(&name).map_err(|_| "shell is unavailable")?;
-        if rec.pane_key.as_ref() != Some(&key) {
+        if !shell_key_matches(rec.pane_key.as_deref(), &key) {
             return Err("shell changed; read the ticket again".into());
         }
         let pane = key
@@ -79,24 +79,18 @@ impl Daemon {
         id: uuid::Uuid,
     ) -> Result<ShellOutput, String> {
         let (key, pane) = self.shell_pane(ticket, id)?;
-        let (raw, alternate) = self.backend.capture_shell(&pane).map_err(|e| e.to_string())?;
+        let (raw, alternate, history_omitted) =
+            self.backend.capture_shell(&pane).map_err(|e| e.to_string())?;
         if self.shell_pane(ticket, id)?.0 != key {
             return Err("shell changed during capture; try again".into());
         }
-        let rows: Vec<_> = raw.lines().collect();
-        let clean =
-            mesimon_core::text::scrub_lines(&rows[rows.len().saturating_sub(200)..].join("\n"));
-        let truncated = clean.len() > OUTPUT_BYTES || rows.len() >= 200;
-        let mut from = clean.len().saturating_sub(OUTPUT_BYTES);
-        while !clean.is_char_boundary(from) {
-            from += 1;
-        }
+        let (text, truncated) = bounded_output(&raw);
         Ok(ShellOutput {
             shell: id,
             captured_at_ms: now_ms(),
             source: if alternate { "terminal_screen" } else { "terminal_scrollback" }.into(),
-            truncated,
-            text: clean[from..].to_owned(),
+            truncated: truncated || history_omitted,
+            text,
         })
     }
 
@@ -125,15 +119,17 @@ impl Daemon {
             None => own,
         };
         let by = Principal::Agent { session };
-        if let Decision::Deny { reason } =
-            authorize(&by, &Action::ReadShell, &Resource::Shell { ticket: target, id: shell })
-        {
+        if let Decision::Deny { reason } = authorize(
+            &by,
+            &Action::ReadShell { own, crown: self.board.is_crowned(own) },
+            &Resource::Shell { ticket: target, id: shell },
+        ) {
             return Response::Err { message: reason };
         }
         if !self.board.sessions.iter().any(|r| {
             r.id == shell && r.ticket == target && r.kind == SessionKind::Bash && r.shell_shared
         }) {
-            return Response::Err { message: "no shared shell on this ticket; the person shares it with ^s or Shift+Enter on its ticket-page row".into() };
+            return Response::Err { message: "no shared shell on this ticket".into() };
         }
         self.capture_shell_output(target, shell).map_or_else(
             |message| Response::Err { message },
@@ -157,22 +153,14 @@ impl Daemon {
             .find(|p| p.session_name == rec.sid16() && !p.pane_dead)
             .ok_or("shell activity is unknown; open it and exit it yourself")?;
         let kids = live_children(fact.pane_pid)?;
-        if !kids.is_empty() {
-            return Err(format!(
-                "shell has live children ({}); open it, finish or stop its program, then exit",
-                kids.join(", ")
-            ));
-        }
-        if mesimon_core::board::foreground_of(
-            &fact.current_command,
-            rec.argv.first().map(String::as_str).unwrap_or(""),
-        )
-        .is_some()
-        {
-            return Err(
-                "shell is running a program; open it, finish or stop the program, then exit".into(),
-            );
-        }
+        shell_activity_ready(
+            &kids,
+            mesimon_core::board::foreground_of(
+                &fact.current_command,
+                rec.argv.first().map(String::as_str).unwrap_or(""),
+            )
+            .as_deref(),
+        )?;
         // A second identity read also covers a process sample taken across a pane replacement.
         if self.shell_pane(rec.ticket, rec.id)?.1 != pane {
             return Err("shell changed; read the ticket again".into());
@@ -197,7 +185,7 @@ impl Daemon {
         let by = Principal::Agent { session };
         if let Decision::Deny { reason } = authorize(
             &by,
-            &Action::RequestCloseShell,
+            &Action::RequestCloseShell { own, crown: self.board.is_crowned(own) },
             &Resource::Shell { ticket: target, id: shell },
         ) {
             return Response::Err { message: reason };
@@ -260,6 +248,9 @@ impl Daemon {
                     message: "close request expired or shell changed; nothing closed".into(),
                 };
             }
+            if let Err(message) = self.shell_close_ready(rec) {
+                return Response::Err { message };
+            }
             if let Err(message) = self.sleep_one(id, false, Park::Deliberate) {
                 return Response::Err { message };
             }
@@ -269,18 +260,37 @@ impl Daemon {
         self.persist_and_notify();
         Response::Ok
     }
+}
 
-    pub(super) fn shell_blocker(&self, ticket: ulid::Ulid) -> Option<String> {
-        if self
-            .board
-            .sessions
-            .iter()
-            .any(|r| r.ticket == ticket && r.kind == SessionKind::Bash && r.state.has_pane())
-        {
-            return Some("shell still open — select its row on the ticket page; x closes it and loses its terminal history. If a program is running, open the shell, finish or stop it, then exit".into());
-        }
-        self.terminals.contains_key(&Some(ticket)).then(|| "terminal still open — ! opens it; finish or stop its program, then exit before parking or archiving this ticket".into())
+/// Older records have no pane generation; a recorded generation must still match.
+fn shell_key_matches(recorded: Option<&str>, observed: &str) -> bool {
+    recorded.is_none_or(|key| key == observed)
+}
+
+/// Activity names are local observations, not part of the close-request response.
+fn shell_activity_ready(children: &[String], foreground: Option<&str>) -> Result<(), String> {
+    if !children.is_empty() || foreground.is_some() {
+        Err("shell is busy; open it, finish or stop its program, then exit".into())
+    } else {
+        Ok(())
     }
+}
+
+fn bounded_output(raw: &str) -> (String, bool) {
+    let clean = mesimon_core::text::scrub_lines(raw);
+    let mut rows: Vec<_> = clean.lines().collect();
+    // tmux includes the unused screen rows. They are padding, not lost output.
+    while rows.last().is_some_and(|row| row.trim().is_empty()) {
+        rows.pop();
+    }
+    let omitted_rows = rows.len() > 200;
+    let tail = rows[rows.len().saturating_sub(200)..].join("\n");
+    let truncated = omitted_rows || tail.len() > OUTPUT_BYTES;
+    let mut from = tail.len().saturating_sub(OUTPUT_BYTES);
+    while !tail.is_char_boundary(from) {
+        from += 1;
+    }
+    (tail[from..].to_owned(), truncated)
 }
 
 /// Only pgrep's explicit no-match result proves an empty child list.
@@ -312,6 +322,40 @@ pub(super) fn parse_children(status: Option<i32>, bytes: &[u8]) -> Result<Vec<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_legacy_shell_key_is_trusted_but_a_recorded_key_must_match() {
+        assert!(shell_key_matches(None, "10:%2"));
+        assert!(shell_key_matches(Some("10:%2"), "10:%2"));
+        assert!(!shell_key_matches(Some("9:%2"), "10:%2"));
+        assert!(!shell_key_matches(Some("10:%1"), "10:%2"));
+    }
+
+    #[test]
+    fn close_refusals_do_not_name_shell_processes() {
+        for (children, foreground) in
+            [(vec!["private-reviewer".into()], None), (vec![], Some("private-editor"))]
+        {
+            assert_eq!(
+                shell_activity_ready(&children, foreground).unwrap_err(),
+                "shell is busy; open it, finish or stop its program, then exit"
+            );
+        }
+        assert!(shell_activity_ready(&[], None).is_ok());
+    }
+
+    #[test]
+    fn capture_limits_report_only_output_actually_omitted() {
+        let rows = (0..200).map(|i| format!("row {i}")).collect::<Vec<_>>().join("\n");
+        assert_eq!(bounded_output(&format!("{rows}\n\n   \n")), (rows.clone(), false));
+        assert_eq!(bounded_output(&format!("older\n{rows}\n")), (rows, true));
+        assert_eq!(bounded_output("first\n\nlast\n\n"), ("first\n\nlast".into(), false));
+        assert_eq!(bounded_output(&"x".repeat(OUTPUT_BYTES)).1, false);
+        let (tail, truncated) = bounded_output(&"א".repeat(OUTPUT_BYTES));
+        assert!(truncated);
+        assert!(tail.len() <= OUTPUT_BYTES);
+        assert!(tail.chars().all(|c| c == 'א'));
+    }
 
     #[test]
     fn missing_or_malformed_process_evidence_is_not_an_idle_shell() {

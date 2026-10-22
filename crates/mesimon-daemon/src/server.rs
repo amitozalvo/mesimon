@@ -6339,6 +6339,7 @@ impl Daemon {
             };
         }
 
+        let logged = cmd.meta().logged;
         match cmd {
             Command::AgentGetTicket => {
                 let by = Principal::Agent { session };
@@ -6485,7 +6486,18 @@ impl Daemon {
                 self.read_attachment(target, attachment)
             }
             Command::AgentReadShell { shell, key } => {
-                self.agent_read_shell(session, ticket, shell, key)
+                let response = self.agent_read_shell(session, ticket, shell, key);
+                if logged {
+                    let target =
+                        self.board.sessions.iter().find(|s| s.id == shell).map(|s| s.ticket);
+                    self.feed.shell_read(
+                        session,
+                        shell,
+                        target,
+                        matches!(&response, Response::ShellOutput { .. }),
+                    );
+                }
+                response
             }
             Command::AgentRequestCloseShell { shell, key } => {
                 self.request_close_shell(session, ticket, shell, &key)
@@ -8721,10 +8733,17 @@ impl Daemon {
                 mesimon_core::mcp::describe(&text, n.id, mesimon_core::mcp::DESCRIPTION_MAX_BYTES)
             })
         });
+        let shells = self.agent_shells(id);
+        let terminal_open = self.terminals.contains_key(&Some(id));
+        let shells_about = if terminal_open || !shells.is_empty() {
+            "Shift+Enter on a shell row adopts if needed and captures output for an existing agent; sending delivers it, Esc discards it. Capture grants no live reads and starts no agent. Live sharing has no TUI key. Shared shells are readable by this ticket’s agent and the crown. The board tools provide no terminal input. Foreground names do not prove completion or success.".into()
+        } else {
+            String::new()
+        };
         Some(AgentTicketView {
-            terminal_open: self.terminals.contains_key(&Some(id)),
-            shells: self.agent_shells(id),
-            shells_about: "A person can run commands or an independent reviewer in !. On its ticket-page row, Shift+Enter adopts, shares and prepares output to send. Shared shells are readable by this ticket's agent and the crown through read_shell; only the person types in them. A foreground name is an observation, not completion or success. The crown can request closure, which waits for the person's confirmation.".into(),
+            terminal_open,
+            shells,
+            shells_about,
             key: t.short_key.clone(),
             key_about: None,
             title: t.title.clone(),
@@ -8948,7 +8967,8 @@ impl Daemon {
                         .then(|| {
                             self.agent_shells(t.id).len()
                                 + usize::from(self.terminals.contains_key(&Some(t.id)))
-                        }),
+                        })
+                        .filter(|count| *count > 0),
                     key: t.short_key.clone(),
                     title: t.title.clone(),
                     column: t.column.clone(),
@@ -10172,8 +10192,11 @@ impl Daemon {
             .iter()
             .filter(|t| !t.is_archived() && reclaim.contains(t.column.as_str()))
             .filter(|t| {
-                if self.board.ticket_awake_sessions(t.id) > 0 || self.shell_blocker(t.id).is_some()
-                {
+                if self.board.sessions.iter().any(|s| {
+                    s.ticket == t.id
+                        && s.state.has_pane()
+                        && (s.kind.is_agent() || s.foreground.is_some())
+                }) {
                     return false;
                 }
                 let sessions: Vec<_> =
@@ -10264,7 +10287,11 @@ impl Daemon {
         let mut archived = 0;
         let mut skipped = 0;
         for id in ids {
-            if self.board.ticket_awake_sessions(id) > 0 {
+            let Ok(shells) = self.archive_ready_shells(id) else {
+                skipped += 1;
+                continue;
+            };
+            if shells.into_iter().any(|sid| self.sleep_one(sid, false, Park::Automatic).is_err()) {
                 skipped += 1;
                 continue;
             }
@@ -13736,10 +13763,26 @@ impl Daemon {
         Response::Ok
     }
 
+    /// Idle adopted shells close with an archive; only agents need parking first.
+    /// Like ordinary parking, a shell with a live child refuses before anything changes.
+    fn archive_ready_shells(&self, id: ulid::Ulid) -> Result<Vec<uuid::Uuid>, String> {
+        let sessions: Vec<_> =
+            self.board.sessions.iter().filter(|s| s.ticket == id && s.state.has_pane()).collect();
+        if sessions.iter().any(|s| s.kind.is_agent()) {
+            return Err("sessions still awake — sleep them first".into());
+        }
+        for rec in &sessions {
+            // This refusal also reaches the crown; process names stay local.
+            self.sleep_eligible(rec, now_ms(), false).map_err(|_| {
+                "shell has live children; open it, finish or stop its program, then exit".to_owned()
+            })?;
+        }
+        Ok(sessions.iter().map(|s| s.id).collect())
+    }
+
     /// Archive: off the board, everything kept (ticket file, sleeping
     /// sessions) — and the worktree too, unless its work has landed
-    /// (`reclaim_on_archive`). Gated on the ticket holding no pane —
-    /// archive means everything is already asleep.
+    /// (`reclaim_on_archive`). Agents must already be asleep; idle shells close.
     fn archive_ticket(&mut self, id: ulid::Ulid, by: &Principal) -> Response {
         match self.board.ticket(id) {
             None => return no_such_ticket(),
@@ -13748,16 +13791,19 @@ impl Daemon {
             }
             Some(_) => {}
         }
-        if let Some(message) = self.shell_blocker(id) {
-            return Response::Err { message };
-        }
-        if self.board.ticket_awake_sessions(id) > 0 {
-            return Response::Err { message: "sessions still awake — sleep them first".into() };
-        }
+        let shells = match self.archive_ready_shells(id) {
+            Ok(shells) => shells,
+            Err(message) => return Response::Err { message },
+        };
         let column = self.board.ticket(id).map(|t| t.column.clone()).unwrap_or_default();
         if self.board.column(&column).is_some_and(|c| c.settings.requires_ticked) {
             let what = format!("to archive from {column}");
             if let Some(message) = open_boxes_refusal(self.open_boxes(id), &what) {
+                return Response::Err { message };
+            }
+        }
+        for sid in shells {
+            if let Err(message) = self.sleep_one(sid, false, Park::Automatic) {
                 return Response::Err { message };
             }
         }
@@ -13871,8 +13917,7 @@ impl Daemon {
     /// so an unmerged archived tree costs no fork per bucket; a tree already
     /// gone is left alone, so the squash-merged branch `branch -d` refuses
     /// (`Evicted`, kept on purpose) is not re-queued, and re-logged, every
-    /// bucket. A ticket whose `!` terminal is open waits for it to close:
-    /// nobody asked for this teardown just now, and it would kill that shell.
+    /// bucket. The teardown closes the worktree terminal before reclaiming it.
     fn reclaim_archived(&mut self) {
         let due: Vec<ulid::Ulid> = self
             .worktrees
@@ -13887,7 +13932,6 @@ impl Daemon {
                     && self.wt_agg.get(*id).is_some_and(|a| a.merged)
                     && self.open_pr(**id).is_none()
                     && b.path.is_dir()
-                    && !self.terminals.contains_key(&Some(**id))
             })
             .map(|(id, _)| *id)
             .collect();
@@ -13906,7 +13950,7 @@ impl Daemon {
     /// the bulk sweep's age floor, since a `z` is as deliberate as an `x` —
     /// and it is all-or-nothing: every pane on the ticket is judged BEFORE
     /// any is signalled, so a claude still working (or waiting on the user,
-    /// or any open shell) holds the ticket on
+    /// or a shell with a live child) holds the ticket on
     /// the board with nothing on it touched, in words that name it.
     /// `wake_snoozed` on the tick wheel is the other half; the sessions
     /// stay asleep when the ticket returns, and `c` wakes them.
@@ -13917,9 +13961,6 @@ impl Daemon {
                 return Response::Err { message: "already archived".into() }
             }
             Some(_) => {}
-        }
-        if let Some(message) = self.shell_blocker(id) {
-            return Response::Err { message };
         }
         if until <= now_secs() {
             return Response::Err { message: "snooze deadline is already past".into() };
@@ -14551,7 +14592,7 @@ impl Daemon {
         if self.board.column(column).is_none() {
             return Response::Err { message: format!("no such column: {column}") };
         }
-        let needs_you = self.board.needs_you_tickets();
+        let needs_you = self.board.needs_you_tickets(mesimon_core::clock::now_ms());
         let touched = self.board.sort_column(column, by, &needs_you);
         for id in touched {
             if let Some(t) = self.board.ticket(id) {
@@ -14731,8 +14772,6 @@ impl Daemon {
                     // archive) waits for the first to land and is judged
                     // against what is left.
                     && !self.tearing_down.contains(&t.ticket)
-                    && (!matches!(t.why, TeardownWhy::Archived)
-                        || self.shell_blocker(t.ticket).is_none())
             })
             .map(|(i, _)| i)
             .collect();
@@ -14761,22 +14800,8 @@ impl Daemon {
             if b.path.is_dir() {
                 // The worktree's terminal (T-273) stands in the directory
                 // about to go: it is no session of the ticket, so the reaper
-                // never saw it. Archive reclamation waits for it to close;
-                // explicit deletion keeps its confirmed terminal cleanup.
-                if archived {
-                    match self.backend.snapshot() {
-                        Ok(panes)
-                            if !panes.iter().any(|p| {
-                                p.session_name == terminal_name(Some(ticket)) && !p.pane_dead
-                            }) => {}
-                        _ => {
-                            self.pending_teardown.push(Teardown { ticket, why, sids: Vec::new() });
-                            continue;
-                        }
-                    }
-                } else {
-                    let _ = self.backend.kill_session(&terminal_name(Some(ticket)));
-                }
+                // never saw it. Killed here, first — never remove a live cwd.
+                let _ = self.backend.kill_session(&terminal_name(Some(ticket)));
             }
             // The gates are judged here, on the writer, with the board in
             // hand; the removal itself goes to a worker (T-561). `worktree
@@ -17473,7 +17498,18 @@ impl Daemon {
         if rec.kind == SessionKind::Bash {
             // TIOCGPGRP recast: we hold no PTY master under tmux, so the
             // guard is the pane process's live children (D23 hard floor).
-            self.shell_close_ready(rec)?;
+            let pane_pid = self
+                .backend
+                .snapshot()
+                .ok()
+                .and_then(|s| s.into_iter().find(|p| p.session_name == rec.sid16()))
+                .map(|p| p.pane_pid);
+            if let Some(pid) = pane_pid {
+                let kids = live_children(pid).unwrap_or_default();
+                if !kids.is_empty() {
+                    return Err(format!("bash has live children ({})", kids.join(", ")));
+                }
+            }
         }
         Ok(())
     }
@@ -18024,7 +18060,7 @@ impl Daemon {
         let queue = mesimon_core::attention::attention_queue(&self.board);
         // Sessions in the attention set plus tickets a snooze woke lit —
         // the header chip's number, so the two never disagree.
-        let needs_you = self.board.needs_you_count();
+        let needs_you = self.board.needs_you_count(mesimon_core::clock::now_ms());
         // The user is looking at this pane: a `!1` that means "the session
         // you're inside" is noise, so the chip only shows when somewhere
         // ELSE needs them too.

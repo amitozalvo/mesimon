@@ -1546,7 +1546,7 @@ mod tests {
             vec![Event::needs_you(Ulid(1), "T-1", "brief not sent")]
         );
         assert!(d.scan(&b, true, Hush::default()).is_empty(), "still unsent is not unsent again");
-        assert_eq!(b.needs_you_count(), 1, "the header counts it");
+        assert_eq!(b.needs_you_count(0), 1, "the header counts it");
         b.sessions[0].unsent = None;
         assert!(d.scan(&b, true, Hush::default()).is_empty(), "taken says nothing");
         b.sessions[0].state = SessionState::Sleeping;
@@ -1555,7 +1555,7 @@ mod tests {
             d.scan(&b, true, Hush::default()).is_empty(),
             "a parked seat has no box to resend into"
         );
-        assert_eq!(b.needs_you_count(), 0);
+        assert_eq!(b.needs_you_count(0), 0);
     }
 
     /// Every road to the saturated colour is a road to a notification: what
@@ -1570,7 +1570,7 @@ mod tests {
             by: "agent:x".into(),
             reason: "which provider".into(),
         });
-        assert_eq!(b.needs_you_count(), 3, "the header's own number");
+        assert_eq!(b.needs_you_count(0), 3, "the header's own number");
         let mut c = Coalescer::default();
         for e in d.scan(&b, true, Hush::default()) {
             c.offer(e, 0);

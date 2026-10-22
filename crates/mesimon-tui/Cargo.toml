@@ -8,6 +8,9 @@ repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
 mesimon-core.workspace = true
 mesimon-daemon = { path = "../mesimon-daemon" }

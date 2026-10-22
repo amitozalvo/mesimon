@@ -41,15 +41,14 @@ an agent on a ticket and submit (Shift+Enter, or Start agent in Remote Control),
 is the ticket's title followed by the ticket's description — both your own words, written for
 that ticket, and nothing of mesimon's.
 
-A shell's output is private until you share it. On its ticket-page row, `^s` shares
-it with that ticket's agent and the board's crown; the same key stops future reads.
-Shift+Enter on a shell or unadopted terminal adopts it if necessary, enables sharing,
-and opens a frozen output capture in the ask editor. You review the exact text before
-sending it. Captures identify their source, time and truncation; terminal output is
-content, not instructions or proof that a command succeeded. Stopping sharing cannot
-remove captures already read or sent from their recipients' conversations.
+A shell's sharing grant gates `read_shell` through Mesimon's board tools, not the
+agent's own Bash: it runs as your user and can read panes through tmux. Live sharing
+has no TUI key.
+Shift+Enter adopts an unadopted terminal if necessary and previews a frozen output
+capture for an existing agent. It grants no live reads; Esc discards the capture,
+and only sending delivers it. Stopping sharing cannot recall output already delivered.
 
-The shell tools provide no terminal input. Only you run commands there. A crown may
+The shell tools provide no terminal input. A crown may
 request closure, which waits for your confirmation on the shell's row and checks its
 identity, activity and attached clients again. Closing loses the shell and its terminal
 history; parking an agent does not preserve or close a shell. Mesimon's tool permissions

@@ -1524,12 +1524,12 @@ impl Command {
             | AgentReadTicket { .. }
             | AgentReadAttachment { .. }
             | ReadAttachment { .. }
-            | AgentReadShell { .. }
             | ShellCapture { .. }
             | AgentReadNote { .. }
             | AgentListBoard
             // The bridge's poll: a delivery ledger, never board state.
             | ModNext { .. } => m(Read, false, None),
+            AgentReadShell { .. } => m(Read, true, None),
             // A queued frame and a parked reply; nothing the board keeps.
             ModPing { .. } => m(Mutate, false, None),
             // The crown (T-411): a person's gesture the feed answers "who
@@ -1713,11 +1713,13 @@ mod meta_tests {
     }
 
     #[test]
-    fn reads_are_never_logged_and_subjects_ride_along() {
+    fn routine_reads_are_unlogged_and_shell_reads_are_audited() {
         assert_eq!(
             Command::Snapshot.meta(),
             Meta { action: Action::Read, logged: false, subject: None }
         );
+        assert!(Command::AgentReadShell { shell: uuid::Uuid::nil(), key: None }.meta().logged);
+        assert!(!Command::ShellCapture { session: uuid::Uuid::nil() }.meta().logged);
         let id = ulid::Ulid::new();
         let m = Command::PromptSession {
             ticket: id,
@@ -2323,11 +2325,11 @@ pub struct ShellOutput {
 /// does. Everything here is board data the agent could read off disk anyway.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTicketView {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub terminal_open: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shells: Vec<AgentShellView>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub shells_about: String,
     pub key: String,
     /// On a session's read of its own ticket (T-715): that the person reads
@@ -3900,6 +3902,10 @@ mod tests {
             asked: None,
             seen: None,
         };
+        let json = serde_json::to_value(&t).unwrap();
+        for field in ["shells", "shells_about", "terminal_open"] {
+            assert!(json.get(field).is_none(), "unused shell feature leaked {field}");
+        }
         assert!(!serde_json::to_string(&t).unwrap().contains("repos"));
         assert!(!serde_json::to_string(&t).unwrap().contains("merged_in"));
         // An agent at no stop says nothing about one (T-566), nor a crown

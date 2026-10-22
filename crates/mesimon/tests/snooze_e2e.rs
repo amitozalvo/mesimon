@@ -100,7 +100,7 @@ fn a_snoozed_ticket_leaves_and_comes_back_lit_at_the_top() {
         vec![napper, stays],
         "a woken ticket lands on top"
     );
-    assert_eq!(board.needs_you_count(), 1);
+    assert_eq!(board.needs_you_count(mesimon_core::clock::now_ms()), 1);
     let on_disk = std::fs::read_to_string(&ticket_toml).unwrap();
     assert!(on_disk.contains("woke_at"), "{on_disk}");
     assert!(!on_disk.contains("[archived]"), "{on_disk}");
@@ -109,7 +109,7 @@ fn a_snoozed_ticket_leaves_and_comes_back_lit_at_the_top() {
     assert!(matches!(c.request(Command::SeenTicket { id: napper }), Response::Ok));
     assert!(!c.board().ticket(napper).unwrap().is_woke());
     assert!(matches!(c.request(Command::SeenTicket { id: napper }), Response::Ok));
-    assert_eq!(c.board().needs_you_count(), 0);
+    assert_eq!(c.board().needs_you_count(mesimon_core::clock::now_ms()), 0);
 
     // A quiet snooze wakes unlit.
     let until = now_secs() + 1;

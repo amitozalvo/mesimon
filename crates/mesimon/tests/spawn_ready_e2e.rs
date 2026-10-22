@@ -188,7 +188,11 @@ fn a_composer_that_never_paints_is_a_failed_start() {
     assert_eq!(rec.unsent, Some(Unsent { text: String::new(), brief: true }));
     assert!(!rec.pending_submit, "nothing is owed any more");
     assert!(!rec.ticket_read, "the brief never went in");
-    assert_eq!(c.board().needs_you_count(), 1, "the card and the chip say so");
+    assert_eq!(
+        c.board().needs_you_count(mesimon_core::clock::now_ms()),
+        1,
+        "the card and the chip say so"
+    );
     assert!(!got(&h).contains("mesimon-ready"), "nothing was pasted: {:?}", got(&h));
     match c.send(Principal::Agent { session: sid }, Command::AgentGetTicket) {
         Response::AgentTicket { ticket: view } => {
@@ -217,7 +221,7 @@ fn a_give_up_is_marked_and_the_resend_clears_the_box_once() {
         feed_count(&h, "prompt_submit_gave_up", ticket) == 1
     });
     assert_eq!(record(&mut c, sid).unsent, Some(Unsent { text: String::new(), brief: true }));
-    assert_eq!(c.board().needs_you_count(), 1);
+    assert_eq!(c.board().needs_you_count(mesimon_core::clock::now_ms()), 1);
     assert!(!got(&h).contains('\x03'), "the first paste clears nothing");
     let before = pastes(&got(&h)).len();
     assert_eq!(before, 1, "the first paste went under the typed title: {:?}", got(&h));
@@ -253,7 +257,7 @@ fn a_give_up_is_marked_and_the_resend_clears_the_box_once() {
         let rec = record(&mut c, sid);
         rec.unsent.is_none() && !rec.pending_submit
     });
-    assert_eq!(c.board().needs_you_count(), 0);
+    assert_eq!(c.board().needs_you_count(mesimon_core::clock::now_ms()), 0);
     wait_until(Duration::from_secs(3), "the resend's feed line", || {
         feed_count(&h, "prompt_resent", ticket) == 1
     });

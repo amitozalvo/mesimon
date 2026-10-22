@@ -5,8 +5,14 @@ use crate::Principal;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Read,
-    ReadShell,
-    RequestCloseShell,
+    ReadShell {
+        own: ulid::Ulid,
+        crown: bool,
+    },
+    RequestCloseShell {
+        own: ulid::Ulid,
+        crown: bool,
+    },
     Mutate,
     /// Materialize external content as a fresh, inert local ticket. There is
     /// no wire command for this seam. Existing agents and daemon automation
@@ -108,10 +114,15 @@ impl Decision {
 /// for everyone else they are `Mutate`. `Annotate` is its note edit, on a ticket (T-532).
 pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) -> Decision {
     let deny = |reason: &str| Decision::Deny { reason: reason.to_string() };
-    if matches!(action, Action::ReadShell | Action::RequestCloseShell) {
+    if let Action::ReadShell { own, crown } | Action::RequestCloseShell { own, crown } = action {
         return match (principal, resource) {
-            (Principal::Local | Principal::Agent { .. }, Resource::Shell { .. }) => Decision::Allow,
-            _ => deny("shell access requires a local owner or a scoped agent"),
+            (Principal::Local, Resource::Shell { .. }) => Decision::Allow,
+            (Principal::Agent { .. }, Resource::Shell { ticket, .. })
+                if ticket == own || *crown =>
+            {
+                Decision::Allow
+            }
+            _ => deny("shell access requires a local owner, its ticket's agent or the crown"),
         };
     }
     if matches!(
@@ -192,26 +203,7 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
             }
             (Action::Read, _) => Decision::Allow,
             (Action::Mutate, Resource::Ticket { .. } | Resource::Column { .. }) => Decision::Allow,
-            (
-                Action::ReadShell
-                | Action::RequestCloseShell
-                | Action::ImportContent
-                | Action::PromptExisting
-                | Action::ApproveExisting
-                | Action::FileTicket
-                | Action::StartAgent
-                | Action::Annotate,
-                _,
-            ) => deny("an agent cannot import external content"),
-            // Answered as `Mutate` at the top.
-            (
-                Action::MoveTicket
-                | Action::RenameTicket
-                | Action::TagTicket
-                | Action::ChooseWorkspace
-                | Action::ArchiveTicket,
-                _,
-            ) => authorize(principal, &Action::Mutate, resource),
+            _ => deny("this action is not available to an agent"),
         },
         // A teammate on a shared board (T-215): tickets and notes per the
         // role the relay enforced, never a session, never the board's own
@@ -226,26 +218,7 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
             }
             (Action::Read, _) => Decision::Allow,
             (Action::Mutate, Resource::Ticket { .. } | Resource::Column { .. }) => Decision::Allow,
-            (
-                Action::ReadShell
-                | Action::RequestCloseShell
-                | Action::ImportContent
-                | Action::PromptExisting
-                | Action::ApproveExisting
-                | Action::FileTicket
-                | Action::StartAgent
-                | Action::Annotate,
-                _,
-            ) => deny("a teammate cannot import external content"),
-            // Answered as `Mutate` at the top.
-            (
-                Action::MoveTicket
-                | Action::RenameTicket
-                | Action::TagTicket
-                | Action::ChooseWorkspace
-                | Action::ArchiveTicket,
-                _,
-            ) => authorize(principal, &Action::Mutate, resource),
+            _ => deny("this action is not available to a teammate"),
         },
         // Another board's daemon (T-733) holds no resource here at all: its
         // one command, words for this board's crown, is judged by the
@@ -561,10 +534,40 @@ mod tests {
         assert!(reason.contains("session"), "the reason is rendered to the agent: {reason}");
     }
     #[test]
+    fn shell_scope_is_a_core_authorization_floor() {
+        let own = ulid::Ulid(1);
+        for crown in [false, true] {
+            for action in
+                [Action::ReadShell { own, crown }, Action::RequestCloseShell { own, crown }]
+            {
+                for ticket in [own, ulid::Ulid(2)] {
+                    let shell = Resource::Shell { ticket, id: uuid::Uuid::nil() };
+                    assert_eq!(
+                        !authorize(&agent(), &action, &shell).denied(),
+                        ticket == own || crown
+                    );
+                    assert_eq!(authorize(&Principal::Local, &action, &shell), Decision::Allow);
+                    for principal in [
+                        automation(),
+                        remote(),
+                        Principal::Paired { device: "d".into(), grant: "g".into() },
+                        Principal::Peer { board: "b".into() },
+                    ] {
+                        assert!(authorize(&principal, &action, &shell).denied());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn shell_capabilities_never_grant_session_access_or_execution() {
         let shell = Resource::Shell { ticket: ulid::Ulid::nil(), id: uuid::Uuid::nil() };
         let session = Resource::Session { id: uuid::Uuid::nil() };
-        for action in [Action::ReadShell, Action::RequestCloseShell] {
+        for action in [
+            Action::ReadShell { own: ulid::Ulid::nil(), crown: false },
+            Action::RequestCloseShell { own: ulid::Ulid::nil(), crown: false },
+        ] {
             assert_eq!(authorize(&agent(), &action, &shell), Decision::Allow);
             assert!(authorize(&agent(), &action, &session).denied());
             assert!(authorize(&automation(), &action, &shell).denied());

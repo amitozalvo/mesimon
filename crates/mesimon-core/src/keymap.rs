@@ -903,7 +903,6 @@ pub enum Verb {
     Cancel,
     // ---- drawer ----
     AdoptObserve,
-    ShareShell,
     /// `n`: open the note the cursor means in the editor — the selected
     /// rail note, else the ticket's description, else a fresh one that
     /// becomes the description on save.
@@ -1404,7 +1403,6 @@ pub struct Ctx {
     /// The selected rail session is a live shell (T-366): `x` closes it
     /// rather than parking it, and says so.
     pub sel_shell: bool,
-    pub sel_shell_shared: bool,
     pub shell_close_armed: bool,
     /// The rail cursor is on the `+ agent session` row (T-300) — the
     /// phantom row the rail carries while the ticket's claude seat is empty
@@ -3197,9 +3195,9 @@ static TICKET: &[Binding] = &[
         show: "shift+enter",
         hint: |c| {
             if c.sel_terminal {
-                "adopt + share output"
+                "adopt + capture output"
             } else if c.sel_shell {
-                "share output"
+                "capture output"
             } else {
                 ask_hint(c)
             }
@@ -3274,23 +3272,6 @@ static TICKET: &[Binding] = &[
         group: Group::Sessions,
         mutates: false,
         prio: 0,
-    },
-    Binding {
-        keys: &[Key::Ctrl('s')],
-        verb: Verb::ShareShell,
-        show: "^s",
-        hint: |c| {
-            if c.sel_shell_shared {
-                "stop sharing shell"
-            } else {
-                "share shell with agent + crown"
-            }
-        },
-        avail: |c| c.sel_shell,
-        class: Class::Plain,
-        group: Group::Sessions,
-        mutates: true,
-        prio: 22,
     },
     Binding {
         keys: &[Key::Char('x')],

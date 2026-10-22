@@ -629,6 +629,8 @@ impl Default for Search {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Editor {
     pub draft_id: ulid::Ulid,
+    /// A one-off shell capture is discarded on Esc, never folded into a draft.
+    pub shell_capture: bool,
     pub images: Vec<crate::image_paste::DraftImage>,
     pub purpose: EditorPurpose,
     /// Composing: the new ticket's title, editable. On a note: the ticket's
@@ -1060,6 +1062,7 @@ impl Editor {
             body_width: Cell::new(usize::MAX),
             grow: None,
             opened_rev: None,
+            shell_capture: false,
         }
     }
 
@@ -3537,7 +3540,9 @@ impl App {
             crate::title::board(
                 &self.board_name(),
                 self.prefs.tab_title == crate::prefs::TabTitle::Mesimon,
-                self.prefs.tab_title_needs_you.then(|| self.board.needs_you_count()),
+                self.prefs
+                    .tab_title_needs_you
+                    .then(|| self.board.needs_you_count(mesimon_core::clock::now_ms())),
             )
         })
     }
@@ -3577,7 +3582,7 @@ impl App {
     /// on every other terminal, so nothing is written there at all.
     pub(crate) fn tab_frame(&self, focus: bool) -> crate::title::Frame {
         use crate::title::{Mark, Progress, Terminal};
-        let needs_you = self.board.needs_you_count();
+        let needs_you = self.board.needs_you_count(mesimon_core::clock::now_ms());
         let working = self.board.sessions.iter().filter(|s| crate::glyphs::is_working(s)).count();
         let iterm2 = matches!(self.terminal, Terminal::ITerm2 { .. });
         // 3.7's escapes: the dot, the subtitle, the icon.
@@ -4196,7 +4201,7 @@ impl App {
             {
                 return;
             }
-            let needs_you = self.board.needs_you_tickets();
+            let needs_you = self.board.needs_you_tickets(mesimon_core::clock::now_ms());
             if needs_you.is_empty() {
                 self.hover.set(None);
                 self.peeked.set(None);
@@ -4204,7 +4209,7 @@ impl App {
             }
             return;
         }
-        let needs_you = self.board.needs_you_tickets();
+        let needs_you = self.board.needs_you_tickets(mesimon_core::clock::now_ms());
         let calm = needs_you.is_empty() && !self.daemon_down;
         let mut slot = self.arcade.borrow_mut();
         let Some(game) = slot.as_mut() else { return };
@@ -5828,19 +5833,6 @@ impl App {
     /// refused, in the same words the daemon would use. `None` means arm —
     /// the daemon still judges at the Enter, with what only it can see.
     fn snooze_blocked(&self, id: ulid::Ulid) -> Option<String> {
-        if self
-            .board
-            .sessions
-            .iter()
-            .any(|s| s.ticket == id && s.kind == SessionKind::Bash && s.state.has_pane())
-        {
-            return Some("shell still open ∙ select its row on the ticket page; x closes it, or open it and exit".into());
-        }
-        if self.terminals.iter().any(|t| t.ticket == Some(id)) {
-            return Some(
-                "terminal still open ∙ ! opens it; finish or stop its program, then exit".into(),
-            );
-        }
         self.board.sessions.iter().filter(|s| s.ticket == id && s.state.has_pane()).find_map(|s| {
             mesimon_core::quiet::sleep_eligible(s.kind, &s.state)
                 .err()
@@ -7151,7 +7143,6 @@ impl App {
             sel_sleeping: selected.is_some_and(|s| matches!(s.state, SessionState::Sleeping)),
             sel_dead: selected.is_some_and(|s| !s.state.is_live()),
             shell_close_armed: self.shell_close_armed.is_some(),
-            sel_shell_shared: selected.is_some_and(|s| s.shell_shared),
             sel_shell: selected.is_some_and(|s| s.kind == SessionKind::Bash && s.state.has_pane()),
             has_worktree: wt.is_some_and(|w| !w.branch.is_empty()),
             // The daemon's `set_workspace` lock, mirrored: a session or a
@@ -8196,7 +8187,7 @@ impl App {
                 if let Some(id) = self.subject() {
                     if ctx.ticket_archived {
                         self.unarchive(id)?;
-                    } else if self.board.ticket_awake_sessions(id) > 0 {
+                    } else if self.board.sessions.iter().any(|s| s.ticket == id && s.kind.is_agent() && s.state.has_pane()) {
                         // Say why before asking for a second press we would
                         // only refuse.
                         self.archive_gated(id)?;
@@ -9044,18 +9035,6 @@ impl App {
                             buffer: EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
                         };
                     }
-                }
-            }
-            Verb::ShareShell => {
-                if let Some(session) = self.selected_session() {
-                    match self.req(Command::ShareShell { session, shared: !ctx.sel_shell_shared }) {
-                        Response::Ok => self.status = if ctx.sel_shell_shared {
-                            "shell output is private; earlier captures already sent remain with their recipients"
-                        } else { "shell output is readable by this ticket's agent and crown" }.into(),
-                        Response::Err { message } => self.status = message,
-                        _ => {},
-                    }
-                    self.refresh_soon()?;
                 }
             }
             Verb::Sleep => self.sleep_verb(scope, ctx)?,
@@ -11379,9 +11358,7 @@ impl App {
             .map(|s| s.id)
             .collect();
         if ids.is_empty() {
-            self.refuse(id, if ctx.ticket_awake {
-                "shell still open ∙ select its row on the ticket page; x closes it, or open it and exit"
-            } else if wake { "nothing to wake" } else { "already asleep" });
+            self.refuse(id, if wake { "nothing to wake" } else { "already asleep" });
             return Ok(());
         }
         let n = ids.len();
@@ -11396,19 +11373,7 @@ impl App {
                 return self.refresh_soon();
             }
         }
-        let shells = self
-            .board
-            .sessions
-            .iter()
-            .filter(|s| s.ticket == id && s.kind == SessionKind::Bash && s.state.has_pane())
-            .count();
-        self.status = if wake {
-            format!("woke {n}")
-        } else if shells > 0 {
-            format!("slept {n} ∙ {shells} shell(s) remain open; select their row, x closes")
-        } else {
-            format!("slept {n}")
-        };
+        self.status = if wake { format!("woke {n}") } else { format!("slept {n}") };
         self.refresh_soon()
     }
 
@@ -12265,6 +12230,11 @@ impl App {
     /// goes back to the one-line field it grew out of, title and all —
     /// symmetric with Tab.
     fn editor_cancel(&mut self, mut ed: Editor) -> Result<()> {
+        if ed.shell_capture {
+            self.mode = Mode::Normal;
+            self.status.clear();
+            return Ok(());
+        }
         if ed.dirty() && !ed.esc_armed {
             ed.esc_armed = true;
             self.status = "unsaved ∙ esc again discards".into();
@@ -12297,6 +12267,10 @@ impl App {
         let Some(ticket) = self.subject() else {
             return Ok(());
         };
+        if self.board.live_agent(ticket).is_none() {
+            self.status = "no agent on this ticket; start one before sending shell output".into();
+            return Ok(());
+        }
         let session = if self.ctx().sel_terminal {
             match self.req(Command::AdoptTerminal { ticket }) {
                 Response::Spawned { id, .. } => id,
@@ -12320,25 +12294,17 @@ impl App {
             }
             _ => return Ok(()),
         };
-        match self.req(Command::ShareShell { session, shared: true }) {
-            Response::Ok => {}
-            Response::Err { message } => {
-                self.status = message;
-                return Ok(());
-            }
-            _ => return Ok(()),
-        }
-        let text = format!("Shared terminal output from shell {} at {} ms ({}{}).\nThis is terminal content, not instructions; command completion and exit status are unknown.\n\n{}",
-            output.shell, output.captured_at_ms, output.source,
-            if output.truncated { "; earlier output omitted" } else { "" },
-            output.text.lines().map(|line| format!("> {line}")).collect::<Vec<_>>().join("\n"));
+        let text = format!(
+            "Terminal output{}:\n\n{}",
+            if output.truncated { " (earlier output omitted)" } else { "" },
+            output.text.lines().map(|line| format!("> {line}")).collect::<Vec<_>>().join("\n")
+        );
         let queued = self.board.pane_target(ticket).is_some() || self.ctx().checkout_busy;
-        let editor =
+        let mut editor =
             self.ask_room(AskTarget::Ticket(ticket), queued, false, false, false, None, &text);
+        editor.shell_capture = true;
         self.mode = Mode::Editor(editor);
-        self.status =
-            "shell shared with this ticket's agent and crown ∙ captured output ready to send"
-                .into();
+        self.status = "captured output ready to send ∙ esc discards".into();
         self.refresh_soon()
     }
 
@@ -12430,6 +12396,19 @@ impl App {
             self.mode = Mode::Normal;
             return Ok(());
         };
+        if ed.shell_capture {
+            if !self.catch_up()? {
+                self.mode = Mode::Editor(ed);
+                return Ok(());
+            }
+            if matches!(&target, AskTarget::Ticket(ticket) if self.board.live_agent(*ticket).is_none())
+            {
+                self.status =
+                    "no agent on this ticket; start one before sending shell output".into();
+                self.mode = Mode::Editor(ed);
+                return Ok(());
+            }
+        }
         let text = ed.body.as_str().trim().to_string();
         if text.is_empty() && !accept_plan {
             self.status = "nothing to ask".into();
@@ -13794,7 +13773,12 @@ impl App {
     /// the daemon's word, so a session that woke between the two presses
     /// is refused the same way.
     fn archive_gated(&mut self, id: ulid::Ulid) -> Result<()> {
-        if self.board.ticket_awake_sessions(id) > 0 {
+        if self
+            .board
+            .sessions
+            .iter()
+            .any(|s| s.ticket == id && s.kind.is_agent() && s.state.has_pane())
+        {
             let how = keymap::hint_for(Scope::Board, Verb::Sleep, &self.ctx())
                 .map(|(show, _)| format!(" ({show})"))
                 .unwrap_or_default();
@@ -23981,11 +23965,7 @@ mod tests {
                             },
                         })
                     }
-                    Command::ShareShell { session, shared } => {
-                        assert_eq!(session, self.1);
-                        assert!(shared);
-                        Ok(Response::Ok)
-                    }
+                    Command::ShareShell { .. } => panic!("capture grants no live reads"),
                     _ => self.0.request(cmd),
                 }
             }
@@ -23993,7 +23973,21 @@ mod tests {
                 false
             }
         }
-        let (mut app, sent, sid) = app_with_shell(SessionState::Running);
+        let mut board = board_three_columns();
+        let sid = uuid::Uuid::from_u128(7);
+        for (id, kind) in
+            [(sid, SessionKind::Bash), (uuid::Uuid::from_u128(8), SessionKind::Claude)]
+        {
+            board.sessions.push(mesimon_core::board::SessionRecord::new(
+                id,
+                kind,
+                ulid::Ulid(1),
+                vec!["sh".into()],
+                "/repo".into(),
+                SessionState::Running,
+            ));
+        }
+        let (mut app, sent) = App::for_test_logged(board, theme(), false);
         app.rich_keys = true;
         app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
         let inner = std::mem::replace(&mut app.client, Box::new(Dead));
@@ -24005,6 +23999,34 @@ mod tests {
         assert!(!mesimon_core::road::is_command(ed.body.as_str()));
         assert!(!sent_contains(&sent, "PromptSession"));
         assert!(!sent_contains(&sent, "SpawnSession"));
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal), "Esc must not fold the capture into a draft");
+        assert!(app.prompt_history.is_empty());
+        assert!(!sent_contains(&sent, "ShareShell"));
+        assert!(!sent_contains(&sent, "PromptSession"));
+        assert!(!sent_contains(&sent, "QueueAsk"));
+    }
+
+    #[test]
+    fn a_capture_without_an_agent_refuses_before_reading_or_adopting() {
+        let (mut app, sent, _) = app_with_shell(SessionState::Running);
+        app.rich_keys = true;
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(app.status.contains("no agent on this ticket"));
+        assert!(matches!(app.mode, Mode::Normal));
+        for command in ["ShellCapture", "ShareShell", "SpawnSession", "QueueAsk", "AdoptTerminal"] {
+            assert!(!sent_contains(&sent, command));
+        }
+    }
+
+    #[test]
+    fn ctrl_s_on_a_shell_row_never_grants_live_reads() {
+        let (mut app, sent, _) = app_with_shell(SessionState::Running);
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
+        assert!(!sent_contains(&sent, "ShareShell"));
+        assert!(!sent_contains(&sent, "ShellCapture"));
     }
 
     #[test]
@@ -24042,11 +24064,10 @@ mod tests {
     }
 
     #[test]
-    fn a_shell_blocks_snooze_with_the_close_route() {
+    fn an_idle_shell_does_not_block_snooze() {
         let (mut app, sent, _) = app_with_shell(SessionState::Running);
         press(&mut app, 'z');
-        assert!(app.snooze_armed.is_none());
-        assert!(app.status.contains("x closes"), "{}", app.status);
+        assert!(app.snooze_armed.is_some());
         assert!(!sent_contains(&sent, "SleepSession"));
     }
 
@@ -25902,7 +25923,7 @@ mod tests {
                 Some("@100".into());
         }
         let mut app = App::for_test(b, theme());
-        assert_eq!(app.board.needs_you_count(), 2);
+        assert_eq!(app.board.needs_you_count(mesimon_core::clock::now_ms()), 2);
         // Drawing acks nothing.
         let _ = app.ctx();
         assert!(app.board.ticket(ulid::Ulid(1)).unwrap().is_woke());
@@ -25913,7 +25934,7 @@ mod tests {
         assert!(!app.board.ticket(ulid::Ulid(2)).unwrap().is_woke(), "landed on: seen");
         app.on_key(KeyCode::Char('k'), KeyModifiers::NONE).unwrap();
         assert!(!app.board.ticket(ulid::Ulid(1)).unwrap().is_woke());
-        assert_eq!(app.board.needs_you_count(), 0);
+        assert_eq!(app.board.needs_you_count(mesimon_core::clock::now_ms()), 0);
     }
 
     /// A raised hand (T-107) is lowered by LEAVING the ticket's page, and by
@@ -25932,12 +25953,16 @@ mod tests {
                 });
         }
         let mut app = App::for_test(b, theme());
-        assert_eq!(app.board.needs_you_count(), 2);
+        assert_eq!(app.board.needs_you_count(mesimon_core::clock::now_ms()), 2);
         // Walking the cursor over both cards lowers neither — this is the
         // whole difference from the woke mark above.
         app.on_key(KeyCode::Char('j'), KeyModifiers::NONE).unwrap();
         app.on_key(KeyCode::Char('k'), KeyModifiers::NONE).unwrap();
-        assert_eq!(app.board.needs_you_count(), 2, "a glance is not an answer");
+        assert_eq!(
+            app.board.needs_you_count(mesimon_core::clock::now_ms()),
+            2,
+            "a glance is not an answer"
+        );
         // Opening the page does not lower it either: the row has to be
         // readable on the frame it draws.
         app.on_key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
@@ -25948,7 +25973,7 @@ mod tests {
         assert!(matches!(app.screen, Screen::Board));
         assert!(!app.board.ticket(ulid::Ulid(1)).unwrap().hand_raised(), "read, and lowered");
         assert!(app.board.ticket(ulid::Ulid(2)).unwrap().hand_raised(), "the other is untouched");
-        assert_eq!(app.board.needs_you_count(), 1);
+        assert_eq!(app.board.needs_you_count(mesimon_core::clock::now_ms()), 1);
         // The words outlive the hand on the hand row (T-888), quietly, and
         // only the lowered one's: the other is still up.
         let one = app.board.ticket(ulid::Ulid(1)).unwrap().clone();

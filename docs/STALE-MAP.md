@@ -30152,3 +30152,25 @@ Coverage: `input_tests::a_redraw_never_reads_as_a_dialog_and_a_real_one_refuses_
 (the recorded working frame, hidden and on the status line, and 0.163's captured approval);
 `provider_e2e::a_steer_reads_past_a_redraw_and_a_missing_box_is_no_dialog`, where the Codex
 stub's `hide_ms` draws a frame with its cursor hidden for 150 ms (fails 3 of 3 at one read).
+
+## One-off shell captures and scoped live reads (T-904 follow-up, 2026-10-22)
+
+Shift+Enter on a ticket's shell row now prepares only a frozen capture for an
+existing agent. Esc discards it without retaining an ask draft or granting live
+reads. An unadopted terminal is still adopted in one press. No TUI key enables live sharing; the wire grant remains available.
+The shell tools do not isolate same-user processes.
+The capture prefill says only “Terminal output” and whether earlier output was omitted.
+
+Core authorization takes the caller's ticket and crown facts for shell actions;
+the daemon retains its ticket and sharing checks. Close-request refusals say busy
+without process names. Records without an older pane key remain usable; recorded
+keys still have to match. Read events record reader, shell and outcome, never output.
+Idle shells do not block parking, snoozing or archiving. Ordinary parking retains
+the live-child guard; archive teardown closes the worktree terminal as before. Attention counts take
+an injected time; shell guidance is omitted on tickets without a shell or terminal,
+and capture truncation excludes trailing screen padding and checks both row and byte limits.
+
+Coverage adds cancellation/no-agent key tests, authorization-scope and legacy-key
+unit cases, bounded-output cases, capture-without-sharing wire checks and metadata-only
+read-feed checks. SH1 verifies successful shell reads, structured workflow answers,
+no execution tools, and a live shell awaiting human closure confirmation.

@@ -1039,7 +1039,11 @@ fn a_brief_owed_across_a_daemon_restart_is_resent_to_a_seat_that_took_no_prompt(
     let rec = c.board().sessions.into_iter().find(|s| s.id == sid).unwrap();
     assert!(rec.pending_submit, "the Enter is owed until the ack");
     assert!(rec.ticket_read, "the brief went in");
-    assert_eq!(c.board().needs_you_count(), 0, "a resend under way is not a failed start");
+    assert_eq!(
+        c.board().needs_you_count(mesimon_core::clock::now_ms()),
+        0,
+        "a resend under way is not a failed start"
+    );
 
     hook_send_with(&h.paths.hook_sock(), &sid.to_string(), "UserPromptSubmit", None, "{}");
     wait_until(Duration::from_secs(5), "the ack", || {
@@ -1073,7 +1077,7 @@ fn a_brief_owed_across_a_restart_is_not_resent_to_a_seat_that_took_a_prompt() {
         "the mark stays for a person"
     );
     assert!(!rec.pending_submit, "nothing is owed");
-    assert_eq!(c.board().needs_you_count(), 1, "the card says so");
+    assert_eq!(c.board().needs_you_count(mesimon_core::clock::now_ms()), 1, "the card says so");
     assert_eq!(feed_count(&h, "prompt_resent", ticket), 0);
     assert_eq!(feed_count(&h, "prompt_submit_abandoned", ticket), 0);
     let _ = c.request(Command::KillSession { id: sid });

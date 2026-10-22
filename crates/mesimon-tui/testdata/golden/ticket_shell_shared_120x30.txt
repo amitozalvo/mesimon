@@ -27,4 +27,4 @@
 
 
 
- jk select session ∙ enter focus ∙ shift+enter share output ∙ ^s stop sharing shell ∙ r rename ∙ d delete        ? keys
+ jk select session ∙ enter focus ∙ shift+enter capture output ∙ r rename ∙ d delete ∙ n describe                 ? keys
