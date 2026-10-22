@@ -498,7 +498,7 @@ fn render(buf: &mut Buffer, area: Rect, beat: &Beat, theme: &Theme, ink: &Creatu
         for c in 0..cv.w {
             let (t, b) = (cv.get(c, 2 * r), cv.get(c, 2 * r + 1));
             let (ch, style) = match (t, b) {
-                (Some(t), Some(b)) if t == b => ('█', Style::default().fg(t)),
+                (Some(t), Some(b)) if t == b => ('█', Style::default().fg(t).bg(t)),
                 (Some(t), Some(b)) => ('▀', Style::default().fg(t).bg(b)),
                 (Some(t), None) => ('▀', Style::default().fg(t)),
                 (None, Some(b)) => ('▄', Style::default().fg(b)),
@@ -711,6 +711,26 @@ mod tests {
         }
         let want = std::fs::read_to_string(&path).unwrap_or_default();
         assert!(want == got, "{} drifted; review + MESIMON_UPDATE_GOLDEN=1\n{got}", path.display());
+    }
+
+    #[test]
+    fn every_intro_solid_pixel_fills_the_cell_background() {
+        let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+        let ink = theme.creature_ink(false).unwrap();
+        let area = Rect::new(0, 0, 100, 24);
+        let mut solids = 0;
+        for beat in storyboard() {
+            let mut buf = Buffer::empty(area);
+            render(&mut buf, area, &beat, &theme, &ink);
+            for cell in &buf.content {
+                if cell.symbol() == "█" {
+                    solids += 1;
+                    assert_eq!(cell.bg, cell.fg);
+                    assert_ne!(cell.bg, Color::Reset);
+                }
+            }
+        }
+        assert!(solids > 0);
     }
 
     #[test]

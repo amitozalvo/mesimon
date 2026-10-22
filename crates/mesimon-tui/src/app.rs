@@ -2466,7 +2466,12 @@ impl App {
         {
             return;
         }
-        let theme = (self.theme.flavor, self.theme.profile, self.theme.underline_colors);
+        let theme = (
+            self.theme.flavor,
+            self.theme.profile,
+            self.theme.underline_colors,
+            self.theme.block_gaps,
+        );
         let repos = self.git.repos.len();
         match crate::setup::Setup::new(
             theme,
@@ -2534,7 +2539,12 @@ impl App {
 
     /// Open the guided tour (T-763) on its first lesson, or say why not.
     fn open_tour(&mut self) {
-        let theme = (self.theme.flavor, self.theme.profile, self.theme.underline_colors);
+        let theme = (
+            self.theme.flavor,
+            self.theme.profile,
+            self.theme.underline_colors,
+            self.theme.block_gaps,
+        );
         match crate::tour::Tour::new(theme, self.prefs.clone(), 0) {
             Ok(t) => {
                 self.tour = Some(Box::new(t));
@@ -16346,18 +16356,22 @@ mod tests {
     #[test]
     fn terminal_decorations_survive_theme_preview_and_practice_boards() {
         let mut app = app_three_columns();
-        app.theme.underline_colors = false;
+        app.theme = app.theme.for_terminal(Some("Apple_Terminal"));
         app.preview(Flavor::Chalk);
         assert!(!app.theme.underline_colors);
+        assert!(app.theme.block_gaps);
         app.preview(Flavor::Graphite);
         assert!(!app.theme.underline_colors);
+        assert!(app.theme.block_gaps);
         app.open_tour();
         let tour = app.tour.as_mut().expect("tour");
         assert!(!tour.sandbox.theme.underline_colors);
+        assert!(tour.sandbox.theme.block_gaps);
         tour.try_it().expect("reset practice board");
         assert!(!tour.sandbox.theme.underline_colors);
+        assert!(tour.sandbox.theme.block_gaps);
         let setup = crate::setup::Setup::new(
-            (Flavor::Graphite, Profile::TrueColor, false),
+            (Flavor::Graphite, Profile::TrueColor, false, true),
             Default::default(),
             "/practice".into(),
             1,
@@ -16365,6 +16379,7 @@ mod tests {
         )
         .expect("setup");
         assert!(!setup.sandbox.theme.underline_colors);
+        assert!(setup.sandbox.theme.block_gaps);
     }
 
     /// A board whose CLAUDE.md is sampled and does not carry the line, so the

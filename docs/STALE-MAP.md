@@ -30508,3 +30508,36 @@ waited before consuming final PTY output, and its next compared macOS's kernel P
 as configuration; the corrected driver drains restoration output and excludes only that
 bookkeeping bit. All final bounded runs had clean fixture audits. Full nextest and
 Linux/Docker were not run for this client-rendering change.
+
+
+## Fill solid terminal cells independently of font leading (T-909, 2026-10-23)
+
+Terminal.app screenshots exposed two gaps that the board-only visual comparison missed:
+the ticket description's `▎` looked dashed, and the mascot's full-block rows had horizontal
+seams. A foreground block glyph need not cover the terminal's entire cell. The mascot and
+intro now give every solid `█` the same foreground and background color. The background
+fills any leading around the glyph, while two-color and half-cell pixels retain their
+existing shape and colors. The source drawing, animation geometry and generated PNGs are
+unchanged; this does not promise identical rasterization of half blocks across fonts.
+
+Terminal.app's description bar uses a background-painted cell instead of `▎`. It is one
+cell wide rather than a quarter cell: continuity takes precedence over the thin-bar
+preference on this endpoint. Text still begins in the same column. Other endpoints keep
+the thin bar; Mono/ANSI8 keep their ASCII stroke. This rendering capability is independent
+of color depth and underline support, and survives theme previews, setup and tour resets.
+No saved terminal profile or font settings are changed.
+
+The real-renderer replay adds a description with blank rows and a mascot specimen (39
+frames per configuration). Terminal.app's default SF Mono 11 replay was captured and
+inspected: the bar is continuous through blank lines, and the mascot's solid body has no
+horizontal seams. Regression checks cover description geometry across all themes and
+color profiles, every mascot pose's solid-cell backgrounds, the intro storyboard, and
+capability preservation. Golden regeneration produced no golden changes: the glyph
+geometry and source image remain the same; buffer color assertions cover the new paint.
+
+Validation: 1,188 TUI tests passed with golden regeneration; `cargo ut` passed 2,549
+unit tests, with the six standard ignored timing/network/PTY-child entries. Its first
+run stopped at the unrelated doctor tree-size assertion (64 KiB reported for two 64 KiB
+files); the unchanged test passed on the complete rerun. The real-tmux `m1_e2e` acceptance
+test passed. Fixture audits were clean. Formatting and diff checks passed. Full nextest
+and Linux/Docker were not run for this TUI-only change.

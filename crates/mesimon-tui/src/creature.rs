@@ -1148,7 +1148,9 @@ fn stage(pic: &Picture, ink: &CreatureInk) -> Stage {
             let paint = |y: i16| pic.at(x, y).map(|role| role.ink(ink));
             let (top, bottom) = (paint(y), paint(y + 1));
             cells[(r * cols + c) as usize] = match (top, bottom) {
-                (Some(t), Some(b)) if t == b => Some(('█', Style::default().fg(t))),
+                // Background fills the font's leading too; a full-block glyph alone
+                // leaves horizontal seams in Terminal.app.
+                (Some(t), Some(b)) if t == b => Some(('█', Style::default().fg(t).bg(t))),
                 (Some(t), Some(b)) => Some(('▀', Style::default().fg(t).bg(b))),
                 (Some(t), None) => Some(('▀', Style::default().fg(t))),
                 (None, Some(b)) => Some(('▄', Style::default().fg(b))),
@@ -1313,6 +1315,15 @@ mod tests {
                     }
                     let ink = theme.creature_ink(fr.faded).expect("truecolor draws");
                     let st = stage(&pic, &ink);
+                    for (ch, style) in st.cells.iter().flatten() {
+                        if *ch == '█' {
+                            assert_eq!(
+                                style.bg, style.fg,
+                                "{size:?} {anim:?}: solid pixels fill the cell"
+                            );
+                            assert!(style.bg.is_some());
+                        }
+                    }
                     let want = (b.w as u16 + pad as u16 + 4, b.h as u16 / 2 + ABOVE);
                     assert_eq!((st.cols, st.rows), want, "{size:?} {anim:?}");
                 }

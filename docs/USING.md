@@ -314,6 +314,8 @@ lists it).
 Terminal.app uses a plain underline for the completed portion; the unfinished portion is
 bare. Text and background colors stay in RGB. The color sweep requires independently
 colored underlines, so Terminal.app updates the completed length directly instead.
+Its ticket description bar is one cell wide so it stays continuous when the font leaves
+space between rows.
 
 ## Filing a ticket from a script
 

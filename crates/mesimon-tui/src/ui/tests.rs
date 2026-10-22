@@ -8127,6 +8127,39 @@ fn test_ticket_header_section_is_a_band() {
     assert_eq!(Some(buf[(code_x as u16, code_y as u16)].bg), app.theme.bg);
 }
 
+/// A background-painted description bar is continuous even when the terminal
+/// adds leading around font glyphs. The rest of the ticket keeps its geometry.
+#[test]
+fn terminal_app_description_bar_fills_every_row_without_moving_the_text() {
+    for flavor in Flavor::ALL {
+        for profile in [Profile::TrueColor, Profile::Ansi256, Profile::Ansi16] {
+            let mut app = app_noted();
+            app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+            app.theme = Theme::new(flavor, profile);
+            let before = cells(&app, 120, 30);
+            let lines = lines_of(&before);
+            let first = lines.iter().position(|l| l.contains("What changed")).unwrap() as u16;
+            let last = lines.iter().position(|l| l.contains("the goldens moved")).unwrap() as u16;
+            app.theme = app.theme.for_terminal(Some("Apple_Terminal"));
+            let after = cells(&app, 120, 30);
+            for y in 0..30 {
+                for x in 0..120 {
+                    if x == 1 && (first..=last).contains(&y) {
+                        assert_eq!(after[(x, y)].symbol(), " ");
+                        assert_eq!(after[(x, y)].bg, before[(x, y)].fg);
+                    } else {
+                        assert_eq!(after[(x, y)], before[(x, y)], "{flavor:?}/{profile:?}/{x},{y}");
+                    }
+                }
+            }
+        }
+    }
+    for profile in [Profile::Ansi8, Profile::Mono] {
+        let theme = Theme::new(Flavor::Graphite, profile).for_terminal(Some("Apple_Terminal"));
+        assert_eq!(theme.desc_bar(), ('|', ratatui::style::Style::default()));
+    }
+}
+
 /// A description block eats rows from the zones below, never from the
 /// footer, and a ticket with no description keeps its old geometry.
 #[test]

@@ -66,7 +66,11 @@ fn specimen(flavor: Flavor, colored: bool) -> App {
     waiting.waiting_since = Some(1);
     waiting.detail = Some("Review the proposed change".into());
     app.board = std::sync::Arc::new(board);
-    app.theme = Theme::new(flavor, Profile::TrueColor).with_underline_colors(colored);
+    app.theme = Theme::new(flavor, Profile::TrueColor).for_terminal(Some(if colored {
+        "iTerm.app"
+    } else {
+        "Apple_Terminal"
+    }));
     app.now = || 10_000;
     app.rich_keys = false; // actual legacy hints, not iTerm's negotiated keys
     app
@@ -122,6 +126,16 @@ fn frames(flavor: Flavor, colored: bool, w: u16, h: u16) -> Vec<(String, u64, Bu
     add("rich note", 1400, &app);
     install_diff(&mut app);
     add("diff colors and wrapping", 1400, &app);
+    let mut detail = app_noted();
+    detail.theme = Theme::new(flavor, Profile::TrueColor).for_terminal(Some(if colored {
+        "iTerm.app"
+    } else {
+        "Apple_Terminal"
+    }));
+    detail.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    add("description bar including blank rows", 1400, &detail);
+    detail.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
+    add("mascot solid pixels", 1400, &detail);
     // Actual status glyphs, isolated so a width disagreement is visible
     // against the ASCII end marker without depending on a running agent.
     let glyphs = [

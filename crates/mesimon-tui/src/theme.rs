@@ -1273,6 +1273,8 @@ pub(crate) struct Theme {
     pub profile: Profile,
     /// Decoration support is independent of foreground/background color depth.
     pub underline_colors: bool,
+    /// Block glyphs may stop short of cell edges in font-based renderers.
+    pub block_gaps: bool,
     pub flavor: Flavor,
     /// Painted page background; None rides the terminal default.
     pub bg: Option<Color>,
@@ -1585,6 +1587,7 @@ impl Theme {
         Theme {
             profile,
             underline_colors: true,
+            block_gaps: false,
             flavor,
             bg,
             selected_bg,
@@ -1605,9 +1608,21 @@ impl Theme {
         self
     }
 
+    pub fn with_block_gaps(mut self, gaps: bool) -> Self {
+        self.block_gaps = gaps;
+        self
+    }
+
+    pub fn for_terminal(self, program: Option<&str>) -> Self {
+        self.with_underline_colors(crate::underline::colors_supported(program))
+            .with_block_gaps(program == Some("Apple_Terminal"))
+    }
+
     /// Theme previews and appearance changes retain the endpoint's capabilities.
     pub fn variant(&self, flavor: Flavor) -> Self {
-        Self::new(flavor, self.profile).with_underline_colors(self.underline_colors)
+        Self::new(flavor, self.profile)
+            .with_underline_colors(self.underline_colors)
+            .with_block_gaps(self.block_gaps)
     }
 
     /// Diff-pane line tints (M4b dogfood: full-line green/red grounds like
@@ -2248,10 +2263,14 @@ impl Theme {
     /// quarter of the width (author 2026-09-03, "reduce thickness"). A
     /// painted cell has one width, so thinner means a glyph — `▎` U+258E in
     /// the bar's colour, drawn over whatever surface the row is on. The
-    /// ladder tiers draw `|`, their thin stroke.
+    /// ladder tiers draw `|`, their thin stroke. Terminal.app uses a painted
+    /// cell: its font block can leave gaps between consecutive rows.
     pub fn desc_bar(&self) -> (char, Style) {
         if self.profile == Profile::Mono || self.profile == Profile::Ansi8 {
             return ('|', Style::default());
+        }
+        if self.block_gaps {
+            return (' ', Style::default().bg(self.bar_cursor));
         }
         ('▎', Style::default().fg(self.bar_cursor))
     }
