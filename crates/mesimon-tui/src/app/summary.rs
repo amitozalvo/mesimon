@@ -260,6 +260,12 @@ impl App {
     /// cache is a parse, not the text — and a line that no longer holds a
     /// box means the note moved on since the dialog was drawn.
     pub(crate) fn summary_tick(&mut self) -> Result<()> {
+        // The row and its note's revision are read off the board (T-812
+        // re-review): a second tick before the first's board lands would
+        // send the old revision and be refused.
+        if !self.catch_up()? {
+            return Ok(());
+        }
         let Some((ticket, row)) = self.summary_cursor() else {
             return Ok(());
         };

@@ -29926,3 +29926,33 @@ left alone: it governs launch words' owed Enter, not a queued ask's paste, and n
 seat's under both follow-up modes); `ask_queue_e2e::a_queued_ask_lands_after_an_api_error_and_waits_out_a_limit`
 (an ask queued mid-turn lands on the `StopFailure{server_error}`, and one queued on a
 `StopFailure{rate_limit}` stays), on both passes; it times out with the old `Idle`-only gate.
+
+## The barrier comes before the read, and it has a deadline (T-812 re-review, 2026-10-22)
+
+The re-review of `d861af37` (T-897's `Re-review d861af37`) confirmed the first five fixes and
+found five more of the same family: the barrier ran inside the send, after the key had already
+read the board for its value or target.
+
+**Applied.** `catch_up` now runs before the read in the column rings that compute their value
+outside `set_column` (`on working`, `on done`, `arrives`, the column workspace), in `grab`
+before it picks the card and the column, in `u` before `undo_target`, and in the summary tick
+before it reads the row and the note's revision. The undo roads wait for their own board — the
+archive, the snooze, the unarchive and the restore — so `u` is offered and aimed off the grace
+band and the archive that show the last change: two `u` restore two tickets, and an archive's
+"u undoes it" is true on the next frame.
+
+**The deadline.** `catch_up` returns whether it caught up, and every caller sends nothing when it
+did not. It waits for one `client::RESPONSE_WAIT` end to end, across the ask out and the one more
+it may send on the lane (`App::catch_up_wait`, which a test shortens); `settle_snapshot` waits
+the same, never a bare `recv`. An ask a barrier gave up on stays out: `pump` lands it when it
+comes and asks once more. And `land_snapshot` drops an answer asked before the board on screen,
+so a waited-for fetch that overtook a held ask is never rolled back by it. Every connection's
+writes now time out at `RESPONSE_WAIT` too (`client::hello`). CLAUDE.md no longer says such a
+key never waits: it does, while the daemon is slow, and for that bound at most.
+
+**Tests.** `column_rings_step_twice_while_the_board_lands_late`,
+`a_second_filing_grabs_the_card_that_slid_under`,
+`undo_twice_restores_both_and_an_archive_is_undoable_at_once`,
+`a_second_summary_tick_carries_the_first_ticks_revision` (the fake now refuses a stale note
+revision, as the daemon does), `a_barrier_gives_up_at_its_deadline_and_sends_nothing`,
+`an_answer_older_than_the_board_on_screen_is_dropped`.

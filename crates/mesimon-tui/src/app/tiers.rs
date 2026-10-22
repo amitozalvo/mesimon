@@ -103,7 +103,9 @@ impl App {
     pub(crate) fn cycle_tier(&mut self) -> Result<()> {
         // The tier as the daemon has it (T-812 review): a second press
         // before the first's board lands steps from the first's answer.
-        self.catch_up()?;
+        if !self.catch_up()? {
+            return Ok(());
+        }
         let Some(id) = self.subject() else { return Ok(()) };
         let book = self.tiers();
         let current = book.of_ticket(id).id;

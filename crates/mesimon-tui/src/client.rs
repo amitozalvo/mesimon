@@ -754,6 +754,10 @@ fn shutdown_existing(sock: &Path) -> Result<Response> {
 }
 
 fn hello(stream: UnixStream, version: u32) -> Result<Conn> {
+    // A write the daemon never drains ends within the same wait a reply
+    // gets (T-812 re-review): the lane's thread, and the board's, never
+    // hang on a full socket buffer.
+    stream.set_write_timeout(Some(RESPONSE_WAIT))?;
     let write = stream.try_clone()?;
     let (rtx, rrx): (Sender<Response>, Receiver<Response>) = channel();
     let (etx, erx) = channel();

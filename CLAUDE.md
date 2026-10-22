@@ -328,9 +328,13 @@ waited-for fetch, for a key whose next line reads the fresh board (the `select_t
 just made); it lands the ask in flight first, so no board lands after a newer one. A new mutating
 key calls `refresh_soon` (or `send`) unless the line after it reads the board. **A
 read-modify-write key** — one whose write is decided by a read of the board (a toggle, a cycle,
-a whole `ColumnSettings`, a move's place, `u`'s target) — calls `App::catch_up` before it reads,
-or waits for its own board; and an intent armed before an ask (a parked focus, a cursor kept
-home) ignores answers asked before the key (`App::landing`, the asks' count).
+a whole `ColumnSettings`, a move's card and place, `u`'s target, a note's revision) — calls
+`App::catch_up` *before* it reads the board to compute anything, or waits for its own board;
+and an intent armed before an ask (a parked focus, a cursor kept home) ignores answers asked
+before the key (`App::landing`, the asks' count). **Such a key does block** while the daemon is
+slow: `catch_up` waits on this thread for one `RESPONSE_WAIT` at most, then sends nothing and
+says `daemon slow ∙ the board is behind ∙ nothing sent`. Only the keys that read nothing
+(navigation, the frame) never wait.
 
 **Paths (D33b).** Per repo, keyed by `proj16` = sha256(canonical repo path)[..16]: sockets under
 `/tmp/mesimon-<uid>/<proj16>/` (sun_path budget — a new socket must be added to the length test
