@@ -107,10 +107,10 @@ SWEEP_WAIT = 1.0  # the last frames' feed lines, after the worker's end
 # The column the permission tests' workers start in (T-581): Claude Code in
 # manual mode, so a Bash command asks.
 MANUAL_COLUMN = "RIG MANUAL"
-# Where the rig stands in for the phone (T-581): the socket the phone mod's
-# `mesimon approve` dials, short for sun_path. The phone holds each request
-# this long, so the dialog is up and the card says so before it is answered.
-PHONE_SOCK = "/tmp/msmn-rig-phone.sock"
+# The rig stands in for the phone (T-581) at a socket the phone mod's
+# `mesimon approve` dials, in each board's runtime dir (`Rig.phone_sock`, T-831).
+# The phone holds each request this long, so the dialog is up and the card
+# says so before it is answered.
 PHONE_HOLD = 4.0
 # What a terminal hands a program it starts: the rig's daemon is started from
 # this, never from the environment of the agent running the rig, which
@@ -587,14 +587,17 @@ class Phone:
     (`mesophon::PermissionDecision`), then the stream closes. Every request is
     logged with the session and the answer."""
 
-    def __init__(self):
+    def __init__(self, path):
         self.answer = "allow"
         self.log = []
-        if os.path.exists(PHONE_SOCK):
-            os.remove(PHONE_SOCK)
+        self.path = path
+        # The path is this board's own (its runtime dir), so nothing here
+        # removes a socket another run owns; a leftover is this board's.
+        if os.path.exists(path):
+            os.remove(path)
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.bind(PHONE_SOCK)
-        os.chmod(PHONE_SOCK, 0o600)
+        self.sock.bind(path)
+        os.chmod(path, 0o600)
         self.sock.listen(8)
         threading.Thread(target=self.serve, daemon=True).start()
 
@@ -881,6 +884,11 @@ class Rig:
             die(f"P4's mod does not validate:\n{out.stdout}{out.stderr}")
         return dst
 
+    def phone_sock(self):
+        """The stand-in phone's socket: in this board's runtime dir, beside
+        hook.sock, so it fits sun_path as they do and two runs never share it."""
+        return os.path.join(self.paths.rt_dir, "phone.sock")
+
     def phone_mod(self):
         """C1's and C2's mod: the laid sources, with `mesimon approve` dialing
         the rig's phone instead of the board's hook.sock. Nothing else moves:
@@ -897,7 +905,7 @@ class Rig:
         line = "const argv = [c.bin, 'approve', '--sock', c.hookSock, '--session', c.session,"
         if line not in text:
             die("the mod's approve moved: the phone cannot be patched in")
-        text = text.replace(line, line.replace("c.hookSock", repr(PHONE_SOCK)), 1)
+        text = text.replace(line, line.replace("c.hookSock", repr(self.phone_sock())), 1)
         os.remove(os.path.join(dst, "hooks", "register.test.ts"))
         with open(path, "w") as f:
             f.write(text)
@@ -1516,7 +1524,7 @@ Reply with the single word ready and end your turn."""
         if what in ("phone_allow", "phone_deny"):
             # The phone stands in at the socket the phone mod's approve dials
             # (T-581); the daemon comes up with that mod once.
-            self.phone = self.phone or Phone()
+            self.phone = self.phone or Phone(self.phone_sock())
             self.phone.answer = "allow" if what == "phone_allow" else "deny"
             if self.on_phone_mod:
                 return True
