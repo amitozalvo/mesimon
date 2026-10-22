@@ -56,8 +56,15 @@ pub(crate) struct Quiet<W: Write> {
 
 impl<W: Write> Quiet<W> {
     pub(crate) fn new(writer: W) -> Self {
+        Self::for_terminal(writer, std::env::var("TERM_PROGRAM").ok().as_deref())
+    }
+
+    fn for_terminal(writer: W, terminal_program: Option<&str>) -> Self {
         Self {
-            inner: CrosstermBackend::new(crate::underline::UnderlineColors::new(writer)),
+            inner: CrosstermBackend::new(crate::underline::UnderlineColors::new(
+                writer,
+                terminal_program,
+            )),
             shadow: std::collections::HashMap::new(),
             hidden: None,
             at: None,
@@ -310,7 +317,7 @@ mod tests {
     fn term() -> (Terminal<Quiet<Tty>>, Tty) {
         let tty = Tty::default();
         let options = TerminalOptions { viewport: Viewport::Fixed(Rect::new(0, 0, 12, 2)) };
-        (Terminal::with_options(Quiet::new(tty.clone()), options).unwrap(), tty)
+        (Terminal::with_options(Quiet::for_terminal(tty.clone(), None), options).unwrap(), tty)
     }
 
     fn frame(t: &mut Terminal<Quiet<Tty>>, text: &str, cursor: Option<(u16, u16)>) {
@@ -393,6 +400,54 @@ mod tests {
             .unwrap();
         let glyph = tty.take();
         assert!(glyph.contains('D') && !glyph.contains("\x1b[24m"), "{glyph:?}");
+    }
+
+    #[test]
+    fn leaving_a_card_on_apple_terminal_keeps_its_text_style_and_plain_underline() {
+        use ratatui::style::{Color, Modifier, Style};
+        use ratatui::text::{Line, Span};
+        let actual = Tty::default();
+        let reference = Tty::default();
+        let options = || TerminalOptions { viewport: Viewport::Fixed(Rect::new(0, 0, 24, 2)) };
+        let mut apple = Terminal::with_options(
+            Quiet::for_terminal(actual.clone(), Some("Apple_Terminal")),
+            options(),
+        )
+        .unwrap();
+        let mut plain =
+            Terminal::with_options(Quiet::for_terminal(reference.clone(), None), options())
+                .unwrap();
+        for (frame, focused) in [true, false, false].into_iter().enumerate() {
+            let style = Style::default()
+                .fg(Color::Rgb(80, 200, 230))
+                .bg(if focused { Color::Rgb(65, 40, 75) } else { Color::Rgb(30, 30, 40) })
+                .add_modifier(Modifier::UNDERLINED)
+                .add_modifier(if focused { Modifier::BOLD } else { Modifier::empty() });
+            for (terminal, custom) in [(&mut apple, true), (&mut plain, false)] {
+                draw(terminal, |f| {
+                    let color = |rgb| if custom { style.underline_color(rgb) } else { style };
+                    f.render_widget(
+                        Line::from(vec![
+                            Span::styled("prepare pro", color(Color::Rgb(41, 46, 107))),
+                            Span::styled("duction", color(Color::Rgb(46, 41, 107))),
+                        ]),
+                        f.area(),
+                    );
+                })
+                .unwrap();
+            }
+            let bytes = actual.take();
+            // Exactly the stream produced without custom underline colors:
+            // RGB ink, surface, bold removal, ordinary underline, and cursor.
+            assert_eq!(bytes, reference.take(), "frame {frame}");
+            assert!(!bytes.contains("\x1b[58"), "{bytes:?}");
+            if frame == 2 {
+                assert!(bytes.is_empty(), "the settled card stays silent");
+            } else {
+                assert!(bytes.contains("\x1b[4m"), "ordinary underline remains: {bytes:?}");
+                assert!(bytes.contains("38;2;80;200;230"), "RGB ink remains: {bytes:?}");
+            }
+        }
     }
 
     #[test]

@@ -30401,3 +30401,39 @@ above, and the ticket's binary built successfully. Both used the bounded runner 
 `git diff --check` passed. No goldens changed. Full nextest, tmux e2e and Linux/Docker
 checks were not rerun for this renderer-output-only fix; the affected emulator was checked
 with the standalone diagnostic, not an interactive Mesimon board.
+
+## Terminal.app needs plain underlines, not grouped underline colors (T-909 correction, 2026-10-22)
+
+The preceding claim that Terminal.app safely ignores a grouped SGR 58 is refuted.
+After that fix, leaving a card still left its title partially white on the terminal's
+default background. The first diagnostic checked for colored blocks on a nearly default
+surface; it did not establish that the existing foreground, background and attributes
+survived the command. A second standalone Terminal.app diagnostic used cyan text on a
+purple background, bold and underlined, with BEFORE and AFTER samples. The user confirmed
+that only the grouped underline-color command lost the styling; SGR 59 did not.
+
+`Quiet` now supplies the endpoint's `TERM_PROGRAM` to the underline writer. For
+`Apple_Terminal`, it omits the renderer's custom RGB and indexed underline-color commands
+entirely. Ordinary SGR 4/24 underlines and the harmless reset 59 pass through; the line
+inherits the text's color. RGB text and backgrounds, selection weight, geometry, and
+foreground/background animation are retained. Colored underline progress loses its separate
+track/run colors on this endpoint. Other terminals retain the grouped encoding and iTerm's
+repaint workaround. This capability is independent of the color profile: a newer Terminal.app
+supporting RGB does not establish SGR 58 support. No terminal query or preference write is
+introduced. The existing `TERM_PROGRAM` endpoint is used, not an inherited iTerm session id
+or a host-OS assumption; a tmux endpoint keeps its own behavior.
+
+Regression coverage checks the fallback at every write boundary and byte by byte, preserves
+all surrounding styles and ordinary underlines, and retains colored output for other
+endpoints. An actual `Quiet` draw/diff regression focuses and leaves a title with two
+underline colors and compares the output with a plain-underline reference: the streams
+must match exactly, including RGB text/background and weight changes, and a settled frame
+must emit nothing. This tests the emitted stream, not just ratatui's cached cells. Buffer
+goldens need no update because the adaptation is confined to terminal output.
+
+Validation: the three targeted `apple_terminal` tests passed, followed by all 2,543
+`cargo ut` tests (the same six standard ignored entries), and the ticket binary built.
+The bounded runners reported clean fixture audits; ANSI tests ran with `NO_COLOR` removed.
+Formatting and `git diff --check` passed. Full nextest, tmux e2e and Linux/Docker were not
+rerun for this terminal-output-only change. The actual emulator diagnostic was checked
+by the user; the fixed full board has not been manually inspected.

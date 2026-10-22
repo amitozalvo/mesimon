@@ -4,10 +4,10 @@
 //! semicolon-form 58 as separate SGR commands: component 46 paints a cyan
 //! background, 41 a red one. Ratatui never requested those backgrounds,
 //! so its diff cannot restore them when an animation finishes. The grouped
-//! `58:2::r:g:b` / `58:5:n` form is understood or ignored as one parameter.
-//! Terminal.app's standalone comparison was confirmed by the user: only
-//! the semicolon row left colored blocks. No terminal-name heuristic or
-//! palette downgrade is needed.
+//! `58:2::r:g:b` / `58:5:n` groups the components for capable terminals.
+//! Terminal.app also misparses that form, losing the existing text style
+//! (confirmed by a second, non-default-color diagnostic). Omit custom
+//! underline colors there: ordinary underlines inherit the text color.
 
 use std::io::{self, Write};
 
@@ -16,11 +16,17 @@ use std::io::{self, Write};
 pub(crate) struct UnderlineColors<W> {
     inner: W,
     pending: Vec<u8>,
+    colored: bool,
 }
 
 impl<W: Write> UnderlineColors<W> {
-    pub(crate) fn new(inner: W) -> Self {
-        Self { inner, pending: Vec::with_capacity(24) }
+    pub(crate) fn new(inner: W, terminal_program: Option<&str>) -> Self {
+        Self {
+            inner,
+            pending: Vec::with_capacity(24),
+            // RGB text support does not imply support for SGR 58.
+            colored: terminal_program != Some("Apple_Terminal"),
+        }
     }
 
     fn emit(&mut self) -> io::Result<()> {
@@ -40,6 +46,10 @@ impl<W: Write> UnderlineColors<W> {
             let rgb = parts.len() == 4 && parts[0] == b"2" && components(&parts[1..]);
             let indexed = parts.len() == 2 && parts[0] == b"5" && components(&parts[1..]);
             if rgb || indexed {
+                if !self.colored {
+                    self.pending.clear();
+                    return Ok(());
+                }
                 self.inner.write_all(if rgb { b"\x1b[58:2:" } else { b"\x1b[58:5" })?;
                 for p in &parts[1..] {
                     self.inner.write_all(b":")?;
@@ -146,14 +156,14 @@ mod tests {
                 (polluted, true),
                 "reproduces the old stray background"
             );
-            let mut out = UnderlineColors::new(Vec::new());
+            let mut out = UnderlineColors::new(Vec::new(), None);
             out.write_all(before.as_bytes()).unwrap();
             out.flush().unwrap();
             assert_eq!(background_and_dim(&out.inner), ((30, 30, 30), false));
         }
         // Indexed underline colors used to become blink (5) and a second
         // command too; a palette index must never become a background.
-        let mut out = UnderlineColors::new(Vec::new());
+        let mut out = UnderlineColors::new(Vec::new(), None);
         out.write_all(b"\x1b[0m\x1b[48;2;30;30;30m\x1b[58;5;46m").unwrap();
         out.flush().unwrap();
         assert_eq!(background_and_dim(&out.inner), ((30, 30, 30), false));
@@ -164,18 +174,44 @@ mod tests {
         let before = "héllo\x1b[38;2;41;46;107m\x1b[48;5;42m\x1b[4m\x1b[58;2;41;46;107m✓\x1b[58;5;9m!\x1b[59m\x1b[0m\x1b[2;3H\x1b[?2026l";
         let after = "héllo\x1b[38;2;41;46;107m\x1b[48;5;42m\x1b[4m\x1b[58:2::41:46:107m✓\x1b[58:5:9m!\x1b[59m\x1b[0m\x1b[2;3H\x1b[?2026l";
         for split in 0..=before.len() {
-            let mut out = UnderlineColors::new(Vec::new());
+            let mut out = UnderlineColors::new(Vec::new(), None);
             out.write_all(&before.as_bytes()[..split]).unwrap();
             out.write_all(&before.as_bytes()[split..]).unwrap();
             out.flush().unwrap();
             assert_eq!(out.inner, after.as_bytes(), "split {split}");
         }
-        let mut out = UnderlineColors::new(Vec::new());
+        let mut out = UnderlineColors::new(Vec::new(), None);
         for b in before.bytes() {
             out.write_all(&[b]).unwrap();
         }
         out.flush().unwrap();
         assert_eq!(out.inner, after.as_bytes());
+    }
+
+    #[test]
+    fn apple_terminal_omits_only_custom_underline_colors_at_every_write_boundary() {
+        let before = b"\x1b[38;2;80;200;230m\x1b[48;2;65;40;75m\x1b[1m\x1b[4mBEFORE\x1b[58;2;41;46;107mAFTER\x1b[58;5;9m!\x1b[59m\x1b[24m\x1b[0m";
+        let after = b"\x1b[38;2;80;200;230m\x1b[48;2;65;40;75m\x1b[1m\x1b[4mBEFOREAFTER!\x1b[59m\x1b[24m\x1b[0m";
+        for split in 0..=before.len() {
+            let mut out = UnderlineColors::new(Vec::new(), Some("Apple_Terminal"));
+            out.write_all(&before[..split]).unwrap();
+            out.write_all(&before[split..]).unwrap();
+            out.flush().unwrap();
+            assert_eq!(out.inner, after, "split {split}");
+        }
+        let mut out = UnderlineColors::new(Vec::new(), Some("Apple_Terminal"));
+        for b in before {
+            out.write_all(&[*b]).unwrap();
+        }
+        out.flush().unwrap();
+        assert_eq!(out.inner, after);
+        // The endpoint decides, not a global downgrade or a color profile.
+        for program in [None, Some("iTerm.app"), Some("ghostty"), Some("tmux")] {
+            let mut out = UnderlineColors::new(Vec::new(), program);
+            out.write_all(b"\x1b[58;2;41;46;107m").unwrap();
+            out.flush().unwrap();
+            assert_eq!(out.inner, b"\x1b[58:2::41:46:107m", "{program:?}");
+        }
     }
 
     #[test]
@@ -191,12 +227,12 @@ mod tests {
             "\x1b[58;2;00000000000000000000000000000000000000m",
             "\x1b[58;2;41",
         ] {
-            let mut out = UnderlineColors::new(Vec::new());
+            let mut out = UnderlineColors::new(Vec::new(), None);
             out.write_all(bytes.as_bytes()).unwrap();
             out.flush().unwrap();
             assert_eq!(out.inner, bytes.as_bytes());
         }
-        let mut out = UnderlineColors::new(Vec::new());
+        let mut out = UnderlineColors::new(Vec::new(), None);
         out.write_all(b"\x1b\x1b[58;5;41m").unwrap();
         out.flush().unwrap();
         assert_eq!(out.inner, b"\x1b\x1b[58:5:41m");
@@ -215,12 +251,12 @@ mod tests {
                 Ok(())
             }
         }
-        let mut out = UnderlineColors::new(Short(Vec::new()));
+        let mut out = UnderlineColors::new(Short(Vec::new()), None);
         out.write_all(b"\x1b[58;2;41;46;107mtext").unwrap();
         out.flush().unwrap();
         assert_eq!(out.inner.0, b"\x1b[58:2::41:46:107mtext");
         let mut storage = [0u8; 1];
-        let mut out = UnderlineColors::new(storage.as_mut_slice());
+        let mut out = UnderlineColors::new(storage.as_mut_slice(), None);
         assert!(out.write_all(b"\x1b[58;5;41m").is_err());
     }
 }
