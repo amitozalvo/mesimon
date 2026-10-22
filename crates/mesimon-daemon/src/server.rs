@@ -11687,12 +11687,23 @@ impl Daemon {
         let Some(sid) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.sid16()) else {
             return Err("no live agent session on this ticket — start or wake one first".into());
         };
-        let screen = self
-            .backend
-            .capture_input_screen(&sid)
-            .map_err(|e| format!("could not deliver: {e}"))?;
-        if !crate::agents::codex::input_ready(&screen) {
-            return Err(mesimon_core::command::ANSWER_IN_PANE_FIRST.into());
+        // A few reads at the key, never one (T-907): a frame Codex is mid-way
+        // through drawing hides the box's cursor. At most 200 ms on the writer.
+        let sight = crate::agents::codex::steer_sight(|i| {
+            if i > 0 {
+                std::thread::sleep(Duration::from_millis(crate::agents::codex::STEER_READ_GAP_MS));
+            }
+            self.backend.capture_input_screen(&sid)
+        })
+        .map_err(|e| format!("could not deliver: {e}"))?;
+        match sight {
+            crate::agents::codex::SteerSight::Composer => {}
+            crate::agents::codex::SteerSight::Dialog => {
+                return Err(mesimon_core::command::ANSWER_IN_PANE_FIRST.into());
+            }
+            crate::agents::codex::SteerSight::Unseen => {
+                return Err(mesimon_core::command::COMPOSER_NOT_FOUND.into());
+            }
         }
         self.backend.paste_input(&sid, text).map_err(|e| format!("could not deliver: {e}"))?;
         let now = now_ms();

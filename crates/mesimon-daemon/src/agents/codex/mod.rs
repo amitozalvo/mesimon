@@ -68,6 +68,62 @@ pub fn composer_holds_text(screen: &mesimon_backend_tmux::InputScreen) -> bool {
         && !(x == 2 && screen.lines.get(y).is_some_and(|line| line.starts_with('›')))
 }
 
+/// A Codex dialog stands in the box's place (T-907): the pane's last `›`
+/// row is a numbered choice (`› 1. Yes, proceed (y)`), as an approval's, a
+/// question's and the plan's lists draw their cursor. The last such row,
+/// because the conversation above keeps every prompt the person sent, each
+/// behind a `›` of its own.
+pub fn dialog_shown(screen: &mesimon_backend_tmux::InputScreen) -> bool {
+    let numbered = |row: &str| {
+        row.trim_start()
+            .split_once(". ")
+            .is_some_and(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    };
+    !input_ready(screen)
+        && screen
+            .lines
+            .iter()
+            .rev()
+            .find_map(|line| line.trim_start().strip_prefix('›'))
+            .is_some_and(numbered)
+}
+
+/// What words into a running Codex turn found in the pane (T-907).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SteerSight {
+    Composer,
+    Dialog,
+    /// Neither, on every read: a redraw that outlasted them, or a screen
+    /// no rule here knows.
+    Unseen,
+}
+
+/// How many times a steer reads the pane, and how far apart (T-907).
+pub const STEER_READS: usize = 3;
+pub const STEER_READ_GAP_MS: u64 = 100;
+
+/// Read the pane up to [`STEER_READS`] times (`read(i)`, the caller waiting
+/// between) until it shows the box or a dialog. Codex hides its cursor
+/// while it redraws a running turn's status line, so one read can land
+/// mid-frame with the box intact (measured on 0.163: 1 read in 4,000 on a
+/// quiet turn, more under a tool's streaming output) and refused the words
+/// as a dialog no one could see. A dialog read stops at once; a failed read
+/// is the pane's, not a frame's, and fails the whole.
+pub fn steer_sight<E>(
+    mut read: impl FnMut(usize) -> Result<mesimon_backend_tmux::InputScreen, E>,
+) -> Result<SteerSight, E> {
+    for i in 0..STEER_READS {
+        let screen = read(i)?;
+        if input_ready(&screen) {
+            return Ok(SteerSight::Composer);
+        }
+        if dialog_shown(&screen) {
+            return Ok(SteerSight::Dialog);
+        }
+    }
+    Ok(SteerSight::Unseen)
+}
+
 /// Whether a steer's due Enter goes (T-872): the pane read at the key must
 /// show the words still standing — never a dialog a running turn raised
 /// since — and `live` is read only when the sampler's screen from after the
@@ -756,6 +812,83 @@ mod input_tests {
         assert_eq!(reads.get(), 4);
         assert!(!steer_presses(Some(&empty()), live(held())), "the words went");
         assert_eq!(reads.get(), 4, "a fresh sample of an empty box forks nothing");
+    }
+
+    /// T-904's Codex seat on 2026-10-22, 24 minutes into a tool call: the
+    /// box intact under the turn's status line. Its cursor is the frame's.
+    const WORKING: &str = "\
+• Ran python3 -B ci/rig.py --only R3
+  └ == R3 running
+
+• Working (24m 13s • esc to interrupt)
+  └ Tip: Use /keymap to configure keyboard shortcuts.
+
+
+› Ask Codex to do anything
+
+  T-904-allow-agents-to-interact-with · GPT-6-Astra high · Context 51% used · weekly 96% left
+  ? for shortcuts";
+
+    /// Codex 0.163.0's command approval as captured on 2026-10-17 (T-846).
+    const APPROVAL: &str = "\
+  Would you like to run the following command?
+
+  Environment: local
+
+  Reason: May I write this disposable fixture file?
+
+  $ printf MESIMON_REFUSED_WRITE >
+  /private/tmp/msmn-e2e-codex-runtime-apj3xgcw/approval-refused.txt
+
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with `printf
+     MESIMON_REFUSED_WRITE > /private/tmp/msmn-e2e-codex-runtime-apj3xgcw/
+     approval-refused.txt` (p)
+  3. No, and tell Codex what to do differently (esc)
+
+  Press enter to confirm or esc to cancel";
+
+    /// A send-now into a working turn (T-907): a frame read mid-redraw (the
+    /// cursor hidden, as measured, or parked on the status line) is neither
+    /// the box nor a dialog, and the next read finds the box; a real
+    /// approval refuses on its first read, in the dialog's words.
+    #[test]
+    fn a_redraw_never_reads_as_a_dialog_and_a_real_one_refuses_the_steer() {
+        let composer = screen(WORKING, Some((2, 7)));
+        assert!(input_ready(&composer) && !dialog_shown(&composer));
+        for frame in [screen(WORKING, None), screen(WORKING, Some((36, 3)))] {
+            assert!(!input_ready(&frame), "{:?}", frame.cursor);
+            assert!(!dialog_shown(&frame), "a redraw is no dialog: {:?}", frame.cursor);
+        }
+        let approval = screen(APPROVAL, None);
+        assert!(!input_ready(&approval) && dialog_shown(&approval));
+        let question =
+            screen("  Choose fixture color?\n\n  › 1. Blue  Use blue.\n    2. Green", None);
+        assert!(dialog_shown(&question));
+        // A prompt the person once sent, `› 1. …` in the conversation, is
+        // above the box: the box is the last `›` row.
+        let history = screen(&format!("› 1. Do the first step\n{WORKING}"), None);
+        assert!(!dialog_shown(&history));
+
+        let reads = |frames: Vec<InputScreen>| {
+            let mut frames = frames.into_iter();
+            let taken = std::cell::Cell::new(0);
+            let sight = steer_sight(|i| {
+                taken.set(i + 1);
+                frames.next().ok_or("no pane")
+            });
+            (sight, taken.get())
+        };
+        let redraw = || screen(WORKING, None);
+        assert_eq!(
+            reads(vec![redraw(), screen(WORKING, Some((2, 7)))]),
+            (Ok(SteerSight::Composer), 2),
+            "the second read finds the box"
+        );
+        assert_eq!(reads(vec![redraw(), redraw(), redraw()]), (Ok(SteerSight::Unseen), 3));
+        assert_eq!(reads(vec![screen(APPROVAL, None)]), (Ok(SteerSight::Dialog), 1));
+        assert_eq!(reads(vec![redraw()]), (Err("no pane"), 2), "a pane that cannot be read");
     }
 
     #[test]

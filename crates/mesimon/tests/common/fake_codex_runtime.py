@@ -12,6 +12,7 @@ prior=None; submits=0; steers=0; pending=b''; pasted=False; stopping=False
 # Codex 0.163's `/plan` (T-847): typed, never pasted; the mode is then on the
 # snapshot (the server's thread/settings/updated) and/or in the footer.
 typed=b''; mode=None; plans=0
+reveal=None
 def stop(*_):
     global stopping
     stopping=True
@@ -38,8 +39,16 @@ while not stopping:
     if instruction!=prior:
         if 'state' in instruction: state=instruction['state']
         if 'turn_id' in instruction: turn=instruction['turn_id']
-        if 'screen' in instruction: render(instruction['screen'],instruction.get('cursor',[2,1]))
+        if 'screen' in instruction and instruction.get('hide_ms'):
+            # A frame Codex is mid-way through drawing (T-907): the box is
+            # whole and its cursor hidden until the frame ends.
+            render(instruction['screen'],None)
+            reveal=(time.monotonic()+instruction['hide_ms']/1000,instruction['screen'],instruction.get('cursor',[2,1]))
+            (root/(config['session']+'.hidden')).write_text('1')
+        elif 'screen' in instruction: render(instruction['screen'],instruction.get('cursor',[2,1]))
         sequence+=1; prior=instruction
+    if reveal and time.monotonic()>=reveal[0]:
+        render(reveal[1],reveal[2]); reveal=None
     if instruction.get('publish',True):
         value={'session':config['session'],'generation':config['generation'],'sequence':sequence,
                'heartbeat_ms':time.time_ns()//1000000,'thread_id':thread,'turn_id':turn,
@@ -50,7 +59,8 @@ while not stopping:
                'collaboration_mode':mode if plan_option('mode_on_snapshot',True) else None}
         temporary=path.with_suffix('.tmp')
         temporary.write_text(json.dumps(value));temporary.replace(path)
-    if select.select([sys.stdin],[],[],0.1)[0]:
+    wait=0.1 if not reveal else max(0,min(0.1,reveal[0]-time.monotonic()))
+    if select.select([sys.stdin],[],[],wait)[0]:
         data=os.read(0,65536)
         if not data: break
         with (root/(config['session']+'.input')).open('ab') as log: log.write(data)

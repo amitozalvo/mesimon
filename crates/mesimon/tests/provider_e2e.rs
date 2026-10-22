@@ -1149,6 +1149,51 @@ fn a_steer_goes_into_a_running_codex_turn_and_is_acked_by_the_runtime() {
     assert_eq!(submits(&h, id), before + 2);
 }
 
+/// A running Codex turn redraws its status line with the box's cursor hidden
+/// (T-907): a steer read in that frame reads again and goes in, and one that
+/// never finds the box says so, never that a dialog waits on the person.
+#[test]
+fn a_steer_reads_past_a_redraw_and_a_missing_box_is_no_dialog() {
+    let Some(h) = Fixture::boot("providersteerredraw") else { return };
+    let mut c = h.client();
+    select(&mut c, AgentProvider::Codex);
+    let ticket = ticket(&mut c, "a turn that redraws", None);
+    let id = c.spawn_claude(ticket);
+    h.codex_ready(&mut c, id);
+    h.control(
+        id,
+        json!({"state":{"state":"running"},"turn_id":"redraw-turn",
+            "screen":"• Working (3s • esc to interrupt)\r\n\r\n  ? for shortcuts","cursor":null}),
+    );
+    c.await_state(id, "the turn running", |s| *s == SessionState::Running);
+    std::thread::sleep(Duration::from_millis(300));
+    match steer(&mut c, ticket, "words with no box") {
+        Response::Err { message } => {
+            assert_eq!(message, mesimon_core::command::COMPOSER_NOT_FOUND)
+        }
+        response => panic!("a steer with no box: {response:?}"),
+    }
+    let before = submits(&h, id);
+    let hidden = h.owner.dir.join(format!("{id}.hidden"));
+    h.control(
+        id,
+        json!({"state":{"state":"running"},"turn_id":"redraw-turn",
+            "screen":"• Working (4s • esc to interrupt)\r\n\r\n› Ask Codex to do anything\r\n\r\n  ? for shortcuts",
+            "cursor":[2,2],"hide_ms":150}),
+    );
+    wait_until(Duration::from_secs(10), "the frame drawn with its cursor hidden", || {
+        hidden.exists()
+    });
+    assert!(matches!(steer(&mut c, ticket, "words past the redraw"), Response::Ok));
+    wait_until(Duration::from_secs(10), "the steer taken by the running turn", || {
+        fed(&h, "codex_steered", ticket) == 1
+    });
+    assert_eq!(submits(&h, id), before + 1, "one Enter");
+    let input = std::fs::read_to_string(h.owner.dir.join(format!("{id}.input"))).unwrap();
+    assert!(!input.contains("words with no box"), "{input:?}");
+    assert_eq!(input.matches("words past the redraw").count(), 1, "{input:?}");
+}
+
 /// A dialog over a running Codex turn is the person's (T-568): a steer is
 /// refused in the board's words and nothing reaches the pane.
 #[test]

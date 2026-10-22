@@ -30126,3 +30126,29 @@ Coverage: authorization and tool-tier tests; real-tmux adoption, sharing, revoca
 cross-ticket reads, close requests, busy/attached refusal and confirmation; TUI output
 preview and snooze guidance; shared-shell and close-request goldens; rig SH1 exercises
 a real worker reading the shared output and a crown requesting human-confirmed closure.
+
+## T-907 — a send-now into a working Codex turn reads past a redraw (2026-10-22)
+
+The crown's `ask_agent` with `deliver: now` to T-904's working Codex seat was refused twice with
+`ANSWER_IN_PANE_FIRST` while no dialog was up: `codex_steer` took ONE `capture_input_screen` and
+read anything but the box as a dialog. Measured on that pane (Codex 0.163, a 24-minute tool
+call): 1 read in 4,000 found `cursor_flag 0` at row 16, i.e. Codex hides the cursor while it
+redraws the `Working (…)` line, so a read landing mid-frame lost the box.
+
+- `codex::steer_sight` reads up to `STEER_READS` (3) times, `STEER_READ_GAP_MS` (100) apart, so
+  at most 200 ms on the writer, at the key (T-857 allows an edge's fork). The box on any read
+  goes; a dialog on any read stops at once.
+- `codex::dialog_shown` is the positive witness: the pane's LAST `›` row is a numbered choice
+  (`› 1. Yes, proceed (y)`), as the approval, question and plan lists draw it. The last one,
+  because the conversation keeps each sent prompt behind a `›` of its own.
+- Only a dialog says `ANSWER_IN_PANE_FIRST`. Neither, on every read, is the new
+  `command::COMPOSER_NOT_FOUND`: `could not find the agent's message box ∙ try again, or send it
+  after its turn`. The runtime's own pending request is still checked earlier
+  (`pane_waits_on_you`, `RequiresAction`); `codex_park` steers only a `Running` record.
+- Not taken: the sampler's last screen as the witness. A dialog raised after it would be typed
+  into (T-568); the live reads decide, as `steer_presses` does (T-872).
+
+Coverage: `input_tests::a_redraw_never_reads_as_a_dialog_and_a_real_one_refuses_the_steer`
+(the recorded working frame, hidden and on the status line, and 0.163's captured approval);
+`provider_e2e::a_steer_reads_past_a_redraw_and_a_missing_box_is_no_dialog`, where the Codex
+stub's `hide_ms` draws a frame with its cursor hidden for 150 ms (fails 3 of 3 at one read).

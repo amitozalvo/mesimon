@@ -1443,6 +1443,13 @@ pub fn too_long_words(what: &str, bytes: usize) -> String {
 /// (T-420): a paste there lands in the dialog as its answer.
 pub const ANSWER_IN_PANE_FIRST: &str = "the agent is waiting on you ∙ answer it in the pane first";
 
+/// Why words into a running turn are refused when no read of the pane found
+/// its message box and none showed a dialog either (T-907): nothing is
+/// waiting on the person, so [`ANSWER_IN_PANE_FIRST`] would send them to
+/// answer a dialog that is not there.
+pub const COMPOSER_NOT_FOUND: &str =
+    "could not find the agent's message box ∙ try again, or send it after its turn";
+
 /// The daemon-side boundary for a user-typed prompt, and the twin of
 /// [`crate::board::sanitize_tag`]: user text about to leave mesimon for
 /// somebody else's process.
