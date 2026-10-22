@@ -619,47 +619,125 @@ pub(crate) struct HeldArchive {
     stale: bool,
 }
 
-/// A move this board sent and the daemon took (T-910), as it sent it:
-/// `ticket` into `column`, above `before` or at its foot. `need` is the
-/// count of the first board asked after it, the first that shows it.
+/// A change this board sent and the daemon took (T-910, T-911), as it sent
+/// it. Held in `App::laid` until the first board asked after it lands.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Edit {
+    /// `ticket` into `column`, above `before` or at its foot.
+    Move { ticket: ulid::Ulid, column: String, before: Option<ulid::Ulid> },
+    /// `ticket`'s tag on axis `group`, or none.
+    Tag { ticket: ulid::Ulid, group: u8, name: Option<String> },
+    /// A registry tag's tint.
+    TagColor { group: u8, name: String, color: u8 },
+    /// `ticket`'s tier pick, as the daemon stores it (`Book::stored_pick`).
+    Tier { ticket: ulid::Ulid, tier: Option<String> },
+    /// A column's whole settings struct.
+    Column { name: String, settings: ColumnSettings },
+    /// One of the board's own settings.
+    Board(BoardSetting),
+}
+
+/// A board setting a Settings row sets by itself (T-911).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum BoardSetting {
+    CrownBudget(u8),
+    CrownMode(mesimon_core::board::CrownMode),
+    MergeInto(mesimon_core::board::MergeInto),
+    CrownArchives(bool),
+    ReviewedPrs(bool),
+    CrownWatches(bool),
+    McpTools(bool),
+    Workspace(WorkspaceStrategy),
+}
+
+impl BoardSetting {
+    /// The command that sets it.
+    fn command(self) -> Command {
+        match self {
+            BoardSetting::CrownBudget(budget) => Command::SetCrownBudget { budget },
+            BoardSetting::CrownMode(mode) => Command::SetCrownMode { mode },
+            BoardSetting::MergeInto(into) => Command::SetMergeInto { into },
+            BoardSetting::CrownArchives(on) => Command::SetCrownArchives { on },
+            BoardSetting::ReviewedPrs(on) => Command::SetReviewedPrs { on },
+            BoardSetting::CrownWatches(on) => Command::SetCrownWatches { on },
+            BoardSetting::McpTools(on) => Command::SetMcpTools { on },
+            BoardSetting::Workspace(workspace) => Command::SetBoardWorkspace { workspace },
+        }
+    }
+}
+
+/// An `Edit` and `need`, the count of the first board asked after it: the
+/// first that shows it.
 #[derive(Debug, Clone)]
-pub(crate) struct Placement {
-    ticket: ulid::Ulid,
-    column: String,
-    before: Option<ulid::Ulid>,
+pub(crate) struct Laid {
+    edit: Edit,
     need: u64,
 }
 
-impl Placement {
-    /// The move on `board`, placed as the daemon places it
-    /// (`Daemon::order_within`'s `Before`): a card already where it was
-    /// sent is left alone, so a board that shows the move keeps it.
+impl Edit {
+    /// The change on `board`, as the daemon makes it. A move is placed as
+    /// `Daemon::order_within`'s `Before` places it, and a card already where
+    /// it was sent is left alone, so a board that shows the move keeps it.
     fn lay(&self, board: &mut Board) {
-        if board.column(&self.column).is_none() {
-            return;
+        match self {
+            Edit::Move { ticket, column, before } => lay_move(board, *ticket, column, *before),
+            Edit::Tag { ticket, group, name } => {
+                if let Some(t) = board.ticket_mut(*ticket) {
+                    t.set_tag(*group, name.clone());
+                }
+            }
+            Edit::TagColor { group, name, color } => {
+                let _ = board.set_tag_color(*group, name, *color);
+            }
+            Edit::Tier { ticket, tier } => {
+                if let Some(t) = board.ticket_mut(*ticket) {
+                    t.tier = tier.clone();
+                }
+            }
+            Edit::Column { name, settings } => {
+                if let Some(c) = board.column_mut(name) {
+                    c.settings = settings.clone();
+                }
+            }
+            Edit::Board(s) => match *s {
+                BoardSetting::CrownBudget(v) => board.crown_budget = v,
+                BoardSetting::CrownMode(v) => board.crown_mode = v,
+                BoardSetting::MergeInto(v) => board.merge_into = v,
+                BoardSetting::CrownArchives(v) => board.crown_archives = v,
+                BoardSetting::ReviewedPrs(v) => board.reviewed_prs = v,
+                BoardSetting::CrownWatches(v) => board.crown_watches = v,
+                BoardSetting::McpTools(v) => board.mcp_tools = v,
+                // As the daemon stores it: shared is no word.
+                BoardSetting::Workspace(v) => {
+                    board.workspace = (v != WorkspaceStrategy::SharedCheckout).then_some(v)
+                }
+            },
         }
-        let Some(card) = board.ticket(self.ticket).filter(|t| !t.is_archived()) else { return };
-        let home = card.column == self.column;
-        let siblings = board.column_tickets(&self.column);
-        let at = siblings.iter().position(|t| t.id == self.ticket);
-        let others: Vec<(ulid::Ulid, String)> = siblings
-            .iter()
-            .filter(|t| t.id != self.ticket)
-            .map(|t| (t.id, t.order.clone()))
-            .collect();
-        let want = self.before.and_then(|b| others.iter().position(|(id, _)| *id == b));
-        if home && at == Some(want.unwrap_or(others.len())) {
-            return;
-        }
-        let between = mesimon_core::fracindex::between;
-        let order = match want {
-            Some(i) => between(if i == 0 { "" } else { &others[i - 1].1 }, &others[i].1),
-            None => between(others.last().map(|(_, o)| o.as_str()).unwrap_or(""), ""),
-        };
-        if let Some(t) = board.ticket_mut(self.ticket) {
-            t.column = self.column.clone();
-            t.order = order;
-        }
+    }
+}
+
+fn lay_move(board: &mut Board, ticket: ulid::Ulid, column: &str, before: Option<ulid::Ulid>) {
+    if board.column(column).is_none() {
+        return;
+    }
+    let Some(card) = board.ticket(ticket).filter(|t| !t.is_archived()) else { return };
+    let home = card.column == column;
+    let siblings = board.column_tickets(column);
+    let at = siblings.iter().position(|t| t.id == ticket);
+    let others: Vec<(ulid::Ulid, String)> =
+        siblings.iter().filter(|t| t.id != ticket).map(|t| (t.id, t.order.clone())).collect();
+    let want = before.and_then(|b| others.iter().position(|(id, _)| *id == b));
+    if home && at == Some(want.unwrap_or(others.len())) {
+        return;
+    }
+    let between = mesimon_core::fracindex::between;
+    let order = match want {
+        Some(i) => between(if i == 0 { "" } else { &others[i - 1].1 }, &others[i].1),
+        None => between(others.last().map(|(_, o)| o.as_str()).unwrap_or(""), ""),
+    };
+    if let Some(t) = board.ticket_mut(ticket) {
+        t.column = column.to_string();
+        t.order = order;
     }
 }
 
@@ -2210,11 +2288,11 @@ pub struct App {
     /// cursor stays where it was, the next card sliding under it, instead
     /// of following the card into its column.
     cursor_hold: Option<(ulid::Ulid, u64)>,
-    /// The moves this board sent that the daemon took, drawn where they
-    /// went until the first board asked after each lands (T-910): laid
-    /// over every board absorbed before it, so no frame draws the card
-    /// back home while its board is out. In the order they were sent.
-    placed: Vec<Placement>,
+    /// The changes this board sent that the daemon took, drawn as made
+    /// until the first board asked after each lands (T-910, T-911): laid
+    /// over every board absorbed before it, so no frame draws a card back
+    /// home, or its old tag, while its board is out. In the order sent.
+    laid: Vec<Laid>,
     /// How long `catch_up` and `settle_snapshot` wait for a board on this
     /// thread: `client::RESPONSE_WAIT`, end to end; a test shortens it.
     pub(crate) catch_up_wait: Duration,
@@ -2437,7 +2515,7 @@ impl App {
             landing: 1,
             need_seq: 1,
             cursor_hold: None,
-            placed: Vec::new(),
+            laid: Vec::new(),
             catch_up_wait: crate::client::RESPONSE_WAIT,
             reconcile_due: false,
             // None: `lib.rs` starts the thread, so a test app is mute and
@@ -3090,6 +3168,41 @@ impl App {
         Ok(true)
     }
 
+    /// `catch_up`, unless this board laid the field the key reads and its
+    /// board has not landed yet (T-911): `laid` picks that field's edits.
+    ///
+    /// `catch_up` makes the board as new as the last change this board
+    /// made or heard of, so a read-modify-write key steps from the value
+    /// the daemon holds. For a field this board laid, the newest value it
+    /// knows of is its own, on screen: the daemon took it, and every board
+    /// asked before it lands with it laid on top. Waiting would land the
+    /// same value a round trip later, so a quick second press steps from
+    /// the first at once and sends the next step, never the same one twice.
+    /// The one thing the wait would add is another mover's write to that
+    /// same field inside that round trip, and that race stands with the
+    /// wait too: such a write can land a moment after any barrier.
+    ///
+    /// A key that also reads what this board has not laid — a move's
+    /// column, the cards under the cursor, a grace band — keeps `catch_up`.
+    /// So does the first press, whose field holds no edit of this board.
+    pub(crate) fn catch_up_unless_laid(&mut self, laid: impl Fn(&Edit) -> bool) -> Result<bool> {
+        if self.laid.iter().any(|l| laid(&l.edit)) {
+            return Ok(true);
+        }
+        self.catch_up()
+    }
+
+    /// A change the daemon took, on this frame's board (T-910, T-911), and
+    /// laid over every board absorbed until the next ask's lands, which is
+    /// the first that shows it. Called after the daemon's answer and before
+    /// `refresh_soon` asks: a refusal lays nothing.
+    fn lay(&mut self, edit: Edit) {
+        edit.lay(Arc::make_mut(&mut self.board));
+        self.laid.push(Laid { edit, need: self.snapshot_sent + 1 });
+        // A column's collapse is its pin.
+        self.reindex_columns();
+    }
+
     /// The board, soon (T-812): asked on the transport's lane from a thread
     /// of its own and landed by `poll_snapshot` on a later tick, so neither
     /// a keypress nor a frame waits out the writer thread's turn. One ask
@@ -3390,17 +3503,18 @@ impl App {
             prs,
             forge,
         } = snap;
-        // This board's own moves the snapshot was asked too early to show
-        // (T-910): laid over it, as the daemon will have them, so the card
-        // is not drawn home in between and no move is read off the gap.
+        // This board's own changes the snapshot was asked too early to show
+        // (T-910, T-911): laid over it, as the daemon will have them, so a
+        // card is not drawn home or untagged in between and no key reads
+        // the gap.
         let mut board = board;
         let landing = self.landing;
-        let (retired, unshown): (Vec<Placement>, Vec<Placement>) =
-            std::mem::take(&mut self.placed).into_iter().partition(|p| p.need <= landing);
-        for p in &unshown {
-            p.lay(&mut board);
+        let (retired, unshown): (Vec<Laid>, Vec<Laid>) =
+            std::mem::take(&mut self.laid).into_iter().partition(|l| l.need <= landing);
+        for l in &unshown {
+            l.edit.lay(&mut board);
         }
-        self.placed = unshown;
+        self.laid = unshown;
         let was = self.cursor_column().map(|c| c.name.clone());
         // The cursor holds its TICKET across the pass (T-335): a card that
         // a teammate moved or reordered keeps the selection on it, and one
@@ -3494,11 +3608,13 @@ impl App {
         self.summaries.retain(|n, _| notes.contains(n));
         self.absorb_crown_touches(crown_touches, crown_was, &placed, burnt);
         self.absorb_moves(moved, &crown_moved, followed);
-        // A placement's board carries its move, which the overlay already
+        // A laid move's board carries it, which the overlay already
         // drew: the stamp is spent here, as it was when the card moved on
         // this landing (T-838), or it would claim the next mover's move.
-        for p in &retired {
-            self.own_moves.remove(&p.ticket);
+        for l in &retired {
+            if let Edit::Move { ticket, .. } = l.edit {
+                self.own_moves.remove(&ticket);
+            }
         }
         self.settle_drawer();
         self.seed_team_drafts();
@@ -8174,17 +8290,22 @@ impl App {
                 self.tag_clamp();
             }
             Verb::TagColor | Verb::TagColorBack => {
-                if !self.catch_up()? {
+                let cell = self.tag_cell().map(|(group, name, _)| (group, name));
+                let laid = |e: &Edit| {
+                    matches!(e, Edit::TagColor { group, name, .. }
+                        if cell.as_ref().is_some_and(|(g, n)| g == group && n == name))
+                };
+                if !self.catch_up_unless_laid(laid)? {
                     return Ok(());
                 }
                 let Some((group, name, tint)) = self.tag_cell() else { return Ok(()) };
                 let n = mesimon_core::board::TAG_TINTS;
                 let step = if verb == Verb::TagColorBack { n - 1 } else { 1 };
                 let next = (tint + step) % n;
-                if let Response::Err { message } =
-                    self.req(Command::SetTagColor { group, name, color: next })
-                {
-                    self.status = message;
+                let command = Command::SetTagColor { group, name: name.clone(), color: next };
+                match self.req(command) {
+                    Response::Err { message } => self.status = message,
+                    _ => self.lay(Edit::TagColor { group, name, color: next }),
                 }
                 self.refresh_soon()?;
             }
@@ -8198,7 +8319,18 @@ impl App {
                 }
             }
             Verb::TagToggle => {
-                if !self.catch_up()? {
+                // Whether the subject wears the cell is read off its tags,
+                // which this board may have laid (T-911); a name being typed
+                // reads the registry, which it never lays.
+                let naming = self.tag_armed.as_ref().is_some_and(|a| a.naming.is_some());
+                let on = self.tag_armed.as_ref().and_then(|a| a.ticket);
+                let cell = self.tag_cell().map(|(group, _, _)| group);
+                let laid = |e: &Edit| {
+                    !naming
+                        && matches!(e, Edit::Tag { ticket, group, .. }
+                            if Some(*ticket) == on && Some(*group) == cell)
+                };
+                if !self.catch_up_unless_laid(laid)? {
                     return Ok(());
                 }
                 // Naming borrows Enter; the hint says so.
@@ -8419,143 +8551,96 @@ impl App {
             // in `key_input` and `key_editor`.
             Verb::TierNext => self.cycle_tier()?,
             Verb::CrownBudget => {
-                if !self.catch_up()? {
-                    return Ok(());
-                }
-                let budget = match self.board.crown_budget {
-                    0 => 1,
-                    1 => 2,
-                    2 => 3,
-                    3..=4 => 5,
-                    5..=7 => 8,
-                    _ => 0,
-                };
-                match self.client.request(Command::SetCrownBudget { budget })? {
-                    Response::Err { message } => self.status = message,
-                    _ => self.refresh_soon()?,
-                }
+                self.set_board(|b| {
+                    BoardSetting::CrownBudget(match b.crown_budget {
+                        0 => 1,
+                        1 => 2,
+                        2 => 3,
+                        3..=4 => 5,
+                        5..=7 => 8,
+                        _ => 0,
+                    })
+                })?;
             }
             Verb::CrownMode => {
-                if !self.catch_up()? {
-                    return Ok(());
-                }
-                let mode = self.board.crown_mode.toggled();
-                match self.client.request(Command::SetCrownMode { mode })? {
-                    Response::Err { message } => self.status = message,
-                    _ => {
-                        self.refresh_soon()?;
-                        // The reach (T-550, T-569, T-582, T-610): which
-                        // agents take its words and its answers, and that
-                        // a person's agent never does.
-                        self.status = if mode.sends() {
-                            "crown autonomous ∙ agents it started take its asks and its answers"
-                                .into()
-                        } else {
-                            "crown supervised ∙ its asks wait for ^y, every question and plan for you"
-                                .into()
-                        };
-                    }
+                let set = self.set_board(|b| BoardSetting::CrownMode(b.crown_mode.toggled()))?;
+                if let Some(BoardSetting::CrownMode(mode)) = set {
+                    // The reach (T-550, T-569, T-582, T-610): which
+                    // agents take its words and its answers, and that
+                    // a person's agent never does.
+                    self.status = if mode.sends() {
+                        "crown autonomous ∙ agents it started take its asks and its answers"
+                            .into()
+                    } else {
+                        "crown supervised ∙ its asks wait for ^y, every question and plan for you"
+                            .into()
+                    };
                 }
             }
             // Where the board's worktree branches land (T-810): board state
             // like the crown's mode, so it goes to the daemon and comes back
             // on the snapshot.
             Verb::MergeInto => {
-                if !self.catch_up()? {
-                    return Ok(());
-                }
-                let into = self.board.merge_into.toggled();
-                match self.client.request(Command::SetMergeInto { into })? {
-                    Response::Err { message } => self.status = message,
-                    _ => {
-                        self.refresh_soon()?;
-                        self.status = if into.pull_requests() {
-                            "merge into pull requests ∙ branches land on the forge, which the board now reads"
-                                .into()
-                        } else {
-                            "merge into main ∙ the merge train and m land branches, and no forge is read"
-                                .into()
-                        };
-                    }
+                let set = self.set_board(|b| BoardSetting::MergeInto(b.merge_into.toggled()))?;
+                if let Some(BoardSetting::MergeInto(into)) = set {
+                    self.status = if into.pull_requests() {
+                        "merge into pull requests ∙ branches land on the forge, which the board now reads"
+                            .into()
+                    } else {
+                        "merge into main ∙ the merge train and m land branches, and no forge is read"
+                            .into()
+                    };
                 }
             }
             Verb::CrownArchives => {
-                if !self.catch_up()? {
-                    return Ok(());
-                }
-                let on = !self.board.crown_archives;
-                match self.client.request(Command::SetCrownArchives { on })? {
-                    Response::Err { message } => self.status = message,
-                    _ => {
-                        self.refresh_soon()?;
-                        // Who takes a card off the board (T-590).
-                        self.status = if on {
-                            "crown archives on ∙ it may archive and restore tickets".into()
-                        } else {
-                            "crown archives off ∙ it may not archive or restore tickets".into()
-                        };
-                    }
+                let set = self.set_board(|b| BoardSetting::CrownArchives(!b.crown_archives))?;
+                if let Some(BoardSetting::CrownArchives(on)) = set {
+                    // Who takes a card off the board (T-590).
+                    self.status = if on {
+                        "crown archives on ∙ it may archive and restore tickets".into()
+                    } else {
+                        "crown archives off ∙ it may not archive or restore tickets".into()
+                    };
                 }
             }
             Verb::ReviewedPrs => {
-                if !self.catch_up()? {
-                    return Ok(());
-                }
-                let on = !self.board.reviewed_prs;
-                match self.client.request(Command::SetReviewedPrs { on })? {
-                    Response::Err { message } => self.status = message,
-                    _ => {
-                        self.refresh_soon()?;
-                        // Whose pull requests a ticket carries (T-859).
-                        self.status = if on {
-                            "reviewed pull requests on ∙ a PR the agent reviewed or named in its \
-                             Summary is the ticket's too"
-                                .into()
-                        } else {
-                            "reviewed pull requests off ∙ a ticket's PRs are the ones this \
-                             account opened"
-                                .into()
-                        };
-                    }
+                let set = self.set_board(|b| BoardSetting::ReviewedPrs(!b.reviewed_prs))?;
+                if let Some(BoardSetting::ReviewedPrs(on)) = set {
+                    // Whose pull requests a ticket carries (T-859).
+                    self.status = if on {
+                        "reviewed pull requests on ∙ a PR the agent reviewed or named in its \
+                         Summary is the ticket's too"
+                            .into()
+                    } else {
+                        "reviewed pull requests off ∙ a ticket's PRs are the ones this \
+                         account opened"
+                            .into()
+                    };
                 }
             }
             Verb::CrownWatches => {
-                if !self.catch_up()? {
-                    return Ok(());
-                }
-                let on = !self.board.crown_watches;
-                match self.client.request(Command::SetCrownWatches { on })? {
-                    Response::Err { message } => self.status = message,
-                    _ => {
-                        self.refresh_soon()?;
-                        // Whose tickets wake the crown (T-712).
-                        self.status = if on {
-                            "crown watches on ∙ a ticket it watches wakes it as its own workers do"
-                                .into()
-                        } else {
-                            "crown watches off ∙ it hears only of the agents it started".into()
-                        };
-                    }
+                let set = self.set_board(|b| BoardSetting::CrownWatches(!b.crown_watches))?;
+                if let Some(BoardSetting::CrownWatches(on)) = set {
+                    // Whose tickets wake the crown (T-712).
+                    self.status = if on {
+                        "crown watches on ∙ a ticket it watches wakes it as its own workers do"
+                            .into()
+                    } else {
+                        "crown watches off ∙ it hears only of the agents it started".into()
+                    };
                 }
             }
             Verb::McpTools => {
-                if !self.catch_up()? {
-                    return Ok(());
-                }
-                let on = !self.board.mcp_tools;
-                match self.client.request(Command::SetMcpTools { on })? {
-                    Response::Err { message } => self.status = message,
-                    _ => {
-                        self.refresh_soon()?;
-                        // Says the reach, not just the state: a user who
-                        // turns the tools off and watches a running agent go
-                        // on using them has been told wrong.
-                        self.status = if on {
-                            "agent tools on ∙ new sessions and wakes get them".into()
-                        } else {
-                            "agent tools off ∙ new sessions and wakes lose them".into()
-                        };
-                    }
+                let set = self.set_board(|b| BoardSetting::McpTools(!b.mcp_tools))?;
+                if let Some(BoardSetting::McpTools(on)) = set {
+                    // Says the reach, not just the state: a user who
+                    // turns the tools off and watches a running agent go
+                    // on using them has been told wrong.
+                    self.status = if on {
+                        "agent tools on ∙ new sessions and wakes get them".into()
+                    } else {
+                        "agent tools off ∙ new sessions and wakes lose them".into()
+                    };
                 }
             }
             // The brief's switch, from Settings (T-224): board state like the
@@ -9371,7 +9456,7 @@ impl App {
             // the board does, so the row steps to the other one and back
             // to saying nothing.
             Verb::ColumnWorkspace => {
-                if !self.catch_up()? {
+                if !self.catch_up_column()? {
                     return Ok(());
                 }
                 let board = self.board.workspace.unwrap_or(WorkspaceStrategy::SharedCheckout);
@@ -9392,14 +9477,14 @@ impl App {
             // The next value is computed off the board (T-812 re-review):
             // caught up first, not only inside `set_column`.
             Verb::ColumnOnWorking => {
-                if !self.catch_up()? {
+                if !self.catch_up_column()? {
                     return Ok(());
                 }
                 let next = self.next_column_target(|s| s.on_working.clone());
                 self.set_column(|s| s.on_working = next)?;
             }
             Verb::ColumnOnDone => {
-                if !self.catch_up()? {
+                if !self.catch_up_column()? {
                     return Ok(());
                 }
                 let next = self.next_column_target(|s| s.on_done.clone());
@@ -9417,7 +9502,7 @@ impl App {
             // T-739. The ring's `deployed to` stop is not sent on its own: it
             // opens the environment's field, and Enter there sends both.
             Verb::ColumnArrives => {
-                if !self.catch_up()? {
+                if !self.catch_up_column()? {
                     return Ok(());
                 }
                 let Some(col) = self.dialog_column() else { return Ok(()) };
@@ -9451,20 +9536,15 @@ impl App {
             // Where a ticket nothing else chose works (T-816): board state,
             // to the daemon and back on the snapshot.
             Verb::BoardWorkspace => {
-                if !self.catch_up()? {
-                    return Ok(());
-                }
-                let workspace = if self.board.workspace == Some(WorkspaceStrategy::Worktree) {
-                    WorkspaceStrategy::SharedCheckout
-                } else {
-                    WorkspaceStrategy::Worktree
-                };
-                match self.client.request(Command::SetBoardWorkspace { workspace })? {
-                    Response::Err { message } => self.status = message,
-                    _ => {
-                        self.refresh_soon()?;
-                        self.status = format!("new tickets work in a {}", workspace.word());
-                    }
+                let set = self.set_board(|b| {
+                    BoardSetting::Workspace(if b.workspace == Some(WorkspaceStrategy::Worktree) {
+                        WorkspaceStrategy::SharedCheckout
+                    } else {
+                        WorkspaceStrategy::Worktree
+                    })
+                })?;
+                if let Some(BoardSetting::Workspace(workspace)) = set {
+                    self.status = format!("new tickets work in a {}", workspace.word());
                 }
             }
             Verb::AdoptObserve => self.adopt_external(false)?,
@@ -10246,20 +10326,60 @@ impl App {
     }
 
     /// One column setting changed from the dialog: the whole struct goes to
-    /// the daemon (one validation site for the two rule targets) and the row
-    /// relabels off the snapshot — nothing local is flipped.
+    /// the daemon (one validation site for the two rule targets), and what
+    /// it took is laid on the board until its snapshot lands (T-911); a
+    /// refusal flips nothing.
     fn set_column(&mut self, f: impl FnOnce(&mut ColumnSettings)) -> Result<()> {
         // The settings as the daemon has them (T-812 review): the whole
         // struct goes, so a second edit before the first's board lands
-        // would otherwise send the first's setting back off.
-        if !self.catch_up()? {
+        // would otherwise send the first's setting back off. The first's
+        // is laid on the board (T-911), so the second reads it there.
+        if !self.catch_up_column()? {
             return Ok(());
         }
         let Some(col) = self.dialog_column() else { return Ok(()) };
         let name = col.name.clone();
         let mut settings = col.settings.clone();
         f(&mut settings);
-        self.send(Command::SetColumnSettings { name, settings })
+        let command = Command::SetColumnSettings { name: name.clone(), settings: settings.clone() };
+        match self.req(command) {
+            Response::Err { message } => self.status = message,
+            _ => self.lay(Edit::Column { name, settings }),
+        }
+        self.refresh_soon()
+    }
+
+    /// One of the board's settings, stepped from its value by `next` and
+    /// laid once the daemon takes it (T-911): `catch_up` first, unless this
+    /// board laid that setting and its board is still out. What was set,
+    /// or `None` when nothing was (a refusal is in the status).
+    fn set_board(&mut self, next: impl Fn(&Board) -> BoardSetting) -> Result<Option<BoardSetting>> {
+        let kind = std::mem::discriminant(&next(&self.board));
+        let laid = |e: &Edit| matches!(e, Edit::Board(s) if std::mem::discriminant(s) == kind);
+        if !self.catch_up_unless_laid(laid)? {
+            return Ok(None);
+        }
+        let setting = next(&self.board);
+        match self.client.request(setting.command())? {
+            Response::Err { message } => {
+                self.status = message;
+                Ok(None)
+            }
+            _ => {
+                self.lay(Edit::Board(setting));
+                self.refresh_soon()?;
+                Ok(Some(setting))
+            }
+        }
+    }
+
+    /// `catch_up` for the dialog's column, unless this board laid its
+    /// settings and their board is still out (`catch_up_unless_laid`).
+    fn catch_up_column(&mut self) -> Result<bool> {
+        let on = self.dialog_column().map(|c| c.name.clone());
+        self.catch_up_unless_laid(
+            |e| matches!(e, Edit::Column { name, .. } if Some(name) == on.as_ref()),
+        )
     }
 
     /// The next target for a `move to` rule: through the other columns in
@@ -13114,8 +13234,9 @@ impl App {
         let ticket = self.tag_armed.as_ref().and_then(|a| a.ticket);
         match ticket {
             Some(id) => {
-                if let Response::Err { message } = self.req(Command::SetTag { id, group, name }) {
-                    self.status = message;
+                match self.req(Command::SetTag { id, group, name: name.clone() }) {
+                    Response::Err { message } => self.status = message,
+                    _ => self.lay(Edit::Tag { ticket: id, group, name }),
                 }
             }
             None => {
@@ -13138,8 +13259,13 @@ impl App {
     /// reads its subject out of the open picker's arm — there is no arm here,
     /// and the composer (whose tags buffer `apply_tag` also feeds) never
     /// reaches this verb: a text field owns its digits.
+    ///
+    /// The step is laid on the card at once (T-911), so the next frame
+    /// draws it and a quick next press steps from it without a wait.
     fn cycle_tag(&mut self, group: u8) -> Result<()> {
-        if !self.catch_up()? {
+        let on = self.subject();
+        let laid = |e: &Edit| matches!(e, Edit::Tag { ticket, group: g, .. } if Some(*ticket) == on && *g == group);
+        if !self.catch_up_unless_laid(laid)? {
             return Ok(());
         }
         let Some(id) = self.subject() else { return Ok(()) };
@@ -13155,9 +13281,12 @@ impl App {
             return Ok(());
         }
         let word = next.clone().unwrap_or_else(|| "none".into());
-        if let Response::Err { message } = self.req(Command::SetTag { id, group, name: next }) {
+        if let Response::Err { message } =
+            self.req(Command::SetTag { id, group, name: next.clone() })
+        {
             self.refuse(id, message);
         } else {
+            self.lay(Edit::Tag { ticket: id, group, name: next });
             self.status = format!("group {group} ∙ {word}");
             // Show the change where it will be read from now on. The status
             // line says WHICH tag in words; the card is where the stripe and
@@ -13967,18 +14096,14 @@ impl App {
         if filing {
             self.last_action = Some(LastAction::Move { column: target_col.clone() });
         }
-        // The first board that shows the move is the next ask's.
-        let need = self.snapshot_sent + 1;
         if stay {
-            self.cursor_hold = Some((ticket, need));
+            // The first board that shows the move is the next ask's.
+            self.cursor_hold = Some((ticket, self.snapshot_sent + 1));
         }
         // Drawn where it went on this frame (T-910), and held there until
         // that board lands: asked, not waited for (T-812), and never drawn
         // home in between.
-        let placement = Placement { ticket, column: target_col, before, need };
-        placement.lay(Arc::make_mut(&mut self.board));
-        self.placed.push(placement);
-        self.reindex_columns();
+        self.lay(Edit::Move { ticket, column: target_col, before });
         if !stay {
             self.follow_ticket(Some(ticket));
         }
@@ -16746,7 +16871,8 @@ mod tests {
 
     /// Two column edits before the first's board lands (T-812 review): the
     /// second reads the first's answer, not the board it was drawn from,
-    /// so the whole struct it sends keeps the first's setting.
+    /// so the whole struct it sends keeps the first's setting. The first is
+    /// laid on the board (T-911), so the second reads it without a wait.
     #[test]
     fn a_column_edit_reads_the_edit_before_it() {
         let (mut app, _) = App::for_test_logged(board_three_columns(), theme(), false);
@@ -16757,15 +16883,22 @@ mod tests {
         hold.borrow_mut().pushes = 1;
         app.pump().unwrap();
         assert!(app.snapshot_in_flight(), "an ask out, older than both edits");
+        // The first edit waits for the board the push wanted.
         release_late(&hold, LATE);
         app.set_column(|s| s.requires_merge = true).unwrap();
-        release_late(&hold, LATE);
+        assert_eq!(hold.borrow().asks, 2, "the push's, then the edit's");
         app.set_column(|s| s.requires_pipeline = true).unwrap();
+        assert_eq!(hold.borrow().asks, 2, "the second waited on nothing");
+        let todo = app.board.sorted_columns()[0].settings.clone();
+        assert!(todo.requires_merge && todo.requires_pipeline, "both drawn at once: {todo:?}");
+        release(&hold);
+        app.pump().unwrap();
         release(&hold);
         app.pump().unwrap();
         let todo = app.board.sorted_columns()[0].settings.clone();
         assert!(todo.requires_merge, "the first edit survived the second: {todo:?}");
         assert!(todo.requires_pipeline, "{todo:?}");
+        assert!(app.laid.is_empty());
     }
 
     /// `u` after a delete restores the ticket just deleted (T-812 review):
@@ -16845,7 +16978,7 @@ mod tests {
         assert_eq!(drawn_at(&app, ulid::Ulid(1)), ("doing".into(), 0));
         release(&hold);
         app.pump().unwrap();
-        assert!(app.placed.is_empty(), "the board that shows it retires the placement");
+        assert!(app.laid.is_empty(), "the board that shows it retires the placement");
         assert_eq!(drawn_at(&app, ulid::Ulid(1)), ("doing".into(), 0));
         release(&hold);
         app.pump().unwrap();
@@ -16908,15 +17041,125 @@ mod tests {
         let hold = slow(&mut app);
         press(&mut app, 'L');
         assert!(app.snapshot_in_flight(), "the board is asked all the same");
-        assert!(app.placed.is_empty());
+        assert!(app.laid.is_empty());
         assert_eq!(drawn_at(&app, ulid::Ulid(1)), ("todo".into(), 0));
         assert_eq!((app.cursor_col, app.cursor_row), (0, Some(0)));
         release(&hold);
         app.pump().unwrap();
         press(&mut app, '>');
         assert!(app.status.contains("merge before DONE"), "refused: {}", app.status);
-        assert!(app.placed.is_empty());
+        assert!(app.laid.is_empty());
         assert_eq!(drawn_at(&app, ulid::Ulid(1)), ("todo".into(), 0));
+    }
+
+    /// A board whose group 1 names three tags, the cursor on ticket 1.
+    fn tag_board() -> Board {
+        let mut b = board_three_columns();
+        for name in ["BUG", "CHANGE", "FEATURE"] {
+            b.register_tag(1, name).unwrap();
+        }
+        b
+    }
+
+    /// Ticket 1's tag in group 1 as a frame draws it: the card is open for
+    /// the digit's flash, so its chip spells the name.
+    fn drawn_tag(app: &App) -> Option<String> {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+        let text: String =
+            terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        let worn = app.board.ticket(ulid::Ulid(1))?.tag_in(1)?.name.clone();
+        assert!(text.contains(&worn), "{worn} worn but not drawn");
+        Some(worn)
+    }
+
+    /// A digit's tag is on the card on the next frame (T-911), not when its
+    /// board lands.
+    #[test]
+    fn a_digit_is_drawn_before_its_board_lands() {
+        let (mut app, _) = App::for_test_logged(tag_board(), theme(), false);
+        let hold = slow(&mut app);
+        press(&mut app, '1');
+        assert!(app.snapshot_in_flight(), "its board is out");
+        assert_eq!(drawn_tag(&app).as_deref(), Some("BUG"));
+        release(&hold);
+        app.pump().unwrap();
+        assert!(app.laid.is_empty(), "the board that shows it retires the edit");
+        assert_eq!(drawn_tag(&app).as_deref(), Some("BUG"));
+    }
+
+    /// Quick digits walk the group one step a press (T-911): each steps from
+    /// the one before, laid on the card, and none waits for a board — not
+    /// even with a push heard between them, which raises the board a key
+    /// must catch up to.
+    #[test]
+    fn quick_digits_walk_the_tags_without_a_wait() {
+        let (mut app, sent) = App::for_test_logged(tag_board(), theme(), false);
+        // A wait would give up here and send nothing.
+        app.catch_up_wait = Duration::from_millis(20);
+        let hold = slow(&mut app);
+        press(&mut app, '1');
+        assert_eq!(drawn_tag(&app).as_deref(), Some("BUG"));
+        hold.borrow_mut().pushes = 1;
+        app.pump().unwrap();
+        press(&mut app, '1');
+        assert_eq!(drawn_tag(&app).as_deref(), Some("CHANGE"));
+        press(&mut app, '1');
+        assert_eq!(drawn_tag(&app).as_deref(), Some("FEATURE"));
+        assert_eq!(hold.borrow().asks, 1, "the first press's ask; no press waited for a board");
+        assert_eq!(app.status, "group 1 ∙ FEATURE");
+        let names: Vec<String> =
+            sent.borrow().iter().filter(|c| c.starts_with("SetTag ")).cloned().collect();
+        assert_eq!(names.len(), 3, "{names:?}");
+        for (line, want) in names.iter().zip(["BUG", "CHANGE", "FEATURE"]) {
+            assert!(line.contains(&format!("Some(\"{want}\")")), "{line}");
+        }
+        // The first's board shows BUG; the laid steps hold over it.
+        release(&hold);
+        app.pump().unwrap();
+        assert_eq!(drawn_tag(&app).as_deref(), Some("FEATURE"));
+        release(&hold);
+        app.pump().unwrap();
+        assert!(app.laid.is_empty());
+        assert_eq!(drawn_tag(&app).as_deref(), Some("FEATURE"));
+        // Off the end: untagged, and the next press starts over.
+        press(&mut app, '1');
+        assert_eq!(drawn_tag(&app), None);
+        press(&mut app, '1');
+        assert_eq!(drawn_tag(&app).as_deref(), Some("BUG"));
+    }
+
+    /// A refused digit lays nothing (T-450): the card keeps its tag.
+    #[test]
+    fn a_refused_digit_is_drawn_as_it_was() {
+        struct Refuse(Box<dyn Transport>);
+        impl Transport for Refuse {
+            fn request(&mut self, command: Command) -> Result<Response> {
+                if matches!(command, Command::SetTag { .. }) {
+                    return Ok(Response::Err { message: "viewers cannot tag".into() });
+                }
+                self.0.request(command)
+            }
+            fn poll_event(&mut self) -> bool {
+                self.0.poll_event()
+            }
+        }
+        let mut b = tag_board();
+        b.tickets[0].set_tag(1, Some("BUG".into()));
+        let (mut app, _) = App::for_test_logged(b, theme(), false);
+        let inner = std::mem::replace(&mut app.client, Box::new(Dead));
+        app.client = Box::new(Refuse(inner));
+        // No flash opens a refused card: `p` keeps it open to read.
+        app.peek = true;
+        let hold = slow(&mut app);
+        press(&mut app, '1');
+        assert!(app.laid.is_empty());
+        assert!(app.status.contains("viewers cannot tag"), "{}", app.status);
+        assert_eq!(drawn_tag(&app).as_deref(), Some("BUG"));
+        release(&hold);
+        app.pump().unwrap();
+        assert_eq!(drawn_tag(&app).as_deref(), Some("BUG"));
     }
 
     /// A board asked before a spawn does not stand its parked focus down
@@ -16982,10 +17225,16 @@ mod tests {
         let hold = slow(&mut app);
         hold.borrow_mut().pushes = 1;
         app.pump().unwrap();
+        // The first press waits for the board the push wanted; the second
+        // steps from the first, laid on the card (T-911), and waits on
+        // nothing.
         release_late(&hold, LATE);
         app.cycle_tier().unwrap();
-        release_late(&hold, LATE);
         app.cycle_tier().unwrap();
+        assert_eq!(app.tiers().of_ticket(id).id, twice, "two steps at once");
+        assert_eq!(hold.borrow().asks, 2, "the push's and the first press's");
+        release(&hold);
+        app.pump().unwrap();
         release(&hold);
         app.pump().unwrap();
         assert_eq!(app.tiers().of_ticket(id).id, twice, "two steps, not one");
@@ -16993,24 +17242,33 @@ mod tests {
         // twice is on and off again, not on twice.
         app.tag_armed = Some(TagArm::new(Some(id)));
         let tint = app.tag_cell().map(|(_, _, t)| t).unwrap();
-        // Nothing is out before the first press; each press after it waits
-        // on the ask the one before it sent.
+        // Nothing is out before the first press, and the second steps from
+        // the first's laid tint.
         app.dispatch(Verb::TagColor, Key::Char('c'), Scope::TagChord, &app.ctx()).unwrap();
-        release_late(&hold, LATE);
         app.dispatch(Verb::TagColor, Key::Char('c'), Scope::TagChord, &app.ctx()).unwrap();
-        release_late(&hold, LATE);
-        app.dispatch(Verb::TagToggle, Key::Enter, Scope::TagChord, &app.ctx()).unwrap();
-        release_late(&hold, LATE);
-        app.dispatch(Verb::TagToggle, Key::Enter, Scope::TagChord, &app.ctx()).unwrap();
+        let n = mesimon_core::board::TAG_TINTS;
+        assert_eq!(app.tag_cell().map(|(_, _, t)| t), Some((tint + 2) % n), "drawn at once");
+        // Wearing reads the tags, which nothing laid yet: it waits for the
+        // tints' boards, and the take-off steps from the laid wear.
         release(&hold);
         app.pump().unwrap();
-        let n = mesimon_core::board::TAG_TINTS;
+        release_late(&hold, LATE);
+        app.dispatch(Verb::TagToggle, Key::Enter, Scope::TagChord, &app.ctx()).unwrap();
+        assert!(!app.board.ticket(id).unwrap().tags.is_empty(), "worn at once");
+        app.dispatch(Verb::TagToggle, Key::Enter, Scope::TagChord, &app.ctx()).unwrap();
+        assert!(app.board.ticket(id).unwrap().tags.is_empty(), "taken off at once");
+        release(&hold);
+        app.pump().unwrap();
+        release(&hold);
+        app.pump().unwrap();
         assert_eq!(app.tag_cell().map(|(_, _, t)| t), Some((tint + 2) % n), "two tints on");
         assert!(app.board.ticket(id).unwrap().tags.is_empty(), "worn, then taken off again");
     }
 
     /// The column rings compute their next value off the board (T-812
     /// re-review): two quick presses step twice, not to the same value.
+    /// The first waits for the board the push wanted; every one after it
+    /// steps from the settings laid before it (T-911) and waits on nothing.
     #[test]
     fn column_rings_step_twice_while_the_board_lands_late() {
         use mesimon_core::board::Arrival;
@@ -17021,13 +17279,15 @@ mod tests {
         let hold = slow(&mut app);
         hold.borrow_mut().pushes = 1;
         app.pump().unwrap();
+        release_late(&hold, LATE);
         for verb in [Verb::ColumnOnWorking, Verb::ColumnOnDone, Verb::ColumnArrives] {
             for _ in 0..2 {
-                // Each press waits on the ask the one before it sent.
-                release_late(&hold, LATE);
                 app.dispatch(verb, Key::Enter, Scope::ColumnSettings, &app.ctx()).unwrap();
             }
         }
+        assert_eq!(hold.borrow().asks, 2, "the push's and the first press's; nothing waited");
+        release(&hold);
+        app.pump().unwrap();
         release(&hold);
         app.pump().unwrap();
         let todo = app.board.sorted_columns()[0].settings.clone();

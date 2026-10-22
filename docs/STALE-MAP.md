@@ -30633,3 +30633,77 @@ Tests in `app.rs` hold the snapshot back with the `Slow`/`Hold` seam (T-812):
 tests that pinned "drawn home still" now pin the card slid under at once. There are no golden
 changes. `cargo clippy -p mesimon-tui --all-targets -- -D warnings` fails on main as it is
 (`large_enum_variant` on `Mode`); this ticket does not touch that.
+
+## A digit's tag is on the card before its board lands (T-911, 2026-10-23, "Cycling a ticket's tags with the digit keys is slow since the board fetches in the background")
+
+**The report.** "Also cycling tags on ticket is slow ever since i guess", on main e0f848d1:
+since T-812 moved the snapshot off the UI thread.
+
+**Measured** on the author's board (39 tickets, a 193 KB snapshot), debug build as the author
+runs it:
+- A `Snapshot` round trip on `orch.sock`, from a client outside the TUI: 9.4 ms min, 10.2 ms
+  median, 12.3 ms p90, 17 ms max over 30 asks. Serialising that `Response` takes 3.9 ms of it,
+  so the writer's turn plus the socket is about 6 ms. `daemon.log` has no `slow turn` since
+  2026-10-22.
+- In the TUI: parsing the line and `snapshot_of` take 3.7 ms, `absorb` 0.06 ms (0.8 ms at
+  worst), a 200×50 frame 3 ms.
+- **The lag was the frame, not the board.** The lane's answer is landed by `pump`, at the start
+  of the next tick. An idle tick waits up to 100 ms for terminal input (`tick`'s frame), and
+  nothing wakes it when the lane answers. So after a single press the card kept its old tag for
+  up to ~100 ms, though the board was in after ~15 ms. A second press while that ask was out
+  also waited on this thread in `catch_up`, for about one round trip (~15 ms). On a board whose
+  agents push often, that happened on most presses. Cause confirmed: both halves of the crown's
+  reading.
+
+**What shipped.** T-910's `Placement` is now `Laid { edit: Edit, need }`. `Edit` is `Move` (as
+before), `Tag`, `TagColor`, `Tier`, `Column` (a whole `ColumnSettings`) and `Board(BoardSetting)`
+(crown budget, crown mode, merge into, crown archives, reviewed PRs, crown watches, agent tools,
+board workspace). `App::lay` puts the edit on `App.board` at once. `absorb` lays every edit still
+pending over each board it takes, and retires an edit at the first landing whose ask count
+reaches `need`, as T-910 does for moves. A refused command lays nothing (T-450). `tag_flash`,
+`tier_flash` and the status lines are as they were. Each edit is laid the way the daemon stores
+it: a tier pick as `Book::stored_pick`, the board workspace as `None` for shared.
+
+**`catch_up_unless_laid`** is the new rule. A read-modify-write key skips `catch_up` when this
+board laid an edit on the field the key reads, and that edit's board has not landed. For that
+field, the newest value this board knows is its own: the daemon took it, and every board asked
+before it lands has it laid on top. Waiting would land the same value a round trip later. The
+only thing the wait adds is another mover's write to the same field inside that round trip.
+That race exists with the wait too, since such a write can land a moment after any barrier. The
+first press still catches up, because its field holds no edit of this board.
+
+This answers T-910's refuted "skip when the board lags only by our own placements". That test
+was whether the *board* lags only by our own edits, and pushes raise `need_seq` on a busy board,
+so it rarely held. The new test is whether the *field the key reads* is laid. A push heard
+between presses does not change that answer (`quick_digits_walk_the_tags_without_a_wait` pumps a
+push between the first and second press).
+
+Keys on the rule: the digits (`cycle_tag`), `^n` (`cycle_tier`), the tag sheet's colour and
+wear (`TagColor`, `TagToggle`; the wear is `apply_tag`'s `SetTag`), every column-dialog ring
+through `set_column` and `catch_up_column` (`ColumnWorkspace`, `ColumnOnWorking`, `ColumnOnDone`
+and `ColumnArrives` included), and the Settings rows for the board's own settings (`set_board`).
+
+**Still `catch_up` every time, and why:**
+- The move keys (grab, nudge, `drop_ghost`, `.`): they read the column's order and the card
+  under the cursor, which automove and other movers change. T-910 drew the move at once.
+- `u`: its target is the grace band and the archive, which are not laid.
+- `x` (`sleep_verb`): sleep or wake is read off session state, which only the daemon makes.
+- `t` (`ManualMerge`) and the crown toggle: one press at a time. The crown also changes who
+  holds the crown, which the train and the card read off the snapshot together.
+- The brief's switch, and the column dialog's description and environment saves: a dialog or
+  a text field's Enter, never pressed quickly in a row.
+- The shell-output capture (`prepare_shell_output`, the capture editor): it reads the terminals.
+- `TagToggle` while a name is being typed: it commits to the registry, which is never laid.
+
+Tests in `app.rs`, on the `Slow`/`Hold` seam: `a_digit_is_drawn_before_its_board_lands`,
+`quick_digits_walk_the_tags_without_a_wait` (three `SetTag`s with the right names, one ask, and a
+20 ms `catch_up_wait` that would have dropped a press that waited; it fails with the skip turned
+off), and `a_refused_digit_is_drawn_as_it_was`. Three T-812 tests pinned "each press waits on the
+ask before it". They now pin that only the first press waits, and the rest step from what was
+laid before them, with the ask count asserted: `a_column_edit_reads_the_edit_before_it`,
+`repeated_presses_each_step_once_while_the_board_lands_late` and
+`column_rings_step_twice_while_the_board_lands_late`. There are no golden changes. Clippy is
+clean apart from main's `large_enum_variant` on `Mode`.
+
+**Not done:** waking the tick when the lane answers. Every key that only asks `refresh_soon`
+still shows its board up to 100 ms late, but a laid edit no longer needs that wake.
