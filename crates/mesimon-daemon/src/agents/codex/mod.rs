@@ -68,6 +68,18 @@ pub fn composer_holds_text(screen: &mesimon_backend_tmux::InputScreen) -> bool {
         && !(x == 2 && screen.lines.get(y).is_some_and(|line| line.starts_with('›')))
 }
 
+/// Whether a steer's due Enter goes (T-872): the pane read at the key must
+/// show the words still standing — never a dialog a running turn raised
+/// since — and `live` is read only when the sampler's screen from after the
+/// paste does too, or when none has landed, as on a machine whose samples
+/// run slow: a missing sample never costs the Enter.
+pub fn steer_presses(
+    sampled: Option<&mesimon_backend_tmux::InputScreen>,
+    live: impl FnOnce() -> Option<mesimon_backend_tmux::InputScreen>,
+) -> bool {
+    sampled.is_none_or(composer_holds_text) && live().is_some_and(|s| composer_holds_text(&s))
+}
+
 /// The composer's footer names Plan mode (T-847): Codex 0.163 writes it at
 /// the right of the line under the box once `/plan` took (`… · cwd… Plan
 /// mode`). Only below the cursor, the box's own row excluded, so neither the
@@ -717,6 +729,33 @@ mod input_tests {
         assert!(composer_holds_text(&wrapped));
         let dialog = screen("Allow command?\n› 1. Yes\n  2. No", None);
         assert!(!input_ready(&dialog) && !composer_holds_text(&dialog));
+    }
+
+    /// A steer's Enter (T-872): the live read decides, the sampler's screen
+    /// only spares it. No sample after the paste (a slow sampler) still
+    /// presses into a box holding the words; a sample showing the box empty
+    /// reads nothing live; a dialog at the key is never pressed into.
+    #[test]
+    fn a_steer_presses_on_the_live_box_and_a_missing_sample_never_costs_the_enter() {
+        let held = || screen("› also check the docs", Some((21, 0)));
+        let empty = || screen("› Ask Codex to do anything", Some((2, 0)));
+        let dialog = || screen("Allow command?\n› 1. Yes\n  2. No", None);
+        let reads = std::cell::Cell::new(0);
+        let live = |s: InputScreen| {
+            let reads = &reads;
+            move || {
+                reads.set(reads.get() + 1);
+                Some(s)
+            }
+        };
+        assert!(steer_presses(None, live(held())), "no sample landed: the live box decides");
+        assert!(steer_presses(Some(&held()), live(held())));
+        assert!(!steer_presses(None, live(dialog())), "a dialog raised since is never answered");
+        assert!(!steer_presses(Some(&held()), live(dialog())));
+        assert!(!steer_presses(None, || None), "a pane that cannot be read is not pressed");
+        assert_eq!(reads.get(), 4);
+        assert!(!steer_presses(Some(&empty()), live(held())), "the words went");
+        assert_eq!(reads.get(), 4, "a fresh sample of an empty box forks nothing");
     }
 
     #[test]

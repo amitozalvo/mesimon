@@ -29482,7 +29482,10 @@ screen from a previous pane under the same session name, or from a running turn,
 yet; a steer's is its paste. A stale screen costs a steer press as a failed capture did (ten
 presses, 5 s). The steer's Enter itself reads the pane live once, at the key, after the sample
 says the box holds the words: a running turn can raise an approval dialog after the sample, and
-an Enter there would answer it for the person (the commit review's catch). `codex_steer`'s one read at the ask edge stays a fork, as do `send_brief`'s and
+an Enter there would answer it for the person (the commit review's catch). The live read
+decides and the sample only spares it (`codex::steer_presses`): with no sample from after the
+paste (a slow sampler under build load), the live box still gets its Enter, where requiring both
+sent none and left the words in the box (the independent review's catch). `codex_steer`'s one read at the ask edge stays a fork, as do `send_brief`'s and
 `press_plan`'s: edges, not ticks. `InputScreen` derives `Clone` so the plan step can hold one
 while the writer mutates.
 
