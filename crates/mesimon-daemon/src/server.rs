@@ -2269,6 +2269,25 @@ fn no_such_ticket() -> Response {
 /// Why nothing may grow on an archived ticket until it is restored.
 const TICKET_ARCHIVED: &str = "ticket archived — restore it first";
 
+/// `Daemon::crown_refusal`'s words (T-908): `what` is what the caller
+/// reached for, `own` its ticket's key, `holder` the crown's key, and
+/// `hears` whether the crown is woken by this ticket's raised hand.
+fn crown_refused(what: &str, own: &str, holder: Option<&str>, hears: bool) -> String {
+    let Some(holder) = holder else {
+        return format!(
+            "only the crown reads or changes {what}, and no ticket wears the crown: only a \
+             person grants it, on the board with the cursor on {own}, where ^o crowns it. \
+             raise_hand on this ticket, naming what is missing, puts it on the card for the \
+             person."
+        );
+    };
+    let reach = if hears { "reaches the person and the crown" } else { "reaches the person" };
+    format!(
+        "only the crown ({holder}) reads or changes {what}; the crown can copy what is needed \
+         onto this ticket, and raise_hand on this ticket, naming what is missing, {reach}."
+    )
+}
+
 /// The crown's `archive_ticket` while the board's switch is off (T-590):
 /// result data, so it may instruct, and it names the row a person turns and
 /// the road the crown has instead.
@@ -7536,7 +7555,7 @@ impl Daemon {
             return Ok(own);
         }
         if !self.board.is_crowned(own) {
-            return Err(self.crown_refusal(own));
+            return Err(self.crown_refusal(own, &format!("another ticket ({key})")));
         }
         if t.is_archived() && !archived_ok {
             return Err(format!("{key} is archived; archive_ticket with restore brings it back"));
@@ -7567,22 +7586,18 @@ impl Daemon {
     }
 
     /// The words an uncrowned agent reads when it reaches for another
-    /// ticket: who wears the crown, how a person grants it, and the road
-    /// that puts the ask on the card. Transient result data, so it may
-    /// instruct — the lint that keeps tool text descriptive does not reach
-    /// a refusal, and this one exists to be relayed to the person.
-    fn crown_refusal(&self, own: ulid::Ulid) -> String {
+    /// ticket (or, for `ask_board`, another board), `what` naming it: who
+    /// wears the crown and the road that reaches it (T-908). A worker the
+    /// crown hears reads that the crown copies what it needs onto this
+    /// ticket and that `raise_hand` reaches both — the hand is the road,
+    /// since pane text reaches no one. With no crown, a person grants one.
+    /// Every keyed road (`crown_target`) and `ask_board` spell it here, in
+    /// tool text's voice: descriptive, no second person.
+    fn crown_refusal(&self, own: ulid::Ulid, what: &str) -> String {
         let key = self.board.ticket(own).map(|t| t.short_key.clone()).unwrap_or_default();
-        let who = match self.board.crown_holder() {
-            Some(h) => format!("{} wears the crown", h.short_key),
-            None => "no ticket wears the crown".to_string(),
-        };
-        format!(
-            "not the board's coordinator: {who}. Editing another ticket needs the crown, \
-             which only a person grants — on the board, with the cursor on {key}, ^o crowns it. \
-             raise_hand puts this request on the card so the person sees it without opening \
-             the pane."
-        )
+        let holder = self.board.crown_holder();
+        let hears = holder.is_some_and(|h| self.crown_claims(own, h.id, WakeCause::Raised));
+        crown_refused(what, &key, holder.map(|h| h.short_key.as_str()), hears)
     }
 
     /// An opaque stamp over everything a keyed edit may assume about a
@@ -18702,6 +18717,43 @@ mod restart_resend_tests {
         shell.kind = SessionKind::Codex;
         assert!(!restart_resends(&shell, true), "a codex keeps its own policy");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod crown_refusal_tests {
+    use super::crown_refused;
+    use mesimon_core::mcp::lint_tool_text;
+
+    /// T-908: a worker reaching for another ticket reads who reads it, that
+    /// the crown copies what is needed onto this ticket, and that a raised
+    /// hand is the road — to the crown too where the crown hears this
+    /// ticket. Every keyed road (`read_note`, `get_ticket`,
+    /// `read_attachment`, `read_shell`, the keyed writes) passes
+    /// `crown_target`'s one `what`; `ask_board` passes its own.
+    #[test]
+    fn the_refusal_names_the_road() {
+        for what in ["another ticket (T-9)", "a linked board"] {
+            let heard = crown_refused(what, "T-5", Some("T-1"), true);
+            assert_eq!(
+                heard,
+                format!(
+                    "only the crown (T-1) reads or changes {what}; the crown can copy what is \
+                     needed onto this ticket, and raise_hand on this ticket, naming what is \
+                     missing, reaches the person and the crown."
+                )
+            );
+            let unheard = crown_refused(what, "T-5", Some("T-1"), false);
+            assert!(unheard.ends_with("naming what is missing, reaches the person."), "{unheard}");
+            assert!(!unheard.contains("^o"), "under a crown, no second crown is offered");
+            let none = crown_refused(what, "T-5", None, false);
+            for words in ["no ticket wears the crown", "cursor on T-5", "^o", "raise_hand"] {
+                assert!(none.contains(words), "{words}: {none}");
+            }
+            for text in [heard, unheard, none] {
+                lint_tool_text(&text).unwrap();
+            }
+        }
     }
 }
 

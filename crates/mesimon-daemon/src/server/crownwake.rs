@@ -1701,7 +1701,12 @@ impl Daemon {
 
     /// `note_crown_wake`'s guards: never the crown's own ticket, and, an
     /// answer aside, a worker it started, or a watched ticket's news.
-    fn crown_claims(&self, worker: ulid::Ulid, crown: ulid::Ulid, cause: WakeCause) -> bool {
+    pub(super) fn crown_claims(
+        &self,
+        worker: ulid::Ulid,
+        crown: ulid::Ulid,
+        cause: WakeCause,
+    ) -> bool {
         if worker == crown {
             return false;
         }

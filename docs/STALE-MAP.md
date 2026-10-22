@@ -30312,3 +30312,25 @@ that variable from the test process environment. Six standard unit entries are i
 four timing probes, the live-release download test, and the pty child invoked by its parent
 regression test. No full nextest, Linux/Docker or live terminal visual comparison was run:
 this changes client detection/clearing, not daemon state, the wire or tmux configuration.
+
+## A worker the crown asks for what it cannot reach raises its hand (T-908, 2026-10-22, "A worker that can't do what the crown asked says so with raise_hand, not only in its pane")
+
+The report: the crown told T-904's worker to `read_note key=T-906`; the board refused
+with "not the board's coordinator … ^o crowns it", and the worker asked for the note in
+its own pane, where nobody reads. The refusal offered the person a second crown (which
+would unseat the first) and spoke of editing for a read.
+
+`crown_target`'s refusal is spelled once, `server.rs::crown_refused`, for every keyed
+road (`get_ticket`, `read_note`, `read_attachment`, `read_shell`, the keyed writes) and
+for `ask_board`, in tool text's voice (the lint passes over it in the unit test). Under a
+crown: "only the crown (T-1) reads or changes another ticket (T-9); the crown can copy
+what is needed onto this ticket, and raise_hand on this ticket, naming what is missing,
+reaches the person and the crown" — the last clause is "reaches the person" when the
+crown does not hear this ticket's hand (`crown_claims(…, Raised)`: started or watched).
+With no crown, the person's `^o` stays. `raise_hand`'s description says it wakes the crown
+for a ticket it started or watches and covers a step the crown asked for that cannot be
+taken; `WORKER_UNDER_CROWN` says pane words reach no one and the hand is the road.
+
+Coverage: `crown_refusal_tests`, `crown_e2e` (every keyed road from a person's worker,
+and `read_note` from a crown-started one), rig RH1 on Sonnet (refused `read_note` →
+`raise_hand` naming the note → the crown woken, `raised`).

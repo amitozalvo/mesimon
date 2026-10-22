@@ -169,7 +169,7 @@ impl Daemon {
         text: String,
     ) -> Response {
         if !self.board.is_crowned(ticket) {
-            return Response::Err { message: self.crown_refusal(ticket) };
+            return Response::Err { message: self.crown_refusal(ticket, "a linked board") };
         }
         let me = self.my_root();
         self.links.refresh();

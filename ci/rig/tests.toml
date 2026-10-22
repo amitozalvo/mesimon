@@ -83,11 +83,14 @@
 #              shell:<line> / shell_out:<text> / no_shell (T-876: the
 #              worker's transcript records <line> as a `!` line that ran in
 #              its box, some such line printed <text>, or no `!` line ran),
+#              hand:<word> (T-908: the worker raised its hand on its own
+#              ticket, the reason naming <word>, case aside),
 #              crown_never:<w1,w2,...> (T-895: no Bash call of the crown's
 #              since the test began holds any of the words, and no Monitor
 #              ran: the board's wake is the wait).
 #   siblings   more tickets the test files beside its own ({key2}, {key3}
-#              in a step), each with the same brief and every check run on
+#              in a step; {crown} is the rig's crown's own key), each with
+#              the same brief and every check run on
 #              each.
 #   long_brief `true` appends 10 KB of numbered filler to the brief (P1); a
 #              number appends that many bytes (B1), and `tail` is the
@@ -1251,5 +1254,23 @@ checks = ["tools:get_ticket,read_shell", "shell_workflow", "shell_close_pending"
 
   [[test.steps]]
   crown = "SH1: start {key} on shared_checkout, no tier or plan. End your turn with SH1 started. When its work arrives, read its ticket and shared shell output through board tools, then request closure of that shell through request_close_shell. Do not use a shell command to read or close it. Report that closing awaits the person's confirmation and end your turn."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
+id = "RH1"
+title = "RH1 · a worker the crown asks for what it cannot reach raises its hand: do the steps below"
+workspace = "worktree"
+brief = "Reply with the single word done and end your turn. Read no file and run no command."
+expect = "the crown starts the worker, which answers and goes idle. The crown then writes a Review note on its own ticket and asks the worker, with ask_agent, to read it with read_note naming the crown's key. A worker reads no other ticket, so the board refuses, in words saying only the crown reads another ticket, that the crown can copy what is needed onto this ticket, and that raise_hand on this ticket naming what is missing reaches the person and the crown (T-908). Told nothing more, the worker raises its hand on its own ticket naming the Review note rather than saying so in its pane alone, and the board wakes the crown, raised its hand."
+checks = ["road:mod", "started_by_crown", "crown:ask_agent", "fed:raise_hand", "hand:review", "woke:raised"]
+
+  [[test.steps]]
+  crown = "RH1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: RH1 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: RH1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  crown = "RH1: call write_note on your own ticket {crown} with the text: # Review (one line, then a blank line, then: Rename the flag --quick to --fast.). Then call get_ticket on {crown} for that note's id, and call ask_agent for {key} with the words: Read the Review note on {crown} with read_note, key {crown} and that note id, and do what it says. End your turn with the single line: RH1 asked. When the board wakes you about {key}, end your turn with the single line: RH1 heard."
   until = { stops = 1, state = "idle" }
   wake = true

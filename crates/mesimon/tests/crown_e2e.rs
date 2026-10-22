@@ -125,6 +125,36 @@ fn the_crown_lets_one_agent_edit_the_others() {
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     assert_eq!(c.board().crown, Some(a));
     assert!(c.board().is_crowned(a));
+    // T-908: under a crown, every keyed road a worker reaches for says who
+    // reads another ticket, that the crown copies what is needed here, and
+    // that a raised hand is the road. B's agent is a person's, unwatched,
+    // so its hand reaches the person alone.
+    let reach = |key: &str| -> Vec<Command> {
+        let key = Some(key.to_string());
+        vec![
+            Command::AgentReadTicket { key: key.clone().unwrap() },
+            Command::AgentReadNote { note: ulid::Ulid::new(), key: key.clone() },
+            Command::AgentReadAttachment { attachment: ulid::Ulid::new(), key: key.clone() },
+            Command::AgentReadShell { shell: uuid::Uuid::new_v4(), key: key.clone() },
+            Command::AgentWriteNote { note: None, text: "x".into(), key: key.clone() },
+            Command::AgentTagTicket { name: "x".into(), group: None, remove: false, key },
+        ]
+    };
+    for command in reach(&kd) {
+        let what = format!("{command:?}");
+        match c.send(Principal::Agent { session: sb }, command) {
+            Response::Err { message } => assert_eq!(
+                message,
+                format!(
+                    "only the crown ({ka}) reads or changes another ticket ({kd}); the crown \
+                     can copy what is needed onto this ticket, and raise_hand on this ticket, \
+                     naming what is missing, reaches the person."
+                ),
+                "{what}"
+            ),
+            other => panic!("{what}: {other:?}"),
+        }
+    }
     let own = read(&mut c, sa, &ka).unwrap();
     assert!(own.crowned, "get_ticket says the caller wears it");
     // T-537: and how the board wakes it, so it arms no monitor of its own.
@@ -533,6 +563,18 @@ fn the_crown_lets_one_agent_edit_the_others() {
     assert_eq!(touches(&mut c).iter().find(|t| t.ticket == e1).unwrap().action, "started");
     let sessions = std::fs::read_to_string(h.paths.state_dir.join("sessions.json")).unwrap();
     assert!(sessions.contains("\"started_by\""), "persisted, so a restart keeps the count");
+    // T-908: the crown's own worker reaching for another ticket reads that
+    // its raised hand wakes the crown as well as reaching the person.
+    match c.send(
+        Principal::Agent { session: started.id },
+        Command::AgentReadNote { note: ulid::Ulid::new(), key: Some(kb.clone()) },
+    ) {
+        Response::Err { message } => {
+            assert!(message.starts_with(&format!("only the crown ({ka})")), "{message}");
+            assert!(message.ends_with("reaches the person and the crown."), "{message}");
+        }
+        other => panic!("a worker reading another ticket's note: {other:?}"),
+    }
     // A second start on the same ticket is refused by the seat.
     let v1 = read(&mut c, sa, &k1).unwrap();
     match start(&mut c, &k1, v1.seen) {

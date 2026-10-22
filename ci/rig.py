@@ -1147,7 +1147,9 @@ class Rig:
         return [(test["ticket"], test["key"], test["title"])] + test.get("others", [])
 
     def keys_of(self, test):
-        keys = {"key": test["key"]}
+        # `{crown}` is the rig's crown's own key (T-908: a note there is
+        # another ticket's to a worker).
+        keys = {"key": test["key"], "crown": self.crown_key}
         for i, (_, k, _) in enumerate(test.get("others", []), start=2):
             keys[f"key{i}"] = k
         return keys
@@ -1157,7 +1159,8 @@ class Rig:
         lines.append("**Steps.**")
         for step in test["steps"]:
             if "crown" in step:
-                said = step["crown"].format(key="this ticket", key2="the second", key3="the third")
+                said = step["crown"].format(key="this ticket", key2="the second", key3="the third",
+                                            crown="the crown's ticket")
                 lines.append(f"- the crown is told: “{said}”")
             else:
                 lines.append(f"- the rig: `{step['rig']}`")
@@ -2374,6 +2377,14 @@ Reply with the single word ready and end your turn."""
                 hands = [i.get("reason", "") for n, i in tool_inputs(transcript(crown) if crown else [])
                          if (n or "").endswith("raise_hand")]
                 said = [h for h in hands if arg in h]
+                check(c, said, repr(said[-1][:100]) if said
+                      else f"{len(hands)} hands, none naming {arg}: {[h[:60] for h in hands[-2:]]}")
+            elif name == "hand":
+                # The worker's own hand (T-908), its reason naming `arg`,
+                # case aside: what the worker wrote, from its transcript.
+                hands = [i.get("reason", "") for n, i in tool_inputs(rows)
+                         if (n or "").endswith("raise_hand")]
+                said = [h for h in hands if arg.lower() in h.lower()]
                 check(c, said, repr(said[-1][:100]) if said
                       else f"{len(hands)} hands, none naming {arg}: {[h[:60] for h in hands[-2:]]}")
             elif name == "crown_never":

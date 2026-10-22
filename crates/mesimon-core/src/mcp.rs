@@ -386,7 +386,9 @@ pub const WORKER_UNDER_CROWN: &str = "The board's crown, the agent coordinating 
      addresses to a person are only those a person must run, such as a production ship. A \
      finished turn leaves no background task or monitor running: the board reads a running \
      task as unfinished work, so the branch is not merged behind it, and the crown asks what \
-     it waits on.";
+     it waits on. Words in the pane reach no one: a step the crown asked for that this \
+     session cannot take, such as reading another ticket's note, is a raise_hand on this \
+     ticket naming what is missing, which wakes the crown and lights the card.";
 
 /// Words that turn a description into an instruction. Tool text is injected
 /// into every request; it may describe, and it may not tell the model what to
@@ -722,9 +724,12 @@ pub fn tools() -> Vec<Value> {
             "description": "Marks this session's ticket as waiting on a person: the card \
                             lights on the mesimon board and the board's attention count \
                             includes it until the ticket is opened or its next prompt \
-                            arrives. For a turn that ends on a question, a decision, or a \
-                            blocker a person has to settle; an ordinary finished turn \
-                            already reads as done.",
+                            arrives, and the crown is woken for a ticket it started or \
+                            watches. For a turn that ends on a question, a decision, a \
+                            blocker a person has to settle, or a step the crown asked for \
+                            that this session cannot take (a refused tool, another \
+                            ticket's note), named in the reason; words in the pane reach \
+                            no one. An ordinary finished turn already reads as done.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
