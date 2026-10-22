@@ -5446,8 +5446,13 @@ impl Daemon {
     /// words may now be moot. The one settling site for every road (T-244).
     fn ack_owed(&mut self, id: uuid::Uuid) -> bool {
         // A `/` command or a `!` line acked off the screen (T-876, T-894)
-        // is the box's own, not a prompt: words still unsent stay so.
+        // is the box's own, not a prompt: words still unsent stay so, and
+        // a queued ask stays queued.
         let command = self.owed.get(&id).is_some_and(|o| o.screen_acked);
+        // When our own words went in: a queued ask from after them is a
+        // follow-up the ack must not take with it (T-894 review: a person
+        // queued words behind a `/compact`, and its ack deleted them).
+        let sent_at = self.owed.get(&id).map(|o| o.screen_after);
         let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else {
             return false;
         };
@@ -5468,7 +5473,17 @@ impl Daemon {
         } else {
             self.late_ask_acked(ticket);
         }
-        changed | self.forget_queued(ticket, "queued_ask_dropped_by_hand", "local", "person")
+        if command {
+            return changed;
+        }
+        changed
+            | self.forget_queued_before(
+                ticket,
+                sent_at,
+                "queued_ask_dropped_by_hand",
+                "local",
+                "person",
+            )
     }
 
     /// Start the delivery of an owed Enter: the pane is provably alive.
@@ -13191,6 +13206,24 @@ impl Daemon {
         actor: &str,
         dropped_by: &'static str,
     ) -> bool {
+        self.forget_queued_before(ticket, None, why, actor, dropped_by)
+    }
+
+    /// `forget_queued`, sparing an ask queued after `cutoff` (epoch ms):
+    /// an ack of words that went in earlier says nothing about it.
+    fn forget_queued_before(
+        &mut self,
+        ticket: ulid::Ulid,
+        cutoff: Option<u64>,
+        why: &str,
+        actor: &str,
+        dropped_by: &'static str,
+    ) -> bool {
+        if let Some(at) = cutoff {
+            if self.queued.iter().any(|q| q.ticket == ticket && q.queued_at > at) {
+                return false;
+            }
+        }
         let before = self.queued.len();
         let queued = self.queued.iter().find(|q| q.ticket == ticket);
         let session = queued.and_then(|q| match q.seat {

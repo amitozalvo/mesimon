@@ -55,11 +55,88 @@ const RULE_MIN: usize = 8;
 /// composer for the whole of a compaction and gone the moment it ends or
 /// is interrupted — and an Esc fires no hook and writes no transcript, so
 /// this line's absence is the one close an interrupted compaction has.
-pub const COMPACTING_LINE: &str = "Compacting conversation";
+/// Its words up to the timer's paren, which a quotation of them lacks.
+pub const COMPACTING_LINE: &str = "Compacting conversation… (";
 
-/// Whether `screen` shows a compaction in flight (see `COMPACTING_LINE`).
+/// The spinner's glyphs as 2.1.308 cycles them (`·` `✢` `✳` `✶` `✻` `✽`),
+/// and `*` where a terminal draws none of them.
+const SPINNER: &[char] = &['·', '✢', '✳', '✶', '✻', '✽', '*'];
+
+/// The most rows the spinner's block may span above the composer: the
+/// line wrapped on a narrow pane, and the tip Claude Code hangs under it.
+const SPINNER_BLOCK_MAX: usize = 16;
+
+/// The effort indicator's glyphs (`◐ medium · /effort`), hung against the
+/// composer's rule: chrome, never the spinner's block, at any width.
+const EFFORT: &[char] = &['○', '◔', '◑', '◐', '◕', '●'];
+
+/// Whether `screen` shows a compaction in flight (see `COMPACTING_LINE`),
+/// read only where the spinner stands (T-894 review): the nearest block of
+/// rows above the composer's top rule, past the blank and right-hung
+/// status rows between, never the composer itself and never scrollback
+/// above that block. The spinner row is the block's row that starts with
+/// a spinner glyph, joined with the rows it wrapped onto (up to a `⎿` tip
+/// or the block's end), so a narrow pane that wraps the line still reads
+/// as compacting. No composer, no reading: `Absent` is no screen to judge.
 pub fn compacting(screen: &InputScreen) -> bool {
-    screen.lines.iter().any(|l| l.contains(COMPACTING_LINE))
+    let lines = &screen.lines;
+    let Some(top) = composer_top(lines) else { return false };
+    let mut row = top;
+    // Up past the blank rows and the right-hung status rows (`◐ medium ·
+    // /effort` sits against the rule) to the nearest block's last row.
+    let bottom = loop {
+        if row == 0 {
+            return false;
+        }
+        row -= 1;
+        let line = &lines[row];
+        let body = line.trim_start();
+        let indent = line.len() - body.len();
+        if body.is_empty() || indent >= 20 || body.starts_with(EFFORT) {
+            continue;
+        }
+        break row;
+    };
+    let mut first = bottom;
+    while first > 0 && bottom - first + 1 < SPINNER_BLOCK_MAX && !lines[first - 1].trim().is_empty()
+    {
+        first -= 1;
+    }
+    (first..=bottom).any(|r| {
+        let body = lines[r].trim_start();
+        let Some(rest) = body.strip_prefix(SPINNER) else { return false };
+        if !rest.starts_with(' ') {
+            return false;
+        }
+        let mut joined = rest.trim().to_string();
+        for next in &lines[r + 1..=bottom] {
+            let next = next.trim();
+            if next.starts_with('⎿') {
+                break;
+            }
+            joined.push(' ');
+            joined.push_str(next);
+        }
+        let joined = joined.split_whitespace().collect::<Vec<_>>().join(" ");
+        joined.starts_with(COMPACTING_LINE)
+    })
+}
+
+/// The row of the composer's top rule: the same composer `read` finds.
+fn composer_top(lines: &[String]) -> Option<usize> {
+    for (row, line) in lines.iter().enumerate().rev() {
+        let body = line.trim_start();
+        if body.strip_prefix(PROMPT).or_else(|| body.strip_prefix(SHELL)).is_none() {
+            continue;
+        }
+        if row == 0 || !is_rule(&lines[row - 1]) {
+            continue;
+        }
+        if lines[row + 1..].iter().any(|l| is_rule(l)) {
+            return Some(row - 1);
+        }
+    }
+    None
 }
 
 fn is_rule(line: &str) -> bool {
@@ -105,19 +182,41 @@ mod tests {
         InputScreen { lines: s.lines().map(str::to_string).collect(), cursor }
     }
 
+    /// The pane as captured mid-`/compact` on 2.1.308 (T-894), 140 columns:
+    /// the spinner, the tip under it, a blank, the effort row hung against
+    /// the rule, then the composer.
+    fn compacting_pane(spinner: &[&str], input: &str) -> InputScreen {
+        let mut rows = vec![
+            "❯ say the single word hello".to_string(),
+            "⏺ hello".to_string(),
+            String::new(),
+            "❯ /compact".to_string(),
+        ];
+        rows.extend(spinner.iter().map(|s| s.to_string()));
+        rows.push(
+            "  ⎿  Tip: Use /permissions to pre-approve and pre-deny bash, edit, and MCP tools"
+                .into(),
+        );
+        rows.push(String::new());
+        rows.push(format!("{}◐ medium · /effort", " ".repeat(100)));
+        rows.push(RULE_ROW.to_string());
+        rows.push(format!("❯ {input}"));
+        rows.push(RULE_ROW.to_string());
+        rows.push("  ⏵⏵ auto mode on (shift+tab to cycle)".to_string());
+        InputScreen { lines: rows, cursor: None }
+    }
+
     /// Claude Code 2.1.308's line for the whole of a compaction (T-894),
-    /// captured from a scratch pane, and the pane after an Esc out of it:
-    /// the line gone and `/compact` back in the box.
+    /// every glyph it cycles, and the pane after an Esc out of it: the line
+    /// gone and `/compact` back in the box.
     #[test]
     fn a_compaction_reads_off_its_spinner_line() {
-        let during = screen(
-            &format!(
-                "❯ /compact\n✻ Compacting conversation… (3s · ↓ 77 tokens)\n{RULE_ROW}\n❯ \n{RULE_ROW}"
-            ),
-            None,
-        );
-        assert!(compacting(&during));
-        assert_eq!(read(&during), Composer::Empty);
+        for glyph in ["·", "✢", "✳", "✶", "✻", "✽"] {
+            let line = format!("{glyph} Compacting conversation… (3s · ↓ 77 tokens)");
+            let during = compacting_pane(&[&line], "");
+            assert!(compacting(&during), "{glyph}");
+            assert_eq!(read(&during), Composer::Empty);
+        }
         let after_esc = screen(
             &format!(
                 "✻ Cogitated for 1s\n{RULE_ROW}\n❯ /compact  <optional custom summarization instructions>\n{RULE_ROW}"
@@ -126,6 +225,55 @@ mod tests {
         );
         assert!(!compacting(&after_esc));
         assert_eq!(read(&after_esc), Composer::Holding, "an Esc puts `/compact` back");
+    }
+
+    /// A narrow pane wraps the spinner line across rows (T-894 review: at
+    /// ~20 columns the phrase never stood on one row, and two samples later
+    /// a running compaction read as over). The rows it wrapped onto are
+    /// joined, the effort row is chrome at any width.
+    #[test]
+    fn a_wrapped_spinner_line_still_reads_as_compacting() {
+        let rule = "────────────────────";
+        let narrow = screen(
+            &format!(
+                "❯ /compact\n✻ Compacting\n  conversation… (3s\n  · ↓ 77 tokens)\n  ⎿  Tip: Use\n     /permissions to\n     pre-approve\n\n ◐ medium · /effort\n{rule}\n❯ \n{rule}"
+            ),
+            None,
+        );
+        assert!(compacting(&narrow));
+        let mid_word =
+            screen(&format!("✻ Compacting conver\n  sation… (0s)\n\n{rule}\n❯ \n{rule}"), None);
+        assert!(!compacting(&mid_word), "a word split mid-way is not the phrase");
+        let at_words =
+            screen(&format!("✽ Compacting\n  conversation…\n  (12s)\n{rule}\n❯ \n{rule}"), None);
+        assert!(compacting(&at_words));
+    }
+
+    /// The phrase anywhere but the spinner's place is ordinary text (T-894
+    /// review): `/compact` restored after an Esc with instructions that say
+    /// it, a reply that quotes it, scrollback above the nearest block. Only
+    /// the block nearest above the composer's rule, led by a spinner glyph,
+    /// is read; with no composer, nothing is.
+    #[test]
+    fn the_phrase_in_ordinary_text_is_not_the_spinner() {
+        let restored =
+            compacting_pane(&[], "/compact keep the Compacting conversation… (3s) notes");
+        assert!(!compacting(&restored), "the composer is never read");
+        let quoted_reply = compacting_pane(
+            &["⏺ Claude Code shows \"✻ Compacting conversation… (3s)\" while it works."],
+            "",
+        );
+        assert!(!compacting(&quoted_reply), "a reply is not the spinner");
+        let scrollback = screen(
+            &format!(
+                "✻ Compacting conversation… (3s · ↓ 77 tokens)\n\n⏺ done\n\n✻ Cogitated for 2s\n{RULE_ROW}\n❯ \n{RULE_ROW}"
+            ),
+            None,
+        );
+        assert!(!compacting(&scrollback), "scrollback above the nearest block");
+        let no_composer =
+            screen("✻ Compacting conversation… (3s)\n Do you trust this folder?", None);
+        assert!(!compacting(&no_composer));
     }
 
     const RULE_ROW: &str =

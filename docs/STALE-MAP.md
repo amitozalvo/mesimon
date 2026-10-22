@@ -29982,3 +29982,25 @@ key never waits: it does, while the daemon is slow, and for that bound at most.
 `a_second_summary_tick_carries_the_first_ticks_revision` (the fake now refuses a stale note
 revision, as the daemon does), `a_barrier_gives_up_at_its_deadline_and_sends_nothing`,
 `an_answer_older_than_the_board_on_screen_is_dropped`.
+
+## The compaction close reads the spinner's place, and a command's ack keeps the queue (T-894 review by T-900, 2026-10-22)
+
+T-900's review of `8bf691b0` found three holes. **A command's ack swept the queue**: `ack_owed`
+ran `forget_queued` for every ack, so a follow-up queued behind a `/compact` (window open,
+words held) was deleted by the command's screen ack and its asker told the person dropped it.
+A `/` or `!` ack now forgets nothing, and a prompt's ack forgets only an ask queued at or before
+its words went in (`forget_queued_before`, against the entry's `screen_after`): a follow-up is
+never the earlier words' to take. **A narrow pane closed a running compaction** (the phrase never
+stood on one row at ~20 columns), and **ordinary text held a window open** for ten minutes
+(`/compact` restored with instructions that say the phrase, or output quoting it). The detector
+now reads only the spinner's place: the nearest block of rows above the composer's top rule,
+past blank and right-hung status rows (the effort row, `◐ medium · /effort`, by its glyph at any
+width), never the composer and never scrollback above that block. Within it, a row led by a
+spinner glyph (`· ✢ ✳ ✶ ✻ ✽`, or `*`) is joined with the rows it wrapped onto, up to the `⎿` tip,
+and must read `Compacting conversation… (`, the timer's paren a quotation lacks.
+
+Tests: `composer::a_compaction_reads_off_its_spinner_line` (every glyph, a pane captured on
+2.1.308), `composer::a_wrapped_spinner_line_still_reads_as_compacting`,
+`composer::the_phrase_in_ordinary_text_is_not_the_spinner`, and
+`compact_e2e::a_slash_command_from_the_board_is_acked_off_the_screen` with a follow-up queued
+behind the command (fails against the old sweep: the follow-up was dropped).

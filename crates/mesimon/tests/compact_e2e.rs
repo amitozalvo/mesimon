@@ -58,6 +58,10 @@ fn session_of(h: &Harness) -> String {
     std::fs::read_to_string(h.dir.join("session")).unwrap()
 }
 
+fn feed(h: &Harness) -> String {
+    std::fs::read_to_string(h.paths.state_dir.join("activity.jsonl")).unwrap_or_default()
+}
+
 fn got(h: &Harness) -> String {
     std::fs::read_to_string(h.dir.join("got.txt")).unwrap_or_default()
 }
@@ -304,6 +308,12 @@ fn a_slash_command_from_the_board_is_acked_off_the_screen() {
         std::thread::sleep(Duration::from_millis(300));
     }
     assert!(matches!(ask(&mut c, ticket, "/compact", false), Response::Ok));
+    // Its `PreCompact` opens the window, and a follow-up is queued behind
+    // it before the screen acks the command (T-894 review: the ack's queue
+    // sweep deleted the follow-up and told its asker the person dropped it).
+    pre(&h, "manual");
+    let words = "mesimon-894 after the command";
+    assert!(matches!(ask(&mut c, ticket, words, true), Response::Queued { .. }));
     wait_until(Duration::from_secs(8), "the command typed and entered", || {
         // The stub's line holds the plain start's prefilled title too: a
         // stub draws no box, so the composer the daemon reads stays empty.
@@ -319,4 +329,14 @@ fn a_slash_command_from_the_board_is_acked_off_the_screen() {
     assert!(rec.unsent.is_none(), "{:?}", rec.unsent);
     assert!(!rec.pending_submit);
     assert_eq!(feed_count(&h, "paste_unacked", ticket), 0);
+    // The ack took the command and nothing else: the follow-up waits out
+    // the window, and goes when it closes.
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!(feed_count(&h, "queued_ask_dropped_by_hand", ticket), 0, "{}", feed(&h));
+    assert_eq!(pending_of(&mut c, Some(ticket)).len(), 1, "the follow-up waits");
+    assert!(!got(&h).contains(words));
+    post(&h, "manual");
+    wait_until(Duration::from_secs(8), "the follow-up goes once the window closes", || {
+        got(&h).contains(words)
+    });
 }
