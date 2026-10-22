@@ -2158,6 +2158,10 @@ pub struct App {
     /// How long `catch_up` and `settle_snapshot` wait for a board on this
     /// thread: `client::RESPONSE_WAIT`, end to end; a test shortens it.
     pub(crate) catch_up_wait: Duration,
+    /// A board a barrier landed (`catch_up`) owes its reconcile pass, which
+    /// may send: run by the next `pump`, so the key's wait stays inside
+    /// `catch_up_wait` (T-812 re-review).
+    reconcile_due: bool,
 }
 
 impl App {
@@ -2371,6 +2375,7 @@ impl App {
             need_seq: 1,
             cursor_hold: None,
             catch_up_wait: crate::client::RESPONSE_WAIT,
+            reconcile_due: false,
             // None: `lib.rs` starts the thread, so a test app is mute and
             // opens no second connection.
             notifier: None,
@@ -2999,7 +3004,11 @@ impl App {
                 }
             };
             let failed = got.is_err();
-            self.land_snapshot(seq, got)?;
+            // Absorbed now, reconciled by the next `pump`: the reconcile
+            // pass may send, and the key's wait is this deadline alone.
+            if self.absorb_landing(seq, got) {
+                self.reconcile_due = true;
+            }
             if failed {
                 return Ok(false);
             }
@@ -3086,16 +3095,22 @@ impl App {
     /// Every snapshot's landing, whichever road asked: `absorb`, then what
     /// the fresh board settles.
     fn land_snapshot(&mut self, seq: u64, got: Result<Snapshot>) -> Result<()> {
+        if self.absorb_landing(seq, got) {
+            self.reconcile_after_landing()?;
+        }
+        Ok(())
+    }
+
+    /// A landing's half that sends nothing: `absorb`, and the daemon's
+    /// word. True when a board was absorbed.
+    fn absorb_landing(&mut self, seq: u64, got: Result<Snapshot>) -> bool {
         match got {
             // Asked before the board on screen (a barrier gave up on it and
             // a newer one landed): it would roll the board back.
-            Ok(_) if seq < self.landing => {}
+            Ok(_) if seq < self.landing => false,
             Ok(snap) => {
                 self.landing = seq;
                 self.absorb(snap);
-                self.reconcile_train();
-                self.reconcile_status_line();
-                self.reconcile_usage_wants();
                 // Back once the board's own connection is too: the lane can
                 // answer while that one still dials (a subscriber the daemon
                 // dropped, T-838), and the next tick would say gone again.
@@ -3103,11 +3118,23 @@ impl App {
                     self.daemon_down = false;
                     self.status = "daemon back ∙ board refreshed".into();
                 }
-                self.settle_pending_spawn_focus()?;
+                true
             }
-            Err(e) => self.note_daemon_down(crate::client::outage(&e)),
+            Err(e) => {
+                self.note_daemon_down(crate::client::outage(&e));
+                false
+            }
         }
-        Ok(())
+    }
+
+    /// A landing's half that may send: the pushes the fresh board settles
+    /// and a parked focus it finishes.
+    fn reconcile_after_landing(&mut self) -> Result<()> {
+        self.reconcile_due = false;
+        self.reconcile_train();
+        self.reconcile_status_line();
+        self.reconcile_usage_wants();
+        self.settle_pending_spawn_focus()
     }
 
     /// Finish a `c` whose spawn was parked behind worktree provisioning: once
@@ -3980,6 +4007,11 @@ impl App {
         // The snapshot in flight (T-812): its answer lands here, on the
         // thread that never waited for it.
         dirty |= self.poll_snapshot()?;
+        // What a barrier's landing left to reconcile (T-812 re-review).
+        if self.reconcile_due {
+            self.reconcile_after_landing()?;
+            dirty = true;
+        }
         let wire = !self.merge_in_flight();
         // Async board-changed events from the daemon: however many, one
         // ask — and none while a merge runs, whose reply asks (T-431).
@@ -16811,6 +16843,66 @@ mod tests {
         tx.send(Ok(stale)).unwrap();
         app.pump().unwrap();
         assert!(app.board.tickets.iter().any(|t| t.short_key == "T-999"), "not rolled back");
+    }
+
+    /// A Space ticks the box under the cursor (T-812 re-review, P1): two
+    /// notes with a box each, the first ticked, a pump reading its body
+    /// back under the old revision before that tick's board lands, and a
+    /// second Space. The barrier lands the new revision, and the tick brings
+    /// the summary cache up to it before resolving the row, so the cursor's
+    /// row is still the first note's — not the second's.
+    #[test]
+    fn a_second_space_ticks_the_box_under_the_cursor_not_the_next_notes() {
+        let (mut app, sent) = app_with_notes_state(
+            None,
+            &[(90, "## Summary\n- [ ] a\n"), (91, "## Summary\n- [ ] b\n")],
+        );
+        app.poll_summaries();
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::CONTROL).unwrap();
+        assert!(matches!(app.mode, Mode::Summary { idx: 0, .. }), "{:?}", app.mode);
+        assert_eq!(app.summary_cursor().map(|(_, r)| r.note), Some(ulid::Ulid(90)));
+        let hold = slow(&mut app);
+        hold.borrow_mut().pushes = 1;
+        app.pump().unwrap();
+        release_late(&hold, LATE);
+        app.summary_tick().unwrap();
+        assert_eq!(app.status, "ticked");
+        // Before the tick's board lands, a pump reads note 90's body back
+        // under the revision the board still shows.
+        assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().note(ulid::Ulid(90)).unwrap().rev, 1);
+        app.poll_summaries();
+        release_late(&hold, LATE);
+        app.summary_tick().unwrap();
+        let note90 = format!("note: Some({:?})", ulid::Ulid(90));
+        let writes: Vec<String> =
+            sent.borrow().iter().filter(|c| c.starts_with("WriteNote")).cloned().collect();
+        assert_eq!(writes.len(), 2, "{writes:?}");
+        assert!(writes[1].contains(&note90), "the first note's box: {}", writes[1]);
+        assert!(writes[1].contains("- [ ] a"), "unticked again: {}", writes[1]);
+        assert_eq!(app.status, "unticked");
+        release(&hold);
+        app.pump().unwrap();
+        let s = app.ticket_summary(ulid::Ulid(1)).expect("listed");
+        assert!(s.rows.iter().all(|r| !r.done), "nothing in note 91 was ticked: {:?}", s.rows);
+    }
+
+    /// A barrier's landing leaves its reconcile pass to the next `pump`
+    /// (T-812 re-review, P3), so a key waits for the board alone.
+    #[test]
+    fn a_barriers_landing_reconciles_on_the_next_pump() {
+        let (mut app, _) = App::for_test_logged(board_three_columns(), theme(), false);
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::ColumnSettings { .. }));
+        let hold = slow(&mut app);
+        hold.borrow_mut().pushes = 1;
+        app.pump().unwrap();
+        release_late(&hold, LATE);
+        app.set_column(|s| s.requires_merge = true).unwrap();
+        assert!(app.reconcile_due, "owed, not run inside the barrier");
+        release(&hold);
+        app.pump().unwrap();
+        assert!(!app.reconcile_due);
     }
 
     /// The reconnect cadence dials on the board's own connection and asks

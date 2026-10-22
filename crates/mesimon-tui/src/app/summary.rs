@@ -266,6 +266,13 @@ impl App {
         if !self.catch_up()? {
             return Ok(());
         }
+        // The cache up to the board just landed (T-812 re-review): a body a
+        // pump read back under the old revision is stale now, and a note
+        // left out of the list would shift every row after it — the cursor
+        // would land on the next note's box.
+        if let Mode::Summary { ticket, .. } = self.mode {
+            self.fetch_summary(ticket);
+        }
         let Some((ticket, row)) = self.summary_cursor() else {
             return Ok(());
         };

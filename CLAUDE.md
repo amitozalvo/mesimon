@@ -320,7 +320,7 @@ event granularity, and every snapshot field rides one `Snapshot` struct through 
 **That round-trip is the board's only one** (T-686): the notifier and the keep-awake monitor read
 `App.board` (an `Arc<Board>`, handed by `App::hand_board` after every absorb) and dial a snapshot
 of their own only while the board is handed away. A new observer thread takes the hand-off too.
-**And it never waits on the UI thread** (T-812): a push, and nearly every mutating key, asks
+**And a push never waits on the UI thread** (T-812): a push, and nearly every mutating key, asks
 `App::refresh_soon`, which sends `Snapshot` on the client's second connection (the lane,
 `Client::snapshot_detached`) and lands the answer in `pump` (`poll_snapshot`); one ask is out at
 a time, and whatever wanted the board meanwhile becomes one follow-up. `App::refresh` is the
@@ -333,8 +333,9 @@ a whole `ColumnSettings`, a move's card and place, `u`'s target, a note's revisi
 and an intent armed before an ask (a parked focus, a cursor kept home) ignores answers asked
 before the key (`App::landing`, the asks' count). **Such a key does block** while the daemon is
 slow: `catch_up` waits on this thread for one `RESPONSE_WAIT` at most, then sends nothing and
-says `daemon slow ∙ the board is behind ∙ nothing sent`. Only the keys that read nothing
-(navigation, the frame) never wait.
+says `daemon slow ∙ the board is behind ∙ nothing sent`; what that landing reconciles (the
+train, the status line, a parked focus) runs in the next `pump`, outside the key's wait. Only the
+keys that read nothing (navigation, the frame) never wait.
 
 **Paths (D33b).** Per repo, keyed by `proj16` = sha256(canonical repo path)[..16]: sockets under
 `/tmp/mesimon-<uid>/<proj16>/` (sun_path budget — a new socket must be added to the length test
