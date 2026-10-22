@@ -46,15 +46,27 @@ impl Daemon {
     /// take, the person's banner waits for a sample started from here, and
     /// the ticket's own is asked for now rather than on the next bucket.
     /// A worker the crown hears is looked at too, train or not: its forge
-    /// half is the read the crown's wake waits for (T-773).
+    /// half is the read the crown's wake waits for (T-773). And so is any
+    /// worktree ticket on a board that merges through pull requests
+    /// (T-895, `forge_follows`): a turn's `pr create` or push is read
+    /// within the burst's floor, whoever hears the turn.
     pub(super) fn look_after_turn(&mut self, ticket: ulid::Ulid) {
         if self.train_could_take(ticket) {
             let need = self.wt_seq.wrapping_add(1);
             self.awaiting_looks.insert(ticket, AwaitingLook { need, since_ms: now_ms() });
-        } else if !self.crown_hears_turn(ticket) {
+        } else if !self.crown_hears_turn(ticket) && !self.forge_follows(ticket) {
             return;
         }
         self.queue_ticket_flags(ticket);
+    }
+
+    /// A ticket whose branch a forge may read (T-895): a worktree ticket on
+    /// a board that merges through pull requests. Its turn's end is looked
+    /// at — the legs' pushes and the transcript's tail — train, crown or
+    /// neither, so the card and a column's `Arrives here when` see the PR it
+    /// opened in seconds, not on the minute.
+    fn forge_follows(&self, ticket: ulid::Ulid) -> bool {
+        self.through_prs() && self.worktrees.get(&ticket).is_some_and(|b| !b.branch.is_empty())
     }
 
     /// The ticket's own flags sample on a worker, landing as

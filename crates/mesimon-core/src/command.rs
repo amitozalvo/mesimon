@@ -2267,6 +2267,13 @@ pub struct AgentTicketView {
     /// reads it on its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge: Option<AgentMergeView>,
+    /// What the board does with `prs` (T-895), beside them: it reads the
+    /// forge on its own and wakes the crown with each change, and a watch
+    /// or a sleep loop on a pull request holds the merge train and that
+    /// wake (`mcp::PRS_ABOUT`). On a board that merges through pull
+    /// requests; absent elsewhere and from an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prs_about: Option<String>,
     /// The ticket's pull requests as the forge last said (T-739), newest
     /// first; empty, and absent from the JSON, with none bound or no forge.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -3739,6 +3746,7 @@ mod tests {
             merged_in: None,
             repos: vec![],
             merge: None,
+            prs_about: None,
             prs: vec![],
             worktree_init: None,
             worktree_error: None,

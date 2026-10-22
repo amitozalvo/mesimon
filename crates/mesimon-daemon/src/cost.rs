@@ -338,7 +338,15 @@ impl Ledger {
     /// conversation's fence goes to the check, never the hours; the fence is
     /// the ledger's, which a mod's report may have set while the pass ran.
     pub fn apply(&mut self, done: Vec<Done>) -> bool {
+        self.apply_named(done).0
+    }
+
+    /// `apply`, and the tickets whose named pull requests grew (T-895): a
+    /// `pr create` result or an act the pass read, which the forge is asked
+    /// about at once.
+    pub fn apply_named(&mut self, done: Vec<Done>) -> (bool, Vec<ulid::Ulid>) {
         let mut moved = false;
+        let mut named: Vec<ulid::Ulid> = Vec::new();
         for d in done {
             let t = self.tickets.entry(d.ticket).or_default();
             let mut cursor = d.cursor;
@@ -351,10 +359,20 @@ impl Ledger {
                 moved = true;
             }
             for url in d.pr_urls {
-                moved |= keep_named(&mut t.pr_urls, url);
+                if keep_named(&mut t.pr_urls, url) {
+                    moved = true;
+                    if !named.contains(&d.ticket) {
+                        named.push(d.ticket);
+                    }
+                }
             }
             for entry in d.pr_acted {
-                moved |= keep_named(&mut t.pr_acted, entry);
+                if keep_named(&mut t.pr_acted, entry) {
+                    moved = true;
+                    if !named.contains(&d.ticket) {
+                        named.push(d.ticket);
+                    }
+                }
             }
             for (at_ms, model, tokens) in d.added {
                 if tokens.is_empty() {
@@ -381,7 +399,7 @@ impl Ledger {
                 moved = true;
             }
         }
-        moved
+        (moved, named)
     }
 
     /// The PR URLs a ticket's sessions opened (T-739).

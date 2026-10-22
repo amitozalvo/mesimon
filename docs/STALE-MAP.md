@@ -29517,3 +29517,97 @@ compacting, and is held from auto-park, for `COMPACT_STALE_MS`.
 Tests: `attention::a_post_compact_with_no_window_invents_no_turn`,
 `attention::a_restart_inside_a_compaction_reads_no_turn`, the scenario `restart-in-compaction`
 (the review's frames), and `compact_e2e`'s restart phase through the real daemon.
+
+## PR news reaches the card and the crown within seconds, and crowns stop polling pipelines (T-895, 2026-10-22, the author: "a PR named on a plain line under a ticket's `Summary` takes long enough to show on the card that it looks like a bug, and the other PR stories are slow too" ∙ "crowns sometimes watch a PR's pipeline themselves (`gh pr checks --watch`, sleep loops)")
+
+**Why it was slow.** The forge's one cadence was the minute (`forge::EVERY`, checked on the 10 s
+slow bucket, so 70–90 s worst case), with two exceptions: a turn's end's burst (T-761) only
+where the train could take the ticket or the crown heard its turn, and the busy cadence (T-781)
+only for a PR whose pipeline already read running or waiting. Every other story waited for the
+minute: `write_note` forgot `summary_prs` and asked nothing; a `pr create` reached the daemon
+twice — as a `PostToolUse` frame nothing read for it, and in the transcript ledger at the `Stop`
+— and the ledger's landing asked nothing either; a review, a conflict, a merge or a pipeline's
+first run on a quiet PR was the minute's. And `queue_forge_burst` pruned the owed tickets by
+`forge_fresh`, which judges against the agent's last end of turn: for a ticket with no agent, or
+one mid-turn, that is zero, so any read ever made the ticket "current" and dropped its ask.
+
+**Decided: every event asks the forge now, and news warms the ticket; the minute stays.**
+`Daemon::owe_forge_read(ticket)` is the one road: `forge.owed.insert(ticket, now)`, `warm`, and
+`queue_forge_burst`, which now prunes by `State::settle_owed` (answered by a read begun since the
+ask, or nothing to read) in place of `forge_fresh`. Four callers: (1) `write_note` compares the
+`Summary`'s addresses before and after the write (`summary_prs_of`, by `same_url`) and asks on a
+change; (2) `on_hook` reads a `PostToolUse` whose `tool_name` is `Bash` and whose
+`tool_input.command` `is_pr_create` — the hook set's and the mod's frames carry both (the mod's
+`postToolUseBody` keeps the envelope's `command`) — and `pr_created` feeds `pr_create_seen`, sets
+`cost_due` so the ledger reads the result's address on the next bucket (a checkout ticket binds
+by it alone) and asks at once (a worktree ticket's PR binds by its branch); (3)
+`Ledger::apply_named` names the tickets whose `pr_urls` or `pr_acted` grew, and `on_cost_scanned`
+asks for each — a `pr create` or a `gh pr review` at a `Stop`, mid-turn under `cost_due`, or on a
+Codex seat with no hook road, is read in seconds; (4) `look_after_turn` looks at every worktree
+ticket on a pull-requests board (`forge_follows`), train or crown or neither, where it looked only
+for a train ticket or a crown's worker. **The warm window**: `State::warm` (memory only) stamps a
+ticket on news — a read that changed its set with an open or merged PR in it (never a first read's
+baseline, only its opening), a Summary write, a `pr create` — and `State::busy(now)` adds the
+tickets inside `WARM_MS` (3 min) to the running-pipeline set, so the busy road (15 s) reads them:
+a PR's first pipeline run, a quick review and a quick merge land in seconds, and the merge
+commit's first run after a merge too. `queue_forge_busy` and `launch_forge_burst` are unchanged;
+`BURST_MS` got a seam (`MESIMON_FORGE_BURST_MS`) beside `WARM_MS`'s.
+
+**`EVERY` stays 60 s.** The four reported stories are covered by the events and the window; what
+the minute alone still reads is news on a PR quiet for more than three minutes with no pipeline
+running — a human's review hours later — and it reads it within 70 s as before. Shortening
+`EVERY` to 30 s would double the standing cost of every repository on every board (60 → 120 list
+calls per repository per hour against GitHub's 5,000) for that one story; the window costs at most
+12 extra list calls per event, and a burst one. **Rate limits** (`forge::rate_limited`: `rate
+limit`, `HTTP 429`, `429 Too Many`, `Too Many Requests` in the CLI's first line) fall into the
+same 300 s `BACKOFF` a failed call does, and `State::trouble` names it on the advisory row —
+`<repo>: rate limited by the forge ∙ read again in 5 min` — in place of the CLI's paragraph.
+
+**Latency per story, before → after** (the e2es' measured numbers, a stub `gh` on an idle
+machine; the real forge adds one call's round trip, under a second):
+
+| story | before | after |
+| --- | --- | --- |
+| a PR URL written under `Summary` | 70–90 s (the minute) | 0.12 s (`owe_forge_read` at the write; up to the 10 s floor after another read) |
+| `gh pr create`, mid-turn | 70–90 s | 0.12 s (the `PostToolUse`; the same floor) |
+| `gh pr create`, at a turn's end nobody heard | 70–90 s | 1.7 s (the idle edge's 1.5 s settle, the look, the burst) |
+| a review, conflict, merge or first pipeline run on a PR with news inside 3 min | 70–90 s | ≤ 16 s (the busy cadence; 1.1 s in the e2e at 500 ms) |
+| the same on a PR quiet for over 3 min, pipeline settled | 70–90 s | 70–90 s (the minute, unchanged) |
+| a pipeline already running or waiting | ≤ 16 s | ≤ 16 s |
+
+**The crown stops polling.** What led a crown to `gh pr checks --watch`: `get_ticket`'s `prs`
+said `pipeline: running` and nothing beside it said who would notice the pass, and the one
+sentence in `CROWN_WAKES` ("Nothing needs polling.") named no cadence and no command. Now
+`CROWN_WAKES` says the board reads the forge on its own, in round numbers (about 15 seconds while
+a pipeline runs or the PR just changed, about a minute otherwise), that a pass or failure, a
+review, a conflict and a merge each arrive as a prompt, and that a watch command (`gh pr checks
+--watch`, `glab ci status --live`) or a sleep loop keeps the session busy, which holds the merge
+train and the wake itself — "the way to wait for a pull request's news is to end the turn". And
+`get_ticket` carries `prs_about` (`mcp::PRS_ABOUT`, beside `prs`, on a pull-requests board) with
+the same words where the crown reads the running pipeline. Both in the lint's voice
+(`lint_tool_text`). USING.md's forge paragraph has the cadence and the crown's rule.
+
+**Refuted.** A shorter `EVERY` (above). Reading the `PostToolUse`'s `tool_response` for the URL
+and feeding it to the ledger from the hook: the ledger is the one keeper of `pr_urls` and reads
+the transcript's own `tool_result`, which is the same text a bucket later; the hook road only
+asks the read sooner. Warming on every set change, a first read included: a fresh board's first
+pass would warm every ticket with a merged PR for three minutes, one `pr view` per PR the list
+no longer holds every 15 s. Persisting `warm` in `forge.json`: a restart's first pass reads
+everything, and what changed while it was down is news again.
+
+**Tests.** `forge::a_warm_ticket_is_busy_for_the_window_and_an_owed_read_settles_on_a_read_since`
+(the window, a ticket with no set, `settle_owed` from the ask's moment, the rate limit named);
+`mcp::the_crown_is_told_the_board_reads_the_forge_and_polls_nothing` (`CROWN_WAKES` and
+`PRS_ABOUT`, the lint). `forge_e2e::a_summary_address_and_news_on_a_warm_pull_request_are_read_within_seconds`
+(the minute at 60 s: a Summary write binds its PR within the burst's floor; the ticket is read
+every busy step; a review inside the window wakes the crown within seconds; past the window
+nothing reads it) and `a_pr_create_is_read_mid_turn_and_at_a_gated_turn_end` (no crown, the train
+unarmed: a `PostToolUse` `gh pr create` binds mid-turn and feeds `pr_create_seen`; a turn that
+pushed and opened a PR with no hook road is read at its `Stop`, having been read by nothing
+mid-turn). Rig F12 (`crown_never:pr checks,--watch,sleep,ci status,pr view`, a new check over
+the crown's Bash calls and Monitors since the test began): the crown, asked to wait for a running
+pipeline, ends its turn and reports on the board's `pipeline passed #42` wake. On the real Sonnet,
+2026-10-22: PASS in 77 s — zero Bash calls, the crown's turn on the ask ended in 6 s ("Pipeline
+on #42 is still running. Ending my turn…"), the forge wake came 9 s after the stub's pass, and
+its turn on it said `F12 passed: #42`; the first run read the same and failed only `replies:done`,
+the new check having shadowed the worker's transcript rows (fixed in the same ticket).

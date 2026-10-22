@@ -121,6 +121,22 @@ macro_rules! persons_steps {
 /// See `persons_steps!`.
 pub const PERSONS_STEPS: &str = persons_steps!();
 
+/// What the board does with a ticket's pull requests (T-895), beside
+/// `get_ticket`'s `prs` on a board that merges through them. A crown that
+/// read `pipeline: running` there and was asked to merge once green ran
+/// `gh pr checks --watch` and a sleep loop, which kept its session busy:
+/// the merge train waits for an idle crown, and so does the wake that
+/// would have told it. The cadence is the forge's (`forge::EVERY`,
+/// `BUSY_EVERY`, `WARM_MS`), said in round numbers so a change to one of
+/// them is not a change here.
+pub const PRS_ABOUT: &str = "The board reads these off the forge on its own, within about 15 \
+     seconds while a pipeline runs or the pull request just opened, changed or merged, and \
+     within about a minute otherwise, and wakes the crown with each change: a pipeline's pass \
+     or failure, a review, a conflict, a merge, a deployment. A watch command (gh pr checks \
+     --watch, glab ci status --live) or a sleep loop on a pull request keeps the session busy, \
+     which holds the merge train and the crown's wake; the way to wait for its news is to end \
+     the turn.";
+
 /// How the crown picks a tier (T-584), as one clause inside `CROWN_WAKES`.
 /// The judgement is the crown's: mesimon scores no ticket's difficulty, and
 /// the words it judges against are the person's own, one description a
@@ -178,7 +194,14 @@ pub const CROWN_WAKES: &str = concat!(
      work stays where the turn left it. sleep_agent parks it, conversation kept, and \
      start_agent naming another tier then wakes it on that tier to go on; otherwise the \
      person resumes it with credits, another model or the limit's reset. Nothing needs \
-     polling. A background task or monitor left running does not hold the wake or a queued \
+     polling: the board reads the forge on its own, within about 15 seconds while a pull \
+     request's pipeline runs or the PR just opened, changed or merged, and within about a \
+     minute otherwise, and wakes this session with the news, so a pipeline's pass or failure, \
+     a review, a conflict and a merge each arrive as a prompt. A watch command (gh pr checks \
+     --watch, glab ci status --live) or a sleep loop that waits for one of them keeps this \
+     session busy, which holds the merge train and the wake itself; the way to wait for a \
+     pull request's news is to end the turn. \
+     A background task or monitor left running does not hold the wake or a queued \
      word: they land at this session's composer as at any idle one. A worker the crown started \
      that sits idle with background tasks for 30 minutes wakes this session once (has been \
      idle with N background tasks), and get_ticket on it carries background (tasks, \
@@ -2631,6 +2654,40 @@ mod tests {
         ] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
         }
+    }
+
+    /// T-895: the crown is told the board reads the forge and wakes it, in
+    /// round seconds, and that a watch command or a sleep loop holds the
+    /// train and the wake; `get_ticket`'s `prs_about` says the same beside
+    /// the PRs. Both in the lint's voice.
+    #[test]
+    fn the_crown_is_told_the_board_reads_the_forge_and_polls_nothing() {
+        for words in [
+            "Nothing needs polling: the board reads the forge on its own",
+            "within about 15 seconds while a pull request's pipeline runs",
+            "within about a minute otherwise",
+            "a pipeline's pass or failure, a review, a conflict and a merge each arrive as a prompt",
+            "gh pr checks --watch",
+            "a sleep loop that waits for one of them keeps this session busy",
+            "holds the merge train and the wake itself",
+            "the way to wait for a pull request's news is to end the turn",
+        ] {
+            assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
+        }
+        for words in [
+            "reads these off the forge on its own",
+            "within about 15 seconds",
+            "within about a minute otherwise",
+            "wakes the crown with each change",
+            "gh pr checks --watch",
+            "sleep loop",
+            "holds the merge train and the crown's wake",
+            "the way to wait for its news is to end the turn",
+        ] {
+            assert!(PRS_ABOUT.contains(words), "PRS_ABOUT names {words:?}");
+        }
+        assert_eq!(lint_tool_text(PRS_ABOUT), Ok(()));
+        assert!(PRS_ABOUT.len() < 700, "one paragraph beside the PRs: {}", PRS_ABOUT.len());
     }
 
     /// T-566: the crown is told where a worker's question is read and whose

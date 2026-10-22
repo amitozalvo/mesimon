@@ -4615,6 +4615,20 @@ impl Daemon {
         {
             return;
         }
+        // A `gh pr create` / `glab mr create` the session just ran (T-895):
+        // the forge is asked now, mid-turn, not at the turn's end or on the
+        // minute. The command is the tool's own input, never prose.
+        if frame.event == "PostToolUse"
+            && frame.payload.get("tool_name").and_then(serde_json::Value::as_str) == Some("Bash")
+            && frame.payload["tool_input"]
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(mesimon_core::forge::is_pr_create)
+        {
+            if let Some(t) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket) {
+                self.pr_created(t);
+            }
+        }
         self.control_release_permission(id, &frame);
         self.control_observe_dialog(id, &frame);
         let now = now_ms();
@@ -8488,6 +8502,9 @@ impl Daemon {
                 .map(|m| mesimon_core::text::scrub_text(&m)),
             repos: self.agent_repo_views(id),
             merge: self.merge_state_word(id).is_some().then(|| self.merge_by(id)),
+            // What the board does with them (T-895): reads the forge on its
+            // own and wakes the crown, so no session watches a pipeline.
+            prs_about: self.through_prs().then(|| mesimon_core::mcp::PRS_ABOUT.to_string()),
             // The ticket's pull requests as the forge last said (T-739),
             // newest first: a worker sees its own red pipeline on the next
             // read, and the crown reads a worker's.
@@ -9643,7 +9660,16 @@ impl Daemon {
         self.cost_scanning = false;
         let live: std::collections::HashSet<ulid::Ulid> =
             self.board.tickets.iter().map(|t| t.id).collect();
-        let moved = self.costs.apply(done) | self.costs.keep(&live);
+        let (applied, named) = self.costs.apply_named(done);
+        let moved = applied | self.costs.keep(&live);
+        // A ticket whose sessions opened or acted on a pull request (T-895):
+        // the forge is asked for it now, not on the minute. A checkout
+        // ticket's `pr create` binds by this address alone.
+        for t in named {
+            if live.contains(&t) {
+                self.owe_forge_read(t);
+            }
+        }
         if moved {
             self.persist_costs();
             self.broadcast();
@@ -11808,8 +11834,11 @@ impl Daemon {
         let now = now_iso();
         let author = by.note_author();
         self.open_box_counts.forget(ticket);
+        // The Summary's pull requests before the write (T-895): a change in
+        // them asks the forge now, not on the minute.
+        let summary_before = self.summary_prs_of(ticket);
         self.summary_prs.forget(ticket);
-        match (note, blank) {
+        let response = match (note, blank) {
             (None, true) => Response::Err { message: "nothing to save".into() },
             (Some(id), true) => {
                 if let Err(e) = store::delete_note(&self.paths, &key, id) {
@@ -11843,7 +11872,18 @@ impl Daemon {
                 });
                 Response::NoteWritten { note: Some(id) }
             }
+        };
+        if matches!(response, Response::NoteWritten { .. }) {
+            let summary_after = self.summary_prs_of(ticket);
+            let same = |a: &[String], b: &[String]| {
+                a.len() == b.len()
+                    && a.iter().all(|u| b.iter().any(|v| mesimon_core::forge::same_url(u, v)))
+            };
+            if !same(&summary_before, &summary_after) {
+                self.owe_forge_read(ticket);
+            }
         }
+        response
     }
 
     /// Tell the ticket's live claude a note changed — `merge_to_agent`'s
@@ -15247,33 +15287,61 @@ impl Daemon {
         if !self.through_prs() {
             return;
         }
-        // A ticket the minute's read or a look made current is owed nothing.
-        let current: Vec<ulid::Ulid> =
-            self.forge.owed.keys().copied().filter(|t| self.forge_fresh(*t)).collect();
-        for t in current {
-            self.forge.owed.remove(&t);
-        }
+        // A ticket a read since its ask answered is owed nothing (T-895):
+        // judged from the ask's own moment, never from a turn's end, since a
+        // Summary write or a `pr create` seen mid-turn owes one too.
+        self.forge.settle_owed();
         if self.forge.burst_inflight || self.forge.owed.is_empty() {
             return;
         }
         let only: std::collections::HashSet<ulid::Ulid> = self.forge.owed.keys().copied().collect();
-        self.launch_forge_burst(&only, Duration::from_millis(crate::forge::BURST_MS));
+        self.launch_forge_burst(&only, Duration::from_millis(crate::forge::burst_ms()));
     }
 
-    /// A pipeline in flight's read (T-781): the tickets whose PR's pipeline
-    /// runs or waits, their repositories alone, every `forge::busy_every`
-    /// rather than on the minute, so a deploy job of seconds shows. It
-    /// rides the turn's end's road, one read out at a time, and a
-    /// repository whose call failed is the minute's backoff's.
+    /// A pipeline in flight's read (T-781), and a warm ticket's (T-895):
+    /// the tickets whose PR's pipeline runs or waits, and those with news
+    /// inside the warm window, their repositories alone, every
+    /// `forge::busy_every` rather than on the minute, so a deploy job of
+    /// seconds shows and a PR that just opened has its first pipeline run,
+    /// its review and its merge read in seconds. It rides the turn's end's
+    /// road, one read out at a time, and a repository whose call failed is
+    /// the minute's backoff's.
     fn queue_forge_busy(&mut self) {
         if !self.through_prs() || self.forge.inflight || self.forge.burst_inflight {
             return;
         }
-        let busy = self.forge.busy();
+        let busy = self.forge.busy(now_ms());
         if busy.is_empty() {
             return;
         }
         self.launch_forge_burst(&busy, crate::forge::busy_every());
+    }
+
+    /// The forge is asked about `ticket` now (T-895): owed from this
+    /// moment, warm for the window, and the turn's end's road taken at once
+    /// rather than on the minute. Nothing on a board that merges into main.
+    fn owe_forge_read(&mut self, ticket: ulid::Ulid) {
+        if !self.through_prs() || self.board.ticket(ticket).is_none() {
+            return;
+        }
+        let now = now_ms();
+        self.forge.owed.insert(ticket, now);
+        self.forge.warm(ticket, now);
+        self.queue_forge_burst();
+    }
+
+    /// A session of `ticket` ran a `pr create` (T-895), seen on its
+    /// `PostToolUse` mid-turn: the ledger reads the result's address on the
+    /// next bucket (a checkout ticket binds by it alone, and the ledger's
+    /// landing asks again), and the forge is asked now (a worktree ticket's
+    /// PR binds by its branch at once).
+    fn pr_created(&mut self, ticket: ulid::Ulid) {
+        if !self.through_prs() {
+            return;
+        }
+        self.feed.board("forge", "pr_create_seen", Some(ticket));
+        self.cost_due = true;
+        self.owe_forge_read(ticket);
     }
 
     /// The turn's end's road (`Msg::ForgeBurst`) for `only`'s repositories,
@@ -15697,12 +15765,22 @@ impl Daemon {
             // never held is an opening all the same (T-782): a worker's
             // first turn can open one before any read of its ticket, and
             // the opening rides that turn's wake alone (`hear_forged`).
+            // News on the set (T-895): a PR opened, a head moved, a review,
+            // a conflict, a merge. The ticket is read on the busy cadence
+            // for the warm window, so what follows at once — the first
+            // pipeline run, a quick review or merge — lands in seconds. A
+            // first read is a baseline, news only for the opening it found.
+            let mut warm = old.is_some() && !unchanged;
             if edge.is_none() {
                 let first = crate::forge::edge(&[], &set, &held);
                 if !first.opened.is_empty() {
                     openings.insert(t, first.opening().join(", "));
                     edged = true;
+                    warm = true;
                 }
+            }
+            if warm && set.iter().any(|p| p.state != mesimon_core::forge::PrState::Closed) {
+                self.forge.warm(t, sample.at_ms);
             }
             if let Some(mut edge) = edge {
                 // A conflict is said once and its clear only after it

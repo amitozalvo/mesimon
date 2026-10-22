@@ -71,6 +71,13 @@
 //! there when dev and staging read deployed a pass later, and the wake
 //! held for the crown's turn says the column the card is in.
 //!
+//! PR news reaches the card within seconds (T-895): an address written
+//! under a `Summary`, a `gh pr create` seen mid-turn on its `PostToolUse`
+//! and one read by the look after a turn no train and no crown hears are
+//! each read within the burst's floor; news on a PR warms its ticket, so a
+//! review inside the window is read on the busy cadence and wakes the
+//! crown in seconds, and the minute alone reads it once the window closes.
+//!
 //! The stub is the forge: `auth status` passes, `pr list` prints the file
 //! the test writes, `api …/check-runs` and `api …/status` the merge
 //! commit's pipeline, by sha where the test wrote one, and `api
@@ -2288,6 +2295,10 @@ fn a_running_pipeline_is_read_on_the_busy_cadence_and_a_settled_one_on_the_minut
             ("MESIMON_WT_REFRESH_TICKS", "4"),
             ("MESIMON_FORGE_EVERY_MS", "6000"),
             ("MESIMON_FORGE_BUSY_MS", "500"),
+            // The pass is news (T-895), which keeps the ticket on the busy
+            // cadence for the warm window: short here, so the minute's
+            // return can be seen.
+            ("MESIMON_FORGE_WARM_MS", "1000"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
             ("PATH", &path_var),
             ("MSMN_GH_PRS", &prs_file.display().to_string()),
@@ -2324,7 +2335,8 @@ fn a_running_pipeline_is_read_on_the_busy_cadence_and_a_settled_one_on_the_minut
     let busy = lists(Duration::from_secs(4));
     assert!(busy >= 2, "a running pipeline is listed {busy} times in 4 s");
 
-    // Passed: settled, and the minute's cadence (6 s here) is back.
+    // Passed: settled, and once the warm window the pass opened closes
+    // (T-895), the minute's cadence (6 s here) is back.
     write(
         &checks_file,
         r#"{"check_runs":[{"name":"deploy","status":"completed","conclusion":"success"}]}"#,
@@ -2332,6 +2344,7 @@ fn a_running_pipeline_is_read_on_the_busy_cadence_and_a_settled_one_on_the_minut
     wait_until(Duration::from_secs(20), "the pipeline to read passed", || {
         pipeline(&mut c) == "passed"
     });
+    std::thread::sleep(Duration::from_millis(1500));
     let idle = lists(Duration::from_secs(4));
     assert!(idle <= 1, "a settled pipeline is listed {idle} times in 4 s");
     let _ = c.request(Command::Shutdown);
@@ -4408,6 +4421,243 @@ fn a_deploy_to_an_earlier_environment_never_moves_the_card_back() {
     assert!(line.contains("deployed to dev !1"), "{line}");
     assert!(!line.contains("column STAGING") && !line.contains("column DEV"), "{line}");
     let _ = (k.ws, &k.path);
+    let _ = c.request(Command::Shutdown);
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// The snapshot's forge status.
+fn forge_of(c: &mut TestClient) -> mesimon_core::command::ForgeStatus {
+    match c.request(Command::Snapshot) {
+        Response::Board { forge, .. } => forge,
+        other => panic!("not a board: {other:?}"),
+    }
+}
+
+/// The stub's calls since the log was last cleared that begin with `what`.
+fn calls(log: &Path, what: &str) -> usize {
+    std::fs::read_to_string(log).unwrap_or_default().lines().filter(|l| l.starts_with(what)).count()
+}
+
+/// T-895, the author's report: a PR named on a plain line under a ticket's
+/// `Summary` took the minute's pass to show on the card. Here the minute
+/// never comes (60 s): the write asks the forge at once, and the PR is on
+/// the snapshot within the burst's floor. The news warms the ticket: a
+/// review on the PR inside the window is read on the busy cadence and
+/// wakes the crown within seconds, and once the window closes the
+/// repository is read by nothing but the minute.
+#[test]
+fn a_summary_address_and_news_on_a_warm_pull_request_are_read_within_seconds() {
+    let (stub_dir, path_var) = gh_stub("forge-warm");
+    let prs_file = stub_dir.join("prs.json");
+    let log = stub_dir.join("gh.log");
+    write(&prs_file, "[]");
+    let head = "cd".repeat(20);
+    let view = stub_dir.join("view.43.json");
+    write(&view, &numbered_pr(43, "feature/other", &head, false));
+    let Some(h) = Harness::boot_with_env(
+        "forge_warm",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            // The minute never comes inside this test: every read below is
+            // a burst's or the busy cadence's.
+            ("MESIMON_FORGE_EVERY_MS", "60000"),
+            ("MESIMON_FORGE_BURST_MS", "1000"),
+            ("MESIMON_FORGE_BUSY_MS", "500"),
+            ("MESIMON_FORGE_WARM_MS", "5000"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs_file.display().to_string()),
+            ("MSMN_GH_LOG", &log.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("forge_warm");
+    through_prs(&mut c);
+    let k = crowned(&h, &mut c);
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    wait_until(Duration::from_secs(20), "the first pass", || forge_of(&mut c).sampled_at_ms > 0);
+    // Past the burst's floor from the look after the worker's turn.
+    std::thread::sleep(Duration::from_millis(1500));
+
+    // ---- a Summary address is read within the burst's floor -------------
+    let b = match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "named".into(),
+        workspace: None,
+        tier: None,
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("create: {other:?}"),
+    };
+    let kb = c.board().ticket(b).unwrap().short_key.clone();
+    let _ = std::fs::remove_file(&log);
+    let written = std::time::Instant::now();
+    match c.request(Command::WriteNote {
+        ticket: b,
+        note: None,
+        text: "# Reviewed\n\n## Summary\n- https://github.com/example/forge/pull/43\n".into(),
+        rev: None,
+    }) {
+        Response::NoteWritten { .. } => {}
+        other => panic!("note: {other:?}"),
+    }
+    wait_until(Duration::from_secs(20), "the Summary's PR to bind", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == b && p.number == 43 && p.reviewed)
+    });
+    let bound = written.elapsed();
+    eprintln!("T-895 summary address: bound {bound:?} after the write");
+    assert!(bound < Duration::from_secs(5), "bound {bound:?} after the write, not on the minute");
+    // Its first read is a baseline: no wake for the crown.
+    let named_b = format!("{kb} \"named\" has news from the forge (");
+    assert!(lines_with(&named_b).is_empty(), "{}", lines_with("").join("\n"));
+
+    // ---- the ticket is warm: a review is read on the busy cadence ---------
+    let _ = std::fs::remove_file(&log);
+    wait_until(Duration::from_secs(5), "a warm PR to be read on every busy step", || {
+        calls(&log, "pr view 43") >= 2
+    });
+    let reviewed = std::time::Instant::now();
+    write(
+        &view,
+        &numbered_pr(43, "feature/other", &head, false).replace("REVIEW_REQUIRED", "APPROVED"),
+    );
+    wait_until(Duration::from_secs(20), "the review's wake", || {
+        lines_with(&named_b).iter().any(|l| l.contains("review approved #43"))
+    });
+    let heard = reviewed.elapsed();
+    eprintln!("T-895 warm review: the crown heard it {heard:?} after the forge changed");
+    assert!(heard < Duration::from_secs(5), "the crown heard the review {heard:?} after it");
+    turn(&mut c, &hook_sock, k.crown);
+    assert_eq!(wakes(&h, b, "forge"), 1);
+
+    // ---- the window closes: the minute alone reads it -------------------
+    std::thread::sleep(Duration::from_millis(7000));
+    let _ = std::fs::remove_file(&log);
+    std::thread::sleep(Duration::from_millis(3000));
+    let idle = calls(&log, "pr view 43");
+    assert_eq!(idle, 0, "past the warm window nothing but the minute reads it: {idle} views");
+    let _ = (&k.path, k.ws);
+    let _ = c.request(Command::Shutdown);
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// T-895: a `gh pr create` is read when it runs, not at the turn's end and
+/// not on the minute. Mid-turn its `PostToolUse` asks the forge, and the
+/// PR is on the snapshot within the burst's floor. At a turn's end on a
+/// ticket the train cannot take and no crown hears — the look that used to
+/// be gated — the push and the PR are read at once too. No crown, the
+/// train unarmed, the minute at 60 s.
+#[test]
+fn a_pr_create_is_read_mid_turn_and_at_a_gated_turn_end() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    let (stub_dir, path_var) = gh_stub("forge-create");
+    let prs_file = stub_dir.join("prs.json");
+    write(&prs_file, "[]");
+    let Some(h) = Harness::boot_with_env(
+        "forge_create",
+        Some(STUB),
+        &[
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "60000"),
+            ("MESIMON_FORGE_BURST_MS", "1000"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs_file.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("forge_create");
+    through_prs(&mut c);
+    let feed = h.paths.state_dir.join("activity.jsonl");
+    let fed = |cmd: &str, t: ulid::Ulid| -> bool {
+        std::fs::read_to_string(&feed).unwrap_or_default().lines().any(|l| {
+            l.contains("\"kind\":\"board\"")
+                && l.contains(&format!("\"cmd\":\"{cmd}\""))
+                && l.contains(&format!("\"ticket\":\"{t}\""))
+        })
+    };
+
+    // ---- mid-turn: the PostToolUse of a `gh pr create` -------------------
+    let (a, sa, branch_a, path_a) = ready(&mut c, "alpha");
+    let tip_a = git(&path_a, &["rev-parse", "HEAD"]).trim().to_string();
+    wait_until(Duration::from_secs(20), "the first pass", || forge_of(&mut c).sampled_at_ms > 0);
+    std::thread::sleep(Duration::from_millis(1500));
+    hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sa, "running", |s| *s == SessionState::Running);
+    write(&prs_file, &format!("[{}]", numbered_pr(42, &branch_a, &tip_a, false)));
+    let created = std::time::Instant::now();
+    hook_send(
+        &hook_sock,
+        &sa.to_string(),
+        "PostToolUse",
+        r#"{"tool_name":"Bash","tool_input":{"command":"gh pr create --fill"},"tool_response":{"stdout":"https://github.com/example/forge/pull/42\n","stderr":""}}"#,
+    );
+    wait_until(Duration::from_secs(20), "the PR opened mid-turn to bind", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == a && p.number == 42)
+    });
+    let bound = created.elapsed();
+    eprintln!("T-895 pr create mid-turn: bound {bound:?} after the PostToolUse");
+    assert!(bound < Duration::from_secs(5), "bound {bound:?} after the pr create, mid-turn");
+    // The feed's line rides the tick's flush, a bucket behind the read.
+    wait_until(Duration::from_secs(5), "the feed to say the pr create was seen", || {
+        fed("pr_create_seen", a)
+    });
+    hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
+
+    // ---- a gated turn's end: no train, no crown ---------------------------
+    let (b, sb, branch_b, path_b) = ready(&mut c, "beta");
+    let tip_b = git(&path_b, &["rev-parse", "HEAD"]).trim().to_string();
+    wait_until(Duration::from_secs(20), "the second ticket's first read", || {
+        forge_of(&mut c).sampled_at_ms > 0
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    hook_send(&hook_sock, &sb.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sb, "running", |s| *s == SessionState::Running);
+    // The turn pushes its branch and opens #43; nothing of it is read
+    // while the turn runs (no PostToolUse here: a Codex turn, say).
+    git(&path_b, &["update-ref", &format!("refs/remotes/origin/{branch_b}"), &tip_b]);
+    write(
+        &prs_file,
+        &format!(
+            "[{},{}]",
+            numbered_pr(43, &branch_b, &tip_b, false),
+            numbered_pr(42, &branch_a, &tip_a, false)
+        ),
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(
+        !prs_of(&mut c).iter().any(|p| p.ticket == b),
+        "nothing read it mid-turn: the minute is 60 s away"
+    );
+    let ended = std::time::Instant::now();
+    hook_send(&hook_sock, &sb.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sb, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    wait_until(Duration::from_secs(20), "the PR opened in the turn to bind", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == b && p.number == 43)
+    });
+    let bound = ended.elapsed();
+    eprintln!("T-895 gated turn end: bound {bound:?} after the Stop");
+    assert!(bound < Duration::from_secs(5), "bound {bound:?} after the turn's end, not the minute");
+    assert!(!fed("pr_create_seen", b), "no pr create was seen: the look read the push");
     let _ = c.request(Command::Shutdown);
     let _ = std::fs::remove_dir_all(&stub_dir);
 }

@@ -2158,7 +2158,8 @@ Reply with the single word ready and end your turn."""
         start_mark = len(self.feed_lines)
         t0 = time.time()
         say(f"\n▶ {test['id']} {test['key']}: {test['title']}")
-        record = {"failures": [], "pings": [], "doctor": None, "wakes": []}
+        record = {"failures": [], "pings": [], "doctor": None, "wakes": [],
+                  "t0_ms": int(t0 * 1000)}
         ok = True
         for step in test["steps"]:
             if ok:
@@ -2352,6 +2353,23 @@ Reply with the single word ready and end your turn."""
                 said = [h for h in hands if arg in h]
                 check(c, said, repr(said[-1][:100]) if said
                       else f"{len(hands)} hands, none naming {arg}: {[h[:60] for h in hands[-2:]]}")
+            elif name == "crown_never":
+                # T-895: no Bash call of the crown's since the test began
+                # holds any of the words (a `gh pr checks --watch`, a
+                # `sleep` loop), and no Monitor stood in for one: the
+                # board's wake is the wait, and a crown that polls holds the
+                # merge train and that wake.
+                crown = self.agent_of(board, self.crown)
+                since = record.get("t0_ms", 0)
+                crown_rows = [r for r in (transcript(crown) if crown else [])
+                              if (iso_ms(r.get("timestamp") or "") or 0) >= since]
+                words = [w for w in arg.split(",") if w]
+                calls = tool_inputs(crown_rows)
+                ran = [i.get("command", "") for n, i in calls if n == "Bash"]
+                bad = [r for r in ran if any(w in r for w in words)]
+                bad += [f"<{n}>" for n, _ in calls if n == "Monitor"]
+                check(c, not bad, " → ".join(repr(b[:60]) for b in bad)
+                      or f"{len(ran)} bash calls, none of {words}")
             elif name == "fed":
                 check(c, arg in fed, f"{arg}×{fed.count(arg)}")
             elif name == "board_fed":

@@ -605,8 +605,12 @@ review, the merge button), `✗` a failed pipeline, `●` merged, `◆` merged a
 without merging. A card shows a closed PR only when every PR of its ticket is closed. A merged
 PR whose merge commit's pipeline is still running turns `◴`, and one waiting on a manual job
 shows `◎`, until the pipeline settles, deployed or not: a PR deployed to staging and waiting on
-the production job shows `◎`, and `◆` once that pipeline passes. While a pipeline runs or waits,
-its repository is read every 15 seconds instead of once a minute. **Settings ›
+the production job shows `◎`, and `◆` once that pipeline passes. The forge is read once a
+minute, and every 15 seconds while a pipeline runs or waits and for three minutes after news
+on a pull request (it opened, its head moved, a review, a conflict, a merge), so its first
+pipeline run, a quick review and a quick merge show within seconds. A pull request an agent
+opens with `gh pr create` or `glab mr create`, or names on a plain line under a note's
+`Summary`, is read within seconds of the command or the write, not on the minute. **Settings ›
 Appearance › Pull requests on cards** shows the line always, only as news until you rest on the
 card, or never. `ctrl-k` on the ticket opens the PR. `ctrl-h` on a card or a ticket page (or a
 click on its PR glyphs) lists every pull request with its pipeline, job, review and deployments,
@@ -668,7 +672,10 @@ landed. A pull request first seen already passed, failed, waiting, in conflict o
 so, and a merge read with its deployment is said first, in the same line. A worker's turn that
 pushed or opened a pull request reaches the crown after the board has read the forge for it, up
 to 15 seconds later, and its line names the PR it opened. What the crown does then is up to its
-brief.
+brief. The crown is told the board reads the forge and wakes it, in `get_ticket` beside a
+ticket's pull requests and in its receipts, so it ends its turn to wait for a pipeline rather
+than watching it: a `gh pr checks --watch` or a sleep loop keeps the crown busy, which holds the
+merge train and the very wake it waits for.
 
 mesimon reads the forge and never writes to it: no PR is opened, merged or commented on from the
 board, and no token is stored; the CLI's own sign-in is the only credential. The activity feed

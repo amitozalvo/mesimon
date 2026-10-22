@@ -43,6 +43,11 @@ pub const EVERY: Duration = Duration::from_secs(60);
 pub const BUSY_EVERY: Duration = Duration::from_secs(15);
 /// The cadence after a repository failed to answer.
 pub const BACKOFF: Duration = Duration::from_secs(300);
+/// How long a ticket stays warm after news on its pull request (T-895): a
+/// PR that just opened, changed head, got a review or merged is read on
+/// `BUSY_EVERY` for this long, so its first pipeline run, a quick review
+/// and a quick merge land in seconds. Past it the minute's pass is enough.
+pub const WARM_MS: u64 = 3 * 60 * 1000;
 /// The floor between two reads of one repository (T-761): a turn's end
 /// asks its ticket's repositories at once, at most this often each.
 pub const BURST_MS: u64 = 10_000;
@@ -99,6 +104,30 @@ pub fn busy_every() -> Duration {
 /// `MESIMON_FORGE_BACKOFF_MS`: the backoff, a test seam.
 pub fn backoff() -> Duration {
     seam_ms("MESIMON_FORGE_BACKOFF_MS", BACKOFF)
+}
+
+/// `MESIMON_FORGE_BURST_MS`: the floor between two reads of one repository
+/// off the minute, a test seam.
+pub fn burst_ms() -> u64 {
+    seam_ms("MESIMON_FORGE_BURST_MS", Duration::from_millis(BURST_MS)).as_millis() as u64
+}
+
+/// `MESIMON_FORGE_WARM_MS`: the warm window, a test seam.
+pub fn warm_ms() -> u64 {
+    seam_ms("MESIMON_FORGE_WARM_MS", Duration::from_millis(WARM_MS)).as_millis() as u64
+}
+
+/// Whether a CLI's error is the forge's rate limit (T-895): GitHub's
+/// primary (`API rate limit exceeded`, HTTP 403) or secondary (`secondary
+/// rate limit`, HTTP 429), GitLab's `429 Too Many Requests`. The backoff
+/// is the same; the advisory row names the limit rather than the CLI's
+/// paragraph.
+pub fn rate_limited(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("rate limit")
+        || lower.contains("http 429")
+        || lower.contains("429 too many")
+        || lower.contains("too many requests")
 }
 
 /// `gh` or `glab` on the captured shell `PATH`, else the daemon's own.
@@ -1595,6 +1624,12 @@ pub struct State {
     /// was deleted, or a number that names none, holds no gate forever.
     /// Memory only: a restart asks once more.
     pub unfound: HashMap<ulid::Ulid, Vec<String>>,
+    /// Unix ms of the last news on each ticket's pull requests (T-895): a
+    /// read that changed its set, a `pr create` seen, an address written
+    /// under its `Summary`. For `warm_ms()` after it the ticket is read on
+    /// the busy cadence (`busy`). Memory only: a restart's first pass reads
+    /// everything, and what changed while it was down warms again.
+    pub warm: HashMap<ulid::Ulid, u64>,
 }
 
 impl State {
@@ -1674,9 +1709,13 @@ impl State {
     }
 
     /// The tickets holding an open or merged PR whose pipeline runs or
-    /// waits on a person (T-781): their repositories are read every
-    /// `busy_every`, so a deploy job of seconds shows on the card.
-    pub fn busy(&self) -> HashSet<ulid::Ulid> {
+    /// waits on a person (T-781), and those warm with news (T-895,
+    /// `warm`): their repositories are read every `busy_every`, so a
+    /// deploy job of seconds shows on the card, and a PR that just opened
+    /// or changed has its first pipeline run, its review and its merge read
+    /// in seconds.
+    pub fn busy(&self, now_ms: u64) -> HashSet<ulid::Ulid> {
+        let window = warm_ms();
         self.sets
             .iter()
             .filter(|(_, set)| {
@@ -1686,7 +1725,36 @@ impl State {
                 })
             })
             .map(|(t, _)| *t)
+            .chain(
+                self.warm
+                    .iter()
+                    .filter(|(_, at)| now_ms.saturating_sub(**at) < window)
+                    .map(|(t, _)| *t),
+            )
             .collect()
+    }
+
+    /// News on `t`'s pull requests at `now_ms` (T-895): the ticket is
+    /// read on the busy cadence for the warm window from here.
+    pub fn warm(&mut self, t: ulid::Ulid, now_ms: u64) {
+        let at = self.warm.entry(t).or_insert(now_ms);
+        *at = (*at).max(now_ms);
+    }
+
+    /// Drops the owed reads that are answered (T-895): a read begun since
+    /// the ask landed (`at_ms`), or no forge reads this board, so nothing
+    /// could. What `answer` does as a read lands, judged again before a
+    /// burst is asked, since a ticket is owed from its own moment — a
+    /// Summary write, a `pr create` seen mid-turn, a look after a turn —
+    /// and never from its agent's last end of turn (`fresh`), which a
+    /// ticket with no agent or one mid-turn has at zero.
+    pub fn settle_owed(&mut self) {
+        if self.none() {
+            self.owed.clear();
+            return;
+        }
+        let at_ms = &self.at_ms;
+        self.owed.retain(|t, since| at_ms.get(t).is_none_or(|at| at < since));
     }
 
     /// The forge's verdict on a ticket is current (T-739): no forge reads
@@ -1786,6 +1854,7 @@ impl State {
         self.landed.retain(|t, _| live.contains(t));
         self.quiet.retain(|t, _| live.contains(t));
         self.unfound.retain(|t, _| live.contains(t));
+        self.warm.retain(|t, _| live.contains(t));
         // And the merge commits no kept set names (T-838): the two maps
         // grew by every PR ever merged, were written whole to `forge.json`
         // and copied into every pass's and burst's query.
@@ -1883,7 +1952,14 @@ impl State {
         }
         let (key, why) = self.errors.first()?;
         // A key can come from a URL a session printed (T-795).
-        Some(format!("{}: {why}", mesimon_core::text::scrub_text(key)))
+        let key = mesimon_core::text::scrub_text(key);
+        // The forge's rate limit (T-895): named, with when the repository
+        // is read again, in place of the CLI's paragraph.
+        if rate_limited(why) {
+            let minutes = backoff().as_secs().div_ceil(60).max(1);
+            return Some(format!("{key}: rate limited by the forge ∙ read again in {minutes} min"));
+        }
+        Some(format!("{key}: {why}"))
     }
 }
 
@@ -3205,7 +3281,7 @@ mod tests {
         );
         s.sets.insert(settled, vec![pr(3, PrState::Merged, Pipeline::Passed)]);
         s.sets.insert(closed, vec![pr(4, PrState::Closed, Pipeline::Running(String::new()))]);
-        assert_eq!(s.busy(), HashSet::from([open, merged]));
+        assert_eq!(s.busy(0), HashSet::from([open, merged]));
         // The minute's pass is not due, the busy repository is at 15 s.
         s.last = Some(Instant::now());
         assert!(!s.due());
@@ -3217,6 +3293,61 @@ mod tests {
         s.errors.push(("github.com/o/r".into(), "boom".into()));
         assert!(!s.due_for("github.com/o/r", BUSY_EVERY));
         assert!(BUSY_EVERY < EVERY && EVERY < BACKOFF);
+    }
+
+    /// T-895: a ticket with news is read on the busy cadence for the warm
+    /// window and on the minute after it; an owed read settles on a read
+    /// begun since the ask, never on one before it, and a board no forge
+    /// reads owes nothing; the forge's rate limit is named with its
+    /// backoff.
+    #[test]
+    fn a_warm_ticket_is_busy_for_the_window_and_an_owed_read_settles_on_a_read_since() {
+        let mut s = State::default();
+        let (warm, quiet, closed) = (ulid::Ulid::new(), ulid::Ulid::new(), ulid::Ulid::new());
+        s.sets.insert(warm, vec![pr(1, PrState::Open, Pipeline::Unknown)]);
+        s.sets.insert(quiet, vec![pr(2, PrState::Open, Pipeline::Unknown)]);
+        s.sets.insert(closed, vec![pr(3, PrState::Closed, Pipeline::Unknown)]);
+        assert!(s.busy(10_000).is_empty(), "nothing runs and nothing is warm");
+        s.warm(warm, 10_000);
+        s.warm(warm, 9_000);
+        assert_eq!(s.warm[&warm], 10_000, "news keeps its latest moment");
+        assert_eq!(s.busy(10_000 + WARM_MS - 1), HashSet::from([warm]), "inside the window");
+        assert!(s.busy(10_000 + WARM_MS).is_empty(), "the minute's pass after it");
+        // A ticket with no set yet (a Summary address just written) is warm
+        // all the same: the busy road reads it by its addresses.
+        let named = ulid::Ulid::new();
+        s.warm(named, 20_000);
+        assert_eq!(s.busy(20_000), HashSet::from([warm, named]));
+        s.keep_tickets(&HashSet::from([warm, quiet, closed]));
+        assert!(!s.warm.contains_key(&named), "a ticket gone is forgotten");
+
+        // Owed from the ask's own moment.
+        s.owed.insert(warm, 30_000);
+        s.owed.insert(quiet, 30_000);
+        s.at_ms.insert(warm, 29_999);
+        s.at_ms.insert(quiet, 30_000);
+        s.remotes
+            .insert(PathBuf::from("/r"), Some(Remote::parse("https://github.com/o/r").unwrap()));
+        s.settle_owed();
+        assert!(s.owed.contains_key(&warm), "a read begun before the ask answers nothing");
+        assert!(!s.owed.contains_key(&quiet), "a read begun at the ask answers it");
+        assert!(s.awaited(warm));
+        // No forge reads this board: nothing is owed.
+        s.remotes.insert(PathBuf::from("/r"), None);
+        s.settle_owed();
+        assert!(s.owed.is_empty());
+
+        // The rate limit, named.
+        assert!(rate_limited("HTTP 429: You have exceeded a secondary rate limit."));
+        assert!(rate_limited("API rate limit exceeded for user ID 1 (HTTP 403)"));
+        assert!(rate_limited("GET https://gitlab.example.com/api/v4/x: 429 Too Many Requests"));
+        assert!(!rate_limited("HTTP 502: Bad Gateway"));
+        s.errors.push(("github.com/o/r".into(), "HTTP 429: secondary rate limit".into()));
+        assert_eq!(
+            s.trouble().as_deref(),
+            Some("github.com/o/r: rate limited by the forge ∙ read again in 5 min")
+        );
+        assert!(WARM_MS > BUSY_EVERY.as_millis() as u64 && WARM_MS < backoff().as_millis() as u64);
     }
 
     #[test]

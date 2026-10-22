@@ -82,7 +82,10 @@
 #              beginning <prefix> holds <word>, or with `!<word>` does not),
 #              shell:<line> / shell_out:<text> / no_shell (T-876: the
 #              worker's transcript records <line> as a `!` line that ran in
-#              its box, some such line printed <text>, or no `!` line ran).
+#              its box, some such line printed <text>, or no `!` line ran),
+#              crown_never:<w1,w2,...> (T-895: no Bash call of the crown's
+#              since the test began holds any of the words, and no Monitor
+#              ran: the board's wake is the wait).
 #   siblings   more tickets the test files beside its own ({key2}, {key3}
 #              in a step), each with the same brief and every check run on
 #              each.
@@ -1002,6 +1005,32 @@ checks = ["road:mod", "started_by_crown", "reviewed:43", "replies:done"]
 
   [[test.steps]]
   rig = "forge_reviewed"
+
+  [[test.steps]]
+  rig = "forge_off"
+
+[[test]]
+id = "F12"
+title = "F12 · the crown waits for a pull request's pipeline by ending its turn, never by watching it: do the steps below"
+workspace = "worktree"
+brief = "Reply with the single word done and end your turn. Read no file and run no command."
+expect = "the worker's PR binds off a stub forge with its pipeline running; the crown, asked to wait for that pipeline to pass and then report, reads get_ticket's prs (pipeline running, prs_about: the board reads the forge and wakes it) and ends its turn without a `gh pr checks`, a `--watch` or a sleep loop (T-895); the pipeline then passes on the stub, the board wakes the crown with has news from the forge (pipeline passed #42), and the crown's turn on that wake ends with F12 passed naming the PR."
+checks = ["road:mod", "started_by_crown", "woke:forge", "crown_never:pr checks,--watch,sleep,ci status,pr view", "crown_line:F12 passed:42", "replies:done"]
+
+  [[test.steps]]
+  crown = "F12: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: F12 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: F12 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "forge_pr"
+
+  [[test.steps]]
+  crown = "F12: {key}'s pull request has a pipeline running on it. Wait for that pipeline to pass, and once it has passed, end your turn with one line that begins: F12 passed: followed by the pull request's number."
+  until = { state = "idle" }
+
+  [[test.steps]]
+  rig = "forge_pass"
 
   [[test.steps]]
   rig = "forge_off"
