@@ -675,9 +675,12 @@ impl TmuxBackend {
         // converge, or a live server keeps typing iTerm2's XTVERSION reply
         // into nvim until it is restarted.
         self.run(&["set-option", "-g", "extended-keys", "on"])?;
-        let mut bind = vec!["bind-key", "-T", "root", "S-Enter", "send-keys", "-H"];
-        bind.extend(conf::SHIFT_ENTER_HEX.split(' '));
-        self.run(&bind)?;
+        // Terminal.app sends Shift+Enter as ESC CR (tmux's M-Enter).
+        for key in ["S-Enter", "M-Enter"] {
+            let mut bind = vec!["bind-key", "-T", "root", key, "send-keys", "-H"];
+            bind.extend(conf::SHIFT_ENTER_HEX.split(' '));
+            self.run(&bind)?;
+        }
         Ok(())
     }
 
@@ -1293,6 +1296,113 @@ mod tests {
         assert!(d.pane_dead);
         assert_eq!(d.dead_status, Some(7));
         be.kill_server().unwrap();
+    }
+
+    /// The actual bytes from Terminal.app pass through a real attached tmux
+    /// client. Enter stays Enter, ESC CR becomes modified Enter, and ^] leaves
+    /// the client without reaching or killing the pane. Repeat after upgrading
+    /// an already-running server's bindings.
+    #[test]
+    fn legacy_enter_and_detach_reach_fresh_and_surviving_clients() {
+        const READER: &str = r#"
+import os, pathlib, select, sys, termios, time, tty
+saved = termios.tcgetattr(0)
+try:
+    tty.setraw(0)
+    pathlib.Path(sys.argv[2]).write_text('ready')
+    data = b''
+    until = time.monotonic() + 30
+    while time.monotonic() < until:
+        if select.select([0], [], [], 0.1)[0]:
+            data += os.read(0, 4096)
+            pathlib.Path(sys.argv[1]).write_bytes(data)
+finally:
+    termios.tcsetattr(0, termios.TCSADRAIN, saved)
+"#;
+        const CLIENT: &str = r#"
+import fcntl, os, pathlib, pty, select, signal, struct, sys, termios, time
+received, ready = map(pathlib.Path, sys.argv[1:3])
+argv = sys.argv[3:]
+pid, fd = pty.fork()
+if pid == 0:
+    os.environ['TERM'] = 'xterm-256color'
+    os.environ.pop('TMUX', None)
+    os.execv(argv[0], argv)
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
+reaped = False
+transcript = bytearray()
+def wait_for(predicate):
+    until = time.monotonic() + 3
+    while time.monotonic() < until:
+        if predicate(): return
+        if select.select([fd], [], [], 0.02)[0]:
+            try: transcript.extend(os.read(fd, 65536))
+            except OSError: pass
+    raise AssertionError('timed out: ' + repr(bytes(transcript[-2000:])))
+try:
+    wait_for(lambda: ready.exists() and len(transcript) > 0)
+    expected = b''
+    for physical, delivered in [(b'\r', b'\r'), (b'\x1b\r', b'\x1b[27;2;13~'),
+                                 (b'\x1b[27;2;13~', b'\x1b[27;2;13~')]:
+        os.write(fd, physical)
+        expected += delivered
+        wait_for(lambda: received.exists() and len(received.read_bytes()) >= len(expected))
+        assert received.read_bytes() == expected, repr(received.read_bytes())
+    os.write(fd, b'\x1d')
+    def detached():
+        global reaped
+        got, status = os.waitpid(pid, os.WNOHANG)
+        if got:
+            reaped = True
+            assert status == 0, status
+        return reaped
+    wait_for(detached)
+    assert received.read_bytes() == expected, 'detach leaked into the pane'
+finally:
+    if not reaped:
+        os.kill(pid, signal.SIGTERM)
+        os.waitpid(pid, 0)
+    os.close(fd)
+"#;
+        for upgrade in [false, true] {
+            let f = fixture("backend-legacy-keys", "t.sock");
+            let be = TmuxBackend::new(f.dir.join("t.sock"), &f.dir, None).unwrap();
+            let received = f.dir.join("received");
+            let ready = f.dir.join("ready");
+            be.spawn(
+                "keys",
+                &f.dir,
+                &[
+                    "python3".into(),
+                    "-c".into(),
+                    READER.into(),
+                    received.display().to_string(),
+                    ready.display().to_string(),
+                ],
+            )
+            .unwrap();
+            if upgrade {
+                be.run(&["unbind-key", "-T", "root", "M-Enter"]).unwrap();
+                be.set_status_left("key test").unwrap();
+                be.set_status_left("key test").unwrap();
+            }
+            let mut argv = vec![
+                "python3".into(),
+                "-c".into(),
+                CLIENT.into(),
+                received.display().to_string(),
+                ready.display().to_string(),
+            ];
+            argv.extend(be.attach_argv("keys"));
+            f.spawn(argv, Default::default()).join().unwrap();
+            assert!(!be.has_clients("keys").unwrap());
+            assert!(be
+                .snapshot()
+                .unwrap()
+                .iter()
+                .any(|pane| pane.session_name == "keys" && !pane.pane_dead));
+            be.kill_server().unwrap();
+        }
     }
 
     #[test]

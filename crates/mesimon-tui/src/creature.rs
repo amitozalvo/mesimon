@@ -1131,12 +1131,33 @@ pub(crate) struct Stage {
 pub(crate) fn stage_for(size: Size, anim: Anim, ms: u64, theme: &Theme) -> Option<Stage> {
     let frame = frame_at(anim, ms);
     let ink = theme.creature_ink(frame.faded)?;
-    let mut st = stage(&compose(size, frame, anim_pad(size, anim)), &ink);
+    let mut st = stage(&compose(size, frame, anim_pad(size, anim)), &ink, theme.block_gaps);
     st.body = Body::get(size).w as u16;
     Some(st)
 }
 
-fn stage(pic: &Picture, ink: &CreatureInk) -> Stage {
+/// Preserve both logical pixels while keeping dark facial details out of a
+/// half-block's background on font-based renderers: that background otherwise
+/// leaks above the glyph and duplicates eyes and mouths in the line leading.
+pub(crate) fn pixel_cell(
+    top: Option<Color>,
+    bottom: Option<Color>,
+    ink: &CreatureInk,
+    block_gaps: bool,
+) -> Option<(char, Style)> {
+    match (top, bottom) {
+        (Some(t), Some(b)) if t == b => Some(('█', Style::default().fg(t).bg(t))),
+        (Some(t), Some(b)) if block_gaps && b == ink.eye => {
+            Some(('▄', Style::default().fg(b).bg(t)))
+        }
+        (Some(t), Some(b)) => Some(('▀', Style::default().fg(t).bg(b))),
+        (Some(t), None) => Some(('▀', Style::default().fg(t))),
+        (None, Some(b)) => Some(('▄', Style::default().fg(b))),
+        (None, None) => None,
+    }
+}
+
+fn stage(pic: &Picture, ink: &CreatureInk, block_gaps: bool) -> Stage {
     let above = ABOVE;
     let cols = pic.w as u16 + LEFT + RIGHT;
     let rows = pic.h as u16 / 2 + above;
@@ -1147,15 +1168,7 @@ fn stage(pic: &Picture, ink: &CreatureInk) -> Stage {
             let y = (r as i16 - above as i16) * 2;
             let paint = |y: i16| pic.at(x, y).map(|role| role.ink(ink));
             let (top, bottom) = (paint(y), paint(y + 1));
-            cells[(r * cols + c) as usize] = match (top, bottom) {
-                // Background fills the font's leading too; a full-block glyph alone
-                // leaves horizontal seams in Terminal.app.
-                (Some(t), Some(b)) if t == b => Some(('█', Style::default().fg(t).bg(t))),
-                (Some(t), Some(b)) => Some(('▀', Style::default().fg(t).bg(b))),
-                (Some(t), None) => Some(('▀', Style::default().fg(t))),
-                (None, Some(b)) => Some(('▄', Style::default().fg(b))),
-                (None, None) => None,
-            };
+            cells[(r * cols + c) as usize] = pixel_cell(top, bottom, ink, block_gaps);
         }
     }
     for m in &pic.marks {
@@ -1314,7 +1327,7 @@ mod tests {
                         );
                     }
                     let ink = theme.creature_ink(fr.faded).expect("truecolor draws");
-                    let st = stage(&pic, &ink);
+                    let st = stage(&pic, &ink, false);
                     for (ch, style) in st.cells.iter().flatten() {
                         if *ch == '█' {
                             assert_eq!(
@@ -1329,6 +1342,49 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn font_gap_fallback_keeps_every_pixel_and_never_backgrounds_a_half_eye() {
+        let mut changed = 0;
+        for flavor in Flavor::ALL {
+            for profile in [Profile::TrueColor, Profile::Ansi256, Profile::Ansi16, Profile::Ansi8] {
+                let theme = Theme::new(flavor, profile);
+                for size in SIZES {
+                    for anim in Anim::ALL {
+                        for frame in frames(anim) {
+                            let ink = theme.creature_ink(frame.faded).unwrap();
+                            let pic = compose(size, frame, anim_pad(size, anim));
+                            let before = stage(&pic, &ink, false);
+                            let after = stage(&pic, &ink, true);
+                            assert_eq!((before.cols, before.rows), (after.cols, after.rows));
+                            for (a, b) in before.cells.iter().zip(&after.cells) {
+                                if a == b {
+                                    continue;
+                                }
+                                changed += 1;
+                                let (ac, ast) = a.unwrap();
+                                let (bc, bst) = b.unwrap();
+                                assert_eq!((ac, bc), ('▀', '▄'));
+                                assert_eq!((ast.fg, ast.bg), (bst.bg, bst.fg));
+                                assert_eq!(bst.fg, Some(ink.eye));
+                                assert_ne!(bst.bg, Some(ink.eye));
+                            }
+                            for (ch, style) in after.cells.iter().flatten() {
+                                if matches!(ch, '▀' | '▄') {
+                                    assert_ne!(
+                                        style.bg,
+                                        Some(ink.eye),
+                                        "{flavor:?}/{size:?}/{anim:?}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(changed > 0);
     }
 
     /// The redraw clock steps every 100 ms, so a frame of any other length
@@ -1400,7 +1456,7 @@ mod tests {
         let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
         let glyphs = |fr: &Frame| {
             let ink = theme.creature_ink(fr.faded).expect("ink");
-            stage(&compose(Size::Medium, fr, 0), &ink).cells
+            stage(&compose(Size::Medium, fr, 0), &ink, false).cells
         };
         let firsts: Vec<_> = Anim::ALL.iter().map(|&a| glyphs(frame_at(a, 0))).collect();
         for (i, a) in Anim::ALL.iter().enumerate() {

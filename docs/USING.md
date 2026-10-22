@@ -341,8 +341,9 @@ writing it.
 ## Keyboard layouts and terminals
 
 On Hebrew and other layouts that mirror the bracket keys, `ctrl-]` arrives as Esc — which
-interrupts the agent instead of detaching. `ctrl-5` is bound for exactly that and works on any
-layout; in iTerm2 you can also fix the keystroke itself, leaving Escape alone: Keys → Key
+interrupts the agent instead of detaching. `ctrl-5` is also bound where the terminal sends
+it. Terminal.app may beep without sending anything for `ctrl-5`; use `ctrl-]` with the
+English layout there. In iTerm2 you can also fix the keystroke itself, leaving Escape alone: Keys → Key
 Bindings → `ctrl-]` → Send Hex Code → `0x1d`.
 
 Every key is an English letter, so on a layout whose letters are not Latin (Hebrew, Russian,
@@ -351,9 +352,14 @@ guessing: the footer names the layout, and every character key is ignored until 
 English and press a letter, which then acts. `esc` dismisses the pause. Arrows, `enter`, digits
 and the `ctrl` keys keep working, and text fields take any language.
 
-If `shift-enter` does nothing and `?` does not list it, the terminal never reported the key:
-mesimon asks for it through the kitty keyboard protocol and leaves the key unbound where the
-answer is no. On iTerm2 the usual cause is a key binding on Shift+Enter — Claude Code's
+Terminal.app's `shift-enter` sends Escape followed by Return. Mesimon recognizes that
+sequence on the board and forwards it as modified Enter inside an agent's pane, keeping
+plain Return separate. The same Escape+Return sequence from an Alt/Option+Enter mapping
+is accepted too. This does not require enabling other extended keyboard features.
+
+If `shift-enter` arrives as plain Return, Mesimon cannot distinguish the two keys. On
+other terminals it detects distinct Shift+Enter through the kitty keyboard protocol.
+On iTerm2 a possible cause is a key binding on Shift+Enter — Claude Code's
 `/terminal-setup` installs one that sends a plain newline. Delete the `⇧↩` row under Keys → Key
 Bindings and Profiles → Keys, then start mesimon again, in an iTerm2 tab rather than inside your
 own tmux.

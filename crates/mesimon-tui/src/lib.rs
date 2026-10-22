@@ -224,8 +224,10 @@ pub fn run(repo_root: &Path) -> Result<()> {
     let mut terminal = init_terminal()?;
     // Set AFTER init_terminal, which is what runs (and caches) the probe —
     // asking before raw mode is on gets a false negative. This is the single
-    // gate on every `Key::ShiftEnter` binding.
+    // gate on extended keys; Escape + Return is supported independently.
     app.rich_keys = kitty_keyboard_supported();
+    app.legacy_shift_enter =
+        std::env::var("TERM_PROGRAM").ok().as_deref() == Some("Apple_Terminal");
     // The intro (T-869): a machine that never saw it, the installer's or
     // this, sees it here once, before the board's first frame.
     intro::before_board(&mut terminal, &app.theme)?;

@@ -1,19 +1,16 @@
 //! The private server's tmux.conf — every line justified by docs/19 or a spike.
 
-/// The status line's right-hand hint: the two detach keys and the word. Spelled
-/// the way the board's own footer spells a control key (`keymap`: `Key::Ctrl(c)`
-/// renders `^c`, so `^k`, `^t`, `^]`) — one vocabulary on both sides of the
-/// handover; it read `Ctrl+]/^5` for a while, two spellings in ten cells
-/// (T-261). Rendered into the conf for fresh servers and pushed live by
-/// `TmuxBackend::set_status_left` for the ones already running, from this one
-/// place, so the two cannot drift apart again.
-pub const STATUS_RIGHT: &str = " ^]/^5 back  ";
+/// The portable detach hint. Ctrl+5 remains an alias for terminals that emit
+/// it; Terminal.app can beep without sending any byte, so it is not promised.
+/// Fresh configs and live-server upgrades share this spelling.
+pub const STATUS_RIGHT: &str = " ^] back  ";
 
 /// `ESC [ 27 ; 2 ; 13 ~` — Shift+Enter in the xterm modified-key form — as
 /// `send-keys -H` spells it. The root-table `S-Enter` bind sends these bytes
 /// to the focused pane, so under `extended-keys on` a pane that never asked
 /// for modified keys (Codex) still tells Shift+Enter from Enter (T-488).
-/// Rendered into the conf and replayed live by `TmuxBackend::set_status_left`.
+/// Terminal.app reports Shift+Enter as ESC CR (`M-Enter`), bound to these
+/// same bytes. Rendered into the conf and replayed live by `TmuxBackend::set_status_left`.
 pub const SHIFT_ENTER_HEX: &str = "1b 5b 32 37 3b 32 3b 31 33 7e";
 
 /// One line per wheel event: tmux's default five-line step amplifies trackpad
@@ -64,6 +61,7 @@ unbind-key -a
 bind-key -n C-] detach-client
 bind-key -n C-5 detach-client
 bind-key -n S-Enter send-keys -H @SHIFT_ENTER_HEX@
+bind-key -n M-Enter send-keys -H @SHIFT_ENTER_HEX@
 set -g remain-on-exit on
 set -g update-environment ""
 set -g set-clipboard off
@@ -212,6 +210,7 @@ mod tests {
         assert!(conf.contains("set -g extended-keys on\n"), "{conf}");
         assert!(!conf.contains("extended-keys always"), "{conf}");
         assert!(conf.contains(&format!("bind-key -n S-Enter send-keys -H {SHIFT_ENTER_HEX}\n")));
+        assert!(conf.contains(&format!("bind-key -n M-Enter send-keys -H {SHIFT_ENTER_HEX}\n")));
         let bytes: Vec<u8> =
             SHIFT_ENTER_HEX.split(' ').map(|h| u8::from_str_radix(h, 16).unwrap()).collect();
         assert_eq!(bytes, b"\x1b[27;2;13~");
@@ -238,7 +237,8 @@ mod tests {
     #[test]
     fn the_detach_hint_speaks_the_footers_language() {
         assert!(!STATUS_RIGHT.contains("Ctrl"), "{STATUS_RIGHT:?}");
-        assert!(STATUS_RIGHT.contains("^]") && STATUS_RIGHT.contains("^5"));
+        assert!(STATUS_RIGHT.contains("^]"));
+        assert!(!STATUS_RIGHT.contains("^5"), "Terminal.app may beep without sending this key");
         assert!(render(None, false).contains(&format!("set -g status-right \"{STATUS_RIGHT}\"")));
     }
 

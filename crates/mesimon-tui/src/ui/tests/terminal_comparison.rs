@@ -72,7 +72,8 @@ fn specimen(flavor: Flavor, colored: bool) -> App {
         "Apple_Terminal"
     }));
     app.now = || 10_000;
-    app.rich_keys = false; // actual legacy hints, not iTerm's negotiated keys
+    app.rich_keys = false; // no negotiated extended keys in this specimen
+    app.legacy_shift_enter = !colored; // Terminal.app has a distinct Escape+Return
     app
 }
 
@@ -132,6 +133,7 @@ fn frames(flavor: Flavor, colored: bool, w: u16, h: u16) -> Vec<(String, u64, Bu
     } else {
         "Apple_Terminal"
     }));
+    detail.legacy_shift_enter = !colored;
     detail.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
     add("description bar including blank rows", 1400, &detail);
     detail.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
@@ -166,6 +168,21 @@ fn frames(flavor: Flavor, colored: bool, w: u16, h: u16) -> Vec<(String, u64, Bu
     })
     .unwrap();
     out.push(("glyph widths".into(), 1400, term.backend().buffer().clone()));
+    // Both mascot sizes; the companion's small face was absent from the
+    // first replay and exposed the font-leading artifact most clearly.
+    for ms in [0, 1500, 1700, 2900] {
+        let area = Rect::new(0, 0, w, h);
+        let mut buf = Buffer::empty(area);
+        buf.set_style(area, ratatui::style::Style::default().bg(app.theme.bg.unwrap()));
+        for (size, x) in [(crate::creature::Size::Small, 3), (crate::creature::Size::Medium, 23)] {
+            let stage =
+                crate::creature::stage_for(size, crate::creature::Anim::Seat, ms, &app.theme)
+                    .unwrap();
+            stage.paint(&mut buf, x, 3, area);
+        }
+        out.push((format!("mascot faces {ms} ms"), 1200, buf));
+    }
+    out.extend(crate::intro::comparison_frames(&app.theme, w, h));
     out
 }
 

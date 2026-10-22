@@ -497,12 +497,8 @@ fn render(buf: &mut Buffer, area: Rect, beat: &Beat, theme: &Theme, ink: &Creatu
     for r in 0..rows as i16 {
         for c in 0..cv.w {
             let (t, b) = (cv.get(c, 2 * r), cv.get(c, 2 * r + 1));
-            let (ch, style) = match (t, b) {
-                (Some(t), Some(b)) if t == b => ('█', Style::default().fg(t).bg(t)),
-                (Some(t), Some(b)) => ('▀', Style::default().fg(t).bg(b)),
-                (Some(t), None) => ('▀', Style::default().fg(t)),
-                (None, Some(b)) => ('▄', Style::default().fg(b)),
-                (None, None) => continue,
+            let Some((ch, style)) = creature::pixel_cell(t, b, ink, theme.block_gaps) else {
+                continue;
             };
             let at = Position::new(area.x + c as u16, top + r as u16);
             if buf.area.contains(at) {
@@ -680,6 +676,25 @@ fn road<B: Backend<Error = io::Error>>(
 /// exits 1, and that installer prints its own picture and `next:` lines.
 pub fn welcome_command() -> i32 {
     1
+}
+
+/// The actual opening animation, exported by the terminal replay test.
+#[cfg(test)]
+pub(crate) fn comparison_frames(theme: &Theme, w: u16, h: u16) -> Vec<(String, u64, Buffer)> {
+    if !fits(w, h) {
+        return Vec::new();
+    }
+    let Some(ink) = theme.creature_ink(false) else { return Vec::new() };
+    let area = Rect::new(0, 0, w, h);
+    storyboard()
+        .into_iter()
+        .enumerate()
+        .map(|(i, beat)| {
+            let mut buf = Buffer::empty(area);
+            render(&mut buf, area, &beat, theme, &ink);
+            (format!("opening animation {}", i + 1), u64::from(beat.ms), buf)
+        })
+        .collect()
 }
 
 #[cfg(test)]

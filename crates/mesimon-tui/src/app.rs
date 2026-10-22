@@ -2074,10 +2074,11 @@ pub struct App {
     pub diff_two_pane: Cell<bool>,
     /// The terminal answered the kitty-protocol probe (`lib.rs::init_terminal`
     /// sets it), so Shift+Enter arrives as its own atom. False by default —
-    /// on the legacy floor every ShiftEnter binding stays unavailable, which
-    /// is what keeps the composer from hinting a key that would land as a
-    /// plain Enter.
+    /// a distinct legacy Escape+Return spelling is tracked separately, so
+    /// supporting that chord does not advertise Shift+Control keys.
     pub rich_keys: bool,
+    /// Escape + Return, reported by crossterm as Alt+Enter (Terminal.app).
+    pub legacy_shift_enter: bool,
     /// Which terminal the board's stdout reaches (T-492), for the three
     /// iTerm2-only rows — resolved in `lib.rs::run`, never here, so no
     /// test app reads a developer's terminal. `Other` in every test app.
@@ -2339,6 +2340,7 @@ impl App {
             prompt_history: Vec::new(),
             recent_tickets: Vec::new(),
             rich_keys: false,
+            legacy_shift_enter: false,
             terminal: crate::title::Terminal::Other,
             icons: None,
             ticket_shells: false,
@@ -7391,6 +7393,7 @@ impl App {
             editor_from: self.editors.source().map_or("", crate::external::Source::words),
             editor_window: self.editor().is_some_and(|e| e.is_window()),
             rich_keys: self.rich_keys,
+            legacy_shift_enter: self.legacy_shift_enter,
             practice: self.practice,
             tour_tryable: self.tour.as_ref().is_some_and(|t| !t.trying && t.lesson().ask.is_some()),
             setup_back: self.setup.as_ref().is_some_and(|s| s.at > 0),
@@ -7531,9 +7534,19 @@ impl App {
     /// verb it returns is matched exhaustively below — so a binding with no
     /// handler is a compile error, not a dead key.
     pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
+        // Terminal.app's Shift+Enter is ESC CR, which crossterm decodes as
+        // Alt+Enter. Admit that explicit chord without pretending the terminal
+        // supports key releases or any other Shift+Control combination.
+        let mods = if code == KeyCode::Enter && mods == KeyModifiers::ALT {
+            self.legacy_shift_enter = true;
+            KeyModifiers::SHIFT
+        } else {
+            mods
+        };
         // The tour's practice board has the keys (T-763): every one is its
         // own until it gives them back.
         if let Some(t) = self.tour.as_mut().filter(|t| t.trying) {
+            t.sandbox.legacy_shift_enter = self.legacy_shift_enter;
             t.key(code, mods, mesimon_core::clock::now_ms())?;
             return Ok(());
         }
@@ -21239,6 +21252,29 @@ mod tests {
     /// and Enter sends the words without leaving the page. On the legacy
     /// floor the key is a plain Enter, which acts on the rail row and never
     /// opens the field.
+    #[test]
+    fn escape_return_opens_the_ask_without_attaching_or_claiming_rich_keys() {
+        for screen in [Screen::Board, Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 }] {
+            let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+            app.screen = screen;
+            assert!(!app.rich_keys);
+            app.handle_key(KeyCode::Enter, KeyModifiers::ALT).unwrap();
+            assert!(matches!(app.mode, Mode::Input { purpose: InputPurpose::Prompt { .. }, .. }));
+            assert!(app.pending_attach.is_none());
+            assert!(!sent_contains(&sent, "PromptSession"));
+            assert!(app.legacy_shift_enter);
+            assert!(!app.rich_keys);
+            // A second chord sends the field, as a second real Shift+Enter does.
+            for c in "run the tests".chars() {
+                press(&mut app, c);
+            }
+            app.handle_key(KeyCode::Enter, KeyModifiers::ALT).unwrap();
+            assert!(sent_contains(&sent, "PromptSession"));
+            assert!(sent_contains(&sent, "run the tests"));
+            assert!(app.pending_attach.is_none());
+        }
+    }
+
     #[test]
     fn shift_enter_prompts_a_live_agent_from_the_ticket_page() {
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);

@@ -377,8 +377,9 @@ fn multiplexer(repo: &Path, verbose: bool) -> Section {
     // Claude's own Esc — untouched.
     records.push(rec(Level::Note, "back to board", "Ctrl+] or Ctrl+5").advice(
         "On Hebrew and other layouts that mirror the bracket keys, Ctrl+] arrives as Esc, \
-         which interrupts the agent instead of detaching. Ctrl+5 is bound for that and works \
-         on any layout.\nRemapping the keystroke fixes the key itself and leaves Escape alone:\n\
+         which interrupts the agent instead of detaching. Ctrl+5 is an alias only where the \
+         terminal sends it; Terminal.app may beep and send nothing. Use Ctrl+] with the \
+         English layout there.\nRemapping the keystroke fixes the key itself and leaves Escape alone:\n\
          iTerm2: Keys > Key Bindings > Ctrl+] > Send Hex Code 0x1d",
     ));
     Section { name: "multiplexer", records }

@@ -8147,6 +8147,11 @@ fn terminal_app_description_bar_fills_every_row_without_moving_the_text() {
                     if x == 1 && (first..=last).contains(&y) {
                         assert_eq!(after[(x, y)].symbol(), " ");
                         assert_eq!(after[(x, y)].bg, before[(x, y)].fg);
+                    } else if before[(x, y)].symbol() == "▀" && after[(x, y)].symbol() == "▄" {
+                        // The font-gap fallback may invert a facial half block;
+                        // its two logical pixel colors and position stay the same.
+                        assert_eq!(before[(x, y)].fg, after[(x, y)].bg);
+                        assert_eq!(before[(x, y)].bg, after[(x, y)].fg);
                     } else {
                         assert_eq!(after[(x, y)], before[(x, y)], "{flavor:?}/{profile:?}/{x},{y}");
                     }

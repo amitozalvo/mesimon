@@ -30541,3 +30541,57 @@ run stopped at the unrelated doctor tree-size assertion (64 KiB reported for two
 files); the unchanged test passed on the complete rerun. The real-tmux `m1_e2e` acceptance
 test passed. Fixture audits were clean. Formatting and diff checks passed. Full nextest
 and Linux/Docker were not run for this TUI-only change.
+
+
+## Facial half blocks and measured Terminal.app keys (T-909, 2026-10-23)
+
+A full repaint did not remove the reported extra eyes. The earlier solid-cell fix did
+not cover mixed cells: an upper-half glyph with the lower eye color as its background
+can expose that dark background in the font's leading as well as in the intended lower
+half. On Terminal.app, the pixel encoder now swaps such a cell to a lower-half glyph,
+putting the eye/mouth ink in the foreground and the body in the background. Both logical
+pixel colors and their order stay unchanged. The intro uses the same encoder. This is a
+font-gap mitigation, not a promise that a font draws each half exactly at a cell boundary.
+Tests cover every animation pose and size across all colored palettes, compare the
+logical pixels before/after, and prohibit a mixed facial cell from using eye ink as its
+background. The replay adds both mascot sizes through open/blink/wave samples, and exports
+the actual opening storyboard where its normal minimum-size check admits it.
+
+**Keys measured manually, without a board.** A raw-input diagnostic captured Return as
+`0d`, Shift+Return as `1b 0d`, and Ctrl+] as `1d`. The user reported that Ctrl+5 emitted
+nothing and beeped. Automated physical-key injection was denied by macOS; no synthetic
+input is presented as that measurement. This refutes the previous assumption that
+Terminal.app necessarily collapses Shift+Return into Return.
+
+Crossterm decodes Escape+Return as Alt+Enter; Mesimon used to discard Alt on Enter and
+execute ordinary Enter. App now normalizes that explicit chord to Shift+Enter and tracks
+its support independently of the extended-keyboard protocol. Terminal.app advertises the
+chord from startup; another terminal that emits it learns support on the first press.
+Other Shift+Control chords and key-release handling remain gated on real extended support.
+The existing ask/composer/editor paths retain their actions and authorization. No terminal
+profile is rewritten. The private tmux root table translates M-Enter to the same explicit
+modified-Enter bytes as S-Enter, for fresh servers and at the next focus on surviving ones.
+A supervised real-client PTY test sends plain Return, the measured Escape+Return and xterm
+Shift+Return, checks the exact pane bytes, then detaches with Ctrl+] and verifies that the
+byte never reached the pane and the pane survived; it runs on fresh and upgraded bindings.
+
+Ctrl+5 remains bound where an endpoint sends it. The status line now hints Ctrl+] rather
+than advertising a key Terminal.app did not emit. Doctor and the usage guide no longer
+claim universal Ctrl+5 support, and advise the English layout for Ctrl+] where bracket
+layouts differ. Exact physical Ctrl+5 support would require an endpoint mapping, outside
+the app's input stream.
+
+The requested opening animation was launched as a standalone replay in Terminal.app,
+with no board, daemon or agent. Later replay windows were offscreen according to macOS,
+and window capture failed. The user viewed the replay and accepted the improvement as
+sufficient, while noting a remaining horizontal split through the eye. That residual
+font-rendering seam is known; the change does not claim pixel parity with iTerm2.
+
+Validation: `cargo ut` passed 2,553 tests. The TUI golden run passed 1,190 tests and
+produced no golden changes. The real-client key regression passed in isolation. Full
+`cargo nextest run --workspace` passed 2,807 tests, followed by all 254 alternate mod-road
+integration tests; the fixture audit was clean (507 owners). Seven explicitly ignored
+entries were not run directly: four timing probes, the live-network release check, and
+two subprocess helpers exercised by their parent tests. The mod pass likewise skipped
+its helper as a direct entry. Formatting and diff checks passed. Linux/Docker was not
+run for this Terminal.app-specific correction.

@@ -38,10 +38,9 @@ pub fn to_key(code: KeyCode, mods: KeyModifiers) -> Option<Key> {
         KeyCode::Char(c) if ctrl => Key::Ctrl(c.to_ascii_lowercase()),
         KeyCode::Char(' ') => Key::Space,
         KeyCode::Char(c) => Key::Char(c),
-        // Shift+Enter is its own atom ONLY where the kitty disambiguate tier
-        // is on; every other terminal reports it as a bare Enter, and the
-        // keymap gates the atom on `Ctx::rich_keys` so it stays unbound there
-        // rather than half-working.
+        // App normalizes the measured legacy ESC CR spelling before this
+        // boundary. The keymap admits ShiftEnter only with extended-key or
+        // legacy-Enter support; a bare Enter keeps its ordinary meaning.
         KeyCode::Enter if mods.contains(KeyModifiers::SHIFT) => Key::ShiftEnter,
         KeyCode::Enter => Key::Enter,
         KeyCode::Esc => Key::Esc,

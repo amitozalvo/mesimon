@@ -1798,10 +1798,12 @@ pub struct Ctx {
     /// plan-able seat in the column parks with the flag on Enter.
     pub col_plan_able: bool,
     // ---- terminal ----
-    /// The terminal answered the kitty-protocol probe, so `Shift+Enter` is
-    /// distinguishable from `Enter`. False on the legacy floor, where every
-    /// binding on `Key::ShiftEnter` must stay inert and unhinted.
+    /// The terminal answered the kitty-protocol probe. Shift+Enter can also
+    /// be supported independently through `legacy_shift_enter`; that does
+    /// not admit the other ambiguous Shift+Control chords.
     pub rich_keys: bool,
+    /// Escape + Return is a distinct legacy Shift+Enter spelling.
+    pub legacy_shift_enter: bool,
     // ---- board sharing (T-334) ----
     /// This machine has a relay identity (`Snapshot.team.device`).
     pub team_signed_in: bool,
@@ -2376,15 +2378,19 @@ static BOARD: &[Binding] = &[
             ask_hint(c)
         },
         // Every ticket, at every stage of its seat: empty (the title is the
-        // prompt), parked (wake, then ask), paned (ask). `rich_keys` is the
-        // ShiftEnter clause: where the terminal spells this as a plain Enter
+        // prompt), parked (wake, then ask), paned (ask). ShiftEnter needs
+        // either extended keys or the distinct Escape+Return spelling:
+        // where the terminal spells this as a plain Enter
         // the key must be inert AND unhinted, or the press would focus the
         // pane instead of opening a field. A column header is the fourth
         // home (T-378), the same verb widened rather than a second binding
         // on the atom: every seat in the column, at every stage of its own
         // (T-405) — so a column offers the key wherever it has a ticket,
         // and only a column with none offers nothing.
-        avail: |c| (c.has_ticket || (c.col_header && c.col_live > 0)) && c.rich_keys,
+        avail: |c| {
+            (c.has_ticket || (c.col_header && c.col_live > 0))
+                && (c.rich_keys || c.legacy_shift_enter)
+        },
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
@@ -3205,7 +3211,7 @@ static TICKET: &[Binding] = &[
         // The ShiftEnter clause, as on the board: where the terminal spells
         // this as a plain Enter the key must be inert AND unhinted, or the
         // press would act on the rail row instead of opening a field.
-        avail: |c| c.has_ticket && c.rich_keys,
+        avail: |c| c.has_ticket && (c.rich_keys || c.legacy_shift_enter),
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
@@ -7156,7 +7162,7 @@ static SUMMARY: &[Binding] = &[
         verb: Verb::SummaryAsk,
         show: "shift+enter",
         hint: |_| "ask agent",
-        avail: |c| c.rich_keys,
+        avail: |c| c.rich_keys || c.legacy_shift_enter,
         class: Class::Plain,
         group: Group::Sessions,
         mutates: false,
@@ -7332,7 +7338,7 @@ static INPUT: &[Binding] = &[
                 "save + ask agent"
             }
         },
-        avail: |c| (c.composing || c.prompting) && c.rich_keys,
+        avail: |c| (c.composing || c.prompting) && (c.rich_keys || c.legacy_shift_enter),
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
@@ -8008,14 +8014,14 @@ static EDITOR: &[Binding] = &[
         // and started an agent. That sentence still has its board home a
         // press after `^s` (an empty seat's Shift+Enter asks the title), so
         // nothing is lost and the atom stays on one idea. Gated on
-        // `rich_keys` like every ShiftEnter binding; on the legacy floor the
+        // distinct Enter support like every ShiftEnter binding; otherwise the
         // key ARRIVES as `Enter`, which is the same verb — the one place the
         // degradation is exact. Unhinted: `enter` beside it already says it.
         keys: &[Key::ShiftEnter],
         verb: Verb::EditorNewline,
         show: "shift+enter",
         hint: |_| "",
-        avail: |c| c.editing && c.rich_keys,
+        avail: |c| c.editing && (c.rich_keys || c.legacy_shift_enter),
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
@@ -9014,6 +9020,24 @@ mod tests {
 
         let picker = Ctx { searching: true, search_hits: 3, ..Default::default() };
         assert_eq!(resolve(Scope::Search, Key::Ctrl('p'), &picker), Some(Verb::CursorUp));
+    }
+
+    #[test]
+    fn legacy_shift_enter_enables_only_the_enter_chord() {
+        let ctx = Ctx {
+            has_ticket: true,
+            composing: true,
+            editing: true,
+            editor_composing: true,
+            legacy_shift_enter: true,
+            ..Default::default()
+        };
+        assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &ctx), Some(Verb::Prompt));
+        assert_eq!(resolve(Scope::Ticket, Key::ShiftEnter, &ctx), Some(Verb::Prompt));
+        assert_eq!(resolve(Scope::Input, Key::ShiftEnter, &ctx), Some(Verb::SaveStart));
+        assert_eq!(resolve(Scope::Editor, Key::ShiftEnter, &ctx), Some(Verb::EditorNewline));
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('S'), &ctx), None);
+        assert_eq!(resolve(Scope::Board, Key::Ctrl('K'), &ctx), None);
     }
 
     #[test]
