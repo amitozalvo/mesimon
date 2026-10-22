@@ -15784,11 +15784,13 @@ impl Daemon {
         }
     }
 
-    /// A column's `Arrives here when` (T-739): the first column, in board
-    /// order, whose rule the pass's edge satisfies takes the ticket, through
-    /// `place_ticket` under the automation principal — the move gate's
-    /// no-undo and fuse apply as to an automove. The furthest stage wins
-    /// when one pass saw several. True when a ticket moved.
+    /// A column's `Arrives here when` (T-739): the column whose rule the
+    /// pass's edge satisfies takes the ticket, through `place_ticket` under
+    /// the automation principal — the move gate's no-undo and fuse apply as
+    /// to an automove. Which column, when one pass saw several, is
+    /// `board::arrival_dest`'s: the furthest stage, the right-most of
+    /// equals, and never a deploy column left of the ticket's own (T-891).
+    /// True when a ticket moved.
     fn forge_arrivals(&mut self, arrivals: Vec<(ulid::Ulid, crate::forge::Edge)>) -> bool {
         use mesimon_core::board::Arrival;
         let mut moved = false;
@@ -15796,41 +15798,27 @@ impl Daemon {
             let Some(from) = self.board.ticket(t).map(|x| x.column.clone()) else { continue };
             // Read once, and only for a column a pass takes to (T-795).
             let head_unread = std::cell::OnceCell::new();
-            // The furthest stage: a deployment over a merge over a pass over
-            // an opening; among equals, the first in board order.
-            let dest = self
-                .board
-                .sorted_columns()
-                .into_iter()
-                .filter(|c| c.name != from)
-                .filter_map(|c| {
-                    let rank = match c.settings.arrives_on {
-                        Arrival::Deployed
-                            if c.settings
-                                .arrives_env
-                                .as_ref()
-                                .is_some_and(|env| edge.deployed.iter().any(|d| d == env)) =>
-                        {
-                            4
-                        }
-                        Arrival::Merged if edge.merged => 3,
-                        // A pass on a head the branch has left is the
-                        // commit before's (T-780).
-                        Arrival::PipelinePasses
-                            if edge.passed
-                                && !*head_unread.get_or_init(|| {
-                                    self.pipeline_head_unread(t, Reading::Fresh)
-                                }) =>
-                        {
-                            2
-                        }
-                        Arrival::PrOpened if !edge.opened.is_empty() => 1,
-                        _ => return None,
-                    };
-                    Some((rank, c.name.clone()))
-                })
-                .max_by_key(|(rank, _)| *rank)
-                .map(|(_, name)| name);
+            let columns = self.board.sorted_columns();
+            let dest = mesimon_core::board::arrival_dest(&columns, &from, |c| {
+                match c.settings.arrives_on {
+                    Arrival::Deployed => c
+                        .settings
+                        .arrives_env
+                        .as_ref()
+                        .is_some_and(|env| edge.deployed.iter().any(|d| d == env)),
+                    Arrival::Merged => edge.merged,
+                    // A pass on a head the branch has left is the commit
+                    // before's (T-780).
+                    Arrival::PipelinePasses => {
+                        edge.passed
+                            && !*head_unread
+                                .get_or_init(|| self.pipeline_head_unread(t, Reading::Fresh))
+                    }
+                    Arrival::PrOpened => !edge.opened.is_empty(),
+                    Arrival::Nothing => false,
+                }
+            })
+            .map(str::to_string);
             let Some(dest) = dest else { continue };
             let by = Principal::Automation { rule: "forge".into() };
             let outcome = match self.place_ticket(t, &dest, Position::Top, &by, None, "forge") {

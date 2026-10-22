@@ -66,6 +66,11 @@
 //! the crown hears each, the ticket arrives once both are there, and a
 //! rollback takes the environment off their rows and leaves the card.
 //!
+//! A deploy to an earlier environment never moves the card back (T-891):
+//! with dev, staging and production columns, a ticket in production stays
+//! there when dev and staging read deployed a pass later, and the wake
+//! held for the crown's turn says the column the card is in.
+//!
 //! The stub is the forge: `auth status` passes, `pr list` prints the file
 //! the test writes, `api …/check-runs` and `api …/status` the merge
 //! commit's pipeline, by sha where the test wrote one, and `api
@@ -4065,7 +4070,13 @@ fn parked_squash_merge(name: &str, restart: bool) {
     assert_eq!(wakes(&h, k.worker, "merged"), 0);
     // A squash on the forge: the merge commit is none of the branch's, and
     // the base here never fetches it.
-    let merged = pr_json(&k.branch, &k.tip, "MERGED", Some("feedf00dfeedf00dfeedf00dfeedf00dfeedf00d"), None);
+    let merged = pr_json(
+        &k.branch,
+        &k.tip,
+        "MERGED",
+        Some("feedf00dfeedf00dfeedf00dfeedf00dfeedf00d"),
+        None,
+    );
     if restart {
         drop(c);
         h.restart_after(|| write(&prs_file, &merged));
@@ -4076,9 +4087,7 @@ fn parked_squash_merge(name: &str, restart: bool) {
     wait_until(Duration::from_secs(30), "the PR to read merged", || {
         prs_of(&mut c).iter().any(|p| p.ticket == k.worker && p.state == "merged")
     });
-    wait_until(Duration::from_secs(30), "the merge's wake", || {
-        wakes(&h, k.worker, "merged") == 1
-    });
+    wait_until(Duration::from_secs(30), "the merge's wake", || wakes(&h, k.worker, "merged") == 1);
     std::thread::sleep(Duration::from_millis(2500));
     let all = std::fs::read_to_string(&got).unwrap_or_default();
     assert!(all.contains(&format!("{} merged (", k.named)), "{all}");
@@ -4240,5 +4249,165 @@ fn a_pull_request_on_a_ticket_with_no_agent_wakes_the_crown() {
     assert_eq!(wakes(&h, o, "merged") + wakes(&h, o, "delivered"), 0, "{all}");
     assert_eq!(lines_with(&named_o).len(), 1, "{all}");
     assert_eq!(c.board().ticket(o).unwrap().column, "DONE", "the arrival rule took it");
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// T-891: the author's work board, GitLab, deploy columns dev → staging →
+/// production. A merge commit reached all three within minutes, the card
+/// went to production, and a later pass's edge for dev and staging moved
+/// it back to staging — the rule excluded the column it was in and took
+/// the last of the rest. Here production runs the merge commit first,
+/// while the crown's turn runs; dev and staging run it a pass later. The
+/// card stays in PROD, and the wake the crown's turn held says `column
+/// PROD` with all three deployments in it.
+#[test]
+fn a_deploy_to_an_earlier_environment_never_moves_the_card_back() {
+    let stub_dir = std::env::temp_dir().join(format!("msmn-forge-back-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&stub_dir);
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    let glab = stub_dir.join("glab");
+    std::fs::write(&glab, GLAB_STUB).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&glab, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mrs = stub_dir.join("mrs.json");
+    let pipelines = stub_dir.join("pipelines");
+    let deploys = stub_dir.join("deploys");
+    write(&mrs, "[]");
+    let path_var = format!(
+        "{}:{}",
+        stub_dir.display(),
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+    );
+    let Some(h) = Harness::boot_with_env(
+        "forge_back",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GLAB_MRS", &mrs.display().to_string()),
+            ("MSMN_GLAB_PIPELINES", &pipelines.display().to_string()),
+            ("MSMN_GLAB_DEPLOYS", &deploys.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    git(&h.repo, &["remote", "add", "origin", "https://gitlab.example.com/lab/forge-lab-api.git"]);
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("forge_back");
+    through_prs(&mut c);
+    // Three environment columns after REVIEW, in the pipeline's order.
+    for (name, after, env) in
+        [("DEV", "REVIEW", "dev"), ("STAGING", "DEV", "staging"), ("PROD", "STAGING", "production")]
+    {
+        assert!(matches!(
+            c.request(Command::AddColumn { name: name.into(), after: Some(after.into()) }),
+            Response::Ok
+        ));
+        let mut settings = c.board().column(name).unwrap().settings.clone();
+        settings.arrives_on = Arrival::Deployed;
+        settings.arrives_env = Some(env.into());
+        assert!(matches!(
+            c.request(Command::SetColumnSettings { name: name.into(), settings }),
+            Response::Ok
+        ));
+    }
+    let k = crowned(&h, &mut c);
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    let column = |c: &mut TestClient| c.board().ticket(k.worker).unwrap().column.clone();
+    let deployed = |c: &mut TestClient| {
+        prs_of(c)
+            .into_iter()
+            .find(|p| p.ticket == k.worker && p.number == 1)
+            .map(|p| p.deployed)
+            .unwrap_or_default()
+    };
+    let moves = || {
+        std::fs::read_to_string(h.paths.state_dir.join("activity.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| {
+                l.contains("\"kind\":\"movement_decision\"")
+                    && l.contains(&format!("\"ticket\":\"{}\"", k.worker))
+            })
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+
+    // ---- the MR merged at a merge commit on main ---------------------------
+    let base = git(&h.repo, &["rev-parse", "HEAD"]).trim().to_string();
+    let tree = git(&h.repo, &["rev-parse", "HEAD^{tree}"]).trim().to_string();
+    let m1 =
+        git(&h.repo, &["commit-tree", &tree, "-p", &base, "-m", "Merge !1"]).trim().to_string();
+    git(&h.repo, &["update-ref", "refs/remotes/origin/main", &m1]);
+    write(&mrs, &mr_json("forge-lab-api", 1, &k.branch, &k.tip, Some(&m1)));
+    wait_until(Duration::from_secs(20), "the MR to read merged", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == k.worker && p.state == "merged")
+    });
+    wait_until(Duration::from_secs(20), "the merged wake", || {
+        !lines_with(&format!("{} merged (", k.named)).is_empty()
+    });
+    turn(&mut c, &hook_sock, k.crown);
+    let runs = |env: &str, sha: &str, at: &str| {
+        write(
+            &deploys.with_extension(env),
+            &format!(r#"[{{"id":1,"sha":"{sha}","status":"success","finished_at":"{at}"}}]"#),
+        );
+    };
+
+    // ---- the crown's turn runs; production runs the merge commit ----------
+    hook_send(&hook_sock, &k.crown.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(k.crown, "running", |s| *s == SessionState::Running);
+    runs("production", &m1, "2026-10-22T09:00:00Z");
+    wait_until(Duration::from_secs(20), "the ticket to arrive in PROD", || {
+        column(&mut c) == "PROD"
+    });
+    wait_until(Duration::from_secs(20), "the deploy's wake, held", || {
+        wakes(&h, k.worker, "forge") >= 1
+    });
+    assert!(lines_with("deployed to production !1").is_empty(), "held for the crown's turn");
+
+    // ---- dev and staging run it a pass later: the card stays ----------------
+    runs("dev", &m1, "2026-10-22T09:01:00Z");
+    runs("staging", &m1, "2026-10-22T09:02:00Z");
+    wait_until(Duration::from_secs(20), "dev and staging on the row", || {
+        let d = deployed(&mut c);
+        d.iter().any(|e| e == "dev") && d.iter().any(|e| e == "staging")
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(column(&mut c), "PROD", "a later environment's column never yields: {:?}", moves());
+    assert!(
+        moves().iter().all(|m| !m.contains("\"destination\":\"STAGING\"")
+            && !m.contains("\"destination\":\"DEV\"")),
+        "{:?}",
+        moves()
+    );
+
+    // ---- the turn ends: one line, the column the card is in ----------------
+    hook_send(&hook_sock, &k.crown.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    wait_until(Duration::from_secs(10), "the folded wake's line", || {
+        !lines_with("deployed to staging !1").is_empty()
+    });
+    let line = lines_with("deployed to staging !1").remove(0);
+    assert!(line.contains("column PROD"), "{line}");
+    assert!(line.contains("deployed to production !1"), "{line}");
+    assert!(line.contains("deployed to dev !1"), "{line}");
+    assert!(!line.contains("column STAGING") && !line.contains("column DEV"), "{line}");
+    let _ = (k.ws, &k.path);
+    let _ = c.request(Command::Shutdown);
     let _ = std::fs::remove_dir_all(&stub_dir);
 }

@@ -652,7 +652,10 @@ own when a PR opens, its pipeline passes, every PR is merged, or the merge reach
 you name (`deployed to staging`), and **Needs passed pipeline** refuses a ticket whose
 pipeline failed, still runs or was never read; a ticket with no pull request passes, as a ticket
 with no branch passes the merge rule, unless its agent opened one the forge has not read yet. A
-closed pull request has no pipeline to pass. These column settings and **Settings › Appearance ›
+closed pull request has no pipeline to pass. With several environment columns, a deployment
+moves the ticket to the right-most column its merge reached and never back: a column left of
+the ticket's own never takes it on a deploy, so a later environment's column keeps the ticket
+when an earlier one reads deployed afterwards. These column settings and **Settings › Appearance ›
 Pull requests on cards** do nothing on a board that merges into main, and their rows say so.
 Without `gh` or `glab`, **Settings › Behaviour › Fetch from the remote** alone makes a merged PR
 read merged once fetched. A crown hears what the forge says of the

@@ -688,7 +688,10 @@ mod tests {
         let woken = body(AskWake::Woken);
         assert_eq!(woken["wake"], "woken");
         let about = woken["wake_about"].as_str().unwrap();
-        assert!(about.contains("woke it") && about.contains("start_agent is not needed"), "{about}");
+        assert!(
+            about.contains("woke it") && about.contains("start_agent is not needed"),
+            "{about}"
+        );
         let later = body(AskWake::WhenSent);
         assert_eq!(later["wake"], "when_sent");
         let about = later["wake_about"].as_str().unwrap();

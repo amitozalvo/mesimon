@@ -1051,7 +1051,7 @@ impl AgentTools {
 /// names (`arrives_env`). Edge-triggered on what a forge pass saw change,
 /// through `place_ticket` under the automation principal, so the move gate
 /// applies as to `on_done`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Arrival {
     #[default]
@@ -1090,6 +1090,31 @@ impl Arrival {
     fn is_nothing(&self) -> bool {
         *self == Arrival::Nothing
     }
+}
+
+/// The column a forge pass's edge takes a ticket to (T-739): among the
+/// columns whose rule the edge satisfies (`satisfied`), the furthest stage
+/// — a deployment over a merge over a pass over an opening, `Arrival`'s
+/// order — and among equals the right-most in board order, `columns` being
+/// that order. A deploy column left of the ticket's own never takes it
+/// (T-891): a ticket in production stays there when dev and staging read
+/// deployed a pass later, so a later environment's column never yields to
+/// an earlier one's. A merge or an opening may still take a ticket back, as
+/// a follow-up PR on a shipped ticket does. `None` where nothing takes it.
+pub fn arrival_dest<'a>(
+    columns: &[&'a Column],
+    from: &str,
+    mut satisfied: impl FnMut(&Column) -> bool,
+) -> Option<&'a str> {
+    let at = columns.iter().position(|c| c.name == from);
+    columns
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.name != from && !c.settings.arrives_on.is_nothing())
+        .filter(|(i, c)| c.settings.arrives_on != Arrival::Deployed || at.is_none_or(|a| *i > a))
+        .filter(|(_, c)| satisfied(c))
+        .max_by_key(|(i, c)| (c.settings.arrives_on, *i))
+        .map(|(_, c)| c.name.as_str())
 }
 
 /// How far the merge train reaches into this column (T-117): nowhere, rebase
@@ -5241,5 +5266,55 @@ mod tests {
         );
         assert!(s.automated());
         assert!(!template_settings("DONE").unwrap().automated());
+    }
+
+    /// T-891: the arrival rule's choice among columns. Among equal stages
+    /// the right-most wins, a stage beats board order, a deploy column left
+    /// of the ticket's own never takes it, and a merge column left of it
+    /// still does.
+    #[test]
+    fn an_arrival_takes_the_right_most_of_equals_and_a_deploy_never_moves_left() {
+        let col = |name: &str, order: &str, on: Arrival, env: Option<&str>| {
+            let mut c = Column::new(name, order);
+            c.settings.arrives_on = on;
+            c.settings.arrives_env = env.map(str::to_string);
+            c
+        };
+        let cols = [
+            col("TODO", "a", Arrival::Nothing, None),
+            col("OPEN", "b", Arrival::PrOpened, None),
+            col("MERGED", "c", Arrival::Merged, None),
+            col("DEV", "d", Arrival::Deployed, Some("dev")),
+            col("STAGING", "e", Arrival::Deployed, Some("staging")),
+            col("PROD", "f", Arrival::Deployed, Some("production")),
+            col("DONE", "g", Arrival::Nothing, None),
+        ];
+        let cols: Vec<&Column> = cols.iter().collect();
+        let deployed = |envs: &'static [&'static str]| {
+            move |c: &Column| {
+                c.settings.arrives_on == Arrival::Deployed
+                    && c.settings.arrives_env.as_deref().is_some_and(|e| envs.contains(&e))
+            }
+        };
+        // Three environments on one pass: the right-most.
+        let three = deployed(&["dev", "staging", "production"]);
+        assert_eq!(arrival_dest(&cols, "MERGED", three), Some("PROD"));
+        // From production, dev and staging a pass later: no move back.
+        let two = deployed(&["dev", "staging"]);
+        assert_eq!(arrival_dest(&cols, "PROD", two), None);
+        assert_eq!(arrival_dest(&cols, "STAGING", two), None);
+        assert_eq!(arrival_dest(&cols, "DEV", two), Some("STAGING"));
+        // Nor from DONE, right of every environment.
+        assert_eq!(arrival_dest(&cols, "DONE", three), None);
+        // A stage beats board order: deployed to dev over merged.
+        let dev_and_merge =
+            |c: &Column| c.settings.arrives_on == Arrival::Merged || deployed(&["dev"])(c);
+        assert_eq!(arrival_dest(&cols, "OPEN", dev_and_merge), Some("DEV"));
+        // A follow-up PR's merge takes a shipped ticket back to MERGED.
+        let merged = |c: &Column| c.settings.arrives_on == Arrival::Merged;
+        assert_eq!(arrival_dest(&cols, "PROD", merged), Some("MERGED"));
+        // The column it is in never takes it, and nothing satisfied is None.
+        assert_eq!(arrival_dest(&cols, "MERGED", merged), None);
+        assert_eq!(arrival_dest(&cols, "TODO", |_| false), None);
     }
 }

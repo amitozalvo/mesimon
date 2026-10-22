@@ -29345,3 +29345,42 @@ agent, which reads markdown.
 `rich::plain_takes_the_markdown_off_and_keeps_the_words`, `rich::plain_inline_reads_a_box_label`,
 `peek::card_words_drop_the_fence_and_mark_a_long_reply`,
 `ui::tests::test_summary_rows_draw_a_code_span_as_words` (card and `^j`). No golden moved.
+
+## A deploy edge never moves a card left, and the right-most column of equals wins (T-891, 2026-10-22, "a deploy wake told the crown a column the ticket had already left")
+
+**What was wrong.** `forge_arrivals` (T-739) ranked the columns a pass's edge satisfied, excluded
+the column the ticket was in, and among equal ranks took the last in board order (`max_by_key`;
+the comment said the first). On the author's work board (GitLab, dev → staging → production) a
+merge commit reached all three environments within minutes, production's read first — a direct
+deploy of the merge commit needs no git answer, where an earlier environment running a later
+commit waits on ancestry (T-801) — and the card went to production. The next pass's edge for
+dev and staging found PROD excluded and took STAGING, the last of the rest: the board moved the
+card back, and the wake the crown's turn held said `column STAGING`, which was where the card
+then was. The crown read the board faithfully; the board was wrong. The e2e reproduced it on the
+old rule: `movement_decision` PROD → STAGING one pass after REVIEW → PROD.
+
+**The rule** (`board::arrival_dest`, pure, over `Arrival`'s new `Ord`, which is the stage order):
+the furthest stage; among equals the right-most column in board order, said now rather than
+left to `max_by_key`; and a deploy column left of the ticket's own never takes it — a later
+environment's column never yields to an earlier one's, the author's "right-most column wins",
+and from DONE no deploy edge moves a card. A merge or an opening may still take a ticket back,
+as a follow-up PR on a shipped ticket does (T-774's road): its new work is not deployed.
+
+**No column setting.** The ticket asked for one if the board could still move a ticket back on
+a deploy edge. It cannot, so there is nothing to switch, and a switch that is never off would
+be a row that says nothing (T-677's rule for rows).
+
+**The sentence was cleared.** `CrownWake::fold`, `sent_at` and `told_columns` (T-785) were the
+first suspects. The e2e reads the one line a crown's turn held across both passes: `column
+PROD, deployed to production !1, deployed to dev !1, deployed to staging !1`, the edges kept as
+heard and the column as the card stands when the line goes out. No word to the crown changed,
+so no rig test (T-816). The work board's exact sequence was not recovered: a second PR on the
+ticket read open (T-890's, opened by the crown) empties `arrived_envs` and its merge fires every
+environment at once, which is one road by which the card reached production again after the
+crown read staging; the board's `movement_decision` lines say which it was.
+
+Tests: `board::an_arrival_takes_the_right_most_of_equals_and_a_deploy_never_moves_left` (three
+on one pass, two from production, from DONE, a stage over board order, a merge back, nothing);
+`forge_e2e::a_deploy_to_an_earlier_environment_never_moves_the_card_back` (glab stub, three
+environment columns after REVIEW, production first while the crown's turn runs, dev and staging
+a pass later, the card in PROD, no move to STAGING or DEV in the feed, and the held line).

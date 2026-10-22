@@ -25,7 +25,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use mesimon_core::board::{CrownMode, MergeInto, SessionKind, SessionState, WorkspaceStrategy};
-use mesimon_core::command::{AgentTicketView, AskRoad, AskWake, Command, CrownTouch, Deliver, Response};
+use mesimon_core::command::{
+    AgentTicketView, AskRoad, AskWake, Command, CrownTouch, Deliver, Response,
+};
 use mesimon_core::Principal;
 use serde_json::json;
 
