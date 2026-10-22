@@ -619,6 +619,50 @@ pub(crate) struct HeldArchive {
     stale: bool,
 }
 
+/// A move this board sent and the daemon took (T-910), as it sent it:
+/// `ticket` into `column`, above `before` or at its foot. `need` is the
+/// count of the first board asked after it, the first that shows it.
+#[derive(Debug, Clone)]
+pub(crate) struct Placement {
+    ticket: ulid::Ulid,
+    column: String,
+    before: Option<ulid::Ulid>,
+    need: u64,
+}
+
+impl Placement {
+    /// The move on `board`, placed as the daemon places it
+    /// (`Daemon::order_within`'s `Before`): a card already where it was
+    /// sent is left alone, so a board that shows the move keeps it.
+    fn lay(&self, board: &mut Board) {
+        if board.column(&self.column).is_none() {
+            return;
+        }
+        let Some(card) = board.ticket(self.ticket).filter(|t| !t.is_archived()) else { return };
+        let home = card.column == self.column;
+        let siblings = board.column_tickets(&self.column);
+        let at = siblings.iter().position(|t| t.id == self.ticket);
+        let others: Vec<(ulid::Ulid, String)> = siblings
+            .iter()
+            .filter(|t| t.id != self.ticket)
+            .map(|t| (t.id, t.order.clone()))
+            .collect();
+        let want = self.before.and_then(|b| others.iter().position(|(id, _)| *id == b));
+        if home && at == Some(want.unwrap_or(others.len())) {
+            return;
+        }
+        let between = mesimon_core::fracindex::between;
+        let order = match want {
+            Some(i) => between(if i == 0 { "" } else { &others[i - 1].1 }, &others[i].1),
+            None => between(others.last().map(|(_, o)| o.as_str()).unwrap_or(""), ""),
+        };
+        if let Some(t) = board.ticket_mut(self.ticket) {
+            t.column = self.column.clone();
+            t.order = order;
+        }
+    }
+}
+
 impl Default for Search {
     fn default() -> Self {
         Self::new()
@@ -2166,6 +2210,11 @@ pub struct App {
     /// cursor stays where it was, the next card sliding under it, instead
     /// of following the card into its column.
     cursor_hold: Option<(ulid::Ulid, u64)>,
+    /// The moves this board sent that the daemon took, drawn where they
+    /// went until the first board asked after each lands (T-910): laid
+    /// over every board absorbed before it, so no frame draws the card
+    /// back home while its board is out. In the order they were sent.
+    placed: Vec<Placement>,
     /// How long `catch_up` and `settle_snapshot` wait for a board on this
     /// thread: `client::RESPONSE_WAIT`, end to end; a test shortens it.
     pub(crate) catch_up_wait: Duration,
@@ -2388,6 +2437,7 @@ impl App {
             landing: 1,
             need_seq: 1,
             cursor_hold: None,
+            placed: Vec::new(),
             catch_up_wait: crate::client::RESPONSE_WAIT,
             reconcile_due: false,
             // None: `lib.rs` starts the thread, so a test app is mute and
@@ -3340,6 +3390,17 @@ impl App {
             prs,
             forge,
         } = snap;
+        // This board's own moves the snapshot was asked too early to show
+        // (T-910): laid over it, as the daemon will have them, so the card
+        // is not drawn home in between and no move is read off the gap.
+        let mut board = board;
+        let landing = self.landing;
+        let (retired, unshown): (Vec<Placement>, Vec<Placement>) =
+            std::mem::take(&mut self.placed).into_iter().partition(|p| p.need <= landing);
+        for p in &unshown {
+            p.lay(&mut board);
+        }
+        self.placed = unshown;
         let was = self.cursor_column().map(|c| c.name.clone());
         // The cursor holds its TICKET across the pass (T-335): a card that
         // a teammate moved or reordered keeps the selection on it, and one
@@ -3348,7 +3409,7 @@ impl App {
         // A card this board filed away (T-812 review): at the first landing
         // that shows the move the cursor stays put — the next card slides
         // under it, which is what `>>` and `.` mean — instead of following
-        // the card into its column. An older landing still draws it home.
+        // the card into its column. An older landing lays the move (T-910).
         if let Some((filed, need)) = self.cursor_hold {
             if self.landing >= need {
                 self.cursor_hold = None;
@@ -3390,7 +3451,6 @@ impl App {
             .filter_map(|t| self.board.ticket(t.ticket))
             .cloned()
             .collect();
-        let mut board = board;
         self.archived = archived;
         self.lay_archive(&mut board);
         self.lay_held(&mut board);
@@ -3434,6 +3494,12 @@ impl App {
         self.summaries.retain(|n, _| notes.contains(n));
         self.absorb_crown_touches(crown_touches, crown_was, &placed, burnt);
         self.absorb_moves(moved, &crown_moved, followed);
+        // A placement's board carries its move, which the overlay already
+        // drew: the stamp is spent here, as it was when the card moved on
+        // this landing (T-838), or it would claim the next mover's move.
+        for p in &retired {
+            self.own_moves.remove(&p.ticket);
+        }
         self.settle_drawer();
         self.seed_team_drafts();
         self.follow_ticket(followed);
@@ -13859,9 +13925,9 @@ impl App {
     /// cursor on it. A refused move lands nothing (T-450): the card never
     /// left, so the cursor stays on it and `.` is not armed with it.
     ///
-    /// `stay`: the cursor keeps its place at the landing that shows the move
-    /// (a filing by `>>` or `.`: the next card slides under it) rather than
-    /// riding the card (a nudge). Returns whether the daemon took the move.
+    /// `stay`: the cursor keeps its place (a filing by `>>` or `.`: the next
+    /// card slides under it) rather than riding the card (a nudge). Returns
+    /// whether the daemon took the move.
     fn drop_ghost(
         &mut self,
         cols: &[String],
@@ -13899,16 +13965,24 @@ impl App {
             return Ok(false);
         }
         if filing {
-            self.last_action = Some(LastAction::Move { column: target_col });
+            self.last_action = Some(LastAction::Move { column: target_col.clone() });
         }
+        // The first board that shows the move is the next ask's.
+        let need = self.snapshot_sent + 1;
         if stay {
-            // The first board that shows the move is the next ask's.
-            self.cursor_hold = Some((ticket, self.snapshot_sent + 1));
+            self.cursor_hold = Some((ticket, need));
         }
-        // Asked, not waited for (T-812): the card is drawn where it was,
-        // the cursor on it, until the board lands, and `absorb` then
-        // follows the cursor's ticket to where the daemon put it — or,
-        // filing, keeps the cursor home.
+        // Drawn where it went on this frame (T-910), and held there until
+        // that board lands: asked, not waited for (T-812), and never drawn
+        // home in between.
+        let placement = Placement { ticket, column: target_col, before, need };
+        placement.lay(Arc::make_mut(&mut self.board));
+        self.placed.push(placement);
+        self.reindex_columns();
+        if !stay {
+            self.follow_ticket(Some(ticket));
+        }
+        self.clamp_cursor();
         self.refresh_soon()?;
         Ok(true)
     }
@@ -16605,12 +16679,12 @@ mod tests {
         assert!(app.snapshot_in_flight());
         // A move is a read-modify-write (its place in the column): it waits
         // for the ask out (T-812 review), then asks once more after itself,
-        // and the card is drawn home, the cursor on it, until that lands.
+        // and the card is drawn where it went while that is out (T-910).
         release_late(&hold, LATE);
         press(&mut app, '>');
         press(&mut app, '>');
         assert_eq!(hold.borrow().asks, 3, "the move's own ask");
-        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(1)));
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(2)));
         terminal.draw(|f| crate::ui::draw(f, &app)).unwrap();
         release(&hold);
         app.pump().unwrap();
@@ -16729,7 +16803,7 @@ mod tests {
         press(&mut app, '>');
         assert!(app.snapshot_in_flight(), "asked after the move");
         assert_eq!((app.cursor_col, app.cursor_row), (0, Some(0)));
-        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(1)), "drawn home still");
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(2)), "slid under at once");
         release(&hold);
         app.pump().unwrap();
         assert_eq!(app.board.ticket(ulid::Ulid(1)).map(|t| t.column.as_str()), Some("doing"));
@@ -16741,6 +16815,108 @@ mod tests {
         app.pump().unwrap();
         assert!(app.board.column_tickets("todo").is_empty());
         assert_eq!(app.cursor_col, 0, "still filing from home");
+    }
+
+    /// The card a frame draws for `id`: its column and row.
+    fn drawn_at(app: &App, id: ulid::Ulid) -> (String, usize) {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+        let (c, r) = app.locate(id).expect("on the board");
+        (app.columns()[c].clone(), r)
+    }
+
+    /// A move the daemon took is drawn where it went on the next frame and
+    /// stays there (T-910): `>>` never draws the card back home while its
+    /// board is out, and the landing moves nothing.
+    #[test]
+    fn a_filing_is_drawn_where_it_went_before_its_board_lands() {
+        let (mut app, _) = App::for_test_logged(board_three_columns(), theme(), false);
+        let hold = slow(&mut app);
+        press(&mut app, '>');
+        press(&mut app, '>');
+        assert!(app.snapshot_in_flight(), "its board is out");
+        assert_eq!(drawn_at(&app, ulid::Ulid(1)), ("doing".into(), 0), "never home");
+        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(0)), "the cursor stays home");
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(2)));
+        // Pushes meanwhile become a follow-up; the card stays where it went.
+        hold.borrow_mut().pushes = 1;
+        app.pump().unwrap();
+        assert_eq!(drawn_at(&app, ulid::Ulid(1)), ("doing".into(), 0));
+        release(&hold);
+        app.pump().unwrap();
+        assert!(app.placed.is_empty(), "the board that shows it retires the placement");
+        assert_eq!(drawn_at(&app, ulid::Ulid(1)), ("doing".into(), 0));
+        release(&hold);
+        app.pump().unwrap();
+        assert_eq!(drawn_at(&app, ulid::Ulid(1)), ("doing".into(), 0));
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(2)));
+    }
+
+    /// A nudge is drawn where it went at once, the cursor riding it
+    /// (T-910): Shift+L does not wait for its board.
+    #[test]
+    fn a_nudge_is_drawn_where_it_went_before_its_board_lands() {
+        let (mut app, _) = App::for_test_logged(board_three_columns(), theme(), false);
+        let hold = slow(&mut app);
+        press(&mut app, 'L');
+        assert!(app.snapshot_in_flight(), "its board is out");
+        assert_eq!(drawn_at(&app, ulid::Ulid(1)), ("doing".into(), 0));
+        assert_eq!((app.cursor_col, app.cursor_row), (1, Some(0)), "the cursor rides the card");
+        release(&hold);
+        app.pump().unwrap();
+        assert_eq!(drawn_at(&app, ulid::Ulid(1)), ("doing".into(), 0));
+        assert_eq!((app.cursor_col, app.cursor_row), (1, Some(0)));
+    }
+
+    /// Repeated nudges before each one's board lands place against the one
+    /// before (T-910): Shift+J three times walks the card down three rows,
+    /// one row a press, and no frame between draws it anywhere else.
+    #[test]
+    fn quick_nudges_walk_the_card_without_jitter() {
+        let mut b = board_three_columns();
+        b.tickets.push(ticket(4, "todo", "c"));
+        b.tickets.push(ticket(5, "todo", "d"));
+        let (mut app, sent) = App::for_test_logged(b, theme(), false);
+        let hold = slow(&mut app);
+        press(&mut app, 'J');
+        assert_eq!(drawn_at(&app, ulid::Ulid(1)), ("todo".into(), 1));
+        for row in 2..=3 {
+            // The press waits on the ask the one before it sent (`catch_up`).
+            release_late(&hold, LATE);
+            press(&mut app, 'J');
+            assert_eq!(drawn_at(&app, ulid::Ulid(1)), ("todo".into(), row));
+            assert_eq!(app.cursor_row, Some(row), "the cursor rides the card");
+        }
+        release(&hold);
+        app.pump().unwrap();
+        assert_eq!(drawn_at(&app, ulid::Ulid(1)), ("todo".into(), 3));
+        let order: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id.0).collect();
+        assert_eq!(order, vec![2, 4, 5, 1], "the daemon's board agrees");
+        let moves = sent.borrow().iter().filter(|c| c.starts_with("MoveTicket")).count();
+        assert_eq!(moves, 3);
+    }
+
+    /// A refused move places nothing (T-450): the card is drawn home on the
+    /// next frame, the cursor on it, while the board is out.
+    #[test]
+    fn a_refused_move_is_drawn_home() {
+        let mut b = board_three_columns();
+        b.columns[1].name = "DONE".into();
+        b.tickets[0].workspace = Some(WorkspaceStrategy::Worktree);
+        let (mut app, _) = App::for_test_logged(b, theme(), false);
+        let hold = slow(&mut app);
+        press(&mut app, 'L');
+        assert!(app.snapshot_in_flight(), "the board is asked all the same");
+        assert!(app.placed.is_empty());
+        assert_eq!(drawn_at(&app, ulid::Ulid(1)), ("todo".into(), 0));
+        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(0)));
+        release(&hold);
+        app.pump().unwrap();
+        press(&mut app, '>');
+        assert!(app.status.contains("merge before DONE"), "refused: {}", app.status);
+        assert!(app.placed.is_empty());
+        assert_eq!(drawn_at(&app, ulid::Ulid(1)), ("todo".into(), 0));
     }
 
     /// A board asked before a spawn does not stand its parked focus down

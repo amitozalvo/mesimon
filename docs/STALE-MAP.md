@@ -30595,3 +30595,41 @@ entries were not run directly: four timing probes, the live-network release chec
 two subprocess helpers exercised by their parent tests. The mod pass likewise skipped
 its helper as a direct entry. Formatting and diff checks passed. Linux/Docker was not
 run for this Terminal.app-specific correction.
+
+## A move is drawn where it went before its board lands (T-910, 2026-10-23, "A moved card snaps back to its old column before it lands (>>), and Shift+hjkl moves it late")
+
+**The report.** On `>>` the card went back to its old column for a moment, then jumped to the
+new one; Shift+H/J/K/L moved it a beat late. Cause confirmed: T-812 asks the board after a
+move on the lane and does not wait, and `drop_ghost` drew the card from the last board, where it
+was still home, until that answer landed. The `>` ghost had already drawn it in its new place,
+so `>>` read as a step back.
+
+**What shipped.** A move the daemon took becomes a `Placement` (ticket, column, `before`, and
+`need`, the ask count of the first board asked after it). `drop_ghost` lays it on `App.board` at
+once, so the next frame draws the card where it went. `absorb` lays every placement still
+pending over each board it takes, and retires a placement at the first landing whose ask count
+reaches `need`. `Placement::lay` places the card the way `Daemon::order_within` does for
+`Position::Before`, and leaves a card that is already there alone, so a board that already shows
+the move does not change. The UI thread still never waits on that board.
+
+- A refused move places nothing (T-450): the card stays home and the cursor stays on it.
+- A nudge's cursor rides the card on the same frame (`follow_ticket`). `>>` and `.` keep it
+  home, so the next card is under the cursor at once. `cursor_hold` is kept, and the comment
+  saying an older landing draws the card home is corrected.
+- `own_moves` is unchanged. The overlay means the landing no longer shows the card as moved, so
+  `absorb_moves` would leave the stamp alive for up to 10 s. A retired placement therefore
+  spends the stamp, as the landing did before (T-838).
+- `catch_up` stays in front of every move key (CLAUDE.md's read-modify-write rule). A second
+  nudge waits only for the first's board, which the overlay already drew, so a held Shift+J
+  walks one row per press without jitter. **Refuted:** skipping `catch_up` when the board lags
+  only by this board's own placements. The daemon's `BoardChanged` push for our own move comes
+  through `pump`'s `refresh_soon` and raises `need_seq` anyway, so the skip would rarely apply,
+  and it would split the barrier in two.
+
+Tests in `app.rs` hold the snapshot back with the `Slow`/`Hold` seam (T-812):
+`a_filing_is_drawn_where_it_went_before_its_board_lands`,
+`a_nudge_is_drawn_where_it_went_before_its_board_lands`,
+`quick_nudges_walk_the_card_without_jitter` and `a_refused_move_is_drawn_home`. The two T-812
+tests that pinned "drawn home still" now pin the card slid under at once. There are no golden
+changes. `cargo clippy -p mesimon-tui --all-targets -- -D warnings` fails on main as it is
+(`large_enum_variant` on `Mode`); this ticket does not touch that.
