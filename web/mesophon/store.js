@@ -25,6 +25,17 @@ export const DESCRIPTION_MAX_BYTES = 32 * 1024;
 export const PROMPT_MAX_BYTES = 32 * 1024;
 // The longest envelope the relay keeps (control::MAIL_BYTES).
 const MAIL_BYTES = 128 * 1024;
+// The longest words that wait at the relay for an away terminal (T-896): half
+// a live prompt's. The sealed letter is hex, twice the JSON it seals, and JSON
+// doubles a backslash, a quote or a line break, so 16 KiB of the worst such
+// text is a 64 KiB envelope, half the mailbox. The envelope's own size is
+// checked after sealing as well, for text that escapes worse still.
+export const MAIL_PROMPT_MAX_BYTES = 16 * 1024;
+const kib = (bytes) => Math.ceil(bytes / 1024);
+// Words for a letter too long to wait at the relay: how much to cut, or the
+// live road, which takes a whole prompt. The draft stays in the box.
+const tooLongToWait = (cut) =>
+  `Too long to wait at the relay: cut about ${kib(cut)} KiB, or send it while your terminal is live.`;
 // This browser was told once where words for an away terminal go (T-881).
 const AWAY_EXPLAINED = "mesophon-away-explained";
 function awayExplained() {
@@ -2322,6 +2333,13 @@ export class Store {
       this.sync();
       return;
     }
+    // Too long to wait is said before the sheet explains waiting.
+    const bytes = new TextEncoder().encode(entry.draft).length;
+    if (bytes > MAIL_PROMPT_MAX_BYTES) {
+      entry.delivery = tooLongToWait(bytes - MAIL_PROMPT_MAX_BYTES);
+      this.sync();
+      return;
+    }
     // The first one says where the words go, and when, before they go.
     if (!awayExplained()) {
       this.awayAsk = { ticket: ticket.id };
@@ -2349,8 +2367,9 @@ export class Store {
   sealPrompt(entry, ticket) {
     const text = entry.draft;
     if (!text.trim() || this.letterOf(ticket)) return;
-    if (new TextEncoder().encode(text).length > PROMPT_MAX_BYTES) {
-      entry.delivery = "Prompt must fit in 32 KiB.";
+    const bytes = new TextEncoder().encode(text).length;
+    if (bytes > MAIL_PROMPT_MAX_BYTES) {
+      entry.delivery = tooLongToWait(bytes - MAIL_PROMPT_MAX_BYTES);
       this.sync();
       return;
     }
@@ -2361,6 +2380,15 @@ export class Store {
       envelope = JSON.parse(this.crypto.mail(JSON.stringify(this.active.pin), JSON.stringify(body)));
     } catch {
       entry.delivery = "Could not seal the message in this browser.";
+      this.sync();
+      return;
+    }
+    // Checked as sealed, as a ticket's is: escaping can grow a text past
+    // what its length promised. The cut is in the text's own bytes, scaled
+    // by how much this text grew.
+    const sealed = JSON.stringify(envelope).length;
+    if (sealed > MAIL_BYTES) {
+      entry.delivery = tooLongToWait(Math.ceil(((sealed - MAIL_BYTES) * bytes) / sealed));
       this.sync();
       return;
     }

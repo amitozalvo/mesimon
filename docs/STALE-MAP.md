@@ -29817,6 +29817,19 @@ paragraph, and the crown, which never saw the brief, finds it with `get_ticket`.
 Sonnet, 2026-10-22, Claude Code 2.1.308: PASS in 34 s, first prompt 8,719 characters byte for
 byte, both replies `tamarind`.
 
+**Review (T-898), three fixes.** (1) The Settings field for a template opened on `text()`, which
+sends the default for an oversized one, so Enter unchanged saved `None` over the person's
+template: the field now opens on `custom()`, and Enter unchanged is refused in words and keeps
+it (`app::an_oversized_template_opens_as_written_and_is_never_erased_by_enter`). (2) The phone
+let 32 KiB wait at the relay, and a sealed letter is hex of the JSON it seals, so escaping could
+take it past the 128 KiB mailbox: words that wait are capped at 16 KiB
+(`MAIL_PROMPT_MAX_BYTES`, the worst ordinary escaping then fills half the mailbox), the sealed
+envelope is measured as a ticket's is, and both refusals say how many KiB to cut and keep the
+draft, before the away sheet on a first send (`ux.test.js`'s away-terminal flow). The live
+road keeps 32 KiB. (3) An ask with pictures read a too-long text as no words and answered
+that the words name no picture; `with_pictures` now returns the length refusal first
+(`attachments_e2e`).
+
 ## A key that reads the board before it writes waits for its last press's board (T-812 review, 2026-10-22)
 
 An independent review of T-812 (T-897's `Review` note) found five regressions with one root: a

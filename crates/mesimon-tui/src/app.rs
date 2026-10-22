@@ -8481,7 +8481,16 @@ impl App {
             | Verb::PromptBoardAsk
             | Verb::PromptBoardReply => {
                 let Some(which) = keymap::prompt_of(verb) else { return Ok(()) };
-                let text = self.board.prompts.text(which).to_string();
+                // The person's own words where they wrote some, even past the
+                // limit (T-896): `text` sends mesimon's in that case, and a
+                // field opened on those would save `None` over a template the
+                // person came here to shorten.
+                let text = self
+                    .board
+                    .prompts
+                    .custom(which)
+                    .unwrap_or_else(|| which.default_text())
+                    .to_string();
                 let items = keymap::prompt_items(&self.ctx());
                 let row = items.iter().position(|m| m.verb == verb).unwrap_or(0);
                 let mut buf =
@@ -18976,6 +18985,41 @@ mod tests {
         // The row relabels off the snapshot: whose words stand there now.
         let ctx = app.ctx();
         assert_eq!((keymap::prompt_items(&ctx)[0].label)(&ctx), "Rebase ask: your words");
+    }
+
+    /// A template over the limit (T-896, only a hand-edited `columns.toml`
+    /// holds one) opens in the field as the person wrote it, not as the
+    /// default that stands in for it: Enter unchanged is refused in words
+    /// and keeps it, and a shortened one saves.
+    #[test]
+    fn an_oversized_template_opens_as_written_and_is_never_erased_by_enter() {
+        use mesimon_core::command::PROMPT_MAX_BYTES;
+        use mesimon_core::prompts::AgentPrompt;
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        let theirs = format!("rebase {{branch}} onto {{base}} {}", "x".repeat(PROMPT_MAX_BYTES));
+        app.board_mut().prompts.set(AgentPrompt::Rebase, Some(theirs.clone()));
+        app.mode = Mode::Prompts { idx: 0, editing: None };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let Mode::Prompts { editing: Some(buf), .. } = &app.mode else { panic!("{:?}", app.mode) };
+        assert_eq!(buf.as_str(), theirs, "the field holds the person's words, not the default");
+        let before = sent.borrow().len();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.status.starts_with("template is"), "{}", app.status);
+        assert!(app.status.contains("the limit is"), "{}", app.status);
+        assert_eq!(sent.borrow().len(), before, "nothing sent");
+        assert_eq!(app.board.prompts.custom(AgentPrompt::Rebase), Some(theirs.as_str()));
+        // Shortened, it saves.
+        app.mode = Mode::Prompts { idx: 0, editing: None };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL).unwrap();
+        for c in "rebase {branch} onto {base}, briefly".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(
+            app.board.prompts.custom(AgentPrompt::Rebase),
+            Some("rebase {branch} onto {base}, briefly")
+        );
     }
 
     /// An emptied field is the way back to mesimon's words, and so is typing

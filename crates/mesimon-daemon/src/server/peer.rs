@@ -180,16 +180,17 @@ impl Daemon {
         let name = boardlink::board_name(&other);
         // Sanitized by subtraction alone, as the person's own words are;
         // past the cap, refused with the count (T-896), never cut.
-        let text =
-            match mesimon_core::command::sanitize_prompt(&text) {
-                Ok(Some(text)) => text,
-                Ok(None) => return Response::Err { message: "nothing to send".into() },
-                Err(why) => return Response::Err {
+        let text = match mesimon_core::command::sanitize_prompt(&text) {
+            Ok(Some(text)) => text,
+            Ok(None) => return Response::Err { message: "nothing to send".into() },
+            Err(why) => {
+                return Response::Err {
                     message: format!(
                         "{why} ∙ words past it are a note on this board, and a shorter ask says so"
                     ),
-                },
-            };
+                }
+            }
+        };
         // A shell line is a person's alone (T-876), on either board.
         if mesimon_core::road::is_shell(&text) {
             return Response::Err { message: mesimon_core::road::SHELL_LINE_REFUSED.into() };

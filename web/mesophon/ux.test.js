@@ -2637,6 +2637,15 @@ async function mailPromptFlow(browser, engineName, size, viewport) {
     await until(page, () => document.querySelector("#shell").dataset.link === "asleep");
     await open("ticket-0");
     assert.match(await page.locator("#prompt").getAttribute("placeholder"), /waits for your terminal/);
+    // Too long to wait at the relay (T-896): refused in words that say how
+    // much to cut, the draft kept and nothing sealed, before the sheet.
+    const long = "x".repeat(16 * 1024 + 3000);
+    await page.locator("#prompt").fill(long);
+    await page.locator("#send").click();
+    await until(page, () => /Too long to wait at the relay: cut about 3 KiB/.test(document.body.textContent));
+    assert.equal(await page.locator("#prompt").inputValue(), long, "the draft stays");
+    assert.equal(await page.evaluate(() => fixture.deposits.length), 0);
+    assert(await sheet.isHidden());
     await page.locator("#prompt").fill("Written while away");
     assert.match(await page.locator("#away-what").textContent(), /Waits for your terminal, then queues for claude/);
 

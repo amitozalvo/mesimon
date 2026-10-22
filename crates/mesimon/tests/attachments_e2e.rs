@@ -289,6 +289,20 @@ fn a_prompt_with_a_picture_keeps_it_with_the_ticket_and_links_it_in_the_words() 
         Response::Err { message } => assert!(message.contains("do not name"), "{message}"),
         other => panic!("an unnamed upload went through: {other:?}"),
     }
+    // Words past the cap with a picture they name are refused for their
+    // length (T-896), never as words that name no picture, and keep nothing.
+    {
+        use mesimon_core::command::PROMPT_MAX_BYTES;
+        let link = format!("[Image #1]({})", mesimon_core::attachment::target(attachment));
+        let long = format!("look at {link} {}", "x".repeat(PROMPT_MAX_BYTES));
+        match c.request(ask(long.clone(), vec![attachment])) {
+            Response::Err { message } => {
+                assert!(message.contains(&format!("prompt is {} bytes", long.len())), "{message}");
+                assert!(!message.contains("do not name"), "{message}");
+            }
+            other => panic!("a 32 KiB ask with a picture went through: {other:?}"),
+        }
+    }
     assert!(
         !matches!(
             c.request(Command::ReadAttachment { ticket, attachment }),

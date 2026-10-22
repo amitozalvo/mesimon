@@ -228,6 +228,8 @@ changes. Reconnects never resubmit prompts automatically. If a delivery result
 cannot be recovered, the browser shows **outcome unknown**; check the agent before
 sending again. Prompt text is limited to 32 KiB (32,768 UTF-8 bytes, a note's limit); a
 longer prompt is refused with its size, never cut, and oversized responses are rejected.
+Words that wait at the relay for an away terminal are limited to 16 KiB, because the sealed
+envelope must fit the relay's mailbox; the phone says how much to cut and keeps the draft.
 
 Beside **Queue** and **Steer**, a menu picks the agent's **tier**, as **^n** in your
 terminal's ask field does: the agent's own provider's tiers, the ticket's picked. A prompt

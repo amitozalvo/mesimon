@@ -47,11 +47,11 @@ impl Daemon {
         if uploads.is_empty() {
             return Ok(send(self, text));
         }
-        // The words are matched as the agent will read them (scrubbed and
-        // capped): a link the cap would cut is a picture the words never
-        // name.
-        let clean =
-            mesimon_core::command::sanitize_prompt(&text).ok().flatten().unwrap_or_default();
+        // The words are matched as the agent will read them (scrubbed).
+        // Words past the cap are refused for their length first (T-896):
+        // read as no words, they would answer that the words name no
+        // picture, which is not what is wrong with them.
+        let clean = mesimon_core::command::sanitize_prompt(&text)?.unwrap_or_default();
         let prepared = (|| -> Result<_> {
             let t = self.board.ticket(ticket).ok_or_else(|| anyhow::anyhow!("no such ticket"))?;
             Ok((t.short_key.clone(), self.uploads.prepare(owner, uploads, &clean)?))
