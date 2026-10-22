@@ -331,6 +331,9 @@ fn an_agent_s_shell_line_and_shell_title_are_refused() {
     }
     wait_line(&h, "!echo mesimon-876-person");
     assert!(!got(&h).contains("mesimon-876-crown"), "{:?}", got(&h));
+    // The feed line is the ack, read off the screen a sample after the
+    // Enter, so it can trail the stub's read.
+    wait_feed(&h, "shell_sent", b, 1);
     assert_eq!(feed_count(&h, "shell_sent", b), 1);
 
     // A title the agent sets may not begin with `!` either way — judged as
