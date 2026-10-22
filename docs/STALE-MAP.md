@@ -29487,3 +29487,28 @@ while the writer mutates.
 **Proof:** `cargo ut`; `provider_e2e`, `plan_mode_e2e`, `trust_accept_e2e` and `prompt_e2e`
 36/36 twice with no wait widened; `ci/codex-lifecycle-e2e.py --live --case stop` on the real
 Codex passed.
+
+## A compaction's frames across a restart are no turn (T-894 review, 2026-10-22)
+
+The review of T-894 found the window's one hole: a daemon restarted inside a quiet compaction
+(the `U` chip, inside T-728's two minutes) came back with no window and read the tail at Low;
+the compaction's two helper `SubagentStop`s (STALE-MAP T-577: the engine's own loops fire them
+twice during a compaction) then promoted that Low `Idle` to `Running` at Medium, which
+`on_working` takes, and the `PostCompact{auto}` with no window affirmed `Running` at High — with
+no `Stop` to follow, the status probe called it an Esc and the crown heard a turn end.
+
+**The compaction's `SessionStart` opens a missed window** (`COMPACT_LATE_MS`: not one within
+30 s of a `PostCompact`, which is that compaction's start arriving late — the two are relayed on
+their own, and 2.1.266 was seen sending it late), **a `SubagentStop` inside a window promotes
+nothing**, and **a `PostCompact` with no window never invents a turn**: an automatic one affirms
+`Running` only where the state already is one (`Running`, a held dialog) and says nothing to a
+seat at rest, since Claude Code compacts an idle seat automatically too; a manual one leaves an
+`Idle` where it is, at the confidence it had — the Low `Idle{Unknown}` it used to demote to held
+the High-only auto-park off until something re-affirmed. **A vetoed `/compact` keeps its clock**:
+no road reports the veto (the hook set fires nothing for "nothing to compact"; the mod's
+`session.compact` sees the skip but speaks the hook set's names alone), so the seat reads
+compacting, and is held from auto-park, for `COMPACT_STALE_MS`.
+
+Tests: `attention::a_post_compact_with_no_window_invents_no_turn`,
+`attention::a_restart_inside_a_compaction_reads_no_turn`, the scenario `restart-in-compaction`
+(the review's frames), and `compact_e2e`'s restart phase through the real daemon.

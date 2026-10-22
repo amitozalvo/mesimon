@@ -3,8 +3,9 @@
 //! `PostCompact` — reach the daemon through the real hook binary on both
 //! roads, and the snapshot's record carries the window (`compacting`) from
 //! the first to the last, with the state and the column it began in kept
-//! throughout: a person's `/compact` at a finished turn, an automatic one
-//! inside a turn, and a vetoed one that fires `PreCompact` alone.
+//! throughout: a person's `/compact` at a finished turn, a quiet one with a
+//! daemon restart inside it, an automatic one inside a turn, and a vetoed
+//! one that fires `PreCompact` alone.
 
 // Integration-test crate: `allow-unwrap-in-tests` only reaches items marked
 // #[test], not the helpers beside them, so the D26 exemption is stated here.
@@ -18,8 +19,11 @@ use std::time::Duration;
 use mesimon_core::board::{SessionKind, SessionRecord, SessionState, StopReason};
 use mesimon_core::command::{Command, Response};
 
-/// The automoves the feed recorded for `ticket` as made.
-fn moves(h: &Harness, ticket: ulid::Ulid) -> usize {
+/// The automoves the feed recorded for `ticket` as made, each as its row.
+/// The feed is flushed on the daemon's tick, a beat after the snapshot
+/// shows the move, so a count is waited for (`moves_reach`) and a "no move"
+/// is read after a tick has passed (`settled_moves`).
+fn moves(h: &Harness, ticket: ulid::Ulid) -> Vec<String> {
     let id = ticket.to_string();
     std::fs::read_to_string(h.paths.state_dir.join("activity.jsonl"))
         .unwrap_or_default()
@@ -29,7 +33,8 @@ fn moves(h: &Harness, ticket: ulid::Ulid) -> usize {
                 && l.contains("\"outcome\":\"moved\"")
                 && l.contains(&id)
         })
-        .count()
+        .map(str::to_string)
+        .collect()
 }
 
 #[test]
@@ -80,8 +85,17 @@ fn a_compaction_is_painted_and_moves_nothing() {
         column(&mut c) == "REVIEW"
     });
     assert_eq!(rec(&mut c).state, done);
-    let moved = moves(&h, ticket);
-    assert_eq!(moved, 2, "the two automoves of the turn");
+    let moves_reach = |n: usize| {
+        wait_until(Duration::from_secs(5), "the feed records the moves", || {
+            moves(&h, ticket).len() == n
+        });
+        moves(&h, ticket)
+    };
+    let settled_moves = || {
+        std::thread::sleep(Duration::from_millis(600));
+        moves(&h, ticket)
+    };
+    let moved = moves_reach(2);
 
     // A person's `/compact` at a finished turn: the window opens on the
     // record with the state and the column untouched — before T-894 the
@@ -104,7 +118,37 @@ fn a_compaction_is_painted_and_moves_nothing() {
     wait_until(Duration::from_secs(5), "the compaction window closes", || !rec(&mut c).compacting);
     assert_eq!(rec(&mut c).state, done, "the finished turn is where it was");
     assert_eq!(column(&mut c), "REVIEW");
-    assert_eq!(moves(&h, ticket), moved, "a manual compaction made no move");
+    assert_eq!(settled_moves(), moved, "a manual compaction made no move");
+
+    // A daemon restarted inside a quiet compaction (the `U` chip) comes
+    // back with no window and a record it cannot read: the compaction's
+    // own `SessionStart` reopens the window, its two helper `SubagentStop`s
+    // hold inside it (before the fix they read the restart's Low record as
+    // a turn and moved the ticket), and its end closes it. No turn, no move.
+    hook_send(&hook_sock, &session, "PreCompact", r#"{"trigger":"auto"}"#);
+    wait_until(Duration::from_secs(5), "the quiet window opens", || rec(&mut c).compacting);
+    drop(c);
+    h.restart();
+    let mut c = h.client("compact-after");
+    assert!(!rec(&mut c).compacting, "a restart's machine starts with no window");
+    hook_send_with(&hook_sock, &session, "SessionStart", Some("compact"), r#"{"session_id":"x"}"#);
+    wait_until(Duration::from_secs(5), "the compaction's start reopens the window", || {
+        rec(&mut c).compacting
+    });
+    hook_send(&hook_sock, &session, "SubagentStop", r#"{"agent_type":""}"#);
+    hook_send(&hook_sock, &session, "SubagentStop", r#"{"agent_type":""}"#);
+    std::thread::sleep(Duration::from_millis(400));
+    let r = rec(&mut c);
+    assert_ne!(r.state, SessionState::Running, "a helper's stop is no turn");
+    assert!(r.compacting, "still compacting through the helper's stops");
+    assert_eq!(column(&mut c), "REVIEW");
+    hook_send(&hook_sock, &session, "PostCompact", r#"{"trigger":"auto"}"#);
+    wait_until(Duration::from_secs(5), "the window closes after the restart", || {
+        !rec(&mut c).compacting
+    });
+    assert_ne!(rec(&mut c).state, SessionState::Running, "a compaction's end is no turn");
+    assert_eq!(column(&mut c), "REVIEW");
+    assert_eq!(settled_moves(), moved, "a compaction across a restart made no move");
 
     // An automatic compaction inside a turn: the window opens over
     // `Running`, which the turn keeps, and the turn ends as any turn does.
@@ -112,7 +156,7 @@ fn a_compaction_is_painted_and_moves_nothing() {
     wait_until(Duration::from_secs(5), "the next turn moves the ticket to IN PROGRESS", || {
         column(&mut c) == "IN PROGRESS"
     });
-    let moved = moves(&h, ticket);
+    let moved = moves_reach(3);
     hook_send(&hook_sock, &session, "PreCompact", r#"{"trigger":"auto"}"#);
     wait_until(Duration::from_secs(5), "the window opens mid-turn", || rec(&mut c).compacting);
     assert_eq!(rec(&mut c).state, SessionState::Running, "the turn goes on");
@@ -121,7 +165,7 @@ fn a_compaction_is_painted_and_moves_nothing() {
     wait_until(Duration::from_secs(5), "the window closes mid-turn", || !rec(&mut c).compacting);
     assert_eq!(rec(&mut c).state, SessionState::Running);
     assert_eq!(column(&mut c), "IN PROGRESS");
-    assert_eq!(moves(&h, ticket), moved, "an automatic compaction made no move");
+    assert_eq!(settled_moves(), moved, "an automatic compaction made no move");
     hook_send(&hook_sock, &session, "Stop", r#"{"stop_hook_active":false}"#);
     wait_until(Duration::from_secs(5), "the turn's end moves the ticket to REVIEW", || {
         column(&mut c) == "REVIEW"

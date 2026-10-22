@@ -37,7 +37,17 @@ pub const PARK_STALE_MS: u64 = 10 * 60 * 1000;
 /// A compaction is a minute or two (T-728 measured 122 s); a vetoed one
 /// fires `PreCompact` alone, and `mesimon hook` fails open, so a
 /// `PostCompact` can be lost. Past this the window is read as closed.
+/// The clock is the only close a veto gets: the hook set fires nothing for
+/// "nothing to compact", and the mod's `session.compact` sees the skip but
+/// speaks the hook set's names alone, so a vetoed `/compact` reads
+/// compacting, and holds off auto-park, for this long.
 pub const COMPACT_STALE_MS: u64 = 10 * 60 * 1000;
+/// How long after a `PostCompact` a `SessionStart{compact}` is that same
+/// compaction's, arriving late: the two are relayed on their own and
+/// 2.1.266 was seen sending the start after the end. Such a start opens
+/// no window; one later than this is a compaction whose `PreCompact` the
+/// daemon missed (a restart between the frames), and opens one.
+pub const COMPACT_LATE_MS: u64 = 30_000;
 /// Flap guard: more than this many debounced changes inside the window pins.
 pub const FLAP_MAX: usize = 4;
 pub const FLAP_WINDOW_MS: u64 = 20_000;
@@ -502,6 +512,9 @@ pub struct Machine {
     /// inside a turn keeps `Running`, as it always did. The window is a
     /// fact for the card — a slow glyph and a row — and nothing else.
     compacting_since: Option<u64>,
+    /// When the last window closed on its `PostCompact`, for
+    /// `COMPACT_LATE_MS`.
+    compact_closed_at: Option<u64>,
     /// The wait the stale clock demoted, while the machine still sits in
     /// that demote (T-565). Fifteen quiet minutes say the wait went
     /// unaffirmed, not that its dialog closed: a person who has not
@@ -550,6 +563,7 @@ impl Machine {
             background_at: now,
             park_fallback: StopReason::EndTurn,
             compacting_since: None,
+            compact_closed_at: None,
             stale_wait: None,
         }
     }
@@ -701,9 +715,23 @@ impl Machine {
         // conversation moved on closes it — a vetoed compaction fires
         // `PreCompact` alone, and a lost `PostCompact` is a hook that failed
         // open. `PostCompact` closes it below, after `target` has read it.
+        // The compaction's own `SessionStart` opens it too, where none is
+        // open and no `PostCompact` just closed one: a daemon restarted
+        // inside the window comes back with no window, and the compaction
+        // is still going — its helper loops fire `SubagentStop` twice
+        // (STALE-MAP, T-577), which on a restart's Low `Idle` read as a
+        // turn and moved the ticket.
         match sig {
             Signal::PreCompact { .. } => {
                 if self.compacting_since.is_none() {
+                    self.compacting_since = Some(now);
+                }
+            }
+            Signal::SessionStart { source: StartSource::Compact } => {
+                let late = self
+                    .compact_closed_at
+                    .is_some_and(|at| now.saturating_sub(at) < COMPACT_LATE_MS);
+                if self.compacting_since.is_none() && !late {
                     self.compacting_since = Some(now);
                 }
             }
@@ -725,6 +753,7 @@ impl Machine {
         let target = self.target(sig);
         if matches!(sig, Signal::PostCompact { .. }) {
             self.compacting_since = None;
+            self.compact_closed_at = Some(now);
         }
         let (to, conf) = target?;
 
@@ -903,21 +932,26 @@ impl Machine {
             // SessionStart mid-turn and the turn continues.
             // A compaction moves nothing (T-894): the state it began in is
             // the state it ends in, and the open window is painted, never
-            // passed through. Its `SessionStart` is inert everywhere: it may
-            // land after the `PostCompact` (both are relayed on their own,
-            // and 2.1.266 was seen sending it late), and a window this daemon
-            // never saw open — a restart between the frames — is closed by
-            // the `PostCompact` alone: an automatic one continues the turn it
-            // interrupted, and a manual one leaves the session at the prompt,
-            // never inventing a finished turn.
+            // passed through. Its `SessionStart` is inert here (it opens a
+            // missed window above, and may land after the `PostCompact`).
+            // A `PostCompact` with no window open — a daemon restarted
+            // between the frames — never invents a turn either: an
+            // automatic one affirms a turn already in flight and says
+            // nothing to a seat at rest (Claude Code compacts an idle seat
+            // automatically too, T-728), and a manual one leaves a seat
+            // that is not already at its prompt there, at Low.
             Signal::PreCompact { .. } | Signal::SessionStart { source: StartSource::Compact } => {
                 None
             }
             Signal::PostCompact { .. } if self.compacting_since.is_some() => None,
-            Signal::PostCompact { manual: true } => {
-                Some((S::Idle { stop_reason: StopReason::Unknown }, Confidence::Low))
-            }
-            Signal::PostCompact { manual: false } => t(S::Running),
+            Signal::PostCompact { manual: false } => match self.state {
+                S::Running | S::RequiresAction { .. } => t(S::Running),
+                _ => None,
+            },
+            Signal::PostCompact { manual: true } => match self.state {
+                S::Idle { .. } => None,
+                _ => Some((S::Idle { stop_reason: StopReason::Unknown }, Confidence::Low)),
+            },
             Signal::SessionStart { .. } => t(S::Idle { stop_reason: StopReason::Unknown }),
             // In-app `/resume` and `/clear` end the CONVERSATION, not the
             // process: Claude Code fires SessionEnd{reason:X} then
@@ -990,8 +1024,12 @@ impl Machine {
             // a misread: promote back to Running at Medium (inference, not a
             // stated event). A High-confidence Idle came from a real Stop
             // (which reports in-flight work via background_tasks) and stands.
+            // ...unless a compaction is in flight (T-894): its helper loops
+            // fire `SubagentStop` twice, and those are the compaction's own.
             Signal::SubagentStop => match &self.state {
-                S::Idle { .. } | S::Unknown { .. } if self.confidence != Confidence::High => {
+                S::Idle { .. } | S::Unknown { .. }
+                    if self.confidence != Confidence::High && self.compacting_since.is_none() =>
+                {
                     Some((S::Running, Confidence::Medium))
                 }
                 _ => None,
@@ -1628,6 +1666,68 @@ mod tests {
     /// The other half: a team that is plainly working keeps its park, however
     /// long it takes. Every frame here is one `target` answers `None` to —
     /// that is exactly why the clock reads them itself.
+    /// A `PostCompact` with no window open never invents a turn (T-894
+    /// review): a restart between a compaction's frames comes back with no
+    /// window, and the frames that follow are the compaction's, not a
+    /// turn's. An automatic end affirms a turn in flight and nothing else;
+    /// a manual one leaves a seat at its prompt where it is, at the
+    /// confidence it had, so the High-only auto-park is not held off.
+    #[test]
+    fn a_post_compact_with_no_window_invents_no_turn() {
+        let done = SessionState::Idle { stop_reason: StopReason::EndTurn };
+        for manual in [false, true] {
+            let mut rest = m(done.clone());
+            assert!(rest.apply(&Signal::PostCompact { manual }, 1_000).is_none(), "{manual}");
+            assert_eq!(rest.state(), &done);
+            assert_eq!(rest.confidence(), Confidence::High);
+            assert!(!rest.compacting());
+        }
+        let mut busy = m(SessionState::Running);
+        assert!(busy.apply(&Signal::PostCompact { manual: false }, 1_000).is_none());
+        assert_eq!(busy.state(), &SessionState::Running);
+        let mut lost = Machine::restore(SessionState::unknown(), Confidence::Low, 0);
+        assert!(lost.apply(&Signal::PostCompact { manual: false }, 1_000).is_none());
+        assert_eq!(lost.state(), &SessionState::unknown());
+        let to = lost.apply(&Signal::PostCompact { manual: true }, 2_000).expect("at the prompt");
+        assert_eq!(to.to, SessionState::Idle { stop_reason: StopReason::Unknown });
+        assert_eq!(to.confidence, Confidence::Low);
+    }
+
+    /// The review's frames (T-894): a finished turn, its quiet compaction
+    /// begun, a restart inside the window, the restart's Low read of the
+    /// tail, then the compaction's own `SessionStart`, its two helper
+    /// `SubagentStop`s and its end. None of it is a turn: the start reopens
+    /// the window the restart lost, the stops hold inside it, and the end
+    /// closes it. A start that follows an end within `COMPACT_LATE_MS` is
+    /// that compaction's, late, and opens nothing.
+    #[test]
+    fn a_restart_inside_a_compaction_reads_no_turn() {
+        let done = SessionState::Idle { stop_reason: StopReason::EndTurn };
+        let mut m = Machine::restore(SessionState::unknown(), Confidence::Low, 0);
+        m.apply(&Signal::TranscriptHint { kind: TailHint::TurnComplete }, 100);
+        m.tick(100 + SETTLE_MS);
+        assert_eq!(m.state(), &done);
+        assert_eq!(m.confidence(), Confidence::Low);
+        assert!(m.apply(&Signal::SessionStart { source: StartSource::Compact }, 60_000).is_none());
+        assert!(m.compacting(), "the start reopens the window a restart lost");
+        for at in [60_100, 60_200] {
+            assert!(m.apply(&Signal::SubagentStop, at).is_none(), "a helper's stop is no turn");
+            assert_eq!(m.state(), &done);
+        }
+        assert!(m.apply(&Signal::PostCompact { manual: false }, 122_000).is_none());
+        assert!(!m.compacting());
+        assert_eq!(m.state(), &done);
+        // The same start, late after the end: that compaction's, inert.
+        assert!(m.apply(&Signal::SessionStart { source: StartSource::Compact }, 123_000).is_none());
+        assert!(!m.compacting(), "a late start reopens nothing");
+        // And past the late window, a start is a compaction of its own.
+        m.apply(&Signal::SessionStart { source: StartSource::Compact }, 122_000 + COMPACT_LATE_MS);
+        assert!(m.compacting());
+        // Outside a window the helper's stop is still the misread it was.
+        let mut cold = Machine::restore(done.clone(), Confidence::Low, 0);
+        assert!(cold.apply(&Signal::SubagentStop, 1_000).is_some());
+    }
+
     #[test]
     fn background_frames_keep_a_park_alive() {
         for sig in [

@@ -1,0 +1,74 @@
+{
+  "schema": 1,
+  "id": "restart-in-compaction",
+  "title": "A daemon restarted inside a quiet compaction reads none of its frames as a turn",
+  "provenance": {
+    "kind": "capture_derived",
+    "capture": "T-894 review: T-728's feed (PreCompact auto, two SubagentStop, SessionStart compact, PostCompact auto, 122 s) with a restart after the PreCompact",
+    "claude_version": "2.1.296",
+    "note": "The restart's machine starts with no window and reads the tail at Low; before the fix the helper SubagentStops promoted that Idle to Running (Medium moves a ticket) and the PostCompact affirmed it High with no Stop to follow. Virtual timing."
+  },
+  "initial": {
+    "state": "idle",
+    "stop_reason": "end_turn"
+  },
+  "confidence": "high",
+  "column": "REVIEW",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {"source": "hook", "event": "PreCompact", "payload": {"trigger": "auto"}},
+      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW", "compacting": true}
+    },
+    {
+      "at_ms": 1000,
+      "input": {"source": "restart"},
+      "expect": {"state": {"state": "unknown", "reason": "no_signal"}, "column": "REVIEW", "confidence": "low", "compacting": false}
+    },
+    {
+      "at_ms": 1100,
+      "input": {"source": "transcript", "record": {"uuid": "reply", "type": "assistant", "message": {"stop_reason": "end_turn", "content": [{"type": "text", "text": "done"}]}}},
+      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW", "confidence": "low", "compacting": false}
+    },
+    {
+      "at_ms": 3000,
+      "input": {"source": "tick"},
+      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW", "confidence": "low", "compacting": false}
+    },
+    {
+      "at_ms": 60000,
+      "input": {"source": "hook", "event": "SessionStart", "payload": {"source": "compact"}},
+      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW", "compacting": true}
+    },
+    {
+      "at_ms": 60100,
+      "input": {"source": "hook", "event": "SubagentStop", "payload": {"agent_type": ""}},
+      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW", "confidence": "low", "compacting": true}
+    },
+    {
+      "at_ms": 60200,
+      "input": {"source": "hook", "event": "SubagentStop", "payload": {"agent_type": ""}},
+      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW", "confidence": "low", "compacting": true}
+    },
+    {
+      "at_ms": 122000,
+      "input": {"source": "hook", "event": "PostCompact", "payload": {"trigger": "auto"}},
+      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW", "confidence": "low", "compacting": false}
+    },
+    {
+      "at_ms": 123000,
+      "input": {"source": "hook", "event": "SessionStart", "payload": {"source": "compact"}},
+      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW", "compacting": false}
+    },
+    {
+      "at_ms": 130000,
+      "input": {"source": "tick"},
+      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW", "confidence": "low"}
+    },
+    {
+      "at_ms": 200000,
+      "input": {"source": "hook", "event": "UserPromptSubmit", "payload": {}},
+      "expect": {"state": {"state": "running"}, "column": "IN PROGRESS", "compacting": false}
+    }
+  ]
+}
