@@ -29850,3 +29850,51 @@ round trip before it.
 on a fake whose snapshot answers come late; the fake now keeps a grace band and applies tags and
 tag colours. `a_snapshot_in_flight_blocks_no_key_and_no_frame` keeps its claim for keys that
 read nothing (navigation, frames) and now shows a move waiting for the ask out.
+
+## A `/compact` from the board, an Esc out of one, and an ask that met it (T-894, 2026-10-22, three bugs from the author's own seat)
+
+The author's board, seq 5–47 of one daemon life: a `/compact` from the ask field sat 11 s as an
+unacked paste (`paste_unacked`); an Esc out of it left the card on "compacting context"; and
+the crown's `ask_agent` into that seat went down the mod and came back `prompt_submit_refused`
+(`dropped`), its words left on the card as "prompt not sent". That mark was the crown's words,
+not the `/compact`'s: the only writer of `unsent` in that life was the refusal.
+
+**Measured** on Claude Code 2.1.308 in a scratch pane (hooks logged, the session file and the
+screen sampled every 130 ms). A completed `/compact`: the composer empties at once, the session
+file reads `busy`, `✻ Compacting conversation… (Ns · ↓ K tokens)` is painted above the composer
+from ~160 ms, and `PreCompact`, a `SubagentStop`, `SessionStart{compact}` and `PostCompact` come,
+then `idle` and `⎿ Compacted`. **An Esc 1.3 s in: `PreCompact` alone, no other hook, nothing in
+the transcript; the file flips `idle` within 130 ms, the line goes, and `/compact` is put back
+in the box.** The refusal's words are Claude Code's own for a plugin's input after a person's
+Esc ("the session was stopped and nobody has sent input since", `n8e` in the binary): input is
+held until the person types.
+
+**A `/` command is acked off the screen**, as a `!` line is (T-876): `Owed::screen_acked`
+(was `shell`) covers `road::is_command`, the feed says `command_sent`, and the ack is the box
+read empty `SHELL_RENDER_MS` after the Enter. A command, like a `!` line, runs only from an
+empty box, never kept unsent, and its ack leaves words already unsent as they were: it is the
+box's own, not a prompt.
+
+**The screen closes an interrupted compaction**: a compacting Claude pane's screen is wanted
+every tick, and the window closes (`Signal::CompactionEnded`, moving nothing, feed
+`compaction_ended_on_screen`) on two screens `COMPACT_CLEAR_MS` apart, both
+`COMPACT_SCREEN_GRACE_MS` after the window opened, showing the composer and no
+`Compacting conversation` line (`composer::compacting`). A veto that paints no line closes the
+same way, so its ten-minute clock is now only the backstop. `SessionRecord::compacting` is now
+set on the record as the window moves (reset at a restart), not only decorated.
+
+**Words wait out a compaction**: `quiet::holds_against_words` holds a compacting Claude seat, so
+a queued ask and the crown's ask wait for the window to close. **A submit refused in the stopped
+words goes in by the paste road** (keys, which Claude Code takes, and the road every ask takes
+on the hook set), owed and acked as a paste, the crown's ask still the turn's — **only into an
+empty box**, read live: after an Esc out of `/compact` the box holds `/compact`, and words pasted
+after it would run as the compaction's instructions. There, and on any other refusal, the words
+stay unsent for the person's resend, and a crown ask reads `asked: dropped, by: agent` on the
+crown's `get_ticket` (no wake: a new wake cause would change `crown.json`). A person's resend
+then goes once they have typed in the pane or cleared its box.
+
+Tests: `compact_e2e` (an Esc phase on a stub that paints the line, a queued ask held through a
+window, and `a_slash_command_from_the_board_is_acked_off_the_screen`), `mod_turns_e2e`'s two
+`a_submit_held_after_a_stop_…` tests (fake mod switch `mod-stopped-submit`), and the units
+`composer::a_compaction_reads_off_its_spinner_line`, `attention::the_screen_closes_an_interrupted_compaction`,
+`quiet`'s word hold and `refusal_tests`.

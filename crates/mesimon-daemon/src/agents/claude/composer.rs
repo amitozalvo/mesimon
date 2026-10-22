@@ -50,6 +50,18 @@ const RULE: char = '─';
 /// so anything this short is something else.
 const RULE_MIN: usize = 8;
 
+/// Claude Code's spinner line while it compacts (2.1.308, T-894):
+/// `✻ Compacting conversation… (3s · ↓ 77 tokens)`, drawn above the
+/// composer for the whole of a compaction and gone the moment it ends or
+/// is interrupted — and an Esc fires no hook and writes no transcript, so
+/// this line's absence is the one close an interrupted compaction has.
+pub const COMPACTING_LINE: &str = "Compacting conversation";
+
+/// Whether `screen` shows a compaction in flight (see `COMPACTING_LINE`).
+pub fn compacting(screen: &InputScreen) -> bool {
+    screen.lines.iter().any(|l| l.contains(COMPACTING_LINE))
+}
+
 fn is_rule(line: &str) -> bool {
     let line = line.trim();
     line.chars().count() >= RULE_MIN && line.chars().all(|c| c == RULE)
@@ -91,6 +103,29 @@ mod tests {
 
     fn screen(s: &str, cursor: Option<(usize, usize)>) -> InputScreen {
         InputScreen { lines: s.lines().map(str::to_string).collect(), cursor }
+    }
+
+    /// Claude Code 2.1.308's line for the whole of a compaction (T-894),
+    /// captured from a scratch pane, and the pane after an Esc out of it:
+    /// the line gone and `/compact` back in the box.
+    #[test]
+    fn a_compaction_reads_off_its_spinner_line() {
+        let during = screen(
+            &format!(
+                "❯ /compact\n✻ Compacting conversation… (3s · ↓ 77 tokens)\n{RULE_ROW}\n❯ \n{RULE_ROW}"
+            ),
+            None,
+        );
+        assert!(compacting(&during));
+        assert_eq!(read(&during), Composer::Empty);
+        let after_esc = screen(
+            &format!(
+                "✻ Cogitated for 1s\n{RULE_ROW}\n❯ /compact  <optional custom summarization instructions>\n{RULE_ROW}"
+            ),
+            None,
+        );
+        assert!(!compacting(&after_esc));
+        assert_eq!(read(&after_esc), Composer::Holding, "an Esc puts `/compact` back");
     }
 
     const RULE_ROW: &str =

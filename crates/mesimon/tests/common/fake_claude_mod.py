@@ -192,6 +192,11 @@ def main():
                 relay("ModPong", frame_id, {})
             elif kind == "submit" and switch("mod-drop-submit"):
                 relay("ModSubmit", frame_id, {"outcome": "dropped", "reason": "a hook blocked it"})
+            elif kind == "submit" and switch("mod-stopped-submit"):
+                # Claude Code 2.1.308's words for a plugin's input after a
+                # person's Esc (T-894): held until the person types.
+                relay("ModSubmit", frame_id, {"outcome": "dropped",
+                      "reason": "the session was stopped and nobody has sent input since"})
             elif kind == "submit":
                 ok = deliver(frame.get("text") or "")
                 relay("ModSubmit", frame_id,

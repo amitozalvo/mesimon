@@ -2498,8 +2498,9 @@ pub struct AgentNeedsYouView {
 /// The crown's last ask, where it did not go (T-568). `status` is a word —
 /// `dropped` — so an older client drops what it cannot read. `by` says who
 /// dropped it: `person` (words replaced from the board or Remote Control,
-/// taken back, or talked past in the pane) or `board` (the seat the words
-/// waited at went, or the ticket did).
+/// taken back, or talked past in the pane), `board` (the seat the words
+/// waited at went, or the ticket did) or `agent` (the agent's own Claude
+/// Code refused them, T-894: a hook beneath blocked the prompt).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentAskedView {
     pub status: String,

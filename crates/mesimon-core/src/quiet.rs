@@ -71,6 +71,10 @@ pub fn holds_against_words(s: &SessionRecord) -> bool {
             && s.state == (SessionState::Idle { stop_reason: StopReason::Background })
             && !s.pending_submit))
         || (s.kind.is_agent() && s.state.stopped_on_limit())
+        // A seat compacting its conversation (T-894) takes no words until
+        // the window closes: the queue holds them, where a submit into it
+        // was refused and dropped.
+        || (s.kind == SessionKind::Claude && s.compacting && s.state.has_pane())
 }
 
 /// An agent BETWEEN TURNS whose pane may be ended and its conversation kept
@@ -369,6 +373,13 @@ mod tests {
             assert!(holds_against_words(&s), "{:?}", s.state);
         }
         s.state = SessionState::Idle { stop_reason: StopReason::EndTurn };
+        assert!(!holds_against_words(&s));
+        // A compaction in flight holds words (T-894) and is no turn: the
+        // working set does not take it; a parked record's flag holds none.
+        s.compacting = true;
+        assert!(holds_against_words(&s), "a compacting seat takes no words");
+        assert!(!is_working(&s));
+        s.state = SessionState::Sleeping;
         assert!(!holds_against_words(&s));
     }
 

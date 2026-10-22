@@ -215,6 +215,14 @@ const SUBMIT_ATTEMPTS: u8 = 10;
 /// a screen captured before it did still shows the empty box the line was
 /// pasted into.
 const SHELL_RENDER_MS: u64 = 300;
+/// How long after a compaction window opens its pane's screen is read for
+/// the close (T-894): Claude Code paints `Compacting conversation…` about
+/// 160 ms after `PreCompact` (2.1.308), and a screen from before it would
+/// read as a compaction already over.
+const COMPACT_SCREEN_GRACE_MS: u64 = 1_500;
+/// The two clear screens that close a compaction window are at least this
+/// far apart (T-894): one capture between repaints closes nothing.
+const COMPACT_CLEAR_MS: u64 = 500;
 /// How long words parked for a Claude pane wait for its composer to paint
 /// (T-570), from the `SessionStart` edge or a resend. The presses start
 /// counting only once the paste is in, so this is the startup's own budget:
@@ -675,6 +683,10 @@ pub struct Daemon {
     /// read consults in place of a fork on the writer. Pruned with the
     /// panes.
     screens: HashMap<String, (u64, mesimon_backend_tmux::InputScreen)>,
+    /// A compacting pane's first screen read clear of its compaction line
+    /// (T-894), by record: the close waits for a second, `COMPACT_CLEAR_MS`
+    /// later, so one capture between repaints closes nothing.
+    compaction_clear: HashMap<uuid::Uuid, u64>,
     /// Per-ticket worktree bindings (M4), persisted as worktrees.json.
     worktrees: worktree::Bindings,
     /// Spawn requests parked behind provisioning: replayed on Provisioned(Ok).
@@ -1263,6 +1275,11 @@ pub fn run(paths: Paths) -> Result<()> {
     });
 
     let now = now_ms();
+    // A restart's machine starts with no compaction window (T-894), and
+    // the record it is minted from says the same.
+    for s in &mut board.sessions {
+        s.compacting = false;
+    }
     let machines = board
         .sessions
         .iter()
@@ -1352,6 +1369,7 @@ pub fn run(paths: Paths) -> Result<()> {
         pane_gen: 0,
         pane_slow_said: None,
         screens: HashMap::new(),
+        compaction_clear: HashMap::new(),
         worktrees,
         pending_spawns: Vec::new(),
         pending_resumes: Vec::new(),
@@ -2020,14 +2038,35 @@ struct Owed {
     /// read before the pane came up, or before the Ctrl+C, is not the box
     /// the words go into.
     screen_after: u64,
-    /// The words are a shell line (`road::is_shell`, T-876): Claude Code
-    /// runs one in its bash mode and fires no `UserPromptSubmit` for it, so
-    /// the ack is the screen's — the box reading empty on a sample after
-    /// the Enter (`SHELL_RENDER_MS` later: a sample stamped before the box
-    /// repainted still shows it empty). A pasted shell line is never kept
-    /// unsent: nothing says whether the box took it, and the person's own
-    /// screen does.
-    shell: bool,
+    /// The words are the box's own (`road::is_command`, T-876, T-894): a
+    /// `!` shell line, which Claude Code runs in its bash mode, or a `/`
+    /// command, which it runs itself; neither fires a `UserPromptSubmit`
+    /// (`/compact` fires `PreCompact`, `/clear` a `SessionEnd`, `/help`
+    /// nothing at all), so the ack is the screen's — the box reading empty
+    /// on a sample after the Enter (`SHELL_RENDER_MS` later: a sample
+    /// stamped before the box repainted still shows it empty). A pasted
+    /// one is never kept unsent: nothing says whether the box took it, and
+    /// the person's own screen does.
+    screen_acked: bool,
+}
+
+/// Claude Code's refusal of a plugin's input after a person's Esc (T-894,
+/// 2.1.308): "the session was stopped and nobody has sent input since".
+/// Its words are the only discriminator the mod is handed; a refusal that
+/// says anything else is a hook beneath that blocked the prompt, and a
+/// paste would meet it too.
+fn input_held_after_stop(reason: &str) -> bool {
+    let r = reason.to_ascii_lowercase();
+    r.contains("stopped") && r.contains("input")
+}
+
+/// The feed's word for a pasted line of the box's own (T-894): what kind.
+fn sent_word(text: &str) -> &'static str {
+    if road::is_shell(text) {
+        "shell_sent"
+    } else {
+        "command_sent"
+    }
 }
 
 impl Owed {
@@ -2051,7 +2090,7 @@ impl Owed {
             asked: None,
             steer: None,
             screen_after: now_ms(),
-            shell: false,
+            screen_acked: false,
         }
     }
 
@@ -2075,7 +2114,7 @@ impl Owed {
             asked: None,
             steer: None,
             screen_after: now,
-            shell: false,
+            screen_acked: false,
         }
     }
 
@@ -3107,9 +3146,14 @@ impl Daemon {
         self.want_codex_inputs();
         let mut changed = self.drive_codex_inputs(now);
         // A compaction window past `COMPACT_STALE_MS` closes (T-894): the
-        // board stops painting it.
-        for m in self.machines.values_mut() {
-            changed |= m.expire_compaction(now);
+        // record stops carrying it.
+        for (id, m) in self.machines.iter_mut() {
+            if m.expire_compaction(now) {
+                if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == *id) {
+                    rec.compacting = false;
+                }
+                changed = true;
+            }
         }
         for (id, change) in fired {
             changed |= stage!(self, "apply_change", self.apply_change(id, &change, None, None));
@@ -3133,6 +3177,8 @@ impl Daemon {
             changed |= stage!(self, "rescue_silent_mods", self.rescue_silent_mods(now));
             self.want_owed_screens(now);
             changed |= stage!(self, "settle_owed", self.settle_owed(now));
+            self.want_compaction_screens();
+            changed |= stage!(self, "settle_compactions", self.settle_compactions(now));
             changed |= stage!(self, "settle_plan_accepts", self.settle_plan_accepts(now));
             changed |= stage!(self, "service_plan_accepts", self.service_plan_accepts(now));
             changed |= stage!(self, "service_crown_plans", self.service_crown_plans());
@@ -4654,7 +4700,6 @@ impl Daemon {
             });
         }
         let mut dirty = observation.metadata_changed;
-        let mut announce = false;
         let signal = observation.signal;
         if let Some(sig) = signal {
             // A death that names ANOTHER pane is the previous tenant's. A
@@ -4738,8 +4783,14 @@ impl Daemon {
             let (change, decision) = machine.apply_explained(&sig, now);
             self.feed.state_decision(id, &frame.event, &decision);
             // A compaction window's edge moves no state (T-894), and the
-            // board paints the window: it is told of the edge all the same.
-            announce |= decision.before.compacting != decision.after.compacting;
+            // record carries the window: the card paints it, and the queue
+            // holds words against it (`quiet::holds_against_words`).
+            if decision.before.compacting != decision.after.compacting {
+                if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                    rec.compacting = decision.after.compacting;
+                    dirty = true;
+                }
+            }
             // The machine's idle-teammate set is what decides whether the
             // NEXT Stop parks or ends the turn (T-135); it survives a daemon
             // restart only on the record.
@@ -4790,8 +4841,6 @@ impl Daemon {
         }
         if dirty {
             self.persist_sessions();
-            self.broadcast();
-        } else if announce {
             self.broadcast();
         }
     }
@@ -5325,8 +5374,60 @@ impl Daemon {
             said.map(|s| mesimon_core::text::cap_bytes(s, 300)).unwrap_or("no reason given")
         ));
         let Some(owed) = self.drop_owed(id) else { return };
+        let ticket = owed.ticket;
+        // Claude Code holds a plugin's input after a person's Esc until the
+        // person types (2.1.308, T-894: "the session was stopped and nobody
+        // has sent input since"), and a submit is a plugin's. The paste road
+        // is keys, which it takes — the road every ask takes on the hook
+        // set: the same words go in by it, owed and acked as a paste is, and
+        // the crown's ask stays the turn's. Only into an EMPTY box: an Esc
+        // out of `/compact` puts `/compact` back in it (measured), and words
+        // pasted after it would run as the compaction's instructions.
+        if said.is_some_and(input_held_after_stop) {
+            use crate::agents::claude::composer::{self, Composer};
+            let pane = self
+                .board
+                .sessions
+                .iter()
+                .find(|s| s.id == id && s.kind == SessionKind::Claude && s.state.has_pane())
+                .map(|s| s.sid16());
+            let empty = pane.as_deref().is_some_and(|sid| {
+                self.backend
+                    .capture_input_screen(sid)
+                    .is_ok_and(|screen| composer::read(&screen) == Composer::Empty)
+            });
+            if let (Some(sid), Some(words), true) = (pane, owed.sent.clone(), empty) {
+                let text = self.launch_words(ticket, &words);
+                match self.backend.paste_text(&sid, &text) {
+                    Ok(()) => {
+                        self.paste_entered(id, ticket, &text, owed.ack, Some(words));
+                        if let Some(o) = self.owed.get_mut(&id) {
+                            o.asked = owed.asked;
+                        }
+                        self.feed.board_outcome(
+                            "daemon",
+                            "prompt_pasted_after_refusal",
+                            Some(ticket),
+                            "input held after a stop",
+                        );
+                        self.persist_and_notify();
+                        return;
+                    }
+                    Err(e) => self.journal.line(&format!("session {id}: the paste failed: {e}")),
+                }
+            }
+        }
+        // Any other refusal (a hook beneath blocked it, or a box holding
+        // text) keeps the words unsent for the person's resend — which goes
+        // once the person has typed in the pane or cleared its box — and
+        // the crown reads its ask dropped by
+        // the agent's own side (`get_ticket`'s `asked: dropped, by: agent`),
+        // never silently.
         self.mark_unsent(id, owed.sent);
-        self.feed.board_outcome("daemon", "prompt_submit_refused", Some(owed.ticket), outcome);
+        if let Some(TurnAsk::Crown(crown)) = owed.asked {
+            self.crown_dropped_ask(ticket, crown, "agent");
+        }
+        self.feed.board_outcome("daemon", "prompt_submit_refused", Some(ticket), outcome);
         self.persist_and_notify();
     }
 
@@ -5344,13 +5445,16 @@ impl Daemon {
     /// drops the ask: they talked to the agent ahead of it, and the parked
     /// words may now be moot. The one settling site for every road (T-244).
     fn ack_owed(&mut self, id: uuid::Uuid) -> bool {
+        // A `/` command or a `!` line acked off the screen (T-876, T-894)
+        // is the box's own, not a prompt: words still unsent stay so.
+        let command = self.owed.get(&id).is_some_and(|o| o.screen_acked);
         let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else {
             return false;
         };
         let ticket = rec.ticket;
         // Words a launch could not deliver (T-570) are moot once the agent
         // takes a prompt, whoever typed it.
-        let mut changed = rec.unsent.take().is_some();
+        let mut changed = !command && rec.unsent.take().is_some();
         if let Some(owed) = self.drop_owed(id) {
             self.feed.board(owed.ack.by, owed.ack.word, Some(ticket));
             // A phone's words that waited for this pane (a relaunch onto
@@ -5465,6 +5569,75 @@ impl Daemon {
         }
     }
 
+    /// A compacting Claude pane's screen is wanted every tick (T-894): the
+    /// `Compacting conversation…` line is the one close an interrupted
+    /// compaction has — a person's Esc fires no hook and writes no
+    /// transcript, and Claude Code's session file flips `idle` within
+    /// 130 ms of it (measured on 2.1.308), the line gone with it.
+    fn want_compaction_screens(&mut self) {
+        let due: Vec<String> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|r| r.compacting && r.kind == SessionKind::Claude && r.state.has_pane())
+            .map(|r| r.sid16())
+            .collect();
+        for sid16 in due {
+            self.pane_due.screen(&sid16);
+        }
+    }
+
+    /// Close a compaction window whose pane shows its composer and no
+    /// `Compacting conversation…` line on two screens `COMPACT_CLEAR_MS`
+    /// apart, both read `COMPACT_SCREEN_GRACE_MS` after the window opened
+    /// (Claude Code paints the line ~160 ms after `PreCompact`). A
+    /// completed compaction's `PostCompact` closes the window before this
+    /// does; an Esc leaves the composer holding `/compact` and the line
+    /// gone, and only this says so.
+    fn settle_compactions(&mut self, now: u64) -> bool {
+        use crate::agents::claude::composer::{self, Composer};
+        let candidates: Vec<(uuid::Uuid, ulid::Ulid, String, u64)> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|r| r.compacting && r.kind == SessionKind::Claude && r.state.has_pane())
+            .filter_map(|r| {
+                let since = self.machines.get(&r.id)?.compacting_since()?;
+                Some((r.id, r.ticket, r.sid16(), since))
+            })
+            .collect();
+        self.compaction_clear.retain(|id, _| candidates.iter().any(|(c, ..)| c == id));
+        let mut changed = false;
+        for (id, ticket, sid16, since) in candidates {
+            let clear = self
+                .screens
+                .get(&sid16)
+                .filter(|(at, _)| *at >= since + COMPACT_SCREEN_GRACE_MS)
+                .map(|(at, screen)| {
+                    (
+                        *at,
+                        composer::read(screen) != Composer::Absent && !composer::compacting(screen),
+                    )
+                });
+            let Some((at, true)) = clear else {
+                self.compaction_clear.remove(&id);
+                continue;
+            };
+            let first = *self.compaction_clear.entry(id).or_insert(at);
+            if at < first + COMPACT_CLEAR_MS {
+                continue;
+            }
+            self.compaction_clear.remove(&id);
+            let _ = self.observe_signal(id, &Signal::CompactionEnded, now, "screen");
+            if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                rec.compacting = false;
+            }
+            self.feed.board("daemon", "compaction_ended_on_screen", Some(ticket));
+            changed = true;
+        }
+        changed
+    }
+
     /// The tick's pass over the ledger: expire the pastes whose ack never
     /// came, and press again where an Enter is due — on cadence, until
     /// `UserPromptSubmit` settles the entry or the attempts run out. Giving
@@ -5517,13 +5690,14 @@ impl Daemon {
                 changed = true;
             }
         }
-        // A pasted shell line's receipt (T-876): the box reads empty on a
-        // sample from after its Enter had time to paint. The sampler is
-        // asked for the next screen each time, as the composer wait is.
+        // A pasted shell line's or slash command's receipt (T-876, T-894):
+        // the box reads empty on a sample from after its Enter had time to
+        // paint. The sampler is asked for the next screen each time, as the
+        // composer wait is.
         let shells: Vec<(uuid::Uuid, String, u64)> = self
             .owed
             .iter()
-            .filter(|(_, o)| o.shell && o.parked.is_none())
+            .filter(|(_, o)| o.screen_acked && o.parked.is_none())
             .filter_map(|(id, o)| {
                 let rec = self.board.sessions.iter().find(|s| s.id == *id)?;
                 Some((*id, rec.sid16(), o.screen_after + SHELL_RENDER_MS))
@@ -5580,12 +5754,13 @@ impl Daemon {
                 let ticket = rec.ticket;
                 let claude = rec.kind == SessionKind::Claude;
                 let owed = self.drop_owed(id);
-                let pasted_shell = owed.as_ref().is_some_and(|o| o.shell && o.parked.is_none());
+                let pasted_command =
+                    owed.as_ref().is_some_and(|o| o.screen_acked && o.parked.is_none());
                 let words = owed.and_then(|o| o.sent.or(o.parked));
                 // A Claude seat stopped by a startup modal still has a pane
                 // to resend into once the dialog is answered (T-570). A
-                // shell line already in the box is not resent (T-876).
-                if claude && !pasted_shell {
+                // shell line or command already in the box is not resent.
+                if claude && !pasted_command {
                     self.mark_unsent(id, words);
                 }
                 self.feed.board("daemon", "prompt_submit_abandoned", Some(ticket));
@@ -5682,14 +5857,15 @@ impl Daemon {
                         let _ = self.backend.send_enter(&sid16);
                     } else {
                         let _ = self.backend.paste_text(&sid16, &text);
-                        // A shell line at a wake (T-876): its receipt is the
-                        // box reading empty after these keys, never a hook.
-                        if road::is_shell(&text) {
+                        // A shell line or a slash command at a wake (T-876,
+                        // T-894): its receipt is the box reading empty after
+                        // these keys, never a hook.
+                        if road::is_command(&text) {
                             if let Some(owed) = self.owed.get_mut(&id) {
-                                owed.shell = true;
+                                owed.screen_acked = true;
                                 owed.screen_after = now_ms();
                             }
-                            self.feed.board("daemon", "shell_sent", Some(ticket));
+                            self.feed.board("daemon", sent_word(&text), Some(ticket));
                         }
                         // The brief went in with the first prompt: this
                         // session has read its ticket, whatever it does with
@@ -5708,16 +5884,17 @@ impl Daemon {
             }
             if left <= 1 {
                 let owed = self.drop_owed(id);
-                let shell = owed.as_ref().is_some_and(|o| o.shell);
+                let command = owed.as_ref().is_some_and(|o| o.screen_acked);
                 let words = owed.and_then(|o| o.sent.or(o.parked));
-                // A shell line's presses ran out with the box never read
-                // empty (T-876): the line may well be running, its echo
-                // scrolled off, so it is neither kept unsent nor called
-                // unsent — the ack that never came is said, as a paste's.
-                if claude && !shell {
+                // A shell line's or command's presses ran out with the box
+                // never read empty (T-876): the line may well be running,
+                // its echo scrolled off, so it is neither kept unsent nor
+                // called unsent — the ack that never came is said, as a
+                // paste's.
+                if claude && !command {
                     self.mark_unsent(id, words);
                 }
-                let word = if shell { "paste_unacked" } else { "prompt_submit_gave_up" };
+                let word = if command { "paste_unacked" } else { "prompt_submit_gave_up" };
                 self.feed.board("daemon", word, Some(ticket));
                 changed = true;
             } else if let Some(owed) = self.owed.get_mut(&id) {
@@ -11322,14 +11499,17 @@ impl Daemon {
         // the line would be the draft's tail, sent to the model as words.
         // The screen says which box this is, read now, at this edge; a
         // screen that cannot be read refuses nothing.
-        let shell = road::is_shell(text);
-        if shell {
+        // A `!` line or a `/` command (T-876, T-894) runs only from an empty
+        // box: into a draft it is text.
+        let command = road::is_command(text);
+        if command {
             use crate::agents::claude::composer::{self, Composer};
             if let Ok(screen) = self.backend.capture_input_screen(&sid) {
                 if composer::read(&screen) == Composer::Holding {
-                    return Err(
-                        "the prompt box holds text ∙ a `!` line runs only from an empty box".into(),
-                    );
+                    let what = if road::is_shell(text) { "a `!` line" } else { "a `/` command" };
+                    return Err(format!(
+                        "the prompt box holds text ∙ {what} runs only from an empty box"
+                    ));
                 }
             }
         }
@@ -11364,15 +11544,31 @@ impl Daemon {
         } else {
             self.backend.paste_text(&sid, text).map_err(|e| format!("could not deliver: {e}"))?;
         }
-        // Stamped after the keys went in: a shell line's receipt is a
-        // sample of the box from after them (T-876).
-        let mut owed = Owed::pasted(ticket, ack, now_ms());
-        owed.shell = shell;
-        self.owed.insert(id, owed);
-        if shell {
-            self.feed.board("daemon", "shell_sent", Some(ticket));
-        }
+        self.paste_entered(id, ticket, text, ack, None);
         Ok(())
+    }
+
+    /// The owed entry for words just pasted into a live Claude pane,
+    /// stamped after the keys went in: a shell line's or a slash command's
+    /// receipt is a sample of the box from after them (T-876, T-894), a
+    /// prompt's is its `UserPromptSubmit`. `sent` keeps the words a give-up
+    /// should say never reached the agent.
+    fn paste_entered(
+        &mut self,
+        id: uuid::Uuid,
+        ticket: ulid::Ulid,
+        text: &str,
+        ack: Ack,
+        sent: Option<Parked>,
+    ) {
+        let command = road::is_command(text);
+        let mut owed = Owed::pasted(ticket, ack, now_ms());
+        owed.screen_acked = command;
+        owed.sent = sent;
+        self.owed.insert(id, owed);
+        if command {
+            self.feed.board("daemon", sent_word(text), Some(ticket));
+        }
     }
 
     /// Words for a Codex pane, pasted by `drive_codex_inputs` on its own
@@ -11716,9 +11912,6 @@ impl Daemon {
         rec.tasks_running = (rec.kind.is_agent()
             && rec.state == (SessionState::Idle { stop_reason: StopReason::Background }))
         .then(|| u32::try_from(rec.background_tasks.count()).unwrap_or(u32::MAX));
-        // And the open compaction window (T-894): the machine's, which a
-        // restart starts without.
-        rec.compacting = self.machines.get(&rec.id).is_some_and(|m| m.compacting());
         // And whether the seat never took a prompt (T-603): one `stat`
         // per idle or parked claude.
         rec.unprompted = self.unprompted_hint(rec);
@@ -18226,6 +18419,21 @@ fn mod_dir() -> Option<std::path::PathBuf> {
 /// while the remote flag has mods off.
 fn rig_no_flags() -> bool {
     std::env::var("MESIMON_RIG_NO_FLAGS").as_deref() == Ok("1")
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::input_held_after_stop;
+
+    /// Claude Code 2.1.308's words for a plugin's input after a person's
+    /// Esc (T-894), read off the binary and the author's journal; a hook's
+    /// block is another refusal, which a paste would meet too.
+    #[test]
+    fn the_stopped_session_refusal_is_told_apart() {
+        assert!(input_held_after_stop("the session was stopped and nobody has sent input since"));
+        assert!(!input_held_after_stop("a hook blocked it"));
+        assert!(!input_held_after_stop(""));
+    }
 }
 
 #[cfg(test)]

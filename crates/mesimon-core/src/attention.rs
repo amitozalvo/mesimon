@@ -386,6 +386,11 @@ pub enum Signal {
     PostCompact {
         manual: bool,
     },
+    /// The pane's screen says the compaction is over (T-894): its
+    /// `Compacting conversation…` line gone and the composer back, on two
+    /// samples. An interrupted compaction (a person's Esc) fires no hook
+    /// and writes no transcript; this is its close. Moves no state.
+    CompactionEnded,
     /// Observe tier: derived from an adopted session's transcript tail.
     TranscriptHint {
         kind: TailHint,
@@ -588,6 +593,11 @@ impl Machine {
         self.compacting_since.is_some()
     }
 
+    /// When the open compaction window began, epoch ms.
+    pub fn compacting_since(&self) -> Option<u64> {
+        self.compacting_since
+    }
+
     /// Close a compaction window no `PostCompact` closed inside
     /// `COMPACT_STALE_MS`. The daemon's tick asks; true when it closed one,
     /// which the board is told of, as it is told of every frame of it.
@@ -742,7 +752,8 @@ impl Machine {
             | Signal::ObservationLost
             | Signal::Stop { has_agent_id: false, .. }
             | Signal::SessionEnd { .. }
-            | Signal::PaneDied { .. } => {
+            | Signal::PaneDied { .. }
+            | Signal::CompactionEnded => {
                 self.compacting_since = None;
             }
             Signal::SessionStart { source } if *source != StartSource::Compact => {
@@ -940,9 +951,9 @@ impl Machine {
             // nothing to a seat at rest (Claude Code compacts an idle seat
             // automatically too, T-728), and a manual one leaves a seat
             // that is not already at its prompt there, at Low.
-            Signal::PreCompact { .. } | Signal::SessionStart { source: StartSource::Compact } => {
-                None
-            }
+            Signal::PreCompact { .. }
+            | Signal::CompactionEnded
+            | Signal::SessionStart { source: StartSource::Compact } => None,
             Signal::PostCompact { .. } if self.compacting_since.is_some() => None,
             Signal::PostCompact { manual: false } => match self.state {
                 S::Running | S::RequiresAction { .. } => t(S::Running),
@@ -1700,6 +1711,20 @@ mod tests {
     /// the window the restart lost, the stops hold inside it, and the end
     /// closes it. A start that follows an end within `COMPACT_LATE_MS` is
     /// that compaction's, late, and opens nothing.
+    /// An Esc out of a compaction fires no hook (measured on 2.1.308): the
+    /// screen's close is the window's end, and it moves no state.
+    #[test]
+    fn the_screen_closes_an_interrupted_compaction() {
+        let done = SessionState::Idle { stop_reason: StopReason::EndTurn };
+        let mut m = m(done.clone());
+        m.apply(&Signal::PreCompact { manual: true }, 100);
+        assert!(m.compacting());
+        assert!(m.apply(&Signal::CompactionEnded, 2_000).is_none());
+        assert!(!m.compacting());
+        assert_eq!(m.state(), &done);
+        assert_eq!(m.confidence(), Confidence::High);
+    }
+
     #[test]
     fn a_restart_inside_a_compaction_reads_no_turn() {
         let done = SessionState::Idle { stop_reason: StopReason::EndTurn };

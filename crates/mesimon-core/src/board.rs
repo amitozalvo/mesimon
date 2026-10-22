@@ -504,8 +504,9 @@ pub struct SessionRecord {
     /// `PostCompact`. The state is whatever it was — a compaction moves
     /// nothing — and the card paints the window: a slow glyph in place of
     /// the state's own, and `compacting the conversation` on its activity
-    /// row. SNAPSHOT only, as `tasks_running` is: the machine holds the
-    /// window, and a restart's machine starts with none.
+    /// row, and the queue holds words against it (`quiet::holds_against_words`).
+    /// Set by the daemon as the window opens and closes, from the machine;
+    /// a restart's machine starts with none, and the record is reset with it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub compacting: bool,
 }

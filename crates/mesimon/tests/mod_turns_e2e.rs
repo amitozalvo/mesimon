@@ -554,3 +554,61 @@ fn the_crown_answers_down_the_worker_s_mod_and_the_person_first_wins() {
     assert!(matches!(refused, Response::Err { .. }), "{refused:?}");
     assert_eq!(frames(&h, ws, "answer").len(), 2, "nothing more went down");
 }
+
+/// Claude Code holds a plugin's input after a person's Esc until the person
+/// types (2.1.308, T-894: the crown's `ask_agent` to a seat whose `/compact`
+/// the author had Esc'd was refused "the session was stopped and nobody has
+/// sent input since", and dropped). A submit refused in those words goes in
+/// by the paste road, which is keys, into the seat's empty box, and is owed
+/// and acked as a paste: delivered once, never left unsent.
+#[test]
+fn a_submit_held_after_a_stop_is_pasted_into_the_empty_box() {
+    let Some(h) = Harness::boot_with_env("modstop", Some(READER), &[MOD]) else { return };
+    std::fs::write(h.dir.join("mod-stopped-submit"), "").unwrap();
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("modstop");
+    let ticket = ticket_with_brief(&mut c, "held", "## Brief\n\nnothing");
+    let sid = spawn(&mut c, ticket, false);
+    wait_bridge(&h, sid);
+    session_start(&hook_sock, sid);
+    c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    assert!(matches!(prompt(&mut c, ticket, "mesimon-894 held words", false), Response::Ok));
+    wait_feed(&h, &["\"cmd\":\"prompt_pasted_after_refusal\""]);
+    wait_until(Duration::from_secs(8), "the words by paste", || {
+        got(&h).contains("mesimon-894 held words")
+    });
+    assert_eq!(frames(&h, sid, "submit").len(), 1, "one submit, then the paste");
+    let rec = record(&mut c, sid);
+    assert!(rec.unsent.is_none(), "{:?}", rec.unsent);
+    assert!(!feed(&h).contains("\"cmd\":\"prompt_submit_refused\""));
+    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"x"}"#);
+    wait_feed(&h, &["\"cmd\":\"prompt_submitted\""]);
+    let _ = c.request(Command::KillSession { id: sid });
+}
+
+/// The same refusal where no empty box shows (an Esc out of `/compact` puts
+/// `/compact` back in it, measured on 2.1.308): nothing is pasted after it,
+/// which would run as the compaction's instructions. The words stay unsent
+/// on the card for the person's resend, and the refusal is in the feed.
+#[test]
+fn a_submit_held_after_a_stop_with_no_empty_box_is_kept_unsent() {
+    let Some(h) = Harness::boot_bare("modstopbox", Some(READER), &[MOD]) else { return };
+    std::fs::write(h.dir.join("mod-stopped-submit"), "").unwrap();
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("modstopbox");
+    let ticket = ticket_with_brief(&mut c, "held box", "## Brief\n\nnothing");
+    let sid = spawn(&mut c, ticket, false);
+    wait_bridge(&h, sid);
+    session_start(&hook_sock, sid);
+    c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    assert!(matches!(prompt(&mut c, ticket, "mesimon-894 kept words", false), Response::Ok));
+    wait_until(Duration::from_secs(5), "the words kept unsent", || {
+        record(&mut c, sid).unsent.is_some()
+    });
+    assert_eq!(record(&mut c, sid).unsent.unwrap().text, "mesimon-894 kept words");
+    wait_feed(&h, &["\"cmd\":\"prompt_submit_refused\""]);
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!got(&h).contains("mesimon-894 kept words"), "nothing pasted");
+    assert!(!feed(&h).contains("prompt_pasted_after_refusal"));
+    let _ = c.request(Command::KillSession { id: sid });
+}
