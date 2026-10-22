@@ -127,6 +127,16 @@ pub(crate) fn draw<W: Write>(
     drawn
 }
 
+/// Clear our fullscreen viewport and invalidate ratatui's previous frame.
+/// `Terminal::clear` preserves the cursor by querying it (CSI 6n); a slow
+/// or non-answering terminal stalls there for up to two seconds. Our next
+/// frame places the cursor itself. Resize clears without that round trip;
+/// size is a local ioctl. Also used by the intro's no-reply pty test.
+pub(crate) fn clear<B: Backend>(terminal: &mut ratatui::Terminal<B>) -> Result<(), B::Error> {
+    let size = terminal.size()?;
+    terminal.resize(ratatui::layout::Rect::new(0, 0, size.width, size.height))
+}
+
 /// A wide glyph's covered columns, written before the glyph (T-540).
 ///
 /// ratatui follows a VS16 emoji (the header's `☕️`) with its covered column
@@ -330,6 +340,21 @@ mod tests {
         assert!(changed.starts_with(BEGIN) && changed.ends_with(END), "{changed:?}");
         assert!(changed.contains('D') && !changed.contains("board"), "only the cell: {changed:?}");
         assert!(!changed.contains("\x1b[?25l"), "still hidden: {changed:?}");
+    }
+
+    #[test]
+    fn fullscreen_clear_repaints_an_unchanged_frame_after_external_damage() {
+        use ratatui::backend::TestBackend;
+        let mut terminal = Terminal::new(TestBackend::new(12, 2)).unwrap();
+        let paint = |f: &mut ratatui::Frame| f.render_widget("board", f.area());
+        terminal.draw(paint).unwrap();
+        let expected = terminal.backend().buffer().clone();
+        // An escaped write or a handover has invalidated what ratatui
+        // remembers. Clearing only the backend would leave this blank.
+        terminal.backend_mut().clear().unwrap();
+        clear(&mut terminal).unwrap();
+        terminal.draw(paint).unwrap();
+        assert_eq!(terminal.backend().buffer(), &expected);
     }
 
     /// A cell whose only change is its underline colour is written twice

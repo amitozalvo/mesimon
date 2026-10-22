@@ -30174,3 +30174,141 @@ Coverage adds cancellation/no-agent key tests, authorization-scope and legacy-ke
 unit cases, bounded-output cases, capture-without-sharing wire checks and metadata-only
 read-feed checks. SH1 verifies successful shell reads, structured workflow answers,
 no execution tools, and a live shell awaiting human closure confirmation.
+
+## Terminal parity starts with the right color profile and query-free clears (T-909, 2026-10-22)
+
+Mesimon can preserve its designed colors and interaction model across capable terminals.
+Pixel-identical text also depends on the emulator's font rasterizer, cell metrics and user
+profile. Treating every non-iTerm terminal as a lesser renderer hides application bugs;
+treating RGB support as proof of every other capability hides a different set of bugs.
+
+**Two concrete defects fixed.** `detect.rs` previously understood `COLORTERM=truecolor/24bit`
+and otherwise only `TERM` containing `256color`, `linux`, or `dumb`. Without `COLORTERM`,
+`xterm-ghostty` and `xterm-kitty` became **16 colors**, and a new Apple Terminal advertising
+`xterm-256color` became **256**. This changes more than color precision: `Theme::new` selects
+a different palette, `tints()` removes the tag ring below RGB, light-256 has no selected
+background, and `mix()` cannot interpolate indexed colors. Losing the environment hint can
+therefore flatten surfaces, remove distinctions and turn fades into steps.
+
+The ladder now retains `NO_COLOR`, `MESIMON_COLOR`/`--color`, and `COLORTERM` precedence, then
+recognizes explicit RGB terminal entries and known direct emulator identities. It recognizes
+Terminal.app's **build** in `TERM_PROGRAM_VERSION` (465 and later), not the host's macOS
+version: the host can be across SSH. The build boundary follows
+[Ratatui's Terminal.app detection](https://www.ratatui.rs/examples/layout/flex/).
+[Apple's Tahoe feature list, page 14](https://www.apple.com/my/os/pdf/All_New_Features_macOS_Tahoe_Sept_2025.pdf)
+confirms 24-bit color; the old blanket claim that Terminal.app cannot display RGB is obsolete.
+Unknown or old Apple versions still use their `TERM` fallback. No bundle-id inference is used.
+`TMUX`, `STY`, screen/tmux terminal entries and multiplexer program names veto inference from
+an inherited outer emulator. An explicit `COLORTERM` or RGB terminal entry still means what
+it did. Generic `xterm-256color` alone still does not promise RGB.
+
+| Evidence with `COLORTERM` absent | Previous profile | Current profile |
+| --- | --- | --- |
+| Direct `TERM=xterm-ghostty` or `xterm-kitty` | 16 | RGB |
+| Direct Ghostty, kitty, WezTerm or cmux program identity, `TERM=xterm-256color` | 256 | RGB |
+| Direct Apple Terminal build 465+, `TERM=xterm-256color` | 256 | RGB |
+| Apple Terminal build below 465 or unknown, `TERM=xterm-256color` | 256 | 256 |
+| Outer tmux/screen, no explicit RGB evidence | TERM fallback | TERM fallback |
+| Generic `TERM=xterm-256color`, unidentified emulator | 256 | 256 |
+
+`mesimon doctor` now prints **board colors**, including the reason for the selection. It
+uses the same pure decision as the board, works in pipes and probes nothing. This describes
+the current launch environment, not an already-running board in another terminal.
+
+Second, Ratatui 0.30.2's `Terminal::clear` queries the cursor to preserve its position. In
+our locked `ratatui-core` 0.1.2 this is `terminal/buffers.rs::clear`; crossterm can wait two
+seconds for the answer. The fullscreen board does not need to preserve that cursor: the
+next frame places it. `quiet::clear` uses the local size ioctl and fullscreen `resize` to
+clear and invalidate the previous frame without a terminal query. Startup, Ctrl+L, resume
+and returns from an attached session/editor use it. The intro shares the helper, extending
+T-903's already-tested approach. The one-time keyboard negotiation and the key-release
+handover fence remain: they answer questions the application actually needs.
+
+**What the rest of the research changes about the approach.** These are distinct axes,
+not a single "good terminal" flag:
+
+- **Color and decoration.** `Theme::summary_under` currently assumes both RGB and 256-color
+  terminals support independently colored underlines. SGR 58 and underline styles are
+  separate from foreground/background RGB; the
+  [kitty underline protocol](https://sw.kovidgoyal.net/kitty/underlines/) defines them
+  separately. A future measured fallback should draw only the completed portion with a
+  plain underline when underline color is unavailable. Do not downgrade the whole palette
+  to fix one decoration, or infer underline support from the Apple RGB build boundary.
+- **Glyph width.** `glyphs::done_unread` deliberately uses text-default emoji `✔` and already
+  records the safer bold `✓` fallback. Emoji presentation, ambiguous-width settings and
+  Unicode versions can disagree with Rust's width calculation. Ratatui buffer goldens prove
+  cell intent, not the pixels an emulator paints. [WezTerm exposes its Unicode width
+  version](https://wezterm.org/config/lua/config/unicode_version.html); [Ghostty documents
+  grapheme-width modes](https://ghostty.org/docs/config/reference#grapheme-width-method).
+  A portable glyph option should be independent of color: today ASCII is coupled to Mono.
+  Measure the failing symbols before replacing the whole UI with ASCII or changing a
+  user's terminal-wide Unicode policy.
+- **Frame presentation.** The board already brackets changed frames with synchronized
+  output (DECSET 2026), emits nothing for idle frames, and repairs covered wide-glyph
+  cells in `quiet.rs`. [Ghostty's rendering guidance](https://ghostty.org/docs/help/synchronized-output)
+  recommends that protocol to prevent tearing. Adding it again is not a fix. Check first
+  paint, resize, full clear and attach/detach separately, and distinguish the board's output
+  from Claude/Codex output inside tmux. A terminal that ignores synchronization can still
+  expose intermediate writes; buffer goldens cannot establish flicker parity.
+- **Keys.** The board already negotiates the kitty keyboard protocol and has legacy
+  alternatives in `keymap.rs`. The [protocol's legacy encoding table](https://sw.kovidgoyal.net/kitty/keyboard-protocol/#legacy-key-event-encoding)
+  demonstrates why Enter and Shift+Enter can be identical bytes. No decoder can reconstruct
+  a modifier the terminal never sent. Keep the fallback actions discoverable and test
+  press/repeat/release across the handover; do not force a protocol by emulator name.
+- **Tmux is a separate hop.** The board normally draws directly; focused agents draw through
+  Mesimon's private tmux. The [tmux RGB guidance](https://github.com/tmux/tmux/wiki/FAQ#how-do-i-use-rgb-colour)
+  requires knowledge of the outer terminal's RGB support. Changing `default-terminal` or
+  unconditionally declaring `*:RGB` is not proof that the attached endpoint supports it.
+  Compare direct-board and attached-pane failures separately before changing this backend.
+- **Terminal chrome.** iTerm tab color, subtitle and icon sequences are application-specific.
+  Mesimon already has terminal-specific notification paths and generic title/progress
+  mechanisms in `title.rs` and `notify.rs`. Matching the board does not require pretending
+  another emulator supports iTerm's tab controls.
+
+**A controlled visual comparison.** Use an ordinary external terminal and an isolated
+fixture, not a board inside an agent pane. Compare the same build, fixture, theme, 120×30
+cell grid and animation time in iTerm, Terminal.app and the reported alternative (cmux and
+Ghostty are useful separate entries). Record application/build, `TERM`, `COLORTERM`,
+`TERM_PROGRAM_VERSION`, `mesimon doctor`'s board-colors line, font family/size, cell spacing,
+and whether tmux or SSH is between the board and the renderer. Do not capture the whole
+environment. Compare once with defaults, then with the same installed font, opaque
+background and matching cell metrics. Keep the two sets of results distinct.
+
+For Ghostty/cmux, the relevant controls are `font-family`, `font-size`,
+`adjust-cell-height`, `adjust-cell-width`, `font-thicken`, `minimum-contrast`, and
+`background-opacity`. Contrast correction can change the relative brightness of muted
+text, and font blending can change apparent weight without changing the requested RGB.
+These are comparison variables, not settings Mesimon should silently write. The
+[Ghostty configuration reference](https://ghostty.org/docs/config/reference) describes these
+controls; [cmux's appearance documentation](https://github.com/manaflow-ai/cmux/blob/main/docs/customizing-appearance.md)
+describes its libghostty rendering settings and their configuration locations.
+[WezTerm's line-height control](https://wezterm.org/config/lua/config/line_height.html)
+similarly changes row spacing independently of the application's cell grid.
+
+Capture a selected and unselected card, all attention states, multiple tags, summary
+progress at rest and during change, the mascot, rich text/diff, a dialog, a long/Unicode
+name, resize and an agent round trip. Inspect both screenshots and a short recording:
+seams and glyph fallback need pixels, tearing needs time. Include a 60×20 pass for narrow
+geometry. A deterministic visual specimen using these existing renderers would make this
+repeatable without live agents; it is the next useful validation tool if differences
+remain, rather than another terminal-name special case.
+
+**Scope and evidence.** This ticket establishes the two fixes above through source analysis
+and regression tests; it does not establish pixel parity on other terminal applications.
+The new environment-table tests cover missing color hints, Apple build boundaries, explicit
+overrides, multiplexer inheritance and conservative fallbacks. The clear test proves that
+an unchanged frame is repainted after external damage; the intro's real no-reply pty test
+checks the shared clear path emits no query. Existing theme and geometry goldens remain the
+expected design. Remaining underline/glyph/profile proposals require a reproduced visual
+failure before changing that design.
+
+Validation: the six detection tests passed; `cargo ut` passed 2,524 tests, including the
+unchanged rendering goldens and the no-reply pty, and `m1_e2e` passed its real-tmux acceptance
+check. Both gates ran through `ci/test-run.py` with clean fixture audits. The first targeted
+run's cleanup failed because the sandbox denied `ps`; its registry had no sockets or repos,
+and the command-scoped rerun completed cleanly. The first unit gate inherited `NO_COLOR=1`
+from the agent and failed the existing ANSI underline-byte assertion; the passing run removed
+that variable from the test process environment. Six standard unit entries are ignored:
+four timing probes, the live-release download test, and the pty child invoked by its parent
+regression test. No full nextest, Linux/Docker or live terminal visual comparison was run:
+this changes client detection/clearing, not daemon state, the wire or tmux configuration.

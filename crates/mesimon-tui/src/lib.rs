@@ -101,6 +101,8 @@ pub fn ticket_shells_status() -> String {
 /// off, and named plainly when nothing here can.
 pub use caffeine::doctor_line as keep_awake_status;
 pub use detach_guide::run as run_detach_guide;
+/// The board's color profile and the environment evidence that selected it.
+pub use detect::doctor_line as color_status;
 /// What `mesimon doctor` says about the note editor's `^g`: which program
 /// opens, and which variable named it.
 pub use external::doctor_line as editor_status;
@@ -385,7 +387,7 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
         // from nothing. This is the Terminal.app probe-garbage recovery, and
         // the answer to any stray write from a program that escaped its pane.
         if std::mem::take(&mut app.force_redraw) {
-            terminal.clear()?;
+            quiet::clear(terminal)?;
         }
 
         // ^Z: suspend THIS client only. The terminal goes back the way we
@@ -405,7 +407,7 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
             *terminal = init_terminal()?;
             mouse = Capture::default();
             app.saw_board(true);
-            terminal.clear()?;
+            quiet::clear(terminal)?;
         }
 
         // Focus handover: leave the terminal entirely, attach, come back (docs/19 §2).
@@ -532,7 +534,7 @@ fn init_terminal() -> Result<Term> {
         )?;
     }
     let mut t = ratatui::Terminal::new(quiet::Quiet::new(stdout))?;
-    t.clear()?;
+    quiet::clear(&mut t)?;
     Ok(t)
 }
 

@@ -230,6 +230,7 @@ fn environment(repo: &std::path::Path, verbose: bool) -> Section {
     // The two theme slots, and whether MESIMON_THEME is pinning one. Never
     // which ground the terminal is on: doctor runs in pipes.
     records.push(rec(Level::Note, "theme", mesimon_tui::theme_status()));
+    records.push(rec(Level::Ok, "board colors", mesimon_tui::color_status()));
     // The editor `^g` opens on a note, and which variable chose it.
     records.push(rec(Level::Note, "editor", mesimon_tui::editor_status(repo)));
     // What `^k` opens a link with (T-256): the platform's opener, or

@@ -671,11 +671,7 @@ fn road<B: Backend<Error = io::Error>>(
     // A terminal it cannot read keys from ends it unmarked; the board's own
     // loop is what says so.
     let _ = play(term, theme, &ink, &path, pace);
-    // Not `Terminal::clear`, which asks the terminal where its cursor is
-    // and waits up to 2 s on one that never answers: a fullscreen resize
-    // clears the same and asks nothing.
-    let size = term.size()?;
-    term.resize(Rect::new(0, 0, size.width, size.height))
+    crate::quiet::clear(term)
 }
 
 /// `mesimon welcome`, which an `install.sh` from before T-903 runs after an
