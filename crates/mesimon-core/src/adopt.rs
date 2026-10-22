@@ -449,8 +449,42 @@ pub fn user_prompt(v: &Value) -> Option<String> {
     if text.is_empty() || text.starts_with(TASK_NOTIFICATION_TAG) {
         return None;
     }
-    Some(text.to_string())
+    Some(unwrap_pasted(text))
 }
+
+/// `text` without the `<pasted_content id=…>` and `</pasted_content>` lines
+/// Claude Code wraps a pasted block in (2.1.287, T-588), and without the
+/// blank lines it leaves under the opening one. The tags are the harness's,
+/// not the person's: a launch's brief is a title over a paste, and on a card
+/// the opening tag took a third of the two rows before a word of the brief
+/// (T-893). Only a tag on a line of its own is the wrapper.
+fn unwrap_pasted(text: &str) -> String {
+    if !text.contains(PASTED_TAG) {
+        return text.to_string();
+    }
+    let is_open = |t: &str| {
+        t.strip_prefix(PASTED_TAG)
+            .is_some_and(|rest| rest.ends_with('>') && rest.starts_with([' ', '>']))
+    };
+    let mut out: Vec<&str> = Vec::new();
+    let mut after_open = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if is_open(t) {
+            after_open = true;
+            continue;
+        }
+        if t == "</pasted_content>" || (after_open && t.is_empty()) {
+            continue;
+        }
+        after_open = false;
+        out.push(line);
+    }
+    out.join("\n").trim().to_string()
+}
+
+/// The opening of the wrapper Claude Code puts around a pasted block.
+const PASTED_TAG: &str = "<pasted_content";
 
 /// The summary a compaction opens the new context with: a plain `user`
 /// record, `isMeta` false, flagged `isCompactSummary` — the harness's words,
@@ -788,6 +822,23 @@ mod tests {
             user_prompt(&val(r#"{"uuid":"u7","type":"user","message":{"content":"  "}}"#)),
             None
         );
+    }
+
+    #[test]
+    fn user_prompt_drops_the_pasted_content_wrapper() {
+        // A launch's brief as Claude Code 2.1.287 records it (T-893).
+        let v = val(
+            r#"{"uuid":"u8","type":"user","message":{"content":"Fix the card\n\n<pasted_content id=\"19e3\">\n\n\nThe brief.\n\nSecond paragraph.\n</pasted_content>"}}"#,
+        );
+        assert_eq!(
+            user_prompt(&v).as_deref(),
+            Some("Fix the card\n\nThe brief.\n\nSecond paragraph.")
+        );
+        // A tag inside a sentence is the person's own words, kept.
+        let v = val(
+            r#"{"uuid":"u9","type":"user","message":{"content":"why does <pasted_content id=x> show?"}}"#,
+        );
+        assert_eq!(user_prompt(&v).as_deref(), Some("why does <pasted_content id=x> show?"));
     }
 
     #[test]

@@ -4588,7 +4588,7 @@ impl App {
         }
         let e = self.spoke.get(&ticket)?;
         let peek = self.peek_cache.peek_for(e.kind, &e.path)?;
-        let words = crate::text::one_line(peek.text.as_deref()?);
+        let words = crate::text::one_line(&crate::peek::card_words(peek.text.as_deref()?));
         // The draw's read can be ahead of the scan that starts the reveal's
         // clock (T-725): words the entry has not stamped yet are a reveal
         // not begun, nothing written, never the settled ink.

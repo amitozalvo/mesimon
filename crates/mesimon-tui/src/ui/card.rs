@@ -1170,7 +1170,8 @@ pub(super) fn render(
         // interior. Two rows (T-829): the gist, with the transcript one
         // focus away.
         if let Some(text) = peek.and_then(|pk| pk.text.as_deref()) {
-            for row in crate::peek::wrap(text, t_cells.saturating_sub(2), PEEK_ROWS) {
+            let words = crate::peek::card_words(text);
+            for row in crate::peek::wrap(&words, t_cells.saturating_sub(2), PEEK_ROWS) {
                 push(vec![Span::styled(format!("  {row}"), dim)]);
             }
         }

@@ -176,6 +176,26 @@ pub(crate) fn sanitize(s: &str) -> String {
     mesimon_core::text::scrub_cells(s, true)
 }
 
+/// A reply as a card draws it (T-893): `rich::plain`'s words, with no
+/// fence, `#`, `**` or backtick spending the two rows the card has. Only the
+/// head is parsed — a card is asked for per frame and shows a sentence or
+/// two, and `CARD_HEAD` bytes of source are far more than two rows of words.
+pub(crate) fn card_words(text: &str) -> String {
+    let mut end = text.len().min(CARD_HEAD);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let head = crate::rich::plain(&text[..end]);
+    if end < text.len() {
+        // Words past the head still exist: one more keeps `wrap`'s cut marker.
+        return format!("{head} ~");
+    }
+    head
+}
+
+/// How much of a reply `card_words` reads.
+const CARD_HEAD: usize = 4096;
+
 /// Greedy display-cell word wrap to at most `max_lines`; a word wider than
 /// `width` hard-splits by grapheme. When content is cut, the last line ends
 /// in the `~` marker (07 §4.1's vocabulary, via `text::truncate`).
@@ -368,6 +388,15 @@ mod tests {
         assert_eq!(sanitize("done \u{2705} ok \u{26A0}\u{FE0F}!"), "done \u{2705} ok \u{26A0}!");
         assert_eq!(sanitize("a\u{200D}b\u{200B}c 1\u{FE0F}\u{20E3}"), "abc 1");
         assert_eq!(sanitize("\u{FEFF}x\u{2060}y"), "xy");
+    }
+
+    #[test]
+    fn card_words_drop_the_fence_and_mark_a_long_reply() {
+        let words = card_words("Ship it:\n```\nmake ship\n```");
+        assert_eq!(wrap(&words, 40, 2), vec!["Ship it: make ship"]);
+        // Past the parsed head, the cut still shows.
+        let long = format!("{}```", "word ".repeat(CARD_HEAD));
+        assert!(card_words(&long).ends_with(" ~"));
     }
 
     #[test]

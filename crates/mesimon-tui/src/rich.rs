@@ -159,6 +159,63 @@ pub(crate) fn mark_cut(lines: &mut [Line<'static>], width: usize, theme: &Theme)
     last.spans.push(Span::styled("~", theme.dim2()));
 }
 
+/// `src`'s words with the markdown taken off, for a surface that draws
+/// plain text — the card's reply rows (T-893). The parse is this module's,
+/// so a fence, a heading's `#`, emphasis, a code span's backticks and a
+/// bullet go exactly where the page's rendering takes them; a fenced
+/// block's lines stay, as words. A link keeps its label and drops its
+/// target, which a card has no room to show. A quote keeps its `> `: on a
+/// card it is the board's mark for the person's own words (`> {prompt}`).
+/// One line per block, so `peek::wrap` reads each as a word break.
+pub(crate) fn plain(src: &str) -> String {
+    plain_of(&blocks(src, Newline::Space))
+}
+
+fn plain_of(bs: &[Block]) -> String {
+    let mut out = String::new();
+    plain_blocks(bs, &mut out);
+    out
+}
+
+fn plain_blocks(bs: &[Block], out: &mut String) {
+    let runs = |out: &mut String, runs: &[Run]| {
+        for r in runs.iter().filter(|r| !r.emph.url) {
+            out.push_str(&r.text);
+        }
+    };
+    for b in bs {
+        if !out.is_empty() && !matches!(b, Block::Blank) {
+            out.push('\n');
+        }
+        match b {
+            Block::Blank => {}
+            Block::Head { runs: rs, .. } | Block::Para { runs: rs } => runs(out, rs),
+            Block::Quote { blocks } => {
+                out.push_str("> ");
+                out.push_str(&plain_of(blocks));
+            }
+            Block::Item { marker, runs: rs, .. } => {
+                if let Some(m) = marker {
+                    out.push_str(m);
+                    out.push(' ');
+                }
+                runs(out, rs);
+            }
+            Block::Code { rows } => out.push_str(&rows.join("\n")),
+            Block::Table { head, rows, .. } => {
+                for row in std::iter::once(head).chain(rows) {
+                    for cell in row {
+                        runs(out, cell);
+                        out.push(' ');
+                    }
+                    out.push('\n');
+                }
+            }
+            Block::Raw { text } => out.push_str(text),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // parse
 // ---------------------------------------------------------------------------
@@ -1339,6 +1396,19 @@ mod tests {
             .find(|(t, _)| t.trim() == needle)
             .unwrap_or_else(|| panic!("{needle:?} not rendered in {:?}", plain(lines)))
             .1
+    }
+
+    #[test]
+    fn plain_takes_the_markdown_off_and_keeps_the_words() {
+        // The card that asked for it (T-893): a fence spent the row.
+        let src = "Run this to ship:\n```sh\n! cd ~/code && ship all\n```\nThen **tag** it.";
+        assert_eq!(super::plain(src), "Run this to ship:\n! cd ~/code && ship all\nThen tag it.");
+        assert_eq!(
+            super::plain("## Done\n\n- `cargo ut` green\n1. see [the map](docs/MAP.md)"),
+            "Done\ncargo ut green\n1. see the map"
+        );
+        // A quote keeps its mark: on a card it says the words are the person's.
+        assert_eq!(super::plain("> fix it\n\nthe brief"), "> fix it\nthe brief");
     }
 
     /// The whole point: `**x**` must not reach the screen as four asterisks,

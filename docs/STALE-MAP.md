@@ -29313,3 +29313,28 @@ PR on a ticket with no agent is a baseline on its first read and its merge one `
 (`merged #42`); a worktree ticket's PR binds unheard while a person's agent holds the seat, the
 agent killed and the row off its merge is nobody's, and the row on its deployment is one `forge`
 wake carrying `merge_state merged` and the arrival's `column DONE`.
+
+## A card's reply rows draw words, not markdown (T-893, 2026-10-22, "transcript preview on ticket should not renders MD decorators")
+
+**What was seen.** A card's two reply rows read `Run this to ship: ``` ! cd ~/Documents/…`:
+the fence's backticks spent a sixth of the rows. And a session whose brief was pasted at launch
+showed `> Title <pasted_content id="19e3"> …` until its first reply, the wrapper Claude Code
+2.1.287 puts round a paste (T-588's trap) taking a third of both rows.
+
+**The wrapper** is gone where a prompt's words are read: `adopt::user_prompt` drops an opening
+`<pasted_content …>` line, the blank lines under it and the closing `</pasted_content>` line.
+Only a tag on a line of its own is the wrapper; the same words inside a sentence are the
+person's and stay. That one function feeds the peek (card and ticket page) and Mesophon's
+transcript rows, so all three lose it. The `last-prompt` latch never carried it.
+
+**The markdown** comes off on the card alone. The ticket page renders the reply (`rich.rs`), so
+`peek::sanitize` keeps the source; the card draws `peek::card_words`, which is `rich::plain`:
+the page's own parse, each block's runs as text — no fence, `#`, emphasis delimiter, code-span
+backtick or bullet; an ordered item keeps its number, a link its label (not its target), a
+quote its `> ` (the card's mark for the person's words), a fenced block its lines as words.
+The card's new-reply row reads the same. Only the first 4 KiB is parsed, because a card is
+asked for per frame; a reply longer than that ends in ` ~` so `wrap` still marks the cut.
+
+**Tests.** `adopt::user_prompt_drops_the_pasted_content_wrapper`,
+`rich::plain_takes_the_markdown_off_and_keeps_the_words`,
+`peek::card_words_drop_the_fence_and_mark_a_long_reply`. No golden moved.
