@@ -1004,7 +1004,7 @@ export class Store {
     dropThumbs(draft);
     Object.assign(draft, { open: false, title: "", description: "", tags: [], error: "", replaces: undefined, pictures: [] });
     this.persistSent(board);
-    this.say("Sending to your board…", "clock");
+    this.sayOfSent("Sending to your board…", "clock");
     this.emit();
   }
   onSentReply(id, reply) {
@@ -1014,9 +1014,9 @@ export class Store {
     this.sent.reply(item, reply);
     if (item.status !== before) {
       this.persistSent(item.board);
-      if (item.status === "landed") this.say(`Landed as ${item.key} in ${item.column}`, "two");
-      else if (item.status === "rejected") this.say(`Not created: ${item.message || "the terminal refused it"}`);
-      else this.say("Delivery unknown. Check the board before sending it again.");
+      if (item.status === "landed") this.sayOfSent(`Landed as ${item.key} in ${item.column}`, "two");
+      else if (item.status === "rejected") this.sayOfSent(`Not created: ${item.message || "the terminal refused it"}`);
+      else this.sayOfSent("Delivery unknown. Check the board before sending it again.");
     }
     if (item.status === "landed") this.refresh();
     this.emit();
@@ -1032,7 +1032,7 @@ export class Store {
     }
     if (!last) return;
     this.persistSent(board);
-    this.say(
+    this.sayOfSent(
       last.picked.by === "agent" ? `An agent started on ${last.key}` : `${last.key} was opened at your desk`,
       "picked",
     );
@@ -1061,13 +1061,13 @@ export class Store {
     Object.assign(draft, { open: false, title: "", description: "", tags: [], error: "", replaces: undefined, pictures: [] });
     this.persistSent(board);
     if (!this.deposit(item))
-      this.say(
+      this.sayOfSent(
         this.link === "nonet"
           ? "Saved in this browser. It goes out when you’re back online."
           : "Saved in this browser. It goes out when the relay answers.",
         "clock",
       );
-    else if (this.live) this.say("Sending to your board…", "clock");
+    else if (this.live) this.sayOfSent("Sending to your board…", "clock");
     this.emit();
   }
   // Hand a sealed ticket to the relay, once per socket.
@@ -1159,7 +1159,7 @@ export class Store {
       this.sent.deposited(item);
       if (before !== item.status) {
         this.persistSent(item.board);
-        if (!this.live) this.say("Sent. It waits at the relay, sealed.", "one");
+        if (!this.live) this.sayOfSent("Sent. It waits at the relay, sealed.", "one");
       }
     } else if (wire.kind === "refused" && item) {
       this.depositing.delete(item.id);
@@ -1173,7 +1173,7 @@ export class Store {
       }[wire.code] || "the relay did not keep it.";
       this.sent.reply(item, { result: "rejected", message: why });
       this.persistSent(item.board);
-      this.say(`Not sent: ${why}`);
+      this.sayOfSent(`Not sent: ${why}`);
     } else if (wire.kind === "withdrawn" && item) {
       const editing = item.editing;
       item.editing = false;
@@ -1181,7 +1181,7 @@ export class Store {
         this.sent.withdrawn(item);
         this.persistSent(item.board);
         if (editing) this.editWords(item, editing);
-        else this.say("Unsent. The relay deleted it.");
+        else this.sayOfSent("Unsent. The relay deleted it.");
       } else this.say("Too late to take back: your terminal has it.");
     } else if (wire.kind === "mailbox" && wire.board === this.active?.pin.board) {
       for (const state of wire.items || []) {
@@ -1229,7 +1229,7 @@ export class Store {
     if (item.status === "local") {
       this.sent.withdrawn(item);
       this.persistSent(item.board);
-      this.say("Unsent. It never left this browser.");
+      this.sayOfSent("Unsent. It never left this browser.");
       this.emit();
     } else if (item.status === "relay") {
       if (!this.mailbox?.send({ kind: "withdraw", board: this.active.pin.board, id }))
@@ -1288,10 +1288,8 @@ export class Store {
     }
     return this.here;
   }
-  // A toast says what became of a ticket; Sent shows it in the feed itself.
-  // The caller emits.
+  // A toast says what just happened, whichever view is open. The caller emits.
   say(text, tick, action) {
-    if (this.board?.mode === "sent" && !action) return;
     clearTimeout(this.toastTimer);
     const toast = (this.toast = { id: (this.toast?.id || 0) + 1, text, tick, action });
     this.toastTimer = setTimeout(() => {
@@ -1300,6 +1298,12 @@ export class Store {
         this.emit();
       }
     }, action ? 6000 : 2800);
+  }
+  // What became of a ticket this browser filed: Sent shows that in its feed,
+  // so it is said only elsewhere. Anything Sent does not list (a letter for
+  // an agent, a note, a start) goes through say() and is said there too (T-902).
+  sayOfSent(text, tick) {
+    if (this.board?.mode !== "sent") this.say(text, tick);
   }
   // Swiped away (T-628): gone without its button's action.
   dismissToast() {

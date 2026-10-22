@@ -30004,3 +30004,20 @@ Tests: `composer::a_compaction_reads_off_its_spinner_line` (every glyph, a pane 
 `composer::the_phrase_in_ordinary_text_is_not_the_spinner`, and
 `compact_e2e::a_slash_command_from_the_board_is_acked_off_the_screen` with a follow-up queued
 behind the command (fails against the old sweep: the follow-up was dropped).
+
+## A refused letter says why in Sent too (T-902, 2026-10-22, "Remote Control: a letter the relay or host refuses vanishes from Sent without its reason")
+
+Mesophon's `say()` dropped every toast without a button while Sent was open, on the reasoning
+that Sent's feed shows what became of a ticket. The feed lists only the tickets this browser
+filed (`store.sent`), so a letter for an agent refused by the relay (`capacity`) or the host
+(asleep, another agent, revoked), a note's refusal, a start's answer and Sent's own "too late"
+and "needs the relay" replies were all silent there: the letter left its ticket's composer and
+the words went back to the box with no word why.
+
+**Now** `say()` speaks in every view, and the quiet in Sent is opt-in: `sayOfSent()` is the road
+for an outcome the feed itself shows (a filed ticket sending, waiting, landed, refused,
+unknown, picked up, unsent). Anything new goes through `say()` and is heard everywhere by
+default. "Too late to take back", "Unsending needs the relay" and "Editing needs the relay" now
+show in Sent, where their buttons are. Test: `mailPromptFlow` in `web/mesophon/ux.test.js` opens
+Sent before a relay refusal and before a host refusal, waits for each reason's toast, and finds
+the words back in the box.

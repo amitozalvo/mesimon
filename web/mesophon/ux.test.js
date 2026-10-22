@@ -2625,6 +2625,11 @@ async function mailPromptFlow(browser, engineName, size, viewport) {
       fixture.refuse = true;
       fixture.channel()?.close();
     });
+  // Sent lists the tickets this browser filed, never a letter (T-902).
+  const view = async (name) => {
+    if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
+    await page.locator(`button[data-mode="${name}"]`).locator("visible=true").click();
+  };
   const sheet = page.locator("#away-sheet");
   const letter = page.locator("#letter-row");
   try {
@@ -2714,18 +2719,48 @@ async function mailPromptFlow(browser, engineName, size, viewport) {
     assert.deepEqual(await page.evaluate(() => fixture.mailedPrompts.map((p) => p.text)),
       ["Written while away"], "the withdrawn letter never reached the terminal");
 
-    // Away again, and the agent parked by then: the words come back.
+    // Refused by the relay while Sent is open (T-902): Sent lists no
+    // letters, so the reason is said there, and the words wait in the box.
+    await page.evaluate(() => {
+      fixture.refuse = true;
+      fixture.relayDown = true;
+      for (const socket of fixture.sockets) socket.close();
+    });
+    await until(page, () => document.querySelector("#shell").dataset.link === "relay");
+    await page.locator("#prompt").fill("Refused at the relay");
+    await page.locator("#send").click();
+    await letter.waitFor({ state: "visible" });
+    await view("sent");
+    await page.evaluate(() => {
+      fixture.mailRefusal = "capacity";
+      fixture.relayDown = false;
+      dispatchEvent(new Event("online"));
+    });
+    await toast("Not sent: too much waits at the relay. Your words are back in the box.");
+    await shot("sent-letter-refused");
+    await page.evaluate(() => (fixture.mailRefusal = ""));
+    await view("agents");
+    await open("ticket-0");
+    assert(await letter.isHidden());
+    assert.equal(await page.locator("#prompt").inputValue(), "Refused at the relay");
+    await page.locator("#prompt").fill("");
+
+    // Away again, and the agent parked by then: the host refuses it while
+    // Sent is open, says why there, and the words come back.
     await away();
     await until(page, () => document.querySelector("#shell").dataset.link === "asleep");
     await page.locator("#prompt").fill("For a parked agent");
     await page.locator("#send").click();
     await letter.waitFor({ state: "visible" });
+    await view("sent");
     await page.evaluate(() => {
       fixture.tickets[0].agent.state = "sleeping";
       fixture.refuse = false;
       fixture.collect();
     });
     await toast("Not queued: the agent was asleep");
+    await view("agents");
+    await open("ticket-0");
     await letter.waitFor({ state: "hidden" });
     assert.equal(await page.locator("#prompt").inputValue(), "For a parked agent");
 
