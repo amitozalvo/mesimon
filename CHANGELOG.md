@@ -6,6 +6,47 @@ notes, and the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-beta.12 — 2026-10-22
+
+### Added
+
+- **Words that begin with `!` run as a shell command in the agent's Claude
+  Code pane.** Send them from the ask field or from Remote Control, as you
+  would type `!` in the pane: the command runs in Claude Code's bash mode and
+  the agent sees the output. Use it for a step auto mode refuses the agent,
+  such as a deploy. It is refused while a draft sits in the agent's own
+  prompt box.
+- **A raised hand shows in full above the selected card's name.** The whole
+  reason is drawn in the needs-you colour and wraps to the screen. After the
+  hand is lowered, it stays in a quieter colour for five minutes.
+
+### Changed
+
+- **The idle snake is off by default.** Turn it on with
+  `Settings › Behaviour › Snake while idle`. Your earlier setting is not
+  carried over, so turn it on again if you had it on.
+- **Only you can send a `!` command.** The crown, a linked board and an agent
+  cannot send one, and an agent cannot give a ticket a title that begins with
+  `!`. A Claude agent is not started on a ticket whose title begins with `!`;
+  rename the ticket first.
+- **Remote Control cards no longer show `claude · working` and similar
+  words.** The card's mark already shows the agent's state. The crown's note
+  now sits on the same line as the ticket key.
+
+### Fixed
+
+- **The update check and the installer offer the newest release.** Before,
+  a release could be skipped when it was tagged on the same commit as the
+  one before it.
+- **A raised hand's reason is no longer cut short.** Reasons up to 400
+  characters are kept whole.
+- **A Codex agent's folder trust question can be accepted from the board
+  and from Remote Control.**
+- **The crown is told when a pull request on a ticket without an agent is
+  merged or its pipeline finishes.** This covers a pull request the crown
+  opened itself and named under the ticket's Summary, while
+  `Settings › Crown › Watches tickets` is on.
+
 ## v0.1.0-beta.11 — 2026-10-21
 
 ### Added
