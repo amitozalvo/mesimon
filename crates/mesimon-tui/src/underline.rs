@@ -11,6 +11,10 @@
 
 use std::io::{self, Write};
 
+pub(crate) fn colors_supported(terminal_program: Option<&str>) -> bool {
+    terminal_program != Some("Apple_Terminal")
+}
+
 /// Wrap only the renderer's output, not arbitrary agent or shell output.
 /// `write_fmt` can split a command anywhere, including between ESC and [.
 pub(crate) struct UnderlineColors<W> {
@@ -25,7 +29,7 @@ impl<W: Write> UnderlineColors<W> {
             inner,
             pending: Vec::with_capacity(24),
             // RGB text support does not imply support for SGR 58.
-            colored: terminal_program != Some("Apple_Terminal"),
+            colored: colors_supported(terminal_program),
         }
     }
 

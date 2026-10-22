@@ -96,7 +96,7 @@ pub(crate) struct Setup {
     probe: Option<mpsc::Receiver<Option<(Forge, bool)>>>,
     pub sandbox: Box<App>,
     world: Shared,
-    theme: (Flavor, Profile),
+    theme: (Flavor, Profile, bool),
     prefs: crate::prefs::Prefs,
     /// Where the practice board is drawn before it is laid on the page.
     pub(crate) canvas: RefCell<Option<Terminal<TestBackend>>>,
@@ -110,7 +110,7 @@ impl Setup {
     /// Setup over the board at `repo`; `probe` asks the forge off this
     /// thread (false in tests, which never run a CLI).
     pub fn new(
-        theme: (Flavor, Profile),
+        theme: (Flavor, Profile, bool),
         prefs: crate::prefs::Prefs,
         repo: PathBuf,
         repos: usize,
@@ -119,7 +119,7 @@ impl Setup {
         let world = Rc::new(RefCell::new(World::new()));
         let sandbox = Box::new(App::practice(
             Box::new(Toy(world.clone())),
-            Theme::new(theme.0, theme.1),
+            Theme::new(theme.0, theme.1).with_underline_colors(theme.2),
             &prefs,
         )?);
         let probe = probe.then(|| {
@@ -426,7 +426,7 @@ impl Setup {
         *self.world.borrow_mut() = world;
         *self.sandbox = App::practice(
             Box::new(Toy(self.world.clone())),
-            Theme::new(self.theme.0, self.theme.1),
+            Theme::new(self.theme.0, self.theme.1).with_underline_colors(self.theme.2),
             &self.prefs,
         )?;
         self.sandbox.rich_keys = true;
@@ -607,7 +607,7 @@ mod tests {
 
     fn setup(repos: usize) -> Setup {
         Setup::new(
-            (Flavor::Graphite, Profile::TrueColor),
+            (Flavor::Graphite, Profile::TrueColor, true),
             Default::default(),
             "/practice".into(),
             repos,

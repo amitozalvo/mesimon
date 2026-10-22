@@ -15,6 +15,9 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{App, InputPurpose, Mode, Screen, SharingRow};
 use crate::theme::{Flavor, Profile, Theme};
 
+#[path = "tests/terminal_comparison.rs"]
+mod terminal_comparison;
+
 fn ulid_n(n: u128) -> ulid::Ulid {
     ulid::Ulid(n)
 }

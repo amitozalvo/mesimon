@@ -59,7 +59,7 @@ impl<W: Write> Quiet<W> {
         Self::for_terminal(writer, std::env::var("TERM_PROGRAM").ok().as_deref())
     }
 
-    fn for_terminal(writer: W, terminal_program: Option<&str>) -> Self {
+    pub(crate) fn for_terminal(writer: W, terminal_program: Option<&str>) -> Self {
         Self {
             inner: CrosstermBackend::new(crate::underline::UnderlineColors::new(
                 writer,

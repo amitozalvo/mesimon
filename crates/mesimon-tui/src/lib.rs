@@ -163,7 +163,9 @@ pub fn run(repo_root: &Path) -> Result<()> {
     let detected = detect::detect(known);
     // The pin outranks the slot; the slot is the ground's.
     let flavor = detected.forced.unwrap_or(resolved.for_ground(detected.ground));
-    let theme = theme::Theme::new(flavor, detected.profile);
+    let theme = theme::Theme::new(flavor, detected.profile).with_underline_colors(
+        underline::colors_supported(std::env::var("TERM_PROGRAM").ok().as_deref()),
+    );
 
     // Hard floor (07 §2.4): refuse to start below 60x20.
     if let Ok((w, h)) = ratatui::crossterm::terminal::size() {

@@ -311,6 +311,10 @@ card's underline; a tick that finishes the list sweeps it twice. Settings › Ap
 `hover` the rows under the selected card only, `none` nothing on the cards (`ctrl-j` still
 lists it).
 
+Terminal.app uses a plain underline for the completed portion; the unfinished portion is
+bare. Text and background colors stay in RGB. The color sweep requires independently
+colored underlines, so Terminal.app updates the completed length directly instead.
+
 ## Filing a ticket from a script
 
 `mesimon ticket create` puts a card on a board from the shell, the way the composer does, and
@@ -351,6 +355,13 @@ answer is no. On iTerm2 the usual cause is a key binding on Shift+Enter — Clau
 `/terminal-setup` installs one that sends a plain newline. Delete the `⇧↩` row under Keys → Key
 Bindings and Profiles → Keys, then start mesimon again, in an iTerm2 tab rather than inside your
 own tmux.
+
+For a similar appearance across terminals, use the same Mesimon theme, font, font size,
+and character spacing. Compare at the same number of columns and rows; window sizes in
+pixels can differ. An opaque terminal background makes the comparison easier. These are
+terminal-profile choices; Mesimon does not change them. `mesimon doctor` reports the board's
+color profile and why it was selected. If an agent pane looks different from the board,
+check it separately: that pane also passes through tmux.
 
 ## The mouse
 

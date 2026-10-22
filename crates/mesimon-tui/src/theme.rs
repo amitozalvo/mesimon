@@ -1271,6 +1271,8 @@ static ICE: Palette = Palette {
 
 pub(crate) struct Theme {
     pub profile: Profile,
+    /// Decoration support is independent of foreground/background color depth.
+    pub underline_colors: bool,
     pub flavor: Flavor,
     /// Painted page background; None rides the terminal default.
     pub bg: Option<Color>,
@@ -1582,6 +1584,7 @@ impl Theme {
             };
         Theme {
             profile,
+            underline_colors: true,
             flavor,
             bg,
             selected_bg,
@@ -1595,6 +1598,16 @@ impl Theme {
             bar_dormant: dormant,
             bar_cursor: cursor,
         }
+    }
+
+    pub fn with_underline_colors(mut self, supported: bool) -> Self {
+        self.underline_colors = supported;
+        self
+    }
+
+    /// Theme previews and appearance changes retain the endpoint's capabilities.
+    pub fn variant(&self, flavor: Flavor) -> Self {
+        Self::new(flavor, self.profile).with_underline_colors(self.underline_colors)
     }
 
     /// Diff-pane line tints (M4b dogfood: full-line green/red grounds like
@@ -2422,7 +2435,8 @@ impl Theme {
         after: mesimon_core::summary::Count,
     ) -> Option<Style> {
         let at_rest = self.summary_under_at(cursorish, cells, cell, after);
-        let colour = matches!(self.profile, Profile::TrueColor | Profile::Ansi256);
+        let colour =
+            self.underline_colors && matches!(self.profile, Profile::TrueColor | Profile::Ansi256);
         if !colour || cells == 0 || elapsed >= Self::summary_pulse_ms(before, after) {
             return at_rest;
         }
@@ -2482,6 +2496,9 @@ impl Theme {
     /// 16-colour tier draws the run alone, plain; the ladder tiers draw
     /// nothing and the open card's rows carry the count there.
     pub fn summary_under(&self, cursorish: bool, done: bool) -> Option<Style> {
+        if !self.underline_colors && matches!(self.profile, Profile::TrueColor | Profile::Ansi256) {
+            return done.then(|| Style::default().add_modifier(Modifier::UNDERLINED));
+        }
         let ramp = if cursorish { &self.sel } else { &self.rest };
         match self.profile {
             Profile::TrueColor | Profile::Ansi256 => {
@@ -2504,6 +2521,50 @@ const MONO_RAMP: Ramp =
 mod tests {
     use super::*;
     use crate::glyphs::Register;
+
+    #[test]
+    fn plain_summary_progress_keeps_its_fraction_through_pulses_and_theme_changes() {
+        use mesimon_core::summary::Count;
+        for flavor in Flavor::ALL {
+            for profile in [Profile::TrueColor, Profile::Ansi256, Profile::Ansi16] {
+                let theme = Theme::new(flavor, profile).with_underline_colors(false);
+                for next in Flavor::ALL {
+                    assert!(!theme.variant(next).underline_colors);
+                }
+                for focused in [false, true] {
+                    for width in [0, 1, 9, 40] {
+                        for done in 0..=5 {
+                            let after = Count { done, total: 5 };
+                            for elapsed in [0, 300, 700, 3_000] {
+                                let underlined = (0..width)
+                                    .filter(|cell| {
+                                        let style = theme.summary_wave(
+                                            elapsed,
+                                            width,
+                                            *cell,
+                                            focused,
+                                            Some(Count { done: 0, total: 5 }),
+                                            after,
+                                        );
+                                        if let Some(style) = style {
+                                            assert_eq!(style.underline_color, None);
+                                            assert_eq!(style.fg, None);
+                                            assert_eq!(style.bg, None);
+                                            assert!(style
+                                                .add_modifier
+                                                .contains(Modifier::UNDERLINED));
+                                        }
+                                        style.is_some()
+                                    })
+                                    .count();
+                                assert_eq!(underlined, (done * width + 2) / 5);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     /// sRGB → CIE L*a*b*, for the colour-law tests (06 §12). Test-only.
     fn lab(rgb: u32) -> (f64, f64, f64) {

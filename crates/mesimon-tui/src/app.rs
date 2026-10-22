@@ -1592,8 +1592,8 @@ pub struct App {
     /// The wall clock a reset time is told in (T-327): UTC until
     /// `lib.rs::run` hands it the machine's zone, so no golden reads one.
     pub clock: fn(u64) -> Option<mesimon_core::snooze::LocalTime>,
-    /// The moment the quota is drawn against — a reading's age, a window
-    /// that rolled over. The system clock; a golden pins it.
+    /// The rendering clock for quota and crown/summary animation. The system
+    /// clock; visual comparisons can pin it to replay identical frames.
     pub now: fn() -> u64,
     /// Cards the crown touched that the cursor has not rested on since —
     /// the residue the light leaves, on the unread done mark's rule.
@@ -2466,7 +2466,7 @@ impl App {
         {
             return;
         }
-        let theme = (self.theme.flavor, self.theme.profile);
+        let theme = (self.theme.flavor, self.theme.profile, self.theme.underline_colors);
         let repos = self.git.repos.len();
         match crate::setup::Setup::new(
             theme,
@@ -2534,7 +2534,7 @@ impl App {
 
     /// Open the guided tour (T-763) on its first lesson, or say why not.
     fn open_tour(&mut self) {
-        let theme = (self.theme.flavor, self.theme.profile);
+        let theme = (self.theme.flavor, self.theme.profile, self.theme.underline_colors);
         match crate::tour::Tour::new(theme, self.prefs.clone(), 0) {
             Ok(t) => {
                 self.tour = Some(Box::new(t));
@@ -2835,7 +2835,7 @@ impl App {
     /// (T-442): the card's and the page's sweep both read it.
     pub fn crowning_ms(&self, id: ulid::Ulid) -> Option<u64> {
         let (t, at) = self.crowned_at?;
-        let elapsed = mesimon_core::clock::now_ms().saturating_sub(at);
+        let elapsed = (self.now)().saturating_sub(at);
         (t == id && elapsed < crate::theme::CROWN_FLASH_MS).then_some(elapsed)
     }
 
@@ -5315,7 +5315,7 @@ impl App {
         if self.theme.flavor == flavor {
             return;
         }
-        self.theme = Theme::new(flavor, self.theme.profile);
+        self.theme = self.theme.variant(flavor);
         // Same recovery as ^L: repaint from nothing rather than trust a
         // cell-level diff to have touched every cell whose colour moved.
         self.force_redraw = true;
@@ -16341,6 +16341,30 @@ mod tests {
 
     fn app_three_columns() -> App {
         App::for_test(board_three_columns(), theme())
+    }
+
+    #[test]
+    fn terminal_decorations_survive_theme_preview_and_practice_boards() {
+        let mut app = app_three_columns();
+        app.theme.underline_colors = false;
+        app.preview(Flavor::Chalk);
+        assert!(!app.theme.underline_colors);
+        app.preview(Flavor::Graphite);
+        assert!(!app.theme.underline_colors);
+        app.open_tour();
+        let tour = app.tour.as_mut().expect("tour");
+        assert!(!tour.sandbox.theme.underline_colors);
+        tour.try_it().expect("reset practice board");
+        assert!(!tour.sandbox.theme.underline_colors);
+        let setup = crate::setup::Setup::new(
+            (Flavor::Graphite, Profile::TrueColor, false),
+            Default::default(),
+            "/practice".into(),
+            1,
+            false,
+        )
+        .expect("setup");
+        assert!(!setup.sandbox.theme.underline_colors);
     }
 
     /// A board whose CLAUDE.md is sampled and does not carry the line, so the

@@ -122,7 +122,7 @@ impl App {
     pub(crate) fn summary_pulse(&self, ticket: ulid::Ulid) -> Option<(u64, Option<Count>)> {
         let p = self.summary_pulses.get(&ticket)?;
         let after = self.ticket_summary(ticket).map(|s| s.count).unwrap_or_default();
-        let elapsed = mesimon_core::clock::now_ms().saturating_sub(p.at_ms);
+        let elapsed = (self.now)().saturating_sub(p.at_ms);
         (elapsed < Theme::summary_pulse_ms(p.from, after)).then_some((elapsed, p.from))
     }
 

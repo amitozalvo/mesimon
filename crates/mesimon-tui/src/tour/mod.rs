@@ -80,20 +80,24 @@ pub(crate) struct Tour {
     pub done: Vec<usize>,
     /// The caption under the board.
     pub caption: &'static str,
-    /// The board's theme, as a flavor and a profile: the practice board is
-    /// drawn in it.
-    theme: (Flavor, Profile),
+    /// The board's flavor, color profile and underline-color capability:
+    /// the practice board uses the same rendering choices.
+    theme: (Flavor, Profile, bool),
     prefs: crate::prefs::Prefs,
     /// Where the practice board is drawn before it is laid on the dialog.
     pub(crate) canvas: RefCell<Option<Terminal<TestBackend>>>,
 }
 
 impl Tour {
-    pub fn new(theme: (Flavor, Profile), prefs: crate::prefs::Prefs, idx: usize) -> Result<Self> {
+    pub fn new(
+        theme: (Flavor, Profile, bool),
+        prefs: crate::prefs::Prefs,
+        idx: usize,
+    ) -> Result<Self> {
         let world = Rc::new(RefCell::new(World::new()));
         let sandbox = Box::new(App::practice(
             Box::new(Toy(world.clone())),
-            Theme::new(theme.0, theme.1),
+            Theme::new(theme.0, theme.1).with_underline_colors(theme.2),
             &prefs,
         )?);
         let mut tour = Self {
@@ -134,7 +138,7 @@ impl Tour {
         *self.world.borrow_mut() = world;
         *self.sandbox = App::practice(
             Box::new(Toy(self.world.clone())),
-            Theme::new(self.theme.0, self.theme.1),
+            Theme::new(self.theme.0, self.theme.1).with_underline_colors(self.theme.2),
             &self.prefs,
         )?;
         Ok(())
@@ -294,7 +298,8 @@ mod tests {
     use super::*;
 
     fn tour(idx: usize) -> Tour {
-        Tour::new((Flavor::Graphite, Profile::TrueColor), Default::default(), idx).expect("tour")
+        Tour::new((Flavor::Graphite, Profile::TrueColor, true), Default::default(), idx)
+            .expect("tour")
     }
 
     #[test]

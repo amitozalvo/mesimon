@@ -30437,3 +30437,74 @@ The bounded runners reported clean fixture audits; ANSI tests ran with `NO_COLOR
 Formatting and `git diff --check` passed. Full nextest, tmux e2e and Linux/Docker were not
 rerun for this terminal-output-only change. The actual emulator diagnostic was checked
 by the user; the fixed full board has not been manually inspected.
+
+## Terminal parity has a replay, and plain progress keeps its meaning (T-909, 2026-10-22)
+
+Omitting SGR 58 fixed corrupt paint but left the summary's run and track indistinguishable:
+both became a full-width ordinary underline. Decoration support now reaches `Theme`
+independently of its color profile. Without underline colors, RGB/256-color themes draw
+only the rounded completed share, in the existing text color, and update its length directly
+instead of attempting a color wave. Zero completed boxes draw no run. Text, backgrounds,
+selection weight and tag colors retain the RGB palette. The output adapter still suppresses
+SGR 58 as a final safeguard. Theme preview/restore, OS appearance changes, setup and tour
+practice boards retain the endpoint capability. Other terminals keep their colored track
+and wave. Tests cover every flavor, focus state, fraction, pulse phase, and theme/practice
+transition; the real card's text, foreground and background match the colored reference.
+
+**A repeatable comparison, using the real renderer.**
+`ui/tests/terminal_comparison.rs` builds a synthetic board through the existing rendering
+fixtures, captures actual `ui::draw` buffers and encodes both full frames and successive
+diffs through `Quiet`. It exports 37 frames for each combination of Graphite/Chalk,
+120×30/60×20, and native/Apple underline support. These include selection, leaving/opening
+a card, summary rows/dialog, ticket page, legacy key hints, 100 ms crown-sweep samples,
+leaving after the sweep, progress fractions, two tags, attention/error states, a rich note,
+a diff, and a glyph sheet. Crown and summary sampling use the existing injectable render
+clock; spinner specimens are explicit glyph frames. Every captured buffer is drawn twice
+to assert idle silence, and Apple output must contain no SGR 58 or cursor query.
+
+Generate the replay without opening a board or starting an agent:
+
+```sh
+env -u NO_COLOR MESIMON_TERMINAL_COMPARISON=/tmp/mesimon-comparison.json \
+  python3 -B ci/test-run.py -- cargo test -p mesimon-tui terminal_comparison_export
+```
+
+In an ordinary external terminal, run
+`python3 -B ci/terminal-compare.py /tmp/mesimon-comparison.json`.
+The player selects Apple/native output from `TERM_PROGRAM`; `--endpoint` can override it
+for diagnostics. `--theme chalk --width 60` selects the light/narrow specimen; the terminal
+needs two additional rows for controls. `--autoplay --through 30` stops after leaving the
+crowned card. Space steps, `p` goes back, `r` restarts, and `f` compares full repaint with
+incremental output. Resizing back to a sufficient size restores a complete frame. `--keys`
+shows received key bytes without forwarding them to Mesimon. Quit, Ctrl+C and SIGTERM
+restore the screen and terminal mode. This tool writes no settings and runs no daemon,
+tmux or agent; it is a developer comparison, not a new product flow.
+
+**Measured external rendering.** The isolated replay ran in Terminal.app 2.15 (488) and
+iTerm2 3.7.2. The initial profiles used SF Mono 11 and MesloLGS NF 13 respectively. Matching
+MesloLGS NF 13 in the temporary Terminal tab made the font comparison meaningful; no saved
+profile changed. Captured 120×30 dark-board frames show the intended colors and layout,
+and both captured post-crown/leave-card frames have a uniformly tinted title. Comparing
+those frames with a fresh full repaint revealed no visible card residue. The Apple fallback
+shows only the completed run; iTerm retains the separate track. Font rasterization and
+underline positioning still differ. The accented/CJK/emoji text in these board captures did
+not justify replacing the glyph set or coupling ASCII to a color downgrade.
+
+Limits: the replay is a renderer specimen, not an end-to-end input/attach recording. The
+glyph sheet was captured in iTerm; later Terminal captures were unavailable because its
+window was offscreen. Light/narrow and rich/diff cases were generated and tested but not
+visually certified in both emulators. cmux and Ghostty were not installed. No claim of
+pixel parity, identical tearing behavior, or a full live keyboard/mouse/attach comparison
+follows from these screenshots. Existing legacy-key, paste, mouse-target and handover tests
+remain the behavioral evidence; there was no reproduced defect warranting a keymap or
+tmux-configuration change. `docs/USING.md` now explains the plain progress display and the
+font/spacing/grid choices needed for a useful appearance comparison.
+
+Validation: 1,186 TUI tests passed with golden regeneration (no golden diff); `cargo ut`
+passed 2,547 tests with the six standard ignored entries; `m1_e2e` passed its real-tmux
+acceptance test; the binary built. The replay's PTY regression passed stepping, full/diff,
+idle silence, resize recovery and terminal-mode restoration. Its first harness attempt
+waited before consuming final PTY output, and its next compared macOS's kernel PENDIN flag
+as configuration; the corrected driver drains restoration output and excludes only that
+bookkeeping bit. All final bounded runs had clean fixture audits. Full nextest and
+Linux/Docker were not run for this client-rendering change.

@@ -19,7 +19,7 @@ use mesimon_core::keymap;
 use crate::app::{App, Mode};
 use crate::glyphs::Tier;
 use crate::text::truncate;
-use crate::theme::{Flavor, Ground, Slot, Theme};
+use crate::theme::{Flavor, Ground, Slot};
 
 use super::dialog;
 
@@ -157,7 +157,7 @@ fn kept_row(app: &App, slot: Slot) -> Option<usize> {
 /// columns, the cursor's card, a card that needs you and one that is done,
 /// and the tag ring. Its frame is as tall as what it holds.
 fn preview(f: &mut Frame, app: &App, room: Rect, flavor: Flavor) {
-    let t = Theme::new(flavor, app.theme.profile);
+    let t = app.theme.variant(flavor);
     let tall = if t.paints_tags() { 9 } else { 7 };
     let at = Rect { height: room.height.min(tall + 2), ..room };
     let inner = dialog::frame(
