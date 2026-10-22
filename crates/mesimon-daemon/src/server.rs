@@ -3105,6 +3105,11 @@ impl Daemon {
         self.want_codex_startup();
         self.want_claude_startup();
         let mut changed = self.drive_codex_inputs(now);
+        // A compaction window past `COMPACT_STALE_MS` closes (T-894): the
+        // board stops painting it.
+        for m in self.machines.values_mut() {
+            changed |= m.expire_compaction(now);
+        }
         for (id, change) in fired {
             changed |= stage!(self, "apply_change", self.apply_change(id, &change, None, None));
         }
@@ -4606,6 +4611,7 @@ impl Daemon {
             });
         }
         let mut dirty = observation.metadata_changed;
+        let mut announce = false;
         let signal = observation.signal;
         if let Some(sig) = signal {
             // A death that names ANOTHER pane is the previous tenant's. A
@@ -4688,6 +4694,9 @@ impl Daemon {
                 .or_insert_with(|| Machine::new(SessionState::unknown(), now));
             let (change, decision) = machine.apply_explained(&sig, now);
             self.feed.state_decision(id, &frame.event, &decision);
+            // A compaction window's edge moves no state (T-894), and the
+            // board paints the window: it is told of the edge all the same.
+            announce |= decision.before.compacting != decision.after.compacting;
             // The machine's idle-teammate set is what decides whether the
             // NEXT Stop parks or ends the turn (T-135); it survives a daemon
             // restart only on the record.
@@ -4738,6 +4747,8 @@ impl Daemon {
         }
         if dirty {
             self.persist_sessions();
+            self.broadcast();
+        } else if announce {
             self.broadcast();
         }
     }
@@ -11651,6 +11662,9 @@ impl Daemon {
         rec.tasks_running = (rec.kind.is_agent()
             && rec.state == (SessionState::Idle { stop_reason: StopReason::Background }))
         .then(|| u32::try_from(rec.background_tasks.count()).unwrap_or(u32::MAX));
+        // And the open compaction window (T-894): the machine's, which a
+        // restart starts without.
+        rec.compacting = self.machines.get(&rec.id).is_some_and(|m| m.compacting());
         // And whether the seat never took a prompt (T-603): one `stat`
         // per idle or parked claude.
         rec.unprompted = self.unprompted_hint(rec);
@@ -16933,7 +16947,7 @@ impl Daemon {
                         let view = m.view();
                         view.state == rec.state
                             && view.pending.is_none()
-                            && view.manual_compaction_prior.is_none()
+                            && !view.compacting
                     })
             })
             .map(|(rec, timeout, rule)| (rec.id, timeout, rule))

@@ -114,6 +114,40 @@ pub(crate) fn background(tier: Tier, frame: usize) -> char {
     frames[(frame / SLOW_STEP_TICKS) % frames.len()]
 }
 
+/// Compaction frames (T-894): the cell pressed down and let go — all six
+/// dots, the lower four, the bottom pair, the lower four — on the SLOW
+/// cadence. Claude Code is summarizing the conversation, and the agent is
+/// not working, so the spinner would lie (the brief's own ask: slow, and
+/// distinct from the working spinner); nor is the seat idle, which a still
+/// mark would say, and said (T-894: "currently looks idle"). No frame is the
+/// spinner's, which never draws a full cell or a lower square; the bottom
+/// pair is one of `waiting`'s six for one beat, inside a press nothing else
+/// on the board makes. Ascii presses the same way, `# % _`: `=` is the plan
+/// mark, `-` archived, `~` throttled, and the rest are taken above.
+const COMPACT_UNICODE: &[char] = &['⠿', '⠶', '⠤', '⠶'];
+const COMPACT_ASCII: &[char] = &['#', '%', '_', '%'];
+
+/// The compacting glyph for `frame` — see `COMPACT_UNICODE`. A compaction
+/// is something in flight that is not the agent's work, so it rides the
+/// slow register with `launching` and `background`: one fast speed on the
+/// board, one slow, and no third.
+pub(crate) fn compacting(tier: Tier, frame: usize) -> char {
+    let frames = if tier == Tier::Ascii { COMPACT_ASCII } else { COMPACT_UNICODE };
+    frames[(frame / SLOW_STEP_TICKS) % frames.len()]
+}
+
+/// The activity row's words while a seat compacts (T-894), on the card and
+/// the ticket page both: one spelling of one fact, short enough for a card
+/// on a four-column board at 100 cells, where a longer row was cut mid-word.
+pub(crate) const COMPACTING_WORDS: &str = "compacting context";
+
+/// A compaction in flight in this seat (T-894), with a pane to be in: the
+/// window the daemon paints on the record, and never on a parked or dead
+/// record, whose glyph says the truer thing.
+pub(crate) fn is_compacting(rec: &SessionRecord) -> bool {
+    rec.compacting && rec.state.has_pane()
+}
+
 /// Owed frames (2026-09-04): mesimon will act on this ticket on its own
 /// clock — a queued ask waiting for its checkout to go quiet, a merge or a
 /// rebase ask the train will make when the board does. A TWO-dot pair on
@@ -569,6 +603,14 @@ pub(crate) fn card_glyph(
     }) {
         return Some(('x', Register::Err));
     }
+    // A compaction in flight (T-894) is what the seat is doing NOW, and it
+    // outranks the done mark and the spinner both: the ✓ said the turn was
+    // over and a quiet compaction began there (T-728), the spinner says the
+    // agent is working and it is not. Under needs-you and the error mark,
+    // which outrank everything. The ✓ comes back when the window closes.
+    if sessions.iter().any(|s| is_compacting(s)) {
+        return Some((compacting(tier, spin), Register::Grey));
+    }
     // A finished agent outranks a shell's work — but not its own: an idle
     // Claude running a `!` command (T-707) is busy, and the card spins.
     if sessions.iter().any(|s| {
@@ -632,6 +674,11 @@ pub(crate) fn card_glyph(
 /// `spin` animates the working and waiting glyphs, exactly as on the card.
 pub(crate) fn session_glyph(rec: &SessionRecord, tier: Tier, spin: usize) -> (char, Register) {
     let ascii = tier == Tier::Ascii;
+    // A compaction in flight (T-894) wears its own slow mark whatever the
+    // state under it, exactly as the card does.
+    if is_compacting(rec) {
+        return (compacting(tier, spin), Register::Grey);
+    }
     // A live shell is quiet, not working (`is_working`): it wears the idle
     // mark for as long as its pane lives, because pane death is the only
     // shell event there is.
@@ -711,6 +758,17 @@ pub(crate) fn prompt_mark(tier: Tier) -> char {
     match tier {
         Tier::Unicode => '\u{203A}',
         Tier::Ascii => '>',
+    }
+}
+
+/// The record's state word: `state_word`'s, except while a compaction is in
+/// flight (T-894) — a fact about the seat the state does not carry, said in
+/// the state's own slot so the page keeps one vocabulary.
+pub(crate) fn record_word(rec: &SessionRecord) -> &'static str {
+    if is_compacting(rec) {
+        "compacting"
+    } else {
+        state_word(&rec.state)
     }
 }
 
@@ -1082,6 +1140,57 @@ mod tests {
     /// An Esc-interrupted turn wears a mark of its own: the card fell through
     /// every arm and drew NOTHING for it, the look of a ticket with no session
     /// (author 2026-09-04). Still, not done, not lost, not plain idle, one cell.
+    /// A compaction in flight (T-894) wears a slow mark of its own: not the
+    /// spinner (the agent is not working), not any still mark (the seat is
+    /// not settled), on the slow cadence, grey, and under needs-you. A
+    /// parked record's flag says nothing: no pane, nothing compacting.
+    #[test]
+    fn a_compaction_wears_its_own_slow_mark() {
+        use unicode_width::UnicodeWidthChar;
+        let mut done = rec(SessionState::Idle { stop_reason: StopReason::EndTurn });
+        done.compacting = true;
+        let mut busy = rec(SessionState::Running);
+        busy.compacting = true;
+        let mut parked = rec(SessionState::Sleeping);
+        parked.compacting = true;
+        let asked = rec(SessionState::RequiresAction { reason: Reason::Permission });
+        for tier in [Tier::Unicode, Tier::Ascii] {
+            for f in 0..40 {
+                let g = compacting(tier, f);
+                assert_eq!(g.width(), Some(1), "{g:?} not one cell");
+                assert!(!is_still_mark(g, tier), "{g:?} is a still mark");
+                assert_ne!(g, idle_mark(tier));
+                assert_ne!(g, interrupted(tier));
+                assert_ne!(g, plan_mark(tier));
+                assert_ne!(g, '!');
+                assert_ne!(g, 'x');
+                for w in 0..40 {
+                    assert_ne!(g, spinner(tier, w), "a compaction frame is the spinner's");
+                }
+            }
+            // The slow cadence: a frame holds for `SLOW_STEP_TICKS` redraws.
+            assert_eq!(compacting(tier, 0), compacting(tier, SLOW_STEP_TICKS - 1));
+            assert_ne!(compacting(tier, 0), compacting(tier, SLOW_STEP_TICKS));
+            for (rec, why) in [(&done, "over the done mark"), (&busy, "over the spinner")] {
+                assert_eq!(
+                    session_glyph(rec, tier, 7),
+                    (compacting(tier, 7), Register::Grey),
+                    "{why}"
+                );
+                assert_eq!(
+                    card_glyph(&[rec], false, tier, 7),
+                    Some((compacting(tier, 7), Register::Grey)),
+                    "{why}"
+                );
+            }
+            assert_eq!(session_glyph(&parked, tier, 0), ('z', Register::Dormant));
+            assert_eq!(card_glyph(&[&parked], false, tier, 0), Some(('z', Register::Dormant)));
+            assert_eq!(card_glyph(&[&done, &asked], false, tier, 0), Some(('!', Register::Attn)));
+        }
+        assert_eq!(record_word(&done), "compacting");
+        assert_eq!(record_word(&parked), "sleeping");
+    }
+
     #[test]
     fn an_interrupted_turn_has_its_own_still_mark() {
         use unicode_width::UnicodeWidthChar;

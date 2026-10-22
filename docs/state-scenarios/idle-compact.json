@@ -18,27 +18,27 @@
     {
       "at_ms": 100,
       "input": {"source": "hook", "event": "PreCompact", "payload": {"trigger": "auto"}},
-      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW"}
+      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW", "compacting": true}
     },
     {
       "at_ms": 200,
       "input": {"source": "hook", "event": "PreCompact", "payload": {"trigger": "auto"}},
-      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW"}
+      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW", "compacting": true}
     },
     {
       "at_ms": 121900,
       "input": {"source": "hook", "event": "SessionStart", "payload": {"source": "compact"}},
-      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW"}
+      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW", "compacting": true}
     },
     {
       "at_ms": 122000,
       "input": {"source": "hook", "event": "PostCompact", "payload": {"trigger": "auto"}},
-      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW"}
+      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW", "compacting": false}
     },
     {
       "at_ms": 122100,
       "input": {"source": "hook", "event": "SessionStart", "payload": {"source": "compact"}},
-      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW"}
+      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW", "compacting": false}
     },
     {
       "at_ms": 130000,
@@ -53,17 +53,17 @@
     {
       "at_ms": 200100,
       "input": {"source": "hook", "event": "PreCompact", "payload": {"trigger": "auto"}},
-      "expect": {"state": {"state": "running"}, "column": "IN PROGRESS"}
+      "expect": {"state": {"state": "running"}, "column": "IN PROGRESS", "compacting": true}
     },
     {
       "at_ms": 200200,
       "input": {"source": "hook", "event": "SessionStart", "payload": {"source": "compact"}},
-      "expect": {"state": {"state": "running"}, "column": "IN PROGRESS"}
+      "expect": {"state": {"state": "running"}, "column": "IN PROGRESS", "compacting": true}
     },
     {
       "at_ms": 200300,
       "input": {"source": "hook", "event": "PostCompact", "payload": {"trigger": "auto"}},
-      "expect": {"state": {"state": "running"}, "column": "IN PROGRESS"}
+      "expect": {"state": {"state": "running"}, "column": "IN PROGRESS", "compacting": false}
     },
     {
       "at_ms": 210000,

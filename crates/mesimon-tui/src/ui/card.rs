@@ -1205,10 +1205,16 @@ pub(super) fn render(
         // The step running now, under the boxes (author: "put the
         // checklists above the command line") — the spinner marks it as
         // now, and quiet keeps the reply the loudest thing in the accordion.
-        if let Some(act) = peek.and_then(|pk| pk.activity.as_ref()) {
+        // A compaction in flight (T-894) is the step running now, and the
+        // peek's last call is history until it ends; the row says so in
+        // the step's own place, pulse and all.
+        let compacting = sessions.iter().any(|s| glyphs::is_compacting(s));
+        let act = peek.and_then(|pk| pk.activity.as_ref());
+        if compacting || act.is_some() {
             let word = match act {
-                crate::peek::Doing::Tool(t) => t.as_str(),
-                crate::peek::Doing::Thinking => "thinking",
+                _ if compacting => glyphs::COMPACTING_WORDS,
+                Some(crate::peek::Doing::Tool(t)) => t.as_str(),
+                Some(crate::peek::Doing::Thinking) | None => "thinking",
             };
             let row = crate::text::truncate(word, t_cells.saturating_sub(4));
             let mark = if glyphs::pulse_lit(ctx.spin) { quiet } else { faint };

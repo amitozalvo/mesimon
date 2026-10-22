@@ -27,7 +27,8 @@
         "state": {
           "state": "running"
         },
-        "column": "IN PROGRESS"
+        "column": "IN PROGRESS",
+        "compacting": true
       }
     },
     {
@@ -43,7 +44,8 @@
         "state": {
           "state": "running"
         },
-        "column": "IN PROGRESS"
+        "column": "IN PROGRESS",
+        "compacting": false
       }
     },
     {

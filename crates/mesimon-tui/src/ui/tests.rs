@@ -753,6 +753,50 @@ fn golden_tasks_running_board_120() {
     golden("board_tasks_running_120x30", &lines);
 }
 
+/// A seat compacting its conversation (T-894): the card wears the slow
+/// press in place of the done mark, and its activity row says what the
+/// seat is doing. The state under it is the finished turn, which stayed.
+#[test]
+fn golden_compacting_board_120() {
+    let mut b = fixture(false);
+    let mut s = session(
+        21,
+        ulid_n(2),
+        SessionKind::Claude,
+        SessionState::Idle { stop_reason: StopReason::EndTurn },
+    );
+    s.compacting = true;
+    b.sessions.push(s);
+    let mut app = app_graphite(b);
+    app.cursor_col = 0;
+    app.cursor_row = Some(1);
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("● compacting context")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains('⠿')), "{lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("✓ Keymap")), "the done mark gives way: {lines:?}");
+    golden("board_compacting_120x30", &lines);
+}
+
+/// The same seat on its ticket page: the preview's row says it, and the
+/// rail's glyph is the press.
+#[test]
+fn golden_ticket_compacting_120() {
+    let mut b = fixture(false);
+    let mut s = session(
+        21,
+        ulid_n(2),
+        SessionKind::Claude,
+        SessionState::Idle { stop_reason: StopReason::EndTurn },
+    );
+    s.compacting = true;
+    b.sessions.push(s);
+    let mut app = app_graphite(b);
+    app.screen = Screen::Ticket { ticket: ulid_n(2), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("● compacting context")), "{lines:?}");
+    golden("ticket_compacting_120x30", &lines);
+}
+
 #[test]
 fn golden_move_ghost_120() {
     let mut app = app_graphite(fixture(false));

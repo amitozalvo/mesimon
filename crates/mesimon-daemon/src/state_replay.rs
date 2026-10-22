@@ -94,6 +94,9 @@ pub struct Expected {
     pub pending: Option<bool>,
     #[serde(default)]
     pub observation_hold: Option<bool>,
+    /// The compaction window (T-894): open or closed, when the step says.
+    #[serde(default)]
+    pub compacting: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -234,10 +237,11 @@ pub fn replay(scenario: &Scenario) -> anyhow::Result<Report> {
             || step.expect.confidence.is_some_and(|c| view.confidence != c)
             || step.expect.pending.is_some_and(|p| view.pending.is_some() != p)
             || step.expect.observation_hold.is_some_and(|held| observation_hold != Some(held))
+            || step.expect.compacting.is_some_and(|c| view.compacting != c)
         {
-            report.failures.push(format!("step {index} at {}ms: expected {:?} in {} ({:?}); got {:?} in {} ({:?}), pending={}",
+            report.failures.push(format!("step {index} at {}ms: expected {:?} in {} ({:?}); got {:?} in {} ({:?}), pending={}, compacting={}",
                 step.at_ms, step.expect.state, step.expect.column, step.expect.confidence,
-                view.state, column, view.confidence, view.pending.is_some()));
+                view.state, column, view.confidence, view.pending.is_some(), view.compacting));
             if step.expect.observation_hold.is_some_and(|held| observation_hold != Some(held)) {
                 report.failures.push(format!(
                     "step {index}: expected observation_hold={:?}, got {observation_hold:?}",

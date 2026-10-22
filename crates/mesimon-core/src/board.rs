@@ -499,6 +499,15 @@ pub struct SessionRecord {
     /// `tasks_running` is.
     #[serde(default, skip_serializing_if = "is_false")]
     pub unprompted: bool,
+    /// A compaction is in flight in this seat (T-894): Claude Code is
+    /// summarizing the conversation, between its `PreCompact` and its
+    /// `PostCompact`. The state is whatever it was — a compaction moves
+    /// nothing — and the card paints the window: a slow glyph in place of
+    /// the state's own, and `compacting the conversation` on its activity
+    /// row. SNAPSHOT only, as `tasks_running` is: the machine holds the
+    /// window, and a restart's machine starts with none.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub compacting: bool,
 }
 
 /// What a launch road meant to submit and did not (T-570). The ticket's
@@ -629,6 +638,7 @@ impl SessionRecord {
             unsent: None,
             tasks_running: None,
             unprompted: false,
+            compacting: false,
         }
     }
 

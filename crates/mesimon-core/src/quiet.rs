@@ -325,6 +325,7 @@ mod tests {
             unsent: None,
             tasks_running: None,
             unprompted: false,
+            compacting: false,
         }
     }
 

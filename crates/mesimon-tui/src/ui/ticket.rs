@@ -869,7 +869,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         // A mid-turn agent keeps composing past whatever the preview shows,
         // so the zone says so (bash panes work too, but have no transcript
         // for the line to qualify — Claude only).
-        let working = sel.is_some_and(|s| s.kind.is_agent() && s.state == SessionState::Running);
+        let working = sel.is_some_and(|s| {
+            s.kind.is_agent() && (s.state == SessionState::Running || glyphs::is_compacting(s))
+        });
         // A shell keeps no transcript — tmux is its only record — so the zone
         // shows the pane itself, under its own heading. Only ever what the
         // poll already fetched for THIS session: a stale capture under a
@@ -1124,7 +1126,9 @@ fn draw_preview(
             }
         }
         if working {
-            lines.push(working_row(app, peek, (area.width as usize).saturating_sub(gutter)));
+            let compacting = record.is_some_and(glyphs::is_compacting);
+            let width = (area.width as usize).saturating_sub(gutter);
+            lines.push(working_row(app, peek, compacting, width));
         }
     } else if let Some(rec) = record {
         // A session with nothing to read (T-308): the young one whose first
@@ -1155,10 +1159,18 @@ fn draw_preview(
 /// ∙ thinking" says one thing twice. It closes a reply that is still being
 /// written, and it IS the headline for a turn that has not said anything
 /// yet (T-308).
-fn working_row(app: &App, peek: Option<&crate::peek::Peek>, width: usize) -> Line<'static> {
+fn working_row(
+    app: &App,
+    peek: Option<&crate::peek::Peek>,
+    compacting: bool,
+    width: usize,
+) -> Line<'static> {
     let theme = &app.theme;
     let working_word = glyphs::state_word(&SessionState::Running);
+    // A compaction in flight (T-894) takes the row whole, the card's words:
+    // the peek's last step is history until it ends.
     let row = match peek.and_then(|p| p.activity.as_ref()) {
+        _ if compacting => glyphs::COMPACTING_WORDS.to_string(),
         Some(crate::peek::Doing::Tool(t)) => format!("{working_word} ∙ {t}"),
         Some(crate::peek::Doing::Thinking) => "thinking".to_string(),
         None => working_word.to_string(),
@@ -1192,10 +1204,12 @@ fn quiet_session(
     let w = area.width as usize;
     let (headline, clauses) = quiet_words(rec);
     let mut text: Vec<Line<'static>> = Vec::new();
-    if rec.state == SessionState::Running {
+    let compacting = glyphs::is_compacting(rec);
+    if rec.state == SessionState::Running || compacting {
         // The pulse is the headline here: a turn in flight has a live thing
-        // to say about itself, and `quiet_words` leaves the row to it.
-        text.push(working_row(app, peek, w));
+        // to say about itself, and `quiet_words` leaves the row to it. So
+        // does a compaction (T-894), whatever state it began in.
+        text.push(working_row(app, peek, compacting, w));
     } else if !headline.is_empty() {
         // A needs-you session's headline is its own question, in the
         // attention register the rail row beside it is already wearing: the
@@ -1233,6 +1247,11 @@ fn quiet_session(
 /// What the shin acts out for an agent session: its state, with the peek's
 /// word for a turn thinking rather than calling a tool.
 fn agent_anim(rec: &mesimon_core::board::SessionRecord, peek: Option<&crate::peek::Peek>) -> Anim {
+    // A compaction (T-894) is the engine summarizing the conversation: the
+    // shin thinks, whatever the state under it says.
+    if glyphs::is_compacting(rec) {
+        return Anim::Thinking;
+    }
     let thinking =
         matches!(peek.and_then(|p| p.activity.as_ref()), Some(crate::peek::Doing::Thinking));
     Anim::of(&rec.state, thinking)
@@ -1244,7 +1263,7 @@ fn agent_anim(rec: &mesimon_core::board::SessionRecord, peek: Option<&crate::pee
 /// better is true — this zone may not invent a second vocabulary for states
 /// the card and the rail already name.
 pub(super) fn quiet_words(rec: &mesimon_core::board::SessionRecord) -> (String, Vec<String>) {
-    let word = glyphs::state_word(&rec.state).to_string();
+    let word = glyphs::record_word(rec).to_string();
     // A shell keeps no transcript at all, so "nothing to read" is never news
     // about a shell — what it means is that the pane has not been captured
     // yet, which lasts one poll (`App::poll_shell_tail`, a 1 s clock).

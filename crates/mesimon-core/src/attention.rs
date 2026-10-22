@@ -33,6 +33,11 @@ pub const STALE_DEMOTE_MS: u64 = 15 * 60 * 1000;
 /// from the last frame that PROVED background work alive, not from entry, so
 /// a slow task that still reports keeps its park (cf. `STALE_DEMOTE_MS`).
 pub const PARK_STALE_MS: u64 = 10 * 60 * 1000;
+/// How long a compaction window stays open with no `PostCompact` (T-894).
+/// A compaction is a minute or two (T-728 measured 122 s); a vetoed one
+/// fires `PreCompact` alone, and `mesimon hook` fails open, so a
+/// `PostCompact` can be lost. Past this the window is read as closed.
+pub const COMPACT_STALE_MS: u64 = 10 * 60 * 1000;
 /// Flap guard: more than this many debounced changes inside the window pins.
 pub const FLAP_MAX: usize = 4;
 pub const FLAP_WINDOW_MS: u64 = 20_000;
@@ -427,8 +432,10 @@ pub struct MachineView {
     pub pending: Option<PendingView>,
     pub pinned_until: Option<u64>,
     pub idle_teammates: usize,
-    pub manual_compaction_prior: Option<SessionState>,
-    pub quiet_compaction: bool,
+    /// A compaction is in flight (T-894): its `PreCompact` came and its
+    /// `PostCompact` has not. The state is whatever it was; the record
+    /// paints the window (`SessionRecord::compacting`).
+    pub compacting: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -483,16 +490,18 @@ pub struct Machine {
     /// as working after every turn; when the clock runs out it reads
     /// monitoring again, as every background shell did before.
     park_fallback: StopReason,
-    manual_compact_prior: Option<(SessionState, Confidence)>,
-    /// An automatic compaction began with no turn open (T-728): Claude Code
-    /// 2.1.296 compacts an idle session before its prompt cache expires
-    /// ("Compacted while idle"), and sends `PreCompact{auto}`,
-    /// `SessionStart{compact}` and `PostCompact{auto}` with no prompt before
-    /// them and no `Stop` after. Read as a turn's own compaction, they put a
-    /// finished session at `Running`, moved its ticket by `on_working`, and
-    /// the status file then called the silence an Esc. None of the three
-    /// moves the state while this holds; it ends where the manual prior does.
-    quiet_compaction: bool,
+    /// When the open compaction window began (T-894): `PreCompact` opens
+    /// it, `PostCompact` closes it, and no frame of the window moves the
+    /// state. Claude Code compacts an idle session before its prompt cache
+    /// expires (T-728, 2.1.296: `PreCompact{auto}`, `SessionStart{compact}`,
+    /// `PostCompact{auto}`, no prompt before and no `Stop` after) and a
+    /// person's `/compact` does the same at any state; read as a turn's own,
+    /// either put a finished session at `Running`, moved its ticket by
+    /// `on_working` and back by `on_done`, told the crown a turn had ended,
+    /// and the status file then called the silence an Esc. A compaction
+    /// inside a turn keeps `Running`, as it always did. The window is a
+    /// fact for the card — a slow glyph and a row — and nothing else.
+    compacting_since: Option<u64>,
     /// The wait the stale clock demoted, while the machine still sits in
     /// that demote (T-565). Fifteen quiet minutes say the wait went
     /// unaffirmed, not that its dialog closed: a person who has not
@@ -540,8 +549,7 @@ impl Machine {
             idle_teammates: BTreeSet::new(),
             background_at: now,
             park_fallback: StopReason::EndTurn,
-            manual_compact_prior: None,
-            quiet_compaction: false,
+            compacting_since: None,
             stale_wait: None,
         }
     }
@@ -561,6 +569,24 @@ impl Machine {
         self.stale_wait
     }
 
+    /// A compaction is in flight (T-894): see `compacting_since`.
+    pub fn compacting(&self) -> bool {
+        self.compacting_since.is_some()
+    }
+
+    /// Close a compaction window no `PostCompact` closed inside
+    /// `COMPACT_STALE_MS`. The daemon's tick asks; true when it closed one,
+    /// which the board is told of, as it is told of every frame of it.
+    pub fn expire_compaction(&mut self, now: u64) -> bool {
+        match self.compacting_since {
+            Some(since) if now.saturating_sub(since) >= COMPACT_STALE_MS => {
+                self.compacting_since = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn view(&self) -> MachineView {
         MachineView {
             state: self.state.clone(),
@@ -568,11 +594,7 @@ impl Machine {
             entered_at: self.entered_at,
             pinned_until: self.pinned_until,
             idle_teammates: self.idle_teammates.len(),
-            manual_compaction_prior: self
-                .manual_compact_prior
-                .as_ref()
-                .map(|(state, _)| state.clone()),
-            quiet_compaction: self.quiet_compaction,
+            compacting: self.compacting_since.is_some(),
             pending: self.pending.as_ref().map(|p| PendingView {
                 state: p.to.clone(),
                 confidence: p.confidence,
@@ -613,9 +635,7 @@ impl Machine {
             } else {
                 "settle_cancelled"
             }
-        } else if before.manual_compaction_prior != after.manual_compaction_prior
-            || before.quiet_compaction != after.quiet_compaction
-        {
+        } else if before.compacting != after.compacting {
             "compaction_updated"
         } else if before.idle_teammates != after.idle_teammates {
             "background_updated"
@@ -676,31 +696,37 @@ impl Machine {
             return None;
         }
 
+        // The compaction window (T-894): a `PreCompact` opens it (a
+        // duplicate keeps the first clock), and anything that says the
+        // conversation moved on closes it — a vetoed compaction fires
+        // `PreCompact` alone, and a lost `PostCompact` is a hook that failed
+        // open. `PostCompact` closes it below, after `target` has read it.
         match sig {
-            Signal::PreCompact { manual: true } => {
-                if self.manual_compact_prior.is_none() {
-                    self.manual_compact_prior = Some((self.state.clone(), self.confidence));
+            Signal::PreCompact { .. } => {
+                if self.compacting_since.is_none() {
+                    self.compacting_since = Some(now);
                 }
-            }
-            // A duplicate of the quiet one finds the state it left alone.
-            Signal::PreCompact { manual: false } => {
-                self.manual_compact_prior = None;
-                self.quiet_compaction = matches!(self.state, SessionState::Idle { .. });
             }
             Signal::UserPromptSubmit
             | Signal::TurnStarted
+            | Signal::TurnEnded { .. }
             | Signal::Ready
-            | Signal::ObservationLost => {
-                self.manual_compact_prior = None;
-                self.quiet_compaction = false;
+            | Signal::ObservationLost
+            | Signal::Stop { has_agent_id: false, .. }
+            | Signal::SessionEnd { .. }
+            | Signal::PaneDied { .. } => {
+                self.compacting_since = None;
             }
             Signal::SessionStart { source } if *source != StartSource::Compact => {
-                self.manual_compact_prior = None;
-                self.quiet_compaction = false;
+                self.compacting_since = None;
             }
             _ => {}
         }
-        let (to, conf) = self.target(sig)?;
+        let target = self.target(sig);
+        if matches!(sig, Signal::PostCompact { .. }) {
+            self.compacting_since = None;
+        }
+        let (to, conf) = target?;
 
         // Flap pin: while pinned, only a STATED transition or a terminal one
         // gets through. The guard exists for evidence that argues with
@@ -875,24 +901,23 @@ impl Machine {
             // not working (dogfood 2026-08-30: fresh spawns read "working"
             // forever). The one exception: a compact-restart fires
             // SessionStart mid-turn and the turn continues.
-            // PreCompact makes maintenance visible. Keep the saved state
-            // through PostCompact: an async SessionStart may arrive afterward.
-            Signal::PreCompact { manual: false } if self.quiet_compaction => None,
-            Signal::PreCompact { .. } => t(S::Running),
-            Signal::PostCompact { manual: true } => Some(
-                self.manual_compact_prior
-                    .clone()
-                    .unwrap_or((S::Idle { stop_reason: StopReason::Unknown }, Confidence::Low)),
-            ),
-            Signal::PostCompact { manual: false } if self.quiet_compaction => None,
-            Signal::PostCompact { manual: false } => t(S::Running),
-            Signal::SessionStart { source: StartSource::Compact } => {
-                if self.manual_compact_prior.is_some() || self.quiet_compaction {
-                    None
-                } else {
-                    t(S::Running)
-                }
+            // A compaction moves nothing (T-894): the state it began in is
+            // the state it ends in, and the open window is painted, never
+            // passed through. Its `SessionStart` is inert everywhere: it may
+            // land after the `PostCompact` (both are relayed on their own,
+            // and 2.1.266 was seen sending it late), and a window this daemon
+            // never saw open — a restart between the frames — is closed by
+            // the `PostCompact` alone: an automatic one continues the turn it
+            // interrupted, and a manual one leaves the session at the prompt,
+            // never inventing a finished turn.
+            Signal::PreCompact { .. } | Signal::SessionStart { source: StartSource::Compact } => {
+                None
             }
+            Signal::PostCompact { .. } if self.compacting_since.is_some() => None,
+            Signal::PostCompact { manual: true } => {
+                Some((S::Idle { stop_reason: StopReason::Unknown }, Confidence::Low))
+            }
+            Signal::PostCompact { manual: false } => t(S::Running),
             Signal::SessionStart { .. } => t(S::Idle { stop_reason: StopReason::Unknown }),
             // In-app `/resume` and `/clear` end the CONVERSATION, not the
             // process: Claude Code fires SessionEnd{reason:X} then

@@ -29415,3 +29415,45 @@ that was never reachable.
 Tests: `a_codex_approval_walks_to_yes_or_no_and_confirms` also walks through `dialog_step_for`;
 `provider_e2e`, `trust_accept_e2e`, `approve_bridge` and `crown_e2e` green. No e2e in this
 repository drives a phone's approval; the relay's browser tests do.
+
+## A compaction is painted, and moves nothing (T-894, 2026-10-22, "indicate compaction in progress")
+
+The author's board: a seat compacting its conversation read idle — Claude Code compacts an idle
+session before its prompt cache expires (T-728), and the card wore the finished turn's `✓` through
+the minute or two of it. The other two shapes were wrong the other way: a person's `/compact` at a
+finished turn put the seat at `Running` (2026-09-09's "exposes Running during compaction"), which
+`on_working` moved to IN PROGRESS, `on_done` moved back at `PostCompact`, and the crown heard a
+turn end that was no turn; an automatic compaction inside a turn spun the working spinner, which
+says the agent is working when it is the engine summarizing. T-728's `quiet_compaction` held only
+the idle automatic case, and `manual_compact_prior` restored a state the machine should never have
+left.
+
+**A compaction moves nothing, and the window is a fact on the record.** `Machine::compacting_since`
+opens at any `PreCompact` (a duplicate keeps the first clock) and closes at `PostCompact`, at
+anything that says the conversation moved on (a prompt, a turn's start or end, a top-level `Stop`,
+a `SessionEnd`, a pane death, a new conversation's `SessionStart`), and at `COMPACT_STALE_MS`
+(ten minutes, the daemon's tick) — a vetoed compaction fires `PreCompact` alone, and `mesimon hook`
+fails open, so a `PostCompact` can be lost. No frame of the window moves the state: `PreCompact`
+and `SessionStart{compact}` are inert everywhere (the start may land after the end, both being
+relayed on their own; 2.1.266 was seen sending it late), and a `PostCompact` with no window open —
+a restart between the frames — keeps its old meaning: automatic continues the turn, manual leaves
+the seat at the prompt at Low. The two manual scenarios now expect the state and the column kept,
+and every compaction scenario asserts the window (`expect.compacting`). The daemon broadcasts a
+window edge that moved no state (`on_hook`'s `announce`), decorates `SessionRecord::compacting`
+onto the snapshot only (the machine holds it; a restart's machine starts with none), and the
+auto-park gate waits on it where it waited on the manual prior.
+
+**The card paints it.** `glyphs::compacting`, the cell pressed down and let go (`⠿ ⠶ ⠤ ⠶`;
+ascii `# % _ %`) on the slow cadence: distinct from the spinner, which never draws a full cell or
+a lower square, grey, under needs-you and the error mark and over the done mark and the spinner
+both (`card_glyph`, `session_glyph`); a parked or dead record's flag paints nothing. The activity
+row says `compacting context` with the pulse, on the card and in the ticket page's preview, the
+peek's last step being history until it ends; the page's state word is `compacting`
+(`glyphs::record_word`), and the shin thinks. Codex is untouched: its `/compact` is a real
+maintenance turn (2026-09-10) and spins as before. Mesophon says nothing of it yet.
+
+**Tests.** `glyphs::a_compaction_wears_its_own_slow_mark`, the goldens
+`board_compacting_120x30` and `ticket_compacting_120x30`, the scenarios `manual-compact-end_turn`,
+`manual-compact-interrupted`, `idle-compact` and `auto-compact-continuation`, and
+`compact_e2e::a_compaction_is_painted_and_moves_nothing` on both roads (fails before the fix at
+its first assertion: the manual window moved the ticket).

@@ -1,12 +1,12 @@
 {
   "schema": 1,
   "id": "manual-compact-interrupted",
-  "title": "Manual compaction restores interrupted even with delayed SessionStart",
+  "title": "A manual compaction leaves an interrupted turn where it was, SessionStart late or not",
   "provenance": {
     "kind": "capture_derived",
     "capture": "20260909T180046Z-e2e-compact-706f77",
     "claude_version": "2.1.266",
-    "note": "Raw manual trigger shape; duplicate PreCompact and delayed SessionStart are synthetic ordering regressions"
+    "note": "Raw manual trigger shape; duplicate PreCompact and delayed SessionStart are synthetic ordering regressions. T-894: a compaction moves nothing — the state and the column stay, and the window is painted (compacting) from PreCompact to PostCompact."
   },
   "initial": {
     "state": "idle",
@@ -26,9 +26,11 @@
       },
       "expect": {
         "state": {
-          "state": "running"
+          "state": "idle",
+          "stop_reason": "interrupted"
         },
-        "column": "IN PROGRESS"
+        "column": "IN PROGRESS",
+        "compacting": true
       }
     },
     {
@@ -42,9 +44,11 @@
       },
       "expect": {
         "state": {
-          "state": "running"
+          "state": "idle",
+          "stop_reason": "interrupted"
         },
-        "column": "IN PROGRESS"
+        "column": "IN PROGRESS",
+        "compacting": true
       }
     },
     {
@@ -58,9 +62,11 @@
       },
       "expect": {
         "state": {
-          "state": "running"
+          "state": "idle",
+          "stop_reason": "interrupted"
         },
-        "column": "IN PROGRESS"
+        "column": "IN PROGRESS",
+        "compacting": false
       }
     },
     {
@@ -74,6 +80,7 @@
           "stop_reason": "interrupted"
         },
         "column": "IN PROGRESS",
+        "compacting": false,
         "confidence": "high"
       }
     },
@@ -91,7 +98,8 @@
           "state": "idle",
           "stop_reason": "interrupted"
         },
-        "column": "IN PROGRESS"
+        "column": "IN PROGRESS",
+        "compacting": false
       }
     }
   ]
