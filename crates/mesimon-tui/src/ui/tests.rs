@@ -2067,6 +2067,26 @@ fn golden_ticket_shell_busy_120() {
 }
 
 #[test]
+fn golden_ticket_shared_shell() {
+    let mut app = app_graphite(fixture(true));
+    let ticket = ulid_n(3);
+    app.rich_keys = true;
+    let shell = app.board_mut().sessions.iter_mut().find(|s| s.id == uuid_n(32)).unwrap();
+    shell.shell_shared = true;
+    app.screen = Screen::Ticket { ticket, rail_idx: 1 };
+    golden("ticket_shell_shared_120x30", &render(&app, 120, 30));
+    app.board_mut().crown = Some(ticket);
+    let shell = app.board_mut().sessions.iter_mut().find(|s| s.id == uuid_n(32)).unwrap();
+    shell.shell_close_request = Some(mesimon_core::board::ShellCloseRequest {
+        id: uuid_n(90),
+        crown: ticket,
+        pane: "1:%1".into(),
+        expires_ms: u64::MAX,
+    });
+    golden("ticket_shell_close_requested_120x30", &render(&app, 120, 30));
+}
+
+#[test]
 fn golden_ticket_previous_column() {
     let mut app = app_graphite(fixture(true));
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };

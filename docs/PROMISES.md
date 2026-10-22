@@ -41,6 +41,20 @@ an agent on a ticket and submit (Shift+Enter, or Start agent in Remote Control),
 is the ticket's title followed by the ticket's description — both your own words, written for
 that ticket, and nothing of mesimon's.
 
+A shell's output is private until you share it. On its ticket-page row, `^s` shares
+it with that ticket's agent and the board's crown; the same key stops future reads.
+Shift+Enter on a shell or unadopted terminal adopts it if necessary, enables sharing,
+and opens a frozen output capture in the ask editor. You review the exact text before
+sending it. Captures identify their source, time and truncation; terminal output is
+content, not instructions or proof that a command succeeded. Stopping sharing cannot
+remove captures already read or sent from their recipients' conversations.
+
+The shell tools provide no terminal input. Only you run commands there. A crown may
+request closure, which waits for your confirmation on the shell's row and checks its
+identity, activity and attached clients again. Closing loses the shell and its terminal
+history; parking an agent does not preserve or close a shell. Mesimon's tool permissions
+are not OS isolation of a coding agent running as your user.
+
 It does give the sessions it spawns scoped board tools — read and move its ticket, read and
 write its notes, tag it from the tags you already made, and file a new ticket — so an agent
 can see which ticket it is on and what it is about. One ticket per board can wear the

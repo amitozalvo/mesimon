@@ -1428,8 +1428,13 @@ pub(super) fn is_unsent(sessions: &[&SessionRecord]) -> bool {
 pub(super) fn is_waiting(sessions: &[&SessionRecord]) -> bool {
     use mesimon_core::board::Confidence;
     sessions.iter().any(|s| {
-        mesimon_core::attention::is_attention(&s.state)
+        (mesimon_core::attention::is_attention(&s.state)
             && matches!(s.confidence, Confidence::High | Confidence::Medium)
-            && !matches!(s.state, SessionState::Sleeping)
+            && !matches!(s.state, SessionState::Sleeping))
+            || (s.kind == SessionKind::Bash
+                && s.state.has_pane()
+                && s.shell_close_request
+                    .as_ref()
+                    .is_some_and(|q| q.expires_ms > mesimon_core::clock::now_ms()))
     })
 }

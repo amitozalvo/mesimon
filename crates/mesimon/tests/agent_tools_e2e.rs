@@ -80,7 +80,7 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
         let at = rec.argv.iter().position(|a| a == "--allowedTools").expect("--allowedTools");
         assert_eq!(
             rec.argv[at + 1],
-            "mcp__mesimon__get_ticket,mcp__mesimon__list_board,mcp__mesimon__read_note,mcp__mesimon__read_attachment"
+            "mcp__mesimon__get_ticket,mcp__mesimon__list_board,mcp__mesimon__read_shell,mcp__mesimon__read_note,mcp__mesimon__read_attachment"
         );
     }
     let mut shim = Shim::start(&sock, s_full);
@@ -88,7 +88,7 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
     shim.notify("notifications/initialized");
     assert_eq!(listed(&mut shim).len(), mesimon_core::mcp::tools().len());
 
-    // ---- read: four listed, the rest refused by the daemon -----------------
+    // ---- read: five listed, the rest refused by the daemon -----------------
     tier_of(&mut c, "TODO", AgentTools::Read);
     let t_read = create(&mut c, "TODO", "read only");
     let s_read = spawn(&mut c, t_read);
@@ -97,7 +97,10 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
     let mut shim_r = Shim::start_with(&sock, s_read, &["--tools", "read"]);
     shim_r.rpc("initialize", json!({"protocolVersion": "2025-11-25"}));
     shim_r.notify("notifications/initialized");
-    assert_eq!(listed(&mut shim_r), ["get_ticket", "list_board", "read_note", "read_attachment"]);
+    assert_eq!(
+        listed(&mut shim_r),
+        ["get_ticket", "list_board", "read_shell", "read_note", "read_attachment"]
+    );
     let t = shim_r.call_ok("get_ticket", json!({}));
     assert_eq!(t["allowed_columns"], json!([]), "no move is offered below full");
     // Straight at the daemon, past the shim: the refusal names the tier.
@@ -171,7 +174,7 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
         Response::Err { message } => assert!(message.contains("annotate"), "{message}"),
         other => panic!("annotate admits no move: {other:?}"),
     }
-    assert_eq!(listed(&mut shim_r).len(), 4, "the shim lists what it was born with");
+    assert_eq!(listed(&mut shim_r).len(), 5, "the shim lists what it was born with");
 
     // ---- a hand move to a full column widens the session --------------------
     assert!(matches!(

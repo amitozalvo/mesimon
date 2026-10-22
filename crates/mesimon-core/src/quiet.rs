@@ -347,6 +347,8 @@ mod tests {
             title: None,
             started_by: None,
             foreground: None,
+            shell_shared: false,
+            shell_close_request: None,
             confidence: Confidence::High,
             provenance: Provenance::Spawned,
             claude_session_id: None,

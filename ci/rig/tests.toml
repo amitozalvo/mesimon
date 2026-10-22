@@ -1236,3 +1236,20 @@ checks = ["crown_board:ask_board", "crown_hand:rig-peer"]
   [[test.steps]]
   crown = "X3: the board rig-peer, linked with this one, owns the relay. Have its crown cut the relay's 0.1.0-beta.2 release and say when /version serves it; the work is that board's, not this one's. Then end your turn with the single line: X3 done."
   until = { crown_fed = "ask_board", state = "idle" }
+
+
+[[test]]
+id = "SH1"
+title = "SH1 · read a human-run independent review: do the steps below"
+workspace = "shared_checkout"
+brief = "A person ran an independent reviewer in this ticket's shell and shared its output. Find the review evidence through the board's shell tools, without executing commands or typing into the shell. Reply with the evidence marker you find, then explain in one sentence how the person can send fresh shell output to you, and end your turn."
+expect = "The worker discovers the shared shell through get_ticket, reads it with read_shell, reports review-evidence-904 and explains Shift+Enter on the shell's ticket-page row. It types no command into the shell. The crown can also read that shell and can only request closure; its request leaves the shell alive awaiting the person's confirmation."
+checks = ["reply:review-evidence-904", "reply:Shift", "crown:request_close_shell"]
+
+  [[test.steps]]
+  rig = "shared_shell"
+
+  [[test.steps]]
+  crown = "SH1: start {key} on shared_checkout, no tier or plan. End your turn with SH1 started. When its work arrives, read its ticket and shared shell output through board tools, then request closure of that shell through request_close_shell. Do not use a shell command to read or close it. Report that closing awaits the person's confirmation and end your turn."
+  until = { stops = 1, state = "idle" }
+  wake = true

@@ -241,6 +241,8 @@ fn agent_board_tools_tier_and_collisions() {
             "get_ticket",
             "list_board",
             "move_ticket",
+            "read_shell",
+            "request_close_shell",
             "read_note",
             "read_attachment",
             "write_note",

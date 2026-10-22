@@ -1409,6 +1409,22 @@ Reply with the single word ready and end your turn."""
     def rig_step(self, test, what, record, step=None):
         step = step or {}
         say(f"  → rig: {what}")
+        if what == "shared_shell":
+            # A human-run terminal, shared explicitly. The agent only gets its read tool.
+            try:
+                self.wire.request({"cmd": "open_terminal", "ticket": test["ticket"]})
+                self.wire.request({"cmd": "terminal_end"})
+                opened = self.wire.request({"cmd": "adopt_terminal", "ticket": test["ticket"]})
+                shell = opened["id"]
+                self.wire.request({"cmd": "share_shell", "session": shell, "shared": True})
+                out = self.tmux("send-keys", "-t", sid16(shell), "-l", "printf '%s%s\\n' review- evidence-904")
+                if out.returncode:
+                    raise RuntimeError(out.stderr)
+                self.tmux("send-keys", "-t", sid16(shell), "Enter")
+                return True
+            except (WireError, KeyError, RuntimeError) as error:
+                record["failures"].append(f"shared shell fixture: {error}")
+                return False
         if what == "prompt":
             # The person's words to the worker while its turn runs (P2).
             rec = self.agent_of(self.board(), test["ticket"])

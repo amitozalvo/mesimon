@@ -268,6 +268,15 @@ pub enum Provenance {
     Adopted,
 }
 
+/// One short-lived human confirmation, bound to an exact shell pane and crown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellCloseRequest {
+    pub id: uuid::Uuid,
+    pub crown: ulid::Ulid,
+    pub pane: String,
+    pub expires_ms: u64,
+}
+
 /// A session record the daemon persists. Mesimon's UUID names its tmux
 /// session and authorization principal. Provider conversation IDs are
 /// separate: Claude initially accepts this UUID; Codex assigns its own.
@@ -314,6 +323,12 @@ pub struct SessionRecord {
     /// automove sees a turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground: Option<String>,
+    /// A person explicitly shared this shell's output with this ticket's agent and crown.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shell_shared: bool,
+    /// A crown's request, never authority to close. Only a local confirmation consumes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_close_request: Option<ShellCloseRequest>,
     #[serde(default)]
     pub confidence: Confidence,
     #[serde(default)]
@@ -608,6 +623,8 @@ impl SessionRecord {
             title: None,
             started_by: None,
             foreground: None,
+            shell_shared: false,
+            shell_close_request: None,
             confidence: Confidence::default(),
             provenance: Provenance::default(),
             claude_session_id: None,
@@ -3403,6 +3420,19 @@ impl Board {
             .chain(self.woke_tickets().iter().map(|t| t.id))
             .chain(self.raised_tickets().iter().map(|t| t.id))
             .chain(self.unsent_tickets().iter().map(|t| t.id))
+            .chain(
+                self.sessions
+                    .iter()
+                    .filter(|s| {
+                        s.kind == SessionKind::Bash
+                            && s.state.has_pane()
+                            && s.shell_close_request.as_ref().is_some_and(|q| {
+                                q.expires_ms > crate::clock::now_ms()
+                                    && self.crown_holder().map(|t| t.id) == Some(q.crown)
+                            })
+                    })
+                    .map(|s| s.ticket),
+            )
             .collect()
     }
 

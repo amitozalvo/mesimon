@@ -726,6 +726,34 @@ impl TmuxBackend {
         Ok((tail, cols))
     }
 
+    /// Bounded physical scrollback for explicitly shared shell output. Blank lines stay.
+    pub fn capture_shell(&self, pane: &str) -> Result<(String, bool)> {
+        let out = self.run(&[
+            "capture-pane",
+            "-p",
+            "-S",
+            "-200",
+            "-t",
+            pane,
+            ";",
+            "display-message",
+            "-p",
+            "-t",
+            pane,
+            "#{alternate_on}",
+        ])?;
+        let (text, alternate) = out
+            .trim_end_matches('\n')
+            .rsplit_once('\n')
+            .context("missing shell capture metadata")?;
+        Ok((text.to_owned(), alternate == "1"))
+    }
+
+    /// Exact client presence; malformed activity timestamps cannot look detached.
+    pub fn has_clients(&self, pane: &str) -> Result<bool> {
+        Ok(!self.run(&["list-clients", "-t", pane, "-F", "#{client_name}"])?.trim().is_empty())
+    }
+
     pub fn capture_input_screen(&self, sid16: &str) -> Result<InputScreen> {
         // Keep physical rows (no -J and no blank-line filtering): cursor_y
         // indexes this screen. Read screen and cursor in one tmux command queue.

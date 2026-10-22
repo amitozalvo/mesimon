@@ -105,6 +105,7 @@ mod crownwake;
 mod mesophon;
 mod peer;
 mod shelf;
+mod shells;
 mod teamglue;
 mod tiers;
 mod trainhold;
@@ -2637,7 +2638,10 @@ impl Daemon {
         let resource = match &env.command {
             Command::ImportTicket { column, .. } | Command::CreateTicketWithNote { column, .. } => Resource::Column { name: column.clone() },
             Command::ReadAttachment { ticket, .. } | Command::SaveNoteWithAttachments { ticket, .. } => Resource::Ticket { id: *ticket },
-            Command::PaneTail { session, .. } => Resource::Session { id: *session },
+            Command::ShareShell { session, .. }
+            | Command::ShellCapture { session }
+            | Command::ConfirmCloseShell { session, .. }
+            | Command::PaneTail { session, .. } => Resource::Session { id: *session },
             // Same rule as the line above, for the pane the user is inside
             // (T-299). `Board` where nothing is focused: there is no session
             // to name and the command answers `None` anyway.
@@ -3053,6 +3057,9 @@ impl Daemon {
             // The board's `w` on a trust dialog (T-844): the walk Remote
             // Control's card asks for, from the terminal.
             Command::AcceptTrust { ticket } => self.accept_trust(ticket),
+            Command::ShareShell { session, shared } => self.share_shell(session, shared),
+            Command::ShellCapture { session } => self.local_shell_capture(session),
+            Command::ConfirmCloseShell { session, request, close } => self.confirm_close_shell(session, request, close),
             Command::SleepSession { id } => match self.sleep_one(id, false, Park::Deliberate) {
                 Ok(()) => {
                     self.persist_and_notify();
@@ -3084,6 +3091,8 @@ impl Daemon {
             | Command::AgentListBoard
             | Command::AgentMoveTicket { .. }
             | Command::AgentReadAttachment { .. }
+            | Command::AgentReadShell { .. }
+            | Command::AgentRequestCloseShell { .. }
             | Command::AgentReadNote { .. }
             | Command::AgentWriteNote { .. }
             | Command::AgentCreateTicket { .. }
@@ -6475,6 +6484,12 @@ impl Daemon {
                 }
                 self.read_attachment(target, attachment)
             }
+            Command::AgentReadShell { shell, key } => {
+                self.agent_read_shell(session, ticket, shell, key)
+            }
+            Command::AgentRequestCloseShell { shell, key } => {
+                self.request_close_shell(session, ticket, shell, &key)
+            }
             Command::AgentReadNote { note, key } => {
                 let target = match key {
                     None => ticket,
@@ -7729,6 +7744,7 @@ impl Daemon {
         // one's words go nowhere on their own (T-550).
         self.drop_crown_wakes();
         self.hold_crown_sends();
+        self.revoke_shell_close_requests();
         self.board.crown = Some(id);
         self.persist_columns();
         self.broadcast();
@@ -7744,6 +7760,7 @@ impl Daemon {
         }
         self.drop_crown_wakes();
         self.hold_crown_sends();
+        self.revoke_shell_close_requests();
         self.board.crown = None;
         self.persist_columns();
         self.broadcast();
@@ -7762,6 +7779,7 @@ impl Daemon {
         if self.board.crown == Some(id) {
             self.drop_crown_wakes();
             self.hold_crown_sends();
+            self.revoke_shell_close_requests();
             self.board.crown = None;
             self.persist_columns();
             self.feed.board("automation", "uncrown", Some(id));
@@ -8704,6 +8722,9 @@ impl Daemon {
             })
         });
         Some(AgentTicketView {
+            terminal_open: self.terminals.contains_key(&Some(id)),
+            shells: self.agent_shells(id),
+            shells_about: "A person can run commands or an independent reviewer in !. On its ticket-page row, Shift+Enter adopts, shares and prepares output to send. Shared shells are readable by this ticket's agent and the crown through read_shell; only the person types in them. A foreground name is an observation, not completion or success. The crown can request closure, which waits for the person's confirmation.".into(),
             key: t.short_key.clone(),
             key_about: None,
             title: t.title.clone(),
@@ -8923,6 +8944,11 @@ impl Daemon {
             .iter()
             .flat_map(|name| {
                 self.board.column_tickets(name).into_iter().map(|t| AgentTicketRow {
+                    shells: (t.id == own || self.board.crown_holder().map(|c| c.id) == Some(own))
+                        .then(|| {
+                            self.agent_shells(t.id).len()
+                                + usize::from(self.terminals.contains_key(&Some(t.id)))
+                        }),
                     key: t.short_key.clone(),
                     title: t.title.clone(),
                     column: t.column.clone(),
@@ -10146,7 +10172,8 @@ impl Daemon {
             .iter()
             .filter(|t| !t.is_archived() && reclaim.contains(t.column.as_str()))
             .filter(|t| {
-                if self.board.ticket_awake_sessions(t.id) > 0 {
+                if self.board.ticket_awake_sessions(t.id) > 0 || self.shell_blocker(t.id).is_some()
+                {
                     return false;
                 }
                 let sessions: Vec<_> =
@@ -11948,6 +11975,11 @@ impl Daemon {
     /// on disk never carries one (T-366). So does the count of an idle
     /// agent's background tasks (T-599): the registry is never persisted.
     fn decorate(&self, rec: &mut mesimon_core::board::SessionRecord) {
+        if rec.shell_close_request.as_ref().is_some_and(|q| {
+            q.expires_ms <= now_ms() || self.board.crown_holder().map(|t| t.id) != Some(q.crown)
+        }) {
+            rec.shell_close_request = None;
+        }
         rec.foreground = self.foregrounds.get(&rec.id).cloned();
         rec.tasks_running = (rec.kind.is_agent()
             && rec.state == (SessionState::Idle { stop_reason: StopReason::Background }))
@@ -13705,6 +13737,9 @@ impl Daemon {
             }
             Some(_) => {}
         }
+        if let Some(message) = self.shell_blocker(id) {
+            return Response::Err { message };
+        }
         if self.board.ticket_awake_sessions(id) > 0 {
             return Response::Err { message: "sessions still awake — sleep them first".into() };
         }
@@ -13860,7 +13895,7 @@ impl Daemon {
     /// the bulk sweep's age floor, since a `z` is as deliberate as an `x` —
     /// and it is all-or-nothing: every pane on the ticket is judged BEFORE
     /// any is signalled, so a claude still working (or waiting on the user,
-    /// or a shell with a live child) holds the ticket on
+    /// or any open shell) holds the ticket on
     /// the board with nothing on it touched, in words that name it.
     /// `wake_snoozed` on the tick wheel is the other half; the sessions
     /// stay asleep when the ticket returns, and `c` wakes them.
@@ -13871,6 +13906,9 @@ impl Daemon {
                 return Response::Err { message: "already archived".into() }
             }
             Some(_) => {}
+        }
+        if let Some(message) = self.shell_blocker(id) {
+            return Response::Err { message };
         }
         if until <= now_secs() {
             return Response::Err { message: "snooze deadline is already past".into() };
@@ -14682,6 +14720,8 @@ impl Daemon {
                     // archive) waits for the first to land and is judged
                     // against what is left.
                     && !self.tearing_down.contains(&t.ticket)
+                    && (!matches!(t.why, TeardownWhy::Archived)
+                        || self.shell_blocker(t.ticket).is_none())
             })
             .map(|(i, _)| i)
             .collect();
@@ -14710,8 +14750,22 @@ impl Daemon {
             if b.path.is_dir() {
                 // The worktree's terminal (T-273) stands in the directory
                 // about to go: it is no session of the ticket, so the reaper
-                // never saw it. Killed here, first — never remove a live cwd.
-                let _ = self.backend.kill_session(&terminal_name(Some(ticket)));
+                // never saw it. Archive reclamation waits for it to close;
+                // explicit deletion keeps its confirmed terminal cleanup.
+                if archived {
+                    match self.backend.snapshot() {
+                        Ok(panes)
+                            if !panes.iter().any(|p| {
+                                p.session_name == terminal_name(Some(ticket)) && !p.pane_dead
+                            }) => {}
+                        _ => {
+                            self.pending_teardown.push(Teardown { ticket, why, sids: Vec::new() });
+                            continue;
+                        }
+                    }
+                } else {
+                    let _ = self.backend.kill_session(&terminal_name(Some(ticket)));
+                }
             }
             // The gates are judged here, on the writer, with the board in
             // hand; the removal itself goes to a worker (T-561). `worktree
@@ -17408,18 +17462,7 @@ impl Daemon {
         if rec.kind == SessionKind::Bash {
             // TIOCGPGRP recast: we hold no PTY master under tmux, so the
             // guard is the pane process's live children (D23 hard floor).
-            let pane_pid = self
-                .backend
-                .snapshot()
-                .ok()
-                .and_then(|s| s.into_iter().find(|p| p.session_name == rec.sid16()))
-                .map(|p| p.pane_pid);
-            if let Some(pid) = pane_pid {
-                let kids = live_children(pid);
-                if !kids.is_empty() {
-                    return Err(format!("bash has live children ({})", kids.join(", ")));
-                }
-            }
+            self.shell_close_ready(rec)?;
         }
         Ok(())
     }
@@ -18437,15 +18480,12 @@ fn claude_startup_candidate(s: &SessionRecord) -> bool {
 }
 
 /// Direct live children of a pid, by name — the tmux-recast bash-sleep guard.
-fn live_children(pid: i32) -> Vec<String> {
-    let Ok(out) = std::process::Command::new("pgrep").args(["-lP", &pid.to_string()]).output()
-    else {
-        return Vec::new();
-    };
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| l.split_whitespace().nth(1).map(str::to_string))
-        .collect()
+fn live_children(pid: i32) -> std::result::Result<Vec<String>, String> {
+    let out =
+        std::process::Command::new("pgrep").args(["-lP", &pid.to_string()]).output().map_err(
+            |_| "could not inspect shell jobs; open the shell and exit it yourself".to_string(),
+        )?;
+    shells::parse_children(out.status.code(), &out.stdout)
 }
 
 /// `created_at`'s `@<unix secs>` stamp as epoch ms; None for anything else

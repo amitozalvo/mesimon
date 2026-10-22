@@ -30088,3 +30088,41 @@ Tests: `header_links_chip_is_the_last_and_opens_reaches_boards` (keymap),
 `links_chip_opens_reaches_boards_and_esc_returns_to_it` (app),
 `links_count_is_a_chip_a_click_opens` (render). No golden changed: a golden is drawn with the
 cursor on the board.
+
+## Shared terminal output and explicit shell closure (T-904, 2026-10-22)
+
+A person can run an unsupported command or independent reviewer in a ticket's `!`
+terminal and share its output with the ticket's agent and the crown. Adoption alone
+keeps output private, including records from earlier versions. `^s` on an adopted
+shell's row toggles sharing; Shift+Enter on a shell or terminal row adopts if needed,
+shares and opens a frozen capture in the ask editor. The person reviews and sends
+that text through the existing ask delivery. Shift+Enter inside an attached application
+keeps its existing meaning. Sharing is a grant for later reads too; stopping it cannot
+recall output already delivered.
+
+`get_ticket` describes the workflow and lists shells, sharing state and observed
+foregrounds. `list_board` carries shell counts for the caller's own ticket and, for
+the crown, other tickets. `read_shell` exports only explicitly shared shell output,
+with the ticket/crown scope checked by the daemon. Its separate core capability grants
+no generic session access or terminal input. Captures preserve blank lines, bound both
+lines and bytes, identify the capture time and screen/scrollback source, and report
+truncation. Foreground observations do not assert completion or an exit status.
+
+`request_close_shell` is a crown request for the person, never authority to terminate.
+The request is visible on the shell and in the needs-you indication. On its row, `x`
+shows the consequence, Enter confirms, and Esc keeps the shell. A request expires in
+five minutes, is bound to its pane, and is revoked when the crown changes. Attached,
+busy or uninspectable shells remain open. The ordinary person's close remains on `x`;
+opening the shell and exiting it is the manual route.
+
+Parking agents leaves shells open and says how to close them. Snooze and archive
+explain their shell/terminal blockers; neither silently closes a shell as part of
+parking. Archive reclamation waits for both adopted shells and unadopted terminals;
+explicit ticket deletion keeps its existing confirmed terminal cleanup.
+Shell output is never copied into a ticket note automatically, and an unsupported
+reviewer is not promoted to a managed agent by sharing its terminal.
+
+Coverage: authorization and tool-tier tests; real-tmux adoption, sharing, revocation,
+cross-ticket reads, close requests, busy/attached refusal and confirmation; TUI output
+preview and snooze guidance; shared-shell and close-request goldens; rig SH1 exercises
+a real worker reading the shared output and a crown requesting human-confirmed closure.

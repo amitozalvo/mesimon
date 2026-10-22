@@ -914,6 +914,20 @@ pub enum Command {
         ticket: Option<ulid::Ulid>,
     },
     TerminalEnd,
+    /// Local owner grants or revokes live shell output sharing.
+    ShareShell {
+        session: uuid::Uuid,
+        shared: bool,
+    },
+    /// Local preview of the same bounded capture the shell read tool returns.
+    ShellCapture {
+        session: uuid::Uuid,
+    },
+    ConfirmCloseShell {
+        session: uuid::Uuid,
+        request: uuid::Uuid,
+        close: bool,
+    },
     /// Has the GATE ceremony been passed on this machine?
     GateStatus,
     GatePassed,
@@ -997,6 +1011,15 @@ pub enum Command {
     // ------------------------------------------------------------------
     /// The caller's own ticket, as `get_ticket` renders it.
     AgentGetTicket,
+    AgentReadShell {
+        shell: uuid::Uuid,
+        #[serde(default)]
+        key: Option<String>,
+    },
+    AgentRequestCloseShell {
+        shell: uuid::Uuid,
+        key: String,
+    },
     /// ANOTHER ticket, by key, as `get_ticket` renders it with a `key`
     /// (T-411). The one read the crown admits and nothing else does: the
     /// daemon refuses it unless the caller's ticket wears the crown, and the
@@ -1494,6 +1517,8 @@ impl Command {
             | AgentReadTicket { .. }
             | AgentReadAttachment { .. }
             | ReadAttachment { .. }
+            | AgentReadShell { .. }
+            | ShellCapture { .. }
             | AgentReadNote { .. }
             | AgentListBoard
             // The bridge's poll: a delivery ledger, never board state.
@@ -1608,6 +1633,8 @@ impl Command {
             | SortColumn { .. }
             | KillSession { .. }
             | ResumeSession { .. }
+            | ShareShell { .. }
+            | ConfirmCloseShell { .. }
             | SleepSession { .. }
             | WakeSession { .. }
             | ReclaimAll => m(Mutate, true, None),
@@ -1630,6 +1657,7 @@ impl Command {
             | AgentSetWorkspace { .. }
             | AgentArchiveTicket { .. }
             | AgentStartTicket { .. }
+            | AgentRequestCloseShell { .. }
             | AgentSleepTicket { .. }
             | AgentWatchTicket { .. }
             | AgentMergeTicket { .. }
@@ -1752,6 +1780,9 @@ mod meta_tests {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "resp", rename_all = "snake_case")]
 pub enum Response {
+    ShellOutput {
+        output: ShellOutput,
+    },
     Mesophon {
         info: crate::mesophon::Info,
     },
@@ -2260,6 +2291,24 @@ pub enum Response {
     },
 }
 
+/// Output explicitly shared by a person; never an agent transcript or shell input API.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentShellView {
+    pub shell: uuid::Uuid,
+    pub shared: bool,
+    pub foreground: Option<String>,
+    pub close_requested: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellOutput {
+    pub shell: uuid::Uuid,
+    pub captured_at_ms: u64,
+    pub source: String,
+    pub truncated: bool,
+    pub text: String,
+}
+
 /// The caller's own ticket, as an agent sees it.
 ///
 /// A hand-written projection, not `Ticket` with fields skipped: a projection
@@ -2267,6 +2316,12 @@ pub enum Response {
 /// does. Everything here is board data the agent could read off disk anyway.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTicketView {
+    #[serde(default)]
+    pub terminal_open: bool,
+    #[serde(default)]
+    pub shells: Vec<AgentShellView>,
+    #[serde(default)]
+    pub shells_about: String,
     pub key: String,
     /// On a session's read of its own ticket (T-715): that the person reads
     /// the session beside this ticket, so "this ticket" names it and the
@@ -2749,6 +2804,9 @@ pub struct AgentNoteView {
 /// shows (T-411), never anything off the pane.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTicketRow {
+    /// Visible to this ticket's agent and the crown; no terminal contents here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shells: Option<usize>,
     pub key: String,
     pub title: String,
     pub column: String,
@@ -3798,6 +3856,9 @@ mod tests {
         let back: WorktreeItem = serde_json::from_str(&serde_json::to_string(&w).unwrap()).unwrap();
         assert_eq!(back.repos, w.repos);
         let mut t = AgentTicketView {
+            terminal_open: false,
+            shells: vec![],
+            shells_about: String::new(),
             key: "T-1".into(),
             key_about: None,
             title: "t".into(),

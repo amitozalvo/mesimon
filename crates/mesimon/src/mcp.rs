@@ -163,6 +163,10 @@ fn tool_result(params: &Value, sock: &std::path::Path, session: uuid::Uuid) -> V
         ToolCall::GetTicket { key: None } => Command::AgentGetTicket,
         ToolCall::GetTicket { key: Some(key) } => Command::AgentReadTicket { key },
         ToolCall::ListBoard => Command::AgentListBoard,
+        ToolCall::ReadShell { shell, key } => Command::AgentReadShell { shell, key },
+        ToolCall::RequestCloseShell { shell, key } => {
+            Command::AgentRequestCloseShell { shell, key }
+        }
         ToolCall::MoveTicket { to_column, idempotency_key, key, before, seen } => {
             Command::AgentMoveTicket {
                 to_column,
@@ -245,6 +249,7 @@ fn tool_result(params: &Value, sock: &std::path::Path, session: uuid::Uuid) -> V
 /// rendered as a malfunction instead of an answer.
 fn render(resp: Response) -> Value {
     match resp {
+        Response::ShellOutput { output } => text(&output),
         Response::AgentTicket { ticket } => text(&ticket),
         Response::AgentBoard { board } => text(&board),
         Response::AgentMoved { column, board_version, replayed, seen } => {

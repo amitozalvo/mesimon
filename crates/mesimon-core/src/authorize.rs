@@ -5,6 +5,8 @@ use crate::Principal;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Read,
+    ReadShell,
+    RequestCloseShell,
     Mutate,
     /// Materialize external content as a fresh, inert local ticket. There is
     /// no wire command for this seam. Existing agents and daemon automation
@@ -51,6 +53,7 @@ pub enum Action {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resource {
     Board,
+    Shell { ticket: ulid::Ulid, id: uuid::Uuid },
     Ticket { id: ulid::Ulid },
     Column { name: String },
     Session { id: uuid::Uuid },
@@ -83,7 +86,9 @@ impl Decision {
 /// * **No agent reads or changes a session, ever.** Not its own, not another's.
 ///   There is no `get_session`, no transcript, no scrollback, no cost — and
 ///   when a second principal exists (D32h), "teammates see tickets and
-///   outcomes, never sessions" is already enforced here.
+///   outcomes, never sessions" is already enforced here. Explicitly shared shell
+///   output has its own `ReadShell` capability; it grants neither a Session read
+///   nor terminal input. The daemon checks kind, ticket, sharing and crown scope.
 /// * **No agent mutates the board as a whole.** It may move its own ticket
 ///   between columns and append a new ticket to a column (`create_ticket`,
 ///   a `Mutate` on `Resource::Column`); it may not create, delete or reorder
@@ -103,6 +108,12 @@ impl Decision {
 /// for everyone else they are `Mutate`. `Annotate` is its note edit, on a ticket (T-532).
 pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) -> Decision {
     let deny = |reason: &str| Decision::Deny { reason: reason.to_string() };
+    if matches!(action, Action::ReadShell | Action::RequestCloseShell) {
+        return match (principal, resource) {
+            (Principal::Local | Principal::Agent { .. }, Resource::Shell { .. }) => Decision::Allow,
+            _ => deny("shell access requires a local owner or a scoped agent"),
+        };
+    }
     if matches!(
         action,
         Action::MoveTicket
@@ -173,7 +184,7 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
             ),
         },
         Principal::Agent { .. } => match (action, resource) {
-            (_, Resource::Session { .. }) => {
+            (_, Resource::Session { .. } | Resource::Shell { .. }) => {
                 deny("an agent cannot read or change a session, at any tier")
             }
             (Action::Mutate, Resource::Board) => {
@@ -182,7 +193,9 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
             (Action::Read, _) => Decision::Allow,
             (Action::Mutate, Resource::Ticket { .. } | Resource::Column { .. }) => Decision::Allow,
             (
-                Action::ImportContent
+                Action::ReadShell
+                | Action::RequestCloseShell
+                | Action::ImportContent
                 | Action::PromptExisting
                 | Action::ApproveExisting
                 | Action::FileTicket
@@ -205,14 +218,18 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
         // shape. The role check happened before the record was accepted;
         // this is the floor under it.
         Principal::Remote { .. } => match (action, resource) {
-            (_, Resource::Session { .. }) => deny("a teammate cannot read or change a session"),
+            (_, Resource::Session { .. } | Resource::Shell { .. }) => {
+                deny("a teammate cannot read or change a session")
+            }
             (Action::Mutate, Resource::Board) => {
                 deny("a teammate cannot change the board itself, only its tickets")
             }
             (Action::Read, _) => Decision::Allow,
             (Action::Mutate, Resource::Ticket { .. } | Resource::Column { .. }) => Decision::Allow,
             (
-                Action::ImportContent
+                Action::ReadShell
+                | Action::RequestCloseShell
+                | Action::ImportContent
                 | Action::PromptExisting
                 | Action::ApproveExisting
                 | Action::FileTicket
@@ -542,5 +559,18 @@ mod tests {
             panic!("expected a denial");
         };
         assert!(reason.contains("session"), "the reason is rendered to the agent: {reason}");
+    }
+    #[test]
+    fn shell_capabilities_never_grant_session_access_or_execution() {
+        let shell = Resource::Shell { ticket: ulid::Ulid::nil(), id: uuid::Uuid::nil() };
+        let session = Resource::Session { id: uuid::Uuid::nil() };
+        for action in [Action::ReadShell, Action::RequestCloseShell] {
+            assert_eq!(authorize(&agent(), &action, &shell), Decision::Allow);
+            assert!(authorize(&agent(), &action, &session).denied());
+            assert!(authorize(&automation(), &action, &shell).denied());
+        }
+        for action in [Action::Read, Action::Mutate, Action::PromptExisting] {
+            assert!(authorize(&agent(), &action, &shell).denied());
+        }
     }
 }

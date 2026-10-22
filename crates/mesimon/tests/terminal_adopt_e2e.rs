@@ -118,6 +118,22 @@ fn the_tickets_terminal_is_listed_previewed_and_adopted() {
     assert_eq!(rec.state, SessionState::Running);
     assert_eq!(rec.foreground.as_deref(), Some("sleep"));
     assert_eq!(rec.argv, ["/bin/sh"]);
+    let exact_key = tmux(&sock)
+        .args([
+            "display-message",
+            "-p",
+            "-t",
+            &format!("={}:0.0", rec.sid16()),
+            "#{pid}:#{pane_id}",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        rec.pane_key.as_deref(),
+        Some(String::from_utf8_lossy(&exact_key.stdout).trim()),
+        "exact pane target: {:?}",
+        exact_key
+    );
     assert!(terminals_of(c.request(Command::Snapshot)).is_empty());
     let panes = list_panes(&sock);
     assert!(panes.iter().any(|(n, _, dead)| *n == sid16 && !dead), "{panes:?}");
@@ -167,4 +183,184 @@ fn the_tickets_terminal_is_listed_previewed_and_adopted() {
     assert!(matches!(c.request(Command::TerminalEnd), Response::Ok));
     assert_eq!(terminals_of(c.request(Command::Snapshot)).len(), 1);
     assert!(board_of(c.request(Command::Snapshot)).sessions.is_empty());
+}
+
+#[test]
+fn shell_output_is_shared_scoped_revocable_and_close_is_human_confirmed() {
+    use mesimon_core::Principal;
+    let Some(h) = Harness::boot_with_env("shell-sharing", None, &[("SHELL", "/bin/sh")]) else {
+        return;
+    };
+    let mut c = h.client("shell-sharing");
+    let owner = c.create_ticket("shell owner");
+    let crown = c.create_ticket("crown");
+    let outsider = c.create_ticket("outsider");
+    let worker = c.spawn_claude(owner);
+    let coordinator = c.spawn_claude(crown);
+    let stranger = c.spawn_claude(outsider);
+    let owner_key = c.board().ticket(owner).unwrap().short_key.clone();
+    assert!(matches!(c.request(Command::CrownTicket { id: crown }), Response::Ok));
+    assert!(matches!(
+        c.request(Command::OpenTerminal { ticket: Some(owner) }),
+        Response::Attach { .. }
+    ));
+    assert!(matches!(c.request(Command::TerminalEnd), Response::Ok));
+    err_containing(
+        c.request(Command::SnoozeTicket {
+            id: owner,
+            until: mesimon_core::clock::now_secs() + 600,
+            needs_you: false,
+        }),
+        "terminal still open",
+    );
+    let shell = match c.request(Command::AdoptTerminal { ticket: owner }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("{other:?}"),
+    };
+    let sid = shell.simple().to_string()[..16].to_owned();
+    let read = |key| Command::AgentReadShell { shell, key };
+    let as_worker = Principal::Agent { session: worker };
+    let as_crown = Principal::Agent { session: coordinator };
+    let as_stranger = Principal::Agent { session: stranger };
+    err_containing(c.send(as_worker.clone(), read(None)), "no shared shell");
+    assert!(matches!(
+        c.request(Command::ShareShell { session: shell, shared: true }),
+        Response::Ok
+    ));
+    send_keys(
+        &h.paths.tmux_sock(),
+        &sid,
+        &["printf '%s%s\\n\\n%s\\n' shell- share-marker '/exit'", "Enter"],
+    );
+    wait_until(
+        Duration::from_secs(10),
+        "shared output",
+        || matches!(c.send(as_worker.clone(), read(None)), Response::ShellOutput { output } if output.text.contains("shell-share-marker\n\n/exit")),
+    );
+    assert!(matches!(
+        c.send(as_crown.clone(), read(Some(owner_key.clone()))),
+        Response::ShellOutput { .. }
+    ));
+    err_containing(c.send(as_stranger.clone(), read(None)), "no shared shell");
+    assert!(matches!(c.send(as_stranger, read(Some(owner_key.clone()))), Response::Err { .. }));
+    for command in [
+        Command::PaneTail { session: shell, lines: 20 },
+        Command::ShellCapture { session: shell },
+        Command::ShareShell { session: shell, shared: true },
+        Command::SleepSession { id: shell },
+    ] {
+        assert!(matches!(c.send(as_crown.clone(), command), Response::Err { .. }));
+    }
+    assert!(matches!(
+        c.request(Command::ShareShell { session: shell, shared: false }),
+        Response::Ok
+    ));
+    err_containing(c.send(as_worker.clone(), read(None)), "no shared shell");
+    err_containing(c.send(as_crown.clone(), read(Some(owner_key.clone()))), "no shared shell");
+    err_containing(c.request(Command::ArchiveTicket { id: owner }), "shell still open");
+    err_containing(
+        c.request(Command::SnoozeTicket {
+            id: owner,
+            until: mesimon_core::clock::now_secs() + 600,
+            needs_you: false,
+        }),
+        "shell still open",
+    );
+    assert!(matches!(
+        c.send(as_worker, Command::AgentRequestCloseShell { shell, key: owner_key.clone() }),
+        Response::Err { .. }
+    ));
+    let request = Command::AgentRequestCloseShell { shell, key: owner_key.clone() };
+    wait_until(Duration::from_secs(10), "shell close request", || {
+        matches!(c.send(as_crown.clone(), request.clone()), Response::AgentTicket { .. })
+    });
+    let q = c
+        .board()
+        .sessions
+        .iter()
+        .find(|s| s.id == shell)
+        .unwrap()
+        .shell_close_request
+        .clone()
+        .unwrap();
+    assert!(matches!(c.send(as_crown.clone(), request.clone()), Response::AgentTicket { .. }));
+    assert_eq!(
+        c.board()
+            .sessions
+            .iter()
+            .find(|s| s.id == shell)
+            .unwrap()
+            .shell_close_request
+            .as_ref()
+            .unwrap()
+            .id,
+        q.id,
+        "retry keeps approval identity"
+    );
+    assert!(matches!(c.request(Command::FocusStart { session: shell }), Response::Attach { .. }));
+    err_containing(c.send(as_crown.clone(), request.clone()), "attached");
+    assert!(matches!(c.request(Command::FocusEnd { session: shell }), Response::Ok));
+    let confirm = Command::ConfirmCloseShell { session: shell, request: q.id, close: true };
+    assert!(matches!(c.send(as_crown.clone(), confirm.clone()), Response::Err { .. }));
+    assert!(matches!(
+        c.request(Command::ConfirmCloseShell {
+            session: shell,
+            request: uuid::Uuid::new_v4(),
+            close: true
+        }),
+        Response::Err { .. }
+    ));
+    send_keys(&h.paths.tmux_sock(), &sid, &["sleep 30", "Enter"]);
+    wait_until(Duration::from_secs(10), "shell busy", || {
+        c.board().sessions.iter().any(|s| s.id == shell && s.foreground.is_some())
+    });
+    err_containing(c.request(confirm.clone()), "live children");
+    assert!(
+        c.board().sessions.iter().any(|s| s.id == shell),
+        "failed confirmation leaves shell alive"
+    );
+    send_keys(&h.paths.tmux_sock(), &sid, &["C-c"]);
+    wait_until(Duration::from_secs(10), "shell idle", || {
+        c.board().sessions.iter().any(|s| s.id == shell && s.foreground.is_none())
+    });
+    assert!(matches!(
+        c.request(Command::ConfirmCloseShell { session: shell, request: q.id, close: false }),
+        Response::Ok
+    ));
+    assert!(matches!(c.request(confirm), Response::Err { .. }), "denial invalidates approval");
+    assert!(matches!(c.send(as_crown.clone(), request), Response::AgentTicket { .. }));
+    let q = c
+        .board()
+        .sessions
+        .iter()
+        .find(|s| s.id == shell)
+        .unwrap()
+        .shell_close_request
+        .clone()
+        .unwrap();
+    assert!(matches!(c.request(Command::Uncrown), Response::Ok));
+    assert!(matches!(c.request(Command::CrownTicket { id: crown }), Response::Ok));
+    err_containing(
+        c.request(Command::ConfirmCloseShell { session: shell, request: q.id, close: true }),
+        "request changed",
+    );
+    assert!(matches!(
+        c.send(as_crown.clone(), Command::AgentRequestCloseShell { shell, key: owner_key.clone() }),
+        Response::AgentTicket { .. }
+    ));
+    let q = c
+        .board()
+        .sessions
+        .iter()
+        .find(|s| s.id == shell)
+        .unwrap()
+        .shell_close_request
+        .clone()
+        .unwrap();
+    assert!(matches!(
+        c.request(Command::ConfirmCloseShell { session: shell, request: q.id, close: true }),
+        Response::Ok
+    ));
+    assert!(!c.board().sessions.iter().any(|s| s.id == shell));
+    assert!(matches!(c.send(as_crown, read(Some(owner_key))), Response::Err { .. }));
 }

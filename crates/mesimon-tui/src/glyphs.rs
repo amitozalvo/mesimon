@@ -584,8 +584,14 @@ pub(crate) fn card_glyph(
         |s: &&&SessionRecord| matches!(s.confidence, Confidence::High | Confidence::Medium);
     // Plan approval gets its own mark, but only when it is the whole story —
     // any other pending reason (permission ranks above plan) keeps the bang.
-    let mut has_attn = false;
-    let mut all_plan = true;
+    let mut has_attn = sessions.iter().any(|s| {
+        s.kind == SessionKind::Bash
+            && s.state.has_pane()
+            && s.shell_close_request
+                .as_ref()
+                .is_some_and(|q| q.expires_ms > mesimon_core::clock::now_ms())
+    });
+    let mut all_plan = !has_attn;
     for s in sessions.iter().filter(usable) {
         if let SessionState::RequiresAction { reason } = &s.state {
             has_attn = true;

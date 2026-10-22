@@ -1730,11 +1730,18 @@ fn draw_rail(
             if s.observe_only() {
                 badges.push("external");
             }
+            if s.kind == SessionKind::Bash && s.state.has_pane() {
+                if s.shell_close_request.as_ref().is_some_and(|q| q.expires_ms > now) {
+                    badges.push("crown asks to close");
+                } else if s.shell_shared {
+                    badges.push("agent + crown can read");
+                }
+            }
             if matches!(s.state, SessionState::Exited { .. }) {
                 badges.push("enter resumes");
             }
             if !badges.is_empty() {
-                let text = format!("    {}", badges.join(" ∙ "));
+                let text = format!("    {}", truncate(&badges.join(" ∙ "), w.saturating_sub(4)));
                 let pad = w.saturating_sub(text.width());
                 lines.push(
                     Line::from(vec![Span::styled(text, theme.dim2()), Span::raw(" ".repeat(pad))])
