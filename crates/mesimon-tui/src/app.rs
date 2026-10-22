@@ -631,6 +631,8 @@ pub struct Editor {
     pub draft_id: ulid::Ulid,
     /// A one-off shell capture is discarded on Esc, never folded into a draft.
     pub shell_capture: bool,
+    /// An unadopted preview is adopted only by the send gesture, for this pane generation.
+    pub capture_terminal: Option<(ulid::Ulid, String)>,
     pub images: Vec<crate::image_paste::DraftImage>,
     pub purpose: EditorPurpose,
     /// Composing: the new ticket's title, editable. On a note: the ticket's
@@ -1063,6 +1065,7 @@ impl Editor {
             grow: None,
             opened_rev: None,
             shell_capture: false,
+            capture_terminal: None,
         }
     }
 
@@ -5834,7 +5837,7 @@ impl App {
     /// the daemon still judges at the Enter, with what only it can see.
     fn snooze_blocked(&self, id: ulid::Ulid) -> Option<String> {
         self.board.sessions.iter().filter(|s| s.ticket == id && s.state.has_pane()).find_map(|s| {
-            mesimon_core::quiet::sleep_eligible(s.kind, &s.state)
+            mesimon_core::quiet::bulk_sleep_eligible(s.kind, &s.state)
                 .err()
                 .map(|why| mesimon_core::quiet::still_awake(s.kind, why))
         })
@@ -8187,7 +8190,7 @@ impl App {
                 if let Some(id) = self.subject() {
                     if ctx.ticket_archived {
                         self.unarchive(id)?;
-                    } else if self.board.sessions.iter().any(|s| s.ticket == id && s.kind.is_agent() && s.state.has_pane()) {
+                    } else if self.board.ticket_awake_sessions(id) > 0 {
                         // Say why before asking for a second press we would
                         // only refuse.
                         self.archive_gated(id)?;
@@ -11544,7 +11547,7 @@ impl App {
             return Ok(());
         }
         self.adopt_armed = None;
-        match self.req(Command::AdoptTerminal { ticket }) {
+        match self.req(Command::AdoptTerminal { ticket, pane_key: None }) {
             Response::Spawned { id, .. } => {
                 self.status = "terminal adopted as this ticket's shell".into();
                 self.refresh()?;
@@ -12271,23 +12274,18 @@ impl App {
             self.status = "no agent on this ticket; start one before sending shell output".into();
             return Ok(());
         }
-        let session = if self.ctx().sel_terminal {
-            match self.req(Command::AdoptTerminal { ticket }) {
-                Response::Spawned { id, .. } => id,
-                Response::Err { message } => {
-                    self.status = message;
-                    return Ok(());
-                }
-                _ => return Ok(()),
-            }
+        let terminal = self.ctx().sel_terminal;
+        let command = if terminal {
+            Command::TerminalCapture { ticket }
         } else {
-            let Some(id) = self.selected_session() else {
-                return Ok(());
-            };
-            id
+            let Some(session) = self.selected_session() else { return Ok(()) };
+            Command::ShellCapture { session }
         };
-        let output = match self.req(Command::ShellCapture { session }) {
-            Response::ShellOutput { output } => output,
+        let (text, truncated, capture_terminal) = match self.req(command) {
+            Response::ShellOutput { output } => (output.text, output.truncated, None),
+            Response::TerminalOutput { pane_key, text, truncated } => {
+                (text, truncated, Some((ticket, pane_key)))
+            }
             Response::Err { message } => {
                 self.status = message;
                 return self.refresh_soon();
@@ -12296,13 +12294,14 @@ impl App {
         };
         let text = format!(
             "Terminal output{}:\n\n{}",
-            if output.truncated { " (earlier output omitted)" } else { "" },
-            output.text.lines().map(|line| format!("> {line}")).collect::<Vec<_>>().join("\n")
+            if truncated { " (earlier output omitted)" } else { "" },
+            text.lines().map(|line| format!("> {line}")).collect::<Vec<_>>().join("\n")
         );
         let queued = self.board.pane_target(ticket).is_some() || self.ctx().checkout_busy;
         let mut editor =
             self.ask_room(AskTarget::Ticket(ticket), queued, false, false, false, None, &text);
         editor.shell_capture = true;
+        editor.capture_terminal = capture_terminal;
         self.mode = Mode::Editor(editor);
         self.status = "captured output ready to send ∙ esc discards".into();
         self.refresh_soon()
@@ -12431,6 +12430,24 @@ impl App {
                 return Ok(());
             }
         };
+        if let Some((ticket, pane_key)) = &ed.capture_terminal {
+            match self
+                .req(Command::AdoptTerminal { ticket: *ticket, pane_key: Some(pane_key.clone()) })
+            {
+                Response::Spawned { .. } => {}
+                response => {
+                    self.status = match response {
+                        Response::Err { message } => message,
+                        _ => "could not adopt terminal".into(),
+                    };
+                    if !uploads.is_empty() {
+                        let _ = self.req(Command::DiscardAttachmentUploads { uploads });
+                    }
+                    self.mode = Mode::Editor(ed);
+                    return Ok(());
+                }
+            }
+        }
         self.mode = Mode::Normal;
         let sent = self.commit_prompt(
             InputPurpose::Prompt {
@@ -13773,12 +13790,7 @@ impl App {
     /// the daemon's word, so a session that woke between the two presses
     /// is refused the same way.
     fn archive_gated(&mut self, id: ulid::Ulid) -> Result<()> {
-        if self
-            .board
-            .sessions
-            .iter()
-            .any(|s| s.ticket == id && s.kind.is_agent() && s.state.has_pane())
-        {
+        if self.board.ticket_awake_sessions(id) > 0 {
             let how = keymap::hint_for(Scope::Board, Verb::Sleep, &self.ctx())
                 .map(|(show, _)| format!(" ({show})"))
                 .unwrap_or_default();
@@ -15838,7 +15850,7 @@ pub(crate) mod test_support {
                         .collect();
                     if let Some(message) = awake.iter().find_map(|&i| {
                         let s = &self.board.sessions[i];
-                        mesimon_core::quiet::sleep_eligible(s.kind, &s.state)
+                        mesimon_core::quiet::bulk_sleep_eligible(s.kind, &s.state)
                             .err()
                             .map(|why| mesimon_core::quiet::still_awake(s.kind, why))
                     }) {
@@ -24008,6 +24020,83 @@ mod tests {
     }
 
     #[test]
+    fn unadopted_capture_adopts_only_on_send_and_checks_the_captured_pane() {
+        struct Capture {
+            inner: Box<dyn Transport>,
+            calls: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+            changed: bool,
+        }
+        impl Transport for Capture {
+            fn request(&mut self, cmd: Command) -> Result<Response> {
+                self.calls.borrow_mut().push(format!("{cmd:?}"));
+                match cmd {
+                    Command::TerminalCapture { ticket } => {
+                        assert_eq!(ticket, ulid::Ulid(1));
+                        Ok(Response::TerminalOutput {
+                            pane_key: "123:%4".into(),
+                            text: "frozen result".into(),
+                            truncated: false,
+                        })
+                    }
+                    Command::AdoptTerminal { ticket, pane_key } => {
+                        assert_eq!(ticket, ulid::Ulid(1));
+                        assert_eq!(pane_key.as_deref(), Some("123:%4"));
+                        Ok(if self.changed {
+                            Response::Err { message: "terminal changed; capture it again".into() }
+                        } else {
+                            Response::Spawned { id: uuid::Uuid::from_u128(99), fresh: false }
+                        })
+                    }
+                    Command::ShareShell { .. } => panic!("capture grants no live reads"),
+                    _ => self.inner.request(cmd),
+                }
+            }
+            fn poll_event(&mut self) -> bool {
+                false
+            }
+        }
+        for (send, changed) in [(false, false), (true, false), (true, true)] {
+            let (mut app, _, _) = app_with_claude(SessionState::Running, false);
+            let ticket = ulid::Ulid(1);
+            app.terminals.push(mesimon_core::command::TerminalItem {
+                ticket: Some(ticket),
+                foreground: None,
+            });
+            app.screen = Screen::Ticket { ticket, rail_idx: 1 };
+            app.rich_keys = true;
+            let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let inner = std::mem::replace(&mut app.client, Box::new(Dead));
+            app.client = Box::new(Capture { inner, calls: calls.clone(), changed });
+            app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+            let Mode::Editor(ed) = &app.mode else { panic!("capture must open a preview") };
+            assert!(ed.body.as_str().contains("frozen result"));
+            assert!(!calls.borrow().iter().any(|c| c.starts_with("AdoptTerminal")));
+            if send {
+                app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
+                let calls = calls.borrow();
+                let adopt = calls.iter().position(|c| c.starts_with("AdoptTerminal")).unwrap();
+                let prompt = calls.iter().position(|c| c.starts_with("PromptSession"));
+                if changed {
+                    assert!(prompt.is_none());
+                    assert!(matches!(app.mode, Mode::Editor(_)));
+                    assert!(app.status.contains("terminal changed"));
+                } else {
+                    assert!(prompt.unwrap() > adopt);
+                    assert!(calls[prompt.unwrap()].contains("frozen result"));
+                    assert!(matches!(app.mode, Mode::Normal));
+                }
+            } else {
+                app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+                assert!(matches!(app.mode, Mode::Normal));
+                assert!(app.prompt_history.is_empty());
+                for command in ["AdoptTerminal", "PromptSession", "ShareShell"] {
+                    assert!(!calls.borrow().iter().any(|c| c.starts_with(command)));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_capture_without_an_agent_refuses_before_reading_or_adopting() {
         let (mut app, sent, _) = app_with_shell(SessionState::Running);
         app.rich_keys = true;
@@ -24064,11 +24153,13 @@ mod tests {
     }
 
     #[test]
-    fn an_idle_shell_does_not_block_snooze() {
+    fn snooze_refuses_an_idle_adopted_shell_without_closing_it() {
         let (mut app, sent, _) = app_with_shell(SessionState::Running);
         press(&mut app, 'z');
-        assert!(app.snooze_armed.is_some());
+        assert!(app.snooze_armed.is_none());
+        assert_eq!(app.status, "shell still awake — close the shell first (x)");
         assert!(!sent_contains(&sent, "SleepSession"));
+        assert!(!sent_contains(&sent, "SnoozeTicket"));
     }
 
     /// The terminal's ghost row (T-366): Enter arms, Enter again adopts,
@@ -26136,6 +26227,19 @@ mod tests {
         assert!(app.status.starts_with("archived T-1"));
         // Cursor clamped onto the surviving row.
         assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(2)));
+    }
+
+    #[test]
+    fn archive_refuses_an_idle_adopted_shell_before_arming_or_sending() {
+        let (mut app, sent, shell) = app_with_shell(SessionState::Running);
+        press(&mut app, 'a');
+        assert_eq!(app.status, "its sessions are awake — sleep them first (x)");
+        assert!(app.archive_armed.is_none());
+        app.archive_gated(ulid::Ulid(1)).unwrap();
+        assert!(app.status.starts_with("its sessions are awake — sleep them first"));
+        assert!(app.board.sessions.iter().any(|s| s.id == shell && s.state.has_pane()));
+        assert!(!sent_contains(&sent, "ArchiveTicket"));
+        assert!(!sent_contains(&sent, "SleepSession"));
     }
 
     #[test]

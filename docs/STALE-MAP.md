@@ -30334,3 +30334,27 @@ taken; `WORKER_UNDER_CROWN` says pane words reach no one and the hand is the roa
 Coverage: `crown_refusal_tests`, `crown_e2e` (every keyed road from a person's worker,
 and `read_note` from a crown-started one), rig RH1 on Sonnet (refused `read_note` →
 `raise_hand` naming the note → the crown woken, `raised`).
+
+## Shell ownership through archive and capture cancellation (T-904 re-review, 2026-10-22)
+
+The previous follow-up's archive interpretation is superseded: an awake adopted
+shell refuses archive with the pre-T-904 “sessions still awake — sleep them first”.
+The single-ticket, crown and bulk-offer roads use the same persisted awake-session
+rule; none closes shells along the way. The worktree's unadopted `!` terminal still
+ends at archive teardown. The latest explicit-close-only rule also holds snooze
+and private-server restart before either parks any sessions; bulk sleep already
+excludes shells. Only the person's individual close or confirmed crown request
+can close an adopted shell. Unreadable child checks refuse, including malformed
+or non-UTF-8 process evidence and a failed pane snapshot.
+
+An unadopted terminal's Shift+Enter preview now changes no board record or pane
+name. Esc leaves it unadopted; sending adopts only the pane generation captured
+for that preview, and grants no live reads. The frozen text is unchanged by later
+terminal output. The promise no longer refers to stopping sharing in the TUI.
+
+Coverage: archive/offer and child-evidence unit regressions, actual preview/cancel/
+send key tests, and terminal integration checks for deferred adoption, crown and
+local archive refusal with the old words, two surviving shells, the exact bulk
+offer count, and refusal of server restart. Archive reclamation retains coverage
+of the separate worktree terminal's teardown. SH1 also checks that the agent
+understands Esc does not adopt an unadopted terminal.

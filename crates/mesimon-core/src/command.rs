@@ -923,6 +923,10 @@ pub enum Command {
     ShellCapture {
         session: uuid::Uuid,
     },
+    /// Local frozen preview of a ticket terminal, without adopting it.
+    TerminalCapture {
+        ticket: ulid::Ulid,
+    },
     ConfirmCloseShell {
         session: uuid::Uuid,
         request: uuid::Uuid,
@@ -971,6 +975,9 @@ pub enum Command {
     /// Answers `Response::Spawned`.
     AdoptTerminal {
         ticket: ulid::Ulid,
+        /// When sending a preview, adopt only the terminal that was captured.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane_key: Option<String>,
     },
 
     /// How long the person inside the FOCUSED pane has been quiet (T-299).
@@ -1525,6 +1532,7 @@ impl Command {
             | AgentReadAttachment { .. }
             | ReadAttachment { .. }
             | ShellCapture { .. }
+            | TerminalCapture { .. }
             | AgentReadNote { .. }
             | AgentListBoard
             // The bridge's poll: a delivery ledger, never board state.
@@ -1587,7 +1595,7 @@ impl Command {
             | SendQueuedAsk { ticket }
             | DropQueuedAsk { ticket }
             | SpawnSession { ticket, .. }
-            | AdoptTerminal { ticket }
+            | AdoptTerminal { ticket, .. }
             | SaveNoteWithAttachments { ticket, .. }
             | WriteNote { ticket, .. }
             | NoteToAgent { ticket, .. } => m(Mutate, true, Some(*ticket)),
@@ -1721,6 +1729,7 @@ mod meta_tests {
         assert!(Command::AgentReadShell { shell: uuid::Uuid::nil(), key: None }.meta().logged);
         assert!(!Command::ShellCapture { session: uuid::Uuid::nil() }.meta().logged);
         let id = ulid::Ulid::new();
+        assert!(!Command::TerminalCapture { ticket: id }.meta().logged);
         let m = Command::PromptSession {
             ticket: id,
             text: "x".into(),
@@ -1791,6 +1800,11 @@ mod meta_tests {
 pub enum Response {
     ShellOutput {
         output: ShellOutput,
+    },
+    TerminalOutput {
+        pane_key: String,
+        text: String,
+        truncated: bool,
     },
     Mesophon {
         info: crate::mesophon::Info,

@@ -158,6 +158,15 @@ pub fn sleep_eligible(kind: SessionKind, state: &SessionState) -> Result<(), &'s
     }
 }
 
+/// Ticket and server lifecycle actions may park agents, but never close a person's shell.
+pub fn bulk_sleep_eligible(kind: SessionKind, state: &SessionState) -> Result<(), &'static str> {
+    if kind == SessionKind::Bash {
+        Err("close the shell first (x)")
+    } else {
+        sleep_eligible(kind, state)
+    }
+}
+
 /// The sentence a snooze refuses in, over a session `sleep_eligible` (or
 /// the daemon's fuller gate) would not sleep: `{who} still awake — {why}`.
 /// One place, so the TUI's pre-judgement and the daemon's answer are the
@@ -692,5 +701,22 @@ mod tests {
             working_tickets_by(&board, &none, Some("/wt/d"), &holds_against_accept),
             vec![d]
         );
+    }
+}
+
+#[cfg(test)]
+mod shell_bulk_close_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_individual_close_road_accepts_a_running_shell() {
+        assert!(sleep_eligible(SessionKind::Bash, &SessionState::Running).is_ok());
+        assert_eq!(
+            bulk_sleep_eligible(SessionKind::Bash, &SessionState::Running),
+            Err("close the shell first (x)")
+        );
+        let idle = SessionState::Idle { stop_reason: StopReason::EndTurn };
+        assert!(bulk_sleep_eligible(SessionKind::Claude, &idle).is_ok());
+        assert!(bulk_sleep_eligible(SessionKind::Claude, &SessionState::Running).is_err());
     }
 }

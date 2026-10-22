@@ -2686,7 +2686,7 @@ impl Daemon {
             | Command::WriteNote { ticket, .. }
             | Command::NoteToAgent { ticket, .. }
             // Growing a ticket a shell is changing the ticket (T-366).
-            | Command::AdoptTerminal { ticket } => Resource::Ticket { id: *ticket },
+            | Command::AdoptTerminal { ticket, .. } => Resource::Ticket { id: *ticket },
             _ => Resource::Board,
         };
         if let Decision::Deny { reason } = authorize(&env.principal, &meta.action, &resource) {
@@ -3039,7 +3039,8 @@ impl Daemon {
             },
             Command::PaneTail { session, lines } => self.pane_tail(session, lines),
             Command::TerminalTail { ticket, lines } => self.terminal_tail(ticket, lines),
-            Command::AdoptTerminal { ticket } => self.adopt_terminal(ticket),
+            Command::AdoptTerminal { ticket, pane_key } => self.adopt_terminal(ticket, pane_key),
+            Command::TerminalCapture { ticket } => self.local_terminal_capture(ticket),
             Command::FocusQuiet => self.focus_quiet(),
             Command::AttachExternal { claude_session_id, ticket } => {
                 match self.attach_external(&env.principal, claude_session_id, ticket) {
@@ -3813,13 +3814,13 @@ impl Daemon {
     /// The Esc menu's `Restart the private tmux server` (T-690).
     ///
     /// Every paned session parks by the road `x` takes — the conversation
-    /// snapshotted, the record `Sleeping`, SIGTERM then the reaper — a shell
-    /// closes as `x` closes it, and the server itself goes in
+    /// snapshotted, the record `Sleeping`, SIGTERM then the reaper. An adopted
+    /// shell refuses the restart until the person closes it; the server goes in
     /// `finish_server_restart` once the panes are reaped, so no agent is
     /// SIGHUP'd mid-exit. Refused whole, before anything parks, when any
-    /// session is not parkable: an agent mid-turn, a shell with live
-    /// children. Automatic restart was not built: the measured safe moment
-    /// is "no pane mid-turn", which is this gate, and the person is the one
+    /// session is not parkable: an agent mid-turn or any adopted shell.
+    /// Automatic restart was not built: the measured safe moment is "no pane
+    /// mid-turn", which is this gate, and the person is the one
     /// who knows whether a turn is about to start.
     fn restart_server(&mut self) -> Response {
         let now = now_ms();
@@ -3827,12 +3828,15 @@ impl Daemon {
             .board
             .sessions
             .iter()
-            .filter(|r| r.state.has_pane() && !r.observe_only())
+            .filter(|r| r.state.has_pane() && (r.kind == SessionKind::Bash || !r.observe_only()))
             .map(|r| r.id)
             .collect();
         for id in &paned {
             let Some(rec) = self.board.sessions.iter().find(|s| s.id == *id) else { continue };
-            if let Err(why) = self.sleep_eligible(rec, now, false) {
+            if let Err(why) = self.sleep_eligible(rec, now, false).and_then(|_| {
+                mesimon_core::quiet::bulk_sleep_eligible(rec.kind, &rec.state)
+                    .map_err(str::to_owned)
+            }) {
                 let key = self
                     .board
                     .ticket(rec.ticket)
@@ -3868,6 +3872,13 @@ impl Daemon {
             return false;
         }
         self.server_restart = None;
+        // A shell may have been adopted during the reaper's grace period.
+        // The tick reads board state only and never kills that new shell.
+        if self.board.sessions.iter().any(|r| r.kind == SessionKind::Bash && r.state.has_pane()) {
+            self.journal.line("server restart cancelled: an adopted shell is awake");
+            return true;
+        }
+
         match self.backend.kill_server() {
             Ok(()) => self.journal.line(
                 "server restart: the private tmux server was killed; the next spawn or wake starts a fresh one",
@@ -8751,7 +8762,7 @@ impl Daemon {
         let shells = self.agent_shells(id);
         let terminal_open = self.terminals.contains_key(&Some(id));
         let shells_about = if terminal_open || !shells.is_empty() {
-            "Shift+Enter on a shell row adopts if needed and captures output for an existing agent; sending delivers it, Esc discards it. Capture grants no live reads and starts no agent. Live sharing has no TUI key. Shared shells are readable by this ticket’s agent and the crown. The board tools provide no terminal input. Foreground names do not prove completion or success.".into()
+            "Shift+Enter on a shell row previews frozen output for an existing agent. Sending adopts the terminal if needed and delivers the capture; Esc discards it without adopting. Capture grants no live reads and starts no agent. Live sharing has no TUI key. Shared shells are readable by this ticket’s agent and the crown. The board tools provide no terminal input. Foreground names do not prove completion or success.".into()
         } else {
             String::new()
         };
@@ -10206,31 +10217,7 @@ impl Daemon {
             .tickets
             .iter()
             .filter(|t| !t.is_archived() && reclaim.contains(t.column.as_str()))
-            .filter(|t| {
-                if self.board.sessions.iter().any(|s| {
-                    s.ticket == t.id
-                        && s.state.has_pane()
-                        && (s.kind.is_agent() || s.foreground.is_some())
-                }) {
-                    return false;
-                }
-                let sessions: Vec<_> =
-                    self.board.sessions.iter().filter(|s| s.ticket == t.id).collect();
-                let sleeping: Vec<_> =
-                    sessions.iter().filter(|s| matches!(s.state, SessionState::Sleeping)).collect();
-                if sleeping.is_empty() {
-                    sessions
-                        .iter()
-                        .filter_map(|s| s.state_changed_at)
-                        .chain(created_at_ms(&t.created_at))
-                        .max()
-                        .is_some_and(|at| now.saturating_sub(at) >= threshold)
-                } else {
-                    sleeping.iter().all(|s| {
-                        s.state_changed_at.is_some_and(|at| now.saturating_sub(at) >= threshold)
-                    })
-                }
-            })
+            .filter(|t| archive_offer_old_enough(&self.board, t.id, &t.created_at, now, threshold))
             // Last, so only a ticket the cheap gates passed costs a read.
             .filter(|t| !self.archive_held(t))
             .map(|t| t.id)
@@ -10302,11 +10289,7 @@ impl Daemon {
         let mut archived = 0;
         let mut skipped = 0;
         for id in ids {
-            let Ok(shells) = self.archive_ready_shells(id) else {
-                skipped += 1;
-                continue;
-            };
-            if shells.into_iter().any(|sid| self.sleep_one(sid, false, Park::Automatic).is_err()) {
+            if self.board.ticket_awake_sessions(id) > 0 {
                 skipped += 1;
                 continue;
             }
@@ -13778,26 +13761,9 @@ impl Daemon {
         Response::Ok
     }
 
-    /// Idle adopted shells close with an archive; only agents need parking first.
-    /// Like ordinary parking, a shell with a live child refuses before anything changes.
-    fn archive_ready_shells(&self, id: ulid::Ulid) -> Result<Vec<uuid::Uuid>, String> {
-        let sessions: Vec<_> =
-            self.board.sessions.iter().filter(|s| s.ticket == id && s.state.has_pane()).collect();
-        if sessions.iter().any(|s| s.kind.is_agent()) {
-            return Err("sessions still awake — sleep them first".into());
-        }
-        for rec in &sessions {
-            // This refusal also reaches the crown; process names stay local.
-            self.sleep_eligible(rec, now_ms(), false).map_err(|_| {
-                "shell has live children; open it, finish or stop its program, then exit".to_owned()
-            })?;
-        }
-        Ok(sessions.iter().map(|s| s.id).collect())
-    }
-
     /// Archive: off the board, everything kept (ticket file, sleeping
     /// sessions) — and the worktree too, unless its work has landed
-    /// (`reclaim_on_archive`). Agents must already be asleep; idle shells close.
+    /// (`reclaim_on_archive`). Every session must already be asleep.
     fn archive_ticket(&mut self, id: ulid::Ulid, by: &Principal) -> Response {
         match self.board.ticket(id) {
             None => return no_such_ticket(),
@@ -13806,19 +13772,13 @@ impl Daemon {
             }
             Some(_) => {}
         }
-        let shells = match self.archive_ready_shells(id) {
-            Ok(shells) => shells,
-            Err(message) => return Response::Err { message },
-        };
+        if self.board.ticket_awake_sessions(id) > 0 {
+            return Response::Err { message: "sessions still awake — sleep them first".into() };
+        }
         let column = self.board.ticket(id).map(|t| t.column.clone()).unwrap_or_default();
         if self.board.column(&column).is_some_and(|c| c.settings.requires_ticked) {
             let what = format!("to archive from {column}");
             if let Some(message) = open_boxes_refusal(self.open_boxes(id), &what) {
-                return Response::Err { message };
-            }
-        }
-        for sid in shells {
-            if let Err(message) = self.sleep_one(sid, false, Park::Automatic) {
                 return Response::Err { message };
             }
         }
@@ -13965,7 +13925,7 @@ impl Daemon {
     /// the bulk sweep's age floor, since a `z` is as deliberate as an `x` —
     /// and it is all-or-nothing: every pane on the ticket is judged BEFORE
     /// any is signalled, so a claude still working (or waiting on the user,
-    /// or a shell with a live child) holds the ticket on
+    /// or an adopted shell) holds the ticket on
     /// the board with nothing on it touched, in words that name it.
     /// `wake_snoozed` on the tick wheel is the other half; the sessions
     /// stay asleep when the ticket returns, and `c` wakes them.
@@ -13990,7 +13950,10 @@ impl Daemon {
             .collect();
         for (sid, kind) in &awake {
             let Some(rec) = self.board.sessions.iter().find(|s| s.id == *sid) else { continue };
-            if let Err(why) = self.sleep_eligible(rec, now, false) {
+            if let Err(why) = self.sleep_eligible(rec, now, false).and_then(|_| {
+                mesimon_core::quiet::bulk_sleep_eligible(rec.kind, &rec.state)
+                    .map_err(str::to_owned)
+            }) {
                 return Response::Err { message: mesimon_core::quiet::still_awake(*kind, &why) };
             }
         }
@@ -17516,14 +17479,14 @@ impl Daemon {
             let pane_pid = self
                 .backend
                 .snapshot()
-                .ok()
-                .and_then(|s| s.into_iter().find(|p| p.session_name == rec.sid16()))
+                .map_err(|_| {
+                    "could not inspect shell jobs; open the shell and exit it yourself".to_string()
+                })?
+                .into_iter()
+                .find(|p| p.session_name == rec.sid16())
                 .map(|p| p.pane_pid);
             if let Some(pid) = pane_pid {
-                let kids = live_children(pid).unwrap_or_default();
-                if !kids.is_empty() {
-                    return Err(format!("bash has live children ({})", kids.join(", ")));
-                }
+                shell_children_idle(live_children(pid))?;
             }
         }
         Ok(())
@@ -17542,6 +17505,10 @@ impl Daemon {
         let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
             return Err("no such session".into());
         };
+        if park == Park::Automatic {
+            mesimon_core::quiet::bulk_sleep_eligible(rec.kind, &rec.state)
+                .map_err(str::to_owned)?;
+        }
         self.sleep_eligible(rec, now, enforce_floor)?;
         let (sid, transcript) = (rec.sid16(), rec.transcript_path.clone());
 
@@ -18169,7 +18136,7 @@ impl Daemon {
     /// `[$SHELL]` in the same directory, `Running`, provenance `Spawned`
     /// (the pane WAS spawned by this daemon through `launch`; `Adopted` is
     /// the external drawer's word and badges `external`).
-    fn adopt_terminal(&mut self, ticket: ulid::Ulid) -> Response {
+    fn adopt_terminal(&mut self, ticket: ulid::Ulid, pane_key: Option<String>) -> Response {
         if let Err(message) = self.open_ticket(ticket) {
             return Response::Err { message: message.into() };
         }
@@ -18189,6 +18156,11 @@ impl Daemon {
         // Exact name, alive, in a fresh snapshot — `rename-session -t`
         // prefix-matches on a miss, so the check is the guard.
         let name = terminal_name(Some(ticket));
+        if let Some(expected) = pane_key {
+            if self.backend.pane_key(&format!("={name}:0.0")).ok().as_ref() != Some(&expected) {
+                return Response::Err { message: "terminal changed; capture it again".into() };
+            }
+        }
         let alive = self
             .backend
             .snapshot()
@@ -18541,6 +18513,44 @@ fn claude_startup_candidate(s: &SessionRecord) -> bool {
         )
 }
 
+/// The offer and its bulk action use persisted session states, never snapshot decorations.
+fn archive_offer_old_enough(
+    board: &Board,
+    ticket: ulid::Ulid,
+    created_at: &str,
+    now: u64,
+    threshold: u64,
+) -> bool {
+    if board.ticket_awake_sessions(ticket) > 0 {
+        return false;
+    }
+    let sessions: Vec<_> = board.sessions.iter().filter(|s| s.ticket == ticket).collect();
+    let sleeping: Vec<_> =
+        sessions.iter().filter(|s| matches!(s.state, SessionState::Sleeping)).collect();
+    if sleeping.is_empty() {
+        sessions
+            .iter()
+            .filter_map(|s| s.state_changed_at)
+            .chain(created_at_ms(created_at))
+            .max()
+            .is_some_and(|at| now.saturating_sub(at) >= threshold)
+    } else {
+        sleeping
+            .iter()
+            .all(|s| s.state_changed_at.is_some_and(|at| now.saturating_sub(at) >= threshold))
+    }
+}
+
+/// Unreadable process evidence cannot authorize closing a person's shell.
+fn shell_children_idle(children: Result<Vec<String>, String>) -> Result<(), String> {
+    let children = children?;
+    if children.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("bash has live children ({})", children.join(", ")))
+    }
+}
+
 /// Direct live children of a pid, by name — the tmux-recast bash-sleep guard.
 fn live_children(pid: i32) -> std::result::Result<Vec<String>, String> {
     let out =
@@ -18814,5 +18824,57 @@ mod permission_release_tests {
                 assert!(!releases_permission(&frame(event, road, json!({}))), "{event}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod shell_archive_regressions {
+    use super::*;
+
+    #[test]
+    fn archive_offer_excludes_awake_shells_without_foreground_decoration() {
+        let ticket = ulid::Ulid(1);
+        let mut board = Board::default();
+        assert!(archive_offer_old_enough(&board, ticket, "@1", 10_000, 5_000));
+        let mut shell = SessionRecord::new(
+            uuid::Uuid::nil(),
+            SessionKind::Bash,
+            ticket,
+            vec!["sh".into()],
+            "/repo".into(),
+            SessionState::Running,
+        );
+        shell.state_changed_at = Some(1_000);
+        assert!(shell.foreground.is_none()); // Exactly what the writer keeps, busy or idle.
+        board.sessions.push(shell);
+        assert!(!archive_offer_old_enough(&board, ticket, "@1", 10_000, 5_000));
+        // A second shell cannot make a partial archive: either awake shell excludes the ticket.
+        let mut second = board.sessions[0].clone();
+        second.id = uuid::Uuid::from_u128(2);
+        board.sessions.push(second);
+        board.sessions[0].state = SessionState::Sleeping;
+        assert!(!archive_offer_old_enough(&board, ticket, "@1", 10_000, 5_000));
+        board.sessions[1].state = SessionState::Sleeping;
+        assert!(archive_offer_old_enough(&board, ticket, "@1", 10_000, 5_000));
+        board.sessions[1].state_changed_at = Some(9_000);
+        assert!(!archive_offer_old_enough(&board, ticket, "@1", 10_000, 5_000));
+    }
+
+    #[test]
+    fn a_shell_child_check_must_prove_idle_before_close() {
+        for (status, text) in [
+            (Some(0), &b"42 \xff"[..]),
+            (Some(2), &b""[..]),
+            (None, &b""[..]),
+            (Some(0), &b"42"[..]),
+        ] {
+            let evidence = shells::parse_children(status, text);
+            let error = evidence.clone().unwrap_err();
+            assert_eq!(shell_children_idle(evidence), Err(error));
+        }
+        assert!(shell_children_idle(shells::parse_children(Some(0), b"42 sleep\n"))
+            .unwrap_err()
+            .contains("live children"));
+        assert!(shell_children_idle(shells::parse_children(Some(1), b"")).is_ok());
     }
 }

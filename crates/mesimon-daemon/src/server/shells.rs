@@ -104,6 +104,29 @@ impl Daemon {
         )
     }
 
+    /// A preview leaves the terminal's name and the board's records untouched.
+    pub(super) fn local_terminal_capture(&self, ticket: ulid::Ulid) -> Response {
+        let capture = || -> Result<Response, String> {
+            if !self.terminals.contains_key(&Some(ticket)) {
+                return Err("no terminal".into());
+            }
+            let name = format!("={}:0.0", terminal_name(Some(ticket)));
+            let key = self.backend.pane_key(&name).map_err(|_| "terminal is unavailable")?;
+            let pane = key
+                .split_once(':')
+                .map(|(_, pane)| pane)
+                .filter(|pane| pane.starts_with('%'))
+                .ok_or("terminal identity is unavailable")?;
+            let (raw, _, omitted) = self.backend.capture_shell(pane).map_err(|e| e.to_string())?;
+            if self.backend.pane_key(&name).ok().as_ref() != Some(&key) {
+                return Err("terminal changed during capture; try again".into());
+            }
+            let (text, truncated) = bounded_output(&raw);
+            Ok(Response::TerminalOutput { pane_key: key, text, truncated: truncated || omitted })
+        };
+        capture().unwrap_or_else(|message| Response::Err { message })
+    }
+
     pub(super) fn agent_read_shell(
         &self,
         session: uuid::Uuid,

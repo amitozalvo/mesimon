@@ -44,9 +44,9 @@ that ticket, and nothing of mesimon's.
 A shell's sharing grant gates `read_shell` through Mesimon's board tools, not the
 agent's own Bash: it runs as your user and can read panes through tmux. Live sharing
 has no TUI key.
-Shift+Enter adopts an unadopted terminal if necessary and previews a frozen output
-capture for an existing agent. It grants no live reads; Esc discards the capture,
-and only sending delivers it. Stopping sharing cannot recall output already delivered.
+Shift+Enter previews a frozen output capture for an existing agent. It grants no
+live reads; Esc discards the capture without adopting the terminal. Sending adopts
+an unadopted terminal and delivers the capture.
 
 The shell tools provide no terminal input. A crown may
 request closure, which waits for your confirmation on the shell's row and checks its

@@ -84,7 +84,7 @@ fn the_tickets_terminal_is_listed_previewed_and_adopted() {
 
     // Nothing to preview or adopt before `!`.
     err_containing(c.request(Command::TerminalTail { ticket: Some(t), lines: 20 }), "no terminal");
-    err_containing(c.request(Command::AdoptTerminal { ticket: t }), "no terminal");
+    err_containing(c.request(Command::AdoptTerminal { ticket: t, pane_key: None }), "no terminal");
 
     // `!` on the ticket page: THIS ticket's terminal, worktree or not, and
     // listed on the board the moment it opens — no record, a terminal.
@@ -96,7 +96,7 @@ fn the_tickets_terminal_is_listed_previewed_and_adopted() {
     assert_eq!(listed, [TerminalItem { ticket: Some(t), foreground: None }], "{listed:?}");
     assert!(board_of(c.request(Command::Snapshot)).sessions.is_empty());
     // Adopting under the user's feet is refused while the token is held.
-    err_containing(c.request(Command::AdoptTerminal { ticket: t }), "attached");
+    err_containing(c.request(Command::AdoptTerminal { ticket: t, pane_key: None }), "attached");
     assert!(matches!(c.request(Command::TerminalEnd), Response::Ok));
 
     // A command running in it is its foreground, read off the pane on the
@@ -116,7 +116,7 @@ fn the_tickets_terminal_is_listed_previewed_and_adopted() {
     // Adopt: a Bash record of the ticket, `Running`, with the foreground
     // carried over; the pane wears the record's sid16 and the terminal's
     // name is gone from the server and from the board's list.
-    let sid = match c.request(Command::AdoptTerminal { ticket: t }) {
+    let sid = match c.request(Command::AdoptTerminal { ticket: t, pane_key: None }) {
         Response::Spawned { id, .. } => id,
         other => panic!("adopt: {other:?}"),
     };
@@ -148,7 +148,7 @@ fn the_tickets_terminal_is_listed_previewed_and_adopted() {
     let panes = list_panes(&sock);
     assert!(panes.iter().any(|(n, _, dead)| *n == sid16 && !dead), "{panes:?}");
     assert!(!panes.iter().any(|(n, _, _)| *n == term), "{panes:?}");
-    err_containing(c.request(Command::AdoptTerminal { ticket: t }), "no terminal");
+    err_containing(c.request(Command::AdoptTerminal { ticket: t, pane_key: None }), "no terminal");
     err_containing(c.request(Command::TerminalTail { ticket: Some(t), lines: 20 }), "no terminal");
 
     // The same pane, by the session's own road: the preview keeps its
@@ -222,7 +222,13 @@ fn shell_output_is_shared_scoped_revocable_and_close_is_human_confirmed() {
         Response::Attach { .. }
     ));
     assert!(matches!(c.request(Command::TerminalEnd), Response::Ok));
-    // One Shift+Enter adopts and captures; Esc discards the editor without sharing.
+    for session in [worker, coordinator] {
+        assert!(matches!(
+            c.send(Principal::Agent { session }, Command::TerminalCapture { ticket: owner }),
+            Response::Err { .. }
+        ));
+    }
+    // Shift+Enter previews without adopting; Esc leaves both the terminal and board untouched.
     let preview = mesimon_tui::test_support::capture_then_cancel(
         Box::new(BoardTransport(h.client("capture-unadopted"))),
         h.repo.clone(),
@@ -231,6 +237,23 @@ fn shell_output_is_shared_scoped_revocable_and_close_is_human_confirmed() {
     )
     .unwrap();
     assert!(preview.starts_with("Terminal output"));
+    assert!(!c.board().sessions.iter().any(|s| s.ticket == owner && s.kind == SessionKind::Bash));
+    assert!(terminals_of(c.request(Command::Snapshot)).iter().any(|t| t.ticket == Some(owner)));
+    err_containing(
+        c.send(
+            Principal::Agent { session: worker },
+            Command::AgentReadShell { shell: uuid::Uuid::nil(), key: None },
+        ),
+        "no shared shell",
+    );
+    // Sending the next capture adopts that terminal, still granting no live reads.
+    mesimon_tui::test_support::capture_then_send(
+        Box::new(BoardTransport(h.client("capture-send-unadopted"))),
+        h.repo.clone(),
+        owner,
+        None,
+    )
+    .unwrap();
     let shell = c
         .board()
         .sessions
@@ -411,7 +434,7 @@ fn shell_output_is_shared_scoped_revocable_and_close_is_human_confirmed() {
 }
 
 #[test]
-fn idle_terminals_and_adopted_shells_do_not_hold_lifecycle_actions() {
+fn lifecycle_actions_leave_adopted_shells_for_the_person_to_close() {
     let Some(h) = Harness::boot_with_env("shell-lifecycle", None, &[("SHELL", "/bin/sh")]) else {
         return;
     };
@@ -427,7 +450,7 @@ fn idle_terminals_and_adopted_shells_do_not_hold_lifecycle_actions() {
             assert!(matches!(c.request(Command::TerminalEnd), Response::Ok));
             if adopted {
                 assert!(matches!(
-                    c.request(Command::AdoptTerminal { ticket }),
+                    c.request(Command::AdoptTerminal { ticket, pane_key: None }),
                     Response::Spawned { .. }
                 ));
                 let shell = c.board().sessions.iter().find(|s| s.ticket == ticket).unwrap().clone();
@@ -445,7 +468,14 @@ fn idle_terminals_and_adopted_shells_do_not_hold_lifecycle_actions() {
                         needs_you: false,
                     }
                 };
-                err_containing(c.request(cmd), "live children");
+                err_containing(
+                    c.request(cmd),
+                    if archive {
+                        "sessions still awake — sleep them first"
+                    } else {
+                        "live children"
+                    },
+                );
                 assert!(!c.board().ticket(ticket).unwrap().is_archived());
                 send_keys(&sock, &shell.sid16(), &["C-c"]);
                 wait_until(Duration::from_secs(10), "idle shell", || {
@@ -462,11 +492,115 @@ fn idle_terminals_and_adopted_shells_do_not_hold_lifecycle_actions() {
                 }
             };
             let response = c.request(cmd);
+            if adopted {
+                let expected = if archive {
+                    "sessions still awake — sleep them first"
+                } else {
+                    "shell still awake — close the shell first (x)"
+                };
+                assert!(
+                    matches!(response, Response::Err { ref message } if message == expected),
+                    "{response:?}"
+                );
+                assert!(c
+                    .board()
+                    .sessions
+                    .iter()
+                    .any(|s| s.ticket == ticket && s.state.has_pane()));
+                err_containing(
+                    c.request(Command::RestartServer),
+                    "shell cannot park yet — close the shell first (x); nothing restarted",
+                );
+                continue;
+            }
             assert!(
                 matches!(response, Response::Ok),
                 "adopted={adopted}, archive={archive}: {response:?}"
             );
             assert!(!c.board().sessions.iter().any(|s| s.ticket == ticket));
         }
+    }
+}
+
+#[test]
+fn crown_archive_and_the_bulk_offer_leave_idle_adopted_shells_alive() {
+    use mesimon_core::Principal;
+    let Some(h) = Harness::boot_with_env(
+        "shell-archive-refusal",
+        None,
+        &[("SHELL", "/bin/sh"), ("MESIMON_ARCHIVE_SUGGEST_MS", "1")],
+    ) else {
+        return;
+    };
+    let mut c = h.client("shell-archive-refusal");
+    let crown = c.create_ticket("crown");
+    let coordinator = c.spawn_claude(crown);
+    assert!(matches!(c.request(Command::CrownTicket { id: crown }), Response::Ok));
+    assert!(matches!(c.request(Command::SetCrownArchives { on: true }), Response::Ok));
+    let owner = c.create_ticket("idle shells belong to the person");
+    let key = c.board().ticket(owner).unwrap().short_key.clone();
+    let mut shells = Vec::new();
+    for _ in 0..2 {
+        assert!(matches!(
+            c.request(Command::OpenTerminal { ticket: Some(owner) }),
+            Response::Attach { .. }
+        ));
+        assert!(matches!(c.request(Command::TerminalEnd), Response::Ok));
+        let Response::Spawned { id, .. } =
+            c.request(Command::AdoptTerminal { ticket: owner, pane_key: None })
+        else {
+            panic!("adopt")
+        };
+        shells.push(id);
+    }
+    let mut settings = c.board().column("TODO").unwrap().settings.clone();
+    settings.offers = Some(mesimon_core::board::ColumnOffers::Archive);
+    assert!(matches!(
+        c.request(Command::SetColumnSettings { name: "TODO".into(), settings }),
+        Response::Ok
+    ));
+    // A separate eligible ticket makes a stale zero offer unable to pass this check.
+    let empty = c.create_ticket("archive candidate");
+    wait_until(
+        Duration::from_secs(10),
+        "only the empty ticket in the archive offer",
+        || matches!(c.request(Command::Snapshot), Response::Board { resources, .. } if resources.archive_tickets == 1),
+    );
+    for principal in [Principal::Local, Principal::Agent { session: coordinator }] {
+        let command = if matches!(principal, Principal::Local) {
+            Command::ArchiveTicket { id: owner }
+        } else {
+            let Response::AgentTicket { ticket: view } =
+                c.send(principal.clone(), Command::AgentReadTicket { key: key.clone() })
+            else {
+                panic!("crown reads target first")
+            };
+            Command::AgentArchiveTicket { key: key.clone(), restore: false, seen: view.seen }
+        };
+        let response = c.send(principal, command);
+        assert!(
+            matches!(response, Response::Err { ref message } if message == "sessions still awake — sleep them first"),
+            "{response:?}"
+        );
+    }
+    assert!(matches!(
+        c.request(Command::ArchiveAll),
+        Response::Archived { archived: 1, skipped: 0 }
+    ));
+    assert!(c.is_archived(empty));
+    assert!(!c.board().ticket(owner).unwrap().is_archived());
+    for id in shells {
+        let shell = c.board().sessions.iter().find(|s| s.id == id).unwrap().clone();
+        assert!(shell.state.has_pane());
+        assert!(list_panes(&h.paths.tmux_sock())
+            .iter()
+            .any(|(name, _, dead)| name == &shell.sid16() && !dead));
+        // A live round-trip proves the pane is usable after both archive roads refused it.
+        send_keys(&h.paths.tmux_sock(), &shell.sid16(), &["printf 'still-alive\\n'", "Enter"]);
+        wait_until(
+            Duration::from_secs(5),
+            "shell alive after archive refusal",
+            || matches!(c.request(Command::PaneTail { session: id, lines: 10 }), Response::PaneTail { lines, .. } if lines.iter().any(|line| line.trim() == "still-alive")),
+        );
     }
 }

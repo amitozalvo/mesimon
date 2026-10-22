@@ -1848,6 +1848,7 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // session, and no agent spawns anything.
         | Command::ShareShell { .. }
         | Command::ShellCapture { .. }
+        | Command::TerminalCapture { .. }
         | Command::ConfirmCloseShell { .. }
         | Command::AdoptTerminal { .. }
         // Who is sitting at the user's terminal, and how recently they
@@ -3634,7 +3635,8 @@ mod tests {
             },
             Command::PaneTail { session: s, lines: 20 },
             Command::TerminalTail { ticket: Some(t), lines: 20 },
-            Command::AdoptTerminal { ticket: t },
+            Command::TerminalCapture { ticket: t },
+            Command::AdoptTerminal { ticket: t, pane_key: None },
             // One agent steering another agent's turn is the sharpest thing
             // the never-tier exists to stop.
             Command::PromptSession {
