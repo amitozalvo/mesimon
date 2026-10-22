@@ -12991,19 +12991,16 @@ impl Daemon {
         self.board.sessions.iter().any(|s| s.id == id && mesimon_core::quiet::at_rest(s))
     }
 
-    /// Will this pane's session take words now — `session_idle`, or idle at
-    /// its composer while background tasks run (T-599,
-    /// `quiet::holds_against_words`)? What a queued ask and the crown's wake
-    /// read. A tier switch or a plan relaunch keeps `session_idle`: those
-    /// end the pane, and the tasks with it. Not yet while its mod's bridge
-    /// is awaited (`bridge_awaited`, T-879): the words go down it, not
-    /// pasted into the composer, once it polls.
+    /// Will this pane's session take words now — `session_idle`, idle at
+    /// its composer while background tasks run (T-599), or a turn an API
+    /// error ended (T-899; `quiet::takes_words`)? What a queued ask and the
+    /// crown's wake read. A tier switch or a plan relaunch keeps
+    /// `session_idle`: those end the pane, and the tasks with it. Not yet
+    /// while its mod's bridge is awaited (`bridge_awaited`, T-879): the
+    /// words go down it, not pasted into the composer, once it polls.
     fn session_takes_words(&self, id: uuid::Uuid) -> bool {
-        self.board.sessions.iter().any(|s| {
-            s.id == id
-                && matches!(s.state, SessionState::Idle { .. })
-                && !mesimon_core::quiet::holds_against_words(s)
-        }) && !self.bridge_awaited(id, now_ms())
+        self.board.sessions.iter().any(|s| s.id == id && mesimon_core::quiet::takes_words(s))
+            && !self.bridge_awaited(id, now_ms())
     }
 
     /// Is this session parked on its plan dialog — the `≡`?

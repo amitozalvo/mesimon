@@ -22014,6 +22014,32 @@ mod tests {
         assert_eq!(queued_status("queued", "next", &[], &[], own), "next");
     }
 
+    /// T-899: a turn an API error ended is no turn in progress to the
+    /// field: Shift+Enter there opens and hints exactly as at an idle seat,
+    /// under either follow-up mode — the daemon then lands a `queued` ask
+    /// at once (`quiet::takes_words`), so nothing reads `after its turn`.
+    #[test]
+    fn shift_enter_on_a_failed_turn_asks_as_at_an_idle_one() {
+        use mesimon_core::board::{FailReason, FollowUpMode, StopReason};
+        let open = |state: SessionState, mode: FollowUpMode| {
+            let (mut app, _sent, _) = app_with_claude(state, false);
+            app.rich_keys = true;
+            app.client.request(Command::SetFollowUpMode { mode }).unwrap();
+            app.refresh().unwrap();
+            let ctx = app.ctx();
+            assert!(!ctx.checkout_busy);
+            let hint = keymap::hint_for(Scope::Board, Verb::Prompt, &ctx);
+            app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+            (hint, app.ctx().ask_queued)
+        };
+        for mode in [FollowUpMode::Queue, FollowUpMode::Steer] {
+            let failed = open(SessionState::Failed { reason: FailReason::Server }, mode);
+            let idle = open(SessionState::Idle { stop_reason: StopReason::EndTurn }, mode);
+            assert_eq!(failed, idle, "{mode:?}");
+            assert_eq!(failed.0, Some(("shift+enter", "ask agent")), "{mode:?}");
+        }
+    }
+
     /// The owed row's words, and the in-flight form.
     #[test]
     fn the_owed_row_names_what_it_waits_on() {

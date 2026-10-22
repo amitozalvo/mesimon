@@ -1078,3 +1078,90 @@ fn a_brief_owed_across_a_restart_is_not_resent_to_a_seat_that_took_a_prompt() {
     assert_eq!(feed_count(&h, "prompt_submit_abandoned", ticket), 0);
     let _ = c.request(Command::KillSession { id: sid });
 }
+
+/// T-899: an API error ends the turn. The person's ask queued while it ran
+/// read `after its turn` and waited for an idle that never came, because
+/// the turn was over and the seat read `Failed`. Now a `StopFailure` that is
+/// no limit lands the queued words at once, as an `Idle` does; a limit stop
+/// still holds them (T-808: pasted, they would meet the limit again).
+#[test]
+fn a_queued_ask_lands_after_an_api_error_and_waits_out_a_limit() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+                        printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+    let Some(h) =
+        Harness::boot_with_env("apierr", Some(STUB), &[("MESIMON_PANE_QUIET_MS", "600000")])
+    else {
+        return;
+    };
+    let got = h.dir.join("got.txt");
+    let text = || std::fs::read_to_string(&got).unwrap_or_default();
+    let hooks = h.paths.hook_sock();
+    let mut c = h.client("apierr");
+    let ticket = match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "api error".into(),
+        workspace: None,
+        tier: None,
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("{other:?}"),
+    };
+    let sid = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn failed: {other:?}"),
+    };
+    std::thread::sleep(Duration::from_millis(800));
+    let s = sid.to_string();
+    let queue = |c: &mut TestClient, words: &str| {
+        c.request(Command::PromptSession {
+            ticket,
+            text: words.into(),
+            queued: true,
+            immediately: false,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+            resend: false,
+            uploads: Vec::new(),
+        })
+    };
+
+    // Mid-turn, the ask waits on its own turn.
+    hook_send(&hooks, &s, "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sid, "running", |st| *st == SessionState::Running);
+    match queue(&mut c, "mesimon-probe-899 continue") {
+        Response::Queued { held, .. } => assert_eq!(held, None),
+        other => panic!("expected the ask parked: {other:?}"),
+    }
+    std::thread::sleep(Duration::from_millis(600));
+    assert!(!text().contains("mesimon-probe-899"), "a turn in flight holds it");
+
+    // The API error ends the turn: the words go in.
+    let body = r#"{"error":"server_error","last_assistant_message":"API Error: Can't reach the API server"}"#;
+    hook_send_with(&hooks, &s, "StopFailure", Some("server_error"), body);
+    c.await_state(sid, "failed", |st| matches!(st, SessionState::Failed { .. }));
+    wait_until(Duration::from_secs(10), "the queued ask after the API error", || {
+        text().contains("mesimon-probe-899 continue")
+    });
+    assert_eq!(text().matches("mesimon-probe-899").count(), 1);
+    hook_send(&hooks, &s, "UserPromptSubmit", r#"{"prompt":"continue"}"#);
+    c.await_state(sid, "running again", |st| *st == SessionState::Running);
+    wait_until(Duration::from_secs(5), "the queue empty", || {
+        pending_of(&mut c, Some(ticket)).iter().all(|p| p.action != PendingAction::Ask)
+    });
+
+    // A limit ends the turn too, and holds the words.
+    let limit = r#"{"error":"rate_limit","last_assistant_message":"You've hit your limit"}"#;
+    hook_send_with(&hooks, &s, "StopFailure", Some("rate_limit"), limit);
+    c.await_state(sid, "on the limit", |st| st.stopped_on_limit());
+    assert!(matches!(queue(&mut c, "mesimon-probe-808 after the limit"), Response::Queued { .. }));
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(!text().contains("mesimon-probe-808"), "a limit holds the words: {:?}", text());
+
+    let _ = c.request(Command::Shutdown);
+}

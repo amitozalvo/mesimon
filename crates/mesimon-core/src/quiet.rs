@@ -77,6 +77,18 @@ pub fn holds_against_words(s: &SessionRecord) -> bool {
         || (s.kind == SessionKind::Claude && s.compacting && s.state.has_pane())
 }
 
+/// A seat whose next words go in now: idle at its composer, or `Failed` —
+/// a `StopFailure` that was no limit (a server, a bad request, a model not
+/// found) ended the turn and left the agent at its composer, which takes a
+/// prompt as an idle does (T-899: a person's queued "continue" sat behind
+/// a turn the API error had already ended). And nothing in
+/// `holds_against_words`. What a queued ask and the crown's wake land on;
+/// the daemon adds its bridge wait.
+pub fn takes_words(s: &SessionRecord) -> bool {
+    matches!(s.state, SessionState::Idle { .. } | SessionState::Failed { .. })
+        && !holds_against_words(s)
+}
+
 /// An agent BETWEEN TURNS whose pane may be ended and its conversation kept
 /// (T-808): idle at its prompt (not parked on background tasks), or stopped
 /// on a limit, and working by none of `is_working`'s signs. What a tier
@@ -276,6 +288,43 @@ mod tests {
         let done = SessionState::Idle { stop_reason: StopReason::EndTurn };
         let s = session(t, SessionKind::Claude, "/r", done);
         assert!(at_rest(&s) && !holds_against_words(&s));
+    }
+
+    /// T-899: a turn a non-limit `StopFailure` ended takes words as an idle
+    /// does; a limit, a turn in flight, a background wait's owed Enter and a
+    /// dialog do not.
+    #[test]
+    fn a_failed_turn_takes_words_and_a_limit_does_not() {
+        use crate::board::FailReason;
+        let t = ulid::Ulid::new();
+        for reason in [
+            FailReason::Server,
+            FailReason::InvalidRequest,
+            FailReason::ModelNotFound,
+            FailReason::MaxOutputTokens,
+            FailReason::Unknown,
+        ] {
+            let mut s = session(t, SessionKind::Claude, "/r", SessionState::Failed { reason });
+            assert!(!is_working(&s) && takes_words(&s), "{reason:?}");
+            s.pending_submit = true;
+            assert!(!takes_words(&s), "an owed Enter is ours: {reason:?}");
+        }
+        for st in [
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+            SessionState::Idle { stop_reason: StopReason::Background },
+        ] {
+            assert!(takes_words(&session(t, SessionKind::Claude, "/r", st.clone())), "{st:?}");
+        }
+        for st in [
+            SessionState::RequiresAction { reason: Reason::QuotaResume },
+            SessionState::Throttled,
+            SessionState::Running,
+            SessionState::Spawning,
+            SessionState::RequiresAction { reason: Reason::Permission },
+            SessionState::Sleeping,
+        ] {
+            assert!(!takes_words(&session(t, SessionKind::Claude, "/r", st.clone())), "{st:?}");
+        }
     }
 
     fn session(

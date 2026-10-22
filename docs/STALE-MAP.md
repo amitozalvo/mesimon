@@ -29898,3 +29898,31 @@ window, and `a_slash_command_from_the_board_is_acked_off_the_screen`), `mod_turn
 `a_submit_held_after_a_stop_…` tests (fake mod switch `mod-stopped-submit`), and the units
 `composer::a_compaction_reads_off_its_spinner_line`, `attention::the_screen_closes_an_interrupted_compaction`,
 `quiet`'s word hold and `refusal_tests`.
+
+## A queued ask lands on a turn an API error ended (T-899, 2026-10-22, "After an API error, a prompt the person sends is queued behind a turn that already ended")
+
+**The report.** A `StopFailure{server}` (ENOTFOUND) moved a seat running → `Failed`. The
+person's Shift+Enter "continue" queued (the board's follow-up mode is Queue), the card read
+`queued ∙ after its turn`, and nothing delivered it; a send-immediately in the same field did.
+
+**Where it stalled: the daemon, not the TUI.** `quiet::is_working` and `holds_against_words`
+already let words through on `Failed`, but `session_takes_words` — what a queued ask and the
+crown's wake land on — also required `Idle`, so a failed seat was never ready, and
+`ask_waits_on_ids` listed the ticket itself, which the card spells `after its turn`. The TUI never
+read `Failed` as mid-turn: its field opens by the follow-up mode for any paned seat, the same at
+`Failed` as at `Idle`, and its `after its turn` was the daemon's `waits_on`.
+
+**The fix.** `quiet::takes_words`: `Idle` or `Failed`, and nothing in `holds_against_words`.
+Every `FailReason` is a turn over with the agent at its composer; a limit is never `Failed`
+(`Throttled` / `QuotaResume`, `stopped_on_limit`) and still holds the words (T-808). The person's
+ask and the crown's (`ask_agent` rides the same queue) and the crown's wake all read it. A plan
+relaunch and a tier switch keep their own gates (`session_idle`, `at_rest`), which still exclude
+`Failed`: a tier switch on a failed seat is a separate question. `SessionRecord::pressable` was
+left alone: it governs launch words' owed Enter, not a queued ask's paste, and no launch reaches
+`Failed` before its prompt is acked.
+
+**Tests.** `quiet::a_failed_turn_takes_words_and_a_limit_does_not`;
+`shift_enter_on_a_failed_turn_asks_as_at_an_idle_one` (the field and its hint match an idle
+seat's under both follow-up modes); `ask_queue_e2e::a_queued_ask_lands_after_an_api_error_and_waits_out_a_limit`
+(an ask queued mid-turn lands on the `StopFailure{server_error}`, and one queued on a
+`StopFailure{rate_limit}` stays), on both passes; it times out with the old `Idle`-only gate.
