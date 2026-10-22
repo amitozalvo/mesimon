@@ -29457,3 +29457,13 @@ maintenance turn (2026-09-10) and spins as before. Mesophon says nothing of it y
 `manual-compact-interrupted`, `idle-compact` and `auto-compact-continuation`, and
 `compact_e2e::a_compaction_is_painted_and_moves_nothing` on both roads (fails before the fix at
 its first assertion: the manual window moved the ticket).
+
+## T-831 — the rig's stand-in phone binds per board
+
+`ci/rig.py`'s phone was one fixed `/tmp/msmn-rig-phone.sock`, which `Phone.__init__` removed
+before binding: a second rig run in another worktree deleted the first's socket, and the first
+board's `mesimon approve` reached the wrong phone or none. **Decision:** the socket is
+`<rt_dir>/phone.sock` (`Rig.phone_sock`), beside `hook.sock`, so it fits `sun_path` as that does,
+and the copied phone mod has that path patched in. A run removes only a file at its own board's
+path, so no run touches another's. **Proof:** `ci/rig.py --only C1` on the real Sonnet (claude
+2.1.308): PASS, `phone:allow` Bash → allow, `c1-allowed.txt` exists.
