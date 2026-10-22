@@ -3104,6 +3104,7 @@ impl Daemon {
         // read where the sample lands (`on_pane_sampled`).
         self.want_codex_startup();
         self.want_claude_startup();
+        self.want_codex_inputs();
         let mut changed = self.drive_codex_inputs(now);
         // A compaction window past `COMPACT_STALE_MS` closes (T-894): the
         // board stops painting it.
@@ -4354,22 +4355,54 @@ impl Daemon {
         dirty
     }
 
+    /// A Codex seat with words to go in at its idle: a title to prefill,
+    /// words parked or a `/plan` owed, none pressed yet, and the runtime
+    /// reading it ready.
+    fn codex_input_waiting(&self, s: &SessionRecord) -> bool {
+        s.kind == SessionKind::Codex
+            && matches!(s.state, SessionState::Idle { .. })
+            && (s.pending_prefill || s.pending_submit || s.codex_plan_owed || self.parked(s.id))
+            && !s.codex_submit_sent
+            && self.codex_ready.contains(&s.id)
+    }
+
+    /// The Codex panes with words to go in or a steer's Enter owed: their
+    /// screens are asked of the sampler every tick (T-872), so
+    /// `drive_codex_inputs` and `press_steer` read one at most a sample old
+    /// in place of a fork on the writer.
+    fn want_codex_inputs(&mut self) {
+        let due: Vec<String> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|s| {
+                self.codex_input_waiting(s) || (self.steering(s.id) && s.state.has_pane())
+            })
+            .map(|s| s.sid16())
+            .collect();
+        for sid in due {
+            self.pane_due.screen(&sid);
+        }
+    }
+
+    /// The sampler's newest screen of a pane, when it was read at or after
+    /// `after` (T-857): an older one is not the box as it stands.
+    fn screen_since(&self, sid16: &str, after: u64) -> Option<&mesimon_backend_tmux::InputScreen> {
+        self.screens.get(sid16).filter(|(at, _)| *at >= after).map(|(_, screen)| screen)
+    }
+
     /// Paste only into an independently visible native input, then send one
     /// Enter after paste detection settles. The persisted sent latch survives
     /// daemon replacement; an unacknowledged submission holds the checkout.
+    /// The input is read off the sampler's screen (`want_codex_inputs`), and
+    /// one from before the seat's last state change or the entry's birth is
+    /// no input yet.
     fn drive_codex_inputs(&mut self, now: u64) -> bool {
         let ids: Vec<_> = self
             .board
             .sessions
             .iter()
-            .filter(|s| {
-                s.kind == SessionKind::Codex
-                    && s.state.has_pane()
-                    && (s.pending_prefill
-                        || s.pending_submit
-                        || s.codex_plan_owed
-                        || self.parked(s.id))
-            })
+            .filter(|s| self.codex_input_waiting(s))
             .map(|s| s.id)
             .collect();
         let mut dirty = false;
@@ -4388,18 +4421,16 @@ impl Daemon {
                 continue;
             }
             let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { continue };
-            if rec.codex_submit_sent
-                || !self.codex_ready.contains(&id)
-                || !matches!(rec.state, SessionState::Idle { .. })
-            {
-                continue;
-            }
             let sid = rec.sid16();
             let ticket = rec.ticket;
             let pending_prefill = rec.pending_prefill;
             let mut submit = rec.pending_submit;
             let plan_owed = rec.codex_plan_owed;
-            let Ok(screen) = self.backend.capture_input_screen(&sid) else { continue };
+            let after = rec
+                .state_changed_at
+                .unwrap_or(0)
+                .max(self.owed.get(&id).map_or(0, |o| o.screen_after));
+            let Some(screen) = self.screen_since(&sid, after).cloned() else { continue };
             if !crate::agents::codex::input_ready(&screen) {
                 continue;
             }
@@ -5503,10 +5534,9 @@ impl Daemon {
         for (id, sid16, after) in shells {
             use crate::agents::claude::composer::{self, Composer};
             self.pane_due.screen(&sid16);
-            let taken = matches!(
-                self.screens.get(&sid16),
-                Some((at, screen)) if *at >= after && composer::read(screen) == Composer::Empty
-            );
+            let taken = self
+                .screen_since(&sid16, after)
+                .is_some_and(|screen| composer::read(screen) == Composer::Empty);
             if taken {
                 changed |= self.ack_owed(id);
             }
@@ -5603,11 +5633,10 @@ impl Daemon {
                 // screen from before the entry's stamp — the pane's start, a
                 // clear — is not this box yet, and reads as no composer.
                 self.pane_due.screen(&sid16);
+                let Some(after) = self.owed.get(&id).map(|o| o.screen_after) else { continue };
+                let composer =
+                    self.screen_since(&sid16, after).map_or(Composer::Absent, composer::read);
                 let Some(owed) = self.owed.get_mut(&id) else { continue };
-                let composer = match self.screens.get(&sid16) {
-                    Some((at, screen)) if *at >= owed.screen_after => composer::read(screen),
-                    _ => Composer::Absent,
-                };
                 let ready_by = *owed.ready_by.get_or_insert(now + composer_wait_ms());
                 match composer {
                     Composer::Absent if ready_by <= now => {
@@ -11410,19 +11439,22 @@ impl Daemon {
     /// into a box still holding the words, so never into a dialog and never
     /// a second turn; an empty box means they went and the count is on its
     /// way. The presses run out either way, and words never seen taken are
-    /// the phone's `unknown`.
+    /// the phone's `unknown`. The box is the sampler's screen of it
+    /// (`want_codex_inputs`), and one read before the paste is not this box.
     fn press_steer(&mut self, id: uuid::Uuid, now: u64) -> bool {
         let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
             self.owed.remove(&id);
             return false;
         };
         let (sid, ticket) = (rec.sid16(), rec.ticket);
-        if rec.state.has_pane() && !matches!(rec.state, SessionState::RequiresAction { .. }) {
-            if let Ok(screen) = self.backend.capture_input_screen(&sid) {
-                if crate::agents::codex::composer_holds_text(&screen) {
-                    let _ = self.backend.send_enter(&sid);
-                }
-            }
+        let after = self.owed.get(&id).map_or(u64::MAX, |o| o.screen_after);
+        if rec.state.has_pane()
+            && !matches!(rec.state, SessionState::RequiresAction { .. })
+            && self
+                .screen_since(&sid, after)
+                .is_some_and(crate::agents::codex::composer_holds_text)
+        {
+            let _ = self.backend.send_enter(&sid);
         }
         let Some(owed) = self.owed.get_mut(&id) else { return false };
         if owed.presses > 1 {

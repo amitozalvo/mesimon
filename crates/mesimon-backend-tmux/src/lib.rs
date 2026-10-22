@@ -176,7 +176,7 @@ pub struct TmuxBackend {
 
 /// Visible physical rows and the application's active text cursor. A hidden
 /// cursor, dead pane or tmux copy mode has no application input cursor.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct InputScreen {
     pub lines: Vec<String>,
     pub cursor: Option<(usize, usize)>,

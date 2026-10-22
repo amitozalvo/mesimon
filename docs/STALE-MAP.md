@@ -29467,3 +29467,23 @@ board's `mesimon approve` reached the wrong phone or none. **Decision:** the soc
 and the copied phone mod has that path patched in. A run removes only a file at its own board's
 path, so no run touches another's. **Proof:** `ci/rig.py --only C1` on the real Sonnet (claude
 2.1.308): PASS, `phone:allow` Bash → allow, `c1-allowed.txt` exists.
+
+## T-872 — the Codex input roads read the sampler's screens (2026-10-22)
+
+T-845 and T-847 left two per-tick forks on the writer thread beside T-857's sampler:
+`drive_codex_inputs` captured a Codex seat's input screen every tick while words, a title or a
+`/plan` were owed, and `press_steer` captured one on `settle_owed`'s cadence. **Decision:**
+`want_codex_inputs` asks the sampler every tick for the screens of the seats
+`codex_input_waiting` names (Idle, the runtime ready, words or `/plan` owed, no Enter sent) and
+of every pane with a steer owed; both roads read `self.screens` through `screen_since`, the
+fence the Claude composer wait already used, now one helper for all four reads. The fence for a
+Codex input is the later of the record's last state change and the owed entry's birth, so a
+screen from a previous pane under the same session name, or from a running turn, is no input
+yet; a steer's is its paste. A stale screen costs a steer press as a failed capture did (ten
+presses, 5 s). `codex_steer`'s one read at the ask edge stays a fork, as do `send_brief`'s and
+`press_plan`'s: edges, not ticks. `InputScreen` derives `Clone` so the plan step can hold one
+while the writer mutates.
+
+**Proof:** `cargo ut`; `provider_e2e`, `plan_mode_e2e`, `trust_accept_e2e` and `prompt_e2e`
+36/36 twice with no wait widened; `ci/codex-lifecycle-e2e.py --live --case stop` on the real
+Codex passed.
