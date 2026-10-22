@@ -561,7 +561,8 @@ pub(super) fn draw_summary(f: &mut Frame, app: &App, ticket: ulid::Ulid, idx: us
         .rows
         .iter()
         .map(|r| {
-            let words = crate::text::one_line(&mesimon_core::text::scrub_cells(&r.text, false));
+            let words = mesimon_core::text::scrub_cells(&crate::rich::plain_inline(&r.text), false);
+            let words = crate::text::one_line(&words);
             let head = format!("{} {words}", super::card::box_mark(tier, Some(r.done)));
             ListRow {
                 lead: " ".into(),

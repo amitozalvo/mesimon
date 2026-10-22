@@ -6612,6 +6612,25 @@ fn test_summary_underline_runs_the_done_share_of_the_title() {
     assert!((0..120u16).all(|x| !buf[(x, y)].modifier.contains(Modifier::UNDERLINED)));
 }
 
+/// A box's label draws its words, not its markdown (T-893): on the open
+/// card and in the `^j` list, a code span loses its backticks and the box
+/// keeps its own mark.
+#[test]
+fn test_summary_rows_draw_a_code_span_as_words() {
+    let note = SUMMARY_NOTE.replace("add the e2e for the attach", "Ship it: `cd ~/x && ship`");
+    let mut app = app_summary();
+    app.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(&note)));
+    app.summary_pulses.clear();
+    app.peek = true;
+    let board = render(&app, 120, 30).join("\n");
+    assert!(board.contains("[ ] Ship it: cd ~/x"), "{board}");
+    assert!(!board.contains('`'), "{board}");
+    app.mode = Mode::Summary { ticket: ulid_n(3), idx: 0 };
+    let list = render(&app, 120, 30).join("\n");
+    assert!(list.contains("[ ] Ship it: cd ~/x && ship"), "{list}");
+    assert!(!list.contains('`'), "{list}");
+}
+
 /// Every box ticked and the agent parked, the title is bare (T-860); a
 /// working agent keeps the full run, and a live shell keeps nothing.
 #[test]

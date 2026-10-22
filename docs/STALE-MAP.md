@@ -29335,6 +29335,13 @@ quote its `> ` (the card's mark for the person's words), a fenced block its line
 The card's new-reply row reads the same. Only the first 4 KiB is parsed, because a card is
 asked for per frame; a reply longer than that ends in ` ~` so `wrap` still marks the cut.
 
+**A Summary box's label** too (the same screenshot: ``[ ] Ship it: `cd ~/…``): the card's box
+rows and the `^j` list draw `rich::plain_inline`, the inline parse alone, because a label is one
+line and its own `# ` or `- ` is words, not a block. The box mark stays the card's. The ticket
+page draws the Summary note through `rich` already; the `^j` ask quotes the label raw to the
+agent, which reads markdown.
+
 **Tests.** `adopt::user_prompt_drops_the_pasted_content_wrapper`,
-`rich::plain_takes_the_markdown_off_and_keeps_the_words`,
-`peek::card_words_drop_the_fence_and_mark_a_long_reply`. No golden moved.
+`rich::plain_takes_the_markdown_off_and_keeps_the_words`, `rich::plain_inline_reads_a_box_label`,
+`peek::card_words_drop_the_fence_and_mark_a_long_reply`,
+`ui::tests::test_summary_rows_draw_a_code_span_as_words` (card and `^j`). No golden moved.

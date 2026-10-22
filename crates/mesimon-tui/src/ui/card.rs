@@ -1187,7 +1187,8 @@ pub(super) fn render(
         if let Some(s) = summary.filter(|_| rows_shown) {
             let (shown, fold) = s.card_rows(SUMMARY_ROWS);
             for r in shown {
-                let words = mesimon_core::text::scrub_cells(&r.text, false);
+                let words =
+                    mesimon_core::text::scrub_cells(&crate::rich::plain_inline(&r.text), false);
                 let row = format!("{} {words}", box_mark(tier, Some(r.done)));
                 push(vec![Span::styled(truncate(&row, t_cells), if r.done { faint } else { dim })]);
             }

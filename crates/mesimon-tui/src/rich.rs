@@ -171,25 +171,36 @@ pub(crate) fn plain(src: &str) -> String {
     plain_of(&blocks(src, Newline::Space))
 }
 
+/// One line's words with its inline markdown taken off — `plain` for a
+/// text that is not a document: a Summary box's label (T-893), whose
+/// `# ` or `- ` is the person's words, not a heading or a bullet.
+pub(crate) fn plain_inline(line: &str) -> String {
+    let mut out = String::new();
+    push_plain(&mut out, &inline(line));
+    out
+}
+
 fn plain_of(bs: &[Block]) -> String {
     let mut out = String::new();
     plain_blocks(bs, &mut out);
     out
 }
 
+/// `runs`' text, a link's target left out.
+fn push_plain(out: &mut String, runs: &[Run]) {
+    for r in runs.iter().filter(|r| !r.emph.url) {
+        out.push_str(&r.text);
+    }
+}
+
 fn plain_blocks(bs: &[Block], out: &mut String) {
-    let runs = |out: &mut String, runs: &[Run]| {
-        for r in runs.iter().filter(|r| !r.emph.url) {
-            out.push_str(&r.text);
-        }
-    };
     for b in bs {
         if !out.is_empty() && !matches!(b, Block::Blank) {
             out.push('\n');
         }
         match b {
             Block::Blank => {}
-            Block::Head { runs: rs, .. } | Block::Para { runs: rs } => runs(out, rs),
+            Block::Head { runs: rs, .. } | Block::Para { runs: rs } => push_plain(out, rs),
             Block::Quote { blocks } => {
                 out.push_str("> ");
                 out.push_str(&plain_of(blocks));
@@ -199,13 +210,13 @@ fn plain_blocks(bs: &[Block], out: &mut String) {
                     out.push_str(m);
                     out.push(' ');
                 }
-                runs(out, rs);
+                push_plain(out, rs);
             }
             Block::Code { rows } => out.push_str(&rows.join("\n")),
             Block::Table { head, rows, .. } => {
                 for row in std::iter::once(head).chain(rows) {
                     for cell in row {
-                        runs(out, cell);
+                        push_plain(out, cell);
                         out.push(' ');
                     }
                     out.push('\n');
@@ -1409,6 +1420,17 @@ mod tests {
         );
         // A quote keeps its mark: on a card it says the words are the person's.
         assert_eq!(super::plain("> fix it\n\nthe brief"), "> fix it\nthe brief");
+    }
+
+    #[test]
+    fn plain_inline_reads_a_box_label() {
+        // The card that asked for it (T-893): the backtick spent a cell.
+        assert_eq!(
+            super::plain_inline("Ship it: `cd ~/code && ship all` **now**"),
+            "Ship it: cd ~/code && ship all now"
+        );
+        // A label's own `# ` is its words: no block parse.
+        assert_eq!(super::plain_inline("# of runs: [log](ci/log)"), "# of runs: log");
     }
 
     /// The whole point: `**x**` must not reach the screen as four asterisks,
