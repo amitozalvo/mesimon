@@ -47,6 +47,7 @@ mod theme;
 mod title;
 mod tour;
 mod ui;
+mod underline;
 mod update;
 
 use std::path::Path;

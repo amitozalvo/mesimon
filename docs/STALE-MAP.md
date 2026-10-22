@@ -30358,3 +30358,46 @@ local archive refusal with the old words, two surviving shells, the exact bulk
 offer count, and refusal of server restart. Archive reclamation retains coverage
 of the separate worktree terminal's teardown. SH1 also checks that the agent
 understands Esc does not adopt an unadopted terminal.
+
+## Terminal.app animation residue is an ungrouped underline color (T-909 follow-up, 2026-10-22)
+
+A Terminal.app screenshot showed cyan and red background blocks left in a card's reply
+row after the crown animation, until visiting the card repainted it. The frame loop already
+redraws after animation, so adding a final repaint would conceal the cause. Crossterm 0.29
+emits underline RGB as `CSI 58;2;r;g;b m`. Terminal.app does not consume that entire form:
+the component `46` becomes a cyan background command, `41` a red background command, and
+`2` dims text. The renderer's cached colors then disagree with the terminal, so subsequent
+cells can inherit paint the frame buffer never requested. A card visit rewrites those cells.
+
+**Confirmed in the affected emulator by the user.** A standalone Python diagnostic in a
+new Terminal.app window printed the same RGB component values 41–47 and 100–107 with the
+same foreground and background, once with semicolons and once with colons. The user
+confirmed that only the semicolon row showed colored blocks; the colon row stayed dark.
+Window capture was unavailable to the agent, so this is user-confirmed visual evidence,
+not an automated screenshot comparison. The diagnostic launched no Mesimon board.
+
+`underline::UnderlineColors` now wraps the board's crossterm writer and converts only its
+complete underline color commands: `58;2;r;g;b` to `58:2::r:g:b`, and `58;5;n` to `58:5:n`.
+A terminal can understand or ignore the grouped parameter without interpreting its color
+components as unrelated SGR commands. Foreground/background RGB, reset 59, cursor movement,
+synchronization and UTF-8 text pass unchanged. The adapter handles commands split by
+`write_fmt`, bounds its pending bytes, completes short writes and propagates I/O errors.
+This retains full RGB and the animation; it needs no Terminal.app identity check, extra
+screen query, or full-frame repaint. Existing idle silence and iTerm's underline repaint
+workaround stay covered by the backend tests.
+
+The same delimiter problem is described in [Vim issue 6687](https://github.com/vim/vim/issues/6687)
+for an emulator supporting only the colon form. RGB support and semicolon-form SGR 58
+support are independent, as the earlier research here cautioned. The new tests reproduce
+the red/cyan-background misparse with a minimal legacy-SGR model, then verify the grouped
+output preserves the requested background and intensity; check every split point and
+byte-at-a-time output; preserve other sequences and incomplete input; and check short
+writes/errors. The backend's existing animation test now verifies grouped underline colors
+are what reaches the writer. No intended cell geometry or theme colors change.
+
+Validation: `cargo ut` passed 2,535 tests with the six standard ignored entries described
+above, and the ticket's binary built successfully. Both used the bounded runner with
+`NO_COLOR` removed for the ANSI assertions; fixture audits were clean. Formatting and
+`git diff --check` passed. No goldens changed. Full nextest, tmux e2e and Linux/Docker
+checks were not rerun for this renderer-output-only fix; the affected emulator was checked
+with the standalone diagnostic, not an interactive Mesimon board.

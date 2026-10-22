@@ -32,7 +32,7 @@ use ratatui::crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdat
 use ratatui::layout::{Position, Size};
 
 pub(crate) struct Quiet<W: Write> {
-    inner: CrosstermBackend<W>,
+    inner: CrosstermBackend<crate::underline::UnderlineColors<W>>,
     /// What the terminal was last told each cell is (T-696). iTerm2 does
     /// not repaint a cell whose only change is its underline colour — a
     /// whole line rewritten shows the new colour, one cell rewritten keeps
@@ -57,7 +57,7 @@ pub(crate) struct Quiet<W: Write> {
 impl<W: Write> Quiet<W> {
     pub(crate) fn new(writer: W) -> Self {
         Self {
-            inner: CrosstermBackend::new(writer),
+            inner: CrosstermBackend::new(crate::underline::UnderlineColors::new(writer)),
             shadow: std::collections::HashMap::new(),
             hidden: None,
             at: None,
@@ -382,7 +382,8 @@ mod tests {
         // from nothing, so four drops), and the blue colour rides along.
         assert_eq!(recoloured.matches("\x1b[24m").count(), 4, "{recoloured:?}");
         assert_eq!(recoloured.matches("\x1b[4m").count(), 5, "{recoloured:?}");
-        assert!(recoloured.contains("58;2;60;60;255"), "{recoloured:?}");
+        assert!(recoloured.contains("58:2::60:60:255"), "{recoloured:?}");
+        assert!(!recoloured.contains("58;"), "ungrouped color components: {recoloured:?}");
         assert!(recoloured.starts_with(BEGIN) && recoloured.ends_with(END), "{recoloured:?}");
         // Unchanged: nothing. A glyph change: once.
         draw(&mut t, |f| f.render_widget(Line::from(Span::styled("ab cd", under(blue))), f.area()))
