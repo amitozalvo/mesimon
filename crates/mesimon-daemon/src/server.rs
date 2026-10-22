@@ -2038,6 +2038,12 @@ struct Owed {
     /// read before the pane came up, or before the Ctrl+C, is not the box
     /// the words go into.
     screen_after: u64,
+    /// When the words went into the pane or down the mod — the paste, the
+    /// submit — and `None` while they are still parked. An ack forgets only
+    /// a queued ask from before this (T-894): a follow-up queued after the
+    /// words went in is not theirs to take, and one queued while they still
+    /// waited for the composer was there before them.
+    sent_at: Option<u64>,
     /// The words are the box's own (`road::is_command`, T-876, T-894): a
     /// `!` shell line, which Claude Code runs in its bash mode, or a `/`
     /// command, which it runs itself; neither fires a `UserPromptSubmit`
@@ -2058,6 +2064,14 @@ struct Owed {
 fn input_held_after_stop(reason: &str) -> bool {
     let r = reason.to_ascii_lowercase();
     r.contains("stopped") && r.contains("input")
+}
+
+/// Whether an ack of words that went in at `sent_at` takes a queued ask
+/// stamped `queued_at` with it (T-894): one from before the words, which
+/// they talked past; never one from after, a follow-up. Words never sent
+/// (`None`: a person typed in the pane while ours waited) take any.
+fn forgotten_by_ack(queued_at: u64, sent_at: Option<u64>) -> bool {
+    sent_at.is_none_or(|at| queued_at <= at)
 }
 
 /// The feed's word for a pasted line of the box's own (T-894): what kind.
@@ -2090,6 +2104,7 @@ impl Owed {
             asked: None,
             steer: None,
             screen_after: now_ms(),
+            sent_at: None,
             screen_acked: false,
         }
     }
@@ -2114,6 +2129,7 @@ impl Owed {
             asked: None,
             steer: None,
             screen_after: now,
+            sent_at: Some(now),
             screen_acked: false,
         }
     }
@@ -4533,6 +4549,9 @@ impl Daemon {
             if !text.is_empty() && self.backend.paste_input(&sid, &text).is_err() {
                 continue;
             }
+            if let Some(owed) = self.owed.get_mut(&id) {
+                owed.sent_at = Some(now_ms());
+            }
             self.control_pasted(id);
             // The words are in; the entry stays for its ack (the new-turn
             // edge), so a queued ask's word still lands on the feed. Words
@@ -5452,7 +5471,7 @@ impl Daemon {
         // When our own words went in: a queued ask from after them is a
         // follow-up the ack must not take with it (T-894 review: a person
         // queued words behind a `/compact`, and its ack deleted them).
-        let sent_at = self.owed.get(&id).map(|o| o.screen_after);
+        let sent_at = self.owed.get(&id).and_then(|o| o.sent_at);
         let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else {
             return false;
         };
@@ -5872,6 +5891,12 @@ impl Daemon {
                         let _ = self.backend.send_enter(&sid16);
                     } else {
                         let _ = self.backend.paste_text(&sid16, &text);
+                    }
+                    // The words go in now, not when they were parked.
+                    if let Some(owed) = self.owed.get_mut(&id) {
+                        owed.sent_at = Some(now_ms());
+                    }
+                    if !text.is_empty() {
                         // A shell line or a slash command at a wake (T-876,
                         // T-894): its receipt is the box reading empty after
                         // these keys, never a hook.
@@ -13219,10 +13244,9 @@ impl Daemon {
         actor: &str,
         dropped_by: &'static str,
     ) -> bool {
-        if let Some(at) = cutoff {
-            if self.queued.iter().any(|q| q.ticket == ticket && q.queued_at > at) {
-                return false;
-            }
+        if self.queued.iter().any(|q| q.ticket == ticket && !forgotten_by_ack(q.queued_at, cutoff))
+        {
+            return false;
         }
         let before = self.queued.len();
         let queued = self.queued.iter().find(|q| q.ticket == ticket);
@@ -18455,6 +18479,32 @@ fn mod_dir() -> Option<std::path::PathBuf> {
 /// while the remote flag has mods off.
 fn rig_no_flags() -> bool {
     std::env::var("MESIMON_RIG_NO_FLAGS").as_deref() == Ok("1")
+}
+
+#[cfg(test)]
+mod ack_cutoff_tests {
+    use super::{forgotten_by_ack, Ack, Owed, Parked};
+
+    /// The ack's cutoff is when the words went in (T-894 re-review): a
+    /// parked launch's entry has none until its paste stamps it, so an ask
+    /// queued after the entry's birth but before the paste was there before
+    /// the words, and goes with the ack; one queued after the paste stays.
+    #[test]
+    fn the_cutoff_is_stamped_when_the_words_go_in() {
+        let words = Parked { text: "go".into(), brief: false, title: false };
+        let mut launch = Owed::launch(ulid::Ulid::nil(), words, Ack::PROMPT);
+        assert_eq!(launch.sent_at, None, "parked words have not gone in");
+        // An ask queued between the entry's birth and the paste.
+        let between = launch.screen_after + 1_000;
+        launch.sent_at = Some(between + 1_000);
+        assert!(forgotten_by_ack(between, launch.sent_at), "it was there before the words");
+        assert!(!forgotten_by_ack(between + 2_000, launch.sent_at), "a follow-up stays");
+        let pasted = Owed::pasted(ulid::Ulid::nil(), Ack::PROMPT, 5_000);
+        assert_eq!(pasted.sent_at, Some(5_000), "a live paste is stamped as it goes in");
+        assert!(forgotten_by_ack(5_000, pasted.sent_at));
+        assert!(!forgotten_by_ack(5_001, pasted.sent_at));
+        assert!(forgotten_by_ack(u64::MAX, None), "a person's own prompt talks past any");
+    }
 }
 
 #[cfg(test)]

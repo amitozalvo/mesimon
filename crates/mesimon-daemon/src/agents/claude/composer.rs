@@ -108,17 +108,17 @@ pub fn compacting(screen: &InputScreen) -> bool {
         if !rest.starts_with(' ') {
             return false;
         }
-        let mut joined = rest.trim().to_string();
+        // Whitespace is ignored on both sides (T-894 re-review): a pane
+        // wraps at a word or mid-word, and a join cannot tell which.
+        let mut joined: String = rest.chars().filter(|c| !c.is_whitespace()).collect();
         for next in &lines[r + 1..=bottom] {
-            let next = next.trim();
-            if next.starts_with('⎿') {
+            if next.trim().starts_with('⎿') {
                 break;
             }
-            joined.push(' ');
-            joined.push_str(next);
+            joined.extend(next.chars().filter(|c| !c.is_whitespace()));
         }
-        let joined = joined.split_whitespace().collect::<Vec<_>>().join(" ");
-        joined.starts_with(COMPACTING_LINE)
+        let want: String = COMPACTING_LINE.chars().filter(|c| !c.is_whitespace()).collect();
+        joined.starts_with(&want)
     })
 }
 
@@ -241,12 +241,23 @@ mod tests {
             None,
         );
         assert!(compacting(&narrow));
+        // A wrap mid-word reads as the phrase too (T-894 re-review: a join
+        // with a space between read `conver sation`, and a running
+        // compaction closed on a narrow pane).
         let mid_word =
             screen(&format!("✻ Compacting conver\n  sation… (0s)\n\n{rule}\n❯ \n{rule}"), None);
-        assert!(!compacting(&mid_word), "a word split mid-way is not the phrase");
+        assert!(compacting(&mid_word), "a word split mid-way is still the phrase");
+        let mid_word_twice = screen(
+            &format!("✶ Compac\nting conversa\ntion… (4s · ↓ 9\n tokens)\n{rule}\n❯ \n{rule}"),
+            None,
+        );
+        assert!(compacting(&mid_word_twice));
         let at_words =
             screen(&format!("✽ Compacting\n  conversation…\n  (12s)\n{rule}\n❯ \n{rule}"), None);
-        assert!(compacting(&at_words));
+        assert!(compacting(&at_words), "a wrap at a word boundary");
+        let other =
+            screen(&format!("✻ Compacting conver\n  ted files (0s)\n{rule}\n❯ \n{rule}"), None);
+        assert!(!compacting(&other), "other words that wrap the same way are not it");
     }
 
     /// The phrase anywhere but the spinner's place is ordinary text (T-894
