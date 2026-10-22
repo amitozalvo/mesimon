@@ -1685,12 +1685,22 @@ pub fn acted_url(entry: &str, repo: &Remote) -> Option<String> {
 
 /// A shell command that opens a PR: `gh pr create …` or `glab mr create …`,
 /// anywhere in the line (after a `cd`, under `&&`), never `pr view` or a
-/// mention in prose, since this is the tool's own input.
+/// mention in prose, since this is the tool's own input. Read as the
+/// shell does (`shell_words`, T-895): the words inside a quoted string —
+/// an `echo`, a commit message — are one word and open nothing, and a
+/// `create` whose own segment carries `--help`, `-h` or `--dry-run` opens
+/// nothing either.
 pub fn is_pr_create(command: &str) -> bool {
-    let words: Vec<&str> = command.split_whitespace().collect();
-    words.windows(3).any(|w| {
-        (w[0].ends_with("gh") && w[1] == "pr" && w[2] == "create")
-            || (w[0].ends_with("glab") && w[1] == "mr" && w[2] == "create")
+    let words = shell_words(command);
+    let is_bin = |w: &str, name: &str| w == name || w.ends_with(&format!("/{name}"));
+    words.windows(3).enumerate().any(|(at, w)| {
+        let create = (is_bin(&w[0], "gh") && w[1] == "pr" && w[2] == "create")
+            || (is_bin(&w[0], "glab") && w[1] == "mr" && w[2] == "create");
+        create
+            && !words[at + 3..]
+                .iter()
+                .take_while(|w| !matches!(w.as_str(), "&&" | "||" | ";" | "|"))
+                .any(|w| matches!(w.as_str(), "--help" | "-h" | "--dry-run"))
     })
 }
 
@@ -2591,6 +2601,16 @@ mod tests {
         assert!(pr_create_line("not json", &mut pending).is_empty());
         assert!(is_pr_create("/usr/local/bin/gh pr create -t x"));
         assert!(!is_pr_create("gh pr list"));
+        // T-895 review: the shell's words, never a quoted mention, and a
+        // `create` that opens nothing.
+        assert!(is_pr_create("cd /x && gh pr create --fill && gh pr view --help"));
+        assert!(is_pr_create("glab mr create --fill --yes"));
+        assert!(!is_pr_create("echo \"gh pr create\" >> notes.md"));
+        assert!(!is_pr_create("git commit -m 'run gh pr create later'"));
+        assert!(!is_pr_create("gh pr create --help"));
+        assert!(!is_pr_create("gh pr create -h"));
+        assert!(!is_pr_create("gh pr create --fill --dry-run"));
+        assert!(!is_pr_create("ugh pr create"));
         for i in 0..20 {
             remember(&mut pending, &format!("id{i}"));
         }

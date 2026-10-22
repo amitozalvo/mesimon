@@ -4375,9 +4375,7 @@ impl Daemon {
             .board
             .sessions
             .iter()
-            .filter(|s| {
-                self.codex_input_waiting(s) || (self.steering(s.id) && s.state.has_pane())
-            })
+            .filter(|s| self.codex_input_waiting(s) || (self.steering(s.id) && s.state.has_pane()))
             .map(|s| s.sid16())
             .collect();
         for sid in due {
@@ -15289,8 +15287,12 @@ impl Daemon {
         }
         // A ticket a read since its ask answered is owed nothing (T-895):
         // judged from the ask's own moment, never from a turn's end, since a
-        // Summary write or a `pr create` seen mid-turn owes one too.
-        self.forge.settle_owed();
+        // Summary write or a `pr create` seen mid-turn owes one too. Nor is
+        // one no read can name any more (its binding torn down, its notes
+        // emptied): it would be owed until a restart.
+        let unnamed: Vec<ulid::Ulid> =
+            self.forge.owed.keys().copied().filter(|t| !self.forge_names(*t)).collect();
+        self.forge.settle_owed(&unnamed);
         if self.forge.burst_inflight || self.forge.owed.is_empty() {
             return;
         }
@@ -15317,11 +15319,27 @@ impl Daemon {
         self.launch_forge_burst(&busy, crate::forge::busy_every());
     }
 
+    /// Whether a forge read names `ticket` (T-895): a worktree with a
+    /// branch, whose legs a query reads, or a pull request it named — a
+    /// `pr create` result or an act in the ledger, an address under its
+    /// `Summary` — read by that address. A ticket a read cannot name is
+    /// owed nothing: a checkout ticket whose `pr create` printed no URL
+    /// (it failed, or was a `--web`) would otherwise stay owed until a
+    /// restart, since `at_ms` is written only for a ticket a query names,
+    /// and every crown wake for it would wait `FORGE_WAIT_MS`.
+    fn forge_names(&self, ticket: ulid::Ulid) -> bool {
+        self.board.ticket(ticket).is_some()
+            && !self.tearing_down.contains(&ticket)
+            && (self.worktrees.get(&ticket).is_some_and(|b| !b.branch.is_empty())
+                || !self.named_prs(ticket).all.is_empty())
+    }
+
     /// The forge is asked about `ticket` now (T-895): owed from this
     /// moment, warm for the window, and the turn's end's road taken at once
-    /// rather than on the minute. Nothing on a board that merges into main.
+    /// rather than on the minute. Nothing on a board that merges into main,
+    /// and nothing for a ticket no read can name (`forge_names`).
     fn owe_forge_read(&mut self, ticket: ulid::Ulid) {
-        if !self.through_prs() || self.board.ticket(ticket).is_none() {
+        if !self.through_prs() || !self.forge_names(ticket) {
             return;
         }
         let now = now_ms();
@@ -15333,8 +15351,9 @@ impl Daemon {
     /// A session of `ticket` ran a `pr create` (T-895), seen on its
     /// `PostToolUse` mid-turn: the ledger reads the result's address on the
     /// next bucket (a checkout ticket binds by it alone, and the ledger's
-    /// landing asks again), and the forge is asked now (a worktree ticket's
-    /// PR binds by its branch at once).
+    /// landing asks then: until it does, nothing names the ticket and
+    /// nothing is owed), and the forge is asked now where a read names the
+    /// ticket (a worktree ticket's PR binds by its branch at once).
     fn pr_created(&mut self, ticket: ulid::Ulid) {
         if !self.through_prs() {
             return;

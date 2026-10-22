@@ -1743,18 +1743,24 @@ impl State {
 
     /// Drops the owed reads that are answered (T-895): a read begun since
     /// the ask landed (`at_ms`), or no forge reads this board, so nothing
-    /// could. What `answer` does as a read lands, judged again before a
-    /// burst is asked, since a ticket is owed from its own moment — a
-    /// Summary write, a `pr create` seen mid-turn, a look after a turn —
-    /// and never from its agent's last end of turn (`fresh`), which a
-    /// ticket with no agent or one mid-turn has at zero.
-    pub fn settle_owed(&mut self) {
+    /// could; and the `unnamed`, which no read can answer — a checkout
+    /// ticket whose `pr create` printed no address names nothing, and
+    /// `at_ms` is written only for a ticket a query names, so one owed
+    /// all the same would hold every crown wake for it `FORGE_WAIT_MS`
+    /// and price a query every tick until a restart. What `answer` does
+    /// as a read lands, judged again before a burst is asked, since a
+    /// ticket is owed from its own moment — a Summary write, a `pr create`
+    /// seen mid-turn, a look after a turn — and never from its agent's
+    /// last end of turn (`fresh`), which a ticket with no agent or one
+    /// mid-turn has at zero.
+    pub fn settle_owed(&mut self, unnamed: &[ulid::Ulid]) {
         if self.none() {
             self.owed.clear();
             return;
         }
         let at_ms = &self.at_ms;
-        self.owed.retain(|t, since| at_ms.get(t).is_none_or(|at| at < since));
+        self.owed
+            .retain(|t, since| !unnamed.contains(t) && at_ms.get(t).is_none_or(|at| at < since));
     }
 
     /// The forge's verdict on a ticket is current (T-739): no forge reads
@@ -3328,13 +3334,19 @@ mod tests {
         s.at_ms.insert(quiet, 30_000);
         s.remotes
             .insert(PathBuf::from("/r"), Some(Remote::parse("https://github.com/o/r").unwrap()));
-        s.settle_owed();
+        s.settle_owed(&[]);
         assert!(s.owed.contains_key(&warm), "a read begun before the ask answers nothing");
         assert!(!s.owed.contains_key(&quiet), "a read begun at the ask answers it");
         assert!(s.awaited(warm));
+        // A ticket no read can name (a checkout ticket with no address) is
+        // owed nothing, whatever it was owed.
+        s.settle_owed(&[warm]);
+        assert!(!s.owed.contains_key(&warm), "unnamed: dropped, never read");
+        assert!(!s.awaited(warm));
         // No forge reads this board: nothing is owed.
+        s.owed.insert(quiet, 40_000);
         s.remotes.insert(PathBuf::from("/r"), None);
-        s.settle_owed();
+        s.settle_owed(&[]);
         assert!(s.owed.is_empty());
 
         // The rate limit, named.

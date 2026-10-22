@@ -29612,6 +29612,36 @@ on #42 is still running. Ending my turn…"), the forge wake came 9 s after the 
 its turn on it said `F12 passed: #42`; the first run read the same and failed only `replies:done`,
 the new check having shadowed the worker's transcript rows (fixed in the same ticket).
 
+**Review (2026-10-22, independent, after the merge).** No storm and no writer fork; the
+rate-limit handling and the wire are fine. Two fixes, on the same branch. (1) **A stuck owed
+read**: `pr_created` owed `forge.owed[t]` on any Bash `PostToolUse` whose command passed
+`is_pr_create`, but `settle_owed` cleared only on `at_ms[t] >= since`, and `at_ms` is written only
+for a ticket a query names — a worktree with a branch, or a named PR. A checkout ticket whose
+`gh pr create` printed no URL (it failed, `--help`, `--web`, `--dry-run`, or the words sat inside an
+`echo` or a commit message) was never queried, so it stayed owed until a restart: `awaited(t)`
+held every crown wake for that worker `FORGE_WAIT_MS`, and the tick priced a `forge_query` every
+250 ms. Now `Daemon::forge_names` (a worktree with a branch, or an address in `named_prs`) gates
+`owe_forge_read`, and `queue_forge_burst` hands `settle_owed` the owed tickets no read names any
+more (a binding torn down, a Summary emptied); a checkout ticket's `pr create` owes nothing until
+the ledger reads its address, and the ledger's landing owes it then. `is_pr_create` reads the
+command through `shell_words`, so a quoted mention is one word and opens nothing, and a `create`
+whose own segment carries `--help`, `-h` or `--dry-run` opens nothing. (2) **The words
+over-promised**: `PRS_ABOUT` said the board "wakes the crown with each change", but `hear_forge`
+wakes only where the crown hears — started by the crown, `watch_ticket`ed, or an unattended PR
+under `crown_watches` — and a worker reading its own `prs_about` is never woken. Both texts now say
+whom the wake is for (an agent the crown started, a ticket it watches, one with no agent), that
+the session on the ticket itself is not woken, and that a repository whose last read failed or hit
+a rate limit is read again in about five minutes, not 15 s. **Steady-state cost**: with many
+agents ending turns, each turn's end and each `pr create` is one read of the ticket's repositories
+under the 10 s floor, so a busy repository is read up to about 6 times a minute where the minute's
+pass alone read it once; the warm window's reads sit inside the same floor (one per 15 s per
+warm repository), and 6 a minute is 360 calls an hour per repository against GitHub's 5,000. Rig
+F12 run again on the crown's new words: PASS. Tests: core `forge::an_act_and_its_result_name_the_pr_and_a_failed_act_names_none`
+gained the `is_pr_create` cases; `forge::a_warm_ticket_is_busy_for_the_window_and_an_owed_read_settles_on_a_read_since`
+the unnamed drop; `forge_e2e::a_summary_address_and_news_on_a_warm_pull_request_are_read_within_seconds`
+ends on a watched checkout ticket whose `pr create` printed no URL: no read asked, and its turn's
+wake comes within seconds, not held `FORGE_WAIT_MS` for a read nothing can make.
+
 ## The board's snapshot is asked off the UI thread (T-812, 2026-10-22, T-804's follow-up: "a slow daemon turn still freezes the board for the turn's length")
 
 **What froze.** `App::pump` → `App::refresh` → `fetch` waited for every snapshot on the loop's

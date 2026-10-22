@@ -129,13 +129,15 @@ pub const PERSONS_STEPS: &str = persons_steps!();
 /// would have told it. The cadence is the forge's (`forge::EVERY`,
 /// `BUSY_EVERY`, `WARM_MS`), said in round numbers so a change to one of
 /// them is not a change here.
-pub const PRS_ABOUT: &str = "The board reads these off the forge on its own, within about 15 \
-     seconds while a pipeline runs or the pull request just opened, changed or merged, and \
-     within about a minute otherwise, and wakes the crown with each change: a pipeline's pass \
-     or failure, a review, a conflict, a merge, a deployment. A watch command (gh pr checks \
-     --watch, glab ci status --live) or a sleep loop on a pull request keeps the session busy, \
-     which holds the merge train and the crown's wake; the way to wait for its news is to end \
-     the turn.";
+pub const PRS_ABOUT: &str = "The board reads these off the forge on its own: within about 15 \
+     seconds while a pipeline runs or the pull request just opened, changed or merged, within \
+     about a minute otherwise, and in about five minutes for a repository whose last read \
+     failed or hit a rate limit. Each change (a pipeline's pass or failure, a review, a \
+     conflict, a merge, a deployment) wakes the crown for a ticket it started, watches with \
+     watch_ticket or that has no agent; the session on the ticket itself is not woken and \
+     reads the change here. A watch command (gh pr checks --watch, glab ci status --live) or a \
+     sleep loop on a pull request keeps a session busy, which holds the merge train and the \
+     crown's wake; the way to wait for its news is to end the turn.";
 
 /// How the crown picks a tier (T-584), as one clause inside `CROWN_WAKES`.
 /// The judgement is the crown's: mesimon scores no ticket's difficulty, and
@@ -195,8 +197,10 @@ pub const CROWN_WAKES: &str = concat!(
      start_agent naming another tier then wakes it on that tier to go on; otherwise the \
      person resumes it with credits, another model or the limit's reset. Nothing needs \
      polling: the board reads the forge on its own, within about 15 seconds while a pull \
-     request's pipeline runs or the PR just opened, changed or merged, and within about a \
-     minute otherwise, and wakes this session with the news, so a pipeline's pass or failure, \
+     request's pipeline runs or the PR just opened, changed or merged, within about a \
+     minute otherwise, and in about five minutes for a repository whose last read failed or \
+     hit a rate limit, and wakes this session with the news for an agent it started, a \
+     ticket it watches or one with no agent, so a pipeline's pass or failure, \
      a review, a conflict and a merge each arrive as a prompt. A watch command (gh pr checks \
      --watch, glab ci status --live) or a sleep loop that waits for one of them keeps this \
      session busy, which holds the merge train and the wake itself; the way to wait for a \
@@ -2666,6 +2670,8 @@ mod tests {
             "Nothing needs polling: the board reads the forge on its own",
             "within about 15 seconds while a pull request's pipeline runs",
             "within about a minute otherwise",
+            "in about five minutes for a repository whose last read failed or hit a rate limit",
+            "for an agent it started, a ticket it watches or one with no agent",
             "a pipeline's pass or failure, a review, a conflict and a merge each arrive as a prompt",
             "gh pr checks --watch",
             "a sleep loop that waits for one of them keeps this session busy",
@@ -2678,7 +2684,12 @@ mod tests {
             "reads these off the forge on its own",
             "within about 15 seconds",
             "within about a minute otherwise",
-            "wakes the crown with each change",
+            "in about five minutes for a repository whose last read failed or hit a rate limit",
+            // The review's point: the wake is the crown's, for a ticket it
+            // started, watches or that has no agent; a worker reading its
+            // own view is not woken.
+            "wakes the crown for a ticket it started, watches with watch_ticket or that has no agent",
+            "the session on the ticket itself is not woken",
             "gh pr checks --watch",
             "sleep loop",
             "holds the merge train and the crown's wake",
@@ -2687,7 +2698,7 @@ mod tests {
             assert!(PRS_ABOUT.contains(words), "PRS_ABOUT names {words:?}");
         }
         assert_eq!(lint_tool_text(PRS_ABOUT), Ok(()));
-        assert!(PRS_ABOUT.len() < 700, "one paragraph beside the PRs: {}", PRS_ABOUT.len());
+        assert!(PRS_ABOUT.len() < 1000, "one paragraph beside the PRs: {}", PRS_ABOUT.len());
     }
 
     /// T-566: the crown is told where a worker's question is read and whose

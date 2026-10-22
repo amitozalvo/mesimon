@@ -4444,7 +4444,10 @@ fn calls(log: &Path, what: &str) -> usize {
 /// the snapshot within the burst's floor. The news warms the ticket: a
 /// review on the PR inside the window is read on the busy cadence and
 /// wakes the crown within seconds, and once the window closes the
-/// repository is read by nothing but the minute.
+/// repository is read by nothing but the minute. And a checkout ticket
+/// whose `pr create` printed no URL (the review's stuck read) is owed
+/// nothing: no read is asked, and the crown's wake for its turn is not
+/// held `FORGE_WAIT_MS` for a read nothing can make.
 #[test]
 fn a_summary_address_and_news_on_a_warm_pull_request_are_read_within_seconds() {
     let (stub_dir, path_var) = gh_stub("forge-warm");
@@ -4550,6 +4553,76 @@ fn a_summary_address_and_news_on_a_warm_pull_request_are_read_within_seconds() {
     std::thread::sleep(Duration::from_millis(3000));
     let idle = calls(&log, "pr view 43");
     assert_eq!(idle, 0, "past the warm window nothing but the minute reads it: {idle} views");
+
+    // ---- a checkout ticket's `pr create` that printed no URL owes nothing --
+    // (the review's stuck read): no read names the ticket, so none is owed,
+    // none is asked, and the crown's wake for its turn is not held for one.
+    let plain = match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "plain".into(),
+        workspace: None,
+        tier: None,
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("create: {other:?}"),
+    };
+    let kp = c.board().ticket(plain).unwrap().short_key.clone();
+    let ps = match c.request(Command::SpawnSession {
+        ticket: plain,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn: {other:?}"),
+    };
+    std::thread::sleep(Duration::from_millis(500));
+    turn(&mut c, &hook_sock, ps);
+    // The crown watches it (T-712), so its turns' ends are the crown's.
+    let seen = match c
+        .send(Principal::Agent { session: k.crown }, Command::AgentReadTicket { key: kp.clone() })
+    {
+        Response::AgentTicket { ticket } => ticket.seen,
+        other => panic!("read: {other:?}"),
+    };
+    let watched = c.send(
+        Principal::Agent { session: k.crown },
+        Command::AgentWatchTicket { key: kp.clone(), unwatch: false, seen },
+    );
+    assert!(!matches!(watched, Response::Err { .. }), "watch: {watched:?}");
+    hook_send(&hook_sock, &ps.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(ps, "running", |s| *s == SessionState::Running);
+    let _ = std::fs::remove_file(&log);
+    hook_send(
+        &hook_sock,
+        &ps.to_string(),
+        "PostToolUse",
+        r#"{"tool_name":"Bash","tool_input":{"command":"gh pr create --fill"},"tool_response":{"stdout":"","stderr":"pull request create failed: GraphQL: No commits between main and plain"}}"#,
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(calls(&log, "pr list"), 0, "nothing names the ticket: no read asked");
+    let ended = std::time::Instant::now();
+    hook_send(&hook_sock, &ps.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(ps, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    // The turn's wake: `delivered` (the checkout's commit is new to the
+    // crown) or `finished its turn`; either is the turn's, unheld.
+    let woken = format!("{kp} \"plain\" ");
+    wait_until(Duration::from_secs(20), "the watched turn's wake", || {
+        !lines_with(&woken).is_empty()
+    });
+    let waited = ended.elapsed();
+    assert!(
+        waited < Duration::from_secs(8),
+        "the wake waited {waited:?} for a read nothing can make"
+    );
+    let feed =
+        std::fs::read_to_string(h.paths.state_dir.join("activity.jsonl")).unwrap_or_default();
+    assert!(
+        !feed
+            .lines()
+            .any(|l| l.contains("crown_wake_deferred:forge") && l.contains(&plain.to_string())),
+        "no wake held for the forge on a ticket no read names"
+    );
     let _ = (&k.path, k.ws);
     let _ = c.request(Command::Shutdown);
     let _ = std::fs::remove_dir_all(&stub_dir);
