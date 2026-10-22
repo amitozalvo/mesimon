@@ -29746,3 +29746,73 @@ wire name or a test shape.
   `tier_e2e`), a spawn that submits or returns the ticket too (`mod_turns_e2e`,
   `mod_bridge_e2e`, `state_lab_e2e`), `mcp_e2e`'s `turn` (Stop first, then a prompt) and the
   local `turn`s inside `forge_e2e`'s tests. New tests use the common three.
+
+## Long briefs and asks arrive whole or are refused in words (T-896, 2026-10-22, "Long briefs and asks are cut silently at 4 KiB")
+
+**Asked.** The author found a crown's brief cut past about 3,000 characters. Every road that
+carries words to an agent capped them at 4,096 bytes with `cap_bytes` and told nobody: about
+3,000 characters once a text holds `—` and `→`. `get_ticket`'s description ended in a bare `…`
+that a crown read as the end; an `ask_agent`, an `ask_board`, a linked board's ask, a person's
+ask and a column template were cut the same way.
+
+**Measured, per road, before picking a number.**
+- **The mod's `submit`**: rig P1 carries a 10 KB brief whole as the first prompt, and B1 (this
+  ticket) an 8,719-character one, byte for byte. Nothing on our side caps it: the bridge is one
+  JSON line over `orch.sock` (1 MiB a line) and the mod reads lines with no limit. A `submit`
+  past 10 KB was not measured on Claude Code's side.
+- **The paste road** (Claude Code 2.1.308, Codex 0.163, a private tmux, `load-buffer -` then
+  `paste-buffer -p`, no Enter): a 32,660-byte text with 900 newlines became Claude's
+  `[Pasted text #1 +900 lines]` chip, every line counted, and Codex's
+  `[Pasted Content 29060 chars]`, every character. `brief_e2e` pastes 12 KiB through the same
+  tmux road on both test roads.
+- **Remote Control**: a letter rides a 256 KiB control frame (`mesimon-team::control::MAX_BYTES`);
+  a linked board's ask rides `orch.sock`'s 1 MiB line.
+
+**Built.**
+- **One prompt cap, the note's: `PROMPT_MAX_BYTES = NOTE_MAX_BYTES` (32 KiB).** Every road above
+  carries it, and words past it belong in a note an ask names. `sanitize_prompt` now returns
+  `Result<Option<String>, String>`: past the cap it is `Err` with the count and the limit
+  (`command::too_long_words`), never a cut. The `Result` is the enforcement, since no caller
+  can drop the refusal the way the old callers could not see the cut. The crown's `ask_agent`
+  adds where the rest goes ("words past it are a note: write_note holds them"), a crown's
+  `ask_board` the same, and Mesophon's two prompt roads and its start answer with the daemon's
+  words in place of "prompt is too long". Mesophon's own check and the TUI's fields read the
+  same constant, so a field never holds what the daemon refuses.
+- **`get_ticket`'s description: whole up to `mcp::DESCRIPTION_MAX_BYTES` (16 KiB), and past it
+  a head that says so.** 16 KiB is the plan's bound beside it (`needs_you.plan`), so a routine
+  read never carries more than a plan does. Past it, `description` is the longest head that
+  fits ending in `…`, and the new `description_cut` says how long the whole is, how much is
+  here, and that `read_note` with the note's id returns all of it (`mcp::describe`). The words
+  are on the field itself, so a model that skipped the tool text still finds the rest. The
+  tool's own text is at its 820-byte cap and did not change.
+- **The brief a launch sends was never capped, and still is not.** `road::launch_words` is the
+  one composer for the paste, the mod's `submit`, a wake and Codex's box, bounded by the note
+  cap alone.
+- **A template past the cap is never sent cut mid-sentence.** `sanitize_template` refuses it in
+  words at the daemon, the Settings field and the TUI's fake. One that reaches the board anyway
+  (a hand-edited `columns.toml`) is kept but stood down: `PromptSet::text` sends mesimon's own
+  words, the Settings row reads `over the limit` with the count, and `doctor`'s `agent prompts`
+  line warns `N over the limit`.
+
+**Refuted.** Keeping 4 KiB with a "cut" marker on prompts: an agent reading a marker cannot ask
+for the rest of an ask, and a sender told the count can split or write a note. Splitting a
+long ask into several turns: two turns are not one prompt, and a turn edge between halves
+changes what the agent does. Carrying the whole description in `get_ticket` up to the note
+cap: every routine read would carry up to 32 KiB, and the head plus `read_note` costs one
+call only on the rare long brief.
+
+**Tests.** `command::a_long_ask_arrives_whole_and_a_longer_one_is_refused_in_words` (10 KiB whole,
+32 KiB + 1 refused with count and limit, bytes not characters, the scrub before the count);
+`prompts::a_long_template_arrives_whole_and_a_longer_one_is_refused_or_stood_down`;
+`mcp::a_long_description_rides_get_ticket_whole_and_a_longer_one_says_it_was_cut`;
+`road::a_long_brief_is_composed_whole_under_the_title`.
+`brief_e2e::a_long_description_reaches_the_agent_whole_as_its_first_prompt` (a 12 KiB brief with
+its fact last: every line reaches the stub in order under the title on the hooks road and the
+mod's; `get_ticket` carries it whole; a 20 KiB one is a 16 KiB head with `description_cut`
+naming the note, and `read_note` returns it whole).
+`crown_e2e::the_crown_sends_now_into_a_working_turn` (a 32 KiB + 1 ask is refused naming
+`write_note` and queues nothing; a 10 KiB ask lands whole). Rig B1 (`long_brief = 8000` with a
+`tail`, a new pair of keys in `tests.toml`): the worker replies with the code word in the last
+paragraph, and the crown, which never saw the brief, finds it with `get_ticket`. On the real
+Sonnet, 2026-10-22, Claude Code 2.1.308: PASS in 34 s, first prompt 8,719 characters byte for
+byte, both replies `tamarind`.
