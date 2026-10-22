@@ -289,7 +289,7 @@ impl App {
                     Some(crate::peek::sanitize(&text)),
                 );
                 self.status = if row.done { "unticked" } else { "ticked" }.into();
-                self.refresh()
+                self.refresh_soon()
             }
             Response::Err { message } => {
                 self.status = message;

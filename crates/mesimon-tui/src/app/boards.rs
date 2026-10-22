@@ -172,7 +172,7 @@ impl App {
                 match self.client.request(Command::UnlinkBoard { path: l.path })? {
                     Response::Err { message } => self.status = message,
                     _ => {
-                        self.refresh()?;
+                        self.refresh_soon()?;
                         self.status = format!("{} unlinked ∙ for both boards", l.name);
                     }
                 }

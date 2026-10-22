@@ -320,6 +320,13 @@ event granularity, and every snapshot field rides one `Snapshot` struct through 
 **That round-trip is the board's only one** (T-686): the notifier and the keep-awake monitor read
 `App.board` (an `Arc<Board>`, handed by `App::hand_board` after every absorb) and dial a snapshot
 of their own only while the board is handed away. A new observer thread takes the hand-off too.
+**And it never waits on the UI thread** (T-812): a push, and nearly every mutating key, asks
+`App::refresh_soon`, which sends `Snapshot` on the client's second connection (the lane,
+`Client::snapshot_detached`) and lands the answer in `pump` (`poll_snapshot`); one ask is out at
+a time, and whatever wanted the board meanwhile becomes one follow-up. `App::refresh` is the
+waited-for fetch, for a key whose next line reads the fresh board (the `select_ticket` of a card
+just made); it lands the ask in flight first, so no board lands after a newer one. A new mutating
+key calls `refresh_soon` (or `send`) unless the line after it reads the board.
 
 **Paths (D33b).** Per repo, keyed by `proj16` = sha256(canonical repo path)[..16]: sockets under
 `/tmp/mesimon-<uid>/<proj16>/` (sun_path budget — a new socket must be added to the length test

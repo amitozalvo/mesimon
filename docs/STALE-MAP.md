@@ -29611,3 +29611,79 @@ pipeline, ends its turn and reports on the board's `pipeline passed #42` wake. O
 on #42 is still running. Ending my turn…"), the forge wake came 9 s after the stub's pass, and
 its turn on it said `F12 passed: #42`; the first run read the same and failed only `replies:done`,
 the new check having shadowed the worker's transcript rows (fixed in the same ticket).
+
+## The board's snapshot is asked off the UI thread (T-812, 2026-10-22, T-804's follow-up: "a slow daemon turn still freezes the board for the turn's length")
+
+**What froze.** `App::pump` → `App::refresh` → `fetch` waited for every snapshot on the loop's
+own thread: after each `BoardChanged` push (~14 a minute with one agent working) and after
+nearly every mutating key (69 `self.refresh()` callers in `app.rs`, 8 more in its submodules).
+T-804 took the parked records off the wire and T-842 the archived tickets, so the bytes were
+no longer the cost; the daemon's writer turn was. A `refresh_panes` tick, a git call or build
+load on the machine held the writer, the snapshot queued behind it, and the keys and the
+spinner froze for the turn's length — the journal logs ~200 ticks over 1 s in a week, all
+`refresh_panes`. T-856 had already taken the *reconnect* off this thread; the request itself
+stayed on it.
+
+**Applied.**
+- **The lane.** `Transport::snapshot_detached` answers `Command::Snapshot` through a channel.
+  The real client keeps a second connection for it (`Client::lane`, under a mutex, opened by
+  `open_lane`: the observer's road with no `Subscribe` — a lane never reads a push, and a
+  subscriber nobody drains grows its event channel by one entry per push for the board's
+  life) and asks on a thread per call; a kept connection that fails outright was opened on a
+  daemon that is gone (a `U` reload, a crash and a respawn) and is dialled once more, a
+  timeout is not retried (the daemon is up and slow; a second wait would double it), and
+  any failure drops the lane so the next ask dials. The merge's `request_detached` (T-431)
+  stays a fresh connection per call: once a day, not fourteen a minute. The parse of the
+  reply is the lane's reader thread's, as the board's always was its own.
+- **One ask out, the rest coalesced.** `App::refresh_soon` drains the pushes already here
+  (each was written after the change it names, and the daemon reads this ask after both),
+  sends on the lane when nothing is out, and otherwise sets `snapshot_wanted`;
+  `App::poll_snapshot` in `pump` lands the answer — `absorb` and what follows it, in
+  `land_snapshot`, the one road every board takes — and asks once more when something
+  wanted it meanwhile, unless a merge runs (its reply asks, as before). Pushes during one
+  ask become one follow-up; a key and three pushes in flight are one. `refresh_soon` lands
+  at once when the answer is already in, which a fake's always is, so the TestBackend
+  tests behave as they did; only the held-answer fakes see the asynchrony.
+- **Waited for, where the next line reads the fresh board.** `App::refresh` stays the
+  synchronous fetch, on the board's own connection, and it lands the ask in flight first
+  (`settle_snapshot`), so no board ever lands after a newer one; the drawer's `RescanExternal`,
+  which answers with the board on this thread, settles first too. The callers kept on it:
+  a duplicated or composed ticket (`select_ticket` of the id just made), a column named or
+  renamed and `ReorderColumn` (the cursor follows the fresh column list), the tag sheet's
+  delete, move and naming (its cursor over the registry), a note saved (the description
+  word reads the note's rev), a terminal or an external conversation adopted (a rail index,
+  a title), `SetWorkspace` (its sentence reads the answer), a spawn or a resume before a
+  focus (the attach needs the record), the tiers editor's rows, a board linked (its name),
+  and the practice board's first refresh. `send`/`send_on` ask; `send_now` waits. Everything
+  else asks: the push road, the reconnect cadence, every Settings toggle, snooze, archive,
+  restore, the asks and their queue, sleep and wake, the merge dialog's reply, the three
+  returns from a handover, and the card move — `drop_ghost` no longer sets the cursor by
+  index on a board it has not seen; the card is drawn where it was, the cursor on it, and
+  `absorb`'s `follow_ticket` takes the cursor to where the daemon put it.
+- **The reconnect cadence asks nothing on this thread.** `Transport::redial` brings the board's
+  own connection back with no request riding it (`Ok(true)` up, `Ok(false)` while T-856's
+  reopen dials, `Err` on a failed attempt); up, the lane asks, and the landing is what says
+  `daemon back`. Before, the cadence's `refresh` blocked for one snapshot on the connection
+  it had just reopened, and for `RESPONSE_WAIT` on a connection that was up and slow.
+
+**Measured, so the archived cut is not done.** On a 677-ticket board of the author's shape
+(648 archived, five notes each) the snapshot is 42 KB: T-842 already leaves the archived
+tickets off the wire, and `ArchivedTickets` is the on-demand road the ticket proposed. What the
+UI thread keeps of a snapshot is `absorb`, 325 µs debug and 84 µs release on that board (the
+parse, now the lane's thread's, 647 µs and 130 µs). Nothing left to cut.
+
+**Not done.** The ticket page's small reads — `poll_notes`, `poll_summaries`, `poll_held`,
+`poll_archive`, `poll_shell_tail` — still ride the board's own connection synchronously from
+`pump`, asked once per note revision or once per screen and again after each snapshot for an
+archived ticket on screen; on a slow turn each is a wait of its own. The lane and
+`poll_snapshot` are the pattern.
+
+**Tests.** `app::a_snapshot_in_flight_blocks_no_key_and_no_frame` (a held answer: keys
+resolve, frames draw, a move and three pushes become one follow-up, the cursor rides the
+move once the board lands), `app::a_waited_refresh_lands_the_snapshot_in_flight_first`,
+`app::the_reconnect_cadence_asks_the_lane_once_the_dial_lands`,
+`client::the_snapshot_lane_keeps_one_connection_and_never_subscribes` (a listening socket at
+a scratch repo's `orch.sock`: one Hello for two asks, none for Subscribe, one more dial after
+a hang-up). **Owed:** a CHANGELOG line at the next bump — **Changed:** the board no longer
+freezes while the daemon is slow to answer a refresh; keys and the spinner keep going and the
+board lands when it comes.

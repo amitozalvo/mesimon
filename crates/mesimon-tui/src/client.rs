@@ -8,6 +8,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -29,6 +30,23 @@ pub trait Transport {
         let (tx, rx) = channel();
         let _ = tx.send(self.request(command));
         rx
+    }
+    /// The board's snapshot, answered through a channel (T-812): the real
+    /// client asks it on a second connection it keeps for snapshots, from
+    /// a thread of its own, so the loop that draws never waits out the
+    /// writer thread's turn. The default is the synchronous request with
+    /// its reply already in the channel — what the fakes get.
+    fn snapshot_detached(&mut self) -> Receiver<Result<Response>> {
+        let (tx, rx) = channel();
+        let _ = tx.send(self.request(Command::Snapshot));
+        rx
+    }
+    /// Bring the board's connection back when it is down, with no request
+    /// riding it (T-812): `Ok(true)` when it is up, `Ok(false)` while the
+    /// reopen is still dialling on its thread (T-856), `Err` when that
+    /// attempt failed — the next call starts another. Fakes are up.
+    fn redial(&mut self) -> Result<bool> {
+        Ok(true)
     }
     /// Non-blocking: true when an async board-changed event has arrived.
     fn poll_event(&mut self) -> bool;
@@ -70,6 +88,11 @@ pub struct Client {
     /// and the loop keeps drawing. `request` answers `Reopening` meanwhile
     /// and takes the connection once it lands.
     reopening: Option<Receiver<Reopened>>,
+    /// The snapshot lane (T-812): a second connection, kept from one ask to
+    /// the next and never subscribed, on which `snapshot_detached` asks for
+    /// the board from a thread of its own. Shared under a mutex because
+    /// each ask is its own thread; the app sends one at a time.
+    lane: Arc<Mutex<Option<Conn>>>,
 }
 
 /// What a reopen thread hands back: the connection and any skew notice.
@@ -253,6 +276,37 @@ impl Transport for Client {
         rx
     }
 
+    /// The snapshot, on the lane (T-812). The thread takes the lane, dials
+    /// it when there is none, asks, and dies with the reply; a snapshot is
+    /// ~14 a minute with one agent working, so the connection is kept
+    /// rather than dialled per ask as the merge's is. The lane is opened by
+    /// the observer's road: no spawn, no lock wait — a daemon that is gone
+    /// is the board's own connection's to bring back (`redial`).
+    fn snapshot_detached(&mut self) -> Receiver<Result<Response>> {
+        let (tx, rx) = channel();
+        let repo_root = self.repo_root.clone();
+        let lane = Arc::clone(&self.lane);
+        std::thread::spawn(move || {
+            let mut lane = lane.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let _ = tx.send(ask_lane(&mut lane, &repo_root));
+        });
+        rx
+    }
+
+    fn redial(&mut self) -> Result<bool> {
+        if self.conn.is_some() {
+            return Ok(true);
+        }
+        match self.reopened() {
+            Ok(Some(_)) => Ok(true),
+            Ok(None) => Ok(false),
+            Err(e) => {
+                self.legacy_daemon = !self.observer && upgradeable(&e);
+                Err(e)
+            }
+        }
+    }
+
     fn poll_event(&mut self) -> bool {
         match self.conn.as_mut().map(|c| c.events.try_recv()) {
             Some(Ok(())) => true,
@@ -348,6 +402,7 @@ impl Client {
                 notice,
                 legacy_daemon: false,
                 reopening: None,
+                lane: Default::default(),
             }),
             Err(why) => Ok(Client {
                 repo_root: repo_root.to_path_buf(),
@@ -356,6 +411,7 @@ impl Client {
                 observer: false,
                 legacy_daemon: upgradeable(&why),
                 reopening: None,
+                lane: Default::default(),
                 notice: Some(if upgradeable(&why) {
                     Notice::new(
                         "protocol_mismatch",
@@ -392,6 +448,7 @@ impl Client {
             notice: None,
             legacy_daemon: false,
             reopening: None,
+            lane: Default::default(),
         })
     }
 }
@@ -638,6 +695,43 @@ fn open(repo_root: &Path) -> Result<Conn> {
     let sock = paths.orch_sock();
     let stream = connect_or_spawn(repo_root, &sock, Duration::from_secs(5))?;
     handshake(stream)
+}
+
+/// The snapshot lane's connection (T-812): `open_existing` without the
+/// `Subscribe`. A lane never reads a push — the board's own connection
+/// does — and a subscriber nobody drains would grow its event channel by
+/// one entry per push for the board's whole life.
+fn open_lane(repo_root: &Path) -> Result<Conn> {
+    let paths = Paths::for_repo(repo_root)?;
+    let sock = paths.orch_sock();
+    let stream =
+        UnixStream::connect(&sock).with_context(|| format!("no daemon on {}", sock.display()))?;
+    hello(stream, PROTOCOL_VERSION)
+}
+
+/// One snapshot on the lane: the kept connection, or a fresh one when there
+/// is none. A kept connection that fails outright was opened on a daemon
+/// that is gone (a `U` reload, a crash and a respawn): one fresh dial asks
+/// the one that is there now, and a snapshot is a read, so asking twice
+/// is safe. A timeout is not that — the daemon is up and slow, and a second
+/// wait would double it. Any failure drops the lane, so the next ask dials.
+fn ask_lane(lane: &mut Option<Conn>, repo_root: &Path) -> Result<Response> {
+    let kept = lane.is_some();
+    let first = match lane.as_mut() {
+        Some(c) => c.request(Command::Snapshot),
+        None => open_lane(repo_root).and_then(|c| lane.insert(c).request(Command::Snapshot)),
+    };
+    let reply = match first {
+        Err(e) if kept && outage(&e) != Outage::Slow => {
+            *lane = None;
+            open_lane(repo_root).and_then(|c| lane.insert(c).request(Command::Snapshot))
+        }
+        other => other,
+    };
+    if reply.is_err() {
+        *lane = None;
+    }
+    reply
 }
 
 /// Wire up the reader thread, say Hello, subscribe — and record what the
@@ -1035,5 +1129,105 @@ mod tests {
         let off = build_skew(&d, stamp(2));
         unsafe { std::env::remove_var("MESIMON_NO_DAEMON_RESTART") };
         assert!(!off);
+    }
+
+    /// The snapshot lane (T-812) dials once and keeps the connection across
+    /// asks, never subscribes, and when the daemon behind it hangs up (a
+    /// reload) one fresh dial answers the next ask. A listening socket at a
+    /// scratch repo's own `orch.sock` plays the daemon: no daemon, tmux or
+    /// user repository involved.
+    #[test]
+    fn the_snapshot_lane_keeps_one_connection_and_never_subscribes() {
+        use std::os::unix::net::UnixListener;
+        struct Scratch(PathBuf, PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.1);
+                let _ = std::fs::remove_dir(self.1.parent().unwrap());
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let repo = std::env::temp_dir().join(format!("msmn-lane-{}", ulid::Ulid::new()));
+        std::fs::create_dir_all(&repo).unwrap();
+        let paths = Paths::for_repo(&repo).unwrap();
+        std::fs::create_dir_all(&paths.rt_dir).unwrap();
+        let scratch = Scratch(repo.clone(), paths.orch_sock());
+        let listener = UnixListener::bind(&scratch.1).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let peer = std::thread::spawn(move || {
+            let accept = || {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            stream.set_nonblocking(false).unwrap();
+                            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                            return BufReader::new(stream);
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "lane connection missing");
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(e) => panic!("accept: {e}"),
+                    }
+                }
+            };
+            let hello = Response::Hello {
+                version: PROTOCOL_VERSION,
+                daemon_pid: 123,
+                build: "0.0.1".into(),
+                exe_stamp: None,
+                detached: false,
+                repo_root: String::new(),
+                crown: None,
+            };
+            let mut hellos = 0;
+            // The first connection: one Hello, then two snapshots, then the
+            // daemon hangs up under it.
+            let mut reader = accept();
+            assert!(matches!(read_command(&mut reader), Command::Hello { .. }));
+            hellos += 1;
+            reply(&mut reader, hello.clone());
+            for _ in 0..2 {
+                assert!(matches!(read_command(&mut reader), Command::Snapshot), "no Subscribe");
+                reply(&mut reader, Response::Ok);
+            }
+            drop(reader);
+            // The second: the ask after the hang-up dials again, once.
+            let mut reader = accept();
+            assert!(matches!(read_command(&mut reader), Command::Hello { .. }));
+            hellos += 1;
+            reply(&mut reader, hello);
+            assert!(matches!(read_command(&mut reader), Command::Snapshot));
+            reply(&mut reader, Response::Ok);
+            hellos
+        });
+        let mut client = Client {
+            repo_root: repo,
+            conn: None,
+            restart_suppressed: true,
+            observer: true,
+            notice: None,
+            legacy_daemon: false,
+            reopening: None,
+            lane: Default::default(),
+        };
+        let wait = Duration::from_secs(5);
+        for _ in 0..2 {
+            let got = client.snapshot_detached().recv_timeout(wait).unwrap().unwrap();
+            assert!(matches!(got, Response::Ok), "{got:?}");
+        }
+        // The peer closed the first connection; the lane finds out on this
+        // ask and dials once more, with the reply still an answer.
+        let deadline = Instant::now() + wait;
+        let got = loop {
+            match client.snapshot_detached().recv_timeout(wait).unwrap() {
+                Ok(r) => break r,
+                Err(e) => assert!(Instant::now() < deadline, "lane never came back: {e}"),
+            }
+        };
+        assert!(matches!(got, Response::Ok), "{got:?}");
+        assert_eq!(peer.join().unwrap(), 2, "one dial per daemon, none per ask");
+        drop(scratch);
     }
 }

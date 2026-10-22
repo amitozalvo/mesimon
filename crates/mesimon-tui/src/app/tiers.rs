@@ -109,7 +109,7 @@ impl App {
         match self.req(Command::SetTicketTier { id, tier: Some(next.id.clone()) }) {
             Response::Err { message } => self.status = message,
             _ => {
-                self.refresh()?;
+                self.refresh_soon()?;
                 self.status = words;
                 self.tier_flash = Some((id, Instant::now()));
             }
