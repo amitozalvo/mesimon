@@ -89,6 +89,9 @@
 #   siblings   more tickets the test files beside its own ({key2}, {key3}
 #              in a step), each with the same brief and every check run on
 #              each.
+#   long_brief `true` appends 10 KB of numbered filler to the brief (P1); a
+#              number appends that many bytes (B1), and `tail` is the
+#              paragraph written after the filler, so a fact can sit last.
 #   rig steps  W1 adds `person_start` (the person starts the test's agent
 #              in its workspace; the step ends at its first turn's end).
 #              The turn roads add: `prompt` (the person's words to the
@@ -309,6 +312,21 @@ long_brief = true
 
   [[test.steps]]
   crown = "P1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: P1 started. When the board wakes you for {key}, end your turn with the single line: P1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
+id = "B1"
+title = "B1 · the one fact in the last paragraph of an 8 KiB brief reaches the worker: reply with the code word named in the last paragraph of this ticket's description, and end your turn"
+workspace = "worktree"
+brief = """The code word this test asks for is named in the LAST paragraph of this description, after the filler. Call get_ticket first, as your system prompt says, and take the description from its answer: if the answer says the description was cut, read_note on the first note returns the whole of it. Everything between here and the last paragraph is filler; do not act on it. Read no file and run no command."""
+expect = "the crown starts the worker; its first prompt is the title, a blank line and the 8 KiB brief whole; get_ticket carries the whole description (under its 16 KiB cap, no description_cut); the worker replies with the code word from the last paragraph, tamarind; then the crown, which never saw the brief, reads it with get_ticket and names the same word."
+checks = ["road:mod", "started_by_crown", "first_prompt_exact", "words:working,idle", "reply:tamarind", "crown_line:B1 word:tamarind"]
+long_brief = 8000
+tail = "The code word is tamarind. Reply with it alone and end your turn."
+
+  [[test.steps]]
+  crown = "B1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: B1 started. When the board wakes you for {key}, call get_ticket with key {key}, find the code word named in the LAST paragraph of its description (if get_ticket says the description was cut, read_note on its first note has the whole of it), and end your turn with the single line: B1 word: <that code word>."
   until = { stops = 1, state = "idle" }
   wake = true
 

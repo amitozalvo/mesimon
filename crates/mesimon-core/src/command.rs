@@ -275,7 +275,8 @@ pub enum Command {
     /// README promise 3 survives literally: `sanitize_prompt` only ever
     /// REMOVES characters, and nothing — no prefix, no marker, no trailing
     /// note — is appended on the way to the pane. The text Claude reads is a
-    /// subsequence of the text the user typed.
+    /// subsequence of the text the user typed; past `PROMPT_MAX_BYTES` it is
+    /// refused in words, never cut (T-896).
     PromptSession {
         ticket: ulid::Ulid,
         text: String,
@@ -363,7 +364,7 @@ pub enum Command {
     /// would press Enter on a turn nobody wrote.
     ///
     /// Promise 3 holds as it does there: `sanitize_prompt` runs once, only
-    /// ever removes, and nothing is appended per ticket.
+    /// ever removes or refuses, and nothing is appended per ticket.
     PromptColumn {
         column: String,
         text: String,
@@ -776,9 +777,10 @@ pub enum Command {
     /// wake (T-414). `None`
     /// puts mesimon's own words back — so does text that sanitizes to
     /// nothing, which is what an emptied field sends. The daemon sanitizes
-    /// what it stores (`sanitize_prompt`, the same boundary a typed ask
-    /// crosses), so a template is one line and the stored bytes are the
-    /// bytes the tty will receive. Per repo, persisted in `columns.toml`.
+    /// what it stores (`prompts::sanitize_template`, the ask sanitizer's
+    /// one-line twin), so a template is one line and the stored bytes are
+    /// the bytes the tty will receive; one past `PROMPT_MAX_BYTES` is
+    /// refused in words (T-896). Per repo, persisted in `columns.toml`.
     /// Local only — an agent that could rewrite the sentence that starts its
     /// own next turn would be writing its own instructions.
     SetAgentPrompt {
@@ -1390,12 +1392,29 @@ impl DiffTarget {
     }
 }
 
-/// The ceiling on one `PromptSession`. A prompt is a sentence or a paragraph
-/// typed into a card-width field, not a document: what the board's Shift+Enter
-/// is for is "ask the agent a thing while looking at the board", and anything
-/// longer belongs in the pane where it can be edited. The bound is here rather
-/// than on the field so a client cannot lift it.
-pub const PROMPT_MAX_BYTES: usize = 4096;
+/// The ceiling on one prompt: a person's ask, the crown's `ask_agent` and
+/// `ask_board`, a linked board's ask, a phone's letter. The note cap
+/// (T-896): a prompt is at most what one note holds, and words past it are
+/// a note (`write_note`) and an ask that names it. 4 KiB until then, and
+/// cut without a word; every road measured carries this much — the mod's
+/// `submit` (a 10 KB brief whole, rig P1), tmux's paste buffer into Claude
+/// Code's `[Pasted text]` chip and Codex's box, Remote Control's 256 KiB
+/// control frame, and the 1 MiB line of `orch.sock` a board's ask to
+/// another rides. The bound is here rather than on the field so a client
+/// cannot lift it, and past it [`sanitize_prompt`] REFUSES in words, never
+/// cuts: a sender told the count can split or write a note; one whose
+/// words were cut never knows.
+pub const PROMPT_MAX_BYTES: usize = crate::board::NOTE_MAX_BYTES;
+
+/// Why text past [`PROMPT_MAX_BYTES`] is refused (T-896): what it is (`prompt`,
+/// `template`), the count and the limit, so the sender can act on it. The
+/// same shape as a note's refusal (`board::note_too_long`).
+pub fn too_long_words(what: &str, bytes: usize) -> String {
+    format!(
+        "{what} is {bytes} bytes; the limit is {PROMPT_MAX_BYTES} bytes ({} KiB)",
+        PROMPT_MAX_BYTES / 1024
+    )
+}
 
 /// Why a send into a pane is refused while its agent waits on a person
 /// (T-420): a paste there lands in the dialog as its answer.
@@ -1413,12 +1432,19 @@ pub const ANSWER_IN_PANE_FIRST: &str = "the agent is waiting on you ∙ answer i
 /// spared — inside Claude's input box Tab is a completion, not whitespace.
 /// A line break STAYS (T-380, the ask editor): inside a bracketed paste a
 /// `\n` is a line of the same prompt, in claude's box and codex's alike, and
-/// the Enter that submits is sent separately. The text is bounded, never
-/// split mid-character, and blank input is `None` so an empty paste can never
-/// press Enter on a turn the user did not write.
-pub fn sanitize_prompt(raw: &str) -> Option<String> {
-    use crate::text::{cap_bytes, nonblank, scrub_lines};
-    nonblank(cap_bytes(&scrub_lines(raw), PROMPT_MAX_BYTES))
+/// the Enter that submits is sent separately. Blank input is `Ok(None)` so
+/// an empty paste can never press Enter on a turn the user did not write,
+/// and text past [`PROMPT_MAX_BYTES`] once scrubbed is `Err` in words
+/// ([`too_long_words`]), never cut (T-896): a cap that cut dropped a
+/// brief's tail with no word to anyone. The `Result` is the whole
+/// enforcement — no caller can forget the refusal, as one forgot the cap.
+pub fn sanitize_prompt(raw: &str) -> Result<Option<String>, String> {
+    use crate::text::{nonblank, scrub_lines};
+    let clean = scrub_lines(raw);
+    if clean.len() > PROMPT_MAX_BYTES {
+        return Err(too_long_words("prompt", clean.len()));
+    }
+    Ok(nonblank(&clean))
 }
 
 /// What the daemon must know about a command before running it: the D32c
@@ -2333,10 +2359,18 @@ pub struct AgentTicketView {
     pub allowed_tags: Vec<AgentTagView>,
     #[serde(default)]
     pub board_version: u64,
-    /// The first note's body — the ticket's description — capped; the whole
-    /// of it comes from `read_note`.
+    /// The first note's body — the ticket's description — whole up to
+    /// `mcp::DESCRIPTION_MAX_BYTES`, and past it its head ending in `…`,
+    /// with `description_cut` saying so.
     #[serde(default)]
     pub description: Option<String>,
+    /// That the description above is a head and not the whole (T-896): how
+    /// long the whole is, how much of it is here, and that `read_note` on
+    /// the note named returns all of it. Absent while the description
+    /// arrived whole — the common case — and from an older daemon, whose
+    /// cut said nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description_cut: Option<String>,
     /// Every note, in order, so `read_note`/`write_note` have an id to name.
     #[serde(default)]
     pub notes: Vec<AgentNoteView>,
@@ -3784,6 +3818,7 @@ mod tests {
             allowed_tags: vec![],
             board_version: 1,
             description: None,
+            description_cut: None,
             notes: vec![],
             summary: None,
             crowned: false,
@@ -3887,7 +3922,7 @@ mod tests {
             "tabs\there",
             &"é".repeat(9000),
         ] {
-            let Some(out) = sanitize_prompt(raw) else { continue };
+            let Ok(Some(out)) = sanitize_prompt(raw) else { continue };
             let mut src = raw.chars();
             for c in out.chars() {
                 assert!(
@@ -3899,24 +3934,48 @@ mod tests {
         }
     }
 
+    /// The ask road (T-896): a 10 KiB ask arrives whole, and one past the
+    /// note cap is refused in words that say the count and the limit, never
+    /// cut. Multi-byte text is counted in bytes, as the field counts it.
+    #[test]
+    fn a_long_ask_arrives_whole_and_a_longer_one_is_refused_in_words() {
+        assert_eq!(PROMPT_MAX_BYTES, crate::board::NOTE_MAX_BYTES, "a prompt is at most a note");
+        let ten_kib =
+            format!("do this\n\n{}\n\nthe fact is in the last paragraph", "x".repeat(10 * 1024));
+        assert_eq!(sanitize_prompt(&ten_kib), Ok(Some(ten_kib.clone())));
+        let exact = "y".repeat(PROMPT_MAX_BYTES);
+        assert_eq!(sanitize_prompt(&exact), Ok(Some(exact.clone())));
+        let over = "z".repeat(PROMPT_MAX_BYTES + 1);
+        let why = sanitize_prompt(&over).expect_err("refused");
+        assert!(why.contains(&format!("{} bytes", PROMPT_MAX_BYTES + 1)), "{why}");
+        assert!(why.contains(&format!("limit is {PROMPT_MAX_BYTES} bytes (32 KiB)")), "{why}");
+        // Bytes, not characters: the field and the daemon count the same.
+        let hebrew = "ש".repeat(PROMPT_MAX_BYTES / 2 + 1);
+        let why = sanitize_prompt(&hebrew).expect_err("refused");
+        assert!(why.contains(&format!("{} bytes", PROMPT_MAX_BYTES + 2)), "{why}");
+        // Measured after the scrub: a control character counts for nothing.
+        let padded = format!("{}\r", "w".repeat(PROMPT_MAX_BYTES));
+        assert!(sanitize_prompt(&padded).is_ok(), "the CR goes before the count");
+    }
+
     /// The three characters that would turn one prompt into a different
     /// event: CR submits early, ESC is read as a key, Tab completes. A line
     /// break is content (T-380): it rides the bracketed paste as a line of
     /// the same prompt, and `"\r\n"` is one of them.
     #[test]
     fn sanitize_prompt_drops_what_a_tty_would_act_on() {
-        assert_eq!(sanitize_prompt("a\rb"), Some("ab".into()));
-        assert_eq!(sanitize_prompt("a\nb"), Some("a\nb".into()));
-        assert_eq!(sanitize_prompt("a\r\nb\n\nc"), Some("a\nb\n\nc".into()));
-        assert_eq!(sanitize_prompt("a\u{1b}b"), Some("ab".into()));
-        assert_eq!(sanitize_prompt("a\tb"), Some("ab".into()));
+        assert_eq!(sanitize_prompt("a\rb"), Ok(Some("ab".into())));
+        assert_eq!(sanitize_prompt("a\nb"), Ok(Some("a\nb".into())));
+        assert_eq!(sanitize_prompt("a\r\nb\n\nc"), Ok(Some("a\nb\n\nc".into())));
+        assert_eq!(sanitize_prompt("a\u{1b}b"), Ok(Some("ab".into())));
+        assert_eq!(sanitize_prompt("a\tb"), Ok(Some("ab".into())));
         // Nothing blank ever presses Enter.
-        assert_eq!(sanitize_prompt(""), None);
-        assert_eq!(sanitize_prompt("   "), None);
-        assert_eq!(sanitize_prompt("\r\n\t"), None);
-        // Bounded, and never split a char.
-        let long = sanitize_prompt(&"é".repeat(9000)).expect("non-empty");
-        assert!(long.len() <= PROMPT_MAX_BYTES, "{} bytes", long.len());
+        assert_eq!(sanitize_prompt(""), Ok(None));
+        assert_eq!(sanitize_prompt("   "), Ok(None));
+        assert_eq!(sanitize_prompt("\r\n\t"), Ok(None));
+        // Whole under the cap, never a character short (9,000 `é` is 18 KB).
+        let long = sanitize_prompt(&"é".repeat(9000)).expect("under the cap").expect("non-empty");
+        assert_eq!(long.chars().count(), 9000);
         assert!(long.chars().all(|c| c == 'é'));
     }
 }

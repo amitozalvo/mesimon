@@ -5770,17 +5770,31 @@ pub static PROMPT_ITEMS: &[MenuItem] = &[
     },
 ];
 
-/// `Rebase ask: mesimon's words` — the name, then whose text stands there.
+/// `Rebase ask: mesimon's words` — the name, then whose text stands there;
+/// `over the limit` where the person's is too long to send (T-896).
 fn prompt_label(ctx: &Ctx, which: crate::prompts::AgentPrompt) -> String {
-    let whose = if ctx.prompts.is_custom(which) { "your words" } else { "mesimon's words" };
+    let whose = if ctx.prompts.over_limit(which).is_some() {
+        "over the limit"
+    } else if ctx.prompts.is_custom(which) {
+        "your words"
+    } else {
+        "mesimon's words"
+    };
     format!("{}: {whose}", which.label())
 }
 
 /// When it is sent and what it says, or — while the field is open — the
-/// placeholders that get filled in and the way back to mesimon's words.
+/// placeholders that get filled in and the way back to mesimon's words. A
+/// template over the limit (T-896) says its count and that mesimon's words
+/// go in its place: never a sentence cut mid-word.
 fn prompt_detail(ctx: &Ctx, which: crate::prompts::AgentPrompt) -> String {
     if ctx.prompt_editing {
         format!("{} get filled in ∙ empty it for mesimon's words", which.fields_hint())
+    } else if let Some(bytes) = ctx.prompts.over_limit(which) {
+        format!(
+            "{} ∙ mesimon's words go until it fits",
+            crate::command::too_long_words("yours", bytes)
+        )
     } else {
         format!("{} ∙ {}", which.when(), ctx.prompts.text(which))
     }

@@ -2528,8 +2528,12 @@ impl Daemon {
             self.persist_sessions();
         }
         // The words cross the same boundary a desk prompt does: scrubbed,
-        // capped and blank-is-none (`sanitize_prompt`).
-        let words = prompt.as_deref().and_then(mesimon_core::command::sanitize_prompt);
+        // blank-is-none and refused past the cap (`sanitize_prompt`).
+        let words = match prompt.as_deref().map(mesimon_core::command::sanitize_prompt) {
+            Some(Err(message)) => return reject(&message),
+            Some(Ok(words)) => words,
+            None => None,
+        };
         let asleep = self
             .board
             .live_agent(id)
@@ -3022,11 +3026,10 @@ impl Daemon {
         if let Some(message) = self.team_viewer_refusal() {
             return reject(&message);
         }
-        if text.len() > mesimon_core::command::PROMPT_MAX_BYTES {
-            return reject("prompt is too long");
-        }
-        let Some(text) = mesimon_core::command::sanitize_prompt(&text) else {
-            return reject("nothing to send");
+        let text = match mesimon_core::command::sanitize_prompt(&text) {
+            Ok(Some(text)) => text,
+            Ok(None) => return reject("nothing to send"),
+            Err(message) => return reject(&message),
         };
         // As the live Queue: words already going into the pane are not
         // replaced by a letter.
@@ -3748,11 +3751,10 @@ impl Daemon {
         if authorize(by, &Action::PromptExisting, &Resource::Session { id }).denied() {
             return Reply::Revoked;
         }
-        if text.len() > mesimon_core::command::PROMPT_MAX_BYTES {
-            return Reply::Rejected { message: "prompt is too long".into() };
-        }
-        let Some(text) = mesimon_core::command::sanitize_prompt(&text) else {
-            return Reply::Rejected { message: "nothing to send".into() };
+        let text = match mesimon_core::command::sanitize_prompt(&text) {
+            Ok(Some(text)) => text,
+            Ok(None) => return Reply::Rejected { message: "nothing to send".into() },
+            Err(message) => return Reply::Rejected { message },
         };
         let Ok(ticket) = ulid::Ulid::from_string(ticket) else {
             return Reply::Rejected { message: "invalid ticket".into() };
@@ -4607,7 +4609,7 @@ enum Plan {
 fn dialog_text_ok(text: &str) -> bool {
     !text.contains(['\n', '\r'])
         && text.len() <= DIALOG_TEXT_MAX
-        && mesimon_core::command::sanitize_prompt(text).as_deref() == Some(text)
+        && matches!(mesimon_core::command::sanitize_prompt(text), Ok(Some(t)) if t == text)
 }
 
 /// Whether `answer` is one `question` takes: one option of a one-choice

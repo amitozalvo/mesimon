@@ -769,8 +769,9 @@ focuses. `Command::PromptSession { ticket, text }` is `MergeToAgent`'s twin (sam
 delivery: bracketed paste, then a SEPARATE `send-keys Enter`), and the difference is whose words
 travel: the merge flow pastes mesimon's, this pastes only the user's, which is why this one hangs
 off an ordinary key. `command::sanitize_prompt` only ever REMOVES (control chars — a bare CR would
-split one prompt into two turns — and anything past 4 KB) and nothing is appended, so what Claude
-reads is a SUBSEQUENCE of what the user typed; `agent_allows` denies the command outright. The
+split one prompt into two turns) and nothing is appended, so what Claude reads is a SUBSEQUENCE of
+what the user typed, and past the 32 KiB cap (the note's, T-896) the prompt is refused with its
+size rather than cut; `agent_allows` denies the command outright. The
 field hangs UNDER the card rather than taking the title line: the ticket is not what is being
 edited, it is who the text is going to, so the card renders whole and the prompted card stays the
 cursor card (the only text field that does). Status line says `asked`, never "sent" — whether the

@@ -5125,23 +5125,9 @@ impl Daemon {
     /// own paste goes under the one it typed.
     fn launch_words(&self, ticket: ulid::Ulid, parked: &Parked) -> String {
         let Parked { text, brief, title } = parked;
-        let text = if *brief {
-            let brief =
-                self.description_body(ticket).map(|b| format!("\n\n{b}")).unwrap_or_default();
-            match (brief.is_empty(), text.is_empty()) {
-                (_, true) => brief,
-                (true, false) => format!("\n\n{text}"),
-                (false, false) => format!("{brief}\n\n{text}"),
-            }
-        } else {
-            text.clone()
-        };
-        if *title {
-            let lead = self.board.ticket(ticket).map_or("", |t| t.title.trim());
-            format!("{lead}{text}").trim_start().to_string()
-        } else {
-            text
-        }
+        let description = brief.then(|| self.description_body(ticket)).flatten();
+        let lead = title.then(|| self.board.ticket(ticket).map_or("", |t| t.title.as_str()));
+        road::launch_words(lead, *brief, description.as_deref(), text)
     }
 
     /// Whether this session is a Claude launch on the mod road (T-575): its
@@ -6475,9 +6461,20 @@ impl Daemon {
                     };
                 }
                 // Sanitized by subtraction alone, as the person's own words
-                // are: nothing is added, and blank words queue nothing.
-                let Some(text) = mesimon_core::command::sanitize_prompt(&text) else {
-                    return Response::Err { message: "nothing to send".into() };
+                // are: nothing is added, and blank words queue nothing. Words
+                // past the cap are refused with the count (T-896), never
+                // cut: the crown can write a note and ask in a line.
+                let text = match mesimon_core::command::sanitize_prompt(&text) {
+                    Ok(Some(text)) => text,
+                    Ok(None) => return Response::Err { message: "nothing to send".into() },
+                    Err(why) => {
+                        return Response::Err {
+                            message: format!(
+                                "{why} ∙ words past it are a note: write_note holds them, and \
+                                 a shorter ask names it"
+                            ),
+                        }
+                    }
                 };
                 // A shell line is a person's alone (T-876): in the worker's
                 // pane it would run with no permission check, the crown's
@@ -8481,6 +8478,14 @@ impl Daemon {
     fn agent_ticket_view(&self, id: ulid::Ulid) -> Option<AgentTicketView> {
         let t = self.board.ticket(id)?;
         let workspace = crown::workspace_word(t.workspace_strategy());
+        // The description, whole up to `mcp::DESCRIPTION_MAX_BYTES` and past
+        // it a head that says so and names the note (T-896): the whole of it
+        // is one `read_note` away, and a routine read never carries 32 KiB.
+        let described = t.description().and_then(|n| {
+            store::read_note(&self.paths, &t.short_key, n.id).ok().map(|text| {
+                mesimon_core::mcp::describe(&text, n.id, mesimon_core::mcp::DESCRIPTION_MAX_BYTES)
+            })
+        });
         Some(AgentTicketView {
             key: t.short_key.clone(),
             key_about: None,
@@ -8572,16 +8577,8 @@ impl Daemon {
                 .map(|d| AgentTagView { name: d.name.clone(), group: d.group })
                 .collect(),
             board_version: self.board_version,
-            description: t.description().and_then(|n| {
-                store::read_note(&self.paths, &t.short_key, n.id).ok().map(|text| {
-                    let cut = mesimon_core::text::cap_bytes(&text, AGENT_DESCRIPTION_MAX_BYTES);
-                    if cut.len() < text.len() {
-                        format!("{cut}…")
-                    } else {
-                        text
-                    }
-                })
-            }),
+            description: described.as_ref().map(|(head, _)| head.clone()),
+            description_cut: described.and_then(|(_, cut)| cut),
             notes: t
                 .notes
                 .iter()
@@ -11990,7 +11987,13 @@ impl Daemon {
                 }
             }
         }
-        let text = match (mesimon_core::command::sanitize_prompt(&text), &seat) {
+        // Past the cap the words are refused with the count (T-896): the
+        // field holds the same limit, so only a client of its own gets here.
+        let words = match mesimon_core::command::sanitize_prompt(&text) {
+            Ok(words) => words,
+            Err(message) => return Response::Err { message },
+        };
+        let text = match (words, &seat) {
             (Some(text), _) => text,
             (None, QueuedSeat::Start(_)) => String::new(),
             // "Accept the plan, ask nothing": the entry carries the flag
@@ -12086,7 +12089,10 @@ impl Daemon {
         // reaches the empty seats and skips every agent already sitting in one;
         // with no empty seat to take it, it is the refusal it always was. A
         // blank ACCEPT is the other exception: "accept the plans, ask nothing".
-        let words = mesimon_core::command::sanitize_prompt(&text);
+        let words = match mesimon_core::command::sanitize_prompt(&text) {
+            Ok(words) => words,
+            Err(message) => return Response::Err { message },
+        };
         if words.is_none()
             && accepts.is_empty()
             && !ids.iter().any(|t| matches!(self.seat_of(*t), QueuedSeat::Start(_)))
@@ -14059,7 +14065,13 @@ impl Daemon {
         if self.columns_barred {
             return Response::Err { message: self.barred_message("columns") };
         }
-        let text = text.as_deref().and_then(mesimon_core::prompts::sanitize_template);
+        // Past the cap it is refused with the count (T-896), never cut
+        // mid-sentence; the row's field holds the same limit.
+        let text = match text.as_deref().map(mesimon_core::prompts::sanitize_template) {
+            Some(Err(message)) => return Response::Err { message },
+            Some(Ok(text)) => text,
+            None => None,
+        };
         if self.board.prompts.custom(which) == text.as_deref() {
             return Response::Ok;
         }
@@ -18189,9 +18201,6 @@ fn created_at_ms(created_at: &str) -> Option<u64> {
     created_at.strip_prefix('@').and_then(|s| s.parse::<u64>().ok()).map(|s| s * 1000)
 }
 
-/// How much of the description rides `get_ticket`. The whole of it is one
-/// `read_note` away; this keeps a routine call from carrying 32 KiB.
-const AGENT_DESCRIPTION_MAX_BYTES: usize = 4096;
 /// The longest plan `get_ticket.needs_you.plan` carries (T-582): the
 /// projection's own bound on the tool input it was read from.
 const AGENT_PLAN_MAX_BYTES: usize = 16 * 1024;

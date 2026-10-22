@@ -26,6 +26,148 @@ use mesimon_core::Principal;
 const BRIEF: &str = "## Brief\n\nmesimon-brief-77 the description travels under the title\n\n\
                      - and so does its second paragraph, mesimon-brief-78";
 
+/// A description of about `bytes`: numbered paragraphs of plain prose, and
+/// the one fact the test looks for in its LAST paragraph (T-896).
+fn long_brief(bytes: usize, fact: &str) -> String {
+    let mut body =
+        String::from("## Brief\n\nmesimon-long-brief: the fact is in the last paragraph.\n\n");
+    let mut n = 0;
+    while body.len() < bytes {
+        n += 1;
+        body.push_str(&format!(
+            "{n}. A paragraph of filler for the long-brief test, with \"quotes\", an \
+             apostrophe's turn, a `backtick` and the number {n} so no two lines read alike.\n\n"
+        ));
+    }
+    body.push_str(fact);
+    body
+}
+
+/// A long description reaches the agent whole (T-896): a 12 KiB brief with
+/// its one fact in the last paragraph is the agent's whole first prompt,
+/// under the title, on the paste road here and on the mod's `submit` in the
+/// suite's mod pass (the stand-in engine pastes what the mod was handed).
+/// `get_ticket` carries the same 12 KiB whole and says nothing of a cut;
+/// a brief past `mcp::DESCRIPTION_MAX_BYTES` rides as a head ending in `…`
+/// with `description_cut` saying how long the whole is and which note
+/// `read_note` reads — never a bare `…` a reader takes for the end.
+#[test]
+fn a_long_description_reaches_the_agent_whole_as_its_first_prompt() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+                        printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+    let Some(h) = Harness::boot("brief_long", Some(STUB)) else { return };
+    let got = h.dir.join("got.txt");
+    let tmux_sock = h.paths.tmux_sock();
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("brief_long");
+
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "brief me at length".into(),
+        workspace: None,
+        tier: None,
+    });
+    let ticket = c.board().tickets.first().expect("ticket").id;
+    let body = long_brief(12 * 1024, "The code word is persimmon-9081.");
+    assert!(body.len() > 12 * 1024 && body.len() < mesimon_core::mcp::DESCRIPTION_MAX_BYTES);
+    assert!(matches!(
+        c.request(Command::WriteNote { ticket, note: None, text: body.clone(), rev: None }),
+        Response::NoteWritten { .. }
+    ));
+
+    let sid = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: true,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn failed: {other:?}"),
+    };
+    let pane_alive = |sock: &std::path::Path| {
+        tmux(sock)
+            .args(["list-panes", "-a", "-F", "#{pane_pid}"])
+            .output()
+            .map(|o| !o.stdout.is_empty())
+            .unwrap_or(false)
+    };
+    wait_until(Duration::from_secs(15), "the stub agent's pane", || pane_alive(&tmux_sock));
+    std::thread::sleep(Duration::from_millis(500));
+    hook_send_with(
+        &hook_sock,
+        &sid.to_string(),
+        "SessionStart",
+        Some("startup"),
+        r#"{"session_id":"x","transcript_path":"/tmp/t-brief-long.jsonl","cwd":"/tmp"}"#,
+    );
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let received = loop {
+        let text = std::fs::read_to_string(&got).unwrap_or_default();
+        if text.contains("persimmon-9081") {
+            break text;
+        }
+        assert!(Instant::now() < deadline, "the last paragraph never reached the agent: {text:?}");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    // Every line of the body arrived, in order, under the title: the whole
+    // brief, not its first 4 KiB.
+    let title_at = received.find("brief me at length").expect("the title line");
+    let mut from = title_at;
+    for line in body.lines().filter(|l| !l.is_empty()) {
+        let at = received[from..]
+            .find(line)
+            .unwrap_or_else(|| panic!("missing or out of order: {line:?}\n{received}"));
+        from += at + line.len();
+    }
+    hook_send_with(&hook_sock, &sid.to_string(), "UserPromptSubmit", None, r#"{}"#);
+    wait_until(Duration::from_secs(3), "the ack", || {
+        c.board().sessions.iter().any(|s| s.id == sid && !s.pending_submit)
+    });
+    let _ = c.request(Command::KillSession { id: sid });
+
+    // ---- get_ticket: the same 12 KiB whole, and a longer one said cut ------
+    let plain = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("plain spawn failed: {other:?}"),
+    };
+    let view = |c: &mut TestClient| match c
+        .send(Principal::Agent { session: plain }, Command::AgentGetTicket)
+    {
+        Response::AgentTicket { ticket: view } => view,
+        other => panic!("get_ticket failed: {other:?}"),
+    };
+    let v = view(&mut c);
+    assert_eq!(v.description.as_deref(), Some(body.as_str()), "12 KiB rides get_ticket whole");
+    assert_eq!(v.description_cut, None);
+
+    let note = v.notes[0].id;
+    let longer = long_brief(20 * 1024, "The code word is quince-4410.");
+    assert!(longer.len() > mesimon_core::mcp::DESCRIPTION_MAX_BYTES);
+    assert!(matches!(
+        c.request(Command::WriteNote { ticket, note: Some(note), text: longer.clone(), rev: None }),
+        Response::NoteWritten { .. }
+    ));
+    let v = view(&mut c);
+    let head = v.description.expect("a head");
+    assert!(head.ends_with('…'), "{}", &head[head.len() - 20..]);
+    assert_eq!(head.trim_end_matches('…').len(), mesimon_core::mcp::DESCRIPTION_MAX_BYTES);
+    assert!(longer.starts_with(head.trim_end_matches('…')), "the head is the brief's own start");
+    let cut = v.description_cut.expect("said");
+    assert!(cut.contains(&format!("is {} bytes", longer.len())), "{cut}");
+    assert!(cut.contains(&format!("read_note with note {note}")), "{cut}");
+    // And read_note returns the whole of it, fact and all.
+    match c.send(Principal::Agent { session: plain }, Command::AgentReadNote { note, key: None }) {
+        Response::Note { text, .. } => assert_eq!(text, longer),
+        other => panic!("read_note failed: {other:?}"),
+    }
+    let _ = c.request(Command::KillSession { id: plain });
+}
+
 #[test]
 fn a_composed_spawn_submits_the_description_under_the_title() {
     // `stty -icanon`: the paste is longer than a canonical tty's 1 KiB line

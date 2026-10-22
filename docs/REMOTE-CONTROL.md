@@ -226,8 +226,8 @@ input, not completion of its work. Waiting Codex prompts retain the
 paired device’s authority and are cancelled if access is revoked or the target
 changes. Reconnects never resubmit prompts automatically. If a delivery result
 cannot be recovered, the browser shows **outcome unknown**; check the agent before
-sending again. Prompt text is limited to 4096 UTF-8 bytes, and oversized responses are
-rejected.
+sending again. Prompt text is limited to 32 KiB (32,768 UTF-8 bytes, a note's limit); a
+longer prompt is refused with its size, never cut, and oversized responses are rejected.
 
 Beside **Queue** and **Steer**, a menu picks the agent's **tier**, as **^n** in your
 terminal's ask field does: the agent's own provider's tiers, the ticket's picked. A prompt

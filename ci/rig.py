@@ -1100,7 +1100,14 @@ class Rig:
                 test["title"] = f"{owner.group(1)} {test['title']}"
                 test["siblings"] = [f"{owner.group(1)} {t}" for t in test.get("siblings", [])]
             if test.get("long_brief"):
-                test["brief"] = test["brief"] + "\n" + filler()
+                # `true` is P1's 10 KB; a number is that many bytes (B1), and
+                # `tail` is the paragraph that ends it (T-896: the one fact a
+                # cut brief loses).
+                size = test["long_brief"]
+                size = size if type(size) is int else 10_000
+                test["brief"] = test["brief"] + "\n" + filler(size)
+                if test.get("tail"):
+                    test["brief"] += "\n\n" + test["tail"]
             tid = self.file_one(test, test["title"])
             test["ticket"] = tid
             test["key"] = self.ticket(self.board(), tid)["short_key"]

@@ -50,7 +50,8 @@ impl Daemon {
         // The words are matched as the agent will read them (scrubbed and
         // capped): a link the cap would cut is a picture the words never
         // name.
-        let clean = mesimon_core::command::sanitize_prompt(&text).unwrap_or_default();
+        let clean =
+            mesimon_core::command::sanitize_prompt(&text).ok().flatten().unwrap_or_default();
         let prepared = (|| -> Result<_> {
             let t = self.board.ticket(ticket).ok_or_else(|| anyhow::anyhow!("no such ticket"))?;
             Ok((t.short_key.clone(), self.uploads.prepare(owner, uploads, &clean)?))

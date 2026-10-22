@@ -710,22 +710,42 @@ fn agents(repo: &Path, verbose: bool) -> Section {
         // opening the TUI.
         let prompts = &cols.prompts;
         let custom = prompts.custom_count();
+        // A template over the limit (T-896) — only a hand-edited
+        // `columns.toml` holds one — is never sent cut: the default goes,
+        // and this is where the file's own words are said to be standing
+        // down.
+        let over: Vec<_> = mesimon_core::prompts::AgentPrompt::ALL
+            .iter()
+            .filter(|w| prompts.over_limit(**w).is_some())
+            .collect();
         let body = mesimon_core::prompts::AgentPrompt::ALL
             .iter()
             .map(|w| {
-                let whose = if prompts.is_custom(*w) { "yours" } else { "default" };
+                let whose = match prompts.over_limit(*w) {
+                    Some(bytes) => format!(
+                        "{}; the default is sent until it fits",
+                        mesimon_core::command::too_long_words("yours", bytes)
+                    ),
+                    None if prompts.is_custom(*w) => "yours".to_string(),
+                    None => "default".to_string(),
+                };
                 format!("{} ({whose}):\n  {}\n", w.label(), prompts.text(*w))
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let summary = match custom {
-            0 => "default wording".to_string(),
-            n => format!("{n} of {} rewritten here", mesimon_core::prompts::AgentPrompt::ALL.len()),
+        let summary = match (custom, over.len()) {
+            (_, n) if n > 0 => format!("{n} over the limit"),
+            (0, _) => "default wording".to_string(),
+            (n, _) => {
+                format!("{n} of {} rewritten here", mesimon_core::prompts::AgentPrompt::ALL.len())
+            }
         };
+        let level = if over.is_empty() { Level::Ok } else { Level::Warn };
         records.push(
-            rec(Level::Ok, "agent prompts", summary)
+            rec(level, "agent prompts", summary)
                 .advice(format!(
-                    "Mesimon sends these into a live session: a rebase request, a merge notice, a note update, and the crown's wake when an agent it started finishes. Settings > Agents > Agent prompts edits them; an emptied field restores the default wording.\n\n{body}"
+                    "Mesimon sends these into a live session: a rebase request, a merge notice, a note update, and the crown's wake when an agent it started finishes. Settings > Agents > Agent prompts edits them; an emptied field restores the default wording. A template longer than {} KiB is not sent: shorten it in Settings, and the default stands in until then.\n\n{body}",
+                    mesimon_core::command::PROMPT_MAX_BYTES / 1024
                 )),
         );
 

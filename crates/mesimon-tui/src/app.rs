@@ -10117,8 +10117,15 @@ impl App {
                 };
                 // Blank, or mesimon's own sentence typed back verbatim, is
                 // the same answer: this board has no template of its own.
-                let text = mesimon_core::prompts::sanitize_template(&text)
-                    .filter(|t| t != which.default_text());
+                // The field holds the daemon's limit, so a refusal here is
+                // a client of its own; it is said, never cut (T-896).
+                let text = match mesimon_core::prompts::sanitize_template(&text) {
+                    Ok(text) => text.filter(|t| t != which.default_text()),
+                    Err(message) => {
+                        self.status = message;
+                        return Ok(());
+                    }
+                };
                 if text.as_deref() != self.board.prompts.custom(which) {
                     match self.req(Command::SetAgentPrompt { which, text }) {
                         Response::Ok => self.refresh_soon()?,
@@ -15261,7 +15268,11 @@ pub(crate) mod test_support {
                 // The daemon's own rule, as small as the fake can hold it:
                 // sanitized in, and blank means mesimon's words back (T-353).
                 Command::SetAgentPrompt { which, text } => {
-                    let text = text.as_deref().and_then(mesimon_core::prompts::sanitize_template);
+                    let text = match text.as_deref().map(mesimon_core::prompts::sanitize_template) {
+                        Some(Err(message)) => return Ok(Response::Err { message }),
+                        Some(Ok(text)) => text,
+                        None => None,
+                    };
                     self.board.prompts.set(which, text);
                     Ok(Response::Ok)
                 }
@@ -18346,7 +18357,7 @@ mod tests {
         app.on_paste(&"x".repeat(PROMPT_MAX_BYTES + 100)).unwrap();
         assert_eq!(field_text(&app).len(), PROMPT_MAX_BYTES);
         assert!(app.status.contains("paste trimmed"), "{}", app.status);
-        assert!(app.status.contains("an ask holds at most 4 KB"), "{}", app.status);
+        assert!(app.status.contains("an ask holds at most 32 KB"), "{}", app.status);
         // The composer's limit is the title's, and the words say so.
         app.mode = Mode::Input {
             purpose: InputPurpose::Create {

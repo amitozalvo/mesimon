@@ -3013,6 +3013,60 @@ fn the_crown_sends_now_into_a_working_turn() {
     });
     start(&mut c, sa);
     stop(&mut c, sa);
+    // An ask past the note cap is refused in words that say the count, the
+    // limit and where the rest goes (T-896), never cut: a 10 KiB ask is
+    // ordinary and queues as any other.
+    {
+        use mesimon_core::command::PROMPT_MAX_BYTES;
+        let v = read(&mut c, sa, &kw).unwrap();
+        let long = "x".repeat(PROMPT_MAX_BYTES + 1);
+        match c.send(
+            Principal::Agent { session: sa },
+            Command::AgentAskTicket {
+                key: kw.clone(),
+                text: long,
+                seen: v.seen.clone(),
+                plan: false,
+                deliver: Deliver::Idle,
+            },
+        ) {
+            Response::Err { message } => {
+                assert!(message.contains(&format!("{} bytes", PROMPT_MAX_BYTES + 1)), "{message}");
+                assert!(
+                    message.contains(&format!("limit is {PROMPT_MAX_BYTES} bytes")),
+                    "{message}"
+                );
+                assert!(message.contains("write_note"), "{message}");
+            }
+            other => panic!("a 32 KiB ask was taken: {other:?}"),
+        }
+        assert!(pending_of(&mut c, Some(w)).is_empty(), "nothing queued by the refusal");
+        let ten_kib = format!("mesimon-probe-80 {}", "y".repeat(10 * 1024));
+        match c.send(
+            Principal::Agent { session: sa },
+            Command::AgentAskTicket {
+                key: kw.clone(),
+                text: ten_kib.clone(),
+                seen: v.seen,
+                plan: false,
+                deliver: Deliver::Idle,
+            },
+        ) {
+            Response::AgentAsked { .. } => {}
+            other => panic!("a 10 KiB ask was refused: {other:?}"),
+        }
+        wait_until(std::time::Duration::from_secs(10), "the 10 KiB ask in W's box", || {
+            landed(&ten_kib)
+        });
+        hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"x"}"#);
+        start(&mut c, ws);
+        stop(&mut c, ws);
+        wait_until(std::time::Duration::from_secs(20), "the answer's wake on the crown", || {
+            landed(&format!("{kw} \"mesimon-probe-81 worker\" answered your ask"))
+        });
+        start(&mut c, sa);
+        stop(&mut c, sa);
+    }
     let answered = format!("{kw} \"mesimon-probe-81 worker\" answered your ask");
     let answers = || read_got().matches(answered.as_str()).count();
     let ask = |c: &mut TestClient, text: &str, deliver: Deliver| {

@@ -232,6 +232,36 @@ pub fn is_command(text: &str) -> bool {
     text.trim_start().starts_with('/') || is_shell(text)
 }
 
+/// The words a launch road delivers (T-117, T-294), composed once for every
+/// road — the paste, the mod's `submit`, a wake and Codex's box — and never
+/// capped (T-896): the description is a note, bounded by the note cap
+/// alone, and every road carries one whole. `description` is the ticket's
+/// when the brief is wanted; it rides under a blank line, and `text` (the
+/// words a Shift+Enter carried into an empty seat) under that, in the order
+/// they were written: the ticket says what the work is, the person says
+/// what to do about it first. `title` leads where the road types none.
+pub fn launch_words(
+    title: Option<&str>,
+    brief: bool,
+    description: Option<&str>,
+    text: &str,
+) -> String {
+    let text = if brief {
+        let brief = description.map(|b| format!("\n\n{b}")).unwrap_or_default();
+        match (brief.is_empty(), text.is_empty()) {
+            (_, true) => brief,
+            (true, false) => format!("\n\n{text}"),
+            (false, false) => format!("{brief}\n\n{text}"),
+        }
+    } else {
+        text.to_string()
+    };
+    match title {
+        Some(lead) => format!("{}{text}", lead.trim()).trim_start().to_string(),
+        None => text,
+    }
+}
+
 /// Whether words are a shell line for Claude Code's prompt box: their first
 /// character is `!`. The box runs one in its bash mode, as the person's own
 /// shell with no permission check, and fires no `UserPromptSubmit` for it
@@ -345,6 +375,30 @@ pub const BRIDGE_REFUSED_EXIT: i32 = 3;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The brief road (T-896): a 10 KiB description rides under the title
+    /// whole, and the person's words under it; nothing here caps anything.
+    #[test]
+    fn a_long_brief_is_composed_whole_under_the_title() {
+        let brief =
+            format!("## Brief\n\n{}\n\nthe fact is in the last paragraph", "x".repeat(10 * 1024));
+        assert_eq!(
+            launch_words(Some(" T-9 do it "), true, Some(&brief), ""),
+            format!("T-9 do it\n\n{brief}")
+        );
+        assert_eq!(
+            launch_words(Some("T-9"), true, Some(&brief), "first, read it"),
+            format!("T-9\n\n{brief}\n\nfirst, read it")
+        );
+        assert_eq!(launch_words(None, true, Some(&brief), ""), format!("\n\n{brief}"));
+        // No description: the title alone, or the words under a blank line.
+        assert_eq!(launch_words(Some("T-9"), true, None, ""), "T-9");
+        assert_eq!(launch_words(Some("T-9"), true, None, "go"), "T-9\n\ngo");
+        assert_eq!(launch_words(None, true, None, "go"), "\n\ngo");
+        // Not a brief: the words as they are, under a title where one leads.
+        assert_eq!(launch_words(None, false, Some(&brief), "go"), "go");
+        assert_eq!(launch_words(Some("T-9"), false, None, "go"), "T-9go");
+    }
 
     #[test]
     fn a_version_is_its_first_three_numbers() {

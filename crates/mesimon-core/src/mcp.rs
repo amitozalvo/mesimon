@@ -341,6 +341,32 @@ pub const SUMMARY_ABOUT: &str = "A note section headed `Summary` is what the tic
      its work opened in another repository, or one it reviewed; the board reads it from the \
      forge and shows it beside the ticket's own.";
 
+/// How much of the description rides `get_ticket` (T-896): the plan's bound
+/// (`needs_you.plan`), so a routine read never carries more than a plan does,
+/// and four times what the crown's longest brief has run to. The whole of it
+/// is one `read_note` away, and [`describe`] says so when it cuts; 4 KiB
+/// until then, cut to a bare `…`, which a crown read as the whole brief.
+pub const DESCRIPTION_MAX_BYTES: usize = 16 * 1024;
+
+/// The description as `get_ticket` carries it: whole within `max`, and past
+/// it the longest head that fits ending in `…`, with the words that say how
+/// long the whole is, how much is here, and that `read_note` on `note`
+/// returns all of it (T-896). The words are the field's own, so a model
+/// that never read the tool text still learns where the rest is.
+pub fn describe(text: &str, note: ulid::Ulid, max: usize) -> (String, Option<String>) {
+    let head = crate::text::cap_bytes(text, max);
+    if head.len() == text.len() {
+        return (text.to_string(), None);
+    }
+    let words = format!(
+        "the description is {} bytes and this is its first {}; read_note with note {note} \
+         returns the whole of it",
+        text.len(),
+        head.len()
+    );
+    (format!("{head}…"), Some(words))
+}
+
 /// What the ticket's own key is to the person (T-715), on a session's read
 /// of its own ticket (`key_about`): everything the session says is read
 /// beside the ticket, so its key is a lookup for the card already in view.
@@ -2699,6 +2725,31 @@ mod tests {
         }
         assert_eq!(lint_tool_text(PRS_ABOUT), Ok(()));
         assert!(PRS_ABOUT.len() < 1000, "one paragraph beside the PRs: {}", PRS_ABOUT.len());
+    }
+
+    /// The description road (T-896): a 10 KiB brief rides `get_ticket`
+    /// whole and says nothing; one past the cap is its head, ending in
+    /// `…`, and `description_cut` says how long the whole is, how much is
+    /// here and which note `read_note` reads. Never a character split.
+    #[test]
+    fn a_long_description_rides_get_ticket_whole_and_a_longer_one_says_it_was_cut() {
+        let note = ulid::Ulid::from_string("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+        let ten_kib = format!("# Brief\n\n{}\n\nthe fact is here", "x".repeat(10 * 1024));
+        assert_eq!(describe(&ten_kib, note, DESCRIPTION_MAX_BYTES), (ten_kib.clone(), None));
+        let exact = "y".repeat(DESCRIPTION_MAX_BYTES);
+        assert_eq!(describe(&exact, note, DESCRIPTION_MAX_BYTES), (exact.clone(), None));
+
+        let long = format!("{}\n\nthe fact is in the last paragraph", "ש".repeat(12 * 1024));
+        let (head, cut) = describe(&long, note, DESCRIPTION_MAX_BYTES);
+        assert!(head.ends_with('…'), "{}", &head[head.len() - 12..]);
+        assert_eq!(head.trim_end_matches('…').len(), DESCRIPTION_MAX_BYTES, "cut on a boundary");
+        let cut = cut.expect("said");
+        assert!(cut.contains(&format!("is {} bytes", long.len())), "{cut}");
+        assert!(cut.contains(&format!("first {}", DESCRIPTION_MAX_BYTES)), "{cut}");
+        assert!(cut.contains(&format!("read_note with note {note}")), "{cut}");
+        // The field speaks as the tool text does (the id aside, which the
+        // lint would read as shouting).
+        assert_eq!(lint_tool_text(&cut.replace(&note.to_string(), "the id")), Ok(()));
     }
 
     /// T-566: the crown is told where a worker's question is read and whose

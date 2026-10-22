@@ -20,8 +20,9 @@ const narrow = () => matchMedia("(max-width: 700px)").matches;
 const receiptOps = ["prompt", "send_now", "take_back", "permission", "dialog", "status"];
 // A filed ticket's description is its first note: the host's note limit.
 export const DESCRIPTION_MAX_BYTES = 32 * 1024;
-// A first prompt's cap, the daemon's `PROMPT_MAX_BYTES` (T-510).
-export const PROMPT_MAX_BYTES = 4096;
+// A prompt's cap, the daemon's `PROMPT_MAX_BYTES` (T-510): the note cap
+// since T-896, and the daemon refuses past it in words rather than cutting.
+export const PROMPT_MAX_BYTES = 32 * 1024;
 // The longest envelope the relay keeps (control::MAIL_BYTES).
 const MAIL_BYTES = 128 * 1024;
 // This browser was told once where words for an away terminal go (T-881).
@@ -2265,8 +2266,8 @@ export class Store {
   // its pictures linked), with the pictures' ids. The receipt keeps the
   // draft's own words, so a refusal gives them back pictures and all.
   sendPrompt(entry, text, uploads, starts) {
-    if (new TextEncoder().encode(text).length > 4096) {
-      entry.delivery = "Prompt must fit in 4096 UTF-8 bytes.";
+    if (new TextEncoder().encode(text).length > PROMPT_MAX_BYTES) {
+      entry.delivery = "Prompt must fit in 32 KiB.";
       this.sync();
       return;
     }
@@ -2349,7 +2350,7 @@ export class Store {
     const text = entry.draft;
     if (!text.trim() || this.letterOf(ticket)) return;
     if (new TextEncoder().encode(text).length > PROMPT_MAX_BYTES) {
-      entry.delivery = "Prompt must fit in 4096 UTF-8 bytes.";
+      entry.delivery = "Prompt must fit in 32 KiB.";
       this.sync();
       return;
     }

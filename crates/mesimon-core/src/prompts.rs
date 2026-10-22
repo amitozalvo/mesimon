@@ -185,9 +185,21 @@ impl PromptSet {
         }
     }
 
-    /// The template that will actually be sent — theirs if they wrote one.
+    /// The template that will actually be sent — theirs if they wrote one
+    /// that fits. One past `PROMPT_MAX_BYTES` — only a hand-edited
+    /// `columns.toml` holds one, since the daemon and the field refuse it —
+    /// is never sent cut mid-sentence (T-896): mesimon's own words go, and
+    /// the Settings row and `doctor` say so ([`PromptSet::over_limit`]).
     pub fn text(&self, which: AgentPrompt) -> &str {
-        self.custom(which).unwrap_or_else(|| which.default_text())
+        self.custom(which)
+            .filter(|t| t.len() <= crate::command::PROMPT_MAX_BYTES)
+            .unwrap_or_else(|| which.default_text())
+    }
+
+    /// How long a template past the limit is, in bytes, or `None` where
+    /// the one standing fits (T-896): the row's and `doctor`'s word.
+    pub fn over_limit(&self, which: AgentPrompt) -> Option<usize> {
+        self.custom(which).map(str::len).filter(|n| *n > crate::command::PROMPT_MAX_BYTES)
     }
 
     pub fn is_custom(&self, which: AgentPrompt) -> bool {
@@ -235,13 +247,18 @@ impl PromptSet {
 /// [`crate::command::sanitize_prompt`] with one difference: every newline
 /// goes, because a template is one line by law — the row that edits it is a
 /// one-line field, and the sentence is typed into a box as one turn. Only
-/// ever removes, bounded like a prompt, and blank is `None` (mesimon's own
-/// words back). Stored sanitized, so the bytes on disk are the bytes the tty
-/// receives.
-pub fn sanitize_template(raw: &str) -> Option<String> {
-    use crate::command::PROMPT_MAX_BYTES;
-    use crate::text::{cap_bytes, nonblank, scrub_text};
-    nonblank(cap_bytes(&scrub_text(raw), PROMPT_MAX_BYTES))
+/// ever removes, and blank is `Ok(None)` (mesimon's own words back). One
+/// past `PROMPT_MAX_BYTES` is `Err` in words, never cut (T-896): a sentence
+/// cut mid-word would be typed into a box as something else. Stored
+/// sanitized, so the bytes on disk are the bytes the tty receives.
+pub fn sanitize_template(raw: &str) -> Result<Option<String>, String> {
+    use crate::command::{too_long_words, PROMPT_MAX_BYTES};
+    use crate::text::{nonblank, scrub_text};
+    let clean = scrub_text(raw);
+    if clean.len() > PROMPT_MAX_BYTES {
+        return Err(too_long_words("template", clean.len()));
+    }
+    Ok(nonblank(&clean))
 }
 
 #[cfg(test)]
@@ -303,22 +320,52 @@ mod tests {
         for which in AgentPrompt::ALL {
             let text = which.default_text();
             assert_eq!(
-                sanitize_template(text).as_deref(),
-                Some(text),
+                sanitize_template(text),
+                Ok(Some(text.to_string())),
                 "{}'s default is not what the tty would receive",
                 which.key()
             );
-            assert_eq!(sanitize_prompt(text).as_deref(), Some(text), "{}", which.key());
+            assert_eq!(sanitize_prompt(text), Ok(Some(text.to_string())), "{}", which.key());
         }
+    }
+
+    /// The template road (T-896): a 10 KiB template arrives whole, one past
+    /// the note cap is refused in words, and one that reached the board
+    /// over the limit anyway (a hand-edited `columns.toml`) is never sent
+    /// cut — mesimon's words go, and the row can say why.
+    #[test]
+    fn a_long_template_arrives_whole_and_a_longer_one_is_refused_or_stood_down() {
+        use crate::command::PROMPT_MAX_BYTES;
+        let ten_kib = format!("rebase {{branch}} onto {{base}} {}", "x".repeat(10 * 1024));
+        assert_eq!(sanitize_template(&ten_kib), Ok(Some(ten_kib.clone())));
+        let over = format!("rebase {{branch}} {}", "y".repeat(PROMPT_MAX_BYTES));
+        let why = sanitize_template(&over).expect_err("refused");
+        assert!(why.starts_with(&format!("template is {} bytes", over.len())), "{why}");
+        assert!(why.contains(&format!("limit is {PROMPT_MAX_BYTES} bytes (32 KiB)")), "{why}");
+
+        let mut p = PromptSet::default();
+        p.set(AgentPrompt::Rebase, Some(ten_kib.clone()));
+        assert_eq!(p.over_limit(AgentPrompt::Rebase), None);
+        assert!(p.render(AgentPrompt::Rebase, &[("branch", "b"), ("base", "m")]).len() > 10 * 1024);
+        p.set(AgentPrompt::Rebase, Some(over.clone()));
+        assert!(p.is_custom(AgentPrompt::Rebase), "the person's words are kept");
+        assert_eq!(p.over_limit(AgentPrompt::Rebase), Some(over.len()));
+        assert_eq!(p.text(AgentPrompt::Rebase), AgentPrompt::Rebase.default_text());
+        assert_eq!(
+            p.render(AgentPrompt::Rebase, &[("branch", "msmn/T-1-x"), ("base", "main")]),
+            PromptSet::default()
+                .render(AgentPrompt::Rebase, &[("branch", "msmn/T-1-x"), ("base", "main")]),
+            "never a sentence cut mid-word"
+        );
     }
 
     /// A template stays one line where an ask keeps its lines (T-380): the
     /// newline goes, the CR goes, and the rest is what was typed.
     #[test]
     fn a_template_is_one_line() {
-        assert_eq!(sanitize_template("  a\r\nb\nc  "), Some("abc".into()));
-        assert_eq!(sanitize_prompt("a\nb"), Some("a\nb".into()), "the ask keeps its line");
-        assert_eq!(sanitize_template(" \n "), None);
+        assert_eq!(sanitize_template("  a\r\nb\nc  "), Ok(Some("abc".into())));
+        assert_eq!(sanitize_prompt("a\nb"), Ok(Some("a\nb".into())), "the ask keeps its line");
+        assert_eq!(sanitize_template(" \n "), Ok(None));
     }
 
     /// The user's words win, and only the fields the prompt declares are
