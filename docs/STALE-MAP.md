@@ -29480,7 +29480,9 @@ fence the Claude composer wait already used, now one helper for all four reads. 
 Codex input is the later of the record's last state change and the owed entry's birth, so a
 screen from a previous pane under the same session name, or from a running turn, is no input
 yet; a steer's is its paste. A stale screen costs a steer press as a failed capture did (ten
-presses, 5 s). `codex_steer`'s one read at the ask edge stays a fork, as do `send_brief`'s and
+presses, 5 s). The steer's Enter itself reads the pane live once, at the key, after the sample
+says the box holds the words: a running turn can raise an approval dialog after the sample, and
+an Enter there would answer it for the person (the commit review's catch). `codex_steer`'s one read at the ask edge stays a fork, as do `send_brief`'s and
 `press_plan`'s: edges, not ticks. `InputScreen` derives `Clone` so the plan step can hold one
 while the writer mutates.
 

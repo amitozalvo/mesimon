@@ -11439,9 +11439,13 @@ impl Daemon {
     /// into a box still holding the words, so never into a dialog and never
     /// a second turn; an empty box means they went and the count is on its
     /// way. The presses run out either way, and words never seen taken are
-    /// the phone's `unknown`. The box is the sampler's screen of it
-    /// (`want_codex_inputs`), and one read before the paste is not this box.
+    /// the phone's `unknown`. The cadence reads the sampler's screen of the
+    /// box (`want_codex_inputs`), one from before the paste not this box;
+    /// the press itself reads the pane once more, at the key: a running
+    /// turn can raise an approval dialog after the sample, and an Enter
+    /// there would answer it for the person.
     fn press_steer(&mut self, id: uuid::Uuid, now: u64) -> bool {
+        use crate::agents::codex::composer_holds_text;
         let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
             self.owed.remove(&id);
             return false;
@@ -11450,9 +11454,8 @@ impl Daemon {
         let after = self.owed.get(&id).map_or(u64::MAX, |o| o.screen_after);
         if rec.state.has_pane()
             && !matches!(rec.state, SessionState::RequiresAction { .. })
-            && self
-                .screen_since(&sid, after)
-                .is_some_and(crate::agents::codex::composer_holds_text)
+            && self.screen_since(&sid, after).is_some_and(composer_holds_text)
+            && self.backend.capture_input_screen(&sid).is_ok_and(|s| composer_holds_text(&s))
         {
             let _ = self.backend.send_enter(&sid);
         }
