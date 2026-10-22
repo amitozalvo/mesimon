@@ -106,11 +106,15 @@ struct Peer {
     ceiling: u64,
     high: u64,
 }
+/// An answer on its way down a pane (T-567): a dialog's, walked one key a
+/// pass and confirmed by the hook edge, or a Codex approval's (T-846),
+/// walked to its `Yes` or `No` row and confirmed by the request leaving the
+/// runtime's snapshot.
 struct DialogDelivery {
     by: Deliverer,
     ticket: ulid::Ulid,
     request: String,
-    response: api::DialogAnswer,
+    answer: DeliveryAnswer,
     deadline: Instant,
     next: Instant,
     steps: u8,
@@ -125,6 +129,21 @@ struct DialogDelivery {
     /// alone, since a dialog the mod closed fires no `PostToolUse`, and one
     /// that does fire was the person's.
     by_mod: Option<String>,
+}
+/// What a delivery answers (T-873).
+enum DeliveryAnswer {
+    /// A question, a plan or a trust dialog the hook stream or a Codex
+    /// snapshot projected into `dialogs`.
+    Dialog(api::DialogAnswer),
+    /// A Codex approval waiting in `permissions`, a phone's alone.
+    Approval { allow: bool },
+}
+/// The request a delivery answers while it still stands, with its answer:
+/// what `dialog_step_for` walks.
+#[derive(Clone, Copy)]
+enum Standing<'a> {
+    Dialog(&'a api::Dialog, &'a api::DialogAnswer),
+    Approval(&'a api::Permission, bool),
 }
 /// Whose answer a dialog delivery carries, and where its receipt goes.
 enum Deliverer {
@@ -208,23 +227,6 @@ enum PermissionRoad {
     /// Enter, and `serverRequest/resolved` on the ledger confirms it.
     Codex,
 }
-/// A phone's answer to a Codex approval on its way down the pane (T-846):
-/// the same walk a dialog answer takes (`DialogDelivery`), to one of two
-/// rows, confirmed by the request leaving the runtime's snapshot.
-struct ApprovalDelivery {
-    grant: BoardId,
-    device: DeviceId,
-    command: u64,
-    ticket: ulid::Ulid,
-    request: String,
-    allow: bool,
-    deadline: Instant,
-    next: Instant,
-    steps: u8,
-    /// Set once Enter went in: the request's resolution confirms it, and
-    /// past this the keys were sent and not confirmed.
-    confirm: Option<Instant>,
-}
 /// How long a renewing wait outlives its run for the next one to take it
 /// over (T-632): the mod starts it at once, so this is slack for a loaded
 /// machine.
@@ -281,8 +283,6 @@ pub(super) struct Control {
     /// Starts on their way, by ticket (T-498).
     starts: HashMap<ulid::Ulid, StartWait>,
     permissions: HashMap<uuid::Uuid, PermissionWait>,
-    /// Phone answers to Codex approvals on their way (T-846).
-    approvals: HashMap<uuid::Uuid, ApprovalDelivery>,
     /// The request each Codex seat's snapshot last carried (T-846), by
     /// its id: a change is the old request's resolution, the edge a Codex
     /// dialog's answer is confirmed by; `plan:` prefixed for a plan.
@@ -342,7 +342,6 @@ impl Control {
             pending: HashMap::new(),
             starts: HashMap::new(),
             permissions: HashMap::new(),
-            approvals: HashMap::new(),
             codex_asks: HashMap::new(),
             phases: HashMap::new(),
             suppress_awareness: false,
@@ -622,7 +621,6 @@ impl Daemon {
     pub(super) fn control_tick(&mut self) {
         self.control_expire_permissions();
         self.control_deliver_dialogs();
-        self.control_deliver_approvals();
         if self.control.stored.is_none() && self.control.retired.is_none() {
             return;
         }
@@ -1280,7 +1278,7 @@ impl Daemon {
                 by: Deliverer::Phone { grant, device, command },
                 ticket,
                 request: request.into(),
-                response,
+                answer: DeliveryAnswer::Dialog(response),
                 deadline: Instant::now() + walk,
                 next: Instant::now(),
                 steps: 0,
@@ -1293,10 +1291,12 @@ impl Daemon {
         Reply::delivery("awaiting_delivery")
     }
 
-    /// Walk each queued dialog answer one key per pass (T-567). The last key
-    /// waits for the hook edge: `answered` only when it comes, `input_sent`
-    /// past `DIALOG_CONFIRM`, and `unknown` with its reason when no key could
-    /// be chosen. Keys already in are never undone.
+    /// Walk each queued dialog answer one key per pass (T-567), and a Codex
+    /// approval's to its `Yes, proceed` or `No, …` row (T-846). The last key
+    /// waits for the hook edge, or for the approval to leave the snapshot:
+    /// `answered` only when it comes, `input_sent` past `DIALOG_CONFIRM`, and
+    /// `unknown` with its reason when no key could be chosen. Keys already in
+    /// are never undone.
     fn control_deliver_dialogs(&mut self) {
         use mesimon_backend_tmux::DialogKey;
         let board = &self.board;
@@ -1312,8 +1312,20 @@ impl Daemon {
         for id in ready {
             let Some(mut pending) = self.control.dialog_deliveries.remove(&id) else { continue };
             if let Some(until) = pending.confirm {
+                if let DeliveryAnswer::Approval { .. } = pending.answer {
+                    if self.delivery_standing(id, &pending).is_none() {
+                        self.control_settle_dialog(id, pending, "answered", None, "");
+                    } else if Instant::now() >= until {
+                        self.control_settle_dialog(id, pending, "input_sent", None, "");
+                    } else {
+                        pending.next = Instant::now() + Duration::from_millis(250);
+                        self.control.dialog_deliveries.insert(id, pending);
+                    }
+                    continue;
+                }
                 let edge = self.control_dialog_edge(id, &pending.request);
-                let reject = matches!(pending.response, api::DialogAnswer::Reject);
+                let reject =
+                    matches!(pending.answer, DeliveryAnswer::Dialog(api::DialogAnswer::Reject));
                 // An answer the mod carries (T-576) is confirmed by the mod's
                 // own report alone: the engine's `PostToolUse`, or a refusal,
                 // is the person's answer winning the race in the pane.
@@ -1367,29 +1379,40 @@ impl Daemon {
             let allowed = match &pending.by {
                 Deliverer::Phone { grant, device, .. } => {
                     let by = pending.by.principal();
+                    let (action, waiting) = match pending.answer {
+                        DeliveryAnswer::Dialog(_) => {
+                            (Action::PromptExisting, self.dialog_waiting(id))
+                        }
+                        DeliveryAnswer::Approval { .. } => {
+                            (Action::ApproveExisting, self.approval_waiting(id))
+                        }
+                    };
                     self.control_granted(*grant, *device)
-                        && !authorize(&by, &Action::PromptExisting, &Resource::Session { id })
-                            .denied()
+                        && !authorize(&by, &action, &Resource::Session { id }).denied()
                         && self.control_target(&pending.ticket.to_string(), &id.to_string())
                             == Some(id)
-                        && self.dialog_waiting(id)
+                        && waiting
                 }
                 Deliverer::Crown { crown, session, .. } => {
                     self.crown_answer_allowed(*crown, *session, pending.ticket, id)
                 }
                 Deliverer::Board => self.dialog_waiting(id),
             };
-            let dialog = self.control.dialogs.get(&id).filter(|d| d.request == pending.request);
+            let standing = self.delivery_standing(id, &pending);
             // A session whose mod speaks `answer` takes the whole answer in
             // one frame (T-576): no screen is read, no key is sent, a batch
             // or a several-choice question is answered whole, and the mod
             // returns it in the dialog's place. A refusal stays the Escape
             // key: the mod has no refusal of its own that puts no words of
             // ours in front of the model.
-            let mod_answers = dialog
+            let mod_answers = standing
                 .filter(|_| allowed && Instant::now() < pending.deadline)
                 .filter(|_| self.mod_speaks(id, "answer"))
-                .and_then(|d| match (&d.content, dialog_plan(d, &pending.response)) {
+                .and_then(|s| match s {
+                    Standing::Dialog(d, response) => Some((d, dialog_plan(d, response))),
+                    Standing::Approval(..) => None,
+                })
+                .and_then(|(d, plan)| match (&d.content, plan) {
                     (api::DialogContent::Questions { questions }, Some(Plan::Single(a))) => {
                         Some(mod_answers(questions, std::slice::from_ref(&a)))
                     }
@@ -1419,7 +1442,7 @@ impl Daemon {
             }
             let screen = self.dialog_screen(id);
             let kind = self.session_kind(id);
-            let step = match dialog {
+            let step = match standing {
                 None => Err("state_changed"),
                 Some(_) if !allowed => Err("state_changed"),
                 Some(_)
@@ -1427,8 +1450,7 @@ impl Daemon {
                 {
                     Err("deadline")
                 }
-                Some(d) => dialog_step_for(kind, d, &pending.response, &screen, &pending.walk)
-                    .map_err(Miss::word),
+                Some(s) => dialog_step_for(kind, s, &screen, &pending.walk).map_err(Miss::word),
             };
             let sid = id.simple().to_string()[..16].to_string();
             // `Ok(true)` is the last key: Enter, or Escape for a refusal. A
@@ -1526,6 +1548,29 @@ impl Daemon {
         self.control.dialog_edges.get(&session).filter(|(r, _)| r == request).map(|(_, e)| *e)
     }
 
+    /// The request `pending` answers on `id`, while it stands (T-873): the
+    /// dialog projected for it, or the Codex approval's wait.
+    fn delivery_standing<'a>(
+        &'a self,
+        id: uuid::Uuid,
+        pending: &'a DialogDelivery,
+    ) -> Option<Standing<'a>> {
+        match &pending.answer {
+            DeliveryAnswer::Dialog(response) => self
+                .control
+                .dialogs
+                .get(&id)
+                .filter(|d| d.request == pending.request)
+                .map(|d| Standing::Dialog(d, response)),
+            DeliveryAnswer::Approval { allow } => self
+                .control
+                .permissions
+                .get(&id)
+                .filter(|p| p.codex() && p.projection.request == pending.request)
+                .map(|p| Standing::Approval(&p.projection, *allow)),
+        }
+    }
+
     /// The harness behind a session's pane; a record gone reads as Claude's,
     /// whose shapes refuse any other screen.
     pub(super) fn session_kind(&self, id: uuid::Uuid) -> SessionKind {
@@ -1547,6 +1592,13 @@ impl Daemon {
         })
     }
 
+    /// Whether the session still waits on a permission (T-846).
+    fn approval_waiting(&self, id: uuid::Uuid) -> bool {
+        self.board.sessions.iter().any(|s| {
+            s.id == id && s.state == SessionState::RequiresAction { reason: Reason::Permission }
+        })
+    }
+
     /// The pane's whole visible screen: a dialog is the question, up to
     /// eight options with their descriptions, and the footer (T-567).
     fn dialog_screen(&self, id: uuid::Uuid) -> String {
@@ -1558,7 +1610,9 @@ impl Daemon {
 
     /// A dialog answer's last word (T-567): its receipt and feed line, and
     /// the projection kept while the session still waits and `screen` still
-    /// shows the dialog, so the card still offers the question.
+    /// shows the dialog, so the card still offers the question. A Codex
+    /// approval's wait is dropped once the keys went in, whatever confirmed
+    /// them; one no key carried stays for the next answer (T-846).
     fn control_settle_dialog(
         &mut self,
         id: uuid::Uuid,
@@ -1591,17 +1645,21 @@ impl Daemon {
         let by = pending.by.principal();
         match pending.by {
             Deliverer::Phone { grant, command, .. } => {
+                let event = match pending.answer {
+                    DeliveryAnswer::Dialog(_) => "mesophon_dialog_answer",
+                    DeliveryAnswer::Approval { .. } => {
+                        if status != "unknown" {
+                            self.control.permissions.remove(&id);
+                        }
+                        "mesophon_permission_answer"
+                    }
+                };
                 self.control.remember(
                     grant,
                     command,
                     Reply::Delivery { status: status.into(), reason, replaced: None },
                 );
-                self.feed.board_outcome(
-                    by.actor(),
-                    "mesophon_dialog_answer",
-                    Some(pending.ticket),
-                    status,
-                );
+                self.feed.board_outcome(by.actor(), event, Some(pending.ticket), status);
             }
             Deliverer::Board => {
                 self.feed.board_outcome(by.actor(), "trust_accept", Some(pending.ticket), status);
@@ -1736,7 +1794,7 @@ impl Daemon {
                 by: Deliverer::Crown { crown, session, answer, reply: None, prior: None },
                 ticket: target,
                 request: request.into(),
-                response,
+                answer: DeliveryAnswer::Dialog(response),
                 deadline: Instant::now() + walk,
                 next: Instant::now(),
                 steps: 0,
@@ -2087,25 +2145,30 @@ impl Daemon {
             let (Ok(ticket), Some(grant)) = (ulid::Ulid::from_string(ticket), grant) else {
                 return Reply::Rejected { message: "invalid ticket".into() };
             };
-            if self.control.approvals.contains_key(&id) || self.control_input_in_flight(id) {
+            if self.control.dialog_deliveries.contains_key(&id) || self.control_input_in_flight(id)
+            {
                 return Reply::Rejected { message: "input is already pending".into() };
             }
             let Some(device) = self.control.peers.get(peer).map(|p| p.device) else {
                 return Reply::Rejected { message: "session changed".into() };
             };
-            self.control.approvals.insert(
+            let (max_steps, walk) = ONE_WALK;
+            self.control.dialog_deliveries.insert(
                 id,
-                ApprovalDelivery {
-                    grant,
-                    device,
-                    command,
+                DialogDelivery {
+                    by: Deliverer::Phone { grant, device, command },
                     ticket,
                     request: request.into(),
-                    allow: decision == api::PermissionDecision::Allow,
-                    deadline: Instant::now() + Duration::from_secs(8),
+                    answer: DeliveryAnswer::Approval {
+                        allow: decision == api::PermissionDecision::Allow,
+                    },
+                    deadline: Instant::now() + walk,
                     next: Instant::now(),
                     steps: 0,
+                    max_steps,
+                    walk: Walk::default(),
                     confirm: None,
+                    by_mod: None,
                 },
             );
             return Reply::delivery("awaiting_delivery");
@@ -2129,122 +2192,6 @@ impl Daemon {
         );
         self.control_changed();
         Reply::delivery(if sent { "decision_sent" } else { "unknown" })
-    }
-
-    /// Walk each queued Codex approval answer one key per pass (T-846), as
-    /// `control_deliver_dialogs` walks a question: to the `Yes, proceed`
-    /// row for an allow, the `No, …` row for a deny, then Enter. The last
-    /// key waits for the request to leave the snapshot (`answered`),
-    /// `input_sent` past `DIALOG_CONFIRM`, and `unknown` with its reason
-    /// when no key could be chosen.
-    fn control_deliver_approvals(&mut self) {
-        use mesimon_backend_tmux::DialogKey;
-        let ready: Vec<_> = self
-            .control
-            .approvals
-            .iter()
-            .filter(|(_, p)| Instant::now() >= p.next)
-            .map(|(id, _)| *id)
-            .collect();
-        for id in ready {
-            let Some(mut pending) = self.control.approvals.remove(&id) else { continue };
-            let standing = self
-                .control
-                .permissions
-                .get(&id)
-                .is_some_and(|p| p.codex() && p.projection.request == pending.request);
-            if let Some(until) = pending.confirm {
-                if !standing {
-                    self.control_settle_approval(id, pending, "answered", None);
-                } else if Instant::now() >= until {
-                    self.control_settle_approval(id, pending, "input_sent", None);
-                } else {
-                    pending.next = Instant::now() + Duration::from_millis(250);
-                    self.control.approvals.insert(id, pending);
-                }
-                continue;
-            }
-            let by = Principal::Paired {
-                device: pending.device.to_hex(),
-                grant: pending.grant.to_hex(),
-            };
-            let allowed = standing
-                && self.control_granted(pending.grant, pending.device)
-                && !authorize(&by, &Action::ApproveExisting, &Resource::Session { id }).denied()
-                && self.control_target(&pending.ticket.to_string(), &id.to_string()) == Some(id)
-                && self.board.sessions.iter().any(|s| {
-                    s.id == id
-                        && s.state == SessionState::RequiresAction { reason: Reason::Permission }
-                });
-            let screen = self.dialog_screen(id);
-            let step = if !allowed {
-                Err("state_changed")
-            } else if Instant::now() >= pending.deadline || pending.steps >= 12 {
-                Err("deadline")
-            } else {
-                let projection = self.control.permissions.get(&id).map(|p| p.projection.clone());
-                match projection {
-                    Some(p) => codex_approval_step(&screen, pending.allow, &p).map_err(Miss::word),
-                    None => Err("state_changed"),
-                }
-            };
-            let sid = id.simple().to_string()[..16].to_string();
-            let sent = step.and_then(|step| {
-                match step {
-                    DialogStep::Up => self.backend.dialog_key(&sid, DialogKey::Up).map(|_| false),
-                    DialogStep::Down => {
-                        self.backend.dialog_key(&sid, DialogKey::Down).map(|_| false)
-                    }
-                    DialogStep::Submit => self.backend.send_enter(&sid).map(|_| true),
-                    _ => return Err("shape_unrecognised"),
-                }
-                .map_err(|_| "pane_unreachable")
-            });
-            match sent {
-                Ok(last) => {
-                    pending.steps += 1;
-                    pending.next =
-                        Instant::now() + Duration::from_millis(if last { 250 } else { 350 });
-                    if last {
-                        pending.confirm = Some(Instant::now() + DIALOG_CONFIRM);
-                    }
-                    self.control.approvals.insert(id, pending);
-                }
-                Err(reason) => {
-                    let reason = walk_reason(reason, pending.steps);
-                    self.control_settle_approval(id, pending, "unknown", Some(reason));
-                }
-            }
-        }
-    }
-
-    /// A Codex approval answer's last word (T-846): its receipt and feed
-    /// line. The wait is dropped once the keys went in, whatever confirmed
-    /// them; one no key carried stays for the next answer.
-    fn control_settle_approval(
-        &mut self,
-        id: uuid::Uuid,
-        pending: ApprovalDelivery,
-        status: &str,
-        reason: Option<String>,
-    ) {
-        if status != "unknown" {
-            self.control.permissions.remove(&id);
-        }
-        self.control.remember(
-            pending.grant,
-            pending.command,
-            Reply::Delivery { status: status.into(), reason, replaced: None },
-        );
-        let by =
-            Principal::Paired { device: pending.device.to_hex(), grant: pending.grant.to_hex() };
-        self.feed.board_outcome(
-            by.actor(),
-            "mesophon_permission_answer",
-            Some(pending.ticket),
-            status,
-        );
-        self.control_changed();
     }
 
     /// The request a Codex seat's snapshot carries, projected (T-846): a
@@ -3606,7 +3553,7 @@ impl Daemon {
                 by: Deliverer::Board,
                 ticket,
                 request,
-                response: api::DialogAnswer::Accept,
+                answer: DeliveryAnswer::Dialog(api::DialogAnswer::Accept),
                 deadline: Instant::now() + walk,
                 next: Instant::now(),
                 steps: 0,
@@ -4573,18 +4520,22 @@ struct Walk {
     toggled: Option<(usize, usize)>,
 }
 
+/// The keys and the time a walk to one row and its Enter may take (T-567):
+/// one question's one choice, a plan, a trust dialog, a Codex approval.
+const ONE_WALK: (u8, Duration) = (12, Duration::from_secs(8));
+
 /// How many keys an answer may take and how long its walk may run. The one
-/// question with one choice, and a plan, keep T-567's 12 keys and 8 s. A
+/// question with one choice, and a plan, keep `ONE_WALK`. A
 /// batch or a several-choice question (T-571) has room for each tab's rows
 /// crossed twice, a tick on every option, its text, its Enter and the
 /// review's two keys, at the walk's 350 ms a key with margin, up to
 /// `DIALOG_WALK_MAX`.
 fn walk_budget(dialog: &api::Dialog) -> (u8, Duration) {
     let api::DialogContent::Questions { questions } = &dialog.content else {
-        return (12, Duration::from_secs(8));
+        return ONE_WALK;
     };
     if !dialog_batched(questions) {
-        return (12, Duration::from_secs(8));
+        return ONE_WALK;
     }
     let keys: usize = questions.iter().map(|q| 3 * q.options.len() + 8).sum::<usize>() + 4;
     let keys = u8::try_from(keys).unwrap_or(u8::MAX);
@@ -4967,18 +4918,19 @@ fn codex_shapes(kind: SessionKind, dialog: &api::Dialog) -> bool {
 }
 
 /// `dialog_step` for the harness whose pane shows the dialog (T-846):
-/// Claude Code's measured shapes, or Codex's.
+/// Claude Code's measured shapes, or Codex's, and a Codex approval's rows.
 fn dialog_step_for(
     kind: SessionKind,
-    dialog: &api::Dialog,
-    response: &api::DialogAnswer,
+    standing: Standing<'_>,
     screen: &str,
     walk: &Walk,
 ) -> Result<DialogStep, Miss> {
-    if codex_shapes(kind, dialog) {
-        codex_dialog_step(dialog, response, screen)
-    } else {
-        dialog_step(dialog, response, screen, walk)
+    match standing {
+        Standing::Approval(projection, allow) => codex_approval_step(screen, allow, projection),
+        Standing::Dialog(dialog, response) if codex_shapes(kind, dialog) => {
+            codex_dialog_step(dialog, response, screen)
+        }
+        Standing::Dialog(dialog, response) => dialog_step(dialog, response, screen, walk),
     }
 }
 
@@ -5477,11 +5429,21 @@ mod tests {
         // split (T-871): Codex's own shapes know no trust dialog.
         assert!(!codex_shapes(SessionKind::Codex, &trust));
         assert_eq!(
-            dialog_step_for(SessionKind::Codex, &trust, &accept, codex, &Walk::default()),
+            dialog_step_for(
+                SessionKind::Codex,
+                Standing::Dialog(&trust, &accept),
+                codex,
+                &Walk::default()
+            ),
             Ok(DialogStep::Submit)
         );
         assert_eq!(
-            dialog_step_for(SessionKind::Codex, &trust, &accept, &on_quit, &Walk::default()),
+            dialog_step_for(
+                SessionKind::Codex,
+                Standing::Dialog(&trust, &accept),
+                &on_quit,
+                &Walk::default()
+            ),
             Ok(DialogStep::Up)
         );
         assert!(dialog_shape_for(SessionKind::Codex, &trust, codex));
@@ -7174,7 +7136,12 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         let dialog = codex_question();
         let choose = |i| api::DialogAnswer::Choice { index: i };
         let step = |response, screen: &str| {
-            dialog_step_for(SessionKind::Codex, &dialog, &response, screen, &Walk::default())
+            dialog_step_for(
+                SessionKind::Codex,
+                Standing::Dialog(&dialog, &response),
+                screen,
+                &Walk::default(),
+            )
         };
         assert_eq!(step(choose(0), CODEX_QUESTION), Ok(DialogStep::Submit));
         assert_eq!(step(choose(1), CODEX_QUESTION), Ok(DialogStep::Down));
@@ -7257,6 +7224,13 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         let p = codex_approval(Some(reason), Some(command));
         assert_eq!(codex_approval_step(CODEX_APPROVAL, true, &p), Ok(DialogStep::Submit));
         assert_eq!(codex_approval_step(CODEX_APPROVAL, false, &p), Ok(DialogStep::Down));
+        // T-873: the dialog walker takes an approval to these rows.
+        let walked = |allow| {
+            let standing = Standing::Approval(&p, allow);
+            dialog_step_for(SessionKind::Codex, standing, CODEX_APPROVAL, &Walk::default())
+        };
+        assert_eq!(walked(true), Ok(DialogStep::Submit));
+        assert_eq!(walked(false), Ok(DialogStep::Down));
         let on_two =
             CODEX_APPROVAL.replace("› 1.", "  1.").replace("  2. Yes, and", "› 2. Yes, and");
         assert_eq!(codex_approval_step(&on_two, true, &p), Ok(DialogStep::Up));
@@ -7303,7 +7277,12 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         };
         let dialog = "Implement this plan?\n› Yes, implement this plan\n  No, stay in Plan mode\n";
         let step = |response, screen: &str| {
-            dialog_step_for(SessionKind::Codex, &plan, &response, screen, &Walk::default())
+            dialog_step_for(
+                SessionKind::Codex,
+                Standing::Dialog(&plan, &response),
+                screen,
+                &Walk::default(),
+            )
         };
         assert_eq!(step(api::DialogAnswer::Accept, dialog), Ok(DialogStep::Submit));
         let no = dialog.replace("› Yes", "  Yes").replace("  No", "› No");

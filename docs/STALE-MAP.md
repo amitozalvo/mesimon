@@ -29384,3 +29384,34 @@ on one pass, two from production, from DONE, a stage over board order, a merge b
 `forge_e2e::a_deploy_to_an_earlier_environment_never_moves_the_card_back` (glab stub, three
 environment columns after REVIEW, production first while the crown's turn runs, dev and staging
 a pass later, the card in PROD, no move to STAGING or DEV in the feed, and the held line).
+
+## One dialog walker: a Codex approval is a `DialogDelivery` (T-873, 2026-10-22, "One dialog walker on the phone's control road")
+
+Found by the sixth simplify pass (T-867). `server/mesophon.rs` walked a phone's Codex approval
+(T-846) in a loop of its own, `control_deliver_approvals`/`control_settle_approval` over
+`ApprovalDelivery`, beside `control_deliver_dialogs`/`control_settle_dialog`: the same ready
+set, the same `allowed` gate, the same key send (a subset), the same `steps`/`confirm`/
+`walk_reason` bookkeeping and the same receipt tail.
+
+**The merge.** `DialogDelivery.response` is now `answer: DeliveryAnswer`, `Dialog(api::DialogAnswer)`
+or `Approval { allow }`, and an approval rides `dialog_deliveries` with `by: Deliverer::Phone`.
+`delivery_standing` returns the request while it stands, as `Standing::Dialog(dialog, answer)`
+off `dialogs` or `Standing::Approval(projection, allow)` off a Codex wait in `permissions`, and
+`dialog_step_for` takes that `Standing`, so an approval goes to `codex_approval_step` and a
+mismatched pair cannot be spelled. The four places the two loops differed are match arms in
+the one loop: the confirm (an approval is confirmed by its wait leaving the snapshot, a dialog
+by its hook edge), the phone's gate (`ApproveExisting` and a `Permission` stop, against
+`PromptExisting` and `dialog_waiting`), the mod's `answer` frame (dialogs only), and the settle
+(an approval's wait dropped once keys went in, feed `mesophon_permission_answer`). The 12 keys
+and 8 s an approval and a one-row dialog share are `ONE_WALK`. `control.approvals`,
+`ApprovalDelivery` and both functions are gone.
+
+**No behaviour change, and no receipt changed shape.** The ticket expected two receipts to merge
+into one; both were already `Reply::Delivery { status, reason, replaced: None }`, and each feed
+word stays its own. One map now holds both, so a dialog answer and an approval on one session
+refuse each other as `input is already pending`; a session stops on one of them at a time, so
+that was never reachable.
+
+Tests: `a_codex_approval_walks_to_yes_or_no_and_confirms` also walks through `dialog_step_for`;
+`provider_e2e`, `trust_accept_e2e`, `approve_bridge` and `crown_e2e` green. No e2e in this
+repository drives a phone's approval; the relay's browser tests do.
