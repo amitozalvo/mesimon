@@ -29816,3 +29816,37 @@ naming the note, and `read_note` returns it whole).
 paragraph, and the crown, which never saw the brief, finds it with `get_ticket`. On the real
 Sonnet, 2026-10-22, Claude Code 2.1.308: PASS in 34 s, first prompt 8,719 characters byte for
 byte, both replies `tamarind`.
+
+## A key that reads the board before it writes waits for its last press's board (T-812 review, 2026-10-22)
+
+An independent review of T-812 (T-897's `Review` note) found five regressions with one root: a
+key that read the displayed board, sent a change derived from it, and asked the next board on
+the lane, so a second press read a board that had not caught up. Column settings (the whole
+struct goes) undid each other in the daemon; `u` restored an older grace entry, or was not
+offered at all; `>>` and `.` let the cursor follow the card out of its column; an answer older
+than a `c` stood its parked focus down; two `^n`, two tag-colour presses or two tag toggles
+stepped once.
+
+**The rule.** Every ask is counted (`snapshot_sent`), the board on screen knows the count it was
+asked at (`landing`), and `need_seq` is the count a board must have to show the last change this
+board made. `App::catch_up` lands the ask out or fetches until `landing >= need_seq`; in the
+common case the answer came within the frame and nothing waits. It runs before every
+read-modify-write key: `set_column` and the two column text savers, the tier cycle, the tag
+colour, toggle and quick cycle, the twelve board switches (manual merge, crown and its five
+settings, agent tools, the brief, the board's workspace), sleep and wake (the key's `Ctx` is
+rebuilt after it), `nudge`, `.` and every drop. The delete waits for its own board
+(`send_now_on`), because `u` and its target are read off the grace band. Intents armed before an
+ask are fenced by the count: `pending_spawn_focus` carries the count at the key and is judged
+only by a later board, and a filing (`>>`, `.`) sets `cursor_hold` so the landing that shows the
+move keeps the cursor home and the next card slides under it; a nudge rides its card as before.
+Not delta commands on the wire: the wire is unchanged, and each of these keys already took one
+round trip before it.
+
+**Tests.** `a_column_edit_reads_the_edit_before_it`,
+`undo_restores_the_ticket_just_deleted_not_an_earlier_one`,
+`a_filing_keeps_the_cursor_home_when_the_board_lands_late`,
+`an_answer_older_than_the_spawn_leaves_its_focus_parked`,
+`repeated_presses_each_step_once_while_the_board_lands_late` (tier, tag colour, tag toggle), each
+on a fake whose snapshot answers come late; the fake now keeps a grace band and applies tags and
+tag colours. `a_snapshot_in_flight_blocks_no_key_and_no_frame` keeps its claim for keys that
+read nothing (navigation, frames) and now shows a move waiting for the ask out.

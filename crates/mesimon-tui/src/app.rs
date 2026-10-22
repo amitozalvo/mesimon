@@ -1982,7 +1982,7 @@ pub struct App {
     /// (`Response::Provisioning`); this parks the focus half of that keypress.
     /// The first refresh that shows the replayed session finishes it; any
     /// other keypress abandons it (the user moved on — never yank focus).
-    pending_spawn_focus: Option<(ulid::Ulid, SessionKind)>,
+    pending_spawn_focus: Option<(ulid::Ulid, SessionKind, u64)>,
     /// The session a running handover holds focus on (and where the focus
     /// started) — released on return.
     focused_session_hint: Option<FocusTarget>,
@@ -2139,8 +2139,22 @@ pub struct App {
     /// a thread of its own, landed by `poll_snapshot` on this thread. One
     /// at a time: a push or a key that wants the board while one is out
     /// sets `snapshot_wanted`, and the landing asks once more.
-    snapshot_rx: Option<Receiver<Result<Response>>>,
+    snapshot_rx: Option<(u64, Receiver<Result<Response>>)>,
     snapshot_wanted: bool,
+    /// Every snapshot asked, counted (T-812 review): `landing` is the count
+    /// the displayed board was asked at, `need_seq` the count a board must
+    /// have been asked at to show the last change this board made or heard
+    /// of. A key whose write is decided by a read of the board reads after
+    /// `catch_up`, and an intent armed before an ask — a parked focus, a
+    /// cursor kept home — ignores an answer asked before the key.
+    snapshot_sent: u64,
+    landing: u64,
+    need_seq: u64,
+    /// A card this board filed away by `>>` or `.` (T-812 review), and the
+    /// count of the first board that shows the move: at that landing the
+    /// cursor stays where it was, the next card sliding under it, instead
+    /// of following the card into its column.
+    cursor_hold: Option<(ulid::Ulid, u64)>,
 }
 
 impl App {
@@ -2349,6 +2363,10 @@ impl App {
             last_reconnect: None,
             snapshot_rx: None,
             snapshot_wanted: false,
+            snapshot_sent: 1,
+            landing: 1,
+            need_seq: 1,
+            cursor_hold: None,
             // None: `lib.rs` starts the thread, so a test app is mute and
             // opens no second connection.
             notifier: None,
@@ -2826,6 +2844,14 @@ impl App {
         self.refresh_soon()
     }
 
+    /// `send_on`, waited for: the line after it reads the fresh board.
+    fn send_now_on(&mut self, ticket: ulid::Ulid, command: Command) -> Result<()> {
+        if let Response::Err { message } = self.req(command) {
+            self.refuse(ticket, message);
+        }
+        self.refresh()
+    }
+
     /// Is a refusal shake still running?
     fn shaking(&self) -> bool {
         self.refused.is_some_and(|(_, at)| at.elapsed() < SHAKE_STEP * SHAKE_OFFSETS.len() as u32)
@@ -2925,8 +2951,30 @@ impl App {
         self.settle_snapshot()?;
         // What the pushes wanted is on its way here.
         self.snapshot_wanted = false;
+        self.snapshot_sent += 1;
+        self.need_seq = self.snapshot_sent;
+        let seq = self.snapshot_sent;
         let got = fetch(self.client.as_mut());
-        self.land_snapshot(got)
+        self.land_snapshot(seq, got)
+    }
+
+    /// The displayed board, as new as the last change this board made or
+    /// heard of (T-812 review): a key whose write is decided by a read of
+    /// the board — a toggle, a cycle, a whole settings struct, a move's
+    /// place in its column — reads after this, so two presses before the
+    /// first's board lands neither send the same value twice nor undo
+    /// each other. The ask in flight is landed when that is enough, else a
+    /// fetch is made; in the common case the answer came within the frame
+    /// and nothing waits.
+    pub(crate) fn catch_up(&mut self) -> Result<()> {
+        if self.landing >= self.need_seq {
+            return Ok(());
+        }
+        self.settle_snapshot()?;
+        if self.landing >= self.need_seq {
+            return Ok(());
+        }
+        self.refresh()
     }
 
     /// The board, soon (T-812): asked on the transport's lane from a thread
@@ -2939,14 +2987,23 @@ impl App {
     /// once when the answer is already in, which a fake's always is.
     pub(crate) fn refresh_soon(&mut self) -> Result<()> {
         while self.client.poll_event() {}
+        // The next ask — this one, or the follow-up of the one out — is the
+        // first board that shows what this call is about.
+        self.need_seq = self.snapshot_sent + 1;
         if self.snapshot_rx.is_some() {
             self.snapshot_wanted = true;
         } else {
             self.snapshot_wanted = false;
-            self.snapshot_rx = Some(self.client.snapshot_detached());
+            self.send_snapshot();
         }
         self.poll_snapshot()?;
         Ok(())
+    }
+
+    /// One ask on the lane, counted.
+    fn send_snapshot(&mut self) {
+        self.snapshot_sent += 1;
+        self.snapshot_rx = Some((self.snapshot_sent, self.client.snapshot_detached()));
     }
 
     /// The snapshot in flight, landed when its answer is in (`pump`): the
@@ -2954,17 +3011,18 @@ impl App {
     /// landed. A follow-up goes out here when something wanted the board
     /// meanwhile — unless a merge is running, whose reply asks (T-431).
     pub(crate) fn poll_snapshot(&mut self) -> Result<bool> {
-        let Some(rx) = self.snapshot_rx.as_ref() else { return Ok(false) };
+        let Some((seq, rx)) = self.snapshot_rx.as_ref() else { return Ok(false) };
+        let seq = *seq;
         let got = match rx.try_recv() {
             Ok(reply) => reply,
             Err(TryRecvError::Empty) => return Ok(false),
             Err(TryRecvError::Disconnected) => Err(anyhow::anyhow!("snapshot request lost")),
         };
         self.snapshot_rx = None;
-        self.land_snapshot(got.and_then(snapshot_of))?;
+        self.land_snapshot(seq, got.and_then(snapshot_of))?;
         if self.snapshot_wanted && !self.merge_in_flight() {
             self.snapshot_wanted = false;
-            self.snapshot_rx = Some(self.client.snapshot_detached());
+            self.send_snapshot();
         }
         Ok(true)
     }
@@ -2973,9 +3031,9 @@ impl App {
     /// fetched on this thread (`refresh`, the drawer's rescan), so the one
     /// asked earlier never lands after it and rolls the board back.
     fn settle_snapshot(&mut self) -> Result<()> {
-        let Some(rx) = self.snapshot_rx.take() else { return Ok(()) };
+        let Some((seq, rx)) = self.snapshot_rx.take() else { return Ok(()) };
         let got = rx.recv().unwrap_or_else(|_| Err(anyhow::anyhow!("snapshot request lost")));
-        self.land_snapshot(got.and_then(snapshot_of))
+        self.land_snapshot(seq, got.and_then(snapshot_of))
     }
 
     /// Is a snapshot out on the lane?
@@ -2986,9 +3044,10 @@ impl App {
 
     /// Every snapshot's landing, whichever road asked: `absorb`, then what
     /// the fresh board settles.
-    fn land_snapshot(&mut self, got: Result<Snapshot>) -> Result<()> {
+    fn land_snapshot(&mut self, seq: u64, got: Result<Snapshot>) -> Result<()> {
         match got {
             Ok(snap) => {
+                self.landing = seq;
                 self.absorb(snap);
                 self.reconcile_train();
                 self.reconcile_status_line();
@@ -3013,9 +3072,15 @@ impl App {
     /// silently after the binding attached) surfaces in the status line
     /// instead of leaving "session starts when ready" quietly unfulfilled.
     fn settle_pending_spawn_focus(&mut self) -> Result<()> {
-        let Some((ticket, kind)) = self.pending_spawn_focus else {
+        let Some((ticket, kind, since)) = self.pending_spawn_focus else {
             return Ok(());
         };
+        // An answer asked before the key (T-812 review) shows neither the
+        // session nor the binding, and read as "binding vanished" it stood
+        // the focus down. The first board asked after the key can say.
+        if self.landing <= since {
+            return Ok(());
+        }
         if self.board.ticket(ticket).is_none() {
             self.pending_spawn_focus = None;
             return Ok(());
@@ -3136,6 +3201,8 @@ impl App {
     fn absorb_board(&mut self, resp: Response) {
         if let Some(snap) = Snapshot::of(resp) {
             self.snapshot_wanted = false;
+            self.snapshot_sent += 1;
+            self.landing = self.snapshot_sent;
             self.absorb(snap);
         }
     }
@@ -3182,7 +3249,19 @@ impl App {
         // The cursor holds its TICKET across the pass (T-335): a card that
         // a teammate moved or reordered keeps the selection on it, and one
         // that left the board lands the cursor where it was.
-        let followed = self.selected_ticket().map(|t| t.id);
+        let mut followed = self.selected_ticket().map(|t| t.id);
+        // A card this board filed away (T-812 review): at the first landing
+        // that shows the move the cursor stays put — the next card slides
+        // under it, which is what `>>` and `.` mean — instead of following
+        // the card into its column. An older landing still draws it home.
+        if let Some((filed, need)) = self.cursor_hold {
+            if self.landing >= need {
+                self.cursor_hold = None;
+                if followed == Some(filed) {
+                    followed = None;
+                }
+            }
+        }
         let joined_before = self.team.board.as_ref().map(|b| b.role != "owner");
         let crown_was = self.board.crown;
         // Where each touched card stood before this snapshot (T-544): a
@@ -7889,6 +7968,7 @@ impl App {
                 self.tag_clamp();
             }
             Verb::TagColor | Verb::TagColorBack => {
+                self.catch_up()?;
                 let Some((group, name, tint)) = self.tag_cell() else { return Ok(()) };
                 let n = mesimon_core::board::TAG_TINTS;
                 let step = if verb == Verb::TagColorBack { n - 1 } else { 1 };
@@ -7910,6 +7990,7 @@ impl App {
                 }
             }
             Verb::TagToggle => {
+                self.catch_up()?;
                 // Naming borrows Enter; the hint says so.
                 if self.tag_armed.as_ref().is_some_and(|a| a.naming.is_some()) {
                     return self.commit_tag_name();
@@ -8045,6 +8126,7 @@ impl App {
             // ticket file and comes back on the snapshot, so the card's row
             // and the hint relabel themselves off the answer.
             Verb::ManualMerge => {
+                self.catch_up()?;
                 if let Some(id) = self.subject() {
                     let on = !self.board.ticket(id).is_some_and(|t| t.manual_merge);
                     let key = self.board.ticket(id).map(|t| t.short_key.clone()).unwrap_or_default();
@@ -8062,6 +8144,7 @@ impl App {
                 }
             }
             Verb::Crown => {
+                self.catch_up()?;
                 if let Some(id) = self.subject() {
                     let key = self.board.ticket(id).map(|t| t.short_key.clone()).unwrap_or_default();
                     let on = !self.board.is_crowned(id);
@@ -8122,6 +8205,7 @@ impl App {
             // in `key_input` and `key_editor`.
             Verb::TierNext => self.cycle_tier()?,
             Verb::CrownBudget => {
+                self.catch_up()?;
                 let budget = match self.board.crown_budget {
                     0 => 1,
                     1 => 2,
@@ -8136,6 +8220,7 @@ impl App {
                 }
             }
             Verb::CrownMode => {
+                self.catch_up()?;
                 let mode = self.board.crown_mode.toggled();
                 match self.client.request(Command::SetCrownMode { mode })? {
                     Response::Err { message } => self.status = message,
@@ -8158,6 +8243,7 @@ impl App {
             // like the crown's mode, so it goes to the daemon and comes back
             // on the snapshot.
             Verb::MergeInto => {
+                self.catch_up()?;
                 let into = self.board.merge_into.toggled();
                 match self.client.request(Command::SetMergeInto { into })? {
                     Response::Err { message } => self.status = message,
@@ -8174,6 +8260,7 @@ impl App {
                 }
             }
             Verb::CrownArchives => {
+                self.catch_up()?;
                 let on = !self.board.crown_archives;
                 match self.client.request(Command::SetCrownArchives { on })? {
                     Response::Err { message } => self.status = message,
@@ -8189,6 +8276,7 @@ impl App {
                 }
             }
             Verb::ReviewedPrs => {
+                self.catch_up()?;
                 let on = !self.board.reviewed_prs;
                 match self.client.request(Command::SetReviewedPrs { on })? {
                     Response::Err { message } => self.status = message,
@@ -8208,6 +8296,7 @@ impl App {
                 }
             }
             Verb::CrownWatches => {
+                self.catch_up()?;
                 let on = !self.board.crown_watches;
                 match self.client.request(Command::SetCrownWatches { on })? {
                     Response::Err { message } => self.status = message,
@@ -8224,6 +8313,7 @@ impl App {
                 }
             }
             Verb::McpTools => {
+                self.catch_up()?;
                 let on = !self.board.mcp_tools;
                 match self.client.request(Command::SetMcpTools { on })? {
                     Response::Err { message } => self.status = message,
@@ -8246,6 +8336,7 @@ impl App {
             // are on the screen before they are in anyone's system prompt —
             // the same consent the offer asks for, from the other door.
             Verb::SystemPrompt => {
+                self.catch_up()?;
                 if self.board.system_prompt {
                     self.set_system_prompt(false)?;
                 } else {
@@ -9104,6 +9195,7 @@ impl App {
             // Where a ticket nothing else chose works (T-816): board state,
             // to the daemon and back on the snapshot.
             Verb::BoardWorkspace => {
+                self.catch_up()?;
                 let workspace = if self.board.workspace == Some(WorkspaceStrategy::Worktree) {
                     WorkspaceStrategy::SharedCheckout
                 } else {
@@ -9889,6 +9981,10 @@ impl App {
     /// the daemon (one validation site for the two rule targets) and the row
     /// relabels off the snapshot — nothing local is flipped.
     fn set_column(&mut self, f: impl FnOnce(&mut ColumnSettings)) -> Result<()> {
+        // The settings as the daemon has them (T-812 review): the whole
+        // struct goes, so a second edit before the first's board lands
+        // would otherwise send the first's setting back off.
+        self.catch_up()?;
         let Some(col) = self.dialog_column() else { return Ok(()) };
         let name = col.name.clone();
         let mut settings = col.settings.clone();
@@ -9995,6 +10091,7 @@ impl App {
                     return Ok(());
                 };
                 let text = mesimon_core::board::sanitize_column_description(buf.as_str());
+                self.catch_up()?;
                 let Some(col) = self.dialog_column() else { return Ok(()) };
                 if col.settings.description != text {
                     let name = col.name.clone();
@@ -10038,6 +10135,7 @@ impl App {
                     return Ok(());
                 };
                 let env = mesimon_core::board::sanitize_environment(buf.as_str());
+                self.catch_up()?;
                 let Some(col) = self.dialog_column() else { return Ok(()) };
                 let name = col.name.clone();
                 let settings = match env {
@@ -11001,7 +11099,12 @@ impl App {
     /// `x`: sleep or wake. On the board the target is every session of the
     /// ticket; on the ticket page it is the selected one. One verb, one key,
     /// the target resolved by where you are.
-    fn sleep_verb(&mut self, scope: Scope, ctx: &Ctx) -> Result<()> {
+    fn sleep_verb(&mut self, scope: Scope, _: &Ctx) -> Result<()> {
+        // Sleep or wake is read off the board (T-812 review): the key's
+        // context is built again once the board is as new as the last press.
+        self.catch_up()?;
+        let fresh = self.ctx();
+        let ctx = &fresh;
         if scope == Scope::Ticket {
             let Some(sid) = self.selected_session() else {
                 return Ok(());
@@ -11100,7 +11203,7 @@ impl App {
         };
         self.mode = Mode::Normal;
         if c == grab {
-            self.drop_ghost(&cols, ticket, col, idx)?;
+            self.drop_ghost(&cols, ticket, col, idx, true)?;
             self.cursor_col = home.0;
             self.cursor_row = Some(home.1);
             self.clamp_cursor();
@@ -11164,6 +11267,9 @@ impl App {
         if self.on_column_header() {
             return self.reorder_column(key);
         }
+        // Where the card is now (T-812 review): a second nudge before the
+        // first's board lands would otherwise repeat the first.
+        self.catch_up()?;
         let cols = self.columns().to_vec();
         let Some(id) = self.selected_ticket().map(|t| t.id) else {
             return Ok(());
@@ -11200,7 +11306,8 @@ impl App {
             }
             _ => return Ok(()),
         };
-        self.drop_ghost(&cols, id, col, idx)
+        self.drop_ghost(&cols, id, col, idx, false)?;
+        Ok(())
     }
 
     /// `!` (T-273): the project's terminal — a persistent shell on the
@@ -12652,6 +12759,7 @@ impl App {
     /// and the composer (whose tags buffer `apply_tag` also feeds) never
     /// reaches this verb: a text field owns its digits.
     fn cycle_tag(&mut self, group: u8) -> Result<()> {
+        self.catch_up()?;
         let Some(id) = self.subject() else { return Ok(()) };
         let current = self.board.ticket(id).and_then(|t| t.tag_in(group)).map(|t| t.name.clone());
         let (empty, next) = {
@@ -12792,12 +12900,8 @@ impl App {
             return Ok(());
         }
         let workspace = if worktree { None } else { Some(WorkspaceStrategy::Worktree) };
-        if let Response::Err { message } = self.req(Command::SetWorkspace { id: ticket, workspace })
-        {
-            self.refuse(ticket, message);
-        }
         // Waited for: the sentence below reads the answer off the board.
-        self.refresh()?;
+        self.send_now_on(ticket, Command::SetWorkspace { id: ticket, workspace })?;
         // Only when the daemon took it: a refusal has already said why.
         if self
             .board
@@ -13076,7 +13180,9 @@ impl App {
             self.to_board();
         }
         self.last_undo = Some(LastUndo::Delete);
-        self.send_on(id, Command::DeleteTicket { id, discard_worktree: discard })
+        // Waited for (T-812 review): `u`'s target, and whether `u` is
+        // offered at all, are read off the grace band the board shows.
+        self.send_now_on(id, Command::DeleteTicket { id, discard_worktree: discard })
     }
 
     /// The m state machine: stage derives from git state; the first press
@@ -13433,13 +13539,22 @@ impl App {
     /// Commit the MOVE ghost: reinsert `ticket` at (`col`, `idx`) and land the
     /// cursor on it. A refused move lands nothing (T-450): the card never
     /// left, so the cursor stays on it and `.` is not armed with it.
+    ///
+    /// `stay`: the cursor keeps its place at the landing that shows the move
+    /// (a filing by `>>` or `.`: the next card slides under it) rather than
+    /// riding the card (a nudge). Returns whether the daemon took the move.
     fn drop_ghost(
         &mut self,
         cols: &[String],
         ticket: ulid::Ulid,
         col: usize,
         idx: usize,
-    ) -> Result<()> {
+        stay: bool,
+    ) -> Result<bool> {
+        // The target column as the daemon has it (T-812 review): a second
+        // filing before the first's board lands would otherwise be placed
+        // against a column the first already changed.
+        self.catch_up()?;
         let target_col = cols[col.min(cols.len() - 1)].clone();
         let others: Vec<ulid::Ulid> = self
             .board
@@ -13459,15 +13574,22 @@ impl App {
         if let Response::Err { message } = self.req(command) {
             // `refresh` holds the cursor on its ticket, which is still home.
             self.refuse(ticket, message);
-            return self.refresh_soon();
+            self.refresh_soon()?;
+            return Ok(false);
         }
         if filing {
             self.last_action = Some(LastAction::Move { column: target_col });
         }
+        if stay {
+            // The first board that shows the move is the next ask's.
+            self.cursor_hold = Some((ticket, self.snapshot_sent + 1));
+        }
         // Asked, not waited for (T-812): the card is drawn where it was,
         // the cursor on it, until the board lands, and `absorb` then
-        // follows the cursor's ticket to where the daemon put it.
-        self.refresh_soon()
+        // follows the cursor's ticket to where the daemon put it — or,
+        // filing, keeps the cursor home.
+        self.refresh_soon()?;
+        Ok(true)
     }
 
     /// Which column `.` would move the selected card into, or `None` when the
@@ -13499,19 +13621,23 @@ impl App {
     /// spent travelling back. It lands at the top of the target column, which
     /// is exactly where a fresh grab's ghost enters a foreign column.
     fn repeat_last(&mut self) -> Result<()> {
+        // The card under the cursor as the daemon has it (T-812 review): a
+        // `.` right after a `>>` files the card that slid under, not the
+        // one the last board still drew there.
+        self.catch_up()?;
         let Some(col) = self.repeat_target() else { return Ok(()) };
         let Some(id) = self.selected_ticket().map(|t| t.id) else { return Ok(()) };
         let cols = self.columns().to_vec();
         let (home_col, home_row) = (self.cursor_col, self.cursor_row);
-        self.drop_ghost(&cols, id, col, 0)?;
+        let moved = self.drop_ghost(&cols, id, col, 0, true)?;
         self.cursor_col = home_col;
         self.cursor_row = home_row;
         self.clamp_cursor();
         // Only claim it if it happened: `drop_ghost` puts a refusal (the DONE
         // gate on an unmerged worktree is the live one) into the status, and
         // saying "moved to done" over it would be the report contradicting
-        // the board. The card is proof either way.
-        if self.board.ticket(id).is_some_and(|t| t.column == cols[col]) {
+        // the board. The daemon's answer is the proof.
+        if moved {
             self.status = format!("moved to {}", cols[col]);
         }
         Ok(())
@@ -14066,7 +14192,7 @@ impl App {
             // intent finishes this keypress then.
             Response::Provisioning => {
                 self.status = "provisioning worktree ∙ session starts when ready".into();
-                self.pending_spawn_focus = Some((ticket, kind));
+                self.pending_spawn_focus = Some((ticket, kind, self.snapshot_sent));
                 self.refresh_soon()?;
             }
             Response::Err { message } => self.refuse(ticket, message),
@@ -14133,7 +14259,7 @@ impl App {
                     Response::Provisioning => {
                         let word = if kind.is_agent() { keymap::AGENT_WORD } else { "shell" };
                         self.status = format!("provisioning worktree ∙ {word} wakes when ready");
-                        self.pending_spawn_focus = Some((ticket, kind));
+                        self.pending_spawn_focus = Some((ticket, kind, self.snapshot_sent));
                         self.refresh_soon()?;
                         return Ok(());
                     }
@@ -14853,6 +14979,52 @@ pub(crate) mod test_support {
                     let id = ticket.id;
                     self.board.tickets.push(ticket);
                     return Ok(Response::Created { id });
+                }
+                // The grace band (T-812 review): a deleted ticket waits in it
+                // and a restore brings it back, as the daemon's does.
+                Command::DeleteTicket { id, .. } => {
+                    let Some(pos) = self.board.tickets.iter().position(|t| t.id == id) else {
+                        return Ok(Response::Err { message: "no such ticket".into() });
+                    };
+                    let t = self.board.tickets.remove(pos);
+                    self.grace.push(GraceItem {
+                        id: t.id,
+                        short_key: t.short_key,
+                        title: t.title,
+                        expires_in_secs: 60,
+                        live_sessions: 0,
+                    });
+                    return Ok(Response::Ok);
+                }
+                Command::RestoreTicket { id } => {
+                    let Some(pos) = self.grace.iter().position(|g| g.id == id) else {
+                        return Ok(Response::Err { message: "nothing to restore".into() });
+                    };
+                    let g = self.grace.remove(pos);
+                    let first = self
+                        .board
+                        .sorted_columns()
+                        .first()
+                        .map(|c| c.name.clone())
+                        .unwrap_or_default();
+                    let mut t = fake_ticket(first, g.title, None);
+                    t.id = g.id;
+                    t.short_key = g.short_key;
+                    self.board.tickets.push(t);
+                    return Ok(Response::Ok);
+                }
+                Command::SetTag { id, group, name } => {
+                    let Some(t) = self.board.tickets.iter_mut().find(|t| t.id == id) else {
+                        return Ok(Response::Err { message: "no such ticket".into() });
+                    };
+                    t.set_tag(group, name);
+                    return Ok(Response::Ok);
+                }
+                Command::SetTagColor { group, name, color } => {
+                    return Ok(match self.board.set_tag_color(group, &name, color) {
+                        Ok(()) => Response::Ok,
+                        Err(message) => Response::Err { message },
+                    });
                 }
                 Command::DuplicateTicket { id } => {
                     let Some(mut ticket) = self.board.ticket(id).cloned() else {
@@ -15639,8 +15811,18 @@ pub(crate) mod test_support {
             theme: Theme,
             refuse_focus: bool,
         ) -> (App, std::rc::Rc<std::cell::RefCell<Vec<String>>>) {
+            Self::for_test_with(board, theme, |fake| fake.refuse_focus = refuse_focus)
+        }
+
+        /// `for_test_logged`, the fake shaped by `tune` before the app
+        /// opens on it (its tiers, its grace band).
+        pub(crate) fn for_test_with(
+            board: Board,
+            theme: Theme,
+            tune: impl FnOnce(&mut FakeTransport),
+        ) -> (App, std::rc::Rc<std::cell::RefCell<Vec<String>>>) {
             let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-            let fake = FakeTransport {
+            let mut fake = FakeTransport {
                 board,
                 grace: vec![],
                 external: vec![],
@@ -15652,7 +15834,7 @@ pub(crate) mod test_support {
                 status_top: false,
                 claude_md: Default::default(),
                 sent: sent.clone(),
-                refuse_focus,
+                refuse_focus: false,
                 refuse_mint: false,
                 notes: std::collections::HashMap::new(),
                 terminals: Vec::new(),
@@ -15662,6 +15844,7 @@ pub(crate) mod test_support {
                 links: Vec::new(),
                 board_touches: Vec::new(),
             };
+            tune(&mut fake);
             let app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme)
                 .expect("fake transport snapshot");
             (app, sent)
@@ -16026,9 +16209,9 @@ mod tests {
 
     /// A snapshot in flight blocks no key and no frame (T-812): the board
     /// is asked on the lane, keys keep resolving and frames keep drawing on
-    /// the last board while the daemon takes its time, the pushes and the
-    /// keys that wanted the board meanwhile become one follow-up ask, and
-    /// a move's cursor rides the card once the board lands.
+    /// the last board while the daemon takes its time, the pushes that wanted
+    /// the board meanwhile become one follow-up ask, and a filing keeps the
+    /// cursor home once its board lands.
     #[test]
     fn a_snapshot_in_flight_blocks_no_key_and_no_frame() {
         let (mut app, _) = App::for_test_logged(board_three_columns(), theme(), false);
@@ -16048,33 +16231,35 @@ mod tests {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
         terminal.draw(|f| crate::ui::draw(f, &app)).unwrap();
-        // A move while it is out: the card is drawn where it was, the
-        // cursor on it, and the key asks nothing of its own.
-        press(&mut app, '>');
-        press(&mut app, '>');
-        assert!(app.snapshot_in_flight());
-        assert_eq!(hold.borrow().asks, 1, "a key wanting the board asks nothing while one is out");
-        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(1)));
-        assert_eq!(app.cursor_col, 0);
-        terminal.draw(|f| crate::ui::draw(f, &app)).unwrap();
         // Three more pushes: still the one ask.
         hold.borrow_mut().pushes = 3;
         app.pump().unwrap();
         assert_eq!(hold.borrow().asks, 1);
-        // The answer lands — the board from before the move — and one
-        // follow-up goes out for everything since.
+        // The answer lands, and one follow-up goes out for the pushes since.
         release(&hold);
         app.pump().unwrap();
-        assert_eq!(hold.borrow().asks, 2, "the pushes and the key became one follow-up");
+        assert_eq!(hold.borrow().asks, 2, "three pushes became one follow-up");
         assert!(app.snapshot_in_flight());
-        assert_eq!(app.board.ticket(ulid::Ulid(1)).map(|t| t.column.as_str()), Some("todo"));
-        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(0)), "the cursor holds its ticket");
+        // A move is a read-modify-write (its place in the column): it waits
+        // for the ask out (T-812 review), then asks once more after itself,
+        // and the card is drawn home, the cursor on it, until that lands.
+        release_late(&hold, LATE);
+        press(&mut app, '>');
+        press(&mut app, '>');
+        assert_eq!(hold.borrow().asks, 3, "the move's own ask");
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(1)));
+        terminal.draw(|f| crate::ui::draw(f, &app)).unwrap();
         release(&hold);
         app.pump().unwrap();
         assert!(!app.snapshot_in_flight());
-        assert_eq!(hold.borrow().asks, 2, "nothing wanted a third");
+        assert_eq!(hold.borrow().asks, 3, "nothing wanted a fourth");
         assert_eq!(app.board.ticket(ulid::Ulid(1)).map(|t| t.column.as_str()), Some("doing"));
-        assert_eq!((app.cursor_col, app.cursor_row), (1, Some(0)), "the cursor rode the move");
+        assert_eq!(
+            (app.cursor_col, app.cursor_row),
+            (0, Some(0)),
+            "a filing keeps the cursor home"
+        );
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(2)));
     }
 
     /// A board fetched on this thread lands the snapshot in flight first
@@ -16108,6 +16293,183 @@ mod tests {
         app.pump().unwrap();
         assert_eq!(hold.borrow().asks, 1, "the fetch answered the pushes");
         assert!(!app.snapshot_in_flight());
+    }
+
+    /// `release`, from a thread after `after`: for a key that waits on the
+    /// ask out (`catch_up`), so the answer comes while it waits.
+    fn release_late(hold: &std::rc::Rc<std::cell::RefCell<Hold>>, after: Duration) {
+        let (reply, tx) = hold.borrow_mut().replies.pop_front().expect("an ask to answer");
+        std::thread::spawn(move || {
+            std::thread::sleep(after);
+            let _ = tx.send(reply);
+        });
+    }
+
+    const LATE: Duration = Duration::from_millis(40);
+
+    /// Two column edits before the first's board lands (T-812 review): the
+    /// second reads the first's answer, not the board it was drawn from,
+    /// so the whole struct it sends keeps the first's setting.
+    #[test]
+    fn a_column_edit_reads_the_edit_before_it() {
+        let (mut app, _) = App::for_test_logged(board_three_columns(), theme(), false);
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::ColumnSettings { .. }));
+        let hold = slow(&mut app);
+        hold.borrow_mut().pushes = 1;
+        app.pump().unwrap();
+        assert!(app.snapshot_in_flight(), "an ask out, older than both edits");
+        release_late(&hold, LATE);
+        app.set_column(|s| s.requires_merge = true).unwrap();
+        release_late(&hold, LATE);
+        app.set_column(|s| s.requires_pipeline = true).unwrap();
+        release(&hold);
+        app.pump().unwrap();
+        let todo = app.board.sorted_columns()[0].settings.clone();
+        assert!(todo.requires_merge, "the first edit survived the second: {todo:?}");
+        assert!(todo.requires_pipeline, "{todo:?}");
+    }
+
+    /// `u` after a delete restores the ticket just deleted (T-812 review):
+    /// the delete waits for its board, since the next key's target — and
+    /// whether `u` is offered at all — is read off the grace band shown.
+    #[test]
+    fn undo_restores_the_ticket_just_deleted_not_an_earlier_one() {
+        let (mut app, _) = App::for_test_logged(board_three_columns(), theme(), false);
+        app.delete_gated(ulid::Ulid(3), false).unwrap();
+        assert_eq!(app.grace.iter().map(|g| g.id).collect::<Vec<_>>(), vec![ulid::Ulid(3)]);
+        let hold = slow(&mut app);
+        hold.borrow_mut().pushes = 1;
+        app.pump().unwrap();
+        release_late(&hold, LATE);
+        app.delete_gated(ulid::Ulid(1), false).unwrap();
+        assert!(!app.snapshot_in_flight(), "the delete waited");
+        assert_eq!(app.grace.last().map(|g| g.id), Some(ulid::Ulid(1)));
+        assert!(app.ctx().can_undo, "offered at once");
+        press(&mut app, 'u');
+        release(&hold);
+        app.pump().unwrap();
+        assert!(app.board.ticket(ulid::Ulid(1)).is_some(), "the ticket just deleted is back");
+        assert!(app.board.ticket(ulid::Ulid(3)).is_none(), "the earlier one stays deleted");
+    }
+
+    /// A filing by `>>` keeps the cursor home when the board lands late
+    /// (T-812 review): the next card slides under it, and `.` then files
+    /// that card, not the one the last board still drew there.
+    #[test]
+    fn a_filing_keeps_the_cursor_home_when_the_board_lands_late() {
+        let (mut app, _) = App::for_test_logged(board_three_columns(), theme(), false);
+        let hold = slow(&mut app);
+        hold.borrow_mut().pushes = 1;
+        app.pump().unwrap();
+        release_late(&hold, LATE);
+        press(&mut app, '>');
+        press(&mut app, '>');
+        assert!(app.snapshot_in_flight(), "asked after the move");
+        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(0)));
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(1)), "drawn home still");
+        release(&hold);
+        app.pump().unwrap();
+        assert_eq!(app.board.ticket(ulid::Ulid(1)).map(|t| t.column.as_str()), Some("doing"));
+        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(0)), "the cursor stayed home");
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(2)), "the next slid under");
+        press(&mut app, '.');
+        assert_eq!(app.status, "moved to doing");
+        release(&hold);
+        app.pump().unwrap();
+        assert!(app.board.column_tickets("todo").is_empty());
+        assert_eq!(app.cursor_col, 0, "still filing from home");
+    }
+
+    /// A board asked before a spawn does not stand its parked focus down
+    /// (T-812 review): it shows no binding, and the first board asked after
+    /// the key is the one that can say.
+    #[test]
+    fn an_answer_older_than_the_spawn_leaves_its_focus_parked() {
+        struct Parked(Box<dyn Transport>);
+        impl Transport for Parked {
+            fn request(&mut self, command: Command) -> Result<Response> {
+                if matches!(command, Command::SpawnSession { .. }) {
+                    return Ok(Response::Provisioning);
+                }
+                self.0.request(command)
+            }
+            fn poll_event(&mut self) -> bool {
+                false
+            }
+        }
+        let (mut app, _) = App::for_test_logged(board_three_columns(), theme(), false);
+        let inner = std::mem::replace(&mut app.client, Box::new(Dead));
+        app.client = Box::new(Parked(inner));
+        let hold = slow(&mut app);
+        hold.borrow_mut().pushes = 1;
+        app.pump().unwrap();
+        app.spawn_and_focus(ulid::Ulid(1), SessionKind::Claude).unwrap();
+        assert!(app.pending_spawn_focus.is_some());
+        release(&hold);
+        app.pump().unwrap();
+        assert!(app.pending_spawn_focus.is_some(), "an answer older than the key says nothing");
+        assert!(app.snapshot_in_flight(), "the follow-up, asked after the key");
+        release(&hold);
+        app.pump().unwrap();
+        assert!(app.pending_spawn_focus.is_none(), "the board asked after the key settles it");
+    }
+
+    /// Two `^n` before the first's board lands step the tier twice (T-812
+    /// review), and a tag's colour and a tag's wearing cycle the same way.
+    #[test]
+    fn repeated_presses_each_step_once_while_the_board_lands_late() {
+        use mesimon_core::board::AgentProvider;
+        use mesimon_core::tier::{MachineTiers, Tier};
+        let tier = |id: &str| Tier {
+            id: id.into(),
+            name: id.into(),
+            provider: AgentProvider::ClaudeCode,
+            model: String::new(),
+            effort: Default::default(),
+            description: String::new(),
+        };
+        let tiers =
+            MachineTiers { default_tier: None, tiers: vec![tier("a"), tier("b"), tier("c")] };
+        let mut board = board_three_columns();
+        board.register_tag(1, "red").unwrap();
+        let (mut app, _) = App::for_test_with(board, theme(), |f| f.machine_tiers = tiers);
+        // `new` leaves the machine's tiers to the first refresh.
+        app.refresh().unwrap();
+        let id = ulid::Ulid(1);
+        let ring = app.tiers().ring(id);
+        assert!(ring.len() >= 3, "{ring:?}");
+        let at = ring.iter().position(|t| t.id == app.tiers().of_ticket(id).id).unwrap();
+        let twice = ring[(at + 2) % ring.len()].id.clone();
+        let hold = slow(&mut app);
+        hold.borrow_mut().pushes = 1;
+        app.pump().unwrap();
+        release_late(&hold, LATE);
+        app.cycle_tier().unwrap();
+        release_late(&hold, LATE);
+        app.cycle_tier().unwrap();
+        release(&hold);
+        app.pump().unwrap();
+        assert_eq!(app.tiers().of_ticket(id).id, twice, "two steps, not one");
+        // The tag sheet: colour forward twice is two tints on; toggling
+        // twice is on and off again, not on twice.
+        app.tag_armed = Some(TagArm::new(Some(id)));
+        let tint = app.tag_cell().map(|(_, _, t)| t).unwrap();
+        // Nothing is out before the first press; each press after it waits
+        // on the ask the one before it sent.
+        app.dispatch(Verb::TagColor, Key::Char('c'), Scope::TagChord, &app.ctx()).unwrap();
+        release_late(&hold, LATE);
+        app.dispatch(Verb::TagColor, Key::Char('c'), Scope::TagChord, &app.ctx()).unwrap();
+        release_late(&hold, LATE);
+        app.dispatch(Verb::TagToggle, Key::Enter, Scope::TagChord, &app.ctx()).unwrap();
+        release_late(&hold, LATE);
+        app.dispatch(Verb::TagToggle, Key::Enter, Scope::TagChord, &app.ctx()).unwrap();
+        release(&hold);
+        app.pump().unwrap();
+        let n = mesimon_core::board::TAG_TINTS;
+        assert_eq!(app.tag_cell().map(|(_, _, t)| t), Some((tint + 2) % n), "two tints on");
+        assert!(app.board.ticket(id).unwrap().tags.is_empty(), "worn, then taken off again");
     }
 
     /// The reconnect cadence dials on the board's own connection and asks

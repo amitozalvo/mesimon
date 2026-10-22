@@ -101,6 +101,9 @@ impl App {
     /// `^n` on the board or the ticket page: the ticket's next tier, at
     /// once. The status says what the press did to the seat.
     pub(crate) fn cycle_tier(&mut self) -> Result<()> {
+        // The tier as the daemon has it (T-812 review): a second press
+        // before the first's board lands steps from the first's answer.
+        self.catch_up()?;
         let Some(id) = self.subject() else { return Ok(()) };
         let book = self.tiers();
         let current = book.of_ticket(id).id;

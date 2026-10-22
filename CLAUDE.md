@@ -326,7 +326,11 @@ of their own only while the board is handed away. A new observer thread takes th
 a time, and whatever wanted the board meanwhile becomes one follow-up. `App::refresh` is the
 waited-for fetch, for a key whose next line reads the fresh board (the `select_ticket` of a card
 just made); it lands the ask in flight first, so no board lands after a newer one. A new mutating
-key calls `refresh_soon` (or `send`) unless the line after it reads the board.
+key calls `refresh_soon` (or `send`) unless the line after it reads the board. **A
+read-modify-write key** — one whose write is decided by a read of the board (a toggle, a cycle,
+a whole `ColumnSettings`, a move's place, `u`'s target) — calls `App::catch_up` before it reads,
+or waits for its own board; and an intent armed before an ask (a parked focus, a cursor kept
+home) ignores answers asked before the key (`App::landing`, the asks' count).
 
 **Paths (D33b).** Per repo, keyed by `proj16` = sha256(canonical repo path)[..16]: sockets under
 `/tmp/mesimon-<uid>/<proj16>/` (sun_path budget — a new socket must be added to the length test
