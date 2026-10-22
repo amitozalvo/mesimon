@@ -74,6 +74,16 @@ fn failure_unread(record: &SessionRecord) -> bool {
         && record.transcript_path.is_some()
 }
 
+/// `failure_unread` inside its re-read spell: the class may still turn out
+/// a limit (`RateLimit` → QUOTA), so the seat takes no words yet (T-899
+/// review): pasted, they would meet the limit T-808 holds them against.
+/// The spell ended unclassed, or a class read, and it takes them as any
+/// `Failed` does. The one clock both the re-read and the queue ask.
+pub(crate) fn failure_being_read(record: &SessionRecord, now: u64) -> bool {
+    failure_unread(record)
+        && now.saturating_sub(record.state_changed_at.unwrap_or(now)) < FAILURE_REREAD_SPELL_MS
+}
+
 fn observation(signal: Signal, source: &'static str) -> RecoveryObservation {
     RecoveryObservation { signal, source, preview: None }
 }
@@ -112,8 +122,7 @@ impl AgentRecovery for ClaudeRecovery {
             }
             RecoveryChannel::Transcript => {
                 if failure_unread(record) {
-                    let spell = now.saturating_sub(record.state_changed_at.unwrap_or(now));
-                    return spell < FAILURE_REREAD_SPELL_MS
+                    return failure_being_read(record, now)
                         && self
                             .failure_read_at
                             .is_none_or(|at| now.saturating_sub(at) >= FAILURE_REREAD_MS);
@@ -1211,5 +1220,22 @@ mod recovery_tests {
         // A class the frame did say is never re-read.
         record.state = SessionState::Failed { reason: FailReason::Server };
         assert!(!recovery.needs_poll(&record, RecoveryChannel::Transcript, 4000));
+    }
+
+    /// T-899 review: a native `Failed{Unknown}` takes no words while the
+    /// re-read may still class it a limit, and takes them once the spell
+    /// ends or a class is read. The hook set's road named its class.
+    #[test]
+    fn a_native_failure_takes_words_only_once_its_class_is_read_or_given_up() {
+        let mut record = record(SessionState::Failed { reason: FailReason::Unknown });
+        record.transcript_path = Some("/tmp/t.jsonl".into());
+        record.state_changed_at = Some(1_000);
+        assert!(!failure_being_read(&record, 2_000), "the hook set's road");
+        record.native = true;
+        assert!(failure_being_read(&record, 1_000));
+        assert!(failure_being_read(&record, 1_000 + FAILURE_REREAD_SPELL_MS - 1));
+        assert!(!failure_being_read(&record, 1_000 + FAILURE_REREAD_SPELL_MS), "given up");
+        record.state = SessionState::Failed { reason: FailReason::Server };
+        assert!(!failure_being_read(&record, 2_000), "a class read");
     }
 }

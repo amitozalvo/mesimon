@@ -4,6 +4,7 @@ pub mod composer;
 mod history;
 pub mod hooks;
 mod recovery;
+pub(crate) use recovery::failure_being_read;
 pub mod tail;
 
 use mesimon_core::board::{AgentTools, SessionRecord};

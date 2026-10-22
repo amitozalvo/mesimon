@@ -29940,6 +29940,19 @@ seat's under both follow-up modes); `ask_queue_e2e::a_queued_ask_lands_after_an_
 (an ask queued mid-turn lands on the `StopFailure{server_error}`, and one queued on a
 `StopFailure{rate_limit}` stays), on both passes; it times out with the old `Idle`-only gate.
 
+**Review: a native failure's class is read late.** On the native road (T-659) a `StopFailure`
+arrives as `Failed{Unknown}` and the recovery re-reads the tail every 2 s for 60 s, and a
+`rate_limit` found there becomes QUOTA. Until then the seat takes no words
+(`agents::claude::failure_being_read`, the re-read's own spell, asked by `session_takes_words`):
+a crown's ask pasted in that window would meet the limit. Once the spell ends unclassed, or a
+non-limit class is read, it takes them. On the hook set's road Claude Code names the class itself
+(2.1.308: every HTTP 429 is `rate_limit`; `unknown` is its fallback for an unmatched API status,
+a gateway or provider credential error, or a non-API error), so `Failed{Unknown}` there is no
+limit by Claude Code's own reading and is not held. Test:
+`a_native_failure_takes_words_only_once_its_class_is_read_or_given_up`. No e2e: a native record
+needs the `auto` road's probe on a faked enterprise account (`mod_auto_e2e`), and the 60 s spell
+has no seam.
+
 ## The barrier comes before the read, and it has a deadline (T-812 re-review, 2026-10-22)
 
 The re-review of `d861af37` (T-897's `Re-review d861af37`) confirmed the first five fixes and

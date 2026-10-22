@@ -12997,10 +12997,16 @@ impl Daemon {
     /// crown's wake read. A tier switch or a plan relaunch keeps
     /// `session_idle`: those end the pane, and the tasks with it. Not yet
     /// while its mod's bridge is awaited (`bridge_awaited`, T-879): the
-    /// words go down it, not pasted into the composer, once it polls.
+    /// words go down it, not pasted into the composer, once it polls. Nor
+    /// while a native failure's class is still read off the tail
+    /// (`failure_being_read`): it may be a limit.
     fn session_takes_words(&self, id: uuid::Uuid) -> bool {
-        self.board.sessions.iter().any(|s| s.id == id && mesimon_core::quiet::takes_words(s))
-            && !self.bridge_awaited(id, now_ms())
+        let now = now_ms();
+        self.board.sessions.iter().any(|s| {
+            s.id == id
+                && mesimon_core::quiet::takes_words(s)
+                && !crate::agents::claude::failure_being_read(s, now)
+        }) && !self.bridge_awaited(id, now)
     }
 
     /// Is this session parked on its plan dialog — the `≡`?
