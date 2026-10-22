@@ -41,19 +41,6 @@ an agent on a ticket and submit (Shift+Enter, or Start agent in Remote Control),
 is the ticket's title followed by the ticket's description — both your own words, written for
 that ticket, and nothing of mesimon's.
 
-A shell's sharing grant gates `read_shell` through Mesimon's board tools, not the
-agent's own Bash: it runs as your user and can read panes through tmux. Live sharing
-has no TUI key.
-Shift+Enter previews a frozen output capture for an existing agent. It grants no
-live reads; Esc discards the capture without adopting the terminal. Sending adopts
-an unadopted terminal and delivers the capture.
-
-The shell tools provide no terminal input. A crown may
-request closure, which waits for your confirmation on the shell's row and checks its
-identity, activity and attached clients again. Closing loses the shell and its terminal
-history; parking an agent does not preserve or close a shell. Mesimon's tool permissions
-are not OS isolation of a coding agent running as your user.
-
 It does give the sessions it spawns scoped board tools — read and move its ticket, read and
 write its notes, tag it from the tags you already made, and file a new ticket — so an agent
 can see which ticket it is on and what it is about. One ticket per board can wear the
