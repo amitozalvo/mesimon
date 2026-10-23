@@ -14877,15 +14877,26 @@ impl App {
     /// would hand it back: every later focus read "another session is
     /// focused" until the board quit (T-923). The GATE's second half is
     /// dropped too — a failed ceremony proved nothing.
-    pub fn handover_failed(&mut self, error: &anyhow::Error) -> Result<()> {
+    ///
+    /// Best effort and never an error: an attach fails most often while the
+    /// daemon restarts or is down, which is when the give-back fails too, and
+    /// a board that quit over it would be worse than the leak. The status
+    /// keeps both errors; a daemon that comes back new holds no token.
+    pub fn handover_failed(&mut self, error: &anyhow::Error) {
         self.pending_gate_then = None;
-        match self.focused_session_hint.take() {
-            Some(FocusTarget::Session(sid, _)) => self.send(Command::FocusEnd { session: sid })?,
-            Some(FocusTarget::Terminal) => self.send(Command::TerminalEnd)?,
-            None => self.refresh_soon()?,
+        let give_back = match self.focused_session_hint.take() {
+            Some(FocusTarget::Session(sid, _)) => Some(Command::FocusEnd { session: sid }),
+            Some(FocusTarget::Terminal) => Some(Command::TerminalEnd),
+            None => None,
+        };
+        let mut status = format!("focus failed: {error}");
+        if let Some(Response::Err { message }) = give_back.map(|c| self.req(c)) {
+            status = format!("{status} ∙ focus not handed back: {message}");
         }
-        self.status = format!("focus failed: {error}");
-        Ok(())
+        if let Err(e) = self.refresh_soon() {
+            status = format!("{status} ∙ {e}");
+        }
+        self.status = status;
     }
 
     // ---- links (T-256) ---------------------------------------------------
@@ -24424,16 +24435,41 @@ mod tests {
         let (mut app, sent, sid) = app_with_claude(SessionState::Running, false);
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(app.pending_attach.take().is_some());
-        app.handover_failed(&anyhow::anyhow!("exited with exit status: 1")).unwrap();
-        assert!(sent_contains(&sent, &format!("FocusEnd {{ session: {sid} }}")), "{:?}", sent.borrow());
+        app.handover_failed(&anyhow::anyhow!("exited with exit status: 1"));
+        assert!(
+            sent_contains(&sent, &format!("FocusEnd {{ session: {sid} }}")),
+            "{:?}",
+            sent.borrow()
+        );
         assert!(app.focused_session_hint.is_none());
         assert_eq!(app.status, "focus failed: exited with exit status: 1");
 
         press(&mut app, '!');
         assert!(app.pending_attach.take().is_some());
-        app.handover_failed(&anyhow::anyhow!("attach child")).unwrap();
+        app.handover_failed(&anyhow::anyhow!("attach child"));
         assert!(sent_contains(&sent, "TerminalEnd"), "{:?}", sent.borrow());
         assert!(app.focused_session_hint.is_none());
+    }
+
+    /// The give-back is best effort (T-923): an attach that failed because
+    /// the daemon went away cannot hand the token back either, and the board
+    /// stays up saying both, then reconnects on its own cadence.
+    #[test]
+    fn a_failed_give_back_keeps_the_board_up_and_says_both() {
+        let (mut app, _sent, _sid) = app_with_claude(SessionState::Running, false);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.pending_attach.take().is_some());
+        app.client = Box::new(Dead);
+        app.handover_failed(&anyhow::anyhow!("exited with exit status: 1"));
+        assert!(app.focused_session_hint.is_none());
+        assert!(app.daemon_down, "the failed send is the outage");
+        assert!(
+            app.status
+                .starts_with("focus failed: exited with exit status: 1 ∙ focus not handed back: "),
+            "status: {}",
+            app.status
+        );
+        app.pump().expect("the board keeps running");
     }
 
     /// `!` opens the SCREEN's directory (T-273): the board's is the checkout,

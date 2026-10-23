@@ -30910,13 +30910,19 @@ daemon. The daemon had granted the token to this board's connection, and that co
 still alive, so neither `FocusEnd` nor `on_client_gone` would release it: the board could not
 open any session until it quit (a `U`, or the next failed attach after one, reproduces it).
 `App::handover_failed` now gives the token back (`FocusEnd` for a session, `TerminalEnd` for the
-`!` terminal), drops a pending GATE second half, and keeps the `focus failed: …` status. Pinned by
-`a_failed_handover_gives_the_focus_back`.
+`!` terminal), drops a pending GATE second half, and keeps the `focus failed: …` status. The
+give-back is best effort and never an error out of the loop: an attach fails most often while the
+daemon restarts or is down, when the give-back fails too, and a board that quit over it would be
+worse than the leak. The status then carries both errors (`… ∙ focus not handed back: …`), and a
+daemon that comes back new holds no token. Pinned by `a_failed_handover_gives_the_focus_back` and
+`a_failed_give_back_keeps_the_board_up_and_says_both`.
 
 **The update prompt.** Every Codex launch carries `-c check_for_update_on_startup=false` (a
 per-launch flag on both the app-server and the native client; the person's `config.toml` is not
 touched). Codex is updated outside mesimon. `provider_e2e` checks the flag is in the runtime
-config.
+config. The key was verified present in codex-cli 0.164.0's config schema (its native binary
+carries `check_for_update_on_startup`); the prompt's suppression was not observed live, since
+0.164.0 was the latest release and no prompt was due.
 
 **Not done.** `codex orphan kept: … its native pane remains live` appeared for the Codex pane of a
 ticket deleted while its session sat idle; not investigated here.
