@@ -201,6 +201,10 @@ const LAUNCH_DEATH_MS: u64 = 1_000;
 /// Observe-tier transcript polling cadence (2 s) — stat-then-read, adopted
 /// hook-less sessions only.
 const TAIL_POLL_TICKS: u64 = 8;
+/// The crown's wake row while a person is at the crown's box (T-918,
+/// `Daemon::person_hold`): in its pane, or gone with words left in it.
+const WAKE_WHEN_YOU_LEAVE: &str = "when you leave";
+const WAKE_AFTER_YOUR_DRAFT: &str = "after your draft";
 /// How long a write to a subscriber's socket may block the writer thread
 /// before the subscriber is dropped (T-838). Long enough for a board
 /// answer to a client reading it under load; a client that reads nothing
@@ -631,6 +635,11 @@ pub struct Daemon {
     /// startup snapshot, kept by the poll bucket, entered by `open_terminal`
     /// so the ghost row is on the rail the moment the user is back.
     terminals: std::collections::BTreeMap<Option<ulid::Ulid>, Option<String>>,
+    /// The panes a tmux client has open (`#{session_attached}`, T-918), by
+    /// session name, from the same fork as the titles: a person is in
+    /// there, and the crown's wake is not pasted under their hands. In
+    /// memory only, like the foregrounds.
+    attached: std::collections::HashSet<String>,
     /// (bytes, sessions) currently sleepable on sleep-safe tickets — the
     /// header suggestion, recomputed on the RSS bucket.
     reclaim_cache: (u64, usize),
@@ -1367,6 +1376,7 @@ pub fn run(paths: Paths) -> Result<()> {
         rss_by: HashMap::new(),
         foregrounds: HashMap::new(),
         terminals: terminals_in(&snap),
+        attached: std::collections::HashSet::new(),
         reclaim_cache: (0, 0),
         archive_cache: 0,
         open_box_counts: Default::default(),
@@ -1990,6 +2000,8 @@ impl Ack {
     /// A queued ask's paste landed — the one word the snapshot's
     /// `Pending::in_flight` row and the ask receipts read.
     const QUEUED: Ack = Ack { by: "automation", word: "queued_ask_delivered" };
+    /// The board's sentence to the crown landed (T-414).
+    const CROWN_WAKE: Ack = Ack { by: "automation", word: "crown_wake_delivered" };
 }
 
 /// One paste of mesimon's own, waiting for the pane's `UserPromptSubmit`
@@ -3705,10 +3717,20 @@ impl Daemon {
                 Some((t, foreground_of(&f.current_command, &shell)))
             })
             .collect();
-        let repaint = foregrounds != self.foregrounds || terminals != self.terminals;
+        // Who has a pane open (T-918): the crown's wake row says so, and
+        // `crown_wake_blocked` holds the paste on it.
+        let attached: std::collections::HashSet<String> = facts
+            .iter()
+            .filter(|f| f.attached && !f.pane_dead)
+            .map(|f| f.session_name.clone())
+            .collect();
+        let repaint = foregrounds != self.foregrounds
+            || terminals != self.terminals
+            || attached != self.attached;
         if repaint {
             self.foregrounds = foregrounds;
             self.terminals = terminals;
+            self.attached = attached;
         }
         Panes { changed, repaint }
     }
@@ -4608,6 +4630,14 @@ impl Daemon {
                     dirty = true;
                 }
                 self.codex_input_due.remove(&id);
+                continue;
+            }
+            // The crown's wake parked on a Codex crown (T-918) goes in at
+            // its composer's idle, which a person may be typing into: it
+            // waits for them as a Claude crown's does.
+            if self.owed.get(&id).is_some_and(|o| o.ack.word == Ack::CROWN_WAKE.word)
+                && self.held_for_person(id)
+            {
                 continue;
             }
             let mut text = if pending_prefill {
@@ -7955,18 +7985,88 @@ impl Daemon {
     /// What keeps a wake from going out right now, if anything: a person's
     /// ask queued for the crown (theirs goes first, the wake follows as its
     /// own turn), a paste of ours still owed its ack, an empty seat (the
-    /// wake starts nobody), or the crown's own session mid-turn. The
-    /// checkout-wide quiet test the queue applies is deliberately NOT here:
-    /// a crown in the shared checkout would otherwise wait for every worker
-    /// it started to fall silent before hearing about the first.
+    /// wake starts nobody), the crown's own session mid-turn, or a person at
+    /// the crown's box (T-918, `person_hold`): the paste and its Enter would
+    /// land in what they are typing and send it. The checkout-wide quiet test
+    /// the queue applies is deliberately NOT here: a crown in the shared
+    /// checkout would otherwise wait for every worker it started to fall
+    /// silent before hearing about the first.
     fn crown_wake_blocked(&self, crown: ulid::Ulid) -> bool {
         if self.queued.iter().any(|q| q.ticket == crown && q.by.is_none()) || self.owed_on(crown) {
             return true;
         }
         match self.seat_of(crown) {
-            QueuedSeat::Pane(id) => !self.session_takes_words(id),
+            QueuedSeat::Pane(id) => !self.session_takes_words(id) || self.person_hold(id).is_some(),
             QueuedSeat::Wake(_) => false,
             QueuedSeat::Start(_) => true,
+        }
+    }
+
+    /// Why words of the board's would land on a person's (T-918), as the
+    /// crown's wake row says it: a tmux client has the pane open (they may
+    /// be typing), or its box holds words nobody sent (they left a draft,
+    /// which the paste would join and its Enter send). Read off the newest
+    /// pane sample; `held_for_person` reads afresh at the paste.
+    fn person_hold(&self, id: uuid::Uuid) -> Option<&'static str> {
+        let rec = self.board.sessions.iter().find(|s| s.id == id && s.state.has_pane())?;
+        let sid = rec.sid16();
+        if self.attached.contains(&sid) {
+            return Some(WAKE_WHEN_YOU_LEAVE);
+        }
+        let draft = self.screens.get(&sid).is_some_and(|(_, screen)| match rec.kind {
+            SessionKind::Claude => {
+                use crate::agents::claude::composer::{self, Composer};
+                composer::read(screen) == Composer::Holding
+            }
+            SessionKind::Codex => crate::agents::codex::composer_holds_text(screen),
+            _ => false,
+        });
+        draft.then_some(WAKE_AFTER_YOUR_DRAFT)
+    }
+
+    /// `person_hold` at the paste's own edge (T-918). The sample may be a
+    /// poll bucket old, so a pane it read as free is asked once more here,
+    /// its clients and its box, as forks at the edge the paste itself is;
+    /// one it read as held is not asked. Held, the next sample reads both
+    /// again, so the wake follows the person out by the drain's next pass
+    /// (1 s), and the box is read at all. A read tmux cannot answer holds
+    /// nothing: the paste fails on its own.
+    fn held_for_person(&mut self, id: uuid::Uuid) -> bool {
+        let Some(sid) = self
+            .board
+            .sessions
+            .iter()
+            .find(|s| s.id == id && s.state.has_pane())
+            .map(|s| s.sid16())
+        else {
+            return false;
+        };
+        if self.person_hold(id).is_none() {
+            if self.backend.client_quiet_secs(&sid).is_ok_and(|q| q.is_some()) {
+                self.attached.insert(sid.clone());
+            }
+            if let Ok(screen) = self.backend.capture_input_screen(&sid) {
+                self.screens.insert(sid.clone(), (now_ms(), screen));
+            }
+        }
+        let held = self.person_hold(id).is_some();
+        if held {
+            self.want_person(&sid);
+        }
+        held
+    }
+
+    /// The next sample reads who is in this pane and what its box holds.
+    fn want_person(&mut self, sid: &str) {
+        self.pane_due.facts = true;
+        self.pane_due.screen(sid);
+    }
+
+    /// What holds the crown's wake for a person (T-918), the row's word.
+    fn crown_wake_person(&self, crown: ulid::Ulid) -> Option<&'static str> {
+        match self.seat_of(crown) {
+            QueuedSeat::Pane(id) => self.person_hold(id),
+            _ => None,
         }
     }
 
@@ -7983,6 +8083,17 @@ impl Daemon {
             self.drop_crown_wakes();
             return true;
         };
+        // A wake held for a person (T-918) has the crown's pane read again
+        // for every pass of this stage (1 s): the person is heard leaving
+        // by the next one, and a draft's box is sampled at all.
+        if let QueuedSeat::Pane(id) = self.seat_of(crown) {
+            if self.person_hold(id).is_some() {
+                if let Some(sid) = self.board.sessions.iter().find(|s| s.id == id) {
+                    let sid = sid.sid16();
+                    self.want_person(&sid);
+                }
+            }
+        }
         if self.crown_wake_blocked(crown) {
             return false;
         }
@@ -7991,6 +8102,9 @@ impl Daemon {
             QueuedSeat::Pane(id) | QueuedSeat::Wake(id) => id,
             QueuedSeat::Start(_) => return false,
         };
+        if matches!(seat, QueuedSeat::Pane(_)) && self.held_for_person(id) {
+            return true;
+        }
         let by = Principal::Automation { rule: "crown_wake".into() };
         if authorize(&by, &Action::Mutate, &Resource::Session { id }).denied() {
             self.crown_wakes.clear();
@@ -7999,8 +8113,7 @@ impl Daemon {
         }
         let text = self.crown_wake_text();
         let news = self.crown_wake_news();
-        let ack = Ack { by: "automation", word: "crown_wake_delivered" };
-        match self.deliver(crown, seat, text, ack, false, false) {
+        match self.deliver(crown, seat, text, Ack::CROWN_WAKE, false, false) {
             Response::Err { message } => {
                 eprintln!("mesimon: crown wake failed: {message}");
                 self.crown_wakes.clear();
@@ -9731,7 +9844,7 @@ impl Daemon {
                 by: None,
                 sends: false,
                 accept_plan: false,
-                held: None,
+                held: self.crown_wake_person(crown).map(String::from),
                 plan: false,
                 deliver: Deliver::Idle,
             });

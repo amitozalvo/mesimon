@@ -122,7 +122,8 @@ fn pairs(out: &str) -> impl Iterator<Item = (&str, &str)> {
 /// name, whether it is a `remain-on-exit` corpse and whether tmux has reaped
 /// it, the server's pid, the foreground process's name
 /// (`#{pane_current_command}` — the shell's own at a prompt, the command's
-/// while one runs) and its OSC-0 title.
+/// while one runs), whether a client has its session open, and its OSC-0
+/// title.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneFacts {
     pub session_name: String,
@@ -136,6 +137,8 @@ pub struct PaneFacts {
     /// The server's own pid (`#{pid}`), from the same read.
     pub server_pid: i32,
     pub current_command: String,
+    /// `#{session_attached}` is above zero: a person is in the pane (T-918).
+    pub attached: bool,
     pub title: String,
 }
 
@@ -146,14 +149,14 @@ impl PaneFacts {
     }
 }
 
-/// `session|pid|dead|status|signal|server|command|title` rows. Seven splits,
-/// so the title — the one free-text field, last — keeps any separator of
-/// its own.
+/// `session|pid|dead|status|signal|server|command|attached|title` rows.
+/// Eight splits, so the title — the one free-text field, last — keeps any
+/// separator of its own.
 fn parse_facts(out: &str) -> Vec<PaneFacts> {
     out.lines()
         .filter_map(|l| {
-            let f: Vec<&str> = l.splitn(8, SEP).collect();
-            let [name, pid, dead, status, signal, server, cmd, title] = f[..] else {
+            let f: Vec<&str> = l.splitn(9, SEP).collect();
+            let [name, pid, dead, status, signal, server, cmd, attached, title] = f[..] else {
                 return None;
             };
             Some(PaneFacts {
@@ -163,6 +166,7 @@ fn parse_facts(out: &str) -> Vec<PaneFacts> {
                 reaped: !status.is_empty() || !signal.is_empty(),
                 server_pid: server.parse().unwrap_or(0),
                 current_command: cmd.trim().to_string(),
+                attached: attached.trim().parse::<u32>().is_ok_and(|n| n > 0),
                 title: title.trim().to_string(),
             })
         })
@@ -635,7 +639,7 @@ impl TmuxBackend {
         Ok(pairs(&out).filter_map(|(name, t)| Some((name.to_string(), t.parse().ok()?))).collect())
     }
 
-    /// Every pane's liveness, foreground command and OSC-0 title in one fork
+    /// Every pane's liveness, foreground command, attached count and OSC-0 title in one fork
     /// (the title: tmux reports the hostname when the app never set one —
     /// callers filter, same rule as `pane_title`). The title is the last
     /// field because it is the one that may contain the separator.
@@ -648,6 +652,7 @@ impl TmuxBackend {
             "pane_dead_signal",
             "pid",
             "pane_current_command",
+            "session_attached",
             "pane_title",
         ]);
         // As `activity`: the liveness fork only on a failure (T-838).
@@ -1183,8 +1188,8 @@ mod tests {
         );
 
         let facts = parse_facts(
-            "abc123|41|0|||900|cargo|claude | T-12 fix\nmsmn-term-x|42|1|7||900|zsh|host\n\
-             c0dex|43|1|||900|python3|host\nkilled|44|1||9|900|sh|host\nbare\n",
+            "abc123|41|0|||900|cargo|0|claude | T-12 fix\nmsmn-term-x|42|1|7||900|zsh|2|host\n\
+             c0dex|43|1|||900|python3|0|host\nkilled|44|1||9|900|sh|0|host\nbare\n",
         );
         assert_eq!(
             facts[..2],
@@ -1196,6 +1201,7 @@ mod tests {
                     reaped: false,
                     server_pid: 900,
                     current_command: "cargo".into(),
+                    attached: false,
                     title: "claude | T-12 fix".into(),
                 },
                 PaneFacts {
@@ -1205,10 +1211,11 @@ mod tests {
                     reaped: true,
                     server_pid: 900,
                     current_command: "zsh".into(),
+                    attached: true,
                     title: "host".into(),
                 },
             ],
-            "seven splits: the title, last, keeps its own bar"
+            "eight splits: the title, last, keeps its own bar"
         );
         // Dead with no status and no signal: tmux never waited for it
         // (T-917). A signal's death is reaped too.

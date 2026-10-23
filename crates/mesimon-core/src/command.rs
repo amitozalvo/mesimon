@@ -3180,7 +3180,10 @@ pub struct Pending {
     /// `Some` is an ask the daemon HELD because the agent stopped on a
     /// question (T-420): the answer may change what the follow-up should
     /// say, so the words wait for a person's `^y` the way a crown's ask
-    /// does, and the reason is the row's word (`agent asked`).
+    /// does, and the reason is the row's word (`agent asked`). On the
+    /// crown's wake (T-918) it is why the wake waits on a person rather than
+    /// a turn — `when you leave`, `after your draft` — and nobody's send is
+    /// asked for: the wake goes when the reason does.
     #[serde(default)]
     pub held: Option<String>,
     /// The ask starts a plan-mode turn (T-434): the card's row says

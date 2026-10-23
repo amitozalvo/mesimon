@@ -31343,3 +31343,74 @@ This is one sample. It says Sol's choice here was to file and start, which is th
 person found missing, and that it picked the crown's own checkout as the worker's workspace.
 Whether that choice is wrong for a two-file change is the person's call, not the rig's: the
 case's requirement stands, and the verdict stands with it.
+
+## The crown's wake waits for a person at the crown's box (T-918, 2026-10-23, "The crown wake holds while a person is attached to the crown's pane")
+
+**The problem.** The board's sentence to the crown (T-414) went in whenever the crown's agent
+took words (`session_takes_words`). Nothing asked whether a *person* was typing in that box, so
+a wake could land in a half-typed prompt, and its Enter sent both. T-537's note "Delivery road
+assessment: paste vs monitor" argued for keeping the paste road and holding it, not a Monitor.
+
+**What shipped.**
+- **Two facts, sampled off the writer.** `pane_facts` reads `#{session_attached}` in the same
+  `list-panes` fork as the titles (`PaneFacts::attached`). `absorb_panes` keeps the set in
+  `Daemon::attached`, in memory only, as the foregrounds are. The box is the sampler's screen of
+  the pane, read by `composer::read` (Claude) or `codex::composer_holds_text`.
+- **`person_hold`** names the reason: a tmux client has the pane open (`when you leave`), or
+  the box holds words nobody sent (`after your draft`). `crown_wake_blocked` adds it for a
+  `QueuedSeat::Pane` only. A parked crown has no pane, and a `Start` seat is already blocked.
+- **The draft clause goes beyond the ticket's brief, on purpose.** Holding only while a client
+  is attached leaves the commonest case open: the person types half a prompt, goes back to the
+  board, and the wake joins their draft at once. When they come back to the board, the card
+  says why the wake waits.
+- **The row.** The `crown_wake` `Pending` row carries the reason in `held` (the field already
+  says why a row waits: `agent asked`), and `pending_row` says `crown wakes ∙ when you leave` /
+  `crown wakes ∙ after your draft`. That outranks `after its turn`. `is_held` is about queued
+  asks only, so `^y`/`^u` still leave the row alone. There is no new wire field.
+- **Cadence.** `drain_crown_wakes` runs every 4 ticks (1 s). While a wake is held for a person,
+  each pass asks the sampler for the crown's facts and screen. The next pass reads the answer,
+  so the wake goes 1–2 s after the person leaves (rig A1 measured 1.9 s). Without this the box
+  would not be sampled at all, and the facts only on the 2 s poll bucket. A crown that is
+  mid-turn is read on the bucket only.
+- **The edge.** The sample can be one bucket old. So at the paste, `held_for_person` asks tmux
+  once more, the clients (`client_quiet_secs`) and the box (`capture_input_screen`), as forks
+  at the edge like the paste itself. It asks only when the sample read the pane as free. A
+  held pane is never forked for on the writer. A read tmux cannot answer holds nothing, and the
+  paste then fails on its own.
+- **Codex.** A Codex crown's wake is parked and pasted later, at its composer's idle
+  (`drive_codex_inputs`). The same check, `held_for_person`, runs before that paste for an
+  owed entry whose ack is `Ack::CROWN_WAKE`. That row has no reason word: the wake has left
+  `crown_wakes` for the owed entry by then.
+- The feed has nothing new. `crown_wake_sent` still fires on delivery, and the `woke` touch is
+  still made when the wake is owed, not when it is pasted.
+
+**The guarantee, and what it is not.**
+- **Hook road (Claude).** The window is the edge read, then the paste: two tmux forks, a few
+  ms. A person who attaches and types inside it is not caught.
+- **Mod road.** Same window, plus the bridge's long-poll hand-off (ms). `$.prompt.submit`
+  types nothing into the box. Whether a submit keeps a draft in the box is unmeasured, and the
+  hold stands either way.
+- **Codex.** The draft is read off the sampler's screen (at most one sample old), as the paste
+  already reads `input_ready`. The Enter goes `codex_input_due`, 500 ms after the paste. A
+  person who attaches inside those 500 ms and types gets their keys joined to the wake. No
+  Codex live case was added (T-916 owns new Codex rig coverage).
+- **Who counts as attached.** Any tmux client of the private server: the board's own focus,
+  a hand `tmux attach`, a control-mode client. Remote Control is not a tmux client, so a
+  phone holds nothing.
+- **Known cost, as the ticket says.** A crown a person sits in for an hour hears nothing for an
+  hour. So does a crown whose box holds a forgotten draft, and the card says so. If it hurts,
+  the fallback is the per-board switch the ticket names, not a different road.
+
+**Tests.**
+- `crown_e2e::the_crown_wake_waits_for_a_person_at_the_crown_s_box`, on a stub whose composer
+  keeps the cursor in its box (`BOX_STUB`). It attaches a `-C` client, has W1 deliver, and
+  checks the row reads `when you leave` with nothing pasted. Then it types `half a thought`
+  and detaches: the row reads `after your draft`, with nothing pasted. Then it sends Enter:
+  `half a thought` is recorded alone, and the wake lands on its own line.
+- The rest of `crown_e2e` holds unchanged on both roads (28/28 hooks, 28/28 mod).
+- `app.rs::the_owed_row_names_what_it_waits_on` covers the row's words.
+- `backend-tmux` covers the parse.
+- Rig `A1`, on real Sonnet: `person_in_crown`, a crown start, then `person_leaves` (hold
+  12 s), with the check `held_for_person`. It also proves that a real Claude Code composer
+  reads as empty after the person leaves. A false `after your draft` would hold the wake and
+  fail the step.

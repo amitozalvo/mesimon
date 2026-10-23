@@ -6589,6 +6589,12 @@ impl App {
                 _ => "queued ∙ plan mode".into(),
             });
         }
+        // The crown's wake held for a person at the crown's box (T-918):
+        // the daemon's word for why — `when you leave`, `after your draft` —
+        // outranks its turn, which a person's leaving does not end.
+        if let (A::CrownWake, Some(why)) = (p.action, p.held.as_deref()) {
+            return Some(format!("crown wakes ∙ {why}"));
+        }
         Some(match (p.action, after) {
             (A::Ask, _) if p.in_flight => "queued ∙ sending".into(),
             (A::Ask, None) => "queued ∙ sends next".into(),
@@ -23261,7 +23267,7 @@ mod tests {
     #[test]
     fn the_owed_row_names_what_it_waits_on() {
         let (mut app, _sent, _) = app_with_claude(SessionState::Running, false);
-        use mesimon_core::command::PendingAction::{Ask, Merge, Rebase};
+        use mesimon_core::command::PendingAction::{Ask, CrownWake, Merge, Rebase};
         let row = |app: &mut App, waits_on: Vec<&str>, in_flight: bool, action| {
             app.pending = vec![mesimon_core::command::Pending {
                 ticket: ulid::Ulid(1),
@@ -23375,6 +23381,13 @@ mod tests {
         // lists the ticket itself first, and the row says so.
         assert_eq!(row(&mut app, vec![&own], false, Merge), "auto-merge ∙ after its turn");
         assert_eq!(row(&mut app, vec![&own], false, Rebase), "rebase ask ∙ after its turn");
+        // The crown's wake (T-414) waits on its turn, or on a person at its
+        // box (T-918), whose word is the daemon's and outranks the turn.
+        assert_eq!(row(&mut app, vec![], false, CrownWake), "crown wakes next");
+        assert_eq!(row(&mut app, vec![&own], false, CrownWake), "crown wakes ∙ after its turn");
+        app.pending[0].held = Some("when you leave".into());
+        assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("crown wakes ∙ when you leave"));
+        assert!(!app.ticket_held(ulid::Ulid(1)), "no ask to send or take back");
         // A merge the checkout refused (T-289): the reason travels on `text`
         // and outranks what the row waits on — quiet is not what it needs.
         // The ask's own `text` is its words, and must not read as a refusal.

@@ -1512,6 +1512,166 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
 /// the delivery, the rebase the crown itself asked for coming back as its
 /// answer, and the merge — each with what changed. The merged notice's turn
 /// is the person's; the crown is not woken for it.
+/// A recording stub whose composer keeps the cursor in its box, as Claude
+/// Code's does: what a person types there is a draft the screen shows
+/// (`composer::read` reads it `Holding`), and each line read is recorded,
+/// then the box painted empty again.
+const BOX_STUB: &str =
+    "#!/bin/sh\nstty -icanon 2>/dev/null\npaint() { printf '\\033[2J\\033[999;1H\\033[3A\
+                        ────────────────────\\n❯ \\n────────────────────\\n  ? for shortcuts\
+                        \\033[999;1H\\033[2A\\033[3G'; }\npaint\nwhile IFS= read -r line; do \
+                        printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; paint; done\n";
+
+/// A person at the crown's box (T-918): the wake is not pasted into what
+/// they may be typing. It waits while a tmux client has the crown's pane
+/// open (`when you leave`), then while the box holds the draft they left
+/// (`after your draft`), and goes in on its own line once the box is
+/// empty — the person's words sent as they wrote them, never joined.
+#[test]
+fn the_crown_wake_waits_for_a_person_at_the_crown_s_box() {
+    let Some(h) = Harness::boot_bare(
+        "crown_attended",
+        Some(BOX_STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let tmux_sock = h.paths.tmux_sock();
+    let mut c = h.client("crown_attended");
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| -> usize {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .count()
+    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let wake_rows = |c: &mut TestClient, t: ulid::Ulid| -> Vec<mesimon_core::command::Pending> {
+        pending_of(c, Some(t))
+            .into_iter()
+            .filter(|p| p.action == mesimon_core::command::PendingAction::CrownWake)
+            .collect()
+    };
+    let held = |c: &mut TestClient, t: ulid::Ulid| -> Option<String> {
+        wake_rows(c, t).first().and_then(|p| p.held.clone())
+    };
+
+    let a = c.create_ticket("coordinate");
+    let w1 = c.create_ticket("mesimon-probe-91 worker");
+    let (ka, kw1) = (key_of(&mut c, a), key_of(&mut c, w1));
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw1).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw1.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("shared_checkout".into()),
+        },
+    ) {
+        Response::AgentStarted { session_started: true, .. } => {}
+        other => panic!("start_agent {kw1}: {other:?}"),
+    }
+    let ws1 = c.board().live_agent(w1).expect("W1 holds a seat").id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // The spawn left the title in the crown's box, unsent: that is a draft
+    // too, and it goes first, so the box is empty when the person comes.
+    let crown = c.board().sessions.iter().find(|s| s.id == sa).unwrap().sid16();
+    assert!(tmux(&tmux_sock)
+        .args(["send-keys", "-t", &crown, "Enter"])
+        .status()
+        .unwrap()
+        .success());
+    wait_until(std::time::Duration::from_secs(10), "the title out of the box", || {
+        std::fs::read_to_string(&got).is_ok_and(|g| g.lines().any(|l| l.trim() == "coordinate"))
+    });
+
+    // A person comes into the crown's pane: a tmux client on its session.
+    let mut client = tmux(&tmux_sock)
+        .args(["-C", "attach", "-t", &crown])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("a control-mode tmux client");
+    wait_until(std::time::Duration::from_secs(10), "the client on the crown's session", || {
+        tmux(&tmux_sock)
+            .args(["list-clients", "-t", &crown, "-F", "#{client_name}"])
+            .output()
+            .is_ok_and(|o| !o.stdout.is_empty())
+    });
+
+    // W1 delivers while the person is in there: the crown is idle and
+    // would take the words, and the wake waits for the person instead.
+    let h1 = commit(&h.repo, "w1.txt");
+    start(&mut c, ws1);
+    stop(&mut c, ws1);
+    let delivered = format!("{kw1} \"mesimon-probe-91 worker\" delivered (commit {h1}");
+    wait_until(std::time::Duration::from_secs(10), "the wake row to wait on the person", || {
+        wake_rows(&mut c, a).first().is_some_and(|p| {
+            p.held.as_deref() == Some("when you leave") && p.waits_on == [ka.clone()]
+        })
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(lines_with(&delivered), 0, "{}", std::fs::read_to_string(&got).unwrap_or_default());
+    assert_eq!(held(&mut c, a).as_deref(), Some("when you leave"), "still waiting");
+
+    // They type half a prompt and leave it in the box: gone from the pane,
+    // their words still are not sent, and the wake keeps waiting.
+    assert!(tmux(&tmux_sock)
+        .args(["send-keys", "-t", &crown, "-l", "half a thought"])
+        .status()
+        .unwrap()
+        .success());
+    client.kill().unwrap();
+    let _ = client.wait();
+    wait_until(std::time::Duration::from_secs(10), "the wake row to wait on the draft", || {
+        held(&mut c, a).as_deref() == Some("after your draft")
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(lines_with(&delivered), 0, "{}", std::fs::read_to_string(&got).unwrap_or_default());
+    assert_eq!(lines_with("half a thought"), 0, "the draft is theirs to send");
+
+    // They send it: their words go as they wrote them, and the wake follows
+    // on a line of its own once the box is empty.
+    assert!(tmux(&tmux_sock)
+        .args(["send-keys", "-t", &crown, "Enter"])
+        .status()
+        .unwrap()
+        .success());
+    wait_until(std::time::Duration::from_secs(10), "the wake to land after the draft", || {
+        lines_with(&delivered) == 1
+    });
+    let lines = std::fs::read_to_string(&got).unwrap();
+    assert!(lines.lines().any(|l| l == "half a thought"), "{lines}");
+    assert_eq!(lines_with("half a thought"), 1, "never joined to the wake: {lines}");
+    assert!(wake_rows(&mut c, a).is_empty(), "delivered, so nothing is owed");
+    assert_eq!(
+        touches(&mut c).iter().find(|t| t.ticket == a).map(|t| t.action.as_str()),
+        Some("woke"),
+        "the crown's card lit when the wake was owed"
+    );
+    let feed = std::fs::read_to_string(h.paths.state_dir.join("activity.jsonl")).unwrap();
+    assert!(feed.contains("\"crown_wake_sent\""), "{feed}");
+}
+
 #[test]
 fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     let Some(h) = Harness::boot_with_env(

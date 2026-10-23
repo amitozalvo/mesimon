@@ -1594,6 +1594,71 @@ Reply with the single word ready and end your turn."""
             record["pings"].append("no pong")
             record["failures"].append("ping: no pong")
             return False
+        if what == "person_in_crown":
+            # A1 (T-918): a person comes into the crown's pane, a tmux client
+            # on its session as the board's focus would attach, and stays
+            # until `person_leaves`.
+            crown = self.agent_of(self.board(), self.crown)
+            tmux = os.environ.get("MESIMON_TMUX_BIN") or (
+                os.path.join(self.repo, "target/debug/mesimon-tmux")
+                if os.path.exists(os.path.join(self.repo, "target/debug/mesimon-tmux")) else "tmux")
+            self.person = subprocess.Popen(
+                [tmux, "-S", self.paths.tmux_sock, "-C", "attach", "-t", sid16(crown["id"])],
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            came = self.wait_for("the person in the crown's pane", lambda: self.tmux(
+                "list-clients", "-t", sid16(crown["id"]), "-F", "#{client_name}").stdout.strip(),
+                10, self.watch)
+            if not came:
+                record["failures"].append("no tmux client came onto the crown's session")
+                return False
+            record["person_came_ms"] = int(time.time() * 1000)
+            return True
+        if what == "person_leaves":
+            # A1 (T-918): with the worker's wake owed, the person stays
+            # `hold` seconds, while the board must paste nothing into the
+            # crown's box and its wake row must say why; then they leave,
+            # and the wake goes in, and the crown takes its turn on it.
+            tid = test["ticket"]
+            mark = next((i for i, l in enumerate(self.feed_lines)
+                         if l.get("at_ms", 0) >= record["person_came_ms"]), len(self.feed_lines))
+            owed = self.wait_for("the board to owe the crown its wake", lambda: next((
+                l for l in self.feed_lines[mark:] if l.get("kind") == "crown_wake"
+                and l.get("worker") == tid), None), WAKE_GRACE, self.watch)
+            if not owed:
+                record["failures"].append("the board never owed the crown a wake for the worker")
+                return False
+
+            def row():
+                return next((p.get("held") for p in self.wire.snapshot().get("pending", [])
+                             if p.get("action") == "crown_wake" and p.get("ticket") == self.crown),
+                            None)
+
+            rows = []
+            deadline = time.time() + step.get("hold", 10)
+            while time.time() < deadline:
+                rows.append(row())
+                self.watch()
+                time.sleep(1)
+            sent_while_in = [l for l in self.feed_lines[mark:] if l.get("kind") == "board"
+                             and l.get("cmd") == "crown_wake_sent" and l.get("ticket") == self.crown]
+            record["person"] = {"rows": rows, "sent_while_in": len(sent_while_in)}
+            self.person.kill()
+            self.person.wait()
+            left_ms = int(time.time() * 1000)
+            sent = self.wait_for("the wake after the person left", lambda: next((
+                l for l in self.feed_lines[mark:] if l.get("kind") == "board"
+                and l.get("cmd") == "crown_wake_sent" and l.get("ticket") == self.crown
+                and l.get("at_ms", 0) >= left_ms), None), WAKE_GRACE, self.watch)
+            record["person"]["sent_after_ms"] = sent["at_ms"] - left_ms if sent else None
+            if not sent:
+                record["failures"].append(f"no wake went in after the person left (rows {rows[-1:]})")
+                return False
+            settled = lambda: self.crown_settled(after_ms=sent["at_ms"], quiet=0)  # noqa: E731
+            if not self.wait_for("crown", settled, STEP_TIMEOUT, self.watch):
+                record["failures"].append("the crown did not settle on the wake")
+                return False
+            self.closed()
+            return True
         if what == "limit":
             # L1 (T-802): the account's usage limit, as Claude Code reports
             # it — a `StopFailure` whose class is `rate_limit` — sent through
@@ -2768,6 +2833,17 @@ Reply with the single word ready and end your turn."""
                 crown = self.agent_of(board, self.crown)
                 said = last_reply(transcript(crown)) if crown else ""
                 check(c, arg.lower() in said.lower(), f"said {said[:100]!r}")
+            elif name == "held_for_person":
+                # A1 (T-918): the wake waited the whole of the person's stay,
+                # its row said `when you leave` throughout, and it went in
+                # within seconds of their leaving.
+                p = record.get("person") or {}
+                rows = p.get("rows") or []
+                after = p.get("sent_after_ms")
+                held = bool(rows) and all(r == "when you leave" for r in rows)
+                check(c, held and p.get("sent_while_in") == 0 and after is not None and after < 10_000,
+                      f"rows {sorted(set(map(str, rows)))}, {p.get('sent_while_in')} sent while in, "
+                      f"in {after} ms after leaving")
             elif name == "crown_line":
                 # The crown's last line beginning `prefix` (T-810), `word`
                 # within it, or with `!word` not: one test asks the crown
