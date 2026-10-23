@@ -31139,3 +31139,72 @@ Without the fix it fails at the first read exactly as T-917 read. `crown_e2e`'s 
 (a started worker, a watched one) now read `told_hand` after the wake. `crownledger`'s round-trip
 carries `hands`. Rig **RH2** (Sonnet): a worker asks a two-word question by its hand; the crown
 answers it with exactly one `ask_agent` naming the first word, and the worker replies with it.
+
+## A Codex crown measured on delegation and forge news, and told what the crown is for (T-916, 2026-10-23)
+
+The author: a Codex crown delegates less than a Claude crown; what does the rig cover on Codex?
+Before this, nothing measured a real Codex crown deciding anything: the question case drives the
+crown's wire road itself, and the Claude rig's F tests spell out every tool call to a scripted
+crown. Two live Codex cases now ask a crowned seat one thing in a person's words and read the
+board, the feed and the native histories (`ci/rig/README.md` has the cases and their limits).
+
+**What reaches a crown, traced on both providers.** The words are the same bytes: the agent brief
+(`brief::TEXT`; Claude Code's system prompt, Codex's `SessionStart` context as a developer
+message), the tool descriptions, and the crown's own `get_ticket` (`crowned`, and `crown`, which
+was the wake words alone). Codex adds its own developer messages: a skills list, a permission
+profile and `<multi_agent_mode>` ("do not spawn sub-agents unless the user ... explicitly ask"),
+so a native child is not the competing road (none was spawned with `multi_agent` on). The policy
+differs: the mod registers the board's tools with no permission check on Claude, while Codex
+0.163 under on-request asks the person once for each board write the crown calls
+(`set_workspace`, `start_agent`, `ask_agent`, `raise_hand`, `watch_ticket`; reads went unasked
+through code mode). A crown whose person is away sits at `needs you` on every start. That is
+recorded, not changed: the approval policy is Codex's and the person's.
+
+**The demonstrated defect, fixed.** Nothing told a crown what the crown is for, and the brief says
+the description and notes are the brief and "do not start work without them". On a crowned ticket
+with no description, Luna (low) asked for a module and its test read its ticket and replied "the
+ticket brief is empty and doesn't match the request. Please file this work on the correct ticket"
+and did nothing. `mcp::CROWN_ROLE` now opens the crown's own view (`mcp::crown_view`, the role
+then `CROWN_WAKES`; the receipts keep the wake words alone): the person's prompts are its brief
+beside an empty description, a ticket's own work is filed with create_ticket and started with
+start_agent in a session of its own, and coordination stays here. Described, not ordered; no
+delegate-everything rule. With it, the same request gets "the request in this session is the
+brief", and Luna wrote `greet.py` and `test_greet.py` into the checkout itself.
+
+**Runs, each once on the change it tested (`target/rig/codex/<run>/`, Codex CLI 0.163.0,
+`gpt-6-luna`, low, every turn context confirmed):**
+- `delegate`, before the fix: failed, the refusal above (70,030 observed tokens, 1 turn).
+- `delegate`, after it: failed, the crown did the work itself, one `apply_patch` in the checkout
+  (110,752 tokens).
+- `forge`: inconclusive. The crown delegated, but the fixture leaked the person's machine tiers
+  (`$HOME/.local/state/mesimon/tiers.toml`) and the crown picked `deep`, a Claude tier, so the
+  real `claude` started and stopped at its folder-trust dialog before any model call. The runner
+  also read the bare board, which carries no worktrees or PRs. Both fixed: the crown fixtures' daemon runs on
+  a `HOME` of its own (built-in tiers only, no personal skills, a fixture git identity, a `claude`
+  that refuses to start, the rig's own login shell), and the cases read the snapshot.
+- `forge`: failed on the run's 600k observed-token stop before the pipeline failed (611,743;
+  90 % cached input: a Codex crown re-sends a ~60k context on every code-mode request). By then
+  the crown had started the worker in a worktree and, on its "finished" wake, watched it and ended
+  its turn saying the PR's news would wake it. Crown cases now carry their own allowance
+  (`CASE_TOKENS`, 1M and 2M), which raises the run's default.
+- `forge`: passed (406,360 tokens, 5 turns, 4 person approvals). On "has news from the forge
+  (pipeline failed #42: test-linux)" the crown read the ticket, called start_agent on the busy
+  ticket (refused, one agent per ticket), then ask_agent `deliver: now` naming the job, and ended
+  its turn with no watch, sleep or poll; the worker read the words as a prompt.
+- Claude rig `DL1` on Sonnet: passed. Told to do what the board's crown does with the same request,
+  with the rig's rules against filing and starting lifted, the crown filed T-5 and started its
+  agent in a worktree, wrote nothing, and heard the delivery. The rig's crown is scripted by its
+  own brief, so this is the acceptance of the new words, not a parity measurement.
+
+**Not yet explained.** Why Luna keeps a small request rather than filing it, with the role in its
+view, is not settled by one sample. Candidates: the role reaches it as tool output under a
+developer-level brief; Codex's base prompt favours doing the work; a two-file module reads as the
+crown's own. A Claude crown on the same fixture and words was not run: the Codex rig drives
+Claude only on its hook-set road, where every board write would also need a permission answer.
+`delegate` was not re-run on the own-`HOME` fixture; its crown never reached a tier or a start.
+
+Offline: `ci/codex_rig_test.py` (23 tests: selection, deadlines, token and native-turn stops,
+the code-mode call readers, the approval rule, the own-`HOME` fixture, the stub forge on the
+login-shell PATH). Gates: `cargo ut` (one run hit `worktree::tests::default_branch_reads_the_head_of_the_remote_the_checkout_uses`,
+which shares a fixed temp path and passed alone and on the rerun), `crown_e2e`, the release
+clippy, and `cargo nextest run --workspace` (2816 passed, 7 skipped).

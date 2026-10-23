@@ -1336,6 +1336,13 @@ Reply with the single word ready and end your turn."""
             tickets = [t for t, k, _ in self.test_tickets(test) if k == on]
 
         def one_done(tid):
+            if until.get("filed"):
+                # A request in a person's words (DL1, T-916): the ticket the
+                # crown filed and started since the step began stands in for
+                # the test's own, which nothing starts.
+                tid = next(iter(self.crown_filed(self.feed_lines[mark:])), None)
+                if tid is None:
+                    return False
             if until.get("crown_fed"):
                 # A step with no worker (X1): a board line of the crown's
                 # own ticket since the step began, `cmd` as named.
@@ -2153,6 +2160,14 @@ Reply with the single word ready and end your turn."""
             return bool(self.restart())
         die(f"unknown rig step {what}")
 
+    def crown_filed(self, lines):
+        """The tickets the crown both filed and started an agent on, in
+        `lines`, oldest first (T-916)."""
+        mine = lambda cmd: [l.get("ticket") for l in lines if l.get("kind") == "board"  # noqa: E731
+                            and l.get("actor") == "agent" and l.get("cmd") == cmd]
+        started = set(mine("start_agent"))
+        return [t for t in mine("create_ticket") if t in started]
+
     def forge_wake(self, test, mark):
         """The board's forge wake for the test's worker since `mark`."""
         return self.wait_for("the crown's forge wake", lambda: next((
@@ -2300,7 +2315,8 @@ Reply with the single word ready and end your turn."""
             # A start that made no agent (U1) is judged on the board's and
             # the crown's side alone.
             if rec is None and name not in ("woke", "crown_hand", "crown_reply", "crown_line",
-                                            "crown", "crown_board", "peer_fed"):
+                                            "crown", "crown_board", "peer_fed", "filed",
+                                            "crown_wrote_nothing"):
                 check(c, False, "no agent record on the ticket")
             elif name == "road":
                 check(c, rec.get("road", "hooks") == arg, f"road {rec.get('road', 'hooks')}")
@@ -2444,6 +2460,27 @@ Reply with the single word ready and end your turn."""
                 bad += [f"<{n}>" for n, _ in calls if n == "Monitor"]
                 check(c, not bad, " → ".join(repr(b[:60]) for b in bad)
                       or f"{len(ran)} bash calls, none of {words}")
+            elif name == "filed":
+                # T-916: the crown filed the person's request as a ticket of
+                # its own and started an agent on it, which took a turn.
+                filed = self.crown_filed(lines)
+                agents = [(t, self.agent_of(board, t)) for t in filed]
+                ran = [(t, a) for t, a in agents if a and a.get("started_by") == self.crown
+                       and any(r.get("type") == "user" for r in transcript(a))]
+                said = ", ".join(f"{self.ticket(board, t)['short_key']} {self.ticket(board, t)['title'][:50]!r}"
+                                 f" in {'the checkout' if os.path.realpath(a['cwd']) == self.repo else 'a worktree'}"
+                                 for t, a in ran)
+                check(c, ran, said or f"filed {len(filed)}, none with an agent the crown started that took a turn")
+            elif name == "crown_wrote_nothing":
+                # T-916: the work went to the filed ticket's agent, not the
+                # crown's own Write, Edit or NotebookEdit.
+                crown = self.agent_of(board, self.crown)
+                since = record.get("t0_ms", 0)
+                crown_rows = [r for r in (transcript(crown) if crown else [])
+                              if (iso_ms(r.get("timestamp") or "") or 0) >= since]
+                wrote = [i.get("file_path", "") for n, i in tool_inputs(crown_rows)
+                         if n in ("Write", "Edit", "NotebookEdit")]
+                check(c, not wrote, ", ".join(wrote) or "no Write, Edit or NotebookEdit of the crown's")
             elif name == "fed":
                 check(c, arg in fed, f"{arg}×{fed.count(arg)}")
             elif name == "board_fed":

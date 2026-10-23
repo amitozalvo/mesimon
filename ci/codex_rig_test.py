@@ -2,6 +2,7 @@
 import argparse
 import importlib.util
 import json
+import subprocess
 from pathlib import Path
 import tempfile
 import tomllib
@@ -130,6 +131,144 @@ class PreflightTests(unittest.TestCase):
             saved = json.loads((Path(directory) / "verdicts.json").read_text())
             self.assertEqual(saved, manifest)
             self.assertIn("inconclusive", (Path(directory) / "verdicts.md").read_text())
+
+
+def call(name, text=""):
+    kind = "custom_tool_call" if name == "exec" else "function_call"
+    field = "input" if kind == "custom_tool_call" else "arguments"
+    return {"type": "response_item", "payload": {"type": kind, "name": name, field: text}}
+
+
+def said(role, text, phase=None):
+    payload = {"type": "message", "role": role, "content": [{"type": "input_text", "text": text}]}
+    if phase:
+        payload["phase"] = phase
+    return {"type": "response_item", "payload": payload}
+
+
+class CrownTests(unittest.TestCase):
+    """T-916: the crowned Codex cases' selection, budgets and evidence readers."""
+
+    def test_crown_cases_are_opt_in_with_their_own_deadline(self):
+        self.assertTrue(rig.CROWN <= set(rig.EXTENDED) and rig.CROWN.isdisjoint(rig.SMOKE))
+        cases = rig.select_cases(arguments(only="delegate,forge", case_timeout=None), None)
+        self.assertEqual(cases, ["delegate", "forge"])
+        self.assertEqual(sum(rig.TURNS[case] for case in cases), 2, "one person's request each")
+        args = arguments(case_timeout=None)
+        self.assertEqual([rig.case_timeout(args, case) for case in ("delegate", "complete")], [300, 180])
+        self.assertEqual(rig.case_timeout(arguments(case_timeout=120), "delegate"), 120)
+        parser = argparse.ArgumentParser()
+        rig.add_arguments(parser)
+        fresh = parser.parse_args([])
+        fresh.failed = False
+        rig.resolve_options(fresh, None)
+        self.assertIsNone(fresh.case_timeout, "no flag keeps each case's own deadline")
+        for only, tokens in (("complete", 600000), ("forge", 2000000), ("delegate,forge", 3000000)):
+            args = arguments(only=only, max_tokens=None)
+            rig.select_cases(args, None)
+            self.assertEqual(args.max_tokens, tokens, only)
+        args = arguments(only="forge", max_tokens=5)
+        rig.select_cases(args, None)
+        self.assertEqual(args.max_tokens, 5, "an explicit allowance stands")
+
+    def test_delegate_offers_codex_s_own_children_bounded_and_forge_does_not(self):
+        original = 'model = "small"\nmodel_reasoning_effort = "low"\n'
+        for case, enabled in (("delegate", True), ("forge", False)):
+            config = tomllib.loads(rig.fixture_configuration(original, argparse.Namespace(
+                case=case, model="small", effort="low")))
+            self.assertEqual(config["agents"]["enabled"], enabled)
+            self.assertEqual(config["features"]["multi_agent"], enabled)
+            self.assertEqual(config["agents"].get("max_threads"), 1 if enabled else None)
+            self.assertEqual(config["agents"]["default_subagent_model"], "small")
+
+    def test_native_turn_allowance_stops_a_crown_fixture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / "sessions").mkdir()
+            rows = [{"type": "turn_context", "payload": {}}] * (rig.NATIVE_TURNS["forge"] + 1)
+            (home / "sessions/thread.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+            verification = object.__new__(rig.adapter(object))
+            verification.args = argparse.Namespace(case="forge", remaining_tokens=100)
+            verification.home = home
+            verification.manifest = {}
+            verification.last_usage_check = 0
+            with self.assertRaisesRegex(AssertionError, "native turn allowance"):
+                verification.check_usage(force=True)
+            self.assertEqual(verification.manifest["observed_native_turns"], len(rows))
+
+    def test_calls_are_read_through_code_mode(self):
+        rows = [said("user", "add greet.py"),
+                call("exec", 'text(await tools.mcp__mesimon__create_ticket({"title":"greet"}));'),
+                call("mcp__mesimon__start_agent", '{"key":"T-2"}'),
+                call("exec", 'text(await tools.exec_command({"cmd":"gh pr checks 42 --watch"}));'),
+                call("exec", "await tools.sleep({\"seconds\": 30});"),
+                call("exec", "tools.apply_patch(`*** Begin Patch`)"),
+                call("spawn_agent", '{"task":"x"}'),
+                call("exec", 'text(await tools.mcp__mesimon__sleep_agent({"key":"T-2"}));')]
+        calls = rig.tool_calls(rows)
+        self.assertEqual(len(calls), 7)
+        self.assertEqual(rig.board_calls(calls), ["create_ticket", "start_agent", "sleep_agent"])
+        self.assertEqual([c["row"] for c in rig.polling(calls)], [3, 4], "a board sleep_agent is no poll")
+        self.assertEqual(len(rig.patched(calls)), 1)
+        self.assertEqual(len(rig.spawned(calls)), 1)
+        self.assertEqual([c["row"] for c in rig.tool_calls(rows, since=5)], [5, 6, 7])
+
+    def test_user_turns_skip_injected_context_and_a_final_answer_ends_one(self):
+        rows = [said("user", "<environment_context>cwd</environment_context>"),
+                said("developer", "This session was started by mesimon"),
+                said("user", "Add greet.py"), said("assistant", "working", phase="commentary"),
+                said("user", "T-2 finished its turn")]
+        self.assertEqual(rig.user_turns(rows), [(2, "Add greet.py"), (4, "T-2 finished its turn")])
+        self.assertFalse(rig.answered_after(rows, 2))
+        rows.append(said("assistant", "T-2 is done", phase="final_answer"))
+        self.assertTrue(rig.answered_after(rows, 4))
+
+    def test_the_rig_allows_the_board_s_tools_and_a_worker_s_git_alone(self):
+        worktrees = Path("/owned/state/worktrees")
+        mcp = {"what": "mcp_tool", "command": "mesimon", "reason": "Allow mesimon to run start_agent?"}
+        self.assertEqual(rig.approval_decision(mcp, "crown", worktrees), (True, "start_agent"))
+        git = {"what": "command", "command": "git commit -m greet", "cwd": "/owned/state/worktrees/T-2-greet"}
+        self.assertEqual(rig.approval_decision(git, "worker", worktrees), (True, "git commit -m greet"))
+        for request, role in ((git, "crown"), ({**git, "command": "git add . && curl x"}, "worker"),
+                              ({**git, "cwd": "/owned/repo"}, "worker"),
+                              ({"what": "command", "command": "gh pr checks 42"}, "crown"),
+                              ({"what": "mcp_tool", "command": "other", "reason": "write"}, "crown")):
+            with self.subTest(request=request, role=role):
+                self.assertFalse(rig.approval_decision(request, role, worktrees)[0])
+        self.assertTrue(rig.dialog_allows("Allow?\n› 1. Yes, allow once\n  2. No"))
+        self.assertFalse(rig.dialog_allows("› 2. No, and tell Codex what to do"))
+        self.assertFalse(rig.dialog_allows("› Ask Codex to do anything"), "the composer is no dialog")
+
+    def test_the_crown_fixture_s_home_hides_the_person_s_tiers_and_claude(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "home"
+            shell, claude, path = rig.fixture_home(home)
+            self.assertFalse((home / ".local/state/mesimon/tiers.toml").exists())
+            self.assertIn("email = fixture@example.invalid", (home / ".gitconfig").read_text())
+            refused = subprocess.run([str(claude), "--version"], capture_output=True, text=True, timeout=5)
+            self.assertEqual(refused.returncode, 1)
+            captured = subprocess.run([str(shell), "-l", "-i", "-c", "echo $PATH"], capture_output=True,
+                                      text=True, timeout=5, env={"PATH": "/usr/bin:/bin"})
+            self.assertEqual(captured.stdout.strip(), path)
+
+    def test_the_stub_forge_answers_from_its_files_first_on_the_login_shell_path(self):
+        claude_rig = rig.module("rig_claude_stub_test", "rig.py")
+        with tempfile.TemporaryDirectory() as directory:
+            stub = Path(directory) / "forge"
+            gh = rig.forge_stub(stub, claude_rig.GH_STUB)
+            shell, _, _ = rig.fixture_home(Path(directory) / "home", stub)
+            body = rig.pull_requests("msmn/T-2-forge", "abc123", "failed")
+            (stub / "prs.json").write_text(body)
+            found = subprocess.run([str(shell), "-l", "-i", "-c", "command -v gh"], capture_output=True,
+                                   text=True, timeout=5, env={"PATH": "/usr/bin:/bin"})
+            self.assertEqual(found.stdout.strip(), str(gh))
+            listed = subprocess.run([str(gh), "pr", "list"], capture_output=True, text=True, timeout=5, env={})
+            self.assertEqual(json.loads(listed.stdout), json.loads(body))
+            pr = json.loads(body)[0]
+            self.assertEqual((pr["number"], pr["headRefName"], pr["headRefOid"]), (42, "msmn/T-2-forge", "abc123"))
+            self.assertEqual(pr["statusCheckRollup"][0]["conclusion"], "FAILURE")
+            self.assertEqual(json.loads(rig.pull_requests("b", "t", "running"))[0]["statusCheckRollup"][0]["status"],
+                             "IN_PROGRESS")
 
 
 class TrustTests(unittest.TestCase):

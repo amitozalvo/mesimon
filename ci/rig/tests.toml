@@ -28,7 +28,8 @@
 #   until      for a crown step: `stops = N` (that many Stop frames from the
 #              worker since the step began) and/or `events = [...]`, then the
 #              worker's card word `state` (working | needs_you | idle |
-#              sleeping). `all = true` waits on every ticket of the test,
+#              sleeping). `filed = true` (DL1) waits on the ticket the crown
+#              filed and started in the step instead of the test's own. `all = true` waits on every ticket of the test,
 #              `on = "key2"` on that sibling alone.
 #   settle     for a crown step: false where the next step must follow at
 #              once, without waiting for the crown's turn to end (P2).
@@ -89,7 +90,11 @@
 #              since the test began holds any of the words, and no Monitor
 #              ran: the board's wake is the wait), fed_after:<cmd>:<prefix>
 #              (T-919: the ticket's first board line whose cmd begins
-#              <prefix> follows its first <cmd> line, none before it).
+#              <prefix> follows its first <cmd> line, none before it), filed (T-916: a ticket the
+#              crown filed since the test began carries an agent the crown
+#              started, which took a turn), crown_wrote_nothing (T-916: no
+#              Write, Edit or NotebookEdit of the crown's since the test
+#              began).
 #   siblings   more tickets the test files beside its own ({key2}, {key3}
 #              in a step; {crown} is the rig's crown's own key), each with
 #              the same brief and every check run on
@@ -1328,3 +1333,15 @@ checks = ["road:mod", "started_by_crown", "hand:rh2-teal", "woke:raised", "crown
   crown = "RH2: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: RH2 started. When the board wakes you because {key}'s agent raised its hand, answer its question with one ask_agent naming the first of the two words it offers, and end your turn with the single line: RH2 answered: and that word. When the board wakes you because {key}'s agent answered or finished, end your turn with the single line: RH2 seen."
   until = { stops = 2, state = "idle" }
   wake = true
+
+[[test]]
+id = "DL1"
+title = "DL1 · the crown hears work asked for in a person's words: do the steps below"
+workspace = "worktree"
+brief = "Nothing starts on this ticket: the request goes to the crown."
+expect = "asked in a person's words for a small module and its test, naming no tool, with the rig's rules against filing a ticket and starting an agent lifted, the crown files the work as a ticket of its own and starts an agent on it, as its own get_ticket says of the crown (T-916): the person's prompts are its brief, and a ticket's own work goes to a session of its own. The crown writes no file itself, and the agent it started takes the request and ends its turn."
+checks = ["filed", "crown_wrote_nothing"]
+
+  [[test.steps]]
+  crown = "DL1: this test lifts the rig's rules against filing a ticket and starting an agent. The person asks: Add a small Python module greet.py with a function greet(name) that returns \"Hello, <name>!\", and a unittest for it in test_greet.py. Do what this board's crown does with that request, then end your turn with the single line: DL1 handled."
+  until = { filed = true, stops = 1, state = "idle" }

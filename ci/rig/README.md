@@ -35,12 +35,14 @@ defaults, using Codex's [configuration settings](https://learn.chatgpt.com/docs/
 
 `--max-turns` defaults to 12 and must cover the selected scenarios, including
 their explicit child, continuation or compaction allowances. `--max-tokens`
-defaults to 600000 observed total tokens across cases, including cached input;
+defaults to 600000 observed total tokens across cases, including cached input,
+raised to cover the selected crown cases (1M for `delegate`, 2M for `forge`,
+each also that case's own stop);
 manifests also retain input, cached input, output and reasoning token readings.
 The runner checks native
 usage during observation and before further submissions. Usage can arrive late
 and native overhead can be unreported: this is a stop threshold, not a hard token
-or dollar cap. `--case-timeout` defaults to 180 seconds and the automatic outer
+or dollar cap. `--case-timeout` defaults to each case's own (180 seconds, 300 for the crown cases) and the automatic outer
 supervisor caps the entire command at 20 minutes. A failed or inconclusive
 case stops the suite; remaining cases are recorded as `not_run`, and `--failed`
 selects them too, preserving the previous model, effort and limits unless explicitly
@@ -51,7 +53,9 @@ Extended cases are opt-in:
 ```sh
 python3 -B ci/rig.py --provider codex --live --only guard,plan,plan-launch,interrupt,steer
 python3 -B ci/rig.py --provider codex --live --only child,stop,compact,identity,question
-python3 -B ci/rig.py --provider codex --live --suite extended --max-turns 25
+python3 -B ci/rig.py --provider codex --live --only delegate
+python3 -B ci/rig.py --provider codex --live --only forge
+python3 -B ci/rig.py --provider codex --live --suite extended --max-turns 33
 ```
 
 These reuse the native gate, plan, interruption, child and lifecycle checks.
@@ -66,6 +70,52 @@ turn, and the crown's `answer_agent` walks the real `request_user_input` dialog
 by its keys, confirmed by the request leaving the runtime's snapshot (T-846);
 the plan case is still answered through Codex's terminal. These checks do not
 claim Claude mod-road parity.
+
+The two crown cases (T-916) measure what a crowned Codex seat decides, not the
+wire: the person's one request is in a person's words and names no tool, and
+the verdict reads the board, the feed and the native histories, never the
+crown's prose. Each starts a crowned seat on the checkout of a board whose
+columns run Codex in workspace-write with on-request approvals, so the crown
+could do the work itself with no dialog in its way; the board's tools and its
+brief are on. The rig answers approvals as the person at the desk: a call to
+a board tool, and a worker's plain `git` in its own worktree, are allowed once
+each and listed in the manifest (`approvals`); anything else is left standing
+and listed (`approvals_left`), and a crown kept waiting on one fails.
+
+- `delegate`: the person asks for a small module and its test. It passes when
+  the crown files a board ticket and starts a Codex worker on it (the snapshot's
+  `started_by`), with no `apply_patch` of its own and no native child, though
+  Codex's own child agents are on (`multi_agent`, Codex's default, one thread,
+  pinned to the selected model and effort); then the worker's turn ends, the
+  board wakes the crown with it, and the crown's turn on that wake ends with
+  the checkout untouched. The crown's calls before and on the wake, the
+  worker's files and the wake's cause are recorded, not judged.
+- `forge`: the board merges through pull requests, the fixture repository has
+  a github.com remote it never reaches, and the Claude rig's stub `gh` comes
+  first on the daemon's PATH and on its login shell's (the forge looks for
+  `gh` on the captured login-shell PATH first). The person asks the crown to
+  start a ticket in its own worktree and look after its pull request, getting
+  CI fixed if it fails. Once the worker's first turn and the crown's turn on
+  its wake end, the stub opens PR 42 on the worker's branch, running, then
+  fails its one job. It passes when the board wakes the crown with the
+  forge's news, the crown tells the worker with `ask_agent`, the worker reads
+  those words as a prompt, and no turn of the crown's from the news on runs a
+  watch, a sleep or a poll of the pull request (`gh pr checks`, `--watch`,
+  `sleep`, Codex's own sleep tool) or patches the code itself.
+
+The crown cases' daemon runs on a HOME of its own inside the fixture: the
+machine's tiers live under `$HOME` and a crown picks among them (a first run's
+crown started its worker on the person's own Claude tier), so only the built-in
+tiers exist there, `claude` refuses to start, git has a fixture identity, no
+personal Codex skills are listed, and the captured login shell is the rig's
+PATH.
+
+Each crown case allows one person's submission; what follows is the crown's
+doing and the board's wakes, so each also stops at a count of native turns
+across the fixture's threads, children included (20 and 24), and takes a
+300-second deadline unless `--case-timeout` says otherwise. They do not prove
+that a Codex crown delegates every request, nor that it merges, parks or
+closes a delivered worker: one run on one model is one sample of a choice.
 
 Latest results are `target/rig/codex/verdicts.json` and `verdicts.md`. Every run
 also retains its own directory with per-case manifests, board snapshots,

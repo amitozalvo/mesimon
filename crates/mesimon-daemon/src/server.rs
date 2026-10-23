@@ -9012,7 +9012,7 @@ impl Daemon {
             }),
             crowned: self.board.is_crowned(id),
             watched: false,
-            crown: self.board.is_crowned(id).then(|| mesimon_core::mcp::CROWN_WAKES.to_string()),
+            crown: self.board.is_crowned(id).then(mesimon_core::mcp::crown_view),
             under_crown: None,
             background: self.agent_background(id),
             state: self.agent_state_view(id),

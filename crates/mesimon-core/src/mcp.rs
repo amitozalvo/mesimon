@@ -301,6 +301,34 @@ pub const CROWN_WAKES: &str = concat!(
     persons_steps!()
 );
 
+/// What the crown is for (T-916), first on its own `get_ticket` view
+/// ([`crown_view`]), before the wake words. Crowning types nothing into the
+/// conversation, so this is where a crowned agent learns that the person's
+/// prompts are its brief. Without it the agent brief (`brief::TEXT`: the
+/// description and notes are the brief, "do not start work without them",
+/// work stays on this ticket) left a crown seated on a ticket with no
+/// description nowhere to put a request: a real Codex crown (Luna, low)
+/// asked for a module and its test read its empty ticket and replied "the
+/// ticket brief is empty and doesn't match the request. Please file this
+/// work on the correct ticket." The division of work is described, not
+/// ordered: a ticket's own work goes to a session of its own, as the brief
+/// already says of a filed ticket, and coordination stays here.
+pub const CROWN_ROLE: &str = "This session wears the board's crown: it coordinates the \
+     board's other tickets for the person, who gives it work in this session's prompts. Those \
+     prompts are this session's brief as much as its ticket's description and notes, so an \
+     empty description holds nothing up. Work the person asks for that is a ticket's own (a \
+     change, a fix, a feature) is filed with create_ticket, its description the brief, and \
+     started with start_agent in the workspace the crown picks, where a session of its own \
+     does it, as the agent brief says of a ticket filed from here; the board then wakes this \
+     session with what becomes of it. What is the crown's own (reading the board, answering \
+     the person, moving, tagging, merging and closing tickets) is done here.";
+
+/// The crown's own `get_ticket` view's `crown`: what it is for, then how
+/// the board wakes it. The receipts carry `CROWN_WAKES` alone.
+pub fn crown_view() -> String {
+    format!("{CROWN_ROLE} {CROWN_WAKES}")
+}
+
 /// What a worker the crown started is told about the board it works on
 /// (T-599), on its own `get_ticket` view: `CROWN_WAKES`'s counterpart, and
 /// transient result data like it, never tool text or a system prompt, so it
@@ -3002,6 +3030,31 @@ mod tests {
             "{SUMMARY_ABOUT}"
         );
         assert!(description.contains("PR's address on a plain line there"), "{description}");
+    }
+
+    /// T-916: the crown's own view says what it is for before how it is
+    /// woken: the person's prompts are its brief beside an empty
+    /// description, a ticket's own work goes to a session of its own through
+    /// create_ticket and start_agent, and coordination stays here. A
+    /// description, not an order; the receipts keep the wake words alone.
+    #[test]
+    fn the_crown_s_own_view_says_what_the_crown_is_for_first() {
+        let view = crown_view();
+        assert!(view.starts_with(CROWN_ROLE) && view.ends_with(CROWN_WAKES), "{view}");
+        for words in [
+            "wears the board's crown",
+            "this session's prompts",
+            "an empty description holds nothing up",
+            "filed with create_ticket",
+            "started with start_agent",
+            "a session of its own",
+            "the board then wakes this session",
+            "is done here",
+        ] {
+            assert!(CROWN_ROLE.contains(words), "CROWN_ROLE says {words:?}");
+        }
+        assert_eq!(lint_tool_text(CROWN_ROLE), Ok(()));
+        assert!(!CROWN_WAKES.contains(CROWN_ROLE), "the receipts do not repeat it");
     }
 
     /// T-862: every step that is a person's is a hand on the crown's own

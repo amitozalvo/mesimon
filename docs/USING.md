@@ -591,7 +591,10 @@ Once that agent's branch is merged, the crown moves its ticket to DONE, so a fin
 closed without asking you. Where **Crown archives tickets** is on, it may also archive the ticket,
 which reclaims the merged worktree; otherwise the ticket and its worktree stay until you archive it. An agent you started yourself is never slept by
 the crown; it is told to leave that to you. Crowning types nothing into the agent's conversation: the crowned agent learns
-it through its tools. When an agent it started delivers, answers what it asked, or raises its
+it through its tools. Reading its own ticket, it is told first what the crown is for: your words
+in its session are its brief, even on a ticket with no description, and work that belongs on a
+ticket of its own is filed and started on an agent there, while the coordinating stays with the
+crown. When an agent it started delivers, answers what it asked, or raises its
 hand, one sentence saying so is sent into the crown's session, and so is a question, where the
 crown may answer it; the sentence never carries the question's words. So is the merge of that agent's
 worktree branch, whether `m`, the merge train or your own `git merge` made it. So is a turn that

@@ -19,11 +19,38 @@ import uuid
 ROOT = Path(__file__).resolve().parents[2]
 SMOKE = ("complete", "mcp", "brief", "queue", "sleep-resume", "handover")
 EXTENDED = ("guard", "plan", "plan-launch", "interrupt", "steer", "child", "stop", "compact",
-            "identity", "question")
+            "identity", "question", "delegate", "forge")
 TURNS = {"complete": 1, "mcp": 1, "brief": 2, "queue": 2, "sleep-resume": 2,
          "handover": 2, "guard": 2, "plan": 2, "plan-launch": 2, "interrupt": 1, "steer": 2, "child": 2,
-         "stop": 2, "compact": 3, "identity": 2, "question": 3}
+         "stop": 2, "compact": 3, "identity": 2, "question": 3, "delegate": 1, "forge": 1}
 LIFECYCLE = {"stop", "compact", "identity", "question"}
+# T-916: a crowned Codex seat asked one thing by the person, in words a person
+# would use. Everything after that one submission is the crown's own doing and
+# the board's wakes, so these cases also bound the native turns every thread of
+# the fixture takes (children included), and take a longer deadline.
+CROWN = {"delegate", "forge"}
+NATIVE_TURNS = {"delegate": 20, "forge": 24}
+TIMEOUTS = {"delegate": 300, "forge": 300}
+# Observed tokens, cached input included, one crown case may use. A Codex
+# crown re-sends a ~60k context on every code-mode request, so a forge case's
+# four turns read about 1.5M, 90 % of it cached (measured on Luna, T-916).
+CASE_TOKENS = {"delegate": 1000000, "forge": 2000000}
+# Model-created children stay off except where a case measures them, or (the
+# delegate case) where Codex's own default (`multi_agent` on) is the competing
+# road the crown could take instead of a board ticket.
+CHILDREN = {"child", "delegate"}
+# The person's one request in the delegate case: concrete work, no tool named.
+DELEGATE_ASK = ("Add a small Python module greet.py with a function greet(name) that returns "
+                "\"Hello, <name>!\", and a unittest for it in test_greet.py.")
+FORGE_WORKER = "Append the line forge fixture to README.md, then reply done."
+FORGE_ASK = "Please start {key} in its own worktree and look after its pull request. If its CI fails, get it fixed."
+BOARD_TOOLS = ("get_ticket", "list_board", "read_note", "write_note", "create_ticket", "tag_ticket",
+               "raise_hand", "move_ticket", "start_agent", "ask_agent", "answer_agent", "accept_plan",
+               "sleep_agent", "merge_ticket", "watch_ticket", "set_workspace", "rename_ticket",
+               "archive_ticket", "read_attachment", "read_shell", "ask_board", "request_close_shell")
+# A wait on a pull request that holds the session busy (T-895), in a command's
+# words; Codex's own sleep tool is the same wait by another name.
+POLL_WORDS = ("pr checks", "--watch", "sleep ", "ci status", "pr view", "run watch")
 
 
 def module(name, filename):
@@ -45,10 +72,16 @@ def add_arguments(parser):
 
 
 def resolve_options(args, previous):
-    defaults = dict(model="gpt-6-luna", effort="low", max_turns=12, max_tokens=600000, case_timeout=180)
+    # case_timeout None is each case's own (TIMEOUTS, else 180 s).
+    # max_tokens None is 600000, raised to cover the selected crown cases.
+    defaults = dict(model="gpt-6-luna", effort="low", max_turns=12, max_tokens=None, case_timeout=None)
     for name, default in defaults.items():
         if getattr(args, name) is None:
             setattr(args, name, (previous or {}).get(name, default) if args.failed else default)
+
+
+def case_timeout(args, case):
+    return args.case_timeout or TIMEOUTS.get(case, 180)
 
 
 def select_cases(args, previous):
@@ -64,8 +97,11 @@ def select_cases(args, previous):
             raise ValueError("no previous Codex verdicts for --failed")
         failed = [row["case"] for row in previous["cases"] if row["outcome"] != "passed"]
         selected = [case for case in failed if case in selected] if args.only else failed
-    if not 1 <= args.case_timeout <= 300 or args.max_turns < 1 or args.max_tokens < 1:
+    if (args.case_timeout is not None and not 1 <= args.case_timeout <= 300) \
+            or args.max_turns < 1 or (args.max_tokens is not None and args.max_tokens < 1):
         raise ValueError("positive budgets and --case-timeout 1..300 are required")
+    if args.max_tokens is None:
+        args.max_tokens = max(600000, sum(CASE_TOKENS.get(case, 0) for case in selected))
     needed = sum(TURNS[case] for case in selected)
     if needed > args.max_turns:
         raise ValueError(f"selected cases allow {needed} turns; --max-turns is {args.max_turns}")
@@ -108,13 +144,156 @@ def usage_of(rows):
     return usage_totals(rows)["total_tokens"]
 
 
+def native_turns(rows):
+    return sum(1 for row in rows if row.get("type") == "turn_context")
+
+
+def tool_calls(rows, since=0):
+    """Every tool call a native history records from row `since` on: its name
+    and its words. Code mode nests the real call in an `exec` (`tools.x(...)`),
+    so the words are searched, never the name alone."""
+    calls = []
+    for index, row in enumerate(rows[since:], since):
+        payload = row.get("payload", {})
+        if row.get("type") == "response_item" and payload.get("type") in (
+                "function_call", "custom_tool_call", "local_shell_call"):
+            words = payload.get("input") or payload.get("arguments") or payload.get("action") or ""
+            calls.append(dict(row=index, name=payload.get("name") or payload["type"],
+                              text=words if isinstance(words, str) else json.dumps(words)))
+    return calls
+
+
+def board_calls(calls):
+    """The board's tools among `calls`, by name, in order."""
+    found = []
+    for call in calls:
+        found.extend(tool for tool in BOARD_TOOLS
+                     if tool in call["name"] or tool + "(" in call["text"] or '"' + tool + '"' in call["text"])
+    return found
+
+
+def polling(calls):
+    return [call for call in calls if call["name"] == "sleep" or "tools.sleep(" in call["text"]
+            or any(word in call["text"] for word in POLL_WORDS)]
+
+
+def spawned(calls):
+    return [call for call in calls if "spawn_agent" in call["name"] or "spawn_agent(" in call["text"]]
+
+
+def patched(calls):
+    return [call for call in calls if call["name"] == "apply_patch" or "tools.apply_patch(" in call["text"]]
+
+
+def user_turns(rows):
+    """(row, words) of each user message the model read, the turn context
+    Codex itself injects left out."""
+    found = []
+    for index, row in enumerate(rows):
+        payload = row.get("payload", {})
+        if row.get("type") != "response_item" or payload.get("role") != "user":
+            continue
+        words = " ".join(part.get("text", "") for part in payload.get("content", []) if isinstance(part, dict))
+        if words.strip() and not words.lstrip().startswith(("<environment_context>", "<user_instructions>",
+                                                            "<turn_aborted>", "# AGENTS.md")):
+            found.append((index, words))
+    return found
+
+
+def answered_after(rows, index):
+    """A final answer of the assistant's after row `index`: that turn ended."""
+    return any(row.get("type") == "response_item" and row.get("payload", {}).get("role") == "assistant"
+               and row["payload"].get("phase") in (None, "final_answer") for row in rows[index + 1:])
+
+
+def approval_decision(request, role, worktrees):
+    """What the rig, as the person at the desk, does with a native approval
+    on a crown fixture: (True, what) to allow it once, (False, why) to leave
+    it standing. The board's own tools are allowed (the daemon's authorize is
+    their gate), and a worker's git in its own worktree; anything else stays
+    the person's and is recorded."""
+    what = request.get("what")
+    words = " ".join(str(request.get(key) or "") for key in ("command", "reason"))
+    if what == "mcp_tool" and "mesimon" in words.lower():
+        return True, next((tool for tool in BOARD_TOOLS if tool in words), "mesimon")
+    cwd = str(request.get("cwd") or "")
+    command = str(request.get("command") or "").strip()
+    if (what == "command" and role == "worker" and cwd.startswith(str(worktrees) + "/")
+            and command.startswith("git ") and not any(mark in command for mark in (";", "&&", "|", "`", "$("))):
+        return True, command
+    return False, f"{what}: {words.strip()[:200]}"
+
+
+def dialog_allows(screen):
+    """The native approval dialog is drawn with an allowing row selected: a
+    numbered row under the cursor (`› 1. Yes, …`), or, where the dialog draws
+    no numbered rows, its Allow (the scoped MCP case's measured shape)."""
+    rows = [line.strip()[1:].strip() for line in screen.splitlines()
+            if line.strip().startswith("›") and line.strip()[1:].strip()[:2].rstrip(".").isdigit()]
+    if rows:
+        return any(word in rows[-1] for word in ("Yes", "Allow", "Approve"))
+    return "Allow" in screen
+
+
+def pull_requests(branch, tip, pipeline):
+    """`gh pr list --json`'s answer for the stub forge: PR 42 open on the
+    worker's branch at its tip, its one job in `pipeline` (ci/rig.py's shape)."""
+    conclusion = {"running": ("IN_PROGRESS", None), "failed": ("COMPLETED", "FAILURE"),
+                  "passed": ("COMPLETED", "SUCCESS")}[pipeline]
+    return json.dumps([{
+        "number": 42, "url": "https://github.com/example/rig/pull/42", "state": "OPEN", "isDraft": False,
+        "headRefName": branch, "headRefOid": tip, "mergeCommit": None, "mergeable": "MERGEABLE",
+        "reviewDecision": "REVIEW_REQUIRED", "updatedAt": "2026-10-23T06:00:00Z",
+        "statusCheckRollup": [{"__typename": "CheckRun", "name": "test-linux",
+                               "status": conclusion[0], "conclusion": conclusion[1]}]}])
+
+
+def forge_stub(directory, stub_body):
+    """The Claude rig's stub `gh` (ci/rig.py `GH_STUB`, T-739) with its two
+    files named inside it, so no environment has to carry them."""
+    directory.mkdir(mode=0o700)
+    (directory / "prs.json").write_text("[]")
+    (directory / "checks.json").write_text('{"check_runs":[]}')
+    gh = directory / "gh"
+    gh.write_text("#!/bin/sh\nMSMN_GH_PRS=" + shlex.quote(str(directory / "prs.json"))
+                  + "\nMSMN_GH_CHECKS=" + shlex.quote(str(directory / "checks.json"))
+                  + "\nexport MSMN_GH_PRS MSMN_GH_CHECKS\n" + stub_body.split("\n", 1)[1])
+    gh.chmod(0o700)
+    return gh
+
+
+def fixture_home(home, path_first=None):
+    """The crown fixtures' own HOME (T-916). The daemon reads the machine's
+    tiers from `$HOME/.local/state/mesimon/tiers.toml`, and a crown picks
+    among them: a first forge run's crown started its worker on the person's
+    own Claude tier. Here only the built-in tiers exist, `claude` refuses to
+    start (MESIMON_CLAUDE_BIN), git has a fixture identity, and the login shell
+    the daemon captures is the rig's PATH, with `path_first` (the stub forge)
+    ahead of it: the forge looks for `gh` there before the daemon's own PATH."""
+    home.mkdir(mode=0o700)
+    (home / ".gitconfig").write_text("[user]\n\tname = fixture\n\temail = fixture@example.invalid\n")
+    claude = home / "claude-refused"
+    claude.write_text("#!/bin/sh\necho 'claude is not part of this Codex fixture' >&2\nexit 1\n")
+    claude.chmod(0o700)
+    path = os.environ.get("PATH", "")
+    if path_first:
+        path = str(path_first) + ":" + path
+    shell = home / "login-shell"
+    shell.write_text("#!/bin/sh\nPATH=" + shlex.quote(path)
+                     + "\nexport PATH\nfor command; do :; done\nexec /bin/sh -c \"$command\"\n")
+    shell.chmod(0o700)
+    return shell, claude, path
+
+
 def fixture_configuration(original, args):
     settings = "plan_mode_reasoning_effort = " + json.dumps(args.effort) + "\n"
     settings += original.replace('model_reasoning_effort = "low"',
                                  "model_reasoning_effort = " + json.dumps(args.effort))
-    enabled = "true" if args.case == "child" else "false"
+    enabled = "true" if args.case in CHILDREN else "false"
     agents = ("enabled = " + enabled + "\ndefault_subagent_model = " + json.dumps(args.model)
               + "\ndefault_subagent_reasoning_effort = " + json.dumps(args.effort) + "\n")
+    if args.case in CHILDREN and "max_threads" not in original:
+        agents += "max_threads = 1\n"
     if "[agents]\n" in settings:
         settings = settings.replace("[agents]\n", "[agents]\n" + agents)
     else:
@@ -139,6 +318,64 @@ def adapter(base):
                     settings = {key: value for key, value in column.items() if key not in ("name", "order")}
                     settings["agent_tools"] = "read"
                     self.request("set_column_settings", name=column["name"], settings=settings)
+            self.crown_sid = self.crown = None
+            self.answered, self.left = {}, {}
+            if args.case in CROWN:
+                self.crown_board()
+
+        def crown_board(self):
+            """A board a person crowns a Codex seat on (T-916): one commit, so
+            a worktree can be cut; the board's tools and its brief on, as on
+            a fresh board; every column on workspace-write with on-request
+            approvals, so the crown could do the work itself with no dialog in
+            its way, and delegating is its choice. The forge case also gets a
+            github.com remote, the stub forge first on the daemon's PATH and
+            its login shell's, and Merge into: pull requests."""
+            for argv in (["add", "-A"], ["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+                                         "commit", "-q", "-m", "fixture"]):
+                subprocess.run(["git", "-C", str(self.repo), *argv], check=True, timeout=5)
+            stub = None
+            if self.args.case == "forge":
+                self.forge_dir = stub = self.guard.root / "forge-stub"
+                forge_stub(self.forge_dir, module("rig_claude", "rig.py").GH_STUB)
+                subprocess.run(["git", "-C", str(self.repo), "remote", "add", "origin",
+                                "https://github.com/example/rig.git"], check=True, timeout=5)
+            home = self.guard.root / "home"
+            shell, claude, path = fixture_home(home, stub)
+            self.request("shutdown")
+            self.client.close()
+            deadline = time.monotonic() + 10
+            while (self.runtime / "orch.sock").exists():
+                if time.monotonic() > deadline:
+                    raise RuntimeError("the fixture daemon did not stop for its own HOME")
+                time.sleep(0.1)
+            self.env.update(HOME=str(home), SHELL=str(shell), PATH=path, MESIMON_CLAUDE_BIN=str(claude))
+            if stub:
+                self.env.update(MESIMON_FORGE_EVERY_MS="2000", MESIMON_FORGE_BUSY_MS="2000")
+            # The board's state follows HOME; it lies inside the fixture root.
+            self.state = home / ".local/state/mesimon" / self.state.name
+            self.guard.request(op="spawn", argv=[str(self.args.binary), "daemon", "--repo", str(self.repo)],
+                               env=self.env)
+            deadline = time.monotonic() + 15
+            while not (self.runtime / "orch.sock").exists():
+                if time.monotonic() > deadline:
+                    raise RuntimeError("the fixture daemon did not come back on its own HOME")
+                time.sleep(0.1)
+            self.client = type(self.client)(self.repo)
+            machine = self.snapshot().get("machine_tiers") or {}
+            if [tier.get("id") for tier in machine.get("tiers", []) if tier.get("id") not in ("claude", "codex")]:
+                raise RuntimeError("the fixture board still sees a person's tiers")
+            if stub:
+                self.request("set_merge_into", into="pull_requests")
+            self.request("set_mcp_tools", on=True)
+            self.request("set_system_prompt", on=True)
+            policy = dict(codex_sandbox="workspace_write", codex_approval="on_request")
+            for column in self.client.board()["columns"]:
+                settings = {key: value for key, value in column.items() if key not in ("name", "order")}
+                self.request("set_column_settings", name=column["name"], settings=settings | policy)
+            self.manifest["crown_fixture"] = dict(policy, mcp_tools=True, brief=True,
+                                                  native_children=self.args.case in CHILDREN,
+                                                  merge_into="pull_requests" if self.args.case == "forge" else "main")
 
         def preflight(self):
             endpoint = self.guard.root / "preflight.sock"
@@ -159,7 +396,7 @@ def adapter(base):
                 if (configuration.get("model") != self.args.model
                         or configuration.get("model_reasoning_effort") != self.args.effort
                         or configuration.get("plan_mode_reasoning_effort") != self.args.effort
-                        or configuration.get("agents", {}).get("enabled") != (self.args.case == "child")):
+                        or configuration.get("agents", {}).get("enabled") != (self.args.case in CHILDREN)):
                     raise RuntimeError("native configuration did not confirm the fixture model, efforts and child policy")
                 pages, cursor = [], None
                 for _ in range(20):
@@ -199,15 +436,22 @@ def adapter(base):
             self.last_usage_check = time.monotonic()
             histories = list(self.home.glob("sessions/**/*.jsonl"))
             totals = usage_totals([])
+            turns = 0
             for path in histories:
-                reading = usage_totals(read_history(path, self.home))
+                rows = read_history(path, self.home)
+                reading = usage_totals(rows)
+                turns += native_turns(rows)
                 for key in totals:
                     totals[key] += reading[key]
             self.observed_tokens = totals["total_tokens"]
             self.manifest["observed_total_tokens"] = self.observed_tokens
             self.manifest["observed_usage"] = totals
+            self.manifest["observed_native_turns"] = turns
             if self.observed_tokens >= self.args.remaining_tokens:
                 raise AssertionError("observed token allowance exhausted; stopping owned fixture")
+            if turns > NATIVE_TURNS.get(self.args.case, turns):
+                raise AssertionError(f"native turn allowance exhausted ({turns} turns across the fixture's "
+                                     "threads); stopping owned fixture")
 
         def observe(self, sid):
             self.check_usage()
@@ -218,7 +462,307 @@ def adapter(base):
             if fields.get("assertion"):
                 print("  " + fields["assertion"], flush=True)
 
+        # ---------------------------------------------- the crown (T-916)
+
+        def history(self, session):
+            path = Path(session.get("transcript_path") or "/does-not-exist")
+            return read_history(path, self.home) if path.is_file() else []
+
+        def feed(self):
+            path = self.state / "activity.jsonl"
+            rows = []
+            for line in (path.read_text().splitlines() if path.is_file() else []):
+                try:
+                    rows.append(json.loads(line))
+                except ValueError:
+                    continue
+            return rows
+
+        def carried(self, sid):
+            path = self.runtime / ("cdx-" + sid.replace("-", "")[:16] + ".json")
+            try:
+                return json.loads(path.read_text()).get("request")
+            except (OSError, ValueError):
+                return None
+
+        def porcelain(self):
+            out = subprocess.run(["git", "-C", str(self.repo), "status", "--porcelain", "-uall"],
+                                 capture_output=True, text=True, timeout=5).stdout
+            return sorted(line for line in out.splitlines() if ".codex/" not in line)
+
+        @staticmethod
+        def seat(board, sid):
+            return next(s for s in board["sessions"] if s["id"] == sid)
+
+        @staticmethod
+        def turn_ended(session):
+            return (session["state"] == {"state": "idle", "stop_reason": "end_turn"}
+                    and not session.get("pending_submit") and not session.get("observation_hold", True))
+
+        def startup_consent(self, sid, screen):
+            # A worker the crown started opens in a worktree this fixture's
+            # board cut; the base only accepts the fixture's checkout.
+            session = next((s for s in self.client.board()["sessions"] if s["id"] == sid), {})
+            cwd = session.get("cwd") or ""
+            if (self.args.case in CROWN and "Trust this folder?" in screen and "Trust and continue" in screen
+                    and cwd.startswith(str(self.state / "worktrees") + "/")
+                    and Path(cwd).name in "".join(line.strip() for line in screen.splitlines())):
+                self.verify_native_home(sid)
+                self.tm("send-keys", "-t", sid.replace("-", "")[:16], "Enter")
+                self.mark(action="native_fixture_worktree_trust", session=sid, cwd=cwd)
+                time.sleep(0.3)
+                return
+            return super().startup_consent(sid, screen)
+
+        def approval(self, session, screen):
+            """A native approval on a crown fixture, answered as the person
+            at the desk would (`approval_decision`), once, and recorded."""
+            sid = session["id"]
+            request = self.carried(sid)
+            if not request or request.get("kind") != "approval" or request.get("id") in self.answered:
+                return
+            role = "crown" if sid == self.crown_sid else "worker"
+            allow, what = approval_decision(request, role, self.state / "worktrees")
+            if not allow:
+                if request["id"] not in self.left:
+                    self.left[request["id"]] = time.monotonic()
+                    self.manifest.setdefault("approvals_left", []).append(dict(session=sid, role=role, request=what))
+                    self.mark(action="native_approval_left_for_the_person", session=sid, role=role, request=what)
+                if role == "crown" and time.monotonic() - self.left[request["id"]] > 8:
+                    raise AssertionError("the crown waits on the person's approval of " + what)
+                return
+            if not dialog_allows(screen):
+                return
+            self.tm("send-keys", "-t", sid.replace("-", "")[:16], "Enter")
+            self.answered[request["id"]] = what
+            self.manifest.setdefault("approvals", []).append(dict(session=sid, role=role,
+                                                                  what=request.get("what"), allowed=what))
+            self.mark(action="person_allows_native_approval_once", session=sid, role=role, allowed=what)
+
+        def snapshot(self):
+            return self.client.request("snapshot")
+
+        def tend(self):
+            """One look at every Codex seat on the board: startup consent and
+            approvals for each, and every seat's history kept for the capture.
+            The board comes back with the snapshot's worktrees and PRs."""
+            snapshot = self.snapshot()
+            board = dict(snapshot["board"], worktrees=snapshot.get("worktrees") or [],
+                         prs=snapshot.get("prs") or [])
+            for session in board["sessions"]:
+                if session["kind"] != "codex":
+                    continue
+                if session["id"] not in self.sessions:
+                    self.sessions.append(session["id"])
+                if session["state"]["state"] in ("sleeping", "exited", "failed"):
+                    continue
+                _, _, screen = self.observe(session["id"])
+                self.startup_consent(session["id"], screen)
+                self.approval(session, screen)
+            return board
+
+        def until(self, description, predicate, steady=1, **evidence):
+            """Tend the board until `predicate(board)` holds `steady` looks in a
+            row; its value is returned. The case deadline bounds it."""
+            held = 0
+            while True:
+                board = self.tend()
+                value = predicate(board)
+                held = held + 1 if value else 0
+                if held >= steady:
+                    self.mark(assertion=description, passed=True, **evidence)
+                    return value
+                time.sleep(0.25)
+
+        def crown_seat(self):
+            """The crowned seat, on the checkout, its composer empty."""
+            self.crown = self.request("create_ticket", column="TODO", title="Coordinate this board",
+                                      workspace="shared_checkout")["id"]
+            self.request("crown_ticket", id=self.crown)
+            self.crown_sid = self.request("spawn_session", ticket=self.crown, kind="claude",
+                                          submit_prompt=False)["id"]
+            self.sessions.append(self.crown_sid)
+            self.wait(self.crown_sid, "crowned Codex seat ready, its composer empty", lambda s, t, p:
+                      s["state"]["state"] == "idle" and not s.get("pending_prefill", True)
+                      and not s.get("observation_hold", True))
+            self.tm("send-keys", "-t", self.crown_sid.replace("-", "")[:16], "C-u")
+
+        def crown_rows(self, board):
+            return self.history(self.seat(board, self.crown_sid))
+
+        def crown_turn_on(self, board, words, since=0):
+            """The crown's turn on the first user message from row `since`
+            holding `words`: (row, ended) or None before it arrives."""
+            rows = self.crown_rows(board)
+            row = next((index for index, text in user_turns(rows) if index >= since and words in text), None)
+            if row is None:
+                return None
+            return row, answered_after(rows, row) and self.turn_ended(self.seat(board, self.crown_sid))
+
+        def worker_started(self, board, ask_words, ticket=None):
+            """The seat the crown started (on `ticket`, if named), or an
+            AssertionError once the crown's turn on the ask ended without one."""
+            worker = next((s for s in board["sessions"] if s.get("started_by") == self.crown
+                           and s["ticket"] != self.crown and ticket in (None, s["ticket"])), None)
+            if worker:
+                return worker
+            turn = self.crown_turn_on(board, ask_words)
+            if turn and turn[1]:
+                calls = tool_calls(self.crown_rows(board), turn[0])
+                raise AssertionError(
+                    "the crown ended its turn on the request without starting a board worker; "
+                    f"board tools {board_calls(calls)}, native children {len(spawned(calls))}, "
+                    f"its own patches {len(patched(calls))}, checkout {self.porcelain()}")
+            return None
+
+        def record_calls(self, name, calls):
+            self.manifest[name] = [dict(name=call["name"], board=board_calls([call]), text=call["text"][:400])
+                                   for call in calls]
+
+        def delegate(self):
+            """A person asks the crown for concrete work, in a person's words
+            (DELEGATE_ASK, no tool named): passes when the crown files a board
+            ticket and starts its Codex worker rather than writing the code
+            itself or handing it to a native Codex child; then the worker's
+            turn ends, the board wakes the crown with it, and the crown's turn
+            on that wake ends."""
+            self.crown_seat()
+            before = self.porcelain()
+            mark = len(self.feed())
+            self.ask(self.crown_sid, DELEGATE_ASK)
+            worker = self.until("the crown starts a board worker on the request",
+                                lambda board: self.worker_started(board, "greet.py"))
+            board = self.tend()
+            ticket = next(t for t in board["tickets"] if t["id"] == worker["ticket"])
+            calls = tool_calls(self.crown_rows(board))
+            self.record_calls("crown_calls_before_wake", calls)
+            branch = next((w.get("branch") for w in board["worktrees"] if w.get("ticket") == ticket["id"]), None)
+            self.manifest["delegation"] = dict(key=ticket["short_key"], title=ticket["title"],
+                                               created_by=ticket.get("created_by"), created_from=ticket.get("created_from"),
+                                               worker_kind=worker["kind"], cwd=worker.get("cwd"), branch=branch,
+                                               tier=ticket.get("tier"))
+            if worker["kind"] != "codex":
+                raise AssertionError("the crown's worker is not a Codex seat: " + worker["kind"])
+            if spawned(calls) or patched(calls):
+                raise AssertionError(f"the crown also worked natively: {len(spawned(calls))} children, "
+                                     f"{len(patched(calls))} patches of its own")
+            self.mark(assertion="the crown filed the request as a board ticket and started its Codex worker",
+                      passed=True, **self.manifest["delegation"])
+            self.until("the worker's turn ends", lambda board: self.turn_ended(self.seat(board, worker["id"]))
+                       and any(answered_after(self.history(self.seat(board, worker["id"])), row)
+                               for row, _ in user_turns(self.history(self.seat(board, worker["id"])))[:1]))
+            wake = self.until("the board wakes the crown with its worker's news", lambda board: next((
+                line for line in self.feed()[mark:] if line.get("kind") == "crown_wake"
+                and line.get("worker") == ticket["id"]), None))
+            row, _ = self.until("the crown's turn on that wake ends", lambda board: (
+                lambda turn: turn if turn and turn[1] else None)(
+                self.crown_turn_on(board, ticket["short_key"], since=self.crown_turn_on(board, "greet.py")[0] + 1)),
+                steady=4, cause=wake.get("cause"))
+            board = self.client.board()
+            after = tool_calls(self.crown_rows(board), row)
+            self.record_calls("crown_calls_on_wake", after)
+            cwd = Path(worker.get("cwd") or "/does-not-exist")
+            self.manifest["worker_files"] = {name: (cwd / name).is_file() for name in ("greet.py", "test_greet.py")}
+            self.manifest["crown_board_calls"] = board_calls(tool_calls(self.crown_rows(board)))
+            changed = [line for line in self.porcelain() if line not in before]
+            if changed and cwd.resolve() != self.repo.resolve():
+                raise AssertionError("the checkout changed while the work went to a worktree: " + str(changed))
+            if spawned(after) or patched(after):
+                raise AssertionError("the crown worked natively on its worker's news")
+            self.mark(assertion="delivery follow-through: the crown heard its worker and its turn on that ended",
+                      passed=True, wake=wake.get("cause"), files=self.manifest["worker_files"],
+                      crown_board_calls_on_wake=board_calls(after))
+
+        def forge(self):
+            """A person asks the crown to start a ticket and look after its
+            pull request, getting CI fixed if it fails (FORGE_ASK). The stub
+            forge opens PR 42 on the worker's branch, running, then fails its
+            job: passes when the board wakes the crown with the forge's news,
+            the crown tells the worker with ask_agent, the worker reads the
+            words, and no turn of the crown's from the news on waits on the
+            pull request (a watch, a sleep, a poll) or fixes it itself."""
+            ticket = self.request("create_ticket", column="TODO", title=FORGE_WORKER, workspace=None)["id"]
+            key = next(t for t in self.client.board()["tickets"] if t["id"] == ticket)["short_key"]
+            self.crown_seat()
+            mark = len(self.feed())
+            ask = FORGE_ASK.format(key=key)
+            self.ask(self.crown_sid, ask)
+            worker = self.until("the crown starts the worker", lambda board: self.worker_started(board, key, ticket))
+            branch = self.until("the worker works in its own worktree", lambda board: next((
+                w.get("branch") for w in board["worktrees"] if w.get("ticket") == ticket and w.get("branch")),
+                None))
+            def settled(board):
+                feed = self.feed()[mark:]
+                wakes = [line for line in feed if line.get("kind") == "crown_wake" and line.get("worker") == ticket]
+                sent = [line for line in feed if line.get("cmd") == "crown_wake_sent" and line.get("ticket") == self.crown]
+                rows = self.crown_rows(board)
+                last = user_turns(rows)[-1][0] if user_turns(rows) else None
+                return (wakes and len(sent) >= 1 and last is not None and answered_after(rows, last)
+                        and self.turn_ended(self.seat(board, worker["id"]))
+                        and self.turn_ended(self.seat(board, self.crown_sid)))
+            self.until("the worker's first turn and the crown's turn on its wake end", settled, steady=12)
+            prs = self.forge_dir / "prs.json"
+            def publish(pipeline):
+                tip = subprocess.run(["git", "-C", str(self.repo), "rev-parse", branch], capture_output=True,
+                                     text=True, timeout=5).stdout.strip()
+                (self.forge_dir / "prs.tmp").write_text(pull_requests(branch, tip, pipeline))
+                (self.forge_dir / "prs.tmp").replace(prs)
+            publish("running")
+            self.until("the stub forge's pull request binds to the worker's ticket", lambda board: any(
+                p.get("ticket") == ticket and p.get("number") == 42 for p in board["prs"]))
+            self.until("the crown is idle before the pipeline fails", lambda board:
+                       self.turn_ended(self.seat(board, self.crown_sid)), steady=12)
+            mark = len(self.feed())
+            board = self.client.board()
+            crown_from = len(self.crown_rows(board))
+            worker_from = len(self.history(self.seat(board, worker["id"])))
+            publish("failed")
+            wake = self.until("the board wakes the crown with the failed pipeline", lambda board: next((
+                line for line in self.feed()[mark:] if line.get("kind") == "crown_wake"
+                and line.get("worker") == ticket and line.get("cause") == "forge"), None))
+            def told(board):
+                line = next((line for line in self.feed()[mark:] if line.get("kind") == "board"
+                             and line.get("actor") == "agent" and line.get("cmd") == "ask_agent"
+                             and line.get("ticket") == ticket), None)
+                if line:
+                    return line
+                turn = self.crown_turn_on(board, key, since=crown_from)
+                if turn and turn[1]:
+                    calls = tool_calls(self.crown_rows(board), crown_from)
+                    self.record_calls("crown_calls_on_forge_news", calls)
+                    raise AssertionError("the crown ended its turn on the failed pipeline without telling the "
+                                         f"worker; board tools {board_calls(calls)}, polls {len(polling(calls))}, "
+                                         f"its own patches {len(patched(calls))}")
+                return None
+            line = self.until("the crown tells the worker about the failed pipeline", told)
+            self.until("the crown's turn on the forge's news ends", lambda board: (
+                lambda turn: turn and turn[1])(self.crown_turn_on(board, key, since=crown_from)), steady=4)
+            heard = self.until("the worker reads the crown's words as a prompt", lambda board: next((
+                words for row, words in user_turns(self.history(self.seat(board, worker["id"])))
+                if row >= worker_from), None))
+            calls = tool_calls(self.crown_rows(self.client.board()), crown_from)
+            self.record_calls("crown_calls_on_forge_news", calls)
+            self.manifest["forge"] = dict(key=key, branch=branch, wake=wake.get("cause"), ask=line.get("outcome"),
+                                          worker_heard=heard[:400], crown_board_calls=board_calls(calls))
+            if polling(calls):
+                raise AssertionError("the crown waited on the pull request instead of ending its turn: "
+                                     + "; ".join(call["text"][:120] for call in polling(calls)))
+            if patched(calls) or spawned(calls):
+                raise AssertionError("the crown fixed the pipeline natively instead of through its worker")
+            self.mark(assertion="the crown told its worker and yielded: no watch, sleep or poll on the pull request",
+                      passed=True, **self.manifest["forge"])
+
+        def collect(self):
+            super().collect()
+            feed = self.state / "activity.jsonl"
+            if self.args.case in CROWN and feed.is_file() and feed.stat().st_size <= 16 * 1024 * 1024:
+                shutil.copyfile(feed, self.out / "activity.jsonl")
+            if self.args.case in CROWN:
+                (self.out / "snapshot.json").write_text(json.dumps(self.snapshot(), indent=1) + "\n")
+
         def run(self):
+            if self.args.case in CROWN:
+                return getattr(self, self.args.case)()
             if self.args.case == "interrupt":
                 sid = self.start("Run sleep 25 once, then reply exactly MESIMON_INTERRUPTED. No other tools.")
                 self.wait(sid, "native model activity precedes interruption", lambda session, ticket, screen:
@@ -410,7 +954,7 @@ def run(repo, args, parser):
         parser.error("Codex model calls require --live; --lay lists the selection without starting anything")
     if not os.environ.get("MESIMON_TEST_RUN"):
         command = [sys.executable, "-B", str(ROOT / "ci/test-run.py"), "--timeout",
-                   str(min(1200, 120 + len(cases) * (args.case_timeout + 30))), "--", sys.executable,
+                   str(min(1200, 120 + sum(case_timeout(args, case) + 30 for case in cases))), "--", sys.executable,
                    "-B", str(ROOT / "ci/rig.py"), *sys.argv[1:]]
         os.execv(sys.executable, command)
     binary = Path(repo) / "target/debug/mesimon"
@@ -447,17 +991,18 @@ def run(repo, args, parser):
         capture = directory / case
         capture.mkdir(mode=0o700)
         result["capture"] = str(capture)
+        result["case_timeout"] = case_timeout(args, case)
         result["outcome"] = "running"
         report(directory, manifest)
         report(out, manifest)
-        case_args = argparse.Namespace(case=case, model=model, effort=args.effort, timeout=args.case_timeout,
+        case_args = argparse.Namespace(case=case, model=model, effort=args.effort, timeout=case_timeout(args, case),
             binary=binary, codex=executable, tmux=tmux, claude=None, claude_model="haiku",
             auth_file=Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "auth.json",
             user_turn_budget=TURNS[case] - int(case in ("child", "stop", "compact")),
-            remaining_tokens=args.max_tokens - used_tokens)
+            remaining_tokens=min(args.max_tokens - used_tokens, CASE_TOKENS.get(case, args.max_tokens)))
         guard = verification = None
         try:
-            guard = state.probe.Guard(args.case_timeout + 25, tmux)
+            guard = state.probe.Guard(case_timeout(args, case) + 25, tmux)
             base = module("rig_codex_lifecycle", "codex-lifecycle-e2e.py").Verification if case in LIFECYCLE else state.Verification
             verification = adapter(base)(case_args, capture, result, guard)
             print("  Watch from an external terminal: cd " + shlex.quote(str(verification.repo))

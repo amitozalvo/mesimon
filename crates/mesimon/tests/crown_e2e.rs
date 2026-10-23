@@ -158,8 +158,9 @@ fn the_crown_lets_one_agent_edit_the_others() {
     }
     let own = read(&mut c, sa, &ka).unwrap();
     assert!(own.crowned, "get_ticket says the caller wears it");
-    // T-537: and how the board wakes it, so it arms no monitor of its own.
-    assert_eq!(own.crown.as_deref(), Some(mesimon_core::mcp::CROWN_WAKES));
+    // T-916: what the crown is for, then (T-537) how the board wakes it, so
+    // it arms no monitor of its own.
+    assert_eq!(own.crown, Some(mesimon_core::mcp::crown_view()));
     match c.send(Principal::Agent { session: sa }, Command::AgentListBoard) {
         Response::AgentBoard { board } => {
             assert_eq!(board.crown.as_deref(), Some(ka.as_str()));
