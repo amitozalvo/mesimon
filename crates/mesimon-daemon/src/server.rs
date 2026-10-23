@@ -717,6 +717,12 @@ pub struct Daemon {
     /// (T-894), by record: the close waits for a second, `COMPACT_CLEAR_MS`
     /// later, so one capture between repaints closes nothing.
     compaction_clear: HashMap<uuid::Uuid, u64>,
+    /// The sessions that have the crown's rules (T-930): told on their first
+    /// call since they were crowned, compacted or cleared, and forgotten at
+    /// each of those. In memory on purpose: a restart tells every crown
+    /// again, and the rules are the binary's own text, so a new build is a
+    /// restart and needs no version beside them.
+    crown_told: std::collections::HashSet<uuid::Uuid>,
     /// Per-ticket worktree bindings (M4), persisted as worktrees.json.
     worktrees: worktree::Bindings,
     /// Spawn requests parked behind provisioning: replayed on Provisioned(Ok).
@@ -1438,6 +1444,7 @@ pub fn run(paths: Paths) -> Result<()> {
         unreaped_said: std::collections::HashSet::new(),
         screens: HashMap::new(),
         compaction_clear: HashMap::new(),
+        crown_told: std::collections::HashSet::new(),
         worktrees,
         pending_spawns: Vec::new(),
         pending_resumes: Vec::new(),
@@ -2697,7 +2704,10 @@ impl Daemon {
         // is this an agent?" that somebody eventually forgets. Here the answer
         // is settled once, before any board state is touched.
         if let Principal::Agent { session } = env.principal {
-            return self.handle_agent(session, env.command);
+            // The mod's bridge poll is no tool call, so no crown is told by it.
+            let call = !matches!(env.command, Command::ModNext { .. });
+            let resp = self.handle_agent(session, env.command);
+            return if call { self.with_crown_rules(session, resp) } else { resp };
         }
         // `Automation` is the daemon's own rules acting on their own; it is
         // constructed internally and never arrives over a socket. A client
@@ -4886,6 +4896,15 @@ impl Daemon {
         }
         self.feed.hook_event_by(&frame.session, &frame.event, frame.reason.as_deref(), frame.road);
         let Some(id) = self.resolve_session(&frame.session) else { return };
+        // A conversation that starts again holds none of the crown's rules
+        // (T-930): a startup, a `/clear` or a compaction's new start. A
+        // resume keeps the history it read them in.
+        if frame.event == "SessionStart"
+            && frame.payload.get("source").and_then(serde_json::Value::as_str).or(frame.reason.as_deref())
+                != Some("resume")
+        {
+            self.crown_told.remove(&id);
+        }
         // D32c invariant 2: the hook-driven path passes the chokepoint too.
         //
         // The principal is `Automation`, not `Agent`. A hook frame is the
@@ -5027,6 +5046,11 @@ impl Daemon {
             // record carries the window: the card paints it, and the queue
             // holds words against it (`quiet::holds_against_words`).
             if decision.before.compacting != decision.after.compacting {
+                // A compaction keeps no tool result whole (T-930): the crown
+                // is told its rules again on its next call.
+                if decision.after.compacting {
+                    self.crown_told.remove(&id);
+                }
                 if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                     rec.compacting = decision.after.compacting;
                     dirty = true;
@@ -6520,6 +6544,28 @@ impl Daemon {
         }
     }
 
+    /// A crowned session's first call since it was crowned, compacted or
+    /// cleared, or since the daemon started, answered with the crown's rules
+    /// beside it (T-930), whichever tool it called: a person may crown an
+    /// agent mid-run, which never read them. Its own `get_ticket` view
+    /// carries them already (`crown`), so that read tells it and adds
+    /// nothing; every later receipt names where they are read.
+    fn with_crown_rules(&mut self, session: uuid::Uuid, resp: Response) -> Response {
+        let crowned = self
+            .board
+            .sessions
+            .iter()
+            .find(|s| s.id == session)
+            .is_some_and(|rec| self.board.is_crowned(rec.ticket));
+        if !crowned || !self.crown_told.insert(session) {
+            return resp;
+        }
+        if matches!(&resp, Response::AgentTicket { ticket } if ticket.crown.is_some()) {
+            return resp;
+        }
+        Response::CrownRules { rules: mcp::crown_view(), inner: Box::new(resp) }
+    }
+
     fn handle_agent(&mut self, session: uuid::Uuid, cmd: Command) -> Response {
         if !mcp::agent_allows(&cmd) {
             return Response::Err { message: "not available to an agent session".into() };
@@ -6934,10 +6980,9 @@ impl Daemon {
                     return Response::Err {
                         message: format!(
                             "{key}'s agent stopped on a plan; accept_plan accepts it where the \
-                             board lets the crown answer, after get_ticket shows the plan \
-                             (needs_you), and a plan the crown would change is a person's: \
-                             raise_hand names the worker and the change. Words queued now would \
-                             wait behind the plan and the turn it starts."
+                             board lets the crown answer, and get_ticket shows the plan \
+                             (needs_you); a plan the crown would change is a person's. Words \
+                             queued now would wait behind the plan and the turn it starts."
                         ),
                     };
                 }
@@ -8033,6 +8078,7 @@ impl Daemon {
         self.release_crown_holds();
         self.hold_crown_sends();
         self.revoke_shell_close_requests();
+        self.crown_told.clear();
         self.board.crown = Some(id);
         self.persist_columns();
         self.broadcast();
@@ -8050,6 +8096,7 @@ impl Daemon {
         self.release_crown_holds();
         self.hold_crown_sends();
         self.revoke_shell_close_requests();
+        self.crown_told.clear();
         self.board.crown = None;
         self.persist_columns();
         self.broadcast();
@@ -8077,6 +8124,7 @@ impl Daemon {
             self.release_crown_holds();
             self.hold_crown_sends();
             self.revoke_shell_close_requests();
+            self.crown_told.clear();
             self.board.crown = None;
             self.persist_columns();
             self.feed.board("automation", "uncrown", Some(id));

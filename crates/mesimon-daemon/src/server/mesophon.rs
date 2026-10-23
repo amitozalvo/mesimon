@@ -1756,8 +1756,7 @@ impl Daemon {
         if !self.board.crown_mode.answers() {
             return Err(format!(
                 "this board leaves {key}'s question to a person (Settings → Agents → Crown mode is \
-                 supervised); raise_hand on the crown's own ticket names the worker and the \
-                 question for them"
+                 supervised); raise_hand on the crown's own ticket reaches the person"
             ));
         }
         let Some(rec) = self.board.live_agent(target) else {

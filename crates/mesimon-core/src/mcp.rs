@@ -73,10 +73,9 @@ macro_rules! persons_questions {
     () => {
         "A question about secrets or credentials, spend or quota, a destructive or irreversible \
          act (deleting, force-pushing, publishing, sending to people), a preference the \
-         ticket's brief leaves open, or scope beyond the brief is a person's to answer: \
-         raise_hand on the crown's own ticket, naming the worker and the question, puts one \
-         card in front of the person. A batch of questions is submitted whole, so one person's \
-         question in it makes the whole batch a person's."
+         ticket's brief leaves open, or scope beyond the brief is a person's to answer. A batch \
+         of questions is submitted whole, so one person's question in it makes the whole batch \
+         a person's."
     };
 }
 
@@ -90,9 +89,9 @@ pub const PERSONS_QUESTIONS: &str = persons_questions!();
 /// the questions' clause; the tool's own description says the same.
 macro_rules! persons_plans {
     () => {
-        "A plan the crown would change, or one that reaches past the ticket's brief, is a \
-         person's: raise_hand on the crown's own ticket, naming the worker and the change, puts \
-         one card in front of the person, who answers the dialog."
+        "A plan that reaches past the ticket's brief is a person's, and so is one the crown \
+         would change: no road of the crown's sends a plan back, since the dialog's revise row \
+         takes words a person types."
     };
 }
 
@@ -108,13 +107,12 @@ pub const PERSONS_PLANS: &str = persons_plans!();
 /// looks. `CROWN_WAKES` ends on it, after the plans' and the questions'.
 macro_rules! persons_steps {
     () => {
-        "Whatever is a person's to do — a step no tool of this session takes, a fix outside a \
-         brief, a decision the crown leaves to them, a merge or an archive that is theirs — is \
-         raised with raise_hand on the crown's own ticket before the turn ends, naming the \
-         ticket and the step in one line. The person reads the board's cards and its attention \
-         count, not this session's pane: a turn that only says so in its words ends unheard \
-         and reads as done. One hand stands per ticket, its reason replaced by the next, and it \
-         comes down when the person opens the ticket or sends it a prompt."
+        "raise_hand on the crown's own ticket is this session's road to the person: it lights \
+         that card and counts in the board's attention. The person reads the board's cards and \
+         that count, not this session's pane, so a step left to a person in this session's \
+         words alone ends unheard and reads as done. One hand stands per ticket, its reason \
+         replaced by the next, and it comes down when the person opens the ticket or sends it \
+         a prompt."
     };
 }
 
@@ -139,18 +137,16 @@ pub const PRS_ABOUT: &str = "The board reads these off the forge on its own: wit
      sleep loop on a pull request keeps a session busy, which holds the merge train and the \
      crown's wake; the way to wait for its news is to end the turn.";
 
-/// How the crown picks a tier (T-584), as one clause inside `CROWN_WAKES`.
-/// The judgement is the crown's: mesimon scores no ticket's difficulty, and
-/// the words it judges against are the person's own, one description a
-/// tier. The two tool descriptions only name the field.
+/// Which tier a ticket the crown starts runs on (T-584), as one clause
+/// inside `CROWN_WAKES`: the order of the fallbacks and where the person's
+/// words on each tier are read. How the crown picks was cut (T-930); mesimon
+/// scores no ticket's difficulty. The two tool descriptions only name the field.
 macro_rules! crown_tiers {
     () => {
         "A ticket the crown files or starts runs on the tier create_ticket or start_agent names \
          (tier: an id from list_board's tiers), else on its own pick, else the board's default \
-         (is_default). Each tier's description is the person's words on when to use it: the \
-         crown reads each one, picks by the ticket's difficulty against those words, says in \
-         the ticket's brief which tier and why, and leaves the default where no description \
-         fits. A ticket a person started keeps the person's tier. "
+         (is_default). Each tier's description is the person's words on when to use it. A \
+         ticket a person started keeps the person's tier. "
     };
 }
 
@@ -174,6 +170,10 @@ pub const CROWN_TIERS: &str = crown_tiers!();
 /// nothing of workspaces, and could not wake the one it then parked. A
 /// finished turn wakes it too (T-591): a worker whose answer is words, not
 /// commits, used to finish unheard.
+///
+/// It says what the board does and what is the person's, never how the crown
+/// works (T-930): how to pick a tier, what form a hand takes, when to review
+/// or wait were cut, and a person who wants a method gives it in a prompt.
 pub const CROWN_WAKES: &str = concat!(
     "The board wakes this session on its own: when an agent the crown started delivers, \
      finishes a turn with nothing pending on it (no words queued for it, no hand up, no merge \
@@ -185,12 +185,10 @@ pub const CROWN_WAKES: &str = concat!(
      the ticket and what changed arrives as this session's next prompt, once it is idle. A turn \
      that opened a pull request says so in its line (opened #42), and that line waits for the \
      board's read of the forge, so get_ticket already lists the PR. A finished turn that left nothing new to \
-     merge says so: the agent is done with what it was asked, and what comes next is the \
-     crown's to decide. A start_agent whose worktree could not be cut (a repository with no \
+     merge says so. A start_agent whose worktree could not be cut (a repository with no \
      commits yet, a checkout on no branch) wakes it too: could not start, with the reason and \
      its fix, which get_ticket on that ticket also carries (worktree_error). A fix outside \
-     the ticket's brief is the person's: raise_hand on the crown's own ticket says it, and \
-     start_agent once it is made tries again. A worker that hit a usage limit (get_ticket on it \
+     the ticket's brief is the person's, and start_agent once it is made tries again. A worker that hit a usage limit (get_ticket on it \
      carries needs_you: quota) stopped mid-task on the account's limit, and its turn has \
      ended: no word of the crown's resumes it on that tier (ask_agent's words wait), and its \
      work stays where the turn left it. sleep_agent parks it, conversation kept, and \
@@ -216,34 +214,32 @@ pub const CROWN_WAKES: &str = concat!(
      that sits idle with background tasks for 30 minutes wakes this session once (has been \
      idle with N background tasks), and get_ticket on it carries background (tasks, \
      since_secs). The wait may be the work (a long suite, a build) or a loop that will not end, \
-     and the board cannot tell which, so it merges, parks and ends nothing for it: ask_agent \
-     reaches the worker while its tasks run, to ask whether it is done and what they wait on. \
+     and the board cannot tell which, so it merges, parks and ends nothing for it; ask_agent \
+     reaches the worker while its tasks run. \
      A delivered worker's get_ticket says who merges its branch (merge: by train, crown, \
      person or forge, and why), and the delivered line carries the word. The forge's — every \
      worktree ticket's on a board whose Merge into setting is pull requests — lands through its \
      pull request, merged on the forge, and merge_ticket refuses it; on a board that merges \
-     into main nothing is the forge's. The train's is waited for: \
-     the crown hears it once, at the merge. A branch the crown reviews before it lands is \
-     held with hold_ticket (action hold) before its agent delivers: the train then takes \
-     nothing of it, the delivery wakes this session, ask_agent's corrections land while it \
-     stays held, and hold_ticket with action return hands it back once approved, the \
-     train's own gates and order deciding when it merges. get_ticket's held says whose \
+     into main nothing is the forge's. The train's lands by itself, \
+     and the crown hears it once, at the merge. hold_ticket (action hold) keeps a branch out \
+     of the train, which may land it as soon as its agent delivers: held, the train takes \
+     nothing of it, the delivery wakes this session, and ask_agent's words land while it \
+     stays held; action return hands it back, the train's own gates and order deciding when \
+     it merges. get_ticket's held says whose \
      hold it is; a person's (t) is the person's to return. The crown's — the train off, the ticket out of it \
      by t, or a column the train stops short of, under autonomous mode — is merged with \
      merge_ticket while merge_state reads ahead; at needs_rebase the agent is asked to rebase \
      with ask_agent and merged once its turn ends with the branch ahead. A person's — crown \
-     mode supervised — is raised with raise_hand on the crown's own ticket, naming the ticket \
-     and that m on its page merges it. merge_ticket pastes the merged notice into the worker \
+     mode supervised — is the person's to merge, with m on its page. merge_ticket pastes the merged notice into the worker \
      where the merged-notice pref is on, so the worker hears it from the board. \
      A worker whose branch is merged is \
      finished: sleep_agent parks it, which frees its seat in the crown's budget, and \
      move_ticket to the board's done column closes it (its gate admits a merged branch). \
      Where Settings → Agents → Crown archives tickets is on, archive_ticket also takes it off \
-     the board and reclaims its worktree; otherwise a person archives. The park and the move \
-     are the crown's to do, not a person's to be asked for; a person's own agent is the one \
-     the crown may not park. The crown decides each ticket's workspace before it files or starts \
-     it: create_ticket and start_agent take workspace, worktree (the ticket's own branch, \
-     merged later) or shared_checkout (the repository's own checkout). shared_checkout is \
+     the board and reclaims its worktree; otherwise a person archives. A person's own agent \
+     is not the crown's to park, and sleep_agent refuses it. create_ticket and start_agent \
+     take workspace, which the crown names: worktree (the ticket's own branch, merged later) \
+     or shared_checkout (the repository's own checkout). shared_checkout is \
      refused while another ticket's agent holds it, awake or parked (list_board's \
      checkout_held_by), and a ticket with a worktree or a parked agent keeps the workspace it \
      has. A started agent's first prompt is its ticket's title and description, so the \
@@ -258,10 +254,10 @@ pub const CROWN_WAKES: &str = concat!(
      plan reads needs-you, and \
      get_ticket on its ticket carries it (needs_you: the reason, the request, and the \
      question's words and options or the plan's markdown); ask_agent is refused while it \
-     stands. Where the board lets the crown answer (Settings → Agents → Crown mode, \
-     autonomous unless a person chose supervised), the crown answers by default: a question \
-     an agent the crown started asks wakes this session and answer_agent answers it, and a \
-     plan one stops on wakes it and accept_plan accepts it, after get_ticket shows the plan. \
+     stands. Where the board lets the crown answer (Settings → Agents → Crown mode: \
+     autonomous unless a person chose supervised), a question an agent the crown started \
+     asks wakes this session and answer_agent answers it, and a plan one stops on wakes it \
+     and accept_plan accepts it; get_ticket shows the plan. \
      Every other stop, an agent a person started, and a board that does not let the crown \
      answer stay a person's. \
      ask_agent's words wait for the agent's idle by default (deliver idle). With deliver now \
@@ -280,9 +276,9 @@ pub const CROWN_WAKES: &str = concat!(
      delivers, finishes a turn, raises its hand or is merged, as for an agent the crown \
      started, and the watch ends at the merge or with unwatch. While it stands, ask_agent's \
      words reach its agent as they reach one the crown started; its question or plan stays the \
-     person's, and the board sends its agent nothing else. Asked to wait for such a ticket, the crown \
-     watches it and ends its turn: a loop that polls keeps this session busy, which holds the \
-     merge train and the wake itself. A ticket with no agent that carries a pull request (one \
+     person's, and the board sends its agent nothing else. A loop that polls for such a ticket keeps \
+     this session busy, which holds the merge train and the wake itself; the watch's news \
+     comes once the turn ends. A ticket with no agent that carries a pull request (one \
      this session opened and named under its Summary) wakes this session for the forge's news \
      and the merge the same way, with no watch asked. \
      Another board on this machine, where a person linked the two (list_board's \
@@ -290,8 +286,7 @@ pub const CROWN_WAKES: &str = concat!(
      naming the board: the words land on that crown's card and reach it as its next prompt \
      once idle, and its answer comes back the same way, as this session's next prompt, \
      beginning with that board's name; a reply to an ask from there is ask_board naming \
-     the board that asked. Work that belongs to the other board's repository is asked of \
-     its crown rather than done from here. A board that is not open or has no crown refuses \
+     the board that asked. A board that is not open or has no crown refuses \
      in words, and a person opens or crowns it. ",
     crown_tiers!(),
     persons_plans!(),
@@ -316,30 +311,36 @@ pub const CROWN_WAKES: &str = concat!(
 /// the crown's. Whether a given request is worth a ticket stays the crown's
 /// judgement; the first wording ("a ticket's own (a change, a fix, a
 /// feature) is filed") came close to delegating every change and was taken
-/// back in review. Its effect on delegation is unmeasured (STALE-MAP, T-916).
+/// back in review. "For work the person asks for" and the sentence on the
+/// board's own work steered the choice and were cut (T-930): what the two
+/// tools do is said, and whether to use them is the crown's.
 pub const CROWN_ROLE: &str = "This session wears the board's crown: it coordinates the \
      board's other tickets for the person, who gives it work in this session's prompts. Those \
      prompts are this session's brief as much as its ticket's description and notes, so an \
-     empty description holds nothing up. For work the person asks for, the crown can file a \
-     ticket with create_ticket, its description the brief, and start it with start_agent in \
-     the workspace the crown picks; a session of its own then does that ticket's work, as the \
-     agent brief says of a ticket filed from here, and the board wakes this session with what \
-     becomes of it. The board's own work (reading it, answering the person, moving, tagging, \
-     merging and closing tickets) is the crown's, done here.";
+     empty description holds nothing up. create_ticket files a ticket whose description is \
+     its agent's brief, and start_agent starts that agent, a session of its own, in the \
+     workspace the crown names; the board wakes this session with what becomes of it.";
 
 /// The crown's own `get_ticket` view's `crown`: what it is for, then how
-/// the board wakes it. The receipts carry `CROWN_WAKES` alone.
+/// the board wakes it. The first call after a crowning carries it too
+/// (`Response::CrownRules`, T-930); the receipts carry `CROWN_RULES_AT`.
 pub fn crown_view() -> String {
     format!("{CROWN_ROLE} {CROWN_WAKES}")
 }
 
-/// What a worker the crown started is told about the board it works on
-/// (T-599), on its own `get_ticket` view: `CROWN_WAKES`'s counterpart, and
-/// transient result data like it, never tool text or a system prompt, so it
-/// may instruct. A worker under a crown addressed "the author" with four
-/// commands, two of them (the merge, copying the release stamp) the board's
-/// and the crown's; and it left three loops running past its last turn,
-/// which read as unfinished work for ten hours.
+/// Where a crown reads its rules (T-930), in every `start_agent` and
+/// `ask_agent` receipt (`wakes`) in place of the 10 KB `CROWN_WAKES` they
+/// once repeated: said once per crowning, compaction or clear, and on the
+/// crown's own `get_ticket`.
+pub const CROWN_RULES_AT: &str = "The board's rules for the crown (what wakes it, who merges, \
+     what is a person's) are on this session's own get_ticket, under crown. The first call after \
+     a crowning, a compaction, a clear or a board restart carries them whole.";
+
+/// The words before the rules where a call carries them (T-930): the
+/// call's own answer comes first, then this, then `crown_view()`.
+pub const CROWN_RULES_HEAD: &str = "The board's rules for this session's crown, said once since \
+     it was crowned, compacted, cleared or the board restarted (get_ticket's crown repeats them):";
+
 /// What the worktree init script is (T-614), on every `get_ticket`
 /// (`worktree_init.about`): the one place an agent learns that a cold
 /// worktree is made warm by a file in the repository, so a person's "how do
@@ -432,17 +433,20 @@ pub const DAEMON_ABOUT: &str = "binary compares the file at path now with the on
      which code is newer. A rebuild or an install replaces the file and the running daemon \
      keeps the code it started with until it restarts.";
 
+/// What a worker the crown started is told about the board it works on
+/// (T-599), on its own `get_ticket` view: `CROWN_WAKES`'s counterpart. A
+/// worker under a crown addressed "the author" with four commands, two of
+/// them (the merge, copying the release stamp) the board's and the crown's;
+/// and it left three loops running past its last turn, which read as
+/// unfinished work for ten hours. The facts stay; how its report reads and
+/// what its turn leaves were cut (T-930, the rig's WR1 measures the report).
 pub const WORKER_UNDER_CROWN: &str = "The board's crown, the agent coordinating this board \
      from another ticket, started this session. Under a crown the merge is the board's: the \
      merge train lands a finished branch, else the crown does, and the board asks for its \
-     rebase and closes the ticket, so a finished turn's report asks no person to merge, \
-     rebase, move the card or copy what the board already records. The commands a report \
-     addresses to a person are only those a person must run, such as a production ship. A \
-     finished turn leaves no background task or monitor running: the board reads a running \
-     task as unfinished work, so the branch is not merged behind it, and the crown asks what \
-     it waits on. Words in the pane reach no one: a step the crown asked for that this \
-     session cannot take, such as reading another ticket's note, is a raise_hand on this \
-     ticket naming what is missing, which wakes the crown and lights the card.";
+     rebase and closes the ticket. The board reads a background task or monitor still running \
+     after a turn as unfinished work: the branch is not merged behind it, and the crown is \
+     told. Words in the pane reach no one: raise_hand on this ticket wakes the crown and \
+     lights the card.";
 
 /// Words that turn a description into an instruction. Tool text is injected
 /// into every request; it may describe, and it may not tell the model what to
@@ -614,7 +618,7 @@ pub fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "request_close_shell",
-            "description": "Requests human confirmation to close one shell (crown only), for a person's requested closure or after a live child refused parking or archiving. Closes nothing itself. Busy, attached or uninspectable shells are refused. Confirmation expires after five minutes and rechecks the shell. Closing loses its terminal history.",
+            "description": "Requests human confirmation to close one shell (crown only). Closes nothing itself. Busy, attached or uninspectable shells are refused. Confirmation expires after five minutes and rechecks the shell. Closing loses its terminal history.",
             "inputSchema": { "type": "object", "properties": {
                 "shell": { "type": "string", "description": "The shell id listed by get_ticket." }, "key": { "type": "string", "description": "The ticket containing the shell; crown only." }
             }, "required": ["shell", "key"], "additionalProperties": false },
@@ -978,9 +982,8 @@ pub fn tools() -> Vec<Value> {
                             question. A person's: secrets or credentials, spend or quota, a \
                             destructive or irreversible act (deleting, force-pushing, \
                             publishing, sending to people), a preference the brief leaves \
-                            open, scope beyond it, a batch holding one (submitted whole); \
-                            raise_hand names the worker and the question. Outcome: answered, \
-                            input_sent or unknown.",
+                            open, scope beyond it, a batch holding one (submitted whole). \
+                            Outcome: answered, input_sent or unknown.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1004,9 +1007,8 @@ pub fn tools() -> Vec<Value> {
             "description": "Accepts the plan an agent the crown started stops on (crown \
                             only, if the board lets it), as the board's own accept: Enter on \
                             the plan dialog's default row. request: needs_you.request; \
-                            needs_you.plan is the plan. A plan the crown would change, or one \
-                            past the brief, is a person's: raise_hand names the worker and the \
-                            change. Outcome: accepted, input_sent, queued (its checkout busy) \
+                            needs_you.plan is the plan. A plan past the brief, or one the \
+                            crown would change, is a person's. Outcome: accepted, input_sent, queued (its checkout busy) \
                             or unknown.",
             "inputSchema": {
                 "type": "object",
@@ -1059,9 +1061,8 @@ pub fn tools() -> Vec<Value> {
                             for an agent the crown started; the watch ends at the merge or \
                             with unwatch. Its agent gets ask_agent's words as one the \
                             crown started does, nothing more; its question or plan \
-                            stays the person's. Asked to wait for a ticket, the crown \
-                            watches it and ends its turn: a loop that polls holds the \
-                            merge train.",
+                            stays the person's. A loop that polls holds the merge train \
+                            and the wake.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2704,9 +2705,10 @@ mod tests {
 
     /// T-584: the crown names a tier on the two tools that start work, and
     /// reads the tiers on `list_board`. The fields are named inside the cap
-    /// and the lint; how to pick is the receipt's, in `CROWN_WAKES`.
+    /// and the lint; `CROWN_WAKES` says the fallbacks and whose words a
+    /// tier's description is, and not how to pick (T-930).
     #[test]
-    fn the_crown_names_a_tier_and_is_told_how_to_pick_one() {
+    fn the_crown_names_a_tier_and_reads_the_person_s_words_on_each() {
         assert_eq!(
             parse_tool_call(
                 "start_agent",
@@ -2757,12 +2759,13 @@ mod tests {
         for words in [
             "an id from list_board's tiers",
             "the person's words on when to use it",
-            "by the ticket's difficulty",
-            "says in the ticket's brief which tier and why",
-            "leaves the default where no description fits",
             "A ticket a person started keeps the person's tier",
         ] {
             assert!(CROWN_TIERS.contains(words), "CROWN_TIERS says {words:?}");
+        }
+        // T-930: how the crown picks is its own (or the person's to say).
+        for method in ["difficulty", "which tier and why", "leaves the default"] {
+            assert!(!CROWN_TIERS.contains(method), "CROWN_TIERS steers: {method:?}");
         }
         assert!(CROWN_WAKES.contains(CROWN_TIERS), "the receipt paragraph carries it");
         assert_eq!(lint_tool_text(CROWN_TIERS), Ok(()));
@@ -2973,7 +2976,6 @@ mod tests {
             "answer_agent answers it",
             "an agent a person started",
             // T-582: on by default, the plan read and accepted.
-            "the crown answers by default",
             "autonomous unless a person chose supervised",
             "stops on a plan",
             "accept_plan accepts it",
@@ -2988,6 +2990,7 @@ mod tests {
             "one clause, said once"
         );
         assert!(CROWN_WAKES.contains(PERSONS_PLANS), "and the plans' clause before it");
+        assert!(!CROWN_WAKES.contains("answers by default"), "a setting's default, not an order");
         assert_eq!(lint_tool_text(CROWN_WAKES), Ok(()));
         assert_eq!(lint_tool_text(PERSONS_QUESTIONS), Ok(()));
         assert_eq!(lint_tool_text(PERSONS_PLANS), Ok(()));
@@ -3058,8 +3061,8 @@ mod tests {
     /// T-916: the crown's own view says what it is for before how it is
     /// woken: the person's prompts are its brief beside an empty
     /// description, the crown can file and start a ticket whose work a
-    /// session of its own does, and the board's own work stays here. No kind
-    /// of work is classified; the receipts keep the wake words alone.
+    /// session of its own does. No kind of work is classified and no choice
+    /// steered (T-930); the receipts keep the wake words alone.
     #[test]
     fn the_crown_s_own_view_says_what_the_crown_is_for_first() {
         let view = crown_view();
@@ -3068,53 +3071,61 @@ mod tests {
             "wears the board's crown",
             "this session's prompts",
             "an empty description holds nothing up",
-            "can file a ticket with create_ticket",
-            "start it with start_agent",
-            "a session of its own then does that ticket's work",
+            "create_ticket files a ticket whose description is its agent's brief",
+            "start_agent starts that agent, a session of its own",
             "the board wakes this session",
-            "is the crown's, done here",
         ] {
             assert!(CROWN_ROLE.contains(words), "CROWN_ROLE says {words:?}");
         }
         assert!(!CROWN_ROLE.contains("a fix, a feature"), "no kind of work is classified");
+        // T-930: what the tools do, never which work goes to them.
+        for steer in ["For work the person asks for", "is the crown's, done here"] {
+            assert!(!CROWN_ROLE.contains(steer), "CROWN_ROLE steers: {steer:?}");
+        }
         assert_eq!(lint_tool_text(CROWN_ROLE), Ok(()));
         assert!(!CROWN_WAKES.contains(CROWN_ROLE), "the receipts do not repeat it");
     }
 
-    /// T-862: every step that is a person's is a hand on the crown's own
-    /// ticket, said once as the rule the named cases (a plan, a question, a
-    /// fix outside the brief, a supervised merge) are instances of, with
-    /// why: the person reads the board, not the pane. A crown that only
-    /// said it in its pane was missed.
+    /// T-862: a hand on the crown's own ticket is its road to the person,
+    /// said once with why: the person reads the board, not the pane. A crown
+    /// that only said it in its pane was missed. T-930 cut the rule's form
+    /// (raise it before the turn ends, name the ticket in one line).
     #[test]
-    fn the_crown_is_told_every_person_s_step_is_a_hand() {
-        assert!(CROWN_WAKES.ends_with(PERSONS_STEPS), "the wake words end on the rule");
+    fn the_crown_is_told_a_hand_is_its_road_to_the_person() {
+        assert!(CROWN_WAKES.ends_with(PERSONS_STEPS), "the wake words end on the road");
         for words in [
-            "Whatever is a person's to do",
-            "a step no tool of this session takes",
-            "raised with raise_hand on the crown's own ticket before the turn ends",
+            "raise_hand on the crown's own ticket is this session's road to the person",
+            "counts in the board's attention",
             "not this session's pane",
             "ends unheard and reads as done",
             "One hand stands per ticket",
         ] {
             assert!(PERSONS_STEPS.contains(words), "PERSONS_STEPS says {words:?}");
         }
+        // T-930: the road is said, not what to raise or in what words.
+        for form in ["naming the", "in one line", "before the turn ends"] {
+            for text in [PERSONS_STEPS, PERSONS_PLANS, PERSONS_QUESTIONS] {
+                assert!(!text.contains(form), "{form:?} tells the form in {text:?}");
+            }
+        }
         assert_eq!(lint_tool_text(PERSONS_STEPS), Ok(()));
     }
 
     /// T-582: a plan the crown would change stays a person's, said in the
-    /// tool, the receipt's clause and the wake words alike; the tool names
-    /// where the plan is read and every outcome its receipt can carry.
+    /// tool, the receipt's clause and the wake words alike, with why (the
+    /// crown has no road to send one back); the tool names where the plan is
+    /// read and every outcome its receipt can carry.
     #[test]
     fn the_crown_is_told_which_plans_are_a_person_s() {
         let registry = tools();
         let tool = registry.iter().find(|t| t["name"] == "accept_plan").unwrap();
         let description = tool["description"].as_str().unwrap();
         for text in [description, PERSONS_PLANS, CROWN_WAKES] {
-            for case in ["would change", "past", "a person's", "raise_hand", "the worker and the"] {
+            for case in ["would change", "past", "a person's"] {
                 assert!(text.contains(case), "{case:?} is named in {text:?}");
             }
         }
+        assert!(PERSONS_PLANS.contains("no road of the crown's sends a plan back"));
         for words in [
             "crown only",
             "an agent the crown started",
@@ -3132,8 +3143,7 @@ mod tests {
 
     /// T-569: a person's question stays a person's. mesimon does not read
     /// the words; the crown is told which questions are not its to answer,
-    /// in the tool, the receipt's clause and the wake words alike, and where
-    /// such a question goes instead.
+    /// in the tool, the receipt's clause and the wake words alike.
     #[test]
     fn the_crown_is_told_which_questions_are_a_person_s() {
         let registry = tools();
@@ -3147,8 +3157,6 @@ mod tests {
                 "deleting, force-pushing, publishing, sending to people",
                 "leaves open",
                 "scope beyond",
-                "raise_hand",
-                "the worker and the question",
             ] {
                 assert!(text.contains(case), "{case:?} is named in {text:?}");
             }
@@ -3197,8 +3205,9 @@ mod tests {
     /// T-919: the crown's train hold names the state it asks for — a word,
     /// hold or return, never a toggle or an optional flag — with the key and
     /// the stamp every keyed writer needs; the description says what a hold
-    /// does and does not do, and `CROWN_WAKES` places it in the review the
-    /// crown runs. Inside the cap and the lint, on the top rung.
+    /// does and does not do, and `CROWN_WAKES` says what it does to the train
+    /// (T-930: not the review it serves). Inside the cap and the lint, on the
+    /// top rung.
     #[test]
     fn the_crown_holds_a_ticket_out_of_the_train_by_name() {
         let base = json!({ "key": " T-4 ", "action": "hold", "seen": "abc" });
@@ -3248,13 +3257,15 @@ mod tests {
         }));
         assert!(!agent_allows(&Command::SetManualMerge { id: ulid::Ulid::nil(), on: false }));
         for words in [
-            "held with hold_ticket (action hold) before its agent delivers",
-            "ask_agent's corrections land while it stays held",
-            "hold_ticket with action return hands it back once approved",
+            "hold_ticket (action hold) keeps a branch out of the train",
+            "which may land it as soon as its agent delivers",
+            "ask_agent's words land while it stays held",
+            "action return hands it back",
             "a person's (t) is the person's to return",
         ] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
         }
+        assert!(!CROWN_WAKES.contains("reviews before it lands"), "the review is the crown's own");
         for text in [description, CROWN_WAKES] {
             lint_tool_text(text).unwrap();
         }
@@ -3263,9 +3274,8 @@ mod tests {
 
     /// T-712: the crown watches a ticket it did not start only where a person
     /// lets it. The tool parses like its keyed siblings, says it is gated and
-    /// what it wakes for, and `CROWN_WAKES` tells a crown asked to wait to
-    /// watch and end its turn rather than poll; all inside the cap and the
-    /// lint.
+    /// what it wakes for, and `CROWN_WAKES` says a loop that polls holds the
+    /// train and the wake; all inside the cap and the lint.
     #[test]
     fn the_crown_watches_where_a_person_lets_it() {
         assert_eq!(
@@ -3296,10 +3306,11 @@ mod tests {
             "gets ask_agent's words as one the crown started does",
             "delivers, finishes a turn, raises its hand or is merged",
             "ends at the merge or with unwatch",
-            "a loop that polls holds the merge train",
+            "A loop that polls holds the merge train and the wake",
         ] {
             assert!(description.contains(words), "watch_ticket says {words:?}");
         }
+        assert!(!description.contains("Asked to wait"), "the script is the crown's own");
         assert_eq!(watch["inputSchema"]["required"], json!(["key", "seen"]));
         assert_eq!(tier_needed_by_tool("watch_ticket"), Some(AgentTools::Full));
         for words in [
@@ -3307,7 +3318,8 @@ mod tests {
             "watch_ticket on it has the board wake this session",
             "its question or plan stays the person's",
             "ask_agent's words reach its agent as they reach one the crown started",
-            "watches it and ends its turn",
+            "A loop that polls for such a ticket keeps this session busy",
+            "the watch's news comes once the turn ends",
         ] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
         }
@@ -3362,8 +3374,7 @@ mod tests {
             assert!(bytes <= MAX_TOOL_BYTES, "{} is {bytes} bytes", t["name"]);
         }
         for words in [
-            "decides each ticket's workspace before it files or starts it",
-            "create_ticket and start_agent take workspace",
+            "create_ticket and start_agent take workspace, which the crown names",
             "list_board's checkout_held_by",
             "first prompt is its ticket's title and description",
             "wakes that agent",
@@ -3698,12 +3709,11 @@ mod tests {
              requests — lands through its pull request, merged on the forge, and merge_ticket \
              refuses it",
             "on a board that merges into main nothing is the forge's",
-            "The train's is waited for",
+            "The train's lands by itself",
             "the train off, the ticket out of it by t, or a column the train stops short of",
             "merged with merge_ticket while merge_state reads ahead",
             "at needs_rebase the agent is asked to rebase with ask_agent",
-            "A person's — crown mode supervised — is raised with raise_hand",
-            "m on its page merges it",
+            "A person's — crown mode supervised — is the person's to merge, with m on its page",
             "merge_ticket pastes the merged notice into the worker",
         ] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES says {words:?}");

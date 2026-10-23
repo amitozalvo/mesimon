@@ -351,7 +351,7 @@ fn render(resp: Response) -> Value {
                     (true, false) => "started",
                 },
                 "budget_left": budget_left,
-                "wakes": mcp::CROWN_WAKES
+                "wakes": mcp::CROWN_RULES_AT
             });
             if !tier.is_empty() {
                 body["tier"] = json!(tier);
@@ -431,7 +431,7 @@ fn render(resp: Response) -> Value {
                 "replaced": replaced,
                 "road": AskRoad::of(road, held_for_person).word(),
                 "held_for_person": held_for_person,
-                "wakes": mcp::CROWN_WAKES
+                "wakes": mcp::CROWN_RULES_AT
             });
             if let Some(seen) = seen {
                 body["seen"] = json!(seen);
@@ -507,6 +507,19 @@ fn render(resp: Response) -> Value {
             text(&json!({ "note": note.map(|n| n.to_string()), "deleted": note.is_none() }))
         }
         Response::Err { message } => tool_error(&message),
+        // The crown's rules beside the call's own answer (T-930): a second
+        // text block, which the mod joins to the first and the MCP client
+        // lists after it, refusal or not.
+        Response::CrownRules { rules, inner } => {
+            let mut result = render(*inner);
+            if let Some(blocks) = result["content"].as_array_mut() {
+                blocks.push(json!({
+                    "type": "text",
+                    "text": format!("{}\n\n{rules}", mcp::CROWN_RULES_HEAD),
+                }));
+            }
+            result
+        }
         other => tool_error(&format!(
             "unexpected daemon response: {}",
             serde_json::to_string(&other).unwrap_or_else(|_| "?".into())
@@ -749,7 +762,7 @@ mod tests {
         assert_eq!(body(true, Some(AskRoad::HeldForPerson))["road"], "held_for_person");
         assert_eq!(body(true, None)["road"], "held_for_person");
         assert_eq!(body(false, None)["road"], "queued");
-        assert_eq!(body(false, None)["wakes"], mcp::CROWN_WAKES);
+        assert_eq!(body(false, None)["wakes"], mcp::CROWN_RULES_AT);
         assert!(body(false, None).get("wake").is_none(), "a pane's ask wakes nothing");
     }
 
@@ -783,6 +796,28 @@ mod tests {
     }
 
     /// Shift+Enter on a start that landed thirty seconds later.
+    /// T-930: the rules ride the call's own answer as a second text block,
+    /// an answer the mod joins and a refusal alike.
+    #[test]
+    fn the_crown_s_rules_ride_beside_the_call_s_own_answer() {
+        let rules = mcp::crown_view();
+        let ok = render(Response::CrownRules {
+            rules: rules.clone(),
+            inner: Box::new(Response::AgentRaised { reason: "r".into(), board_version: 1 }),
+        });
+        assert_eq!(ok["isError"], false);
+        assert!(ok["content"][0]["text"].as_str().unwrap().contains("\"reason\""));
+        let second = ok["content"][1]["text"].as_str().unwrap();
+        assert!(second.starts_with(mcp::CROWN_RULES_HEAD) && second.ends_with(&rules), "{second}");
+        let refused = render(Response::CrownRules {
+            rules: rules.clone(),
+            inner: Box::new(Response::Err { message: "no such column: NOPE".into() }),
+        });
+        assert_eq!(refused["isError"], true);
+        assert_eq!(refused["content"][0]["text"], "no such column: NOPE");
+        assert!(refused["content"][1]["text"].as_str().unwrap().ends_with(&rules));
+    }
+
     #[test]
     fn a_start_receipt_says_started_or_waiting_never_false() {
         let body = |session_started, woken| {
@@ -802,12 +837,11 @@ mod tests {
         assert_eq!(now["status"], "started");
         assert_eq!(now["key"], "T-7");
         assert_eq!(now["budget_left"], 0);
-        // T-584: the receipt names the tier the agent launched on, and the
-        // paragraph says how the crown picks one.
+        // T-584: the receipt names the tier the agent launched on.
         assert_eq!(now["tier"], "deep");
-        assert!(mcp::CROWN_WAKES.contains(mcp::CROWN_TIERS));
-        // T-537: the receipt says the board wakes the crown, so it polls nothing.
-        assert_eq!(now["wakes"], mcp::CROWN_WAKES);
+        // T-537, T-930: the receipt names where the rules are read (that the
+        // board wakes the crown, so it polls nothing), not the rules again.
+        assert_eq!(now["wakes"], mcp::CROWN_RULES_AT);
         assert!(mcp::CROWN_WAKES.contains("Nothing needs polling"));
         let parked = body(false, false);
         assert_eq!(parked["status"], "waiting_for_worktree");

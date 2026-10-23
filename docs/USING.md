@@ -487,8 +487,8 @@ question or plan from one, wait for you under either mode, and so does a permiss
 form. mesimon does not read the question to decide. The crown is told that a question about
 secrets or credentials, spend or quota, something destructive or irreversible (deleting,
 force-pushing, publishing, sending to people), a preference its brief leaves open, or anything
-beyond the brief is yours, and that one such question in a batch makes the whole batch yours, and
-to raise its hand on its own card for it. If you answer first, the crown's answer is refused.
+beyond the brief is yours, and that one such question in a batch makes the whole batch yours.
+If you answer first, the crown's answer is refused.
 Switching to supervised, or taking the crown back, holds whatever words had not gone yet on their
 card. Where its words are held for you, the ask opens at the level the crown chose when you edit
 it, and `^y` sends it at that level.
@@ -498,20 +498,18 @@ agent's. The crown reads the plan on that agent's ticket and may accept it the w
 own accept does: one Enter on the plan dialog's first row, only once the screen shows the dialog
 with the cursor there, and only while no other agent is working in the same checkout. The card lights `♛ accepted plan` and reads `plan
 accepted by T-411` while the agent works on the plan, and the activity feed records the accept as
-the agent's. The crown is told that a plan it would change, or one that reaches past its brief,
-is yours: it raises its hand on its own card, and you answer the dialog. If you answer first, the
-crown presses nothing.
+the agent's. The crown is told that a plan reaching past its brief is yours, and so is one it
+would change, since it has no way to send a plan back: you answer the dialog. If you answer first,
+the crown presses nothing.
 
 When the crown starts an agent in a worktree and the worktree cannot be made (the repository has
 no commits yet, or the ticket's branch already exists), the crown is told why, in the words the
-card shows, and no agent starts. A fix outside the ticket's brief is yours: the crown raises its
-hand on its own card to say what it is, and starts the agent again once you have made it.
+card shows, and no agent starts. A fix outside the ticket's brief is yours, the crown is told so,
+and a start once you have made it tries again.
 
-The same holds for anything else only you can do. The crown is told that whatever is yours — a
-step no tool of its takes, a decision it leaves to you, a merge or an archive that is yours — is
-raised on its own card before its turn ends, naming the ticket and the step, because you read the
-board and its attention count, not its pane: a crown that only says so in its session is missed.
-One hand stands on its card at a time, the latest reason showing, and it comes down when you open
+The crown is told that raising its hand on its own card is its way to reach you, because you read
+the board and its attention count, not its pane: a step left to you only in its session's words is
+missed. What to raise, and how to word it, is the crown's, or yours to tell it. One hand stands on its card at a time, the latest reason showing, and it comes down when you open
 its ticket or send it a prompt.
 
 **Settings › Crown › Archives tickets** (off by default) lets the crown archive a ticket and
@@ -526,8 +524,8 @@ saying so is sent into the crown's session, and the watch ends at the merge. Whi
 words the crown leaves for that ticket's agent go to it as they go to an agent the crown
 started (under autonomous mode) instead of waiting for your `^y`; when the watch ends, words
 still waiting go back to you. The agent otherwise stays yours: its questions and plans wait for
-you, and the crown cannot answer, park or merge it. Tell the crown to wait for a ticket and it watches that ticket
-and ends its turn instead of polling, which would hold the merge train. While the row is off, the
+you, and the crown cannot answer, park or merge it. The crown is told that a loop that polls a ticket keeps its
+session busy, which holds the merge train and the watch's own wake. While the row is off, the
 crown is refused in words that name it, and says so to you. Turned off, every watch ends.
 
 **Settings › Crown › Reaches boards** links this board with another mesimon board on the same
@@ -544,16 +542,16 @@ your agents do. The reply is the same tool back, said by the **Board reply** tem
 arrives as the asking crown's next prompt. While words go, a bolt runs from the crown's card up
 to the board's name in the header, which lights in the crown's colour for a few seconds with
 what happened: `sent ask to relay`, `relay asks`, `relay replied`, `replied to relay`. A board
-that is not open, has no crown, or is not linked refuses in words, the header says why, and the
-crown is told to raise its hand for what only you can do. Nothing travels except on your say-so:
+that is not open, has no crown, or is not linked refuses in words, the header says why, and opening or
+crowning it is yours. Nothing travels except on your say-so:
 no board is linked by itself, and a link reaches boards on this machine alone.
 
-The crown picks the agent tier for each ticket it files or starts, and it picks by your words.
-Give each tier a description in **Settings › Agents › Tiers**: when to use it, in your own words
-(`docs, renames, one-file fixes`, `cross-crate refactors and anything touching the daemon`). The
-crown reads every description, chooses by how hard the ticket is against what you wrote, and says
-in the ticket's brief which tier it chose and why. Where no description fits, it uses the default
-tier. A ticket you started keeps your tier: the crown may start it again, but not on another
+The crown may name an agent tier for each ticket it files or starts; a ticket it names none for
+runs on the ticket's own tier, else the default. Give each tier a description in **Settings ›
+Agents › Tiers**: when to use it, in your own words (`docs, renames, one-file fixes`, `cross-crate
+refactors and anything touching the daemon`). The crown reads every description as your words on
+when to use that tier; how it chooses is its own, or yours to tell it in a prompt. A ticket you
+started keeps your tier: the crown may start it again, but not on another
 tier. Other agents can read the descriptions but cannot choose a tier for a ticket they file;
 that choice stays with you when you pick the ticket up. mesimon does not judge how hard a ticket
 is. The crown makes the choice, against what you wrote.

@@ -2356,6 +2356,16 @@ pub enum Response {
         #[serde(default)]
         seen: Option<String>,
     },
+    /// A crowned session's call answered with the crown's rules beside it
+    /// (T-930): `rules` is `mcp::crown_view()`, `inner` the call's own
+    /// answer. The daemon sends it on the first call after the session was
+    /// crowned, after its conversation compacted or cleared, and after the
+    /// daemon started, whichever tool that call is; every other receipt
+    /// names where the rules are read (`mcp::CROWN_RULES_AT`).
+    CrownRules {
+        rules: String,
+        inner: Box<Response>,
+    },
 }
 
 /// Output explicitly shared by a person; never an agent transcript or shell input API.

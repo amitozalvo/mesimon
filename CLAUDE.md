@@ -36,10 +36,11 @@ ticket worktrees, 11 red, 10 of them load flakes and 0 caught by a rebase):
 - The release gate (`ci/test-run.py`, both roads) is the full-suite backstop and is unchanged.
 - **A change to what an agent or the crown is told or does** — tool text, `get_ticket`'s
   answer, the brief, a crown wake, a turn road — also gets a rig test in `ci/rig/tests.toml`
-  (a bare ask, the acceptance as a check) and one `python3 -B ci/rig.py --only <id>` run on the
-  real Sonnet before the ticket is done, with the e2e beside it: a stub proves the wire, not
-  that a model finds the words (T-710: the e2e was green and a worker guessed). Never on every
-  build or release; only when such behaviour changes.
+  (a bare ask, the acceptance as a check) and one `python3 -B ci/rig.py --only <id>` run before
+  the ticket is done (workers on Sonnet, the crown on Opus), with the e2e beside it: a stub proves
+  the wire, not that a model finds the words (T-710: the e2e was green and a worker guessed). A
+  cut to crown text is judged blind, before and after, as `ci/rig/README.md` says (T-930). Never
+  on every build or release; only when such behaviour changes.
 
 In a ticket worktree, never `git checkout main` (it will fail — main belongs to another worktree) and never
 merge or push to main yourself: the user merges through mesimon, fast-forward only, so a green
@@ -257,6 +258,9 @@ rides `Harness::boot_with_env`. `prompt_e2e.rs` is the exemplar.
 **Text from a user or an agent** crosses one of two functions in `core/src/text.rs` at the
 boundary it crosses: `scrub_cells` before it is drawn, `scrub_text` before it leaves for
 another process. The hazard lists live there and nowhere else — **do not write a sanitizer.**
+
+**Text an agent or the crown is told** states what the board does and what is the person's, never
+how to work (T-930): how to judge, order, phrase or choose is the person's, in their own prompts.
 
 **A paste is one event, and only a text field takes it.** `App::tick` routes `Event::Paste` to
 `App::on_paste`; `EditBuffer::paste` flattens to one line (newlines become spaces) under the

@@ -173,14 +173,17 @@ Additional targeted gates:
   the `mesimon-relay` checkout beside this one); its header lists what each change needs.
 - The real Claude Code on the mod road: `python3 -B ci/rig.py` in a ticket worktree (a
   `msmn/` branch) lays a board there and drives Sonnet sessions through that board's crown, one
-  test of `ci/rig/tests.toml` at a time; `--lay` starts nothing, `--only T` runs a group,
+  test of `ci/rig/tests.toml` at a time (the crown on Opus, `--crown-model`); `--lay` starts nothing, `--only T` runs a group,
   `--failed` re-runs the last table's failures, `--reset` stops it all; every run first clears
   the boards of ticket worktrees that are gone (`--stale` lists them). It
   costs cents per run and needs the author's Claude Code login. A change to what an agent or
   the crown is told or does (tool text, `get_ticket`'s answer, the brief, a crown wake, a turn
   road) adds a test there and runs it once before the ticket is done, never on every build.
 - A real Codex crown: `python3 -B ci/rig.py --provider codex --live --only delegate` or
-  `--only forge` (Luna, low; `ci/rig/README.md`).
+  `--only forge` (defaults to Luna, low; crown text is judged with `--model gpt-6-sol`,
+  `ci/rig/README.md`).
+- Text an agent or the crown is told states what the board does and what is the person's, never
+  how to work (T-930): how to judge, order, phrase or choose is the person's, in their own prompts.
 - Linux release artifacts: `ci/build-linux.sh`.
 - Release rehearsal: `ci/release.sh --dry-run`; follow the script's current Docker policy and
   never publish as part of an ordinary development task. The author releases with one command,
