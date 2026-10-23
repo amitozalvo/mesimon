@@ -31367,33 +31367,55 @@ assessment: paste vs monitor" argued for keeping the paste road and holding it, 
   says why a row waits: `agent asked`), and `pending_row` says `crown wakes ∙ when you leave` /
   `crown wakes ∙ after your draft`. That outranks `after its turn`. `is_held` is about queued
   asks only, so `^y`/`^u` still leave the row alone. There is no new wire field.
-- **Cadence.** `drain_crown_wakes` runs every 4 ticks (1 s). While a wake is held for a person,
-  each pass asks the sampler for the crown's facts and screen. The next pass reads the answer,
-  so the wake goes 1–2 s after the person leaves (rig A1 measured 1.9 s). Without this the box
+- **Cadence.** `drain_crown_wakes` runs every 4 ticks (1 s). While a wake waits, each pass asks
+  the sampler for the crown's facts and screen, and the sample's landing delivers. The wake
+  therefore goes up to about 1 s after the person leaves (rig A1, before this correction,
+  measured 1.9 s). Without this the box
   would not be sampled at all, and the facts only on the 2 s poll bucket. A crown that is
   mid-turn is read on the bucket only.
-- **The edge.** The sample can be one bucket old. So at the paste, `held_for_person` asks tmux
-  once more, the clients (`client_quiet_secs`) and the box (`capture_input_screen`), as forks
-  at the edge like the paste itself. It asks only when the sample read the pane as free. A
-  held pane is never forked for on the writer. A read tmux cannot answer holds nothing, and the
-  paste then fails on its own.
-- **Codex.** A Codex crown's wake is parked and pasted later, at its composer's idle
-  (`drive_codex_inputs`). The same check, `held_for_person`, runs before that paste for an
-  owed entry whose ack is `Ack::CROWN_WAKE`. That row has no reason word: the wake has left
-  `crown_wakes` for the owed entry by then.
-- The feed has nothing new. `crown_wake_sent` still fires on delivery, and the `woke` touch is
-  still made when the wake is owed, not when it is pasted.
+- **No read on the writer (review of ff317618).** The first cut asked tmux afresh at the paste
+  (`client_quiet_secs`, `capture_input_screen`) on the writer, against the brief. Now a Claude
+  crown's wake goes in only on the pane sample that has just landed, when that sample read
+  both the crown's clients and its box (`person_read_at`: `attached_at` equals that pane's
+  screen time). The drain's 1 s pass only asks for that sample (`want_person`), and
+  `on_pane_sampled` runs `drain_crown_wakes(Some(at))` as it lands. Nothing about a person is
+  forked for on the writer, and the paste rests on reads from the same sample.
+- **Codex: the paste and its Enter (review of ff317618).** A Codex crown's wake is parked and
+  pasted by `drive_codex_inputs`. Its Enter comes 500 ms later (`codex_input_due`), and that
+  Enter sends the whole box. The first cut checked only before the paste, so a person who came
+  in during those 500 ms had their keys sent with the wake: the very bug. Now:
+  - **Before the paste:** a sample that read clients and box together, at or after the box was
+    last seen, with nobody in the pane and no draft.
+  - **Before the Enter:** `codex_wake_box` reads a sample from after the paste:
+    - `Wait` while a person is in the pane, while the box is not the composer, or while it is
+      empty (Codex has yet to draw the paste), up to the composer's wait.
+    - `Ours` when the box holds exactly the words pasted (`codex::composer_shows`: the words,
+      wrapped, or Codex's `[Pasted Content N chars]` placeholder for a long paste). This is
+      the only case that presses Enter.
+    - `Theirs` for anything else (a word added or removed, or the words gone with no turn).
+      Nothing is pressed or typed, the box is left as the person made it, the wake is kept on
+      the record as unsent words (`mark_unsent`; the card's Shift+Enter resends it), and the
+      feed says `crown_wake_failed`.
+  - `owed.sent` keeps the pasted words for that comparison, for the crown's wake only.
+  - `person_hold` does not read mesimon's own pasted wake as a draft, so the wait never blocks
+    on its own paste.
+- The feed has nothing new for a delivery. `crown_wake_sent` still fires on delivery, and the
+  `woke` touch is still made when the wake is owed, not when it is pasted.
 
 **The guarantee, and what it is not.**
-- **Hook road (Claude).** The window is the edge read, then the paste: two tmux forks, a few
-  ms. A person who attaches and types inside it is not caught.
-- **Mod road.** Same window, plus the bridge's long-poll hand-off (ms). `$.prompt.submit`
-  types nothing into the box. Whether a submit keeps a draft in the box is unmeasured, and the
-  hold stands either way.
-- **Codex.** The draft is read off the sampler's screen (at most one sample old), as the paste
-  already reads `input_ready`. The Enter goes `codex_input_due`, 500 ms after the paste. A
-  person who attaches inside those 500 ms and types gets their keys joined to the wake. No
-  Codex live case was added (T-916 owns new Codex rig coverage).
+- **Claude, hook road.** The window runs from the sample's reads (facts first, then screens, in
+  one worker pass) to the paste on the writer: the sample's own duration plus the hand-off, tens
+  of ms on an idle machine and longer under load (T-856). A person who attaches and types
+  inside it is not caught. The paste and its Enter are one call (`paste_text`), and no Enter
+  is pressed later.
+- **Mod road.** The same window, plus the bridge's long-poll hand-off. `$.prompt.submit` types
+  nothing into the box. Whether a submit keeps a draft in the box is unmeasured, and the hold
+  stands either way.
+- **Codex.** The paste and the Enter each rest on a sample read together and not older than the
+  250 ms tick that reads it plus the sample's duration. The Enter needs a sample from after the
+  paste. A person who types in the gap between that sample and the Enter is not caught.
+- **A parked crown** (Claude or Codex) is woken with the words as a launch's. The pane is new
+  and nobody is in it, so those words keep the launch road's own presses, unguarded.
 - **Who counts as attached.** Any tmux client of the private server: the board's own focus,
   a hand `tmux attach`, a control-mode client. Remote Control is not a tmux client, so a
   phone holds nothing.
@@ -31402,6 +31424,20 @@ assessment: paste vs monitor" argued for keeping the paste road and holding it, 
   the fallback is the per-board switch the ticket names, not a different road.
 
 **Tests.**
+- `crown_e2e::a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words`, on the
+  synthetic runtime, whose screen the test draws. It covers five cases:
+  - an ordinary delivery, where the Enter waits until the box shows the paste;
+  - a person in the pane (`when you leave`, nothing pasted), then the draft they leave
+    (`after your draft`), then the paste once the box is empty;
+  - a person who comes in between the paste and its Enter, where no Enter goes until they
+    leave;
+  - a parked crown woken with the words;
+  - a box the person changed after the paste: no Enter and no keys, the wake unsent with its
+    words, and `crown_wake_failed` in the feed.
+
+  Three mutations each fail it: the Enter guard always `Ours`, the attached check removed,
+  and `Theirs` read as `Ours`.
+- `codex::the_box_shows_the_wake_as_pasted_and_a_persons_edit_is_not_it`.
 - `crown_e2e::the_crown_wake_waits_for_a_person_at_the_crown_s_box`, on a stub whose composer
   keeps the cursor in its box (`BOX_STUB`). It attaches a `-C` client, has W1 deliver, and
   checks the row reads `when you leave` with nothing pasted. Then it types `half a thought`

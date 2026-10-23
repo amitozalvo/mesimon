@@ -1775,7 +1775,7 @@ impl Daemon {
         owed: Owed,
     ) {
         self.enter_wake(crown, worker, cause, from, to, owed);
-        self.drain_crown_wakes();
+        self.drain_crown_wakes(None);
         self.broadcast();
     }
 
@@ -1834,7 +1834,7 @@ impl Daemon {
         if let Some(w) = self.crown_wakes.iter_mut().find(|w| w.worker == worker) {
             w.unstarted = Some(why);
         }
-        self.drain_crown_wakes();
+        self.drain_crown_wakes(None);
         self.broadcast();
     }
 

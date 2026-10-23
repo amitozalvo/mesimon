@@ -68,6 +68,37 @@ pub fn composer_holds_text(screen: &mesimon_backend_tmux::InputScreen) -> bool {
         && !(x == 2 && screen.lines.get(y).is_some_and(|line| line.starts_with('›')))
 }
 
+/// The words in a composer that holds text (T-918), as drawn: the `›` row
+/// and its wrapped rows down to the cursor's, whitespace collapsed. `None`
+/// for an empty box or no composer.
+pub fn composer_text(screen: &mesimon_backend_tmux::InputScreen) -> Option<String> {
+    if !composer_holds_text(screen) {
+        return None;
+    }
+    let (_, y) = screen.cursor?;
+    let above = screen.lines.get(..=y)?;
+    let prompt = above.iter().rposition(|line| {
+        line.strip_prefix('›').is_some_and(|text| text.is_empty() || text.starts_with(' '))
+    })?;
+    let rows = above[prompt..].iter().enumerate().map(|(i, line)| {
+        if i == 0 {
+            line.strip_prefix('›').unwrap_or(line)
+        } else {
+            line.as_str()
+        }
+    });
+    Some(rows.flat_map(str::split_whitespace).collect::<Vec<_>>().join(" "))
+}
+
+/// Does the box hold exactly `ours` (T-918): the words as pasted, or the
+/// placeholder Codex draws for a long paste in their place. A word more or
+/// less is a person's edit.
+pub fn composer_shows(screen: &mesimon_backend_tmux::InputScreen, ours: &str) -> bool {
+    let Some(text) = composer_text(screen) else { return false };
+    text == ours.split_whitespace().collect::<Vec<_>>().join(" ")
+        || text == format!("[Pasted Content {} chars]", ours.chars().count())
+}
+
 /// A Codex dialog stands in the box's place (T-907): the pane's last `›`
 /// row is a numbered choice (`› 1. Yes, proceed (y)`), as an approval's, a
 /// question's and the plan's lists draw their cursor. The last such row,
@@ -790,6 +821,36 @@ mod input_tests {
         assert!(composer_holds_text(&wrapped));
         let dialog = screen("Allow command?\n› 1. Yes\n  2. No", None);
         assert!(!input_ready(&dialog) && !composer_holds_text(&dialog));
+    }
+
+    /// The crown's wake in a Codex box (T-918): the box holds exactly the
+    /// words pasted, wrapped or as Codex's long-paste placeholder, and a
+    /// word a person added or took away is not that.
+    #[test]
+    fn the_box_shows_the_wake_as_pasted_and_a_persons_edit_is_not_it() {
+        let wake = "T-2 \"worker\" finished its turn ∙ get_ticket key=T-2 for state and notes";
+        let one = screen(&format!("› {wake}\n\n  ? for shortcuts"), Some((2 + wake.len(), 0)));
+        assert_eq!(composer_text(&one).as_deref(), Some(wake));
+        assert!(composer_shows(&one, wake));
+        let wrapped = screen(
+            "› T-2 \"worker\" finished its turn ∙\n  get_ticket key=T-2 for state and notes\n\n  ? for \
+             shortcuts",
+            Some((39, 1)),
+        );
+        assert!(composer_shows(&wrapped, wake));
+        let long = "x ".repeat(700);
+        let placeholder = screen("› [Pasted Content 1400 chars]", Some((29, 0)));
+        assert!(composer_shows(&placeholder, &long));
+        assert!(!composer_shows(&placeholder, wake));
+        let edited = screen(&format!("› {wake} and also"), Some((11 + wake.len(), 0)));
+        assert!(!composer_shows(&edited, wake), "a word added");
+        let draft = screen("› half a thought", Some((16, 0)));
+        assert!(!composer_shows(&draft, wake));
+        assert_eq!(composer_text(&draft).as_deref(), Some("half a thought"));
+        // An empty box shows its placeholder with the cursor at its start.
+        let empty = screen("› Ask Codex to do anything", Some((2, 0)));
+        assert_eq!(composer_text(&empty), None);
+        assert!(!composer_shows(&empty, wake));
     }
 
     /// A steer's Enter (T-872): the live read decides, the sampler's screen

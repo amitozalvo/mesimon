@@ -162,7 +162,7 @@ impl Daemon {
         }
         // A look that found nothing to read lets the crown's wake go (T-773).
         if self.hear_forged(HashMap::new()) {
-            self.drain_crown_wakes();
+            self.drain_crown_wakes(None);
             changed = true;
         }
         if changed || acted || settled {

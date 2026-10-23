@@ -1668,8 +1668,296 @@ fn the_crown_wake_waits_for_a_person_at_the_crown_s_box() {
         Some("woke"),
         "the crown's card lit when the wake was owed"
     );
-    let feed = std::fs::read_to_string(h.paths.state_dir.join("activity.jsonl")).unwrap();
-    assert!(feed.contains("\"crown_wake_sent\""), "{feed}");
+    // The feed is written a bucket at a time.
+    let feed = h.paths.state_dir.join("activity.jsonl");
+    wait_until(std::time::Duration::from_secs(5), "crown_wake_sent in the feed", || {
+        std::fs::read_to_string(&feed).is_ok_and(|f| f.contains("\"crown_wake_sent\""))
+    });
+}
+
+/// A Codex crown's wake and a person at its box (T-918), on the synthetic
+/// runtime, whose screen the test draws (`fake_codex_runtime.py` echoes no
+/// paste at an idle). The wake is pasted only on a sample that read the
+/// crown's clients and box together, and its Enter, a beat later, only on a
+/// sample from after the paste showing the box as pasted and nobody in the
+/// pane. In order: an ordinary delivery; a person in the pane, then their
+/// draft left behind; a person who comes in between the paste and its
+/// Enter; a parked crown woken with the words; and a person who changes
+/// the pasted words, whose box is left as they made it, the wake unsent.
+#[test]
+fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\n\
+                        while IFS= read -r line; do \
+                        printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+    const FAKE_RUNTIME: &str = include_str!("common/fake_codex_runtime.py");
+    let Some(h) = Harness::boot_with_env(
+        "crown_codex_box",
+        Some(STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let runtime = h.dir.join("fake-codex-runtime.py");
+    std::fs::write(&runtime, FAKE_RUNTIME).unwrap();
+    std::fs::set_permissions(&runtime, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+        .unwrap();
+    h.set_env("MESIMON_CODEX_RUNTIME_BIN", &runtime);
+    h.set_env("MESIMON_CODEX_BIN", h.dir.join("must-not-launch-real-codex"));
+    h.set_env("MESIMON_CODEX_HOME", h.dir.join("synthetic-codex-home"));
+    h.set_env("MESIMON_SLEEP_MIN_AGE_MS", "0");
+    h.restart();
+    let hook_sock = h.paths.hook_sock();
+    let tmux_sock = h.paths.tmux_sock();
+    let mut c = h.client("crown_codex_box");
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let held = |c: &mut TestClient, t: ulid::Ulid| -> Option<String> {
+        pending_of(c, Some(t))
+            .into_iter()
+            .find(|p| p.action == mesimon_core::command::PendingAction::CrownWake)
+            .and_then(|p| p.held)
+    };
+    let draws = std::cell::Cell::new(0u32);
+    let control = |id: uuid::Uuid, mut value: serde_json::Value| {
+        // Each instruction differs from the last, or the runtime skips it.
+        draws.set(draws.get() + 1);
+        value["n"] = json!(draws.get());
+        let path = mesimon_daemon::agents::codex::snapshot_path(&h.paths, id);
+        let control = std::path::PathBuf::from(format!("{}.control", path.display()));
+        mesimon_daemon::agents::codex::write_json(&control, &value).unwrap();
+    };
+    // The box as Codex draws it: the `›` row, wrapped rows indented two
+    // cells, the cursor after the last word; empty, its placeholder.
+    let boxed = |text: &str| -> (String, [usize; 2]) {
+        let mut rows: Vec<String> = vec![String::new()];
+        for word in text.split_whitespace() {
+            let row = rows.last_mut().unwrap();
+            if !row.is_empty() && row.chars().count() + 1 + word.chars().count() > 60 {
+                rows.push(word.to_string());
+            } else {
+                if !row.is_empty() {
+                    row.push(' ');
+                }
+                row.push_str(word);
+            }
+        }
+        let x = 2 + rows.last().unwrap().chars().count();
+        let y = rows.len();
+        let body = rows
+            .iter()
+            .enumerate()
+            .map(|(i, r)| if i == 0 { format!("› {r}") } else { format!("  {r}") })
+            .collect::<Vec<_>>()
+            .join("\r\n");
+        (format!("Synthetic provider fixture\r\n{body}\r\nanything the user wants"), [x, y])
+    };
+    let draw = |id: uuid::Uuid, text: &str, state: serde_json::Value| {
+        let (screen, cursor) = if text.is_empty() {
+            ("Synthetic provider fixture\r\n› \r\nanything the user wants".to_string(), [2, 1])
+        } else {
+            boxed(text)
+        };
+        control(id, json!({"state": state, "screen": screen, "cursor": cursor}));
+    };
+    let idle = json!({"state":"idle","stop_reason":"end_turn"});
+
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-918 worker");
+    let kw = key_of(&mut c, w);
+    assert!(matches!(
+        c.request(Command::SetAgentProvider {
+            provider: mesimon_core::board::AgentProvider::Codex
+        }),
+        Response::Ok
+    ));
+    let sa = match c.request(Command::SpawnSession {
+        ticket: a,
+        kind: SessionKind::Codex,
+        submit_prompt: false,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("the Codex crown's spawn: {other:?}"),
+    };
+    c.await_state(sa, "the Codex crown at its composer", |s| {
+        matches!(s, SessionState::Idle { .. })
+    });
+    wait_until(std::time::Duration::from_secs(10), "the crown's prefill", || {
+        c.board().sessions.iter().any(|s| s.id == sa && !s.pending_prefill)
+    });
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    assert!(matches!(
+        c.request(Command::SetAgentProvider {
+            provider: mesimon_core::board::AgentProvider::ClaudeCode
+        }),
+        Response::Ok
+    ));
+    let input = h.dir.join(format!("{sa}.input"));
+    let bytes = || std::fs::read(&input).unwrap_or_default();
+    // The crown's pastes, each as the box would hold it, and its Enters
+    // (a newline outside a paste).
+    let pastes = || -> Vec<String> {
+        let b = bytes();
+        let s = String::from_utf8_lossy(&b).to_string();
+        s.split("\x1b[200~")
+            .skip(1)
+            .filter_map(|p| p.split_once("\x1b[201~").map(|(t, _)| t.to_string()))
+            .collect()
+    };
+    let enters = || -> usize {
+        let b = bytes();
+        let s = String::from_utf8_lossy(&b).to_string();
+        let mut n = 0;
+        for (i, part) in s.split("\x1b[200~").enumerate() {
+            let outside =
+                if i == 0 { part } else { part.split_once("\x1b[201~").map_or("", |p| p.1) };
+            n += outside.chars().filter(|c| matches!(c, '\r' | '\n')).count();
+        }
+        n
+    };
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("shared_checkout".into()),
+        },
+    ) {
+        Response::AgentStarted { session_started: true, .. } => {}
+        other => panic!("start_agent {kw}: {other:?}"),
+    }
+    let ws = c.board().live_agent(w).expect("W holds a seat").id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let finished = format!("{kw} \"mesimon-probe-918 worker\" finished its turn");
+    let wakes = |p: &[String]| p.iter().filter(|t| t.contains(&finished)).count();
+    // The crown takes its turn on the words: the Enter began one, which
+    // ends here, the box empty again.
+    let crown_turn_ends = |c: &mut TestClient| {
+        c.await_state(sa, "the crown's turn on the wake", |s| *s == SessionState::Running);
+        draw(sa, "", idle.clone());
+        c.await_state(sa, "the crown idle again", |s| matches!(s, SessionState::Idle { .. }));
+        wait_until(std::time::Duration::from_secs(10), "the wake acked", || {
+            c.board().sessions.iter().any(|s| s.id == sa && !s.pending_submit)
+        });
+    };
+
+    // ---- ordinary: nobody there; the Enter waits for the paste to show -----
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the wake pasted", || wakes(&pastes()) == 1);
+    let wake1 = pastes().into_iter().find(|t| t.contains(&finished)).unwrap();
+    let before = enters();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(enters(), before, "no Enter before the box shows the words");
+    draw(sa, &wake1, idle.clone());
+    wait_until(std::time::Duration::from_secs(10), "the wake's Enter", || enters() == before + 1);
+    crown_turn_ends(&mut c);
+
+    // ---- a person in the pane, then their draft left behind ---------------
+    let mut client = tmux(&tmux_sock)
+        .args(["-C", "attach", "-t", &sa.simple().to_string()[..16]])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("a control-mode tmux client");
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the wake held for the person", || {
+        held(&mut c, a).as_deref() == Some("when you leave")
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(wakes(&pastes()), 1, "nothing pasted while they are in");
+    draw(sa, "half a thought", idle.clone());
+    client.kill().unwrap();
+    let _ = client.wait();
+    wait_until(std::time::Duration::from_secs(10), "the wake held for the draft", || {
+        held(&mut c, a).as_deref() == Some("after your draft")
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(wakes(&pastes()), 1, "nothing pasted into their draft");
+    // They send it (the runtime's turn on it is not this test's), and the box
+    // is empty: the wake goes in.
+    draw(sa, "", idle.clone());
+    wait_until(std::time::Duration::from_secs(10), "the wake pasted after the draft", || {
+        wakes(&pastes()) == 2
+    });
+
+    // ---- a person who comes in between the paste and its Enter ------------
+    let wake2 = pastes().into_iter().filter(|t| t.contains(&finished)).nth(1).unwrap();
+    let before = enters();
+    let mut client = tmux(&tmux_sock)
+        .args(["-C", "attach", "-t", &sa.simple().to_string()[..16]])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("a control-mode tmux client");
+    wait_until(std::time::Duration::from_secs(10), "the client on the crown's session", || {
+        tmux(&tmux_sock)
+            .args(["list-clients", "-t", &sa.simple().to_string()[..16], "-F", "#{client_name}"])
+            .output()
+            .is_ok_and(|o| !o.stdout.is_empty())
+    });
+    draw(sa, &wake2, idle.clone());
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    assert_eq!(enters(), before, "no Enter while a person is in the pane");
+    client.kill().unwrap();
+    let _ = client.wait();
+    wait_until(std::time::Duration::from_secs(10), "the Enter once they left", || {
+        enters() == before + 1
+    });
+    crown_turn_ends(&mut c);
+
+    // ---- a parked crown: the wake wakes it, its words go as a launch's ----
+    assert!(matches!(c.request(Command::SleepSession { id: sa }), Response::Ok));
+    wait_until(std::time::Duration::from_secs(10), "the crown parked", || {
+        c.board()
+            .sessions
+            .iter()
+            .any(|s| s.id == sa && s.state == SessionState::Sleeping && !s.codex_stopping)
+    });
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(20), "the parked crown woken with the wake", || {
+        wakes(&pastes()) == 3
+    });
+    let before = enters();
+    wait_until(std::time::Duration::from_secs(10), "the woken crown's Enter", || enters() > before);
+    crown_turn_ends(&mut c);
+
+    // ---- a person changes the pasted words: their box, the wake unsent ----
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the fourth wake pasted", || {
+        wakes(&pastes()) == 4
+    });
+    let wake4 = pastes().into_iter().filter(|t| t.contains(&finished)).nth(3).unwrap();
+    let (before, len) = (enters(), bytes().len());
+    draw(sa, &format!("{wake4} and my own words"), idle.clone());
+    wait_until(std::time::Duration::from_secs(10), "the wake kept unsent", || {
+        c.board()
+            .sessions
+            .iter()
+            .any(|s| s.id == sa && s.unsent.as_ref().is_some_and(|u| u.text == wake4))
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(enters(), before, "their words are never sent by the wake");
+    assert_eq!(bytes().len(), len, "nothing typed into the box they changed");
+    let feed = h.paths.state_dir.join("activity.jsonl");
+    wait_until(std::time::Duration::from_secs(5), "crown_wake_failed in the feed", || {
+        std::fs::read_to_string(&feed).is_ok_and(|f| f.contains("\"crown_wake_failed\""))
+    });
 }
 
 #[test]

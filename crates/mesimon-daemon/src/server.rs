@@ -640,6 +640,10 @@ pub struct Daemon {
     /// there, and the crown's wake is not pasted under their hands. In
     /// memory only, like the foregrounds.
     attached: std::collections::HashSet<String>,
+    /// The sample time `attached` was read at (T-918): a delivery that rests
+    /// on who is in a pane and what its box holds takes both from one
+    /// sample (`person_read_at`).
+    attached_at: u64,
     /// (bytes, sessions) currently sleepable on sleep-safe tickets — the
     /// header suggestion, recomputed on the RSS bucket.
     reclaim_cache: (u64, usize),
@@ -1377,6 +1381,7 @@ pub fn run(paths: Paths) -> Result<()> {
         foregrounds: HashMap::new(),
         terminals: terminals_in(&snap),
         attached: std::collections::HashSet::new(),
+        attached_at: 0,
         reclaim_cache: (0, 0),
         archive_cache: 0,
         open_box_counts: Default::default(),
@@ -2002,6 +2007,17 @@ impl Ack {
     const QUEUED: Ack = Ack { by: "automation", word: "queued_ask_delivered" };
     /// The board's sentence to the crown landed (T-414).
     const CROWN_WAKE: Ack = Ack { by: "automation", word: "crown_wake_delivered" };
+}
+
+/// What a Codex crown's box says about the wake pasted into it (T-918,
+/// `Daemon::codex_wake_box`).
+enum WakeBox {
+    /// The wake's words as pasted, and nobody in the pane: Enter.
+    Ours,
+    /// No reading yet, a person in the pane, or the paste not drawn yet.
+    Wait,
+    /// The person changed the box: it is theirs, and the wake goes unsent.
+    Theirs,
 }
 
 /// One paste of mesimon's own, waiting for the pane's `UserPromptSubmit`
@@ -3271,7 +3287,7 @@ impl Daemon {
             changed |= stage!(self, "hear_stepped", self.hear_stepped());
             changed |= stage!(self, "hear_forged", self.hear_forged(HashMap::new()));
             changed |= stage!(self, "settle_looks", self.settle_looks());
-            changed |= stage!(self, "drain_crown_wakes", self.drain_crown_wakes());
+            changed |= stage!(self, "drain_crown_wakes", self.drain_crown_wakes(None));
             stage!(self, "persist_crown", self.persist_crown());
             changed |= stage!(self, "drive_usage", self.drive_usage(now));
             if !self.cost_scanning && (self.cost_due || self.ticks.is_multiple_of(COST_TICKS)) {
@@ -3724,6 +3740,7 @@ impl Daemon {
             .filter(|f| f.attached && !f.pane_dead)
             .map(|f| f.session_name.clone())
             .collect();
+        self.attached_at = at;
         let repaint = foregrounds != self.foregrounds
             || terminals != self.terminals
             || attached != self.attached;
@@ -4621,6 +4638,33 @@ impl Daemon {
                 if now < due {
                     continue;
                 }
+                // The crown's wake pasted into a Codex crown (T-918): its
+                // Enter sends the whole box, so it goes only on a sample from
+                // after the paste with nobody in the pane and the box holding
+                // the wake's words as pasted. A person who came in meanwhile
+                // is waited out; a box they changed is theirs, and the wake
+                // is kept unsent rather than sent inside their words.
+                if submit && self.crown_wake_owed(id) {
+                    match self.codex_wake_box(id, &sid) {
+                        WakeBox::Ours => {}
+                        WakeBox::Wait => {
+                            self.want_person(&sid);
+                            continue;
+                        }
+                        WakeBox::Theirs => {
+                            self.codex_input_due.remove(&id);
+                            self.control_cancel(id);
+                            let words = self.drop_owed(id).and_then(|o| o.sent);
+                            self.mark_unsent(id, words);
+                            if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                                rec.pending_submit = false;
+                            }
+                            self.feed.board("automation", "crown_wake_failed", Some(ticket));
+                            dirty = true;
+                            continue;
+                        }
+                    }
+                }
                 if submit && self.backend.send_enter(&sid).is_ok() {
                     self.control_submitted(id);
                     if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
@@ -4633,11 +4677,14 @@ impl Daemon {
                 continue;
             }
             // The crown's wake parked on a Codex crown (T-918) goes in at
-            // its composer's idle, which a person may be typing into: it
-            // waits for them as a Claude crown's does.
-            if self.owed.get(&id).is_some_and(|o| o.ack.word == Ack::CROWN_WAKE.word)
-                && self.held_for_person(id)
+            // its composer's idle, which a person may be typing into: only
+            // on a sample whose clients and box were read together, after
+            // the box was last seen, with nobody in the pane and no draft.
+            if self.crown_wake_owed(id)
+                && (self.person_read_at(&sid).is_none_or(|at| at < after)
+                    || self.person_hold(id).is_some())
             {
+                self.want_person(&sid);
                 continue;
             }
             let mut text = if pending_prefill {
@@ -4666,8 +4713,13 @@ impl Daemon {
             if !text.is_empty() && self.backend.paste_input(&sid, &text).is_err() {
                 continue;
             }
+            let wake = self.crown_wake_owed(id);
             if let Some(owed) = self.owed.get_mut(&id) {
                 owed.sent_at = Some(now_ms());
+                // What the box should hold when the wake's Enter is due.
+                if wake {
+                    owed.sent = owed.parked.clone();
+                }
             }
             self.control_pasted(id);
             // The words are in; the entry stays for its ack (the new-turn
@@ -6310,7 +6362,7 @@ impl Daemon {
         // relaunch is what a person asked for when they picked the tier.
         self.drain_tier_switches();
         self.drain_queue();
-        self.drain_crown_wakes();
+        self.drain_crown_wakes(None);
         true
     }
 
@@ -8006,7 +8058,7 @@ impl Daemon {
     /// crown's wake row says it: a tmux client has the pane open (they may
     /// be typing), or its box holds words nobody sent (they left a draft,
     /// which the paste would join and its Enter send). Read off the newest
-    /// pane sample; `held_for_person` reads afresh at the paste.
+    /// pane sample; a delivery takes them from one sample (`person_read_at`).
     fn person_hold(&self, id: uuid::Uuid) -> Option<&'static str> {
         let rec = self.board.sessions.iter().find(|s| s.id == id && s.state.has_pane())?;
         let sid = rec.sid16();
@@ -8018,42 +8070,66 @@ impl Daemon {
                 use crate::agents::claude::composer::{self, Composer};
                 composer::read(screen) == Composer::Holding
             }
-            SessionKind::Codex => crate::agents::codex::composer_holds_text(screen),
+            // The crown's own wake, pasted and waiting for its Enter, is
+            // not a draft: the box is mesimon's until it is changed.
+            SessionKind::Codex => {
+                crate::agents::codex::composer_holds_text(screen)
+                    && !self.owed.get(&id).is_some_and(|o| {
+                        o.ack.word == Ack::CROWN_WAKE.word
+                            && o.sent.as_ref().is_some_and(|w| {
+                                crate::agents::codex::composer_shows(screen, &w.text)
+                            })
+                    })
+            }
             _ => false,
         });
         draft.then_some(WAKE_AFTER_YOUR_DRAFT)
     }
 
-    /// `person_hold` at the paste's own edge (T-918). The sample may be a
-    /// poll bucket old, so a pane it read as free is asked once more here,
-    /// its clients and its box, as forks at the edge the paste itself is;
-    /// one it read as held is not asked. Held, the next sample reads both
-    /// again, so the wake follows the person out by the drain's next pass
-    /// (1 s), and the box is read at all. A read tmux cannot answer holds
-    /// nothing: the paste fails on its own.
-    fn held_for_person(&mut self, id: uuid::Uuid) -> bool {
-        let Some(sid) = self
-            .board
-            .sessions
-            .iter()
-            .find(|s| s.id == id && s.state.has_pane())
-            .map(|s| s.sid16())
+    /// The sample time at which this pane's clients and box were both read
+    /// (T-918): `attached` and the pane's screen from one sample. A sample
+    /// that read the clients and not this box, or a box from another
+    /// sample, is no reading at all.
+    fn person_read_at(&self, sid: &str) -> Option<u64> {
+        self.screens.get(sid).map(|(at, _)| *at).filter(|at| *at == self.attached_at)
+    }
+
+    /// Words owed this session are the crown's wake (T-918).
+    fn crown_wake_owed(&self, id: uuid::Uuid) -> bool {
+        self.owed.get(&id).is_some_and(|o| o.ack.word == Ack::CROWN_WAKE.word)
+    }
+
+    /// What a Codex crown's box says about the wake pasted into it, at its
+    /// Enter (T-918), off the sampler alone. `Wait` until a sample from
+    /// after the paste read the clients and the box together, while a
+    /// person is in the pane, while the box is not the composer, and while
+    /// it is empty (Codex has yet to draw the paste) for at most the
+    /// composer's wait. `Ours` is the box holding the wake as pasted;
+    /// anything else, or the words gone, is `Theirs`.
+    fn codex_wake_box(&self, id: uuid::Uuid, sid: &str) -> WakeBox {
+        let Some((pasted_at, ours)) =
+            self.owed.get(&id).and_then(|o| Some((o.sent_at?, o.sent.as_ref()?.text.clone())))
         else {
-            return false;
+            return WakeBox::Ours;
         };
-        if self.person_hold(id).is_none() {
-            if self.backend.client_quiet_secs(&sid).is_ok_and(|q| q.is_some()) {
-                self.attached.insert(sid.clone());
-            }
-            if let Ok(screen) = self.backend.capture_input_screen(&sid) {
-                self.screens.insert(sid.clone(), (now_ms(), screen));
-            }
+        let Some(at) = self.person_read_at(sid).filter(|at| *at >= pasted_at) else {
+            return WakeBox::Wait;
+        };
+        if self.attached.contains(sid) {
+            return WakeBox::Wait;
         }
-        let held = self.person_hold(id).is_some();
-        if held {
-            self.want_person(&sid);
+        let Some((_, screen)) = self.screens.get(sid) else { return WakeBox::Wait };
+        use crate::agents::codex::{composer_holds_text, composer_shows, input_ready};
+        if !input_ready(screen) {
+            return WakeBox::Wait;
         }
-        held
+        if composer_shows(screen, &ours) {
+            return WakeBox::Ours;
+        }
+        if !composer_holds_text(screen) && at.saturating_sub(pasted_at) < composer_wait_ms() {
+            return WakeBox::Wait;
+        }
+        WakeBox::Theirs
     }
 
     /// The next sample reads who is in this pane and what its box holds.
@@ -8075,7 +8151,7 @@ impl Daemon {
     /// pane is pasted, a parked crown is woken with the words parked for
     /// its first tick. A pane's paste is owed an ack, so the crown is held
     /// in `owed` until its `UserPromptSubmit`, exactly as a queued ask is.
-    fn drain_crown_wakes(&mut self) -> bool {
+    fn drain_crown_wakes(&mut self, landed: Option<u64>) -> bool {
         if self.crown_wakes.is_empty() {
             return false;
         }
@@ -8102,8 +8178,20 @@ impl Daemon {
             QueuedSeat::Pane(id) | QueuedSeat::Wake(id) => id,
             QueuedSeat::Start(_) => return false,
         };
-        if matches!(seat, QueuedSeat::Pane(_)) && self.held_for_person(id) {
-            return true;
+        // A pane is pasted into only on the sample that just landed, its
+        // clients and the crown's box read together (`person_read_at`): the
+        // stage's own pass asks for that sample, and its landing delivers,
+        // so no read is a fork on the writer and none is older than the
+        // sample's own reads.
+        if matches!(seat, QueuedSeat::Pane(_)) {
+            let Some(sid) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.sid16())
+            else {
+                return false;
+            };
+            if landed.is_none() || self.person_read_at(&sid) != landed {
+                self.want_person(&sid);
+                return false;
+            }
         }
         let by = Principal::Automation { rule: "crown_wake".into() };
         if authorize(&by, &Action::Mutate, &Resource::Session { id }).denied() {
@@ -16477,7 +16565,7 @@ impl Daemon {
         let forged = self.hear_forged(openings);
         changed |= self.hear_forge(news);
         if forged {
-            self.drain_crown_wakes();
+            self.drain_crown_wakes(None);
             changed = true;
         }
         if changed {
@@ -16729,6 +16817,11 @@ impl Daemon {
             if paned.contains(&sid) {
                 self.screens.insert(sid, (at, screen));
             }
+        }
+        // The crown's wake goes on the sample its delivery asked for
+        // (T-918), the moment it lands.
+        if !self.crown_wakes.is_empty() {
+            changed |= stage!(self, "drain_crown_wakes", self.drain_crown_wakes(Some(at)));
         }
         if changed {
             stage!(self, "persist_sessions", self.persist_sessions());
