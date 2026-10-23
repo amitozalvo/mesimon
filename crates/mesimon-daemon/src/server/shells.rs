@@ -373,7 +373,7 @@ mod tests {
         assert_eq!(bounded_output(&format!("{rows}\n\n   \n")), (rows.clone(), false));
         assert_eq!(bounded_output(&format!("older\n{rows}\n")), (rows, true));
         assert_eq!(bounded_output("first\n\nlast\n\n"), ("first\n\nlast".into(), false));
-        assert_eq!(bounded_output(&"x".repeat(OUTPUT_BYTES)).1, false);
+        assert!(!bounded_output(&"x".repeat(OUTPUT_BYTES)).1);
         let (tail, truncated) = bounded_output(&"א".repeat(OUTPUT_BYTES));
         assert!(truncated);
         assert!(tail.len() <= OUTPUT_BYTES);

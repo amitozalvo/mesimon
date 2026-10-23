@@ -365,6 +365,9 @@ pub(crate) fn initials(name: &str) -> String {
 /// running away and nothing else — the daemon parses it.
 const JOIN_CODE_MAX_BYTES: usize = 64;
 
+// The app holds one `Mode`, so its size costs nothing; boxing `Editor` would
+// cost every pattern that reaches through it.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
     Normal,
