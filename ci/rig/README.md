@@ -80,8 +80,10 @@ columns run Codex in workspace-write with on-request approvals, so the crown
 could do the work itself with no dialog in its way; the board's tools and its
 brief are on. The rig answers approvals as the person at the desk: a call to
 a board tool, and a worker's plain `git` in its own folder (its worktree, or
-the checkout for a worker on the shared checkout; two plain shapes joined by one
-`&&`, as Sol writes `git add` then `git commit`, count as one), are allowed once each and listed in the manifest (`approvals`); anything else is left standing
+the checkout for a worker on the shared checkout; plain shapes joined by `&&`,
+as Sol writes `git add`, `git commit` and `git status`, count as one, inside a login
+shell's `-lc` too, with paths and messages that hold nothing a shell expands), are
+allowed once each and listed in the manifest (`approvals`); anything else is left standing
 and listed (`approvals_left`), and a crown kept waiting on one fails.
 
 - `delegate`: the person asks for a small module and its test. It passes only

@@ -246,6 +246,7 @@ class CrownTests(unittest.TestCase):
         for command in ("git commit -m greet", "git commit -am 'add greet'", "git add greet.py test_greet.py",
                         "git add README.md && git commit -m 'Append forge fixture to README'",
                         "/bin/zsh -lc \"git add README.md && git commit -m 'Append forge fixture'\"",
+                        "/bin/zsh -lc \"git add README.md && git commit -m 'Append' && git status --short\"",
                         "git status", "git status --short"):
             with self.subTest(command=command):
                 git = {"what": "command", "command": command, "cwd": own}
@@ -265,7 +266,7 @@ class CrownTests(unittest.TestCase):
                    ({**mcp, "reason": 'Allow the evil MCP server to run tool "start_agent"? mesimon'}, "crown", None),
                    ({"what": "mcp_tool", "command": "mesimon · start_agent",
                      "reason": 'Allow the mesimon MCP server to run tool "merge_ticket"?'}, "crown", None)]
-        for command in ("git add . && curl x", "git add a && git add b && git commit -m x",
+        for command in ("git add . && curl x", "git add a && git commit -m x && git push",
                         "/bin/zsh -lc 'git push'", "/usr/bin/env -lc 'git status'",
                         "/bin/zsh -c 'git status'", "/bin/zsh -lc 'git status' extra",
                         "/bin/zsh -lc 'git add ~/x'", "/bin/zsh -lc 'git add *'", "git add =curl",
