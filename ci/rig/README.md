@@ -42,7 +42,8 @@ manifests also retain input, cached input, output and reasoning token readings.
 The runner checks native
 usage during observation and before further submissions. Usage can arrive late
 and native overhead can be unreported: this is a stop threshold, not a hard token
-or dollar cap. `--case-timeout` defaults to each case's own (180 seconds, 300 for the crown cases) and the automatic outer
+or dollar cap. `--case-timeout` defaults to each case's own (180 seconds, 300 for the crown cases; at most 900, which Sol's
+`forge` needs) and the automatic outer
 supervisor caps the entire command at 20 minutes. A failed or inconclusive
 case stops the suite; remaining cases are recorded as `not_run`, and `--failed`
 selects them too, preserving the previous model, effort and limits unless explicitly

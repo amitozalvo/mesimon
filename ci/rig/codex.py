@@ -108,9 +108,11 @@ def select_cases(args, previous):
             raise ValueError("no previous Codex verdicts for --failed")
         failed = [row["case"] for row in previous["cases"] if row["outcome"] != "passed"]
         selected = [case for case in failed if case in selected] if args.only else failed
-    if (args.case_timeout is not None and not 1 <= args.case_timeout <= 300) \
+    # 900 s at most (T-930): Sol's forge case outlasts the 300 s its Luna runs
+    # fit, and the outer supervisor's 20 minutes still covers one such case.
+    if (args.case_timeout is not None and not 1 <= args.case_timeout <= 900) \
             or args.max_turns < 1 or (args.max_tokens is not None and args.max_tokens < 1):
-        raise ValueError("positive budgets and --case-timeout 1..300 are required")
+        raise ValueError("positive budgets and --case-timeout 1..900 are required")
     if args.max_tokens is None:
         args.max_tokens = max(600000, sum(CASE_TOKENS.get(case, 0) for case in selected))
     needed = sum(TURNS[case] for case in selected)
