@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use super::crownwake::{CrownWake, Heard, ToldHand, TurnAsk};
+use super::crownwake::{CrownWake, Entering, Heard, ToldHand, TurnAsk};
 use super::*;
 
 pub const CROWN_SCHEMA: u32 = 1;
@@ -71,6 +71,12 @@ pub(super) struct Ledger {
     /// drops the field loses the reasons, and narrows nothing else.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     hands: BTreeMap<ulid::Ulid, ToldHand>,
+    /// `Daemon::crown_wake_entering` (T-918): the wake a Codex crown's box
+    /// holds unentered, so the next daemon owns those words and does not
+    /// read them as a person's draft. Same schema: a build that drops the
+    /// field reads the words as a draft and waits, which sends nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    entering: Option<Entering>,
 }
 
 /// Startup loader: the ledger, any notices, and whether writes are barred.
@@ -98,6 +104,7 @@ impl Daemon {
             watched: self.crown_watched.iter().copied().collect(),
             held: self.crown_held.iter().copied().collect(),
             hands: self.crown_hands.iter().map(|(w, h)| (*w, h.clone())).collect(),
+            entering: (*self.crown_wake_entering).clone(),
         }
     }
 
@@ -114,6 +121,7 @@ impl Daemon {
             || self.crown_watched.is_dirty()
             || self.crown_held.is_dirty()
             || self.crown_hands.is_dirty()
+            || self.crown_wake_entering.is_dirty()
     }
 
     fn mark_ledger_clean(&mut self) {
@@ -126,6 +134,7 @@ impl Daemon {
         self.crown_watched.mark_clean();
         self.crown_held.mark_clean();
         self.crown_hands.mark_clean();
+        self.crown_wake_entering.mark_clean();
     }
 
     /// The single write path for `crown.json`: on the tick and on the way
@@ -194,6 +203,7 @@ impl Daemon {
         };
         self.crown_hands =
             ledger.hands.into_iter().filter(|(w, hand)| showing(w) && !answered(w, hand)).collect();
+        self.crown_wake_entering = ledger.entering.filter(|e| e.crown == crown).into();
         self.crown_wakes = ledger
             .wakes
             .into_iter()
@@ -242,6 +252,14 @@ mod tests {
         ledger.watched.insert(ulid::Ulid::from_parts(1, 9));
         ledger.held.insert(ulid::Ulid::from_parts(1, 11));
         ledger.hands.insert(w, ToldHand { reason: "which key?".into(), told_ms: 7 });
+        ledger.entering = Some(Entering {
+            crown: ulid::Ulid::from_parts(1, 1),
+            session: uuid::Uuid::from_u128(5),
+            text: "T-7 finished its turn".into(),
+            wakes: Vec::new(),
+            telling: Default::default(),
+            person_came: true,
+        });
         let text = serde_json::to_string_pretty(&ledger).unwrap();
         let back = parse(&text).unwrap();
         assert_eq!(serde_json::to_string_pretty(&back).unwrap(), text);
@@ -253,6 +271,7 @@ mod tests {
         assert!(parse("{\"schema_version\": 1}").unwrap().watched.is_empty());
         assert!(parse("{\"schema_version\": 1}").unwrap().held.is_empty());
         assert!(parse("{\"schema_version\": 1}").unwrap().hands.is_empty());
+        assert!(parse("{\"schema_version\": 1}").unwrap().entering.is_none());
     }
 
     /// Not an assertion about wall clock (see `search.rs`): the number in

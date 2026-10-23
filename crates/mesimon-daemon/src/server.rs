@@ -205,6 +205,10 @@ const TAIL_POLL_TICKS: u64 = 8;
 /// `Daemon::person_hold`): in its pane, or gone with words left in it.
 const WAKE_WHEN_YOU_LEAVE: &str = "when you leave";
 const WAKE_AFTER_YOUR_DRAFT: &str = "after your draft";
+/// The crown's wake is in a Codex crown's box, its Enter next (T-918).
+const WAKE_SENDING: &str = "sending";
+/// How often a held crown wake asks who is in the crown's pane (T-918).
+const PERSON_READ_MS: u64 = 1000;
 /// How long a write to a subscriber's socket may block the writer thread
 /// before the subscriber is dropped (T-838). Long enough for a board
 /// answer to a client reading it under load; a client that reads nothing
@@ -644,6 +648,9 @@ pub struct Daemon {
     /// on who is in a pane and what its box holds takes both from one
     /// sample (`person_read_at`).
     attached_at: u64,
+    /// When the crown's pane was last asked of the sampler for a person
+    /// (T-918, `want_person`): once a second, whatever asks.
+    person_asked_at: u64,
     /// (bytes, sessions) currently sleepable on sleep-safe tickets — the
     /// header suggestion, recomputed on the RSS bucket.
     reclaim_cache: (u64, usize),
@@ -851,6 +858,10 @@ pub struct Daemon {
     /// is idle. Kept in `crown.json` (T-602), so a restart loses none.
     /// Uncrowning drops them.
     crown_wakes: Tracked<Vec<CrownWake>>,
+    /// The wake a Codex crown's box holds and has not entered (T-918,
+    /// `crownwake::Entering`): told at its Enter, owed again if the box
+    /// never sends it. Kept in `crown.json`.
+    crown_wake_entering: Tracked<Option<crownwake::Entering>>,
     /// Each worker's work as its last judged turn left it and as the last
     /// wake about it described it (T-469): what the next turn's end is
     /// compared with — a second idle at the same tip delivers nothing —
@@ -1382,6 +1393,7 @@ pub fn run(paths: Paths) -> Result<()> {
         terminals: terminals_in(&snap),
         attached: std::collections::HashSet::new(),
         attached_at: 0,
+        person_asked_at: 0,
         reclaim_cache: (0, 0),
         archive_cache: 0,
         open_box_counts: Default::default(),
@@ -1451,6 +1463,7 @@ pub fn run(paths: Paths) -> Result<()> {
         asks_out: HashMap::new(),
         asks_in: HashMap::new(),
         crown_wakes: Default::default(),
+        crown_wake_entering: Default::default(),
         crown_heard: Default::default(),
         crown_hands: Default::default(),
         crown_recheck: HashMap::new(),
@@ -1498,6 +1511,7 @@ pub fn run(paths: Paths) -> Result<()> {
     };
     // The crown's ledger (T-602): what it was told, and what it is owed.
     d.restore_crown(crown_ledger);
+    d.resume_crown_entering();
     // The train's open rebase asks (T-635): the hold through a restart.
     d.restore_train(train_file);
     // The board's pull requests as the last pass read them (T-752): on the
@@ -2012,11 +2026,12 @@ impl Ack {
 /// What a Codex crown's box says about the wake pasted into it (T-918,
 /// `Daemon::codex_wake_box`).
 enum WakeBox {
-    /// The wake's words as pasted, and nobody in the pane: Enter.
+    /// The wake's words, and nobody in the pane: Enter.
     Ours,
     /// No reading yet, a person in the pane, or the paste not drawn yet.
     Wait,
-    /// The person changed the box: it is theirs, and the wake goes unsent.
+    /// The box is not the wake: a person changed it, or the words are
+    /// gone. Nothing is pressed, and the wake is owed again.
     Theirs,
 }
 
@@ -3741,6 +3756,19 @@ impl Daemon {
             .map(|f| f.session_name.clone())
             .collect();
         self.attached_at = at;
+        // A person in a Codex crown's pane since its wake went in (T-918):
+        // a box that no longer reads as the wake is theirs from here.
+        if let Some(id) =
+            self.crown_wake_entering.as_ref().filter(|e| !e.person_came).map(|e| e.session)
+        {
+            let pasted = self.owed.get(&id).is_some_and(|o| o.sent_at.is_some());
+            let sid = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.sid16());
+            if pasted && sid.is_some_and(|sid| attached.contains(&sid)) {
+                if let Some(e) = self.crown_wake_entering.as_mut() {
+                    e.person_came = true;
+                }
+            }
+        }
         let repaint = foregrounds != self.foregrounds
             || terminals != self.terminals
             || attached != self.attached;
@@ -4641,10 +4669,12 @@ impl Daemon {
                 // The crown's wake pasted into a Codex crown (T-918): its
                 // Enter sends the whole box, so it goes only on a sample from
                 // after the paste with nobody in the pane and the box holding
-                // the wake's words as pasted. A person who came in meanwhile
-                // is waited out; a box they changed is theirs, and the wake
-                // is kept unsent rather than sent inside their words.
-                if submit && self.crown_wake_owed(id) {
+                // the wake's words. A person who came in meanwhile is waited
+                // out; a box they changed is theirs, and nothing is pressed
+                // or typed into it: the wake is owed again, told nothing, and
+                // waits on their draft as any wake would.
+                let wake = submit && self.crown_wake_owed(id);
+                if wake {
                     match self.codex_wake_box(id, &sid) {
                         WakeBox::Ours => {}
                         WakeBox::Wait => {
@@ -4654,18 +4684,17 @@ impl Daemon {
                         WakeBox::Theirs => {
                             self.codex_input_due.remove(&id);
                             self.control_cancel(id);
-                            let words = self.drop_owed(id).and_then(|o| o.sent);
-                            self.mark_unsent(id, words);
-                            if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
-                                rec.pending_submit = false;
-                            }
-                            self.feed.board("automation", "crown_wake_failed", Some(ticket));
+                            self.drop_owed(id);
+                            self.wake_not_entered();
                             dirty = true;
                             continue;
                         }
                     }
                 }
                 if submit && self.backend.send_enter(&sid).is_ok() {
+                    if wake {
+                        self.wake_entered(id);
+                    }
                     self.control_submitted(id);
                     if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                         rec.codex_submit_sent = true;
@@ -5650,6 +5679,11 @@ impl Daemon {
         // takes a prompt, whoever typed it.
         let mut changed = !command && rec.unsent.take().is_some();
         if let Some(owed) = self.drop_owed(id) {
+            // A Codex crown's turn began on the wake its box held (T-918):
+            // a person's Enter sent it, and the crown has it.
+            if owed.ack.word == Ack::CROWN_WAKE.word {
+                self.wake_entered(id);
+            }
             self.feed.board(owed.ack.by, owed.ack.word, Some(ticket));
             // A phone's words that waited for this pane (a relaunch onto
             // its tier pick, T-643, or a composer still coming up) went in.
@@ -8102,15 +8136,19 @@ impl Daemon {
     /// What a Codex crown's box says about the wake pasted into it, at its
     /// Enter (T-918), off the sampler alone. `Wait` until a sample from
     /// after the paste read the clients and the box together, while a
-    /// person is in the pane, while the box is not the composer, and while
-    /// it is empty (Codex has yet to draw the paste) for at most the
-    /// composer's wait. `Ours` is the box holding the wake as pasted;
-    /// anything else, or the words gone, is `Theirs`.
+    /// person is in the pane, while the box is not the composer, while it
+    /// is empty (Codex has yet to draw the paste) for at most the
+    /// composer's wait, and when the entry says nothing of a paste. `Ours`
+    /// is the box holding the wake as pasted, or holding anything while
+    /// no sample since the paste found a person: nobody else wrote it, and
+    /// a box that reads otherwise is Codex's drawing of the words (a long
+    /// box's top scrolled away). An edit after a person came, or the words
+    /// gone, is `Theirs`.
     fn codex_wake_box(&self, id: uuid::Uuid, sid: &str) -> WakeBox {
         let Some((pasted_at, ours)) =
             self.owed.get(&id).and_then(|o| Some((o.sent_at?, o.sent.as_ref()?.text.clone())))
         else {
-            return WakeBox::Ours;
+            return WakeBox::Wait;
         };
         let Some(at) = self.person_read_at(sid).filter(|at| *at >= pasted_at) else {
             return WakeBox::Wait;
@@ -8126,14 +8164,26 @@ impl Daemon {
         if composer_shows(screen, &ours) {
             return WakeBox::Ours;
         }
-        if !composer_holds_text(screen) && at.saturating_sub(pasted_at) < composer_wait_ms() {
+        if composer_holds_text(screen) {
+            let came =
+                self.crown_wake_entering.as_ref().is_none_or(|e| e.session != id || e.person_came);
+            return if came { WakeBox::Theirs } else { WakeBox::Ours };
+        }
+        if at.saturating_sub(pasted_at) < composer_wait_ms() {
             return WakeBox::Wait;
         }
         WakeBox::Theirs
     }
 
-    /// The next sample reads who is in this pane and what its box holds.
+    /// The next sample reads who is in this pane and what its box holds,
+    /// once a second at most: every caller asks on each landing it sees
+    /// (the drain's, the Codex box's), and the sampler lands four a second.
     fn want_person(&mut self, sid: &str) {
+        let now = now_ms();
+        if now.saturating_sub(self.person_asked_at) < PERSON_READ_MS {
+            return;
+        }
+        self.person_asked_at = now;
         self.pane_due.facts = true;
         self.pane_due.screen(sid);
     }
@@ -8152,16 +8202,17 @@ impl Daemon {
     /// its first tick. A pane's paste is owed an ack, so the crown is held
     /// in `owed` until its `UserPromptSubmit`, exactly as a queued ask is.
     fn drain_crown_wakes(&mut self, landed: Option<u64>) -> bool {
+        let lost = self.lose_entering();
         if self.crown_wakes.is_empty() {
-            return false;
+            return lost;
         }
         let Some(crown) = self.board.crown_holder().map(|t| t.id) else {
             self.drop_crown_wakes();
             return true;
         };
-        // A wake held for a person (T-918) has the crown's pane read again
-        // for every pass of this stage (1 s): the person is heard leaving
-        // by the next one, and a draft's box is sampled at all.
+        // A wake held for a person (T-918) has the crown's pane read again,
+        // once a second (`want_person`): the person is heard leaving by the
+        // next read, and a draft's box is sampled at all.
         if let QueuedSeat::Pane(id) = self.seat_of(crown) {
             if self.person_hold(id).is_some() {
                 if let Some(sid) = self.board.sessions.iter().find(|s| s.id == id) {
@@ -8200,21 +8251,117 @@ impl Daemon {
             return true;
         }
         let text = self.crown_wake_text();
-        let news = self.crown_wake_news();
-        match self.deliver(crown, seat, text, Ack::CROWN_WAKE, false, false) {
+        let telling = self.telling();
+        let pane = matches!(seat, QueuedSeat::Pane(_));
+        match self.deliver(crown, seat, text.clone(), Ack::CROWN_WAKE, false, false) {
             Response::Err { message } => {
                 eprintln!("mesimon: crown wake failed: {message}");
                 self.crown_wakes.clear();
                 self.feed.board("automation", "crown_wake_failed", Some(crown));
             }
+            // A Codex box takes the words and its Enter comes later, held
+            // for a person (`drive_codex_inputs`): the crown has heard
+            // nothing until it goes.
+            _ if pane
+                && self.session_kind(id) == SessionKind::Codex
+                && self.crown_wake_owed(id) =>
+            {
+                let wakes = std::mem::take(&mut *self.crown_wakes);
+                let entering = crownwake::Entering {
+                    crown,
+                    session: id,
+                    text,
+                    wakes,
+                    telling,
+                    person_came: false,
+                };
+                *self.crown_wake_entering = Some(entering);
+            }
             _ => {
-                self.told_columns();
-                self.lower_told_hands();
                 self.crown_wakes.clear();
-                self.feed.board("automation", "crown_wake_sent", Some(crown));
-                self.crown_said(crown, &news);
+                self.told(crown, telling);
             }
         }
+        true
+    }
+
+    /// The wake a Codex crown's box holds was entered: by the board's
+    /// Enter, or a person's (its turn began on it). The crown has it now.
+    fn wake_entered(&mut self, id: uuid::Uuid) {
+        if self.crown_wake_entering.as_ref().is_some_and(|e| e.session == id) {
+            if let Some(e) = self.crown_wake_entering.take() {
+                self.told(e.crown, e.telling);
+            }
+        }
+    }
+
+    /// The wake a Codex crown's box holds will not be entered: the box is
+    /// not it any more, or the entry it rode is gone (the seat died, the
+    /// words were dropped). It is owed again, told nothing.
+    fn wake_not_entered(&mut self) {
+        if let Some(e) = self.crown_wake_entering.take() {
+            self.owe_again(e.wakes);
+        }
+    }
+
+    /// The wake the last daemon left in a Codex crown's box unentered
+    /// (T-918, `crown.json`): the entry that holds its Enter is rebuilt, so
+    /// the box's words read as the board's own and never as a person's
+    /// draft, and the Enter goes on the terms it had: nobody in the pane,
+    /// the box still the wake. Words handed over before their paste are
+    /// parked again as the wake they are. An Enter the last daemon pressed
+    /// was the wake entered; a seat that cannot take it has it owed again,
+    /// `after a restart`.
+    fn resume_crown_entering(&mut self) {
+        let Some((id, crown, text)) =
+            self.crown_wake_entering.as_ref().map(|e| (e.session, e.crown, e.text.clone()))
+        else {
+            return;
+        };
+        let seat = self
+            .board
+            .sessions
+            .iter()
+            .find(|s| s.id == id && s.kind == SessionKind::Codex && s.state.has_pane());
+        if seat.is_some_and(|s| s.codex_submit_sent) {
+            self.wake_entered(id);
+            return;
+        }
+        if seat.is_none() || self.owed.contains_key(&id) {
+            if let Some(e) = self.crown_wake_entering.as_mut() {
+                e.wakes.iter_mut().for_each(|w| w.late = true);
+            }
+            self.wake_not_entered();
+            return;
+        }
+        let handed = seat.and_then(|s| s.unsent.as_ref()).is_some_and(|u| u.text == text);
+        let now = now_ms();
+        let words = Parked { text, brief: false, title: false };
+        let mut owed = Owed::launch(crown, words.clone(), Ack::CROWN_WAKE);
+        if !handed {
+            owed.parked = None;
+            owed.sent = Some(words);
+            owed.sent_at = Some(now);
+            self.codex_input_due.insert(id, now + 500);
+        }
+        self.owed.insert(id, owed);
+        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+            if handed {
+                rec.unsent = None;
+            }
+            rec.pending_submit = true;
+            rec.observation_hold = true;
+        }
+        self.journal.line(&format!("the crown's wake in session {id}'s box is owed its Enter"));
+    }
+
+    /// The entering wake lost the owed entry that would enter it.
+    fn lose_entering(&mut self) -> bool {
+        let Some(id) = self.crown_wake_entering.as_ref().map(|e| e.session) else { return false };
+        if self.crown_wake_owed(id) {
+            return false;
+        }
+        self.wake_not_entered();
         true
     }
 
@@ -9917,22 +10064,32 @@ impl Daemon {
         // The wake the crown is owed (T-414), after the queue's rows so a
         // person's own ask on the crown ticket is the card's row. The text
         // is the sentence as it would go out now, for the ticket page.
-        if let Some(crown) =
-            self.board.crown_holder().map(|t| t.id).filter(|_| !self.crown_wakes.is_empty())
+        // A Codex box holding the wake for its Enter (T-918) is the row
+        // too, its sentence the one in the box.
+        let entering = self.crown_wake_entering.as_ref().map(|e| e.text.clone());
+        if let Some(crown) = self
+            .board
+            .crown_holder()
+            .map(|t| t.id)
+            .filter(|_| !self.crown_wakes.is_empty() || entering.is_some())
         {
             let waits_on =
                 if self.crown_wake_blocked(crown) { self.keys_of(&[crown]) } else { Vec::new() };
+            let held = self
+                .crown_wake_person(crown)
+                .or(entering.is_some().then_some(WAKE_SENDING))
+                .map(String::from);
             out.push(Pending {
                 ticket: crown,
                 action: PendingAction::CrownWake,
                 waits_on,
                 asking: Vec::new(),
-                text: Some(self.crown_wake_text()),
+                text: Some(entering.unwrap_or_else(|| self.crown_wake_text())),
                 in_flight: false,
                 by: None,
                 sends: false,
                 accept_plan: false,
-                held: self.crown_wake_person(crown).map(String::from),
+                held,
                 plan: false,
                 deliver: Deliver::Idle,
             });
@@ -14367,7 +14524,7 @@ impl Daemon {
     /// the card (T-861): a person stepping into its pane or out of it
     /// (`FocusStart`, `FocusEnd`), a park of theirs or the crown's
     /// (`SleepSession`, `sleep_agent`, the exit park), and the crown being
-    /// told the hand went up (`lower_told_hands`). An autosleep, a bulk
+    /// told the hand went up (`told`). An autosleep, a bulk
     /// reclaim, a restart's park and a tier relaunch are nobody dealing
     /// with it and keep the mark.
     ///

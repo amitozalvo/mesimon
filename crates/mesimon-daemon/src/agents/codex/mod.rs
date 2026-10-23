@@ -91,12 +91,15 @@ pub fn composer_text(screen: &mesimon_backend_tmux::InputScreen) -> Option<Strin
 }
 
 /// Does the box hold exactly `ours` (T-918): the words as pasted, or the
-/// placeholder Codex draws for a long paste in their place. A word more or
-/// less is a person's edit.
+/// placeholder Codex draws for a long paste in their place. Compared with
+/// every blank taken out, since Codex wraps a long word mid-token and at a
+/// hyphen and the rows are joined back at a space: a blank is how the box
+/// was drawn, a word more or less is a person's edit.
 pub fn composer_shows(screen: &mesimon_backend_tmux::InputScreen, ours: &str) -> bool {
     let Some(text) = composer_text(screen) else { return false };
-    text == ours.split_whitespace().collect::<Vec<_>>().join(" ")
-        || text == format!("[Pasted Content {} chars]", ours.chars().count())
+    let bare = |s: &str| s.split_whitespace().collect::<String>();
+    let text = bare(&text);
+    text == bare(ours) || text == bare(&format!("[Pasted Content {} chars]", ours.chars().count()))
 }
 
 /// A Codex dialog stands in the box's place (T-907): the pane's last `›`
@@ -838,6 +841,16 @@ mod input_tests {
             Some((39, 1)),
         );
         assert!(composer_shows(&wrapped, wake));
+        // Codex breaks a token that does not fit, mid-word or at a hyphen.
+        let mid_token = screen(
+            "› T-2 \"worker\" finished its turn ∙ get_tic\n  ket key=T-2 for state and notes\n\n  \
+             ? for shortcuts",
+            Some((32, 1)),
+        );
+        assert!(composer_shows(&mid_token, wake));
+        let hyphen = "a well-\n  known wake";
+        let at_hyphen = screen(&format!("› {hyphen}"), Some((12, 1)));
+        assert!(composer_shows(&at_hyphen, "a well-known wake"));
         let long = "x ".repeat(700);
         let placeholder = screen("› [Pasted Content 1400 chars]", Some((29, 0)));
         assert!(composer_shows(&placeholder, &long));

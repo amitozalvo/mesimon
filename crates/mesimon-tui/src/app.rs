@@ -6590,7 +6590,8 @@ impl App {
             });
         }
         // The crown's wake held for a person at the crown's box (T-918):
-        // the daemon's word for why — `when you leave`, `after your draft` —
+        // the daemon's word for why — `when you leave`, `after your draft`,
+        // `sending` (a Codex box holding it for its Enter) —
         // outranks its turn, which a person's leaving does not end.
         if let (A::CrownWake, Some(why)) = (p.action, p.held.as_deref()) {
             return Some(format!("crown wakes ∙ {why}"));
@@ -23387,6 +23388,9 @@ mod tests {
         assert_eq!(row(&mut app, vec![&own], false, CrownWake), "crown wakes ∙ after its turn");
         app.pending[0].held = Some("when you leave".into());
         assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("crown wakes ∙ when you leave"));
+        // A Codex box holding the wake for its Enter.
+        app.pending[0].held = Some("sending".into());
+        assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("crown wakes ∙ sending"));
         assert!(!app.ticket_held(ulid::Ulid(1)), "no ask to send or take back");
         // A merge the checkout refused (T-289): the reason travels on `text`
         // and outranks what the row waits on — quiet is not what it needs.

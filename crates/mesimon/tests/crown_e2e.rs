@@ -1508,10 +1508,6 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     assert_eq!(lines_with(&delivered1), before, "nothing lands on an uncrowned board");
 }
 
-/// One ticket landing is three wakes, not four (T-469, seen on T-461; T-527):
-/// the delivery, the rebase the crown itself asked for coming back as its
-/// answer, and the merge — each with what changed. The merged notice's turn
-/// is the person's; the crown is not woken for it.
 /// A recording stub whose composer keeps the cursor in its box, as Claude
 /// Code's does: what a person types there is a draft the screen shows
 /// (`composer::read` reads it `Holding`), and each line read is recorded,
@@ -1680,10 +1676,14 @@ fn the_crown_wake_waits_for_a_person_at_the_crown_s_box() {
 /// paste at an idle). The wake is pasted only on a sample that read the
 /// crown's clients and box together, and its Enter, a beat later, only on a
 /// sample from after the paste showing the box as pasted and nobody in the
-/// pane. In order: an ordinary delivery; a person in the pane, then their
-/// draft left behind; a person who comes in between the paste and its
-/// Enter; a parked crown woken with the words; and a person who changes
-/// the pasted words, whose box is left as they made it, the wake unsent.
+/// pane, or the box drawn otherwise with nobody seen since the paste. In
+/// order: an ordinary delivery, its box's top scrolled away; a person in
+/// the pane, then their draft left behind; a person who comes in between
+/// the paste and its Enter; a parked crown woken with the words; a person
+/// who changes the pasted words, whose box is left as they made it, the
+/// wake told nothing and owed again; and a restart while the Enter waits
+/// on a person, after which the box is still the board's, never a draft.
+/// Codex wraps the box mid-token (`boxed`).
 #[test]
 fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\n\
@@ -1734,20 +1734,20 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
         mesimon_daemon::agents::codex::write_json(&control, &value).unwrap();
     };
     // The box as Codex draws it: the `›` row, wrapped rows indented two
-    // cells, the cursor after the last word; empty, its placeholder.
+    // cells where the row is full, inside a word as it must, the cursor
+    // after the last word; empty, its placeholder.
+    // The width is one at which every break of a wrapped box falls inside a
+    // word, so a box read back joined at a space is never the wake.
+    let rows_of = |text: &str| -> Vec<String> {
+        let flat: Vec<char> =
+            text.split_whitespace().collect::<Vec<_>>().join(" ").chars().collect();
+        let mid_word =
+            |w: usize| (w..flat.len()).step_by(w).all(|i| flat[i - 1] != ' ' && flat[i] != ' ');
+        let width = (40..=60).rev().find(|w| mid_word(*w)).expect("a width that breaks a word");
+        flat.chunks(width).map(|c| c.iter().collect()).collect()
+    };
     let boxed = |text: &str| -> (String, [usize; 2]) {
-        let mut rows: Vec<String> = vec![String::new()];
-        for word in text.split_whitespace() {
-            let row = rows.last_mut().unwrap();
-            if !row.is_empty() && row.chars().count() + 1 + word.chars().count() > 60 {
-                rows.push(word.to_string());
-            } else {
-                if !row.is_empty() {
-                    row.push(' ');
-                }
-                row.push_str(word);
-            }
-        }
+        let rows = rows_of(text);
         let x = 2 + rows.last().unwrap().chars().count();
         let y = rows.len();
         let body = rows
@@ -1859,7 +1859,14 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     let before = enters();
     std::thread::sleep(std::time::Duration::from_millis(1500));
     assert_eq!(enters(), before, "no Enter before the box shows the words");
-    draw(sa, &wake1, idle.clone());
+    // A long box's `›` row scrolled off the screen, the prompt above it in
+    // the history read in its place: nobody came, so it is ours all the same.
+    let rows = rows_of(&wake1);
+    assert!(rows.len() > 1, "the wake wraps");
+    let tail = rows[1..].iter().map(|r| format!("  {r}")).collect::<Vec<_>>().join("\r\n");
+    let x = 2 + rows.last().unwrap().chars().count();
+    let screen = format!("Synthetic provider fixture\r\n› go\r\n{tail}\r\nanything the user wants");
+    control(sa, json!({"state": idle.clone(), "screen": screen, "cursor": [x, rows.len()]}));
     wait_until(std::time::Duration::from_secs(10), "the wake's Enter", || enters() == before + 1);
     crown_turn_ends(&mut c);
 
@@ -1936,30 +1943,107 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     wait_until(std::time::Duration::from_secs(10), "the woken crown's Enter", || enters() > before);
     crown_turn_ends(&mut c);
 
-    // ---- a person changes the pasted words: their box, the wake unsent ----
+    // ---- a person changes the pasted words: their box, the wake owed again
+    let feed = h.paths.state_dir.join("activity.jsonl");
+    let told = || {
+        std::fs::read_to_string(&feed).unwrap_or_default().matches("\"crown_wake_sent\"").count()
+    };
+    let attach = || {
+        let client = tmux(&tmux_sock)
+            .args(["-C", "attach", "-t", &sa.simple().to_string()[..16]])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("a control-mode tmux client");
+        wait_until(std::time::Duration::from_secs(10), "the client on the crown's session", || {
+            tmux(&tmux_sock)
+                .args([
+                    "list-clients",
+                    "-t",
+                    &sa.simple().to_string()[..16],
+                    "-F",
+                    "#{client_name}",
+                ])
+                .output()
+                .is_ok_and(|o| !o.stdout.is_empty())
+        });
+        client
+    };
     start(&mut c, ws);
     stop(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the fourth wake pasted", || {
         wakes(&pastes()) == 4
     });
     let wake4 = pastes().into_iter().filter(|t| t.contains(&finished)).nth(3).unwrap();
-    let (before, len) = (enters(), bytes().len());
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let (before, len, said) = (enters(), bytes().len(), told());
+    let mut client = attach();
     draw(sa, &format!("{wake4} and my own words"), idle.clone());
-    wait_until(std::time::Duration::from_secs(10), "the wake kept unsent", || {
-        c.board()
-            .sessions
-            .iter()
-            .any(|s| s.id == sa && s.unsent.as_ref().is_some_and(|u| u.text == wake4))
-    });
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    assert_eq!(enters(), before, "no Enter while they are in");
+    client.kill().unwrap();
+    let _ = client.wait();
+    wait_until(
+        std::time::Duration::from_secs(10),
+        "the wake owed again, after their draft",
+        || held(&mut c, a).as_deref() == Some("after your draft"),
+    );
     std::thread::sleep(std::time::Duration::from_millis(1500));
     assert_eq!(enters(), before, "their words are never sent by the wake");
     assert_eq!(bytes().len(), len, "nothing typed into the box they changed");
-    let feed = h.paths.state_dir.join("activity.jsonl");
-    wait_until(std::time::Duration::from_secs(5), "crown_wake_failed in the feed", || {
-        std::fs::read_to_string(&feed).is_ok_and(|f| f.contains("\"crown_wake_failed\""))
+    assert_eq!(told(), said, "a wake never entered is not told");
+    // They send their words (not this test's turn); the empty box takes the
+    // wake again, and its Enter tells it.
+    draw(sa, "", idle.clone());
+    wait_until(std::time::Duration::from_secs(10), "the wake pasted again", || {
+        wakes(&pastes()) == 5
     });
+    let wake5 = pastes().into_iter().filter(|t| t.contains(&finished)).nth(4).unwrap();
+    draw(sa, &wake5, idle.clone());
+    wait_until(std::time::Duration::from_secs(10), "its Enter", || enters() == before + 1);
+    wait_until(std::time::Duration::from_secs(10), "told at its Enter", || told() == said + 1);
+    crown_turn_ends(&mut c);
+
+    // ---- a restart while the Enter waits on a person ----------------------
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the sixth wake pasted", || {
+        wakes(&pastes()) == 6
+    });
+    let wake6 = pastes().into_iter().filter(|t| t.contains(&finished)).nth(5).unwrap();
+    let mut client = attach();
+    draw(sa, &wake6, idle.clone());
+    wait_until(std::time::Duration::from_secs(10), "the Enter held for the person", || {
+        held(&mut c, a).as_deref() == Some("when you leave")
+    });
+    let (before, said) = (enters(), told());
+    h.restart();
+    let mut c = h.client("crown_codex_box_again");
+    wait_until(std::time::Duration::from_secs(15), "the next daemon holds it too", || {
+        held(&mut c, a).as_deref() == Some("when you leave")
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(enters(), before, "no Enter while they are in, across the restart");
+    client.kill().unwrap();
+    let _ = client.wait();
+    wait_until(std::time::Duration::from_secs(15), "the Enter once they left", || {
+        assert_ne!(
+            held(&mut c, a).as_deref(),
+            Some("after your draft"),
+            "the board's own words read as a person's draft"
+        );
+        enters() == before + 1
+    });
+    assert_eq!(wakes(&pastes()), 6, "the box's words were not pasted again");
+    wait_until(std::time::Duration::from_secs(10), "told at its Enter", || told() == said + 1);
+    crown_turn_ends(&mut c);
 }
 
+/// One ticket landing is three wakes, not four (T-469, seen on T-461; T-527):
+/// the delivery, the rebase the crown itself asked for coming back as its
+/// answer, and the merge — each with what changed. The merged notice's turn
+/// is the person's; the crown is not woken for it.
 #[test]
 fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     let Some(h) = Harness::boot_with_env(

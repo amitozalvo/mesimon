@@ -31367,8 +31367,9 @@ assessment: paste vs monitor" argued for keeping the paste road and holding it, 
   says why a row waits: `agent asked`), and `pending_row` says `crown wakes ∙ when you leave` /
   `crown wakes ∙ after your draft`. That outranks `after its turn`. `is_held` is about queued
   asks only, so `^y`/`^u` still leave the row alone. There is no new wire field.
-- **Cadence.** `drain_crown_wakes` runs every 4 ticks (1 s). While a wake waits, each pass asks
-  the sampler for the crown's facts and screen, and the sample's landing delivers. The wake
+- **Cadence.** `drain_crown_wakes` runs every 4 ticks (1 s). While a wake waits, the crown's
+  facts and screen are asked of the sampler once a second (`want_person`, `PERSON_READ_MS`),
+  and the sample's landing delivers. The wake
   therefore goes up to about 1 s after the person leaves (rig A1 measured 1.9 s before this
   correction, and 12 ms after it, on 87026e2d). Without this the box
   would not be sampled at all, and the facts only on the 2 s poll bucket. A crown that is
@@ -31393,9 +31394,9 @@ assessment: paste vs monitor" argued for keeping the paste road and holding it, 
       wrapped, or Codex's `[Pasted Content N chars]` placeholder for a long paste). This is
       the only case that presses Enter.
     - `Theirs` for anything else (a word added or removed, or the words gone with no turn).
-      Nothing is pressed or typed, the box is left as the person made it, the wake is kept on
-      the record as unsent words (`mark_unsent`; the card's Shift+Enter resends it), and the
-      feed says `crown_wake_failed`.
+      Nothing is pressed or typed and the box is left as the person made it. Since the review
+      of f5f9c8d7 the wake is owed again, told nothing (below); the first correction kept it
+      as unsent words with `crown_wake_failed`, and the news was lost.
   - `owed.sent` keeps the pasted words for that comparison, for the crown's wake only.
   - `person_hold` does not read mesimon's own pasted wake as a draft, so the wait never blocks
     on its own paste.
@@ -31432,8 +31433,8 @@ assessment: paste vs monitor" argued for keeping the paste road and holding it, 
   - a person who comes in between the paste and its Enter, where no Enter goes until they
     leave;
   - a parked crown woken with the words;
-  - a box the person changed after the paste: no Enter and no keys, the wake unsent with its
-    words, and `crown_wake_failed` in the feed.
+  - a box the person changed after the paste: no Enter and no keys (what follows it changed
+    in the review of f5f9c8d7, below).
 
   Three mutations each fail it: the Enter guard always `Ours`, the attached check removed,
   and `Theirs` read as `Ours`.
@@ -31450,3 +31451,53 @@ assessment: paste vs monitor" argued for keeping the paste road and holding it, 
   12 s), with the check `held_for_person`. It also proves that a real Claude Code composer
   reads as empty after the person leaves. A false `after your draft` would hold the wake and
   fail the step.
+
+**Corrections from the review of f5f9c8d7 (T-925's crown).**
+- **A Codex wake is told at its Enter, not its paste.** A Claude road enters the words as it
+  delivers them (`paste_text`, a mod's `submit`), so `told` runs there as before. A Codex box
+  takes them and its Enter waits on a person, so the drain moves the wakes and what they tell
+  (`Telling`: each card's column as sent, the hands they are about, the card's line) into
+  `Daemon::crown_wake_entering` (`crownwake::Entering`). The Enter, or a turn the runtime
+  reports begun on it (a person's own Enter), applies `told` and says `crown_wake_sent`.
+  `Theirs`, or the owed entry gone (`lose_entering`), puts the wakes back ahead of any owed
+  since (`owe_again`, folding by worker), so the crown hears them later. The row shows
+  meanwhile: `crown wakes ∙ sending`, or the person's word.
+- **Whitespace-free comparison.** Codex wraps a word that does not fit mid-token and at a
+  hyphen, so `composer_shows` compares with every blank taken out. And `Theirs` needs a person:
+  `Entering::person_came` is set by a sample since the paste that found a client attached.
+  With nobody seen, a box that holds text but does not read as the wake is Codex's drawing of
+  it (a long box whose `›` row scrolled away, an earlier prompt's `›` read in its place), and
+  the Enter goes. An empty box after the composer's wait is the words gone, and owed again.
+  Anchoring on the paste's own `›` row was not done: the whitespace-free compare and the
+  person rule cover the case without it.
+- **Once a second.** `drain_crown_wakes` runs on every landed sample, and each landing asked
+  for the next, about 8 forks a second while a draft sat in the box. `want_person` now asks at
+  most once per `PERSON_READ_MS` (1 s), whoever calls.
+- **A restart during the Enter wait.** `Entering` is kept in `crown.json` (`entering`, same
+  schema: an older build drops it and reads the words as a draft, which sends nothing).
+  `resume_crown_entering` rebuilds the owed entry at start: `sent` and `codex_input_due` for
+  words in the box, or parked again as the wake for words handed over before their paste
+  (taking the seat's `unsent`, so T-849's re-park does not send them as a plain prompt). The
+  box is then the board's own, never `after your draft`, and its Enter goes on the same terms.
+  A latched `codex_submit_sent` was the wake entered; a seat that cannot take it has the wakes
+  owed again, `after a restart`.
+- **Fail closed.** `codex_wake_box` with no `sent_at` or `sent` on the entry is `Wait`.
+- The misplaced doc comment on `BOX_STUB` went back to its test.
+
+**Accepted limits, from that review.**
+- The Codex paste rests on a sample up to a tick old (plus the sample's duration, and up to
+  1 s for the clients since `PERSON_READ_MS`): a person who starts typing in that gap makes a
+  mixed box. It is never sent if they stay in the pane past one sample; a person who
+  attaches, types and detaches between two samples is not seen, and that box is entered.
+- A woken crown's launch words (Claude or Codex) have no person check: outside the brief.
+
+**Tests added.** The Codex e2e's box wraps mid-token at a width chosen so every break falls
+inside a word, and draws the first delivery with its `›` row scrolled away. The edit case now
+attaches, edits, detaches, and checks the row says `after your draft`, nothing pressed, no
+`crown_wake_sent`, then the wake pasted again into the cleared box and told at its Enter. A
+seventh case restarts the daemon while the Enter waits on an attached person: the next daemon
+holds it (`when you leave`), never reads it as a draft, pastes nothing again, and enters it
+once they leave. Four mutations each fail the e2e: no `resume_crown_entering`; `person_came`
+ignored; the compare joined at spaces; told at the paste. `crownledger`'s round trip carries
+`entering`; `app.rs` covers `sending`. `want_person`'s once a second has no test of its own:
+no unit test builds a `Daemon`.

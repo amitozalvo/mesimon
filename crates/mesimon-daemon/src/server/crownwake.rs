@@ -363,6 +363,40 @@ pub(super) struct Owed {
     late: bool,
 }
 
+/// What a sentence to the crown tells it (`Daemon::telling`), kept until
+/// the crown has it (`Daemon::told`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub(super) struct Telling {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    columns: Vec<(ulid::Ulid, String)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    raised: Vec<ulid::Ulid>,
+    #[serde(default)]
+    news: String,
+}
+
+/// The crown's wake pasted into a Codex crown's box (T-918) and not yet
+/// entered: the Enter is held while a person is in the pane, and a box they
+/// changed is theirs. Counted told at the Enter (or a turn begun on it) and
+/// owed again if the box never sends it. Kept in `crown.json`, so the next
+/// daemon knows the words in the box for its own (`resume_crown_entering`)
+/// and never waits on them as a person's draft.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct Entering {
+    pub(super) crown: ulid::Ulid,
+    /// The crown's Codex seat.
+    pub(super) session: uuid::Uuid,
+    /// The sentence pasted.
+    pub(super) text: String,
+    pub(super) wakes: Vec<CrownWake>,
+    pub(super) telling: Telling,
+    /// A sample since the paste found a person in the pane: a box that no
+    /// longer reads as the wake is their edit. With nobody seen, nobody
+    /// but mesimon wrote it.
+    #[serde(default)]
+    pub(super) person_came: bool,
+}
+
 /// A worker idle with background tasks (T-599): how many, and for how long
 /// in minutes, when the board noticed. Never the tasks' words.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1938,16 +1972,74 @@ impl Daemon {
         woke
     }
 
-    /// The wakes just sent told the crown each card's column as it stands
-    /// (`CrownWake::sent_at`), so that is what the next wake's delta runs
-    /// from (T-785): a column said is not said again.
-    pub(super) fn told_columns(&mut self) {
-        for w in self.crown_wakes.iter().filter(|w| w.to.is_some()) {
-            let Some(column) = self.board.ticket(w.worker).map(|t| t.column.clone()) else {
-                continue;
-            };
-            if let Some(told) = self.crown_heard.get_mut(&w.worker).and_then(|h| h.told.as_mut()) {
+    /// What the wakes about to be sent tell the crown (T-918): each card's
+    /// column as it stands (`CrownWake::sent_at`), which the next wake's
+    /// delta runs from (T-785, a column said is not said again), the hands
+    /// they are about, and the card's line. Taken with the sentence and
+    /// applied by `told` once the crown has it: at the paste on Claude's
+    /// roads, at the Enter on a Codex box (`Daemon::crown_wake_entering`).
+    pub(super) fn telling(&self) -> Telling {
+        let columns = self
+            .crown_wakes
+            .iter()
+            .filter(|w| w.to.is_some())
+            .filter_map(|w| Some((w.worker, self.board.ticket(w.worker)?.column.clone())))
+            .collect();
+        let raised = self
+            .crown_wakes
+            .iter()
+            .filter(|w| w.cause == WakeCause::Raised)
+            .map(|w| w.worker)
+            .collect();
+        Telling { columns, raised, news: self.crown_wake_news() }
+    }
+
+    /// The crown has the sentence `telling` was taken with: its columns
+    /// are the baseline, the hands it was about come down (T-861) — the
+    /// crown holds the worker's question from here: it answers the worker,
+    /// which lowers the hand anyway, or raises its own, and a `!` that
+    /// stood on past that was two cards asking a person one thing. Only a
+    /// wake whose cause IS the hand: a question or a plan folded over it
+    /// (`WakeCause`'s order) comes down with its dialog (T-611), and a hand
+    /// folded over a delivery is still the hand.
+    ///
+    /// The reason stays with the crown that was told (T-922): the sentence
+    /// sent it to `get_ticket` for it, and the hand it would have read
+    /// there is the one coming down here. A hand somebody lowered before
+    /// the sentence went in keeps nothing: that person dealt with it.
+    pub(super) fn told(&mut self, crown: ulid::Ulid, telling: Telling) {
+        let Telling { columns, raised, news } = telling;
+        for (worker, column) in columns {
+            if let Some(told) = self.crown_heard.get_mut(&worker).and_then(|h| h.told.as_mut()) {
                 told.column = column;
+            }
+        }
+        let now = now_ms();
+        for worker in raised {
+            let reason = self.board.ticket(worker).and_then(|t| t.raised.as_ref());
+            if let Some(reason) = reason.map(|r| r.reason.clone()) {
+                self.crown_hands.insert(worker, ToldHand { reason, told_ms: now });
+            }
+            self.lower_hand_on(worker);
+        }
+        self.feed.board("automation", "crown_wake_sent", Some(crown));
+        self.crown_said(crown, &news);
+    }
+
+    /// The wakes a Codex box took and never entered (T-918): owed again,
+    /// ahead of any owed since, which fold into them as a second event on
+    /// the same worker does. Nothing was told, so nothing is undone.
+    pub(super) fn owe_again(&mut self, wakes: Vec<CrownWake>) {
+        let since = std::mem::replace(&mut *self.crown_wakes, wakes);
+        for w in since {
+            if let Some(first) = self.crown_wakes.iter_mut().find(|o| o.worker == w.worker) {
+                first.fold(w.cause, w.from, w.to);
+                first.finished |= w.finished;
+                first.linger = w.linger.or(first.linger);
+                first.late |= w.late;
+                first.unstarted = w.unstarted.or(first.unstarted.take());
+            } else {
+                self.crown_wakes.push(w);
             }
         }
     }
@@ -1961,40 +2053,12 @@ impl Daemon {
         self.crown_recheck.clear();
         self.crown_watched.clear();
         self.crown_hands.clear();
-        if self.crown_wakes.is_empty() {
+        let entering = self.crown_wake_entering.take().is_some();
+        if self.crown_wakes.is_empty() && !entering {
             return;
         }
         self.crown_wakes.clear();
         self.feed.board("automation", "crown_wake_dropped", self.board.crown);
-    }
-
-    /// The hands the sentence just told the crown of come down (T-861):
-    /// the crown holds the worker's question from here — it answers the
-    /// worker, which lowers the hand anyway, or raises its own — and a `!`
-    /// that stood on past that was two cards asking a person one thing.
-    /// Only a wake whose cause IS the hand: a question or a plan folded
-    /// over it (`WakeCause`'s order) comes down with its dialog (T-611),
-    /// and a hand folded over a delivery is still the hand.
-    ///
-    /// The reason stays with the crown that was told (T-922): the sentence
-    /// sent it to `get_ticket` for it, and the hand it would have read
-    /// there is the one coming down here. A hand somebody lowered before
-    /// the sentence went keeps nothing: that person dealt with it.
-    pub(super) fn lower_told_hands(&mut self) {
-        let told: Vec<ulid::Ulid> = self
-            .crown_wakes
-            .iter()
-            .filter(|w| w.cause == WakeCause::Raised)
-            .map(|w| w.worker)
-            .collect();
-        let now = now_ms();
-        for worker in told {
-            let reason = self.board.ticket(worker).and_then(|t| t.raised.as_ref());
-            if let Some(reason) = reason.map(|r| r.reason.clone()) {
-                self.crown_hands.insert(worker, ToldHand { reason, told_ms: now });
-            }
-            self.lower_hand_on(worker);
-        }
     }
 
     /// The worker's agent was given something (T-922): its next turn began,
@@ -2586,7 +2650,7 @@ mod tests {
     /// waits for the crown's turn, the crown moves the card to DONE, and
     /// the line that goes out says DONE, as `get_ticket` does then. The
     /// edge stays as heard; a card sent where the crown last heard it says
-    /// no column. `forge_e2e` pins `told_columns`, the other half.
+    /// no column. `forge_e2e` pins `telling`, the other half.
     #[test]
     fn a_wake_says_the_column_it_is_sent_from() {
         let before = branch("aaa", "merged", 0, "REVIEW");
