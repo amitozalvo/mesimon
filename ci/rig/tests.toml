@@ -1344,7 +1344,7 @@ id = "DL1"
 title = "DL1 · the crown hears work asked for in a person's words: do the steps below"
 workspace = "worktree"
 brief = "Nothing starts on this ticket: the request goes to the crown."
-expect = "asked in a person's words for a small module and its test, naming no tool, with the rig's rules against filing a ticket and starting an agent lifted, the crown files the work as a ticket of its own and starts an agent on it, as its own get_ticket says of the crown (T-916): the person's prompts are its brief, and a ticket's own work goes to a session of its own. The crown writes no file itself, and the agent it started takes the request and ends its turn."
+expect = "asked in a person's words for a small module and its test, naming no tool, with the rig's rules against filing a ticket and starting an agent lifted, the crown files the work as a ticket of its own and starts an agent on it, which its own get_ticket says the crown can do (T-916): the person's prompts are its brief, and a ticket the crown starts is worked by a session of its own. The crown writes no file itself, and the agent it started takes the request and ends its turn."
 checks = ["filed", "crown_wrote_nothing:greet.py,test_greet.py"]
 
   [[test.steps]]

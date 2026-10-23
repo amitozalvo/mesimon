@@ -31270,3 +31270,55 @@ The seven tests nextest skips are `#[ignore]`d with their reasons:
 - `intro::tests::pty_child`: the pty test's own child.
 - `release::tests::the_download_half_works_against_the_real_release_channel`: it needs the
   network.
+
+**Second crown review: the checks failed a correct crown** (the same day, the review of `7e4ffd4e`
+under T-925). The model outcomes above stand; these were the checks' own errors:
+- **A board fast-forward read as the crown's write.** `merged_oid` names a commit only where patch
+  equality found the merge; a fast-forward is an ancestor merge and names none, so a crown that
+  delivered and then merged (or a train merge) moved HEAD unexcused. `board_tips` now excuses a
+  HEAD at any board worktree branch's tip as well as a `merged_oid`; a commit past that tip is
+  still the crown's. Both rigs use it.
+- **Reads counted as writes.** `">"` matched `2>&1`, `2>/dev/null` and a JS `=>`; `echo` and
+  `printf` alone counted too. A write by redirection is now output to a file (`REDIRECT`: not fd
+  duplication, `/dev/null`, `=>` or `>=`), and `echo`/`printf` write only through a redirection or
+  `tee`.
+- **One PR read counted as polling.** `gh pr view` and `gh pr checks` were poll words; one read to
+  learn which job failed, then yielding, is the behaviour the case asks for. A poll is now a watch,
+  a sleep (Codex's own included), or the same forge read twice in the crown's calls.
+- **`crowned: false` on a keyed read misled the crown** (the live `forge` failure above). The
+  crown's view of another ticket left the field on, always false; Luna read T-1's as its own. The
+  field is now `Option<bool>`, off the wire on another ticket's view, and said either way on a
+  session's read of its own ticket (`AgentGetTicket`, and a keyed read whose key is its own).
+  `crown_e2e` pins both.
+- **`CROWN_ROLE` classified every change as a ticket's own** ("a change, a fix, a feature"), close
+  to the delegate-everything policy the brief ruled out. It now describes the board's division
+  without classifying work: the crown can file a ticket and start it, a session of its own does
+  that ticket's work, and the board's own work is the crown's. **Its effect on delegation is
+  unmeasured**: the Codex `delegate` run failed with the first wording, and no Claude crown was run
+  without it. What it demonstrably fixed is the refusal on an empty description.
+- **`filed` passed one good start beside bad ones.** Every ticket the crown started an agent on
+  must now hold, as the Codex rig's `delegation_problems` does.
+- **An ask not read off its call passed on the failure words alone.** The `forge` case now ends
+  `inconclusive` there (`Inconclusive`, which the runner records apart from a failure).
+- The fixture-HOME note left `CLAUDE.md` and `AGENTS.md`: it is a fact about this rig, kept in
+  `ci/rig/README.md` and above.
+
+Offline regressions: the fast-forward with no `merged_oid` (a real temporary repository), the
+reads that are no writes, one PR read against the same read twice, and the inconclusive class
+(`ci/codex_rig_test.py`, 30).
+
+Runs after the corrections and the rebase onto main (`34670d8c`), once each, no retries, all
+cleanups clean:
+- `forge` (Luna, low): **passed**, the first pass under the corrected assertions. The crown
+  started T-1 in its worktree; on the forge's wake it called `get_ticket` and `ask_agent` alone,
+  and the worker read the crown's words, read off its call: "PR #42 pipeline failed: test-linux.
+  Please inspect the failing check/logs and fix the cause …". No watch, sleep, poll or write of
+  the crown's. Approvals answered: `start_agent`, `ask_agent`. 579,292 tokens, 1 person's turn.
+  One sample: the `crowned` fix and this pass coincide, and one run does not prove the cause.
+- `delegate` (Luna, low): **failed**, as before: the crown called `get_ticket`, then wrote
+  `greet.py` and `test_greet.py` with `apply_patch` in the checkout, and started no worker. 91,340
+  tokens, 1 turn. The reworded role changed nothing measurable here.
+- Claude rig `DL1` (Sonnet): **passed**. T-11 was filed by the crown's session and started in
+  `msmn/T-11-add-greet.py-with-greet-name-and`, no write of the crown's, the checkout as found,
+  and the crown's turn on the delivered wake ended. Its `expect` words were brought in line with
+  the new role after the run; the checks are unchanged.
