@@ -6557,13 +6557,14 @@ impl Daemon {
                         view.key_about = Some(mesimon_core::mcp::KEY_ABOUT.to_string());
                         view.crowned = Some(self.board.is_crowned(ticket));
                         // A worker the board's crown started reads who merges
-                        // under it (T-599).
-                        let crown = self.board.crown_holder().map(|t| t.id);
+                        // under it (T-599): the crown worn now, whichever
+                        // ticket wore it at the start (T-927).
+                        let crowned = self.board.started_by_crown(ticket);
                         view.under_crown = self
                             .board
                             .sessions
                             .iter()
-                            .any(|s| s.id == session && crown.is_some() && s.started_by == crown)
+                            .any(|s| s.id == session && crowned && s.started_by.is_some())
                             .then(|| mesimon_core::mcp::WORKER_UNDER_CROWN.to_string());
                         // The agent read its ticket: the page stops saying
                         // it has not (T-224). A persisted fact, and a real
@@ -7997,7 +7998,8 @@ impl Daemon {
         }
         // A new crown is owed nothing the old one was (T-414), and the old
         // one's words go nowhere on their own (T-550); its train holds stand
-        // as the person's (T-919).
+        // as the person's (T-919). The workers it started are the new
+        // crown's from here (T-927): their next news wakes it.
         self.drop_crown_wakes();
         self.release_crown_holds();
         self.hold_crown_sends();
@@ -15901,7 +15903,7 @@ impl Daemon {
                 let by_crown = crown.is_some_and(|c| {
                     self.pending_spawns
                         .iter()
-                        .any(|s| s.ticket == ticket && s.started_by == Some(c))
+                        .any(|s| s.ticket == ticket && s.started_by.is_some() && s.ticket != c)
                         || (self.pending_resumes.iter().any(|r| r.ticket == ticket)
                             && self.board.started_by_crown(ticket))
                 });

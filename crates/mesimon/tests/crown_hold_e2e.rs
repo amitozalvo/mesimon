@@ -599,3 +599,161 @@ fn a_hold_inside_the_trains_rebase_turn_lets_the_turn_run_and_merges_nothing() {
     assert!(!held && changed);
     wait_until(std::time::Duration::from_secs(15), "the train to merge it once returned", merged);
 }
+
+/// T-927: the person moved the crown from one ticket to another, and the
+/// new crown heard nothing of the workers the old one had started, nor of
+/// the tickets it held for review, though each hold's receipt said their
+/// delivery wakes it. What a crown started is the seat's: the crown worn
+/// now hears it, and the worker reads that it works under a crown. A hold
+/// is heard whoever started the agent, a person's own included, whose
+/// agent the handover never makes the crown's. A restart between the
+/// handover and the deliveries drops neither.
+#[test]
+fn a_new_crown_hears_the_old_crown_s_workers_and_the_tickets_it_holds() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_handover",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_handover");
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let woke_by = |c: &mut TestClient, crown: ulid::Ulid, worker: ulid::Ulid| {
+        touches(c).iter().any(|t| t.ticket == crown && t.action == "woke" && t.from == Some(worker))
+    };
+
+    let a = c.create_ticket("the first crown");
+    let b = c.create_ticket("the second crown");
+    let w = c.create_ticket("mesimon-probe-927 started by the first crown");
+    let p = c.create_ticket("mesimon-probe-927 a person's own");
+    let (kw, kp) = (key_of(&mut c, w), key_of(&mut c, p));
+    for id in [w, p] {
+        assert!(matches!(
+            c.request(Command::SetWorkspace { id, workspace: Some(WorkspaceStrategy::Worktree) }),
+            Response::Ok
+        ));
+    }
+    let sa = c.spawn_claude(a);
+    let sb = c.spawn_claude(b);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+
+    // ---- 1. the first crown starts a worker; a person starts their own ---
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    let w_path = std::path::PathBuf::from(wait_attached(&mut c, w).path.expect("a path"));
+    wait_until(std::time::Duration::from_secs(15), "the crown's start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    // A person's own start, parked while its worktree is cut.
+    assert!(matches!(
+        c.request(Command::SpawnSession {
+            ticket: p,
+            kind: mesimon_core::board::SessionKind::Claude,
+            submit_prompt: false,
+            plan: false,
+        }),
+        Response::Provisioning | Response::Spawned { .. }
+    ));
+    let p_path = std::path::PathBuf::from(wait_attached(&mut c, p).path.expect("a path"));
+    wait_until(std::time::Duration::from_secs(15), "the person's start to land", || {
+        c.board().live_agent(p).is_some()
+    });
+    let sp = c.board().live_agent(p).unwrap().id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    // The worker is mid-turn when the crown moves.
+    start(&mut c, ws);
+
+    // ---- 2. the person moves the crown; the new one holds the person's ---
+    assert!(matches!(c.request(Command::CrownTicket { id: b }), Response::Ok));
+    start(&mut c, sb);
+    stop(&mut c, sb);
+    match c.send(Principal::Agent { session: ws }, Command::AgentGetTicket) {
+        Response::AgentTicket { ticket } => assert_eq!(
+            ticket.under_crown.as_deref(),
+            Some(mesimon_core::mcp::WORKER_UNDER_CROWN),
+            "the worker works under the crown worn now"
+        ),
+        other => panic!("the worker's get_ticket: {other:?}"),
+    }
+    match c.send(Principal::Agent { session: sp }, Command::AgentGetTicket) {
+        Response::AgentTicket { ticket } => {
+            assert!(ticket.under_crown.is_none(), "a person's agent is no crown's")
+        }
+        other => panic!("the person's agent's get_ticket: {other:?}"),
+    }
+    let (held, by, _, detail) = hold_now(&mut c, sb, &kp, true).unwrap();
+    assert!(held && by == "crown", "{detail}");
+    assert!(detail.contains("its delivery wakes this session"), "{detail}");
+    drop(c);
+
+    // ---- 3. a restart in between --------------------------------------------
+    h.restart();
+    let mut c = h.client("crown_handover_2");
+    assert_eq!(read(&mut c, sb, &kp).unwrap().held.as_deref(), Some("crown"));
+    assert!(
+        c.board().sessions.iter().all(|s| s.ticket != p || s.started_by.is_none()),
+        "the handover made no person's agent the crown's"
+    );
+
+    // ---- 4. the old crown's worker delivers: the new crown hears it --------
+    let worker_w = format!("{kw} \"mesimon-probe-927 started by the first crown\"");
+    commit(&w_path, "w.txt");
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(15), "the old crown's worker's wake", || {
+        lines_with(&worker_w).iter().any(|l| l.contains(" delivered ("))
+    });
+    assert!(woke_by(&mut c, b, w), "the crown worn now was woken");
+    start(&mut c, sb);
+    stop(&mut c, sb);
+
+    // ---- 5. the held person's agent delivers: the crown hears it too -------
+    let worker_p = format!("{kp} \"mesimon-probe-927 a person's own\"");
+    commit(&p_path, "p.txt");
+    start(&mut c, sp);
+    stop(&mut c, sp);
+    wait_until(std::time::Duration::from_secs(15), "the held ticket's wake", || {
+        lines_with(&worker_p).iter().any(|l| l.contains(" delivered ("))
+    });
+    assert!(woke_by(&mut c, b, p), "the hold's receipt kept its word");
+    // The crown's own ticket and the first crown's never wake for either.
+    assert!(!woke_by(&mut c, a, w) && !woke_by(&mut c, a, p));
+}

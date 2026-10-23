@@ -3119,16 +3119,23 @@ impl Board {
         self.crown_holder().is_some_and(|t| t.id == ticket)
     }
 
-    /// Was `ticket`'s agent started by the crown worn now? The claim every
-    /// crown wake makes on a worker (T-414): a worker left over from an
-    /// earlier crown wakes nobody, and the crown's own ticket is never one.
-    /// The daemon's wakes and the person's banners (T-678) ask this one
-    /// predicate, so a worker's news goes to exactly one of the two.
+    /// Is `ticket`'s agent the worn crown's? The claim every crown wake makes
+    /// on a worker (T-414): an agent a crown started, while a crown is worn,
+    /// and never the crown's own ticket. The seat, not the ticket that wore
+    /// it, owns what a crown started (T-927): a worker an earlier crown
+    /// started is the crown's now, as `ask_agent`, `sleep_agent`,
+    /// `answer_agent` and the spawn budget already took it, so a crown
+    /// moved to another ticket hears its workers. A person's agent
+    /// (`started_by: None`) never becomes one. The daemon's wakes and the
+    /// person's banners (T-678) ask this one predicate, so a worker's news
+    /// goes to exactly one of the two.
     pub fn started_by_crown(&self, ticket: ulid::Ulid) -> bool {
         let Some(crown) = self.crown_holder().map(|t| t.id) else { return false };
-        self.sessions
-            .iter()
-            .any(|s| s.ticket == ticket && s.holds_agent_seat() && s.started_by == Some(crown))
+        ticket != crown
+            && self
+                .sessions
+                .iter()
+                .any(|s| s.ticket == ticket && s.holds_agent_seat() && s.started_by.is_some())
     }
 
     /// The vocabulary of axis `group`, in registry order — which is creation
@@ -4049,6 +4056,44 @@ mod tests {
         assert!(board.sessions[2].started_by.is_some(), "and so does its provenance");
         board.sessions[2].state = SessionState::Spawning;
         assert_eq!(board.crown_started().len(), 3, "a wake counts it again");
+    }
+
+    /// T-927: the person moved the crown from one ticket to another, and
+    /// the new crown heard nothing of four workers the old one had started.
+    /// What a crown started is the seat's: the crown worn now hears it,
+    /// whichever ticket wore the crown at its start. A person's agent is
+    /// never the crown's, the crown's own ticket is never its own worker,
+    /// and with no crown worn every worker is the person's.
+    #[test]
+    fn a_worker_an_earlier_crown_started_is_the_crowns_now() {
+        let mut board = Board::default();
+        for n in 1..=4 {
+            board.tickets.push(ticket(n, "IN PROGRESS", "a"));
+        }
+        let seat = |n: u128, by: Option<u128>| {
+            let mut rec = SessionRecord::new(
+                uuid::Uuid::new_v4(),
+                SessionKind::Claude,
+                ulid::Ulid(n),
+                vec!["claude".into()],
+                "/repo".into(),
+                SessionState::Running,
+            );
+            rec.started_by = by.map(ulid::Ulid);
+            rec
+        };
+        // T-1 wore the crown and started T-3; T-4 is a person's agent.
+        board.sessions.push(seat(2, None));
+        board.sessions.push(seat(3, Some(1)));
+        board.sessions.push(seat(4, None));
+        board.crown = Some(ulid::Ulid(1));
+        assert!(board.started_by_crown(ulid::Ulid(3)), "the crown that started it");
+        board.crown = Some(ulid::Ulid(2));
+        assert!(board.started_by_crown(ulid::Ulid(3)), "the crown worn now");
+        assert!(!board.started_by_crown(ulid::Ulid(4)), "a person's agent stays the person's");
+        assert!(!board.started_by_crown(ulid::Ulid(2)), "the crown's own ticket is no worker");
+        board.crown = None;
+        assert!(!board.started_by_crown(ulid::Ulid(3)), "no crown worn: the person's");
     }
 
     /// T-518: the author archived the three tickets the crown had started,

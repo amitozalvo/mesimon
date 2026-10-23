@@ -79,11 +79,15 @@
 //! step in flight — no live agent, a merge the train could not notify, a
 //! person's `m` whose notice is not sent yet — is heard at once.
 //!
-//! **Whose worker (T-712).** Every event above is heard for a worker THIS
-//! crown started (`started_by_crown`), and — behind the board's
+//! **Whose worker (T-712).** Every event above is heard for a worker a
+//! crown started (`started_by_crown`) — the crown worn now, whichever
+//! ticket wore it at the start (T-927): the seat owns its workers, and a
+//! crown moved to another ticket hears them — and — behind the board's
 //! `crown_watches` — for a ticket the crown watches (`watch_ticket`,
 //! `Daemon::crown_watched`): a person's worker the crown was told to wait
-//! for. A watched ticket is heard delivered, finished, raised, limited and merged,
+//! for. A ticket the crown holds out of the merge train (`hold_ticket`,
+//! `Daemon::crown_held`) is heard as a watched one, with no switch: the
+//! hold's receipt promises its delivery. A watched ticket is heard delivered, finished, raised, limited and merged,
 //! and the watch ends at the merge; its question and its plan stay the
 //! person's (the crown cannot answer a person's agent), and so does its
 //! lingering: the crown's words do reach a watched agent (T-734), but a
@@ -558,7 +562,7 @@ pub(super) fn rederiving(s: &SessionRecord) -> bool {
 /// the request the board answers by keys. Supervised, the person is the
 /// one to wake, and the card's needs-you already does. A secret, a form or
 /// a permission is never the crown's, so none of them wakes it. Whose agent
-/// it is — one THIS crown started — is `note_crown_wake`'s to judge.
+/// it is — one a crown started — is `note_crown_wake`'s to judge.
 pub(super) fn asks_the_crown(
     mode: CrownMode,
     kind: SessionKind,
@@ -655,7 +659,7 @@ pub(super) fn due(cause: Option<WakeCause>, held: Option<WakeCause>, pending: &P
 
 /// Whether a worker's branch reading `merged` wakes the crown (T-527), and
 /// as what. `now` is the work as merged, `heard` what the crown has heard of
-/// the worker. Only a worker THIS crown started (`started`) — the crown's
+/// the worker. Only a worker a crown started (`started`) — the crown's
 /// own ticket is never one, since no crown starts itself — and never a
 /// checkout, which has no branch to land. A merge the crown was already
 /// told of at this tip is silent, which is also what keeps a reading that
@@ -1060,9 +1064,10 @@ impl Look {
 }
 
 impl Daemon {
-    /// The worker's claude was started by THIS crown, `crown` still wearing
-    /// it: a worker left over from an earlier crown wakes nobody. The
-    /// board's own predicate, which the person's banners read too (T-678).
+    /// The worker's claude was started by a crown, `crown` wearing it now:
+    /// what an earlier crown started is this one's (T-927), as its
+    /// `ask_agent` and `sleep_agent` already took it. The board's own
+    /// predicate, which the person's banners read too (T-678).
     fn started_by_crown(&self, worker: ulid::Ulid, crown: ulid::Ulid) -> bool {
         self.board.crown_holder().is_some_and(|t| t.id == crown)
             && self.board.started_by_crown(worker)
@@ -1077,14 +1082,26 @@ impl Daemon {
             && self.crown_watched.contains(&worker)
     }
 
-    /// The crown is owed the worker's news: it started the worker, it
-    /// watches the ticket (T-712), or the ticket has no agent and carries
-    /// a pull request (`unattended_pr`, T-890). The one claim every wake
-    /// but an answer makes — `note_crown_wake` narrows a watch to what a
+    /// THIS crown holds the ticket out of the merge train (`hold_ticket`,
+    /// T-919), `crown` still wearing it: the receipt said its delivery
+    /// wakes this session, so it does, whoever started its agent (T-927).
+    /// A hold is heard as a watch is; a person's `t` makes it the person's,
+    /// and the crown's hearing goes with it.
+    fn held_by_crown(&self, worker: ulid::Ulid, crown: ulid::Ulid) -> bool {
+        self.board.crown_holder().is_some_and(|t| t.id == crown)
+            && self.crown_held.contains(&worker)
+    }
+
+    /// The crown is owed the worker's news: a crown started the worker, it
+    /// watches the ticket (T-712) or holds it out of the train (T-927), or
+    /// the ticket has no agent and carries a pull request
+    /// (`unattended_pr`, T-890). The one claim every wake but an answer
+    /// makes — `note_crown_wake` narrows a watch and a hold to what a
     /// person's agent gives the crown to act on.
     fn crown_hears(&self, worker: ulid::Ulid, crown: ulid::Ulid) -> bool {
         self.started_by_crown(worker, crown)
             || self.watched_by_crown(worker, crown)
+            || self.held_by_crown(worker, crown)
             || self.unattended_pr(worker, crown)
     }
 
@@ -1146,7 +1163,8 @@ impl Daemon {
     /// left, carrying whether a turn ran since the last one — taken here,
     /// so an idle re-entered with no turn between finishes nothing (T-591).
     /// Only while a crown is worn, never for the crown's own ticket, and
-    /// only for a worker this crown started or a turn that took its ask.
+    /// only for a worker a crown started, a ticket it watches or holds, or
+    /// a turn that took its ask.
     pub(super) fn turn_ended(&mut self, worker: ulid::Ulid, end_turn: bool) {
         // A worker the restart has yet to look at (T-602): this end is that
         // look when its state is committed — a hook's, or the close in the
@@ -1726,8 +1744,8 @@ impl Daemon {
 
     /// Record that the crown is owed a wake about `worker`, and try to
     /// deliver it now. Only while the crown is worn, and — an answer aside,
-    /// which the crown asked for — only for an agent THIS crown started, or
-    /// a ticket it watches (T-712), whose delivery, finished turn, hand,
+    /// which the crown asked for — only for an agent a crown started, or
+    /// a ticket it watches (T-712) or holds (T-927), whose delivery, finished turn, hand,
     /// usage limit (T-802) and merge are the crown's to hear and whose question or plan is not: a
     /// person's agent is answered by the person, and its card's needs-you
     /// already calls them. The feed line names both tickets and the cause,
@@ -1747,7 +1765,8 @@ impl Daemon {
     }
 
     /// `note_crown_wake`'s guards: never the crown's own ticket, and, an
-    /// answer aside, a worker it started, or a watched ticket's news.
+    /// answer aside, a worker a crown started, or a watched or held
+    /// ticket's news.
     pub(super) fn crown_claims(
         &self,
         worker: ulid::Ulid,
@@ -1768,7 +1787,7 @@ impl Daemon {
                 | WakeCause::Raised
                 | WakeCause::Limited
         );
-        watched_news && self.watched_by_crown(worker, crown)
+        watched_news && (self.watched_by_crown(worker, crown) || self.held_by_crown(worker, crown))
     }
 
     /// A turn ended on `ticket`'s agent that the crown hears (T-773): its
@@ -1896,7 +1915,7 @@ impl Daemon {
             .filter(|s| {
                 s.kind == SessionKind::Claude
                     && s.ticket != crown
-                    && s.started_by == Some(crown)
+                    && s.started_by.is_some()
                     && s.state == (SessionState::Idle { stop_reason: StopReason::Background })
                     && !self.lingered.contains(&s.id)
             })

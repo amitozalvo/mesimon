@@ -31533,3 +31533,50 @@ no unit test builds a `Daemon`.
 The edited-box case now waits for `Theirs` itself: the entry dropped, then `after your
 draft`. Two more mutations fail the e2e: the ack telling the wake, and `drop_crown_wakes`
 leaving the entry.
+
+## A crown hears the workers an earlier crown started, and every ticket it holds (T-927, 2026-10-23, "A crown hears nothing from workers a previous crown started, though hold_ticket says their delivery wakes it")
+
+**What happened.** The person moved the crown from T-915 (Codex) to T-925 (Claude). Workers on
+T-916, T-917, T-918 and T-922 carried `started_by` = T-915's ticket. The new crown held all
+four with `hold_ticket`, whose receipt said "its delivery wakes this session". All four
+delivered, and no wake came for 47 to 62 minutes. Two predicates were at fault, and the
+restart in that window was not:
+- **`Board::started_by_crown` compared `started_by` with the ticket wearing the crown now.**
+  A worker an earlier crown started "woke nobody" (T-414's rule). Every other crown road
+  already read `started_by.is_some()`: `ask_agent`'s send, `sleep_agent`, `answer_agent` and
+  `accept_plan` (`crownplan.rs`), `archive_ticket`'s refusal, `start_agent`'s wake of a parked
+  worker, and the spawn budget. So the new crown could steer those workers and could not hear
+  them. T-920 reached it only through `answered your ask`, the one cause that skips the claim.
+- **`crown_hears` never read `crown_held`.** A hold made by the crown woke the crown only when
+  the crown had also started the agent. The receipt and `CROWN_WAKES` promised more than that.
+
+**The rule.** The crown seat owns what a crown started, not the ticket that wore the crown.
+`started_by_crown` means "a crown started it, a crown is worn now, and it is not the crown's
+own ticket". On a handover the new crown hears the old crown's workers from their next event,
+and their `get_ticket` keeps `under_crown`. Nothing is rewritten. `started_by` stays
+provenance, and a person's agent (`started_by: None`) never becomes the crown's. The
+old seat's owed wakes and baselines are still dropped (`drop_crown_wakes`, T-414), so the new
+crown's first look at an inherited worker has no baseline, and a branch that is ahead reads as
+a delivery. This was the smallest rule that is true. Copying the old crown's workers into
+`crown_watched` was refused, because a watch hears less (no questions, plans or lingering)
+than the crown's other tools let it act on. Rewriting `started_by` was refused too, because it
+loses provenance and needs a migration for no gain.
+
+**A hold is heard like a watch** (`held_by_crown`, in `crown_hears` and `crown_claims`). It
+covers delivered, finished, raised, limited, merged and forge news, with no `crown_watches`
+switch, because the receipt promises the wake. A held person's agent still keeps its question,
+plan and lingering for the person, as a watched one does. A crown-started agent is heard in
+full through provenance. A person's `t` makes the hold the person's (T-919), and the crown's
+hearing ends with it.
+
+**What the crown is told: unchanged.** "An agent the crown started" names the board's crown,
+and the hold sentence in `CROWN_WAKES` is true now, so no rig test was added. The person's
+banners (`notify.rs`) ask the same predicate: while a crown is worn, an inherited worker's news
+goes to the crown and no longer to the person.
+
+**Tests.** `board.rs`: `a_worker_an_earlier_crown_started_is_the_crowns_now`. `crown_hold_e2e`:
+`a_new_crown_hears_the_old_crown_s_workers_and_the_tickets_it_holds`. Crown A starts a worker.
+A person starts their own agent, both in worktrees. The crown moves to B while the worker is
+mid-turn. B holds the person's ticket, the daemon restarts, and both deliveries wake B (the
+line in B's pane and B's `woke` touch), never A. Without the predicate change the test fails at
+`under_crown`. Without `held_by_crown` it times out on the held ticket's wake.
