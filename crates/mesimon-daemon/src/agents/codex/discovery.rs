@@ -641,7 +641,7 @@ mod tests {
         let Reply::Transcript { conversation, rows, end, .. } = read_transcript_reply(
             SessionKind::Codex,
             &original,
-            transcript::Ask { after: Some(old_end), before: Some(1), limit: None },
+            transcript::Ask { after: Some(old_end), before: Some(1), ..Default::default() },
             Some(&old_name),
         )
         .unwrap() else {

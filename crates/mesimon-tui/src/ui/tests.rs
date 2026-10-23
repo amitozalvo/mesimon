@@ -6706,8 +6706,8 @@ fn test_transcript_dialog_steps_messages_and_scrolls_the_one_on_show() {
     assert!(text.contains("TRANSCRIPT (4 of 4)"), "{text}");
     assert!(text.contains("claude"), "{text}");
     assert!(text.contains("Fixed the OSC-11 race"), "{text}");
+    assert!(text.contains("jk scroll"), "a long reply scrolls, offered on its first frame");
     let lines = render(&app, 120, 30);
-    assert!(lines.iter().any(|l| l.contains("jk scroll")), "a long reply scrolls");
     assert!(lines.last().is_some_and(|l| l.contains("esc close")), "esc is the footer's");
     press(&mut app, 'j');
     press(&mut app, 'j');

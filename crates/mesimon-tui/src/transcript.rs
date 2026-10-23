@@ -7,13 +7,16 @@
 //! The newest page is read on the key, so the dialog opens on its last
 //! message at once; the pages before it are read on a thread of their own,
 //! back to the file's start, so `(i of n)` counts the whole conversation
-//! once they land. The tail is read again while the dialog is open, a stat
-//! every `FRESH`, and only what was written since. The file is only
-//! appended to, so a row's `at` is its place for good and a page joins
-//! where the held part begins.
+//! once they land. While the dialog is open the UI thread only stats the
+//! file, every `FRESH`; what was written since is read on another thread,
+//! one read at a time, and lands in `pump`, as a snapshot does (T-812).
+//! That read resolves the file again, so a `/clear`, a `/resume` or a
+//! Codex continuation (T-840) is followed. The file is only appended to,
+//! so a row's `at` is its place for good and a page joins where the held
+//! part begins.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
@@ -25,6 +28,13 @@ use crate::app::Pager;
 
 /// How often an open dialog stats the file for what was written since.
 const FRESH: Duration = Duration::from_millis(250);
+/// How often a Codex conversation is looked for its continuation rollout
+/// while the dialog is open: a walk of `~/.codex/sessions`, on the tail
+/// read's thread.
+const WALK: Duration = Duration::from_secs(5);
+/// The longest message the dialog reads whole; a longer one is cut and
+/// ends in `…` (a phone gets 8 KiB, T-626).
+pub(crate) const ROW_MAX: usize = 256 * 1024;
 
 /// One message: a prompt, a reply or a notice, with the tool calls that
 /// followed it before the next one (the steps it led to; the newest
@@ -108,8 +118,11 @@ pub(crate) struct Page {
     next_before: Option<u64>,
 }
 
-fn read(kind: SessionKind, path: &std::path::Path, ask: Ask, conv: Option<&str>) -> Option<Page> {
-    match mesimon_daemon::agents::read_transcript_reply(kind, path, ask, conv)? {
+/// One page of the file at `path`, already resolved, its messages read
+/// whole up to `ROW_MAX`.
+fn read(kind: SessionKind, path: &Path, ask: Ask, conv: Option<&str>) -> Option<Page> {
+    let ask = Ask { row_max: Some(ROW_MAX), ..ask };
+    match mesimon_daemon::agents::read_transcript_reply_at(kind, path, ask, conv)? {
         Reply::Transcript { conversation, rows, from, end, next_before } => {
             Some(Page { conversation, rows, from, end, next_before })
         }
@@ -117,10 +130,38 @@ fn read(kind: SessionKind, path: &std::path::Path, ask: Ask, conv: Option<&str>)
     }
 }
 
+/// What a tail read found, off the UI thread: the file it read (resolved
+/// again), its stat taken before the read, and either what was written
+/// since the held part (`over: false`) or that file's newest page (another
+/// conversation, a file cut short, more than a page since).
+struct Tail {
+    path: PathBuf,
+    stat: (u64, u64),
+    page: Page,
+    over: bool,
+}
+
+fn read_tail(kind: SessionKind, record: &Path, path: &Path, conv: &str, end: u64) -> Option<Tail> {
+    let file = mesimon_daemon::agents::transcript_file(kind, record);
+    let stat = stat_of(&file);
+    if file == path {
+        let ask = Ask { after: Some(end), ..Ask::default() };
+        let page = read(kind, &file, ask, Some(conv))?;
+        if page.conversation == conv && page.from <= end && page.end >= end {
+            return Some(Tail { path: file, stat, page, over: false });
+        }
+    }
+    let page = read(kind, &file, Ask::default(), None)?;
+    Some(Tail { path: file, stat, page, over: true })
+}
+
 /// The open dialog's conversation and where the reader stands in it.
 pub(crate) struct Transcript {
     pub ticket: ulid::Ulid,
     pub kind: SessionKind,
+    /// The record's transcript path, as the board last said it.
+    record: PathBuf,
+    /// The file read: the record's, or a Codex rollout's continuation.
     path: PathBuf,
     conversation: String,
     rows: Vec<TranscriptRow>,
@@ -131,20 +172,27 @@ pub(crate) struct Transcript {
     messages: Vec<Message>,
     /// The message on show.
     pub idx: usize,
-    /// How many messages the dialog held when the newest was last on show:
-    /// what came after is `new`.
-    seen: usize,
+    /// The newest message the reader has been on: what came after it is
+    /// `new`.
+    seen: Option<(u64, usize)>,
     /// Where each message was left (`Pager` rows hidden above), so a step
     /// back to one lands where the reader was.
     left: HashMap<(u64, usize), usize>,
     pub pager: Pager,
     earlier: Option<Receiver<Page>>,
+    /// The tail read in flight, one at a time; `again` when the file moved
+    /// meanwhile, so another follows it.
+    tail: Option<Receiver<Option<Tail>>>,
+    again: bool,
     stat: (u64, u64),
     checked: Instant,
+    /// When the file was last resolved (a Codex continuation is looked for
+    /// every `WALK` even while the file read is still).
+    walked: Instant,
 }
 
 /// The file's (len, mtime): what moves when anything is written.
-fn stat_of(path: &std::path::Path) -> (u64, u64) {
+fn stat_of(path: &Path) -> (u64, u64) {
     std::fs::metadata(path)
         .map(|m| {
             let mtime = m.modified().ok().and_then(mesimon_core::clock::epoch_ms).unwrap_or(0);
@@ -157,32 +205,52 @@ impl Transcript {
     /// The newest page of `rec`'s conversation, on the newest message.
     /// `None` when there is no file to read or nothing said in it.
     pub(crate) fn open(rec: &SessionRecord) -> Option<Self> {
-        let path = PathBuf::from(rec.transcript_path.as_ref()?);
+        let record = PathBuf::from(rec.transcript_path.as_ref()?);
+        let path = mesimon_daemon::agents::transcript_file(rec.kind, &record);
         let stat = stat_of(&path);
         let page = read(rec.kind, &path, Ask::default(), None)?;
-        let messages = messages(&page.rows);
-        if messages.is_empty() {
+        if messages(&page.rows).is_empty() {
             return None;
         }
         let mut t = Transcript {
             ticket: rec.ticket,
             kind: rec.kind,
+            record,
             path,
-            conversation: page.conversation,
-            rows: page.rows,
-            end: page.end,
-            floor: page.next_before,
-            idx: messages.len() - 1,
-            seen: messages.len(),
-            messages,
+            conversation: String::new(),
+            rows: Vec::new(),
+            end: 0,
+            floor: None,
+            messages: Vec::new(),
+            idx: 0,
+            seen: None,
             left: HashMap::new(),
             pager: Pager::default(),
             earlier: None,
+            tail: None,
+            again: false,
             stat,
             checked: Instant::now(),
+            walked: Instant::now(),
         };
-        t.read_earlier();
+        t.start_over(page);
         Some(t)
+    }
+
+    /// A page as the whole of what is held, on its newest message: the
+    /// dialog's first read, and a new conversation's.
+    fn start_over(&mut self, page: Page) {
+        self.conversation = page.conversation;
+        self.rows = page.rows;
+        self.end = page.end;
+        self.floor = page.next_before;
+        self.messages = messages(&self.rows);
+        self.idx = self.messages.len().saturating_sub(1);
+        self.seen = None;
+        self.saw();
+        self.left.clear();
+        self.pager.reset();
+        self.read_earlier();
     }
 
     /// Every page before the held part, read off this thread back to the
@@ -210,6 +278,19 @@ impl Transcript {
         self.earlier = Some(rx);
     }
 
+    /// What was written since, read on a thread of its own; the file is
+    /// resolved again there.
+    fn read_tail(&mut self) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (kind, record, path) = (self.kind, self.record.clone(), self.path.clone());
+        let (conv, end) = (self.conversation.clone(), self.end);
+        std::thread::spawn(move || {
+            let _ = tx.send(read_tail(kind, &record, &path, &conv, end));
+        });
+        self.tail = Some(rx);
+        self.walked = Instant::now();
+    }
+
     pub(crate) fn messages(&self) -> &[Message] {
         &self.messages
     }
@@ -218,14 +299,15 @@ impl Transcript {
         self.messages.get(self.idx)
     }
 
-    /// Messages that came after the newest one the reader saw.
+    /// Messages that came after the newest one the reader has been on.
     pub(crate) fn unseen(&self) -> usize {
-        self.messages.len().saturating_sub(self.seen)
+        self.messages.iter().rev().take_while(|m| Some(m.key) > self.seen).count()
     }
 
     /// `{ }`: one message older or newer, landing where that one was left.
     pub(crate) fn step(&mut self, dir: isize) {
-        let to = (self.idx as isize + dir).clamp(0, self.messages.len() as isize - 1) as usize;
+        let Some(last) = self.messages.len().checked_sub(1) else { return };
+        let to = self.idx.saturating_add_signed(dir).min(last);
         if to == self.idx {
             return;
         }
@@ -243,20 +325,60 @@ impl Transcript {
     }
 
     fn saw(&mut self) {
-        if self.idx + 1 >= self.messages.len() {
-            self.seen = self.messages.len();
-        }
+        self.seen = self.seen.max(self.message().map(|m| m.key));
     }
 
-    /// Land what the earlier pages' reader sent, and what was written since
-    /// the last read. True when the dialog's words moved.
-    pub(crate) fn poll(&mut self) -> bool {
-        let mut moved = false;
+    /// The messages again from the rows, once per poll however many pages
+    /// landed; the message on show stays on show, found by its key.
+    fn rebuild(&mut self) {
+        let on = self.message().map(|m| m.key);
+        self.messages = messages(&self.rows);
+        self.idx = match on {
+            Some(k) => self.messages.partition_point(|m| m.key <= k).saturating_sub(1),
+            None => self.messages.len().saturating_sub(1),
+        };
+        self.saw();
+    }
+
+    /// Land what the earlier pages' reader sent and what the tail read
+    /// found, and stat the file for another. `record` is the conversation
+    /// the board says the card's agent holds now. True when the dialog's
+    /// words moved.
+    pub(crate) fn poll(&mut self, record: Option<(SessionKind, &str)>) -> bool {
+        let mut rows = false;
         while let Some(rx) = &self.earlier {
             match rx.try_recv() {
-                Ok(page) => moved |= self.prepend(page),
+                Ok(page) => rows |= self.prepend(page),
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => self.earlier = None,
+            }
+        }
+        let mut over = false;
+        if let Some(rx) = &self.tail {
+            match rx.try_recv() {
+                Ok(tail) => {
+                    self.tail = None;
+                    if let Some(Tail { path, stat, page, over: anew }) = tail {
+                        (self.path, self.stat) = (path, stat);
+                        if anew {
+                            over = true;
+                            self.start_over(page);
+                        } else {
+                            rows |= self.append(page);
+                        }
+                    }
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => self.tail = None,
+            }
+        }
+        if rows && !over {
+            self.rebuild();
+        }
+        if let Some((kind, path)) = record {
+            if (kind, Path::new(path)) != (self.kind, self.record.as_path()) {
+                (self.kind, self.record) = (kind, PathBuf::from(path));
+                self.again = true;
             }
         }
         if self.checked.elapsed() >= FRESH {
@@ -264,10 +386,15 @@ impl Transcript {
             let stat = stat_of(&self.path);
             if stat != self.stat {
                 self.stat = stat;
-                moved |= self.read_since();
+                self.again = true;
             }
+            self.again |= self.kind == SessionKind::Codex && self.walked.elapsed() >= WALK;
         }
-        moved
+        if self.again && self.tail.is_none() {
+            self.again = false;
+            self.read_tail();
+        }
+        rows || over
     }
 
     /// An earlier page joins only where the held part begins.
@@ -275,65 +402,22 @@ impl Transcript {
         if page.conversation != self.conversation || Some(page.end) != self.floor {
             return false;
         }
-        let before = self.messages.len();
         self.floor = page.next_before;
         let mut rows = page.rows;
         rows.append(&mut self.rows);
         self.rows = rows;
-        self.messages = messages(&self.rows);
-        // The message on show stays on show: its place moved by what came
-        // before it.
-        let added = self.messages.len().saturating_sub(before);
-        self.idx += added;
-        self.seen += added;
-        added > 0
+        true
     }
 
-    /// What was written since the held part ends. A new conversation
-    /// (`/clear`, `/resume`), or more than a page since, starts over at the
-    /// tail on its newest message.
-    fn read_since(&mut self) -> bool {
-        let ask = Ask { after: Some(self.end), ..Ask::default() };
-        let Some(page) = read(self.kind, &self.path, ask, Some(&self.conversation)) else {
-            return false;
-        };
-        if page.conversation == self.conversation && page.from <= self.end {
-            if page.end == self.end {
-                return false;
-            }
-            let from = page.from;
-            self.rows.retain(|r| r.at < from);
-            self.rows.extend(page.rows);
-            self.end = page.end;
-            let on_newest = self.idx + 1 >= self.messages.len();
-            let had = self.messages.len();
-            self.messages = messages(&self.rows);
-            // A reader on the newest message keeps reading it: what came
-            // after is `new`, never a jump under the eye.
-            self.idx = self.idx.min(self.messages.len().saturating_sub(1));
-            if on_newest && self.messages.len() > had {
-                self.seen = self.seen.min(had);
-            }
-            return true;
-        }
-        let page = match read(self.kind, &self.path, Ask::default(), None) {
-            Some(p) => p,
-            None => return false,
-        };
-        let messages = messages(&page.rows);
-        if messages.is_empty() {
+    /// What was written since the held part ends, from where its page
+    /// begins.
+    fn append(&mut self, page: Page) -> bool {
+        if page.conversation != self.conversation || page.end == self.end {
             return false;
         }
-        self.conversation = page.conversation;
-        self.rows = page.rows;
+        self.rows.retain(|r| r.at < page.from);
+        self.rows.extend(page.rows);
         self.end = page.end;
-        self.floor = page.next_before;
-        self.idx = messages.len() - 1;
-        self.seen = messages.len();
-        self.messages = messages;
-        self.left.clear();
-        self.pager.reset();
-        self.read_earlier();
         true
     }
 }
@@ -400,26 +484,55 @@ pub(crate) mod tests {
         r
     }
 
+    fn lines(lines: &[(&str, &str)]) -> String {
+        lines.iter().map(|(k, t)| format!("{}\n", claude_line(k, t))).collect()
+    }
+
+    fn append(path: &std::path::Path, kind: &str, text: &str) {
+        let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+        std::io::Write::write_all(&mut f, format!("{}\n", claude_line(kind, text)).as_bytes())
+            .unwrap();
+    }
+
+    /// Poll as `pump` does, the stat due every time, until `done`: the
+    /// tail is read on a thread and lands on a later poll.
+    fn settle(t: &mut Transcript, rec: &SessionRecord, done: impl Fn(&Transcript) -> bool) {
+        for _ in 0..1000 {
+            t.checked = Instant::now() - FRESH * 2;
+            t.poll(Some((rec.kind, rec.transcript_path.as_deref().unwrap())));
+            if done(t) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("the dialog never caught up: {:?}", t.messages());
+    }
+
+    fn texts(t: &Transcript) -> Vec<&str> {
+        t.messages().iter().map(|m| m.text.as_str()).collect()
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("msmn-transcript-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn opens_on_the_newest_and_counts_what_comes_after_as_new() {
-        let dir = std::env::temp_dir().join(format!("msmn-transcript-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch("newest");
         let path = dir.join("t.jsonl");
-        let body: String = [claude_line("user", "fix the race"), claude_line("a", "found it")]
-            .iter()
-            .map(|l| format!("{l}\n"))
-            .collect();
-        std::fs::write(&path, body).unwrap();
-        let mut t = Transcript::open(&rec(&path)).expect("a conversation");
+        std::fs::write(&path, lines(&[("user", "fix the race"), ("a", "found it")])).unwrap();
+        let rec = rec(&path);
+        let mut t = Transcript::open(&rec).expect("a conversation");
         assert_eq!((t.idx, t.messages().len(), t.unseen()), (1, 2, 0));
         assert_eq!(t.message().map(|m| m.text.as_str()), Some("found it"));
         // The agent says more: the reader stays where they are.
-        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
-        std::io::Write::write_all(&mut f, format!("{}\n", claude_line("a", "fixed")).as_bytes())
-            .unwrap();
-        t.checked = Instant::now() - FRESH * 2;
-        assert!(t.poll());
-        assert_eq!((t.idx, t.messages().len(), t.unseen()), (1, 3, 1));
+        append(&path, "a", "fixed");
+        settle(&mut t, &rec, |t| t.messages().len() == 3);
+        assert_eq!((t.idx, t.unseen()), (1, 1));
         t.step(1);
         assert_eq!((t.idx, t.unseen()), (2, 0), "the newest on show is seen");
         t.step(1);
@@ -428,6 +541,65 @@ pub(crate) mod tests {
         t.step(-1);
         t.step(-1);
         assert_eq!(t.idx, 0, "nothing before the first");
+        // Back on an older one, what comes next counts from the newest seen.
+        append(&path, "user", "ship it");
+        settle(&mut t, &rec, |t| t.messages().len() == 4);
+        assert_eq!((t.idx, t.unseen()), (0, 1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A long reply reads whole, past the 8 KiB a phone is sent, so `c`
+    /// copies all of it.
+    #[test]
+    fn a_long_reply_is_held_whole() {
+        let dir = scratch("long");
+        let path = dir.join("t.jsonl");
+        let long = "word ".repeat(4096);
+        std::fs::write(&path, lines(&[("user", "plan it"), ("a", &long)])).unwrap();
+        let t = Transcript::open(&rec(&path)).expect("a conversation");
+        assert_eq!(t.message().map(|m| m.text.len()), Some(long.trim_end().len()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `/clear` (or `/resume`) moves the record to another file: the dialog
+    /// follows it and starts over on its newest message.
+    #[test]
+    fn a_new_conversation_is_followed() {
+        let dir = scratch("moved");
+        let (old, new) = (dir.join("a.jsonl"), dir.join("b.jsonl"));
+        std::fs::write(&old, lines(&[("user", "first"), ("a", "first reply")])).unwrap();
+        let mut rec = rec(&old);
+        let mut t = Transcript::open(&rec).expect("a conversation");
+        t.step(-1);
+        std::fs::write(&new, lines(&[("user", "second"), ("a", "on it"), ("a", "done")])).unwrap();
+        rec.transcript_path = Some(new.to_string_lossy().into_owned());
+        settle(&mut t, &rec, |t| t.messages().len() == 3);
+        assert_eq!(texts(&t), ["second", "on it", "done"]);
+        assert_eq!((t.idx, t.unseen()), (2, 0), "on the new conversation's newest");
+        // And its tail is read from there on.
+        append(&new, "a", "merged");
+        settle(&mut t, &rec, |t| t.messages().len() == 4);
+        assert_eq!((t.idx, t.unseen()), (2, 1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file cut short leaves the dialog open on nothing said yet, and a
+    /// step there is inert.
+    #[test]
+    fn a_file_cut_short_starts_over() {
+        let dir = scratch("cut");
+        let path = dir.join("t.jsonl");
+        std::fs::write(&path, lines(&[("user", "fix it"), ("a", "fixed")])).unwrap();
+        let rec = rec(&path);
+        let mut t = Transcript::open(&rec).expect("a conversation");
+        std::fs::write(&path, "").unwrap();
+        settle(&mut t, &rec, |t| t.messages().is_empty());
+        t.step(1);
+        t.step(-1);
+        assert!(t.message().is_none() && t.unseen() == 0);
+        std::fs::write(&path, lines(&[("user", "again")])).unwrap();
+        settle(&mut t, &rec, |t| t.messages().len() == 1);
+        assert_eq!(t.message().map(|m| m.text.as_str()), Some("again"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

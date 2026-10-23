@@ -1030,8 +1030,12 @@ impl Daemon {
                 self.control_preview(&by, &ticket, &session)
             }
             api::Request::Transcript { ticket, session, before, after, conversation, limit } => {
-                let ask =
-                    crate::agents::transcript::Ask { before, after, limit: limit.map(usize::from) };
+                let ask = crate::agents::transcript::Ask {
+                    before,
+                    after,
+                    limit: limit.map(usize::from),
+                    ..Default::default()
+                };
                 // A page is read off this thread and answered when it lands
                 // (`control_transcript_read`); a refusal is answered here.
                 match self.control_transcript(

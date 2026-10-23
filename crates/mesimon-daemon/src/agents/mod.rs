@@ -102,12 +102,18 @@ pub fn read_transcript_reply(
     ask: transcript::Ask,
     conversation: Option<&str>,
 ) -> Option<mesimon_core::mesophon::Reply> {
-    let path = if provider == SessionKind::Codex {
+    read_transcript_reply_at(provider, &transcript_file(provider, path), ask, conversation)
+}
+
+/// The file a record's transcript path is read from: a Codex rollout's
+/// newest continuation (T-840), which walks `~/.codex/sessions`, so a
+/// caller on a UI thread asks it off that thread.
+pub fn transcript_file(provider: SessionKind, path: &Path) -> std::path::PathBuf {
+    if provider == SessionKind::Codex {
         codex::discovery::current_rollout(path)
     } else {
         path.to_path_buf()
-    };
-    read_transcript_reply_at(provider, &path, ask, conversation)
+    }
 }
 
 /// [`read_transcript_reply`] of a path already resolved: a Codex rollout's

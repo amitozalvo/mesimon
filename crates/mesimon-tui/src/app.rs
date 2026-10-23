@@ -2774,13 +2774,17 @@ impl App {
         }
     }
 
-    /// The open transcript's pages landing and its tail read again (T-921).
+    /// The open transcript's pages landing and its tail read again (T-921),
+    /// following the conversation the board says the card's agent holds.
     fn poll_transcript(&mut self) -> bool {
         if !matches!(self.mode, Mode::Transcript { .. }) {
             self.transcript = None;
             return false;
         }
-        self.transcript.as_mut().is_some_and(|t| t.poll())
+        let Some(t) = self.transcript.as_mut() else { return false };
+        let record = crate::transcript::session_of(&self.board, t.ticket)
+            .and_then(|s| Some((s.kind, s.transcript_path.as_deref()?)));
+        t.poll(record)
     }
 
     pub(crate) fn dialog_card(&self) -> Option<ulid::Ulid> {

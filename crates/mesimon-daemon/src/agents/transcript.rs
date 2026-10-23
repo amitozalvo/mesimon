@@ -5,7 +5,9 @@
 //! tail (`claude/history.rs`), and costs what the page holds, not the file.
 //! What a record says is its adapter's business (`AgentAdapter::rows`).
 
-use mesimon_core::mesophon::{TranscriptRow, TRANSCRIPT_PAGE_BYTES, TRANSCRIPT_ROWS};
+use mesimon_core::mesophon::{
+    TranscriptRow, TRANSCRIPT_PAGE_BYTES, TRANSCRIPT_ROWS, TRANSCRIPT_ROW_MAX_BYTES,
+};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
@@ -26,6 +28,9 @@ pub struct Ask {
     pub before: Option<u64>,
     pub after: Option<u64>,
     pub limit: Option<usize>,
+    /// The longest row, cut past it: `TRANSCRIPT_ROW_MAX_BYTES` unless said
+    /// (the board's dialog reads a long reply whole, T-921).
+    pub row_max: Option<usize>,
 }
 
 const WINDOW: u64 = 64 * 1024;
@@ -48,6 +53,7 @@ pub fn page(
     // `after` came from an earlier page of this file; past `top` it is not.
     let floor = ask.after.filter(|a| *a <= top).unwrap_or(0);
     let limit = ask.limit.unwrap_or(TRANSCRIPT_ROWS).clamp(1, TRANSCRIPT_ROWS);
+    let row_max = ask.row_max.unwrap_or(TRANSCRIPT_ROW_MAX_BYTES);
 
     // Newest record first; each record's rows stay together and in order.
     let mut kept: Vec<Vec<TranscriptRow>> = Vec::new();
@@ -65,8 +71,11 @@ pub fn page(
     // One whole line at `start`: true when the page is full and the walk
     // stops before it.
     let mut take = |start: u64, line: &[u8], oversized: bool, from: &mut u64| -> bool {
-        let line_rows =
-            if oversized || line.len() > LINE_MAX { Vec::new() } else { parse(start, line, rows) };
+        let line_rows: Vec<TranscriptRow> = if oversized || line.len() > LINE_MAX {
+            Vec::new()
+        } else {
+            parse(start, line, rows).into_iter().map(|r| r.capped(row_max)).collect()
+        };
         if !line_rows.is_empty() {
             let size: usize =
                 line_rows.iter().map(|r| serde_json::to_vec(r).map_or(0, |v| v.len() + 1)).sum();
@@ -223,6 +232,21 @@ mod tests {
         std::fs::remove_dir_all(p.parent().unwrap()).ok();
     }
 
+    /// A phone gets a long reply cut and marked; a reader that asks for more
+    /// gets it whole (T-921).
+    #[test]
+    fn a_long_row_is_cut_at_the_asked_bound() {
+        let long = "z".repeat(20 * 1024);
+        let p = tmp("long", &format!("{{\"say\":\"{long}\"}}\n"));
+        let phone = page(&p, Ask::default(), &says).unwrap();
+        let text = &phone.rows[0].text;
+        assert!(text.len() <= TRANSCRIPT_ROW_MAX_BYTES && text.ends_with('…'), "{}", text.len());
+        let ask = Ask { row_max: Some(64 * 1024), ..Ask::default() };
+        let whole = page(&p, ask, &says).unwrap();
+        assert_eq!(whole.rows[0].text, long);
+        std::fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+
     /// Pages walked back from the tail, each from the last one's
     /// `next_before`, join into the whole file: no row lost, none twice,
     /// whatever the window cuts through.
@@ -236,7 +260,7 @@ mod tests {
             let mut before = None;
             let mut pages = 0;
             loop {
-                let pg = page(&p, Ask { before, after: None, limit: Some(7) }, &says).unwrap();
+                let pg = page(&p, Ask { before, limit: Some(7), ..Ask::default() }, &says).unwrap();
                 assert!(pg.rows.len() <= 7);
                 assert!(pg.rows.iter().all(|r| r.at >= pg.from && r.at < pg.end), "{pad}");
                 if let Some(before) = before {

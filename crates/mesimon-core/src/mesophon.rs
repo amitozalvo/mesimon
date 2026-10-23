@@ -718,7 +718,7 @@ pub const TRANSCRIPT_PAGE_BYTES: usize = 32 * 1024;
 
 impl TranscriptRow {
     /// A row's words as a phone is sent them (T-626): lines kept, controls
-    /// and format hazards gone, cut at `TRANSCRIPT_ROW_MAX_BYTES`. `None`
+    /// and format hazards gone. Whole: the page cuts them (`capped`). `None`
     /// for words that say nothing.
     pub fn new(at: u64, kind: RowKind, text: &str, ms: Option<u64>) -> Option<Self> {
         let text = crate::text::scrub_lines(&text.replace('\t', "  "));
@@ -726,12 +726,16 @@ impl TranscriptRow {
         if text.is_empty() {
             return None;
         }
-        let text = if text.len() > TRANSCRIPT_ROW_MAX_BYTES {
-            format!("{}…", crate::text::cap_bytes(text, TRANSCRIPT_ROW_MAX_BYTES - 3).trim_end())
-        } else {
-            text.to_string()
-        };
-        Some(TranscriptRow { at, kind, text, ms })
+        Some(TranscriptRow { at, kind, text: text.to_string(), ms })
+    }
+    /// The row cut at `max` bytes, saying so: a phone's `TRANSCRIPT_ROW_MAX_BYTES`
+    /// (T-626), or the more the board's transcript dialog reads (T-921).
+    pub fn capped(mut self, max: usize) -> Self {
+        if self.text.len() > max {
+            let cut = crate::text::cap_bytes(&self.text, max.saturating_sub(3)).trim_end();
+            self.text = format!("{cut}…");
+        }
+        self
     }
     /// A tool call's row: one line, as `step_line` draws a working step.
     pub fn tool(at: u64, label: &str, ms: Option<u64>) -> Option<Self> {

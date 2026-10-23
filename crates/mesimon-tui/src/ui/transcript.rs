@@ -49,16 +49,34 @@ fn steps_word(steps: usize, tools: &[String]) -> String {
 
 pub(super) fn draw(f: &mut Frame, app: &App) {
     let Some(t) = app.open_transcript_view() else { return };
-    let Some(m) = t.message() else { return };
     let theme = &app.theme;
     let screen = f.area();
     let mut area = dialog::placed(app, screen, ROWS, WIDTH);
     // The row above the footer stays the screen's, as a list's does.
     let whole_y = screen.bottom().saturating_sub(2);
     area.height = area.height.min(whole_y.saturating_sub(area.y)).max(3);
+    // Inside the frame, and two cells in from its edge: the title's column.
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+    let body = Rect { x: inner.x + 2, width: inner.width.saturating_sub(4), ..inner };
+    let fits = body.width >= 8 && body.height >= 3;
+
+    // The words are measured before the edge is drawn, so the edge's `jk`
+    // offers a scroll on the very frame that has one.
+    let words = t.message().filter(|_| fits).map(|m| words(app, t, m, body));
+    app.preview_measured();
 
     let mut title = dialog::title(&theme.rest, "TRANSCRIPT");
-    title.push(Span::styled(format!(" ({} of {})", t.idx + 1, t.messages().len()), theme.dim2()));
+    if !t.messages().is_empty() {
+        title.push(Span::styled(
+            format!(" ({} of {})", t.idx + 1, t.messages().len()),
+            theme.dim2(),
+        ));
+    }
     let fresh = t.unseen();
     if fresh > 0 {
         title.push(Span::styled(" ∙ ", theme.dim2()));
@@ -71,16 +89,32 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     let ctx = app.frame_ctx();
     let (own, _) = keymap::footer_split(Scope::Transcript, &ctx);
     let own: Vec<_> = own.into_iter().filter(|b| b.verb != Verb::Back).collect();
-    let inner_w = area.width.saturating_sub(2) as usize;
-    let tail = super::chrome::hint_spans(&own, &ctx, &theme.rest, inner_w.saturating_sub(4));
-    let inner = dialog::frame(f, app, area, None, &theme.rest, Edges { title, tail });
+    let tail =
+        super::chrome::hint_spans(&own, &ctx, &theme.rest, inner.width.saturating_sub(4).into());
+    dialog::frame(f, app, area, None, &theme.rest, Edges { title, tail });
     dialog::notch(f, app, area);
-
-    // Two cells in from the edge: the title's own column.
-    let body = Rect { x: inner.x + 2, width: inner.width.saturating_sub(4), ..inner };
-    if body.width < 8 || body.height < 3 {
+    if !fits {
         return;
     }
+    let Some((head, shown)) = words else {
+        // A conversation cut short, or started over with nothing said yet.
+        let quiet = Line::from(Span::styled("nothing said yet", theme.dim2()));
+        f.render_widget(Paragraph::new(quiet), Rect { height: 1, ..body });
+        return;
+    };
+    f.render_widget(Paragraph::new(head), Rect { height: 1, ..body });
+    f.render_widget(Paragraph::new(shown), Rect { y: body.y + 2, height: body.height - 2, ..body });
+}
+
+/// The message's first row (who, when, the steps that followed it) and its
+/// words in the window `jk` scrolls, measured into the dialog's `Pager`.
+fn words(
+    app: &App,
+    t: &crate::transcript::Transcript,
+    m: &crate::transcript::Message,
+    body: Rect,
+) -> (Line<'static>, Vec<Line<'static>>) {
+    let theme = &app.theme;
     let width = body.width as usize;
 
     // Who, when, and the steps that followed, at the right.
@@ -108,7 +142,6 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     }
     head.push(Span::raw(" ".repeat(gap)));
     head.push(Span::styled(steps, theme.dim3()));
-    f.render_widget(Paragraph::new(Line::from(head)), Rect { height: 1, ..body });
 
     // The words: a person's behind the quote bar, read as they typed
     // them; the agent's as the ticket page reads a reply; a notice in
@@ -136,5 +169,5 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
             line.spans.insert(0, Span::styled(mark, theme.dim3()));
         }
     }
-    f.render_widget(Paragraph::new(shown), Rect { y: body.y + 2, height: body.height - 2, ..body });
+    (Line::from(head), shown)
 }

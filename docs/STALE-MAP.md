@@ -31013,8 +31013,8 @@ the footer only, the board receded as behind the other card dialogs).
 its notch, 68 wide and 14 rows inside, over `board::recede`. It opens on the newest message, at
 its top. Inside, `{ }` step the messages (`TranscriptNewer`, with `{` derived to
 `TranscriptOlder`), `jk` and the wheel scroll the message on show (`ScrollDown` through
-`App::pager`, which now answers the board with the dialog's `Pager`), `c` copies it whole and
-Esc closes. Each message remembers where it was left. A message is a prompt, a reply or a notice;
+`App::pager`, which now answers the board with the dialog's `Pager`), `c` copies it whole (up to
+256 KiB, below) and Esc closes. Each message remembers where it was left. A message is a prompt, a reply or a notice;
 the tool calls that follow one are its `n steps ∙ Read, Edit` on its first row, beside who wrote
 it and when. A person's words wear the `▎` quote bar and keep their line breaks; a reply renders
 through `rich` as the ticket page's preview does, cut with `~` while more is below. The body
@@ -31023,13 +31023,19 @@ have between their title and their rows.
 
 **Where the words come from.** The TUI reads the transcript itself, through
 `mesimon_daemon::agents::read_transcript_reply` — the pager Remote Control reads (T-626) — the
-same observe-tier read the card's peek makes (`peek.rs`). No wire command, no daemon change: a
-running daemon needs no restart. The newest page is read on the key; the pages before it are read
-on a thread of their own back to the file's start, so `(i of n)` counts the whole conversation
-once they land (the message on show keeps its place as they prepend). While the dialog is open
-the file is stat'ed every 250 ms and only what was written since is read; a reader on the newest
-message stays on it, and the title gains `∙ 1 new` until they step to it. A new conversation
-(`/clear`, `/resume`) starts over on its newest message. The session is the ticket's seat holder,
+same observe-tier read the card's peek makes (`peek.rs`). No wire command and no daemon
+behaviour change: a running daemon needs no restart. The newest page is read on the key; the pages
+before it are read on a thread of their own back to the file's start, so `(i of n)` counts the
+whole conversation once they land (the message on show keeps its place, found by its key, as they
+prepend). While the dialog is open the UI thread only stats the file, every 250 ms; what was
+written since is read on another thread, one read in flight at a time, and lands in `pump` as a
+snapshot does (T-812), with the messages rebuilt once per poll however many pages landed. That
+read resolves the file again (`agents::transcript_file`: a Codex rollout's continuation, looked for
+at least every 5 s), and `poll` is handed the record's path off the board each time, so a new
+conversation (`/clear`, `/resume`, a Codex continuation) starts over on its newest message. A
+reader on the newest message stays on it, and the title gains `∙ 1 new` until they step to it:
+"new" is what came after the newest message they have been on, kept as that message's key. A file
+cut short starts over too, on `nothing said yet` when it holds nothing. The session is the ticket's seat holder,
 else its newest agent record, so a parked or finished agent's conversation still opens.
 
 **Gates.** `Ctx::ticket_transcript` (the board, a card, an agent record with a transcript path),
@@ -31040,6 +31046,14 @@ and opens nothing. Under its dialog the card is its title: the peek would repeat
 
 **The footer.** `{ } transcript` (prio 20) sits after `space ticket page` on a card that has a
 conversation, so at 120 columns `tab describe` gives up its place there (three board goldens).
+
+**A long message reads whole (the crown's review, T-925).** Remote Control's pager cut every row
+at `TRANSCRIPT_ROW_MAX_BYTES` (8 KiB) inside `TranscriptRow::new`, so a long final report showed,
+and `c` copied, its first 8 KiB. The cut moved to the page reader: `TranscriptRow::capped`, at
+`Ask::row_max`, default 8 KiB, so a phone's pages are byte for byte what they were, and the dialog
+asks for 256 KiB (`transcript::ROW_MAX`); past that it ends in `…`. A row still counts against the
+page's 32 KiB, which only makes the dialog's pages shorter. The dialog's edge is drawn after the
+message is measured, so `jk scroll` shows on the frame that opens a long one, not the next.
 
 Tests: `transcript::tests` (steps belong to the message before them; opens on the newest, `unseen`
 counts what came after, the ends hold), `golden_transcript_dialog_120`,
