@@ -16430,6 +16430,16 @@ pub(crate) mod test_support {
             };
             App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme)
                 .expect("fake transport snapshot")
+                .with_spin_held()
+        }
+
+        /// The working spinner held on frame 0 (T-926): a test that renders
+        /// twice and compares would otherwise read two frames when a render
+        /// spans a 100 ms step under load. `elapsed` of an epoch in the future
+        /// is zero. A test about the animation sets `spin_epoch` itself.
+        pub(crate) fn with_spin_held(self) -> App {
+            self.spin_epoch.set(Some(Instant::now() + std::time::Duration::from_secs(3600)));
+            self
         }
 
         /// The board, to edit in place: what a test does to stand in for a
@@ -16480,7 +16490,8 @@ pub(crate) mod test_support {
             };
             tune(&mut fake);
             let app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme)
-                .expect("fake transport snapshot");
+                .expect("fake transport snapshot")
+                .with_spin_held();
             (app, sent)
         }
     }

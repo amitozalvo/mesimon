@@ -31623,3 +31623,23 @@ delegation passes and a bound worktree beside a checkout cwd does not; a second 
 the shared worker's write, by-product and commit are its own; the crown's script edit and its
 commit in its own turn are the crown's; and the crown's own write fails with the worker in a
 worktree or on the checkout.
+
+## The TUI tests hold the spinner on frame 0 (T-926, 2026-10-23, "TUI test terminal_app_description_bar_fills_every_row compares two renders across the spinner's wall clock")
+
+`App::spin_epoch` is set at an app's first draw, so every later render on the same app reads a
+later 100 ms frame. A test that renders twice and compares, or checks several goldens on one
+app, failed whenever a slow run crossed a step. Four tests flaked for this reason:
+`terminal_app_description_bar_fills_every_row_without_moving_the_text`,
+`plain_progress_preserves_the_completed_share_and_the_rgb_card`, `golden_mesophon_pair_and_revoke`
+(the board's spinner behind the dialog) and `golden_tiers_list_both_scopes_and_a_page`.
+`App::for_test*` now ends in `with_spin_held`, an epoch an hour ahead, whose `elapsed` is zero.
+`arcade_preserves_…` already used the same trick. A test about the animation sets
+`spin_epoch` itself, as before. Measured with `SPIN_STEP_MS` set to 1: 52 lib tests failed
+before and 8 after. The 8 are the animation tests that set the epoch.
+
+**Left open:** the marquee clocks (`marquee`, `menu_marquee`, `rail_marquee`) are keyed and
+still wall-clock. They hold 1.2 s before scrolling. With that hold forced to zero, 5 tests
+fail: `golden_train_manual_120`, `golden_codex_column_agent_behaviour`,
+`test_the_peek_names_the_ticket`, `the_cursors_links_row_scrolls_its_cut_into_view` and
+`diff_pages_glide_and_file_changes_cancel_the_motion`. A run would have to stall 1.2 s
+between two renders to hit this.

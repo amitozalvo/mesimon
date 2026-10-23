@@ -9054,8 +9054,7 @@ fn golden_board_prs_120() {
         pr(5, 39, "github", "merged", "none"),
         pr(3, 6, "gitlab", "open", "waiting"),
     ];
-    // The sweep's first frame (T-747): the clock starts at the render.
-    app.spin_epoch.set(Some(std::time::Instant::now()));
+    // The sweep's first frame (T-747): `for_test` holds the clock there.
     let lines = render(&app, 120, 30);
     golden("board_prs_120x30", &lines);
     let under = |lines: &[String], title: &str| {
