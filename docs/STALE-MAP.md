@@ -30802,7 +30802,8 @@ turn, so no wake ever came to the crown either. `get_ticket` read idle for 42 s,
   stands for the ticket and the queue will send it, or a resume still waiting for its worktree
   carries words; `held_for_person` when that ask waits for `^y`; otherwise `none`.
 - The shim renders the word as `prompt` and a sentence beside it, `prompt_about`, as T-880 does
-  with `wake`/`wake_about`. For `none`: nothing was sent, the agent stays idle with no turn and
+  with `wake`/`wake_about`. For `none`: nothing was sent, the session is open again (no claim
+  about which conversation, see Not done), the agent stays idle with no turn and
   no wake for the crown until words reach it, `ask_agent` sends them once (deliver idle waits
   for it to be up), and `start_agent` again is not needed. For `queued`: no second ask or
   start. For `held_for_person`: the send is the person's step, raised with `raise_hand`. The
@@ -30822,10 +30823,12 @@ turn, so no wake ever came to the crown either. `get_ticket` read idle for 42 s,
   fails at the person's send. This is what makes `queued` and `held_for_person` true.
 
 **Not done.** The conversation word is not in the receipt. A wake whose history is missing
-(`FreshWhenHistoryMissing`) starts a new conversation under the same record, and the receipt
-does not say so. A crown-started worker has always taken its brief, so this case does not come
-up. No continuation words are written by mesimon: the crown's `ask_agent` is the only road, so
-the zero-injection promise is unchanged.
+(`FreshWhenHistoryMissing`) starts a new conversation under the same record; the wake arm drops
+`Spawned.fresh`, so the receipt does not know which happened, and `prompt_about` says only that
+the session is open again, claiming no conversation either way. A crown-started worker can meet
+this too: it took its brief, but its transcript can still go missing. No continuation words are
+written by mesimon: the crown's `ask_agent` is the only road, so the zero-injection promise is
+unchanged.
 
 **Tests.** `cargo ut`: `a_start_prompt_is_its_own_word_and_absent_from_an_older_daemon`
 (command), `the_crown_is_told_a_wake_sends_nothing` and the quota test's two new phrases (core
@@ -30840,6 +30843,18 @@ now goes on past the tier wake:
   same record and cwd.
 - Parked again with a supervised crown's ask held: the next wake's receipt reads
   `held_for_person`, nothing goes on its own, and the person's `SendQueuedAsk` lands it once.
+`a_wake_s_receipt_names_what_waits_and_it_goes_once` (added after the crown's review) covers
+the receipt's queued and provisioning cases:
+- **Queued.** The crown's ask to a parked shared-checkout worker waits behind the crown's own
+  running turn (`queued`, wake `when_sent`). The `start_agent` wake then reads `queued`. Once
+  the worker is up, the pending row is a pane `ask`, the words wait until the crown's `Stop`,
+  and they land exactly once. With the reseat turned off, the test fails at "aimed at W's pane
+  now".
+- **Provisioning.** A worktree worker is squash-merged, parked and archived, so its tree is
+  reclaimed and the next wake rebuilds it. A `start_agent` wake reads `waiting_for_worktree`
+  with `none`, and nothing is typed once it is up. Reclaimed again, the crown's `ask_agent`
+  wakes it, and its words ride the parked resume (wake `woken`). A second `start_agent` then
+  reads `queued` and does not add a second paste: the words land exactly once.
 Rig L2 is strengthened. The worker's brief has two parts, and part two waits for a later
 prompt. The person's words ask the crown to carry it on with rig-alt "until it finishes". The
 step ends on the worker's next Stop and the board's wake, not on `SessionStart`. Checks:

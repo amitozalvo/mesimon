@@ -262,7 +262,7 @@ fn start_prompt_about(key: &str, prompt: StartPrompt, running: bool) -> String {
              the board wakes this session when that turn ends"
         ),
         StartPrompt::None => format!(
-            "nothing was sent: {key}'s agent is back in its conversation at its prompt box{up}, \
+            "nothing was sent: {key}'s agent's session is open again at its prompt box{up}, \
              and it stays idle, with no turn and no wake for this session, until words reach \
              it. For it to carry on, ask_agent sends them once (deliver idle waits for it to be \
              up), and the turn they start wakes this session at its end; start_agent again is \
@@ -857,6 +857,10 @@ mod tests {
             assert!(words.contains(said), "{said:?} in {words}");
         }
         assert!(!words.contains("worktree"), "{words}");
+        // The wake may have started a new conversation (history missing,
+        // `FreshWhenHistoryMissing`), which the receipt does not carry: the
+        // words claim no conversation either way.
+        assert!(!words.contains("conversation"), "{words}");
         let rebuilt = about(&body(false, true, StartPrompt::None));
         assert!(rebuilt.contains("once its worktree is cut"), "{rebuilt}");
 

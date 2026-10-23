@@ -26,7 +26,8 @@
 
 use mesimon_core::board::{CrownMode, MergeInto, SessionKind, SessionState, WorkspaceStrategy};
 use mesimon_core::command::{
-    AgentTicketView, AskRoad, AskWake, Command, CrownTouch, Deliver, Response, StartPrompt,
+    AgentTicketView, AskRoad, AskWake, Command, CrownTouch, Deliver, PendingAction, Response,
+    StartPrompt,
 };
 use mesimon_core::Principal;
 use serde_json::json;
@@ -6274,6 +6275,215 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
     });
     std::thread::sleep(std::time::Duration::from_millis(1000));
     assert_eq!(held_count(), 1, "once");
+}
+
+/// What a start_agent wake's receipt says waits for the agent (T-920), read
+/// off the daemon's own state, and that whatever waited goes exactly once.
+/// Queued: the crown's ask to a parked worker on the shared checkout waits
+/// behind the crown's own running turn, the wake moves it to the new pane,
+/// and it goes once that turn ends. A resume parked on its worktree's
+/// rebuild: with nothing waiting it reads none and nothing goes; with the
+/// crown's words already riding that resume it reads queued, and a second
+/// start adds no second paste.
+#[test]
+fn a_wake_s_receipt_names_what_waits_and_it_goes_once() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_wake_words",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+        ],
+    ) else {
+        return;
+    };
+    let repo = h.repo.clone();
+    init_repo(&repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_wake_words");
+    let got = h.dir.join("got.txt");
+    let count =
+        |probe: &str| std::fs::read_to_string(&got).unwrap_or_default().matches(probe).count();
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let up = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "SessionStart", r#"{"source":"resume"}"#);
+        c.await_state(sid, "up after the wake", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
+
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("checkout worker");
+    let w2 = c.create_ticket("worktree worker");
+    let (kw, kw2) = (key_of(&mut c, w), key_of(&mut c, w2));
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let start_agent = |c: &mut TestClient, key: &str, workspace: &str| {
+        let v = read(c, sa, key).unwrap();
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket {
+                key: key.into(),
+                seen: v.seen,
+                plan: false,
+                tier: None,
+                workspace: Some(workspace.into()),
+            },
+        )
+    };
+    let ask = |c: &mut TestClient, key: &str, text: &str| {
+        let v = read(c, sa, key).unwrap();
+        match c.send(
+            Principal::Agent { session: sa },
+            Command::AgentAskTicket {
+                key: key.into(),
+                text: text.into(),
+                seen: v.seen,
+                plan: false,
+                deliver: Deliver::Idle,
+            },
+        ) {
+            Response::AgentAsked { held_for_person, road, wake, .. } => {
+                (held_for_person, road, wake)
+            }
+            other => panic!("ask_agent {key}: {other:?}"),
+        }
+    };
+    let park = |c: &mut TestClient, key: &str, sid: uuid::Uuid| {
+        let v = read(c, sa, key).unwrap();
+        match c.send(
+            Principal::Agent { session: sa },
+            Command::AgentSleepTicket { key: key.into(), seen: v.seen },
+        ) {
+            Response::AgentTicket { .. } => {}
+            other => panic!("sleep_agent {key}: {other:?}"),
+        }
+        c.await_state(sid, "parked", |s| *s == SessionState::Sleeping);
+    };
+
+    // ---- queued: the crown's ask waits behind the crown's own turn ---------
+    match start_agent(&mut c, &kw, "shared_checkout") {
+        Response::AgentStarted { prompt, .. } => assert_eq!(prompt, Some(StartPrompt::Brief)),
+        other => panic!("start W: {other:?}"),
+    }
+    let ws = c.board().live_agent(w).expect("W's seat").id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    park(&mut c, &kw, ws);
+    // The crown's turn runs on the checkout W shares, so the queue holds W's
+    // words: they would wake W, and a wake waits for a quiet checkout.
+    start(&mut c, sa);
+    let probe = "mesimon-probe-922 the queued words";
+    let (held, road, wake) = ask(&mut c, &kw, probe);
+    assert!(!held, "the board lets the crown send to its own worker");
+    assert_eq!(road, Some(AskRoad::Queued));
+    assert_eq!(wake, Some(AskWake::WhenSent), "still asleep: the checkout is busy");
+    settle();
+    assert_eq!(c.board().live_agent(w).unwrap().state, SessionState::Sleeping);
+    match start_agent(&mut c, &kw, "shared_checkout") {
+        Response::AgentStarted { session_started: true, woken: true, prompt, .. } => {
+            assert_eq!(prompt, Some(StartPrompt::Queued), "the crown's words wait for it");
+        }
+        other => panic!("start_agent over a queued ask: {other:?}"),
+    }
+    wait_until(std::time::Duration::from_secs(15), "W woken", || {
+        c.board().live_agent(w).is_some_and(|s| s.id == ws && s.state.has_pane())
+    });
+    up(&mut c, ws);
+    settle();
+    assert_eq!(count(probe), 0, "the crown's turn still holds the checkout");
+    let r = pending_of(&mut c, Some(w)).into_iter().find(|p| p.is_queued_ask());
+    assert!(r.is_some_and(|r| r.action == PendingAction::Ask), "aimed at W's pane now");
+    stop(&mut c, sa);
+    wait_until(std::time::Duration::from_secs(10), "the queued words to reach W", || {
+        count(probe) > 0
+    });
+    settle();
+    assert_eq!(count(probe), 1, "once");
+
+    // ---- a resume parked on its worktree's rebuild -------------------------
+    match start_agent(&mut c, &kw2, "worktree") {
+        Response::AgentStarted { session_started: false, prompt, .. } => {
+            assert_eq!(prompt, Some(StartPrompt::Brief), "its brief, once the cut lands");
+        }
+        other => panic!("start W2: {other:?}"),
+    }
+    let tree = std::path::PathBuf::from(wait_attached(&mut c, w2).path.expect("a path"));
+    let branch = wt_of(&mut c, w2).unwrap().branch;
+    wait_until(std::time::Duration::from_secs(15), "W2's start to land", || {
+        c.board().live_agent(w2).is_some_and(|s| s.state.has_pane())
+    });
+    let ws2 = c.board().live_agent(w2).unwrap().id;
+    std::fs::write(tree.join("w2.txt"), "w2\n").unwrap();
+    git(&tree, &["add", "."]);
+    git(&tree, &["commit", "-qm", "w2"]);
+    git(&repo, &["merge", "-q", "--squash", &branch]);
+    git(&repo, &["commit", "-qm", "w2 (#9)"]);
+    wait_until(std::time::Duration::from_secs(20), "the board to read the squash", || {
+        wt_of(&mut c, w2).is_some_and(|wt| wt.merged)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, ws2);
+    stop(&mut c, ws2);
+    // Parked and archived, the landed tree is reclaimed and the branch kept,
+    // so the next wake rebuilds the tree first (T-278).
+    let reclaim = |c: &mut TestClient| {
+        park(c, &kw2, ws2);
+        assert!(matches!(c.request(Command::ArchiveTicket { id: w2 }), Response::Ok));
+        wait_until(std::time::Duration::from_secs(20), "the archive to reclaim W2's tree", || {
+            !tree.exists() && wt_of(c, w2).is_some_and(|wt| wt.status == "evicted")
+        });
+        assert!(matches!(c.request(Command::UnarchiveTicket { id: w2 }), Response::Ok));
+    };
+
+    // Nothing waiting: none, and nothing goes once it is up.
+    reclaim(&mut c);
+    let lines = || std::fs::read_to_string(&got).unwrap_or_default().lines().count();
+    match start_agent(&mut c, &kw2, "worktree") {
+        Response::AgentStarted { session_started: false, woken: true, prompt, .. } => {
+            assert_eq!(prompt, Some(StartPrompt::None));
+        }
+        other => panic!("a wake behind a rebuild: {other:?}"),
+    }
+    wait_until(std::time::Duration::from_secs(20), "W2 up in its rebuilt tree", || {
+        c.board().live_agent(w2).is_some_and(|s| s.id == ws2 && s.state.has_pane())
+    });
+    let before = lines();
+    up(&mut c, ws2);
+    settle();
+    assert_eq!(lines(), before, "nothing was sent");
+
+    // The crown's words already ride the parked resume: queued, and a second
+    // start neither drops them nor sends them twice.
+    reclaim(&mut c);
+    let probe = "mesimon-probe-923 words riding the rebuild";
+    let (held, _, wake) = ask(&mut c, &kw2, probe);
+    assert!(!held);
+    assert_eq!(wake, Some(AskWake::Woken), "the words woke it, behind the rebuild");
+    match start_agent(&mut c, &kw2, "worktree") {
+        Response::AgentStarted { session_started: false, woken: true, prompt, .. } => {
+            assert_eq!(prompt, Some(StartPrompt::Queued), "the words on the resume");
+        }
+        other => panic!("a second start behind the rebuild: {other:?}"),
+    }
+    wait_until(std::time::Duration::from_secs(20), "W2 up again", || {
+        c.board().live_agent(w2).is_some_and(|s| s.id == ws2 && s.state.has_pane())
+    });
+    up(&mut c, ws2);
+    wait_until(std::time::Duration::from_secs(10), "the words to reach W2", || count(probe) > 0);
+    settle();
+    assert_eq!(count(probe), 1, "once");
 }
 
 /// The crown answers a Codex worker's question (T-846). The worker's runtime
