@@ -1995,16 +1995,13 @@ impl Daemon {
             }
             self.lower_hand_on(worker);
         }
-        let board = &self.board;
-        if self.crown_hands.keys().any(|w| board.ticket(*w).is_none()) {
-            self.crown_hands.retain(|w, _| board.ticket(*w).is_some());
-        }
     }
 
     /// The worker's agent was given something (T-922): its next turn began,
     /// so the hand the crown was told of is answered or overtaken, and its
-    /// reason is no longer the worker's ask. Writes nothing for a worker
-    /// that kept none.
+    /// reason is no longer the worker's ask. Also the worker leaving the
+    /// board (archive, snooze, delete). Writes nothing for a worker that
+    /// kept none.
     pub(super) fn forget_told_hand(&mut self, worker: ulid::Ulid) {
         if self.crown_hands.contains_key(&worker) {
             self.crown_hands.remove(&worker);

@@ -174,7 +174,10 @@ impl Daemon {
         let flagged = |w: &ulid::Ulid| self.board.ticket(*w).is_some_and(|t| t.manual_merge);
         self.crown_held = ledger.held.into_iter().filter(|w| *w != crown && flagged(w)).collect();
         self.turn_asks = ledger.asks.into_iter().filter(|(w, _)| on_board(w)).collect();
-        self.crown_hands = ledger.hands.into_iter().filter(|(w, _)| on_board(w)).collect();
+        // An archived worker's hand was forgotten as it went (T-922); one
+        // still on file came from a ledger written before that.
+        let showing = |w: &ulid::Ulid| self.board.ticket(*w).is_some_and(|t| !t.is_archived());
+        self.crown_hands = ledger.hands.into_iter().filter(|(w, _)| showing(w)).collect();
         self.crown_wakes = ledger
             .wakes
             .into_iter()

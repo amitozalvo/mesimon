@@ -31086,14 +31086,20 @@ or lights a told hand), and its reason stays with the crown that was told:
   `lower_hand_on`: `UserPromptSubmit`, Codex's new turn, the High `Idle{EndTurn}`/dialog →
   `Running` edge): it was given something, so the question is answered or overtaken. A new
   `raise_hand` with other words (the new hand is `state.raised`, and its telling replaces the
-  entry). A new crown (`drop_crown_wakes`; it has heard nothing). A ticket gone from the board.
-  One entry per worker, at most `RAISE_REASON_MAX_BYTES`: bounded by the board.
+  entry). A new crown (`drop_crown_wakes`; it has heard nothing). The worker leaving the board,
+  said where it leaves: archive and delete through `drop_crown_if`, a snooze in
+  `snooze_ticket`; a restored ledger drops a worker missing or archived. One entry per worker, at
+  most `RAISE_REASON_MAX_BYTES`: bounded by the board.
 - **Not taken by** the other T-861 roads (focus in or out of the pane, a park, the page's
   `LowerHand`): none of them gave the agent anything, and the crown is still the one holding the
   question. **A hand lowered before the sentence went keeps nothing**: the person dealt with it,
   and the wake that still names it does not resurrect it.
-- Not in `seen_token`: a reason kept or forgotten changes nothing a keyed edit assumes, and the
-  turn that forgets it already moves the stamp.
+- **In `seen_token`, by its words and `told_ms`** (crown review of the first commit): two hands
+  told inside one turn of the worker leave the column, notes, state, `state_changed_at` and
+  `Ticket.raised` (down both times) exactly as the first read saw them, so a stamp without the
+  told hand came back the same and an ask answering the first was accepted for the second.
+  `told_ms` is the telling's moment, persisted, never elapsed time: the stamp holds still while
+  nothing changes, and the same words told again are another hand with another stamp.
 - `CROWN_WAKES` gains one sentence saying the hand comes down at the telling and where its reason
   is read; the wake template and `raise_hand`'s description are unchanged.
 
@@ -31108,6 +31114,12 @@ read by the crown with `state: working` and no `state.raised`, refused to anothe
 on the worker's own read and the crown's own ticket, kept across a restart and the crown's own
 turn, overtaken by a new hand and replaced at its telling, kept past the worker's Stop and taken
 by its next prompt, nothing kept for a hand a person lowered first, and gone with an uncrown.
+`told_hand_e2e::an_answer_read_against_one_told_hand_is_refused_for_the_next`: two hands told in
+one worker turn, the first read's stamp refused (`changed since it was read`) and a fresh read's
+accepted, the stamp still after a second, the same words told again a new stamp; a park keeps the
+told hand, an archive takes it out of `crown.json` and an unarchive brings none back, a delete
+takes it out. Without the stamp change the stale ask is accepted; without `drop_crown_if`'s
+forget the archive keeps it.
 Without the fix it fails at the first read exactly as T-917 read. `crown_e2e`'s two hand passages
 (a started worker, a watched one) now read `told_hand` after the wake. `crownledger`'s round-trip
 carries `hands`. Rig **RH2** (Sonnet): a worker asks a two-word question by its hand; the crown

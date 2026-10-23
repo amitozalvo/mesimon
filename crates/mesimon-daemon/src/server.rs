@@ -7715,6 +7715,15 @@ impl Daemon {
             // The train hold and whose it is (T-919): a person's `t` after
             // the crown's read makes the crown's next edit stale.
             self.train_hold_word(id).hash(&mut h);
+            // The hand the crown was told of (T-922), by its words and the
+            // moment of its telling: a second hand told inside the same
+            // turn leaves everything above as the first read saw it, and
+            // an answer to the first must not pass for one to the second.
+            // The same words told again are another hand.
+            if let Some(told) = self.crown_hands.get(&id) {
+                told.reason.hash(&mut h);
+                told.told_ms.hash(&mut h);
+            }
             if let Some(s) = self.board.live_agent(id) {
                 s.state_word().hash(&mut h);
                 s.state_changed_at.hash(&mut h);
@@ -7895,8 +7904,10 @@ impl Daemon {
     /// feed as the daemon's own doing. A watched ticket leaving takes its
     /// watch (T-712): nothing more will happen to it. A ticket the crown
     /// held out of the train keeps the flag and leaves the crown's ledger
-    /// (T-919): the hold is the person's from here.
+    /// (T-919): the hold is the person's from here. A worker leaving takes
+    /// the hand the crown was told of (T-922): no read will ask for it.
     fn drop_crown_if(&mut self, id: ulid::Ulid) {
+        self.forget_told_hand(id);
         if self.crown_watched.remove(&id) {
             self.hold_unwatched_sends(id);
             self.feed.board("automation", "watch_ended", Some(id));
@@ -14070,6 +14081,9 @@ impl Daemon {
         if !awake.is_empty() {
             self.persist_sessions();
         }
+        // Off the board until it wakes: the told hand goes as on an archive
+        // (T-922); the crown keeps its seat, which a snooze never takes.
+        self.forget_told_hand(id);
         let at = now_iso();
         let resp = self.with_ticket(id, |t| {
             t.woke_at = None;
@@ -14151,7 +14165,8 @@ impl Daemon {
     ///
     /// The three turn-start roads also forget the reason the crown was told
     /// of (`forget_told_hand`, T-922); the others leave it with the crown,
-    /// since none of them gave the agent anything.
+    /// since none of them gave the agent anything. Archive, snooze and
+    /// delete forget it too (`drop_crown_if`, `snooze_ticket`).
     ///
     /// The daemon cannot tell its own paste's ack from a line the user typed
     /// (the queued ask states the same limit), so a prompt mesimon delivers

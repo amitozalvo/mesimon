@@ -197,3 +197,183 @@ fn the_crown_reads_the_reason_of_a_hand_it_was_told_of() {
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     assert_eq!(told(&mut c, sa, &kw), None, "the reason went with the crown it was told");
 }
+
+/// What `crown.json` keeps of `worker`'s told hand (T-922), as written.
+fn kept(h: &Harness, worker: ulid::Ulid) -> Option<String> {
+    let text = std::fs::read_to_string(h.paths.state_dir.join("crown.json")).ok()?;
+    let ledger: serde_json::Value = serde_json::from_str(&text).ok()?;
+    ledger["hands"][worker.to_string()]["reason"].as_str().map(str::to_string)
+}
+
+/// The stamp a keyed edit is judged by covers the told hand (T-922): two
+/// hands told inside one turn of the worker leave its column, notes, state
+/// and its hand-that-is-up as they were, so a stamp that left the told hand
+/// out let an answer read against the first pass for the second. And the
+/// told hand goes with its ticket: an archive and a delete forget it.
+#[test]
+fn an_answer_read_against_one_told_hand_is_refused_for_the_next() {
+    let Some(h) = Harness::boot_with_env(
+        "told_stamp",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_SLEEP_MIN_AGE_MS", "0"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("told_stamp");
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| -> usize {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .count()
+    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let start_agent = |c: &mut TestClient, crown: uuid::Uuid, key: &str, workspace: &str| {
+        let v = read(c, crown, key).unwrap();
+        match c.send(
+            Principal::Agent { session: crown },
+            Command::AgentStartTicket {
+                key: key.into(),
+                seen: v.seen,
+                plan: false,
+                tier: None,
+                workspace: Some(workspace.into()),
+            },
+        ) {
+            Response::AgentStarted { .. } => {}
+            other => panic!("start_agent {key}: {other:?}"),
+        }
+    };
+    let ask = |c: &mut TestClient, crown: uuid::Uuid, key: &str, seen: Option<String>| {
+        c.send(
+            Principal::Agent { session: crown },
+            Command::AgentAskTicket {
+                key: key.into(),
+                text: "mesimon-probe-86 staging".into(),
+                seen,
+                plan: false,
+                deliver: mesimon_core::command::Deliver::Idle,
+            },
+        )
+    };
+
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-85 worker");
+    let w2 = c.create_ticket("mesimon-probe-87 worker");
+    let (kw, kw2) = (key_of(&mut c, w), key_of(&mut c, w2));
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    start_agent(&mut c, sa, &kw, "shared_checkout");
+    let ws = c.board().live_agent(w).expect("W holds a seat").id;
+    start_agent(&mut c, sa, &kw2, "worktree");
+    wait_until(std::time::Duration::from_secs(15), "W2's worktree start to land", || {
+        c.board().live_agent(w2).is_some()
+    });
+    let ws2 = c.board().live_agent(w2).unwrap().id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let told_of = |c: &mut TestClient, n: usize| {
+        wait_until(std::time::Duration::from_secs(10), "the hand's wake to land", || {
+            lines_with(&format!("{kw} \"mesimon-probe-85 worker\" raised its hand")) == n
+        });
+        wait_until(std::time::Duration::from_secs(5), "the told hand to come down", || {
+            !c.board().ticket(w).unwrap().hand_raised()
+        });
+        // The stub crown fires no hook of its own: its turn on the wake is
+        // walked here, so the next wake finds it idle.
+        start(c, sa);
+        stop(c, sa);
+    };
+
+    // ---- 1. two hands told inside one turn of the worker ------------------
+    start(&mut c, ws);
+    let first = "mesimon-secret-85 staging or prod?";
+    raise(&mut c, ws, first);
+    told_of(&mut c, 1);
+    let read_a = read(&mut c, sa, &kw).unwrap();
+    assert_eq!(read_a.told_hand.as_ref().map(|t| t.reason.as_str()), Some(first));
+    let second = "mesimon-secret-86 and which region?";
+    raise(&mut c, ws, second);
+    told_of(&mut c, 2);
+    assert_eq!(told(&mut c, sa, &kw).as_deref(), Some(second));
+    assert_eq!(
+        c.board().live_agent(w).unwrap().state,
+        SessionState::Running,
+        "the same turn: nothing else on the ticket moved"
+    );
+
+    // ---- 2. an answer to the first is refused; a fresh read goes ----------
+    match ask(&mut c, sa, &kw, read_a.seen.clone()) {
+        Response::Err { message } => {
+            assert!(message.contains("changed since it was read"), "{message}")
+        }
+        other => panic!("an ask on the first hand's stamp: {other:?}"),
+    }
+    let read_b = read(&mut c, sa, &kw).unwrap();
+    assert_ne!(read_b.seen, read_a.seen, "the second told hand is another stamp");
+    match ask(&mut c, sa, &kw, read_b.seen.clone()) {
+        Response::AgentAsked { .. } => {}
+        other => panic!("an ask on a fresh read: {other:?}"),
+    }
+    // The stamp holds still while nothing changes: elapsed time is not in it.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert_eq!(read(&mut c, sa, &kw).unwrap().seen, read_b.seen);
+
+    // ---- 3. the same words told again are another hand --------------------
+    raise(&mut c, ws, second);
+    told_of(&mut c, 3);
+    let again = read(&mut c, sa, &kw).unwrap();
+    assert_eq!(again.told_hand.map(|t| t.reason).as_deref(), Some(second));
+    assert_ne!(again.seen, read_b.seen, "a new telling of the same words is a new stamp");
+
+    // ---- 4. an archive forgets it; nothing comes back with the ticket -----
+    start(&mut c, ws2);
+    raise(&mut c, ws2, "mesimon-secret-87 which branch?");
+    wait_until(std::time::Duration::from_secs(10), "W2's told hand", || {
+        told(&mut c, sa, &kw2).is_some()
+    });
+    stop(&mut c, ws2);
+    assert!(matches!(c.request(Command::SleepSession { id: ws2 }), Response::Ok));
+    assert_eq!(
+        told(&mut c, sa, &kw2).as_deref(),
+        Some("mesimon-secret-87 which branch?"),
+        "a park gave the agent nothing: the crown still holds the question"
+    );
+    wait_until(std::time::Duration::from_secs(10), "the ledger to keep W2's hand", || {
+        kept(&h, w2).is_some()
+    });
+    assert!(matches!(c.request(Command::ArchiveTicket { id: w2 }), Response::Ok));
+    wait_until(std::time::Duration::from_secs(10), "the archive to forget W2's hand", || {
+        kept(&h, w2).is_none()
+    });
+    assert!(matches!(c.request(Command::UnarchiveTicket { id: w2 }), Response::Ok));
+    assert_eq!(told(&mut c, sa, &kw2), None, "an archive's return brings no told hand");
+
+    // ---- 5. a delete forgets it -------------------------------------------
+    wait_until(std::time::Duration::from_secs(10), "the ledger to keep W's hand", || {
+        kept(&h, w).as_deref() == Some(second)
+    });
+    assert!(matches!(
+        c.request(Command::DeleteTicket { id: w, discard_worktree: false }),
+        Response::Ok
+    ));
+    wait_until(std::time::Duration::from_secs(10), "the delete to forget W's hand", || {
+        kept(&h, w).is_none()
+    });
+}
