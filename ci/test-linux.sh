@@ -48,7 +48,9 @@ exec docker run --rm --init --cpus 2 --memory 4g --platform linux/arm64 \
   "$image" timeout --signal=TERM --kill-after=10s 900s bash -c '
     set -euo pipefail
     apt-get update -qq >/dev/null
-    apt-get install -y -qq tmux git procps python3 >/dev/null
+    # gh, signed out, in /usr/bin as on the GitHub Ubuntu runner (T-917): a
+    # forge e2e whose stand-in loses to it fails here as it fails there.
+    apt-get install -y -qq tmux git procps python3 gh >/dev/null
     # The worktree e2e commits; a container has no identity.
     git config --global user.email "ci@mesimon.invalid"
     git config --global user.name "mesimon ci"

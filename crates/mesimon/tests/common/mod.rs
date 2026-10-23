@@ -691,6 +691,21 @@ impl Harness {
         for (key, value) in env {
             fixture.set_env(key, value);
         }
+        // A PATH a test sets is the person's PATH, and the daemon reads a
+        // tool off the login shell's before its own (`shellenv::capture`
+        // starts that shell from `/usr/bin:/bin:…`, `forge::find_cli`): the
+        // fixture's `~/.profile` names it too, or a binary the distro put in
+        // `/usr/bin` shadows the test's stand-in (T-917: GitHub's Ubuntu
+        // runner ships `/usr/bin/gh`, signed out).
+        if let Some((_, path)) = env.iter().find(|(key, _)| *key == "PATH") {
+            assert!(!path.contains('\''), "a test PATH is quoted into ~/.profile: {path}");
+            let home = PathBuf::from(&fixture.env.borrow()["HOME"]);
+            std::fs::write(
+                home.join(".profile"),
+                format!("PATH='{path}'\nexport PATH\n"),
+            )
+            .unwrap();
+        }
         let stub = stub.map(|body| {
             let p = dir.join("claude-stub.sh");
             std::fs::write(&p, body).unwrap();
