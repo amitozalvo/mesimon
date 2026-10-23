@@ -293,6 +293,9 @@ pub(super) struct Control {
     dialog_deliveries: HashMap<uuid::Uuid, DialogDelivery>,
     /// The last dialog a hook edge ended on each session, and how (T-567).
     dialog_edges: HashMap<uuid::Uuid, (String, DialogEdge)>,
+    /// The `RequiresAction` spell each seat's dialog was last looked for in
+    /// (T-933), by its `state_changed_at`: once per spell.
+    dialogs_read: HashMap<uuid::Uuid, u64>,
     incarnation: ObjectId,
     origin: String,
     pub(super) online: bool,
@@ -348,6 +351,7 @@ impl Control {
             dialogs: HashMap::new(),
             dialog_deliveries: HashMap::new(),
             dialog_edges: HashMap::new(),
+            dialogs_read: HashMap::new(),
             incarnation: ObjectId::random(),
             origin: String::new(),
             online: false,
@@ -620,6 +624,7 @@ impl Daemon {
     }
     pub(super) fn control_tick(&mut self) {
         self.control_expire_permissions();
+        self.control_recover_dialogs();
         self.control_deliver_dialogs();
         if self.control.stored.is_none() && self.control.retired.is_none() {
             return;
@@ -1144,37 +1149,7 @@ impl Daemon {
             return;
         }
         let Some(tool) = frame.payload["tool_name"].as_str() else { return };
-        // Only the two dialogs are measured: a Write's input is the file.
-        if !matches!(tool, "AskUserQuestion" | "ExitPlanMode") {
-            return;
-        }
-        let input = &frame.payload["tool_input"];
-        if serde_json::to_vec(input).map_or(true, |b| b.len() > 16 * 1024) {
-            return;
-        }
-        let content = match tool {
-            "AskUserQuestion" => {
-                let Ok(questions) =
-                    serde_json::from_value::<Vec<api::Question>>(input["questions"].clone())
-                else {
-                    return;
-                };
-                if questions.is_empty()
-                    || questions.len() > 4
-                    || questions.iter().any(|q| q.options.is_empty() || q.options.len() > 8)
-                {
-                    return;
-                }
-                api::DialogContent::Questions { questions }
-            }
-            "ExitPlanMode" => {
-                let Some(markdown) = input["plan"].as_str().filter(|p| !p.trim().is_empty()) else {
-                    return;
-                };
-                api::DialogContent::Plan { markdown: markdown.into() }
-            }
-            _ => return,
-        };
+        let Some(content) = dialog_content(tool, &frame.payload["tool_input"]) else { return };
         // PermissionRequest may repeat the same PreToolUse payload. Keep its
         // identity stable while a browser is selecting that exact dialog.
         if frame.event == "PermissionRequest"
@@ -1198,6 +1173,62 @@ impl Daemon {
         }
         self.control.dialogs.insert(id, api::Dialog { request, content });
         self.control_changed();
+    }
+
+    /// A Claude seat stopped on a plan or a question with no dialog to show
+    /// for it (T-933): a restart empties `dialogs`, which only the hook
+    /// stream filled, and the record's `RequiresAction` outlives it, so the
+    /// crown read `needs_you` with no request and its `accept_plan` was
+    /// refused. The transcript still holds the call with its `tool_use` id,
+    /// the request the hook stream names, and no result after it: that is
+    /// the dialog, rebuilt within the same bounds. One read per spell, and
+    /// none for a spell the hook stream already gave a dialog, so an answer
+    /// that took one is never resurrected; a call the transcript shows
+    /// answered or gone rebuilds nothing.
+    fn control_recover_dialogs(&mut self) {
+        use mesimon_core::board::Reason;
+        let board = &self.board;
+        self.control.dialogs_read.retain(|id, _| board.sessions.iter().any(|s| s.id == *id));
+        let due: Vec<_> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|s| s.kind == SessionKind::Claude)
+            .filter_map(|s| {
+                let SessionState::RequiresAction {
+                    reason: reason @ (Reason::Plan | Reason::Question),
+                } = s.state
+                else {
+                    return None;
+                };
+                let spell = s.state_changed_at.unwrap_or_default();
+                (self.control.dialogs_read.get(&s.id) != Some(&spell))
+                    .then(|| (s.id, reason, spell, s.transcript_path.clone()))
+            })
+            .collect();
+        for (id, reason, spell, path) in due {
+            self.control.dialogs_read.insert(id, spell);
+            if self.control.dialogs.contains_key(&id) {
+                continue;
+            }
+            let Some(open) = path
+                .and_then(|p| crate::agents::claude::tail::open_dialog(std::path::Path::new(&p)))
+            else {
+                continue;
+            };
+            use mesimon_core::adopt::TailTool;
+            let tool = match (open.tool, reason) {
+                (TailTool::ExitPlanMode, Reason::Plan) => "ExitPlanMode",
+                (TailTool::AskUserQuestion, Reason::Question) => "AskUserQuestion",
+                _ => continue,
+            };
+            if open.id.len() > 256 {
+                continue;
+            }
+            let Some(content) = dialog_content(tool, &open.input) else { continue };
+            self.control.dialogs.insert(id, api::Dialog { request: open.id, content });
+            self.control_changed();
+        }
     }
 
     /// The question dialog a session stopped on, for the crown's
@@ -5303,6 +5334,36 @@ fn batch_step(
         _ => {}
     }
     Ok(toward(current, button, DialogStep::Next))
+}
+
+/// The dialog a plan or question call's input draws, within the bounds
+/// measured for it: only the two dialogs (a Write's input is the file), at
+/// most 16 KiB, one to four questions of one to eight options each, a plan
+/// with words. The hook stream's road and the transcript's (T-933) both.
+fn dialog_content(tool: &str, input: &serde_json::Value) -> Option<api::DialogContent> {
+    if !matches!(tool, "AskUserQuestion" | "ExitPlanMode") {
+        return None;
+    }
+    if serde_json::to_vec(input).map_or(true, |b| b.len() > 16 * 1024) {
+        return None;
+    }
+    match tool {
+        "AskUserQuestion" => {
+            let questions =
+                serde_json::from_value::<Vec<api::Question>>(input["questions"].clone()).ok()?;
+            if questions.is_empty()
+                || questions.len() > 4
+                || questions.iter().any(|q| q.options.is_empty() || q.options.len() > 8)
+            {
+                return None;
+            }
+            Some(api::DialogContent::Questions { questions })
+        }
+        _ => {
+            let markdown = input["plan"].as_str().filter(|p| !p.trim().is_empty())?;
+            Some(api::DialogContent::Plan { markdown: markdown.into() })
+        }
+    }
 }
 
 /// Whether this hook frame ends `dialog` (T-567), and how: its own tool's

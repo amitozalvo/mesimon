@@ -5534,6 +5534,230 @@ fn the_crown_accepts_a_plan_by_default() {
     assert_eq!(pressed(), before, "the crown pressed nothing");
 }
 
+/// T-933: a worker stopped on a plan or a question across a daemon restart
+/// keeps its dialog. The hook stream filled the dialog the crown reads and
+/// answers, and a restart emptied it: `needs_you` carried the reason alone
+/// and `accept_plan` was refused. The new daemon rebuilds it off the
+/// transcript, the unanswered call with its `tool_use` id, so the crown
+/// reads `request` and `plan` (or the questions) again and its accept and
+/// its answer go through. A dialog the transcript shows answered in the
+/// restart's window is not brought back.
+#[test]
+fn a_worker_s_dialog_outlives_a_daemon_restart() {
+    use mesimon_core::board::Reason;
+    const STUB: &str = include_str!("common/fake_claude_dialog.py");
+    const PLAN: &str = "1. Read the code\n2. Write the code";
+    let Some(h) = Harness::boot_bare(
+        "crown_redialog",
+        Some(STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_redialog");
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let pane = |c: &mut TestClient, sid: uuid::Uuid| match c
+        .request(Command::PaneTail { session: sid, lines: 60 })
+    {
+        Response::PaneTail { lines, .. } => lines.join("\n"),
+        _ => String::new(),
+    };
+    let questions = json!({ "questions": [{
+        "question": "Which auth provider?",
+        "header": "Auth",
+        "options": [
+            { "label": "Okta", "description": "" },
+            { "label": "Auth0", "description": "" }
+        ],
+        "multiSelect": false
+    }]});
+    let plan_input = json!({ "plan": PLAN });
+
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-933 worker");
+    let kw = key_of(&mut c, w);
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    assert!(matches!(
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket {
+                key: kw.clone(),
+                seen: v.seen,
+                plan: true,
+                tier: None,
+                workspace: Some("worktree".into()),
+            },
+        ),
+        Response::AgentStarted { .. }
+    ));
+    wait_until(std::time::Duration::from_secs(15), "W's worktree start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).expect("W holds a seat").id;
+
+    // W's transcript, which the hook stream's `SessionStart` names.
+    let transcript = h.dir.join(format!("{ws}.jsonl"));
+    let append = |records: &[serde_json::Value]| {
+        use std::io::Write;
+        let mut f =
+            std::fs::OpenOptions::new().create(true).append(true).open(&transcript).unwrap();
+        for r in records {
+            writeln!(f, "{r}").unwrap();
+        }
+    };
+    let call = |id: &str, name: &str, input: &serde_json::Value| {
+        json!({ "uuid": format!("call-{id}"), "type": "assistant", "message": { "content": [
+            { "type": "tool_use", "id": id, "name": name, "input": input }] } })
+    };
+    let result = |id: &str| {
+        json!({ "uuid": format!("result-{id}"), "type": "user", "message": { "content": [
+            { "type": "tool_result", "tool_use_id": id, "content": "ok" }] } })
+    };
+    append(&[json!({ "uuid": "p", "type": "user", "message": { "content": "brief" } })]);
+    let session_start = format!(
+        r#"{{"session_id":"x","transcript_path":"{}","cwd":"/tmp"}}"#,
+        transcript.display()
+    );
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    hook_send_with(&hook_sock, &ws.to_string(), "SessionStart", Some("startup"), &session_start);
+    c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    start(&mut c, ws);
+
+    // W stops on `tool` with `input`: drawn in its pane, written to its
+    // transcript, and the hook that stops it.
+    let stop_on = |c: &mut TestClient, tool: &str, id: &str, input: &serde_json::Value| {
+        let reason = if tool == "ExitPlanMode" { Reason::Plan } else { Reason::Question };
+        std::fs::write(h.dir.join(format!("dialog-{kw}.json")), input.to_string()).unwrap();
+        let drawn = if tool == "ExitPlanMode" { "Would you like to proceed?" } else { "Okta" };
+        wait_until(std::time::Duration::from_secs(10), "the dialog drawn", || {
+            pane(c, ws).contains(drawn)
+        });
+        append(&[call(id, tool, input)]);
+        let frame = json!({ "tool_name": tool, "tool_use_id": id, "tool_input": input });
+        hook_send(&hook_sock, &ws.to_string(), "PreToolUse", &frame.to_string());
+        c.await_state(ws, "on its dialog", |s| *s == SessionState::RequiresAction { reason });
+        let needs = read(c, sa, &kw).unwrap().needs_you.expect("the dialog");
+        assert_eq!(needs.request.as_deref(), Some(id), "the hook stream's dialog");
+    };
+    let edge = |tool: &str, id: &str, input: &serde_json::Value| {
+        json!({ "tool_name": tool, "tool_use_id": id, "tool_input": input }).to_string()
+    };
+    let read_after_restart = |name: &str| {
+        let mut c = h.client(name);
+        let mut needs = None;
+        wait_until(std::time::Duration::from_secs(10), "the dialog rebuilt", || {
+            needs = read(&mut c, sa, &kw).unwrap().needs_you;
+            needs.as_ref().is_some_and(|n| n.request.is_some())
+        });
+        (c, needs.unwrap())
+    };
+
+    // ---- 1. a plan: rebuilt, read and accepted -----------------------------
+    stop_on(&mut c, "ExitPlanMode", "toolu_r1", &plan_input);
+    drop(c);
+    h.restart();
+    let (mut c, needs) = read_after_restart("crown_redialog_2");
+    assert_eq!(needs.reason, "plan");
+    assert_eq!(needs.request.as_deref(), Some("toolu_r1"), "the transcript's call id");
+    assert_eq!(needs.plan.as_deref(), Some(PLAN), "the markdown, lines kept");
+    let accepted = h.dir.join(format!("accepted-{kw}"));
+    let v = read(&mut c, sa, &kw).unwrap();
+    let cmd =
+        Command::AgentAcceptPlan { key: kw.clone(), seen: v.seen, request: "toolu_r1".into() };
+    let sock = h.paths.orch_sock();
+    let receipt = std::thread::spawn(move || {
+        TestClient::connect(&sock).send(Principal::Agent { session: sa }, cmd)
+    });
+    wait_until(std::time::Duration::from_secs(10), "the plan accepted in W's pane", || {
+        accepted.exists()
+    });
+    append(&[result("toolu_r1")]);
+    hook_send(
+        &hook_sock,
+        &ws.to_string(),
+        "PostToolUse",
+        &edge("ExitPlanMode", "toolu_r1", &plan_input),
+    );
+    match receipt.join().unwrap() {
+        Response::AgentPlanAccepted { outcome, reason, .. } => {
+            assert_eq!((outcome.as_str(), reason), ("accepted", None))
+        }
+        other => panic!("accept_plan after a restart: {other:?}"),
+    }
+    c.await_state(ws, "running the plan", |s| *s == SessionState::Running);
+
+    // ---- 2. a question: rebuilt, read and answered -------------------------
+    stop_on(&mut c, "AskUserQuestion", "toolu_r2", &questions);
+    drop(c);
+    h.restart();
+    let (mut c, needs) = read_after_restart("crown_redialog_3");
+    assert_eq!(needs.reason, "question");
+    assert_eq!(needs.request.as_deref(), Some("toolu_r2"));
+    assert_eq!(needs.questions[0].text, "Which auth provider?");
+    let v = read(&mut c, sa, &kw).unwrap();
+    let cmd = Command::AgentAnswerTicket {
+        key: kw.clone(),
+        seen: v.seen,
+        request: "toolu_r2".into(),
+        index: Some(0),
+        text: None,
+        answers: None,
+    };
+    let sock = h.paths.orch_sock();
+    let receipt = std::thread::spawn(move || {
+        TestClient::connect(&sock).send(Principal::Agent { session: sa }, cmd)
+    });
+    let answered = h.dir.join(format!("answered-{kw}.json"));
+    wait_until(std::time::Duration::from_secs(10), "the answer in W's pane", || answered.exists());
+    append(&[result("toolu_r2")]);
+    hook_send(
+        &hook_sock,
+        &ws.to_string(),
+        "PostToolUse",
+        &edge("AskUserQuestion", "toolu_r2", &questions),
+    );
+    match receipt.join().unwrap() {
+        Response::AgentAnswered { outcome, answer, .. } => {
+            assert_eq!((outcome.as_str(), answer.as_str()), ("answered", "Okta"))
+        }
+        other => panic!("answer_agent after a restart: {other:?}"),
+    }
+    c.await_state(ws, "running on the answer", |s| *s == SessionState::Running);
+
+    // ---- 3. answered while no daemon was up: not brought back --------------
+    stop_on(&mut c, "ExitPlanMode", "toolu_r3", &plan_input);
+    drop(c);
+    h.restart_after(|| append(&[result("toolu_r3")]));
+    let mut c = h.client("crown_redialog_4");
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    let needs = read(&mut c, sa, &kw).unwrap().needs_you;
+    assert!(
+        needs.as_ref().is_none_or(|n| n.request.is_none() && n.plan.is_none()),
+        "an answered plan is gone: {needs:?}"
+    );
+    let v = read(&mut c, sa, &kw).unwrap();
+    let cmd =
+        Command::AgentAcceptPlan { key: kw.clone(), seen: v.seen, request: "toolu_r3".into() };
+    match c.send(Principal::Agent { session: sa }, cmd) {
+        Response::Err { message } => assert!(message.contains("plan changed"), "{message}"),
+        other => panic!("accept_plan on an answered plan: {other:?}"),
+    }
+}
+
 /// T-584: the crown picks a tier by the person's words. `list_board` lists
 /// the tiers a ticket may start on, each with the words the person wrote on
 /// when to use it, to every agent; the crown files a ticket on one and its

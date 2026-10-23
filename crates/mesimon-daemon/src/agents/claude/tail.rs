@@ -8,7 +8,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use mesimon_core::adopt::{
-    classify_tail_record, record_ms, turn_edge, TailEvent, ToolLedger, TurnEdge,
+    classify_tail_record, record_ms, turn_edge, TailEvent, TailTool, ToolLedger, TurnEdge,
 };
 
 /// The last uuid-bearing record's classification — how a transcript nobody
@@ -136,6 +136,59 @@ pub fn prompted_since(path: &Path, since: u64) -> bool {
         }
     }
     false
+}
+
+/// A plan or question dialog the transcript says is still open: the
+/// interaction tool's call, its `tool_use` id (the hook frames'
+/// `tool_use_id`) and its input.
+pub struct OpenDialog {
+    pub tool: TailTool,
+    pub id: String,
+    pub input: serde_json::Value,
+}
+
+/// The plan or question dialog the transcript leaves open, if any (T-933):
+/// a restart empties the dialogs the hook stream filled, and this is what
+/// rebuilds one. Walks back from the end over latches, attachments, the
+/// sibling calls of a parallel batch and their results; the dialog's call
+/// with no `tool_result` of its id after it is open. Anything else that
+/// speaks first (a prompt, an interrupt, text, the turn's close, its own
+/// result) means the dialog is gone.
+pub fn open_dialog(path: &Path) -> Option<OpenDialog> {
+    use serde_json::Value;
+    let mut answered = Vec::new();
+    for v in tail_records(path)? {
+        match classify_tail_record(&v) {
+            TailEvent::Latch | TailEvent::ToolInFlight => continue,
+            TailEvent::NeedsHuman { tool } => {
+                let name = match tool {
+                    TailTool::AskUserQuestion => "AskUserQuestion",
+                    TailTool::ExitPlanMode => "ExitPlanMode",
+                };
+                let call = v["message"]["content"].as_array()?.iter().find(|b| {
+                    b["type"].as_str() == Some("tool_use") && b["name"].as_str() == Some(name)
+                })?;
+                let id = call["id"].as_str()?;
+                if answered.iter().any(|a| a == id) {
+                    return None;
+                }
+                return Some(OpenDialog { tool, id: id.into(), input: call["input"].clone() });
+            }
+            TailEvent::Other => match v.get("type").and_then(Value::as_str) {
+                Some("attachment") => continue,
+                Some("system") if !matches!(turn_edge(&v), TurnEdge::Done(_)) => continue,
+                Some("user") if carries_tool_result(&v) => {
+                    let blocks = v["message"]["content"].as_array()?;
+                    answered.extend(
+                        blocks.iter().filter_map(|b| b["tool_use_id"].as_str()).map(String::from),
+                    );
+                }
+                _ => return None,
+            },
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// How far back `prompted_since` reads: once per told hand at a start, so
@@ -363,6 +416,58 @@ mod tests {
         std::fs::write(&path, "{\"uuid\":\"abort\",\"type\":\"user\",\"message\":{\"content\":\"[Request interrupted by user]\"}}\n").unwrap();
         assert!(!aborted_since(&path, 0), "undated history is not fresh evidence");
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    /// T-933: the dialog a restart rebuilds is the interaction tool's call
+    /// with no result of its id after it; its sibling calls in a batch and
+    /// their results do not close it, its own result or a later word does.
+    #[test]
+    fn an_open_dialog_is_a_call_with_no_result_after_it() {
+        let path = tmp("open-dialog");
+        let call = |uuid: &str, id: &str, name: &str, input: serde_json::Value| {
+            serde_json::json!({"uuid": uuid, "type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": id, "name": name, "input": input}]}})
+        };
+        let result = |uuid: &str, id: &str| {
+            serde_json::json!({"uuid": uuid, "type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": id, "content": "ok"}]}})
+        };
+        let write = |records: &[serde_json::Value]| {
+            let body: String = records.iter().map(|r| format!("{r}\n")).collect();
+            std::fs::write(&path, body).unwrap();
+        };
+        let prompt = serde_json::json!({"uuid": "p", "type": "user", "message": {"content": "go"}});
+        let plan = call("c", "toolu_plan", "ExitPlanMode", serde_json::json!({"plan": "1. a"}));
+        let latch = serde_json::json!({"type": "last-prompt"});
+
+        write(&[prompt.clone(), plan.clone(), latch.clone()]);
+        let open = open_dialog(&path).expect("the plan is open");
+        assert_eq!((open.tool, open.id.as_str()), (TailTool::ExitPlanMode, "toolu_plan"));
+        assert_eq!(open.input["plan"], "1. a");
+
+        // A batch: a sibling call and its result after the question.
+        let ask = call("q", "toolu_q", "AskUserQuestion", serde_json::json!({"questions": []}));
+        let bash = call("b", "toolu_b", "Bash", serde_json::json!({}));
+        write(&[prompt.clone(), ask.clone(), bash.clone(), result("rb", "toolu_b")]);
+        let open = open_dialog(&path).expect("the question stands beside its batch");
+        assert_eq!((open.tool, open.id.as_str()), (TailTool::AskUserQuestion, "toolu_q"));
+
+        // Answered in the restart's window: its own result, then the turn on.
+        write(&[prompt.clone(), plan.clone(), result("rp", "toolu_plan")]);
+        assert!(open_dialog(&path).is_none(), "its own result closes it");
+        write(&[prompt.clone(), plan.clone(), result("rp", "toolu_plan"), bash.clone()]);
+        assert!(open_dialog(&path).is_none(), "a call after its result");
+        let esc = serde_json::json!({"uuid": "x", "type": "user",
+            "message": {"content": "[Request interrupted by user]"}});
+        write(&[prompt.clone(), plan.clone(), esc]);
+        assert!(open_dialog(&path).is_none(), "an Esc out of it");
+        write(&[plan, prompt]);
+        assert!(open_dialog(&path).is_none(), "a newer prompt");
+        write(&[serde_json::json!({"uuid": "t", "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "done"}]}})]);
+        assert!(open_dialog(&path).is_none(), "no dialog at all");
+        assert!(open_dialog(std::path::Path::new("/nonexistent/x.jsonl")).is_none());
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
     #[test]

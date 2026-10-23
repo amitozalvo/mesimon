@@ -31705,3 +31705,56 @@ So both holds go on that road, the attached one and the draft one.
 **Limits.** The measurement covers the box as Claude Code 2.1.309 draws it. If a later version
 puts a submit's words into the box, the spike's `submit_draft` scenario is the check to run
 again. The hook set's road still has no rig run of A1 since T-918; its e2e covers it.
+
+## A worker's plan or question dialog outlives a daemon restart (T-933, 2026-10-24, "After a daemon restart, a worker stopped on a plan or question loses the dialog: the crown can neither read nor answer it")
+
+**Observed.** T-930's worker stopped on a plan and the daemon restarted. The crown's `get_ticket`
+then carried `needs_you: { reason: "plan" }` and nothing else, and `accept_plan` with the
+transcript's tool_use id was refused (`plan changed; read get_ticket again`). The person pressed
+Enter on the dialog themselves.
+
+**Cause.** The dialog the crown reads and answers (`request`, `plan`, `questions`), and the one a
+phone draws, is `Control::dialogs`, an in-memory map only the hook stream filled
+(`control_observe_dialog`, from `PreToolUse`/`PermissionRequest` on `ExitPlanMode` or
+`AskUserQuestion`). `RequiresAction { Plan | Question }` is sticky through reconcile, so the
+record kept its state and lost its dialog.
+
+**Chosen: the transcript, not a new state file.** The transcript already holds everything the map
+held: the call's `tool_use` id is the hook frames' `tool_use_id` (the mod relays it too), so the
+rebuilt request is the same one, and the call's input is the tool input the hook carried.
+Persisting the map would have been an eleventh state file with a schema, bars and a writer, for
+data that is already on disk and that the transcript keeps more truthfully (an answer that lands
+while no daemon listens is written there, and only there).
+
+**What shipped.**
+- `tail::open_dialog(path)`: walking back from the end over latches, attachments, a parallel
+  batch's sibling calls (`ToolInFlight`) and their results, the interaction call with no
+  `tool_result` of its id after it is open. Its own result, a prompt, an interrupt, text or the
+  turn's close first means the dialog is gone.
+- `control_recover_dialogs`, on the control tick: a Claude seat in `RequiresAction { Plan |
+  Question }` with no dialog is looked up once per spell (`dialogs_read`, keyed by
+  `state_changed_at`), and a spell the hook stream already gave a dialog is never read, so an
+  answered dialog is never resurrected. The tool must match the reason.
+- `dialog_content` is the one bound both roads keep (16 KiB, 1 to 4 questions of 1 to 8 options, a
+  plan with words), so the transcript cannot bring back a dialog the hook stream refused to draw.
+- Readers checked: `agent_needs_you`, the crown's `accept_plan` (`crownplan.rs`, request match),
+  `answer_agent` and the phone's answer (`control_dialog_answer`, request match), and the phone's
+  view (`control_dialog_of`) all read the map by session and work on the rebuilt entry. Their
+  receipts wait for `dialog_edge`, which matches the `tool_use_id` the transcript gave. The
+  board's own plan key (`press_plan`) reads the pane, never the map, and was not affected. Codex
+  re-projects its dialogs from its own snapshot (`control_codex_ask`) and is not read here.
+
+**Tests.**
+- `tail::an_open_dialog_is_a_call_with_no_result_after_it`: open plan, a question beside a
+  batch's sibling and its result, and the closers (own result, a call after it, an Esc, a newer
+  prompt).
+- `crown_e2e::a_worker_s_dialog_outlives_a_daemon_restart`: a crown-started worker stops on a
+  plan, the daemon restarts, `needs_you` carries the transcript's request and the plan, and
+  `accept_plan` is `accepted` on the hook edge. The same for a question and `answer_agent`
+  (`Okta`). A plan answered in the restart's window (`restart_after` appends its result) is not
+  brought back, and `accept_plan` on it is refused. With the tick's call removed, the e2e times
+  out on `the dialog rebuilt`.
+
+**Limits.** The read is the transcript's last 64 KiB, as every tail reader's. A dialog whose call
+sits further back (a batch whose siblings wrote more than that after it) stays reason-only, as
+before.
