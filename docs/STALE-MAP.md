@@ -31369,8 +31369,8 @@ assessment: paste vs monitor" argued for keeping the paste road and holding it, 
   asks only, so `^y`/`^u` still leave the row alone. There is no new wire field.
 - **Cadence.** `drain_crown_wakes` runs every 4 ticks (1 s). While a wake waits, each pass asks
   the sampler for the crown's facts and screen, and the sample's landing delivers. The wake
-  therefore goes up to about 1 s after the person leaves (rig A1, before this correction,
-  measured 1.9 s). Without this the box
+  therefore goes up to about 1 s after the person leaves (rig A1 measured 1.9 s before this
+  correction, and 12 ms after it, on 87026e2d). Without this the box
   would not be sampled at all, and the facts only on the 2 s poll bucket. A crown that is
   mid-turn is read on the bucket only.
 - **No read on the writer (review of ff317618).** The first cut asked tmux afresh at the paste
