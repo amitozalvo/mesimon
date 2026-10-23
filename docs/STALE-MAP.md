@@ -31580,3 +31580,46 @@ A person starts their own agent, both in worktrees. The crown moves to B while t
 mid-turn. B holds the person's ticket, the daemon restarts, and both deliveries wake B (the
 line in B's pane and B's `woke` touch), never A. Without the predicate change the test fails at
 `under_crown`. Without `held_by_crown` it times out on the held ticket's wake.
+
+## The rig no longer grades where a crown's delegated worker works (T-929, 2026-10-23)
+
+**Decided by the person.** On Sol, the Codex `delegate` case filed a ticket and started its
+worker on `shared_checkout`. The case failed only because it required a worktree. The person's
+verdict was "sol did ok". `create_ticket` and `start_agent` both require `workspace`, and
+`CROWN_WAKES` offers both values, so the workspace is the crown's choice. A rig that grades the
+choice measures a preference the board never states.
+
+**The rule.** Codex's `delegate` (`delegation_problems(..., shared=True)`) and Claude's `filed`
+(DL1) accept either workspace. Every other requirement still holds: the crown's own session
+files the ticket from its ticket, the feed carries an agent's `create_ticket` and `start_agent`
+for it, `started_by` is the crown, and the worker is the only agent seat on that ticket
+(`seat_problems`, new). A worktree worker keeps the old checks (`place_problems`): a branch,
+the binding's path is the cwd, away from the checkout, and under the fixture's worktrees. A
+shared worker's cwd is the checkout and no worktree is bound to its ticket. `forge` still
+requires the worktree because its request names one. On the Codex fixture, a worker on the
+checkout gets its plain `git` approved there, as a worktree worker does in its worktree.
+
+**Write attribution is by time.** The crown's own calls are already attributed by session,
+because they are read from the crown's history: apply_patch, shell writes and native children
+in Codex, Write/Edit/Bash in Claude. Only the checkout fallback needed a change. A shared
+worker's own writes and commits land in the checkout. Both rigs now take a look at every
+pass of their loop (`look`): `checkout_state`, plus whether the crown is in a turn and whether
+a worker the crown started is in one. `crown_changes` treats a span between two looks as the
+worker's when the crown was out of a turn at both ends and a worker was in one at either end.
+Every other span counts against the crown, overlap included. `checkout_state` now puts a digest
+of each dirty file's bytes beside its `status` line. Without it, a crown's script that edits a
+file the worker already dirtied would leave the porcelain unchanged.
+
+Reading the worker's history was refused as the attribution. A shared worker's test run writes
+files that no call of its names, such as `__pycache__`, and a commit carries no session, so the
+crown would be blamed for the worker's by-products. The time rule has two limits, which the
+rig README states. A move during a span where both are in a turn counts against the crown. A
+process the crown left running that writes while only the worker works reads as the worker's.
+
+**Recorded.** Sol's `delegate` (`gpt-6-sol`, low) passes under the rule; it was not rerun.
+Luna's still fails, because it `apply_patch`ed the code itself. One live rerun on Luna (Codex
+CLI 0.164, low, 95,987 tokens) failed the same way, and the new digest showed in its verdict. Tests in `ci/codex_rig_test.py`: a shared
+delegation passes and a bound worktree beside a checkout cwd does not; a second seat fails;
+the shared worker's write, by-product and commit are its own; the crown's script edit and its
+commit in its own turn are the crown's; and the crown's own write fails with the worker in a
+worktree or on the checkout.

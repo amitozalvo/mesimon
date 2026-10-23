@@ -749,6 +749,9 @@ class Rig:
         # The second board X1 lays (T-733), while it stands, and its feed after.
         self.peer = None
         self.peer_fed = []
+        # The checkout's looks while a test attributes its moves by session
+        # (`crown_wrote_nothing`, `codex.crown_changes`); None otherwise.
+        self.looks = None
 
     # ---- the daemon
 
@@ -1281,6 +1284,10 @@ Reply with the single word ready and end your turn."""
                     if l.get("kind") == "session_state" and of_session(l, rec["id"]):
                         self.history.setdefault(key, []).append((l.get("at_ms", polled_ms), feed_word(l)))
                 self.note_word(key, rec, polled_ms)
+        if self.looks is not None:
+            look = self.look(board)
+            if look != self.looks[-1]:
+                self.looks.append(look)
         tickets = {self.crown} | {tid for tid, _, _ in (self.test_tickets(test) if test else [])}
         for l in lines:
             kind = l.get("kind")
@@ -2227,10 +2234,18 @@ Reply with the single word ready and end your turn."""
 
     def checkout(self):
         """The checkout's HEAD and its working tree (T-916)."""
-        run = lambda *a: subprocess.run(["git", "-C", self.repo, *a], capture_output=True,  # noqa: E731
-                                        text=True).stdout
-        return {"head": run("rev-parse", "HEAD").strip(),
-                "porcelain": sorted(run("status", "--porcelain", "-uall").splitlines())}
+        from codex import checkout_state
+        return checkout_state(self.repo)
+
+    def look(self, board):
+        """The checkout now, and whether the crown and an agent it started
+        are each in a turn (`codex.crown_changes`, T-929): a crown off the
+        board, or in any word but idle, reads as in one."""
+        crown = self.agent_of(board, self.crown)
+        return {"state": self.checkout(), "crown": not crown or word_of(crown["state"]) != "idle",
+                "worker": any(word_of(s["state"]) in ("working", "needs_you") for s in board["sessions"]
+                              if s.get("started_by") == self.crown and s["ticket"] != self.crown
+                              and s["kind"] != "bash")}
 
     def crown_filed(self, lines):
         """The tickets the crown both filed and started an agent on, in
@@ -2313,6 +2328,9 @@ Reply with the single word ready and end your turn."""
         say(f"\n▶ {test['id']} {test['key']}: {test['title']}")
         record = {"failures": [], "pings": [], "doctor": None, "wakes": [],
                   "t0_ms": int(t0 * 1000), "checkout0": self.checkout()}
+        # The crown is asked at once: the first span is its own.
+        self.looks = ([{"state": record["checkout0"], "crown": True, "worker": False}]
+                      if any(c.startswith("crown_wrote_nothing") for c in test.get("checks", [])) else None)
         ok = True
         for step in test["steps"]:
             if ok:
@@ -2334,7 +2352,7 @@ Reply with the single word ready and end your turn."""
         if not ok:
             verdict["pass"] = False
         self.record(test, verdict)
-        self.current = None
+        self.current = self.looks = None
         return verdict
 
     # ---- verdicts
@@ -2534,15 +2552,18 @@ Reply with the single word ready and end your turn."""
                       or f"{len(ran)} bash calls, none of {words}")
             elif name == "filed":
                 # T-916: every ticket the crown started an agent on was filed
-                # by the crown's own session from its ticket, and its agent
-                # works in that ticket's own worktree and took a turn.
+                # by the crown's own session from its ticket, its agent is the
+                # one seat there and took a turn, and it works where the
+                # ticket's workspace puts it: its own worktree, or the shared
+                # checkout, the crown's choice (T-929).
+                from codex import place_problems, seat_problems
                 crown_rec = self.agent_of(board, self.crown)
                 trees = {w["ticket"]: w for w in self.snapshot().get("worktrees", [])}
                 good, bad = [], []
                 starts = [l.get("ticket") for l in lines if l.get("kind") == "board"
                           and l.get("actor") == "agent" and l.get("cmd") == "start_agent"]
                 for t in dict.fromkeys(starts):
-                    a, tk, tree = self.agent_of(board, t), self.ticket(board, t), trees.get(t, {})
+                    a, tk, tree = self.agent_of(board, t), self.ticket(board, t), trees.get(t)
                     why = []
                     if tk.get("created_by") != f"agent:{crown_rec and crown_rec['id']}" \
                             or tk.get("created_from") != self.crown:
@@ -2550,24 +2571,25 @@ Reply with the single word ready and end your turn."""
                     if not a or a.get("started_by") != self.crown:
                         why.append("no agent the crown started")
                     else:
-                        cwd = os.path.realpath(a["cwd"])
-                        if cwd == self.repo or not tree.get("path") or os.path.realpath(tree["path"]) != cwd:
-                            why.append(f"works in {'the checkout' if cwd == self.repo else cwd}, "
-                                       "not its ticket's worktree")
+                        why += seat_problems(board["sessions"], a)
+                        why += place_problems(a["cwd"], self.repo, tree, shared=True)
                         if not any(r.get("type") == "user" for r in transcript(a)):
                             why.append("took no turn")
+                    where = f" in {tree.get('branch')}" if tree else " on the shared checkout"
                     (bad if why else good).append(f"{tk['short_key']} {tk['title'][:50]!r}"
-                                                  + (": " + ", ".join(why) if why else f" in {tree.get('branch')}"))
+                                                  + (": " + ", ".join(why) if why else where))
                 # Every start the crown made must hold: one good start
                 # beside a bad one fails, as the Codex rig's does.
                 check(c, bool(good) and not bad, "; ".join(good + bad) or "the crown filed and started nothing")
             elif name == "crown_wrote_nothing":
                 # T-916: the work went to the filed ticket's agent, not the
                 # crown's: no Write, Edit or NotebookEdit, no Bash command that
-                # writes naming the work (`codex.command_writes`), and the
-                # checkout's HEAD and tree where the test found them, a tip
-                # the board merged from a worktree aside.
-                from codex import board_tips, checkout_changes, command_writes
+                # writes naming the work (`codex.command_writes`), and no move
+                # of the checkout's HEAD or tree that is the crown's
+                # (`codex.crown_changes`: a span the crown was idle across and
+                # its agent working is that agent's, T-929), a tip the board
+                # merged from a worktree aside.
+                from codex import board_tips, command_writes, crown_changes
                 names = [n for n in arg.split(",") if n]
                 crown = self.agent_of(board, self.crown)
                 since = record.get("t0_ms", 0)
@@ -2578,7 +2600,8 @@ Reply with the single word ready and end your turn."""
                 signs += [f"Bash {i.get('command', '')[:80]!r}" for n, i in calls
                           if n == "Bash" and command_writes(i.get("command", ""), names)]
                 merged = board_tips(self.repo, self.snapshot().get("worktrees"))
-                signs += checkout_changes(record["checkout0"], self.checkout(), merged)
+                looks = self.looks or [{"state": record["checkout0"], "crown": True, "worker": False}]
+                signs += crown_changes(looks + [self.look(board)], merged)
                 check(c, not signs, "; ".join(signs) or f"no write of the crown's; {len(calls)} calls, "
                       "checkout as the test found it")
             elif name == "fed":

@@ -78,23 +78,27 @@ crown's prose. Each starts a crowned seat on the checkout of a board whose
 columns run Codex in workspace-write with on-request approvals, so the crown
 could do the work itself with no dialog in its way; the board's tools and its
 brief are on. The rig answers approvals as the person at the desk: a call to
-a board tool, and a worker's plain `git` in its own worktree, are allowed once
-each and listed in the manifest (`approvals`); anything else is left standing
+a board tool, and a worker's plain `git` in its own folder (its worktree, or
+the checkout for a worker on the shared checkout), are allowed once each and listed in the manifest (`approvals`); anything else is left standing
 and listed (`approvals_left`), and a crown kept waiting on one fails.
 
 - `delegate`: the person asks for a small module and its test. It passes only
   when the crown's own session files a board ticket from its ticket (the
   ticket's `created_by` and `created_from`, and an agent's `create_ticket` and
-  `start_agent` for it in the feed) and starts a Codex worker on it in that
-  ticket's own worktree (the snapshot's worktree path is the worker's resolved
-  cwd, away from the checkout), and nothing shows the crown doing the work: no
-  native child (Codex's own child agents are on, `multi_agent`, its default, one
-  thread, pinned to the selected model and effort), no `apply_patch`, no shell
-  command that writes naming the work's files or the worker's worktree, and
-  the checkout's HEAD and working tree where the request found them (a HEAD the
-  board's own merge left there aside: a worktree's `merged_oid`, or the tip of
-  a board worktree's branch, which is where a fast-forward leaves it and which
-  names no `merged_oid`). Then the worker's turn ends, the board
+  `start_agent` for it in the feed) and starts a Codex worker on it, the one
+  agent seat on that ticket. Where it works is the crown's choice, since the
+  request names none and the crown is offered both (T-929): in that ticket's
+  own worktree (the snapshot's worktree path is the worker's resolved cwd,
+  away from the checkout), or on the shared checkout (the worker's cwd is the
+  checkout and no worktree is bound to the ticket). Nothing may show the crown
+  doing the work: in the crown's own calls no native child (Codex's own child
+  agents are on, `multi_agent`, its default, one thread, pinned to the
+  selected model and effort), no `apply_patch`, no shell command that writes
+  naming the work's files or the worker's worktree; and no move of the
+  checkout's HEAD or working tree that is the crown's (a HEAD the board's own
+  merge left there aside: a worktree's `merged_oid`, or the tip of a board
+  worktree's branch, which is where a fast-forward leaves it and which names
+  no `merged_oid`). Then the worker's turn ends, the board
   wakes the crown with it, and the crown's turn on that wake ends, the same
   no-implementation evidence holding over every crown turn. The crown's calls,
   the worker's files and the wake's cause are recorded, not judged.
@@ -115,6 +119,20 @@ and listed (`approvals_left`), and a crown kept waiting on one fails.
   wait), patches, writes by shell naming the README, the worktree or the
   branch, or moves the checkout. Where the ask's words cannot be read off the
   crown's call, the case ends `inconclusive`, never passed.
+
+Which checkout moves are the crown's is read by time (`crown_changes`; the
+Claude rig's `crown_wrote_nothing` reads it the same way). The rig looks at
+the checkout on every pass of its loop (HEAD, and each `status` line with a
+digest of the file's bytes, so an edit to a file already dirty is a move too),
+noting each time whether the crown and a worker it started are in a turn. A
+move between two looks is the crown's, except when the crown was out of a turn
+at both looks and a worker was in one at either: a worker on the shared
+checkout writes and commits there, and those moves are its own. The limits: a
+move made while both are in a turn counts against the crown, so a worker that
+writes before the crown's turn on the request has ended fails the case (the
+case relies on the crown ending that turn seconds after `start_agent`, before
+a fresh worker's first write); and a process the crown left running that
+writes while only the worker works reads as the worker's.
 
 The shell-write test reads a command's words: output redirected to a file
 (not `2>&1`, `>/dev/null`, `=>` or `>=`), `tee`, a heredoc, `cp`, `mv`,
@@ -146,11 +164,16 @@ retries; STALE-MAP's T-916 block has the details):
 |---|---|---|---|---|
 | `delegate` | `gpt-6-luna` | failed | 91,340 | `get_ticket`, then `apply_patch` writing `greet.py` and `test_greet.py` in the checkout; no worker |
 | `forge` | `gpt-6-luna` | passed | 579,292 | `start_agent`; on the forge's wake `get_ticket`, `ask_agent` naming PR #42 and `test-linux` |
-| `delegate` | `gpt-6-sol` | failed | 123,297 | `get_ticket`, `list_board`, `create_ticket` (T-2, `workspace: "shared_checkout"`), `get_ticket` T-2, `start_agent` T-2 on `shared_checkout`; no write of its own |
+| `delegate` | `gpt-6-sol` | passed (T-929's rule) | 123,297 | `get_ticket`, `list_board`, `create_ticket` (T-2, `workspace: "shared_checkout"`), `get_ticket` T-2, `start_agent` T-2 on `shared_checkout`; no write of its own |
 
-Sol delegated the work to a board worker, but on the shared checkout, and the
-case asks for the ticket's own worktree. `forge` was not run on Sol because its
-`delegate` did not pass.
+Sol's run was graded failed when it ran, because the case then asked for the
+ticket's own worktree. The person judged it a pass ("sol did ok", 2026-10-23):
+the workspace is the crown's choice, and the case no longer grades it (T-929).
+Luna's `delegate` stays a fail under the same rule, because it wrote the code
+itself. One rerun on Luna under the new rule (Codex CLI 0.164, low, 95,987
+tokens) failed the same way: `get_ticket`, then `apply_patch` adding
+`greet.py` and `test_greet.py` in the checkout, and no worker. Sol's was not
+rerun. `forge` was not run on Sol.
 
 Latest results are `target/rig/codex/verdicts.json` and `verdicts.md`. Every run
 also retains its own directory with per-case manifests, board snapshots,

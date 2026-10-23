@@ -5,6 +5,7 @@ native terminal submits prompts; app-server RPC is used only for observations.
 """
 import argparse
 import datetime
+import hashlib
 import importlib.util
 import json
 import os
@@ -251,12 +252,19 @@ def shell_writes(calls, names):
 
 
 def checkout_state(repo):
-    """The checkout's HEAD and its working tree, `.codex/` aside."""
+    """The checkout's HEAD and its working tree, `.codex/` aside: each
+    `status --porcelain` line with a digest of the file's bytes beside it,
+    so an edit to a file already dirty is a new line too."""
     run = lambda *argv: subprocess.run(["git", "-C", str(repo), *argv], capture_output=True,  # noqa: E731
                                        text=True, timeout=5).stdout
+    def digest(line):
+        try:
+            return hashlib.sha256((Path(repo) / line[3:].split(" -> ")[-1]).read_bytes()).hexdigest()[:8]
+        except OSError:
+            return "-"
     return dict(head=run("rev-parse", "HEAD").strip(),
-                porcelain=sorted(line for line in run("status", "--porcelain", "-uall").splitlines()
-                                 if ".codex/" not in line))
+                porcelain=sorted(f"{line} {digest(line)}" for line in run("status", "--porcelain", "-uall")
+                                 .splitlines() if ".codex/" not in line))
 
 
 def board_tips(repo, worktrees):
@@ -285,12 +293,57 @@ def checkout_changes(before, after, merged=()):
     return changes
 
 
-def delegation_problems(snapshot, feed, crown, crown_sid, worker, repo, worktrees, filed=True):
+def crown_changes(looks, merged=()):
+    """What moved in the checkout that is the crown's, over `looks` in order:
+    each a `checkout_state` (`state`) and whether the crown and a worker it
+    started were each in a turn at that look (`crown`, `worker`). Every span
+    between two looks is `checkout_changes`, the crown's, except a span the
+    crown was out of a turn at both ends and a worker in one at either: a
+    worker on the shared checkout writes and commits there, and that span's
+    moves are its own. A span both were in a turn across counts against the
+    crown."""
+    changes = []
+    for a, b in zip(looks, looks[1:]):
+        if not a["crown"] and not b["crown"] and (a["worker"] or b["worker"]):
+            continue
+        changes.extend(checkout_changes(a["state"], b["state"], merged))
+    return changes
+
+
+def place_problems(cwd, repo, tree, worktrees=None, shared=False):
+    """Why a worker at `cwd` is not where its ticket's workspace puts it, or
+    an empty list: on the shared checkout (`shared` allows it) its cwd is the
+    checkout and no worktree is bound to the ticket (`tree`, the snapshot's,
+    None); else that worktree has a branch, its path is the cwd, away from
+    the checkout and under `worktrees` where named."""
+    cwd, repo = Path(cwd or "/does-not-exist").resolve(), Path(repo).resolve()
+    if shared and cwd == repo:
+        return [] if tree is None else [f"it works in the checkout, yet {tree.get('path')} is its ticket's worktree"]
+    problems = []
+    if tree is None or not tree.get("branch"):
+        problems.append("no worktree of its own on the board")
+    elif Path(tree.get("path") or "/does-not-exist").resolve() != cwd:
+        problems.append(f"its worktree {tree.get('path')} is not the worker's cwd {cwd}")
+    if cwd == repo or (worktrees and not cwd.is_relative_to(Path(worktrees).resolve())):
+        problems.append(f"the worker works in {cwd}, not a worktree of this board's")
+    return problems
+
+
+def seat_problems(sessions, worker):
+    """Why `worker` is not the one agent seat on its ticket (a shell
+    aside), or an empty list."""
+    seats = [s["id"] for s in sessions if s.get("ticket") == worker["ticket"] and s.get("kind") != "bash"]
+    return [] if seats == [worker["id"]] else [f"the ticket's agent seats are {seats}, not the worker's alone"]
+
+
+def delegation_problems(snapshot, feed, crown, crown_sid, worker, repo, worktrees, filed=True, shared=False):
     """Why `worker` is not the crown's delegated worker, or an empty list:
     its ticket filed by the crown's own session from its ticket (`filed`),
-    a create and a start of the crown's in `feed`, started by the crown, and
-    a worktree of its own whose path is the worker's cwd, away from the
-    checkout and under this fixture's worktrees."""
+    a create and a start of the crown's in `feed`, started by the crown, the
+    one agent seat on that ticket (`seat_problems`), and where its workspace
+    puts it (`place_problems`): a worktree of its own under this fixture's
+    `worktrees`, or with `shared` the checkout too. Which of the two is the
+    crown's choice where the request names none."""
     board = snapshot["board"]
     ticket = next((t for t in board["tickets"] if t["id"] == worker["ticket"]), {})
     problems = []
@@ -304,15 +357,9 @@ def delegation_problems(snapshot, feed, crown, crown_sid, worker, repo, worktree
             problems.append(f"no {cmd} of an agent's for the ticket in the feed")
     if worker.get("started_by") != crown:
         problems.append(f"started by {worker.get('started_by')!r}")
+    problems += seat_problems(board.get("sessions") or [], worker)
     tree = next((w for w in snapshot.get("worktrees") or [] if w.get("ticket") == worker["ticket"]), None)
-    cwd = Path(worker.get("cwd") or "/does-not-exist").resolve()
-    if tree is None or not tree.get("branch"):
-        problems.append("no worktree of its own on the board")
-    elif Path(tree.get("path") or "/does-not-exist").resolve() != cwd:
-        problems.append(f"its worktree {tree.get('path')} is not the worker's cwd {cwd}")
-    if cwd == Path(repo).resolve() or not cwd.is_relative_to(Path(worktrees).resolve()):
-        problems.append(f"the worker works in {cwd}, not a worktree of this board's")
-    return problems
+    return problems + place_problems(worker.get("cwd"), repo, tree, worktrees, shared)
 
 
 # The failure the stub forge reports (`pull_requests`): words that carry it
@@ -356,7 +403,8 @@ def heard_the_ask(heard, asked):
 
 # What the rig allows, matched exactly (a live model writes these requests):
 # Codex's one-tool approval for mesimon's own server, as 0.163 words it, and a
-# worker committing in its own worktree in one of three plain shapes.
+# worker committing in its own folder (its worktree, or the checkout for a
+# worker on the shared checkout) in one of three plain shapes.
 MCP_APPROVAL = re.compile(r'Allow the mesimon MCP server to run tool "([a-z_]+)"\?')
 
 
@@ -382,8 +430,9 @@ def approval_decision(request, role, worktree):
     it standing. A board tool is allowed when the request names mesimon's
     server exactly and one of BOARD_TOOLS (the daemon's authorize is their
     gate); a worker's `plain_git` when the request's cwd resolves to that
-    worker's own worktree (`worktree`, None for the crown); anything else
-    stays the person's and is recorded."""
+    worker's own folder (`worktree`: its worktree, the checkout for a worker
+    on the shared checkout, None for the crown); anything else stays the
+    person's and is recorded."""
     what = request.get("what")
     command = str(request.get("command") or "").strip()
     reason = str(request.get("reason") or "").strip()
@@ -504,6 +553,9 @@ def adapter(base):
                     self.request("set_column_settings", name=column["name"], settings=settings)
             self.crown_sid = self.crown = None
             self.answered, self.left = {}, {}
+            # The checkout's looks while a case attributes its moves by
+            # session (`crown_changes`); None where it does not.
+            self.looks = None
             if args.case in CROWN:
                 self.crown_board()
 
@@ -707,7 +759,8 @@ def adapter(base):
                 return
             role = "crown" if sid == self.crown_sid else "worker"
             worktree = session.get("cwd") if role == "worker" else None
-            if worktree and not Path(worktree).resolve().is_relative_to((self.state / "worktrees").resolve()):
+            if worktree and not (Path(worktree).resolve().is_relative_to((self.state / "worktrees").resolve())
+                                 or Path(worktree).resolve() == self.repo.resolve()):
                 worktree = None
             allow, what = approval_decision(request, role, worktree)
             if not allow:
@@ -746,7 +799,22 @@ def adapter(base):
                 _, _, screen = self.observe(session["id"])
                 self.startup_consent(session["id"], screen)
                 self.approval(session, screen)
+            if self.looks is not None:
+                look = self.look(board)
+                if look != self.looks[-1]:
+                    self.looks.append(look)
             return board
+
+        def look(self, board):
+            """The checkout as it is now, and whether the crown and a worker
+            it started are each in a turn (`crown_changes`); a crown not on
+            the board reads as in one."""
+            busy = lambda s: s["state"]["state"] not in ("sleeping", "exited", "failed") \
+                and not self.turn_ended(s)  # noqa: E731
+            crown = next((s for s in board["sessions"] if s["id"] == self.crown_sid), None)
+            return dict(state=checkout_state(self.repo), crown=crown is None or busy(crown),
+                        worker=any(busy(s) for s in board["sessions"] if s.get("started_by") == self.crown
+                                   and s["ticket"] != self.crown and s["kind"] != "bash"))
 
         def until(self, description, predicate, steady=1, **evidence):
             """Tend the board until `predicate(board)` holds `steady` looks in a
@@ -818,29 +886,36 @@ def adapter(base):
             return seat if any(w.get("ticket") == seat["ticket"] and w.get("path")
                                for w in board["worktrees"]) else None
 
-        def implemented(self, calls, names, before):
-            """Every sign the crown did the work itself: a native child, an
-            `apply_patch`, a shell command that writes naming the work
-            (`shell_writes`), and any move of the checkout's HEAD or working
-            tree since `before`, a tip the board merged from a worktree aside."""
-            merged = board_tips(self.repo, self.snapshot().get("worktrees"))
+        def implemented(self, calls, names, since):
+            """Every sign the crown did the work itself: in its own calls a
+            native child, an `apply_patch`, a shell command that writes naming
+            the work (`shell_writes`); and any move of the checkout's HEAD or
+            working tree that is the crown's, a tip the board merged from a
+            worktree aside. `since` is a `checkout_state`, every move after it
+            the crown's, or the case's looks (`crown_changes`), which leave a
+            shared-checkout worker's own spans out."""
+            snapshot = self.snapshot()
+            merged = board_tips(self.repo, snapshot.get("worktrees"))
+            looks = since if isinstance(since, list) else [dict(state=since, crown=True, worker=False)]
             signs = [f"native child: {c['text'][:120]}" for c in spawned(calls)]
             signs += [f"apply_patch: {c['text'][:120]}" for c in patched(calls)]
             signs += [f"shell write: {c['text'][:160]}" for c in shell_writes(calls, names)]
-            signs += [f"checkout: {change}" for change in checkout_changes(before, checkout_state(self.repo), merged)]
+            signs += [f"checkout: {change}" for change in crown_changes(looks + [self.look(snapshot["board"])], merged)]
             return signs
 
         def delegate(self):
             """A person asks the crown for concrete work, in a person's words
             (DELEGATE_ASK, no tool named). Passes only when the crown's own
-            session files a board ticket and starts a Codex worker on it in a
-            worktree of its own (`delegation_problems`), and nothing shows the
-            crown doing the work (`implemented`: no child, patch, shell write
-            or checkout change); then the worker's turn ends, the board wakes
-            the crown with it, and the crown's turn on that wake ends, still
-            with nothing of the work its own."""
+            session files a board ticket and starts a Codex worker on it, in a
+            worktree of its own or on the shared checkout, the crown's choice
+            (`delegation_problems`), and nothing shows the crown doing the work
+            (`implemented`: no child, patch, shell write or checkout change of
+            its own, a shared worker's spans aside); then the worker's turn
+            ends, the board wakes the crown with it, and the crown's turn on
+            that wake ends, still with nothing of the work its own."""
             self.crown_seat()
-            before = checkout_state(self.repo)
+            # The crown is asked at once: the first span is its own.
+            self.looks = [dict(state=checkout_state(self.repo), crown=True, worker=False)]
             mark = len(self.feed())
             names = ("greet.py", "test_greet.py")
             self.ask(self.crown_sid, DELEGATE_ASK)
@@ -849,7 +924,7 @@ def adapter(base):
                     return self.worker_started(board, "greet.py")
                 except AssertionError as kept:
                     raise AssertionError(f"{kept}; signs of the work done here: "
-                                         f"{self.implemented(tool_calls(self.crown_rows(board)), names, before)}")
+                                         f"{self.implemented(tool_calls(self.crown_rows(board)), names, self.looks)}")
             worker = self.until("the crown starts a board worker on the request", started)
             # The start may wait on the worktree's cut: the record's cwd and
             # the snapshot's worktree come with the worker's launch.
@@ -865,16 +940,17 @@ def adapter(base):
                                                worker_kind=worker["kind"], cwd=worker.get("cwd"),
                                                branch=tree.get("branch"), worktree=tree.get("path"), tier=ticket.get("tier"))
             problems = delegation_problems(snapshot, self.feed()[mark:], self.crown, self.crown_sid, worker,
-                                           self.repo, self.state / "worktrees")
+                                           self.repo, self.state / "worktrees", shared=True)
             if worker["kind"] != "codex":
                 problems.append("the worker is not a Codex seat: " + worker["kind"])
             if problems:
-                raise AssertionError("the crown's start is not a delegated worktree worker: " + "; ".join(problems))
-            signs = self.implemented(calls, names, before)
+                raise AssertionError("the crown's start is not a delegated worker: " + "; ".join(problems))
+            signs = self.implemented(calls, names, self.looks)
             if signs:
                 raise AssertionError("the crown started a worker and did the work itself as well: " + "; ".join(signs))
-            self.mark(assertion="the crown's session filed the request and started its Codex worker in that "
-                      "ticket's own worktree", passed=True, **self.manifest["delegation"])
+            self.mark(assertion="the crown's session filed the request and started its Codex worker on that "
+                      "ticket, " + ("on the shared checkout" if not tree else "in its own worktree"),
+                      passed=True, **self.manifest["delegation"])
             self.until("the worker's turn ends", lambda board: self.turn_ended(self.seat(board, worker["id"]))
                        and any(answered_after(self.history(self.seat(board, worker["id"])), row)
                                for row, _ in user_turns(self.history(self.seat(board, worker["id"])))[:1]))
@@ -891,7 +967,8 @@ def adapter(base):
             cwd = Path(worker["cwd"])
             self.manifest["worker_files"] = {name: (cwd / name).is_file() for name in names}
             self.manifest["crown_board_calls"] = board_calls(every)
-            signs = self.implemented(every, names + (str(cwd),), before)
+            # A worktree's path is the work's; the checkout's is the crown's own cwd.
+            signs = self.implemented(every, names + ((str(cwd),) if tree else ()), self.looks)
             if signs:
                 raise AssertionError("the crown did the work itself around its worker: " + "; ".join(signs))
             self.mark(assertion="delivery follow-through: the crown heard its worker and its turn on that ended, "

@@ -247,6 +247,9 @@ class CrownTests(unittest.TestCase):
             with self.subTest(command=command):
                 git = {"what": "command", "command": command, "cwd": own}
                 self.assertEqual(rig.approval_decision(git, "worker", own), (True, command))
+        shared = {"what": "command", "command": "git commit -m greet", "cwd": "/owned/repo"}
+        self.assertEqual(rig.approval_decision(shared, "worker", "/owned/repo"), (True, "git commit -m greet"),
+                         "a worker on the shared checkout commits there (T-929)")
         git = {"what": "command", "command": "git commit -m greet", "cwd": own}
         refused = [(git, "crown", None), ({**git, "cwd": "/owned/repo"}, "worker", own),
                    ({**git, "cwd": own + "/../T-3-other"}, "worker", own),
@@ -322,7 +325,12 @@ class CrownTests(unittest.TestCase):
             before = rig.checkout_state(repo)
             self.assertEqual(rig.checkout_changes(before, rig.checkout_state(repo)), [], ".codex/ aside")
             (repo / "greet.py").write_text("x\n")
-            self.assertEqual(rig.checkout_changes(before, rig.checkout_state(repo)), ["?? greet.py"])
+            written = rig.checkout_state(repo)
+            changes = rig.checkout_changes(before, written)
+            self.assertEqual([c.rsplit(" ", 1)[0] for c in changes], ["?? greet.py"])
+            (repo / "greet.py").write_text("y\n")
+            self.assertEqual(len(rig.checkout_changes(written, rig.checkout_state(repo))), 1,
+                             "an edit to a file already dirty moves the tree too")
             git("add", "greet.py")
             git("commit", "-q", "-m", "the crown's own commit")
             after = rig.checkout_state(repo)
@@ -362,32 +370,99 @@ class CrownTests(unittest.TestCase):
             self.assertEqual(len(changes), 1)
             self.assertTrue(changes[0].startswith("HEAD "), "a commit past the board's tip is still the crown's")
 
-    def test_delegation_needs_the_crown_s_own_ticket_and_a_worktree_of_its_own(self):
+    def test_delegation_needs_the_crown_s_own_ticket_and_a_worktree_or_the_shared_checkout(self):
         crown, sid, repo, root = "CROWN", "crown-sid", Path("/owned/repo"), Path("/owned/state/worktrees")
         path = str(root / "T-2-greet")
-        worker = {"ticket": "W", "started_by": crown, "cwd": path}
-        snapshot = {"board": {"tickets": [{"id": "W", "created_by": "agent:crown-sid", "created_from": crown}]},
-                    "worktrees": [{"ticket": "W", "branch": "msmn/T-2-greet", "path": path}]}
+        worker = {"id": "worker-sid", "ticket": "W", "started_by": crown, "cwd": path}
+        seats = [{"id": "crown-sid", "ticket": crown, "kind": "codex"}, {"id": "worker-sid", "ticket": "W", "kind": "codex"},
+                 {"id": "shell", "ticket": "W", "kind": "bash"}]
+        board = {"tickets": [{"id": "W", "created_by": "agent:crown-sid", "created_from": crown}], "sessions": seats}
+        snapshot = {"board": board, "worktrees": [{"ticket": "W", "branch": "msmn/T-2-greet", "path": path}]}
         feed = [{"kind": "board", "actor": "agent", "cmd": cmd, "ticket": "W"}
                 for cmd in ("create_ticket", "start_agent")]
         self.assertEqual(rig.delegation_problems(snapshot, feed, crown, sid, worker, repo, root), [])
+        self.assertEqual(rig.delegation_problems(snapshot, feed, crown, sid, worker, repo, root, shared=True), [])
+        # T-929: the workspace is the crown's choice; Sol's start on the checkout passes.
         shared = {**worker, "cwd": str(repo)}
-        bad = {"a shared checkout": (snapshot, feed, shared),
+        on_checkout = {**snapshot, "worktrees": []}
+        self.assertEqual(rig.delegation_problems(on_checkout, feed, crown, sid, shared, repo, root, shared=True), [])
+        self.assertNotEqual(rig.delegation_problems(on_checkout, feed, crown, sid, shared, repo, root), [],
+                            "the forge case asks for its own worktree")
+        bad = {"a worktree bound beside a worker on the checkout": (snapshot, feed, shared),
                "another worktree's cwd": (snapshot, feed, {**worker, "cwd": str(root / "T-3-other")}),
                "a cwd outside this board": (snapshot, feed, {**worker, "cwd": "/elsewhere/T-2-greet"}),
                "no worktree listed": ({**snapshot, "worktrees": []}, feed, worker),
-               "a person's ticket": ({**snapshot, "board": {"tickets": [{"id": "W", "created_by": "local"}]}},
+               "a second agent seat on the ticket": ({**snapshot, "board": {**board, "sessions": seats + [
+                   {"id": "other", "ticket": "W", "kind": "claude"}]}}, feed, worker),
+               "not the ticket's seat": ({**snapshot, "board": {**board, "sessions": seats[:1]}}, feed, worker),
+               "a person's ticket": ({**snapshot, "board": {**board, "tickets": [{"id": "W", "created_by": "local"}]}},
                                      feed, worker),
-               "another agent's ticket": ({**snapshot, "board": {"tickets": [
+               "another agent's ticket": ({**snapshot, "board": {**board, "tickets": [
                    {"id": "W", "created_by": "agent:other", "created_from": crown}]}}, feed, worker),
                "no start in the feed": (snapshot, feed[:1], worker),
                "started by a person": (snapshot, feed, {**worker, "started_by": None})}
         for why, (snap, lines, seat) in bad.items():
             with self.subTest(why):
-                self.assertNotEqual(rig.delegation_problems(snap, lines, crown, sid, seat, repo, root), [])
-        person = {"board": {"tickets": [{"id": "W", "created_by": "local"}]}, "worktrees": snapshot["worktrees"]}
+                self.assertNotEqual(rig.delegation_problems(snap, lines, crown, sid, seat, repo, root, shared=True), [])
+        person = {"board": {**board, "tickets": [{"id": "W", "created_by": "local"}]}, "worktrees": snapshot["worktrees"]}
         self.assertEqual(rig.delegation_problems(person, feed[1:], crown, sid, worker, repo, root, filed=False), [],
                          "the forge case's ticket is a person's; the start is still the crown's")
+        # The Claude rig's `filed` reads the same place, with no fixture root.
+        self.assertEqual(rig.place_problems(str(repo), repo, None, shared=True), [])
+        self.assertEqual(rig.place_problems(path, repo, snapshot["worktrees"][0], shared=True), [])
+        self.assertNotEqual(rig.place_problems(path, repo, None, shared=True), [])
+
+    def test_a_shared_checkout_worker_s_writes_and_commits_are_its_own_and_the_crown_s_still_count(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            git = lambda *a: subprocess.run(["git", "-C", str(repo), "-c", "user.name=f", "-c",
+                                              "user.email=f@x.invalid", *a], check=True, capture_output=True)
+            git("init", "-q")
+            (repo / "README.md").write_text("fixture\n")
+            git("add", "README.md")
+            git("commit", "-q", "-m", "fixture")
+            look = lambda crown, worker: dict(state=rig.checkout_state(repo), crown=crown, worker=worker)  # noqa: E731
+            # The crown's turn on the request: it files and starts, writes nothing.
+            looks = [look(True, False), look(True, True), look(False, True)]
+            (repo / "greet.py").write_text("def greet(n): ...\n")
+            (repo / "__pycache__").mkdir()
+            (repo / "__pycache__" / "greet.pyc").write_text("x")
+            looks.append(look(False, True))
+            git("add", "greet.py")
+            git("commit", "-q", "-m", "the worker's commit")
+            looks.append(look(False, True))
+            looks.append(look(False, False))
+            self.assertEqual(rig.crown_changes(looks), [], "the worker's writes and commit are its own")
+            # The crown's wake turn: a script of its own edits the worker's file.
+            looks.append(look(True, False))
+            (repo / "greet.py").write_text("def greet(n): return n\n")
+            looks.append(look(False, False))
+            self.assertEqual([c.split()[:2] for c in rig.crown_changes(looks)], [["M", "greet.py"]])
+            # And a commit of the crown's, in a turn of its own.
+            git("commit", "-q", "-am", "the crown's own commit")
+            looks.append(look(False, False))
+            self.assertTrue(rig.crown_changes(looks)[-1].startswith("HEAD "))
+
+    def test_the_crown_writing_the_code_itself_fails_in_either_workspace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            git = lambda *a: subprocess.run(["git", "-C", str(repo), "-c", "user.name=f", "-c",
+                                              "user.email=f@x.invalid", *a], check=True, capture_output=True)
+            git("init", "-q")
+            (repo / "README.md").write_text("fixture\n")
+            git("add", "README.md")
+            git("commit", "-q", "-m", "fixture")
+            for worker_on_checkout in (False, True):
+                with self.subTest(shared=worker_on_checkout):
+                    for name in ("greet.py", "test_greet.py"):
+                        (repo / name).unlink(missing_ok=True)
+                    looks = [dict(state=rig.checkout_state(repo), crown=True, worker=False)]
+                    # Luna's road: the crown's own write, while its worker (if any) runs beside it.
+                    (repo / "greet.py").write_text("def greet(n): ...\n")
+                    looks.append(dict(state=rig.checkout_state(repo), crown=True, worker=worker_on_checkout))
+                    self.assertEqual([c.split()[:2] for c in rig.crown_changes(looks)], [["??", "greet.py"]])
+            patch_ = call("exec", 'text(await tools.apply_patch("*** Begin Patch\\n*** Add File: greet.py"));')
+            self.assertEqual(len(rig.patched(rig.tool_calls([patch_]))), 1, "its apply_patch is its own, either way")
 
     def test_the_worker_must_read_the_failure_in_the_crown_s_own_words(self):
         asked_js = call("exec", 'text(await tools.mcp__mesimon__ask_agent({key:"T-1",seen:"s",deliver:"now",'

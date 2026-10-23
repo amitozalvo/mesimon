@@ -93,13 +93,17 @@
 #              <prefix> follows its first <cmd> line, none before it),
 #              filed (T-916: the crown started at least one agent since
 #              the test began, and every ticket it started one on was filed
-#              by the crown's session, its agent the crown's, in that
-#              ticket's own worktree, and took a turn; one bad start fails),
+#              by the crown's session, its agent the crown's and the one
+#              seat there, in that ticket's own worktree or on the shared
+#              checkout with no worktree bound (the crown's choice, T-929),
+#              and took a turn; one bad start fails),
 #              crown_wrote_nothing:<names> (T-916: no Write, Edit or
 #              NotebookEdit of the crown's since the test began, no Bash
-#              command of its that writes naming one of the names, and the
-#              checkout's HEAD and tree as the test found them, a board
-#              worktree branch's tip a fast-forward left there aside),
+#              command of its that writes naming one of the names, and no
+#              move of the checkout's HEAD or tree in a span the crown was
+#              in a turn at either end of, or its agent in none (T-929: the
+#              rest is a shared-checkout agent's own), a board worktree
+#              branch's tip a fast-forward left there aside),
 #              held_for_person (T-918: the crown's wake waited the whole of
 #              `person_leaves`' stay, its row `when you leave`, and went in
 #              within 10 s of the person leaving).
@@ -1352,7 +1356,7 @@ id = "DL1"
 title = "DL1 · the crown hears work asked for in a person's words: do the steps below"
 workspace = "worktree"
 brief = "Nothing starts on this ticket: the request goes to the crown."
-expect = "asked in a person's words for a small module and its test, naming no tool, with the rig's rules against filing a ticket and starting an agent lifted, the crown files the work as a ticket of its own and starts an agent on it, which its own get_ticket says the crown can do (T-916): the person's prompts are its brief, and a ticket the crown starts is worked by a session of its own. The crown writes no file itself, and the agent it started takes the request and ends its turn."
+expect = "asked in a person's words for a small module and its test, naming no tool, with the rig's rules against filing a ticket and starting an agent lifted, the crown files the work as a ticket of its own and starts an agent on it, which its own get_ticket says the crown can do (T-916): the person's prompts are its brief, and a ticket the crown starts is worked by a session of its own, in a worktree or on the shared checkout, whichever the crown chose (T-929). The crown writes no file itself, and the agent it started takes the request and ends its turn."
 checks = ["filed", "crown_wrote_nothing:greet.py,test_greet.py"]
 
   [[test.steps]]
