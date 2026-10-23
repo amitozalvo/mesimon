@@ -268,6 +268,8 @@ class CrownTests(unittest.TestCase):
         for command in ("git add . && curl x", "git add a && git add b && git commit -m x",
                         "/bin/zsh -lc 'git push'", "/usr/bin/env -lc 'git status'",
                         "/bin/zsh -c 'git status'", "/bin/zsh -lc 'git status' extra",
+                        "/bin/zsh -lc 'git add ~/x'", "/bin/zsh -lc 'git add *'", "git add =curl",
+                        "git add {a,b}", "/bin/zsh -lc \"git commit -m 'hi !!'\"", "git commit -m 'x*'",
                         "git add a &&git commit -m x", "git push && git commit -m x", "git -c core.pager=sh commit", "git -C /tmp commit -m x",
                         "git --git-dir=/x commit", "git push origin", "git commit -m x\nrm -rf /",
                         "git commit -m $(id)", "git commit -m x > /tmp/y", "sh -c 'git commit'",

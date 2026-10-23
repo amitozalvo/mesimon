@@ -420,10 +420,17 @@ def plain_git(tokens):
         return rest in ([], ["--short"], ["-s"])
     if verb == "add":
         return bool(rest) and all(not t.startswith("-") and ".." not in Path(t).parts
-                                  and not Path(t).is_absolute() for t in rest)
+                                  and not Path(t).is_absolute() and PLAIN_PATH.fullmatch(t)
+                                  for t in rest)
     if verb == "commit":
-        return len(rest) == 2 and rest[0] in ("-m", "-am")
+        return len(rest) == 2 and rest[0] in ("-m", "-am") and bool(PLAIN_MESSAGE.fullmatch(rest[1]))
     return False
+
+
+# What a shell expands nothing in (T-930): an approved string runs under the
+# login shell, whose globs, `~`, `=cmd`, braces and `!` a shlex split cannot see.
+PLAIN_PATH = re.compile(r"[A-Za-z0-9._/@+-]+")
+PLAIN_MESSAGE = re.compile(r"[A-Za-z0-9 ._,:/@+-]+")
 
 
 def approval_decision(request, role, worktree):
