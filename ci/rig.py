@@ -2587,7 +2587,7 @@ Reply with the single word ready and end your turn."""
                     answer, _ = json.JSONDecoder().raw_decode(said[said.index("{"):])
                 except (ValueError, TypeError):
                     answer = {}
-                expected = {"evidence": "review-evidence-904", "capture_requires_send": True,
+                expected = {"evidence": "review-evidence-904", "capture_needs_separate_send": True,
                             "escape_discards": True, "escape_adopts_terminal": False, "capture_grants_live_reads": False,
                             "capture_starts_agent": False, "live_reads_available_in_tui": False}
                 ok = all(type(answer.get(k)) is type(v) and answer.get(k) == v for k, v in expected.items())
