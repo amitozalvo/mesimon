@@ -207,6 +207,122 @@ def answered_after(rows, index):
                and row["payload"].get("phase") in (None, "final_answer") for row in rows[index + 1:])
 
 
+# A shell command that writes, in a command's words: redirection, the usual
+# writers, an interpreter that may, and git's own writes. Searched together
+# with the names of what the case's work touches (`shell_writes`).
+WRITE_MARKS = (">", "tee ", "<<", "printf", "echo ", "touch ", "cp ", "mv ", "install ", "sed -i",
+               "python -c", "python3 -c", "perl -e", "perl -i", "node -e", "ruby -e")
+WRITE_GIT = re.compile(r"\bgit\b(?:\s+(?:-C|-c|--git-dir|--work-tree)(?:=|\s+)\S+)*\s+"
+                       r"(?:add|commit|apply|am|cherry-pick|merge|rebase|reset|checkout|switch|stash|restore|rm|mv)\b")
+
+
+def command_writes(command, names):
+    """A shell command that names one of `names` and writes (WRITE_MARKS,
+    WRITE_GIT). Shared with the Claude rig's `crown_wrote_nothing`."""
+    return any(name in command for name in names) and (
+        any(mark in command for mark in WRITE_MARKS) or bool(WRITE_GIT.search(command)))
+
+
+def shell_writes(calls, names):
+    """The calls that run a command which names one of `names` (the work's
+    files, a worktree's path) and writes: the crown implementing by shell,
+    which `patched` does not see."""
+    return [call for call in calls
+            if ("exec_command" in call["text"] or "write_stdin" in call["text"] or call["name"] in (
+                "exec_command", "shell", "local_shell_call", "write_stdin"))
+            and command_writes(call["text"], names)]
+
+
+def checkout_state(repo):
+    """The checkout's HEAD and its working tree, `.codex/` aside."""
+    run = lambda *argv: subprocess.run(["git", "-C", str(repo), *argv], capture_output=True,  # noqa: E731
+                                       text=True, timeout=5).stdout
+    return dict(head=run("rev-parse", "HEAD").strip(),
+                porcelain=sorted(line for line in run("status", "--porcelain", "-uall").splitlines()
+                                 if ".codex/" not in line))
+
+
+def checkout_changes(before, after, merged=()):
+    """What moved in the checkout between two `checkout_state`s: a HEAD
+    that is neither the one before nor a tip the board merged (`merged`,
+    the worktrees' merged oids), and every working-tree line that is new.
+    Empty is a checkout the crown left alone."""
+    changes = []
+    if after["head"] != before["head"] and after["head"] not in merged:
+        changes.append(f"HEAD {before['head'][:9]} → {after['head'][:9]}")
+    changes.extend(line for line in after["porcelain"] if line not in before["porcelain"])
+    return changes
+
+
+def delegation_problems(snapshot, feed, crown, crown_sid, worker, repo, worktrees, filed=True):
+    """Why `worker` is not the crown's delegated worker, or an empty list:
+    its ticket filed by the crown's own session from its ticket (`filed`),
+    a create and a start of the crown's in `feed`, started by the crown, and
+    a worktree of its own whose path is the worker's cwd, away from the
+    checkout and under this fixture's worktrees."""
+    board = snapshot["board"]
+    ticket = next((t for t in board["tickets"] if t["id"] == worker["ticket"]), {})
+    problems = []
+    if filed and (ticket.get("created_by") != "agent:" + crown_sid or ticket.get("created_from") != crown):
+        problems.append(f"ticket filed by {ticket.get('created_by')!r} from {ticket.get('created_from')!r}, "
+                        "not the crown's session")
+    agent = [line.get("cmd") for line in feed if line.get("kind") == "board" and line.get("actor") == "agent"
+             and line.get("ticket") == worker["ticket"]]
+    for cmd in (("create_ticket", "start_agent") if filed else ("start_agent",)):
+        if cmd not in agent:
+            problems.append(f"no {cmd} of an agent's for the ticket in the feed")
+    if worker.get("started_by") != crown:
+        problems.append(f"started by {worker.get('started_by')!r}")
+    tree = next((w for w in snapshot.get("worktrees") or [] if w.get("ticket") == worker["ticket"]), None)
+    cwd = Path(worker.get("cwd") or "/does-not-exist").resolve()
+    if tree is None or not tree.get("branch"):
+        problems.append("no worktree of its own on the board")
+    elif Path(tree.get("path") or "/does-not-exist").resolve() != cwd:
+        problems.append(f"its worktree {tree.get('path')} is not the worker's cwd {cwd}")
+    if cwd == Path(repo).resolve() or not cwd.is_relative_to(Path(worktrees).resolve()):
+        problems.append(f"the worker works in {cwd}, not a worktree of this board's")
+    return problems
+
+
+# The failure the stub forge reports (`pull_requests`): words that carry it
+# name the job or the pull request, and say it failed.
+FAILURE_NAME = re.compile(r"test-linux|(?:#|\bpr\s*#?|pull request\s*#?)42\b")
+FAILURE_WORD = re.compile(r"\b(?:fail\w*|red|broke\w*|error\w*)\b")
+
+
+def conveys_failure(words):
+    lower = " ".join(words.lower().split())
+    return bool(FAILURE_NAME.search(lower) and FAILURE_WORD.search(lower))
+
+
+ASK_TEXT = re.compile(r'''["']?text["']?\s*:\s*("(?:[^"\\]|\\.)*")''')
+
+
+def ask_texts(calls):
+    """The words of each ask_agent call, where its arguments spell them as a
+    double-quoted string (code mode's JS object or JSON alike)."""
+    texts = []
+    for call in calls:
+        if "ask_agent" not in call["name"] and "ask_agent(" not in call["text"]:
+            continue
+        for literal in ASK_TEXT.findall(call["text"]):
+            try:
+                texts.append(json.loads(literal))
+            except ValueError:
+                continue
+    return texts
+
+
+def heard_the_ask(heard, asked):
+    """The worker's prompt carries the crown's ask: its words whole, spaces
+    aside, where the ask's words could be read off the call; and either way
+    the failure itself."""
+    flat = lambda text: " ".join(text.split())  # noqa: E731
+    if not conveys_failure(heard):
+        return False
+    return not asked or any(flat(text) in flat(heard) for text in asked)
+
+
 # What the rig allows, matched exactly (a live model writes these requests):
 # Codex's one-tool approval for mesimon's own server, as 0.163 words it, and a
 # worker committing in its own worktree in one of three plain shapes.
@@ -659,35 +775,76 @@ def adapter(base):
             self.manifest[name] = [dict(name=call["name"], board=board_calls([call]), text=call["text"][:400])
                                    for call in calls]
 
+        def launched(self, board, sid):
+            """The worker's seat once it has a cwd: at once on the checkout
+            (judged by `delegation_problems`), else once the board lists the
+            ticket's worktree, which a cut that is still running does not."""
+            seat = self.seat(board, sid)
+            if not seat.get("cwd"):
+                return None
+            if Path(seat["cwd"]).resolve() == self.repo.resolve():
+                return seat
+            return seat if any(w.get("ticket") == seat["ticket"] and w.get("path")
+                               for w in board["worktrees"]) else None
+
+        def implemented(self, calls, names, before):
+            """Every sign the crown did the work itself: a native child, an
+            `apply_patch`, a shell command that writes naming the work
+            (`shell_writes`), and any move of the checkout's HEAD or working
+            tree since `before`, a tip the board merged from a worktree aside."""
+            snapshot = self.snapshot()
+            merged = {w.get("merged_oid") for w in snapshot.get("worktrees") or [] if w.get("merged")} - {None, ""}
+            signs = [f"native child: {c['text'][:120]}" for c in spawned(calls)]
+            signs += [f"apply_patch: {c['text'][:120]}" for c in patched(calls)]
+            signs += [f"shell write: {c['text'][:160]}" for c in shell_writes(calls, names)]
+            signs += [f"checkout: {change}" for change in checkout_changes(before, checkout_state(self.repo), merged)]
+            return signs
+
         def delegate(self):
             """A person asks the crown for concrete work, in a person's words
-            (DELEGATE_ASK, no tool named): passes when the crown files a board
-            ticket and starts its Codex worker rather than writing the code
-            itself or handing it to a native Codex child; then the worker's
-            turn ends, the board wakes the crown with it, and the crown's turn
-            on that wake ends."""
+            (DELEGATE_ASK, no tool named). Passes only when the crown's own
+            session files a board ticket and starts a Codex worker on it in a
+            worktree of its own (`delegation_problems`), and nothing shows the
+            crown doing the work (`implemented`: no child, patch, shell write
+            or checkout change); then the worker's turn ends, the board wakes
+            the crown with it, and the crown's turn on that wake ends, still
+            with nothing of the work its own."""
             self.crown_seat()
-            before = self.porcelain()
+            before = checkout_state(self.repo)
             mark = len(self.feed())
+            names = ("greet.py", "test_greet.py")
             self.ask(self.crown_sid, DELEGATE_ASK)
-            worker = self.until("the crown starts a board worker on the request",
-                                lambda board: self.worker_started(board, "greet.py"))
+            def started(board):
+                try:
+                    return self.worker_started(board, "greet.py")
+                except AssertionError as kept:
+                    raise AssertionError(f"{kept}; signs of the work done here: "
+                                         f"{self.implemented(tool_calls(self.crown_rows(board)), names, before)}")
+            worker = self.until("the crown starts a board worker on the request", started)
+            # The start may wait on the worktree's cut: the record's cwd and
+            # the snapshot's worktree come with the worker's launch.
+            worker = self.until("the worker's seat is launched", lambda board: self.launched(board, worker["id"]))
             board = self.tend()
+            snapshot = self.snapshot()
             ticket = next(t for t in board["tickets"] if t["id"] == worker["ticket"])
             calls = tool_calls(self.crown_rows(board))
             self.record_calls("crown_calls_before_wake", calls)
-            branch = next((w.get("branch") for w in board["worktrees"] if w.get("ticket") == ticket["id"]), None)
+            tree = next((w for w in board["worktrees"] if w.get("ticket") == ticket["id"]), {})
             self.manifest["delegation"] = dict(key=ticket["short_key"], title=ticket["title"],
                                                created_by=ticket.get("created_by"), created_from=ticket.get("created_from"),
-                                               worker_kind=worker["kind"], cwd=worker.get("cwd"), branch=branch,
-                                               tier=ticket.get("tier"))
+                                               worker_kind=worker["kind"], cwd=worker.get("cwd"),
+                                               branch=tree.get("branch"), worktree=tree.get("path"), tier=ticket.get("tier"))
+            problems = delegation_problems(snapshot, self.feed()[mark:], self.crown, self.crown_sid, worker,
+                                           self.repo, self.state / "worktrees")
             if worker["kind"] != "codex":
-                raise AssertionError("the crown's worker is not a Codex seat: " + worker["kind"])
-            if spawned(calls) or patched(calls):
-                raise AssertionError(f"the crown also worked natively: {len(spawned(calls))} children, "
-                                     f"{len(patched(calls))} patches of its own")
-            self.mark(assertion="the crown filed the request as a board ticket and started its Codex worker",
-                      passed=True, **self.manifest["delegation"])
+                problems.append("the worker is not a Codex seat: " + worker["kind"])
+            if problems:
+                raise AssertionError("the crown's start is not a delegated worktree worker: " + "; ".join(problems))
+            signs = self.implemented(calls, names, before)
+            if signs:
+                raise AssertionError("the crown started a worker and did the work itself as well: " + "; ".join(signs))
+            self.mark(assertion="the crown's session filed the request and started its Codex worker in that "
+                      "ticket's own worktree", passed=True, **self.manifest["delegation"])
             self.until("the worker's turn ends", lambda board: self.turn_ended(self.seat(board, worker["id"]))
                        and any(answered_after(self.history(self.seat(board, worker["id"])), row)
                                for row, _ in user_turns(self.history(self.seat(board, worker["id"])))[:1]))
@@ -699,38 +856,45 @@ def adapter(base):
                 self.crown_turn_on(board, ticket["short_key"], since=self.crown_turn_on(board, "greet.py")[0] + 1)),
                 steady=4, cause=wake.get("cause"))
             board = self.client.board()
-            after = tool_calls(self.crown_rows(board), row)
-            self.record_calls("crown_calls_on_wake", after)
-            cwd = Path(worker.get("cwd") or "/does-not-exist")
-            self.manifest["worker_files"] = {name: (cwd / name).is_file() for name in ("greet.py", "test_greet.py")}
-            self.manifest["crown_board_calls"] = board_calls(tool_calls(self.crown_rows(board)))
-            changed = [line for line in self.porcelain() if line not in before]
-            if changed and cwd.resolve() != self.repo.resolve():
-                raise AssertionError("the checkout changed while the work went to a worktree: " + str(changed))
-            if spawned(after) or patched(after):
-                raise AssertionError("the crown worked natively on its worker's news")
-            self.mark(assertion="delivery follow-through: the crown heard its worker and its turn on that ended",
-                      passed=True, wake=wake.get("cause"), files=self.manifest["worker_files"],
-                      crown_board_calls_on_wake=board_calls(after))
+            every = tool_calls(self.crown_rows(board))
+            self.record_calls("crown_calls_on_wake", tool_calls(self.crown_rows(board), row))
+            cwd = Path(worker["cwd"])
+            self.manifest["worker_files"] = {name: (cwd / name).is_file() for name in names}
+            self.manifest["crown_board_calls"] = board_calls(every)
+            signs = self.implemented(every, names + (str(cwd),), before)
+            if signs:
+                raise AssertionError("the crown did the work itself around its worker: " + "; ".join(signs))
+            self.mark(assertion="delivery follow-through: the crown heard its worker and its turn on that ended, "
+                      "nothing of the work its own", passed=True, wake=wake.get("cause"),
+                      files=self.manifest["worker_files"], crown_board_calls_on_wake=board_calls(every[len(calls):]))
 
         def forge(self):
             """A person asks the crown to start a ticket and look after its
             pull request, getting CI fixed if it fails (FORGE_ASK). The stub
             forge opens PR 42 on the worker's branch, running, then fails its
-            job: passes when the board wakes the crown with the forge's news,
-            the crown tells the worker with ask_agent, the worker reads the
-            words, and no turn of the crown's from the news on waits on the
-            pull request (a watch, a sleep, a poll) or fixes it itself."""
+            job `test-linux`. Passes when the crown started the worker in that
+            ticket's own worktree (`delegation_problems`, the ticket a
+            person's), the board wakes the crown with the forge's news, the
+            crown's ask_agent reaches the worker and the words the worker reads
+            carry the failure (`heard_the_ask`: the ask's own words, naming the
+            job or the PR and that it failed), and no turn of the crown's from
+            the news on waits on the pull request (a watch, a sleep, a poll)
+            or fixes it itself (`implemented`)."""
             ticket = self.request("create_ticket", column="TODO", title=FORGE_WORKER, workspace=None)["id"]
             key = next(t for t in self.client.board()["tickets"] if t["id"] == ticket)["short_key"]
             self.crown_seat()
-            mark = len(self.feed())
+            start = len(self.feed())
             ask = FORGE_ASK.format(key=key)
             self.ask(self.crown_sid, ask)
             worker = self.until("the crown starts the worker", lambda board: self.worker_started(board, key, ticket))
-            branch = self.until("the worker works in its own worktree", lambda board: next((
-                w.get("branch") for w in board["worktrees"] if w.get("ticket") == ticket and w.get("branch")),
-                None))
+            worker = self.until("the worker's seat is launched", lambda board: self.launched(board, worker["id"]))
+            problems = delegation_problems(self.snapshot(), self.feed()[start:], self.crown, self.crown_sid, worker,
+                                           self.repo, self.state / "worktrees", filed=False)
+            if problems:
+                raise AssertionError("the crown's start is not a worktree worker: " + "; ".join(problems))
+            tree = next(w for w in self.snapshot()["worktrees"] if w.get("ticket") == ticket and w.get("branch"))
+            branch, cwd = tree["branch"], tree["path"]
+            mark = start
             def settled(board):
                 feed = self.feed()[mark:]
                 wakes = [line for line in feed if line.get("kind") == "crown_wake" and line.get("worker") == ticket]
@@ -756,6 +920,9 @@ def adapter(base):
             board = self.client.board()
             crown_from = len(self.crown_rows(board))
             worker_from = len(self.history(self.seat(board, worker["id"])))
+            before = checkout_state(self.repo)
+            branch_before = subprocess.run(["git", "-C", str(self.repo), "rev-parse", branch], capture_output=True,
+                                           text=True, timeout=5).stdout.strip()
             publish("failed")
             wake = self.until("the board wakes the crown with the failed pipeline", lambda board: next((
                 line for line in self.feed()[mark:] if line.get("kind") == "crown_wake"
@@ -772,24 +939,40 @@ def adapter(base):
                     self.record_calls("crown_calls_on_forge_news", calls)
                     raise AssertionError("the crown ended its turn on the failed pipeline without telling the "
                                          f"worker; board tools {board_calls(calls)}, polls {len(polling(calls))}, "
-                                         f"its own patches {len(patched(calls))}")
+                                         f"its own work {self.implemented(calls, ('README', cwd, branch), before)}")
                 return None
-            line = self.until("the crown tells the worker about the failed pipeline", told)
+            line = self.until("the crown asks the worker on the failed pipeline", told)
             self.until("the crown's turn on the forge's news ends", lambda board: (
                 lambda turn: turn and turn[1])(self.crown_turn_on(board, key, since=crown_from)), steady=4)
-            heard = self.until("the worker reads the crown's words as a prompt", lambda board: next((
-                words for row, words in user_turns(self.history(self.seat(board, worker["id"])))
-                if row >= worker_from), None))
+            calls = tool_calls(self.crown_rows(self.client.board()), crown_from)
+            asked = ask_texts(calls)
+            def heard(board):
+                rows = self.history(self.seat(board, worker["id"]))
+                prompts = [words for row, words in user_turns(rows) if row >= worker_from]
+                return next((words for words in prompts if heard_the_ask(words, asked)), None) \
+                    or (prompts and self.turn_ended(self.seat(board, worker["id"]))
+                        and answered_after(rows, max(r for r, _ in user_turns(rows))) and prompts)
+            words = self.until("the worker reads the crown's words as a prompt", heard)
+            if isinstance(words, list):
+                raise AssertionError("the words the worker read do not carry the failed pipeline: "
+                                     + " | ".join(w[:200] for w in words) + f"; the crown asked {asked}")
             calls = tool_calls(self.crown_rows(self.client.board()), crown_from)
             self.record_calls("crown_calls_on_forge_news", calls)
             self.manifest["forge"] = dict(key=key, branch=branch, wake=wake.get("cause"), ask=line.get("outcome"),
-                                          worker_heard=heard[:400], crown_board_calls=board_calls(calls))
+                                          asked=[a[:400] for a in asked], asked_read_off_call=bool(asked),
+                                          worker_heard=words[:400], crown_board_calls=board_calls(calls))
             if polling(calls):
                 raise AssertionError("the crown waited on the pull request instead of ending its turn: "
                                      + "; ".join(call["text"][:120] for call in polling(calls)))
-            if patched(calls) or spawned(calls):
-                raise AssertionError("the crown fixed the pipeline natively instead of through its worker")
-            self.mark(assertion="the crown told its worker and yielded: no watch, sleep or poll on the pull request",
+            signs = self.implemented(calls, ("README", cwd, branch), before)
+            branch_after = subprocess.run(["git", "-C", str(self.repo), "rev-parse", branch], capture_output=True,
+                                          text=True, timeout=5).stdout.strip()
+            if signs:
+                raise AssertionError("the crown fixed the pipeline itself instead of through its worker: "
+                                     + "; ".join(signs))
+            self.manifest["forge"]["branch_moved_after_news"] = branch_after != branch_before
+            self.mark(assertion="the crown told its worker of the failed job and yielded: the worker read the "
+                      "failure in the crown's words, and no watch, sleep, poll or fix of the crown's own",
                       passed=True, **self.manifest["forge"])
 
         def collect(self):

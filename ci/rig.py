@@ -2160,6 +2160,13 @@ Reply with the single word ready and end your turn."""
             return bool(self.restart())
         die(f"unknown rig step {what}")
 
+    def checkout(self):
+        """The checkout's HEAD and its working tree (T-916)."""
+        run = lambda *a: subprocess.run(["git", "-C", self.repo, *a], capture_output=True,  # noqa: E731
+                                        text=True).stdout
+        return {"head": run("rev-parse", "HEAD").strip(),
+                "porcelain": sorted(run("status", "--porcelain", "-uall").splitlines())}
+
     def crown_filed(self, lines):
         """The tickets the crown both filed and started an agent on, in
         `lines`, oldest first (T-916)."""
@@ -2240,7 +2247,7 @@ Reply with the single word ready and end your turn."""
         t0 = time.time()
         say(f"\n▶ {test['id']} {test['key']}: {test['title']}")
         record = {"failures": [], "pings": [], "doctor": None, "wakes": [],
-                  "t0_ms": int(t0 * 1000)}
+                  "t0_ms": int(t0 * 1000), "checkout0": self.checkout()}
         ok = True
         for step in test["steps"]:
             if ok:
@@ -2461,26 +2468,50 @@ Reply with the single word ready and end your turn."""
                 check(c, not bad, " → ".join(repr(b[:60]) for b in bad)
                       or f"{len(ran)} bash calls, none of {words}")
             elif name == "filed":
-                # T-916: the crown filed the person's request as a ticket of
-                # its own and started an agent on it, which took a turn.
-                filed = self.crown_filed(lines)
-                agents = [(t, self.agent_of(board, t)) for t in filed]
-                ran = [(t, a) for t, a in agents if a and a.get("started_by") == self.crown
-                       and any(r.get("type") == "user" for r in transcript(a))]
-                said = ", ".join(f"{self.ticket(board, t)['short_key']} {self.ticket(board, t)['title'][:50]!r}"
-                                 f" in {'the checkout' if os.path.realpath(a['cwd']) == self.repo else 'a worktree'}"
-                                 for t, a in ran)
-                check(c, ran, said or f"filed {len(filed)}, none with an agent the crown started that took a turn")
+                # T-916: the crown's own session filed the person's request as
+                # a ticket from its ticket and started an agent on it, in that
+                # ticket's own worktree, which took a turn.
+                crown_rec = self.agent_of(board, self.crown)
+                trees = {w["ticket"]: w for w in self.snapshot().get("worktrees", [])}
+                good, bad = [], []
+                for t in self.crown_filed(lines):
+                    a, tk, tree = self.agent_of(board, t), self.ticket(board, t), trees.get(t, {})
+                    why = []
+                    if tk.get("created_by") != f"agent:{crown_rec and crown_rec['id']}" \
+                            or tk.get("created_from") != self.crown:
+                        why.append(f"filed by {tk.get('created_by')!r}")
+                    if not a or a.get("started_by") != self.crown:
+                        why.append("no agent the crown started")
+                    else:
+                        cwd = os.path.realpath(a["cwd"])
+                        if cwd == self.repo or not tree.get("path") or os.path.realpath(tree["path"]) != cwd:
+                            why.append(f"works in {'the checkout' if cwd == self.repo else cwd}, "
+                                       "not its ticket's worktree")
+                        if not any(r.get("type") == "user" for r in transcript(a)):
+                            why.append("took no turn")
+                    (bad if why else good).append(f"{tk['short_key']} {tk['title'][:50]!r}"
+                                                  + (": " + ", ".join(why) if why else f" in {tree.get('branch')}"))
+                check(c, good, "; ".join(good + bad) or "the crown filed and started nothing")
             elif name == "crown_wrote_nothing":
                 # T-916: the work went to the filed ticket's agent, not the
-                # crown's own Write, Edit or NotebookEdit.
+                # crown's: no Write, Edit or NotebookEdit, no Bash command that
+                # writes naming the work (`codex.command_writes`), and the
+                # checkout's HEAD and tree where the test found them, a tip
+                # the board merged from a worktree aside.
+                from codex import checkout_changes, command_writes
+                names = [n for n in arg.split(",") if n]
                 crown = self.agent_of(board, self.crown)
                 since = record.get("t0_ms", 0)
                 crown_rows = [r for r in (transcript(crown) if crown else [])
                               if (iso_ms(r.get("timestamp") or "") or 0) >= since]
-                wrote = [i.get("file_path", "") for n, i in tool_inputs(crown_rows)
-                         if n in ("Write", "Edit", "NotebookEdit")]
-                check(c, not wrote, ", ".join(wrote) or "no Write, Edit or NotebookEdit of the crown's")
+                calls = tool_inputs(crown_rows)
+                signs = [f"{n} {i.get('file_path', '')}" for n, i in calls if n in ("Write", "Edit", "NotebookEdit")]
+                signs += [f"Bash {i.get('command', '')[:80]!r}" for n, i in calls
+                          if n == "Bash" and command_writes(i.get("command", ""), names)]
+                merged = {w.get("merged_oid") for w in self.snapshot().get("worktrees", []) if w.get("merged")}
+                signs += checkout_changes(record["checkout0"], self.checkout(), merged - {None, ""})
+                check(c, not signs, "; ".join(signs) or f"no write of the crown's; {len(calls)} calls, "
+                      "checkout as the test found it")
             elif name == "fed":
                 check(c, arg in fed, f"{arg}×{fed.count(arg)}")
             elif name == "board_fed":

@@ -267,6 +267,101 @@ class CrownTests(unittest.TestCase):
         self.assertFalse(rig.dialog_allows("Allow this?\n› Ask Codex to do anything"),
                          "an Allow anywhere with the composer's cursor is no dialog row")
 
+    def test_a_shell_write_or_commit_of_the_work_is_the_crown_s_own(self):
+        names = ("greet.py", "test_greet.py", "/owned/wt/T-2-greet")
+        exec_ = lambda cmd: call("exec", "text(await tools.exec_command(" + json.dumps({"cmd": cmd}) + "));")
+        writes = [exec_("cat > greet.py <<'EOF'\ndef greet(n): pass\nEOF"),
+                  exec_("printf 'import unittest' > test_greet.py"),
+                  exec_("git -C /owned/wt/T-2-greet commit -am fix"),
+                  exec_("python3 -c \"open('greet.py','w').write('x')\""),
+                  exec_("tee greet.py < /dev/null"),
+                  call("exec_command", json.dumps({"cmd": "echo hi >> greet.py"}))]
+        reads = [exec_("cat greet.py"), exec_("git -C /owned/wt/T-2-greet log --oneline"),
+                 exec_("python3 -m unittest test_greet"), exec_("echo done > /tmp/unrelated.txt"),
+                 call("exec", 'text(await tools.mcp__mesimon__create_ticket({"title":"Add greet.py > tests"}));')]
+        found = rig.shell_writes(rig.tool_calls(writes + reads), names)
+        self.assertEqual([c["row"] for c in found], list(range(len(writes))))
+
+    def test_a_claude_crown_s_bash_write_of_the_work_is_its_own_too(self):
+        names = ["greet.py", "test_greet.py"]
+        for command in ("cat > greet.py << 'EOF'\ndef greet(n): ...\nEOF", "git add greet.py && git commit -m g",
+                        "git -C /rig/wt commit -am 'add test_greet.py'", "sed -i '' s/x/y/ greet.py"):
+            with self.subTest(command=command):
+                self.assertTrue(rig.command_writes(command, names))
+        for command in ("cat greet.py", "python3 -m unittest test_greet", "git log -- greet.py",
+                        "echo done > /tmp/x"):
+            with self.subTest(command=command):
+                self.assertFalse(rig.command_writes(command, names))
+
+    def test_the_checkout_s_head_and_tree_say_what_the_crown_wrote(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            git = lambda *a: subprocess.run(["git", "-C", str(repo), "-c", "user.name=f", "-c",
+                                              "user.email=f@x.invalid", *a], check=True, capture_output=True)
+            git("init", "-q")
+            (repo / "README.md").write_text("fixture\n")
+            (repo / ".codex").mkdir()
+            git("add", "README.md")
+            git("commit", "-q", "-m", "fixture")
+            before = rig.checkout_state(repo)
+            self.assertEqual(rig.checkout_changes(before, rig.checkout_state(repo)), [], ".codex/ aside")
+            (repo / "greet.py").write_text("x\n")
+            self.assertEqual(rig.checkout_changes(before, rig.checkout_state(repo)), ["?? greet.py"])
+            git("add", "greet.py")
+            git("commit", "-q", "-m", "the crown's own commit")
+            after = rig.checkout_state(repo)
+            changes = rig.checkout_changes(before, after)
+            self.assertEqual(len(changes), 1)
+            self.assertTrue(changes[0].startswith("HEAD "), "a committed shell edit is no clean tree")
+            self.assertEqual(rig.checkout_changes(before, after, merged={after["head"]}), [],
+                             "the board's merge of a worker's tip is the follow-through")
+
+    def test_delegation_needs_the_crown_s_own_ticket_and_a_worktree_of_its_own(self):
+        crown, sid, repo, root = "CROWN", "crown-sid", Path("/owned/repo"), Path("/owned/state/worktrees")
+        path = str(root / "T-2-greet")
+        worker = {"ticket": "W", "started_by": crown, "cwd": path}
+        snapshot = {"board": {"tickets": [{"id": "W", "created_by": "agent:crown-sid", "created_from": crown}]},
+                    "worktrees": [{"ticket": "W", "branch": "msmn/T-2-greet", "path": path}]}
+        feed = [{"kind": "board", "actor": "agent", "cmd": cmd, "ticket": "W"}
+                for cmd in ("create_ticket", "start_agent")]
+        self.assertEqual(rig.delegation_problems(snapshot, feed, crown, sid, worker, repo, root), [])
+        shared = {**worker, "cwd": str(repo)}
+        bad = {"a shared checkout": (snapshot, feed, shared),
+               "another worktree's cwd": (snapshot, feed, {**worker, "cwd": str(root / "T-3-other")}),
+               "a cwd outside this board": (snapshot, feed, {**worker, "cwd": "/elsewhere/T-2-greet"}),
+               "no worktree listed": ({**snapshot, "worktrees": []}, feed, worker),
+               "a person's ticket": ({**snapshot, "board": {"tickets": [{"id": "W", "created_by": "local"}]}},
+                                     feed, worker),
+               "another agent's ticket": ({**snapshot, "board": {"tickets": [
+                   {"id": "W", "created_by": "agent:other", "created_from": crown}]}}, feed, worker),
+               "no start in the feed": (snapshot, feed[:1], worker),
+               "started by a person": (snapshot, feed, {**worker, "started_by": None})}
+        for why, (snap, lines, seat) in bad.items():
+            with self.subTest(why):
+                self.assertNotEqual(rig.delegation_problems(snap, lines, crown, sid, seat, repo, root), [])
+        person = {"board": {"tickets": [{"id": "W", "created_by": "local"}]}, "worktrees": snapshot["worktrees"]}
+        self.assertEqual(rig.delegation_problems(person, feed[1:], crown, sid, worker, repo, root, filed=False), [],
+                         "the forge case's ticket is a person's; the start is still the crown's")
+
+    def test_the_worker_must_read_the_failure_in_the_crown_s_own_words(self):
+        asked_js = call("exec", 'text(await tools.mcp__mesimon__ask_agent({key:"T-1",seen:"s",deliver:"now",'
+                                'text:"PR #42 has a failed test-linux pipeline. Fix it.\\nThen report."}));')
+        asked_json = call("mcp__mesimon__ask_agent", json.dumps({"key": "T-1", "text": "test-linux is red on #42"}))
+        asked = rig.ask_texts(rig.tool_calls([asked_js, asked_json]))
+        self.assertEqual(asked, ["PR #42 has a failed test-linux pipeline. Fix it.\nThen report.",
+                                 "test-linux is red on #42"])
+        self.assertTrue(rig.heard_the_ask("PR #42 has a failed test-linux pipeline. Fix it.\nThen  report.", asked))
+        for heard, why in (("Please rebase onto main and report.", "an unrelated ask"),
+                           ("PR #42 passed; nothing to do.", "no failure"),
+                           ("Your review of PR 42 is required.", "required is not red"),
+                           ("T-142 failed to start.", "another number"),
+                           ("The test-linux job failed on #42, look again.", "words the crown did not send")):
+            with self.subTest(why):
+                self.assertFalse(rig.heard_the_ask(heard, asked))
+        self.assertTrue(rig.heard_the_ask("The test-linux job failed on #42.", []),
+                        "words not read off the call are judged on the failure alone")
+        self.assertFalse(rig.heard_the_ask("Please check T-1.", []))
+
     def test_the_crown_fixture_s_home_hides_the_person_s_tiers_and_claude(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory) / "home"

@@ -82,26 +82,41 @@ a board tool, and a worker's plain `git` in its own worktree, are allowed once
 each and listed in the manifest (`approvals`); anything else is left standing
 and listed (`approvals_left`), and a crown kept waiting on one fails.
 
-- `delegate`: the person asks for a small module and its test. It passes when
-  the crown files a board ticket and starts a Codex worker on it (the snapshot's
-  `started_by`), with no `apply_patch` of its own and no native child, though
-  Codex's own child agents are on (`multi_agent`, Codex's default, one thread,
-  pinned to the selected model and effort); then the worker's turn ends, the
-  board wakes the crown with it, and the crown's turn on that wake ends with
-  the checkout untouched. The crown's calls before and on the wake, the
-  worker's files and the wake's cause are recorded, not judged.
+- `delegate`: the person asks for a small module and its test. It passes only
+  when the crown's own session files a board ticket from its ticket (the
+  ticket's `created_by` and `created_from`, and an agent's `create_ticket` and
+  `start_agent` for it in the feed) and starts a Codex worker on it in that
+  ticket's own worktree (the snapshot's worktree path is the worker's resolved
+  cwd, away from the checkout), and nothing shows the crown doing the work: no
+  native child (Codex's own child agents are on, `multi_agent`, its default, one
+  thread, pinned to the selected model and effort), no `apply_patch`, no shell
+  command that writes naming the work's files or the worker's worktree, and
+  the checkout's HEAD and working tree where the request found them (a tip the
+  board merged from a worktree aside). Then the worker's turn ends, the board
+  wakes the crown with it, and the crown's turn on that wake ends, the same
+  no-implementation evidence holding over every crown turn. The crown's calls,
+  the worker's files and the wake's cause are recorded, not judged.
 - `forge`: the board merges through pull requests, the fixture repository has
   a github.com remote it never reaches, and the Claude rig's stub `gh` comes
   first on the daemon's PATH and on its login shell's (the forge looks for
   `gh` on the captured login-shell PATH first). The person asks the crown to
   start a ticket in its own worktree and look after its pull request, getting
-  CI fixed if it fails. Once the worker's first turn and the crown's turn on
-  its wake end, the stub opens PR 42 on the worker's branch, running, then
-  fails its one job. It passes when the board wakes the crown with the
-  forge's news, the crown tells the worker with `ask_agent`, the worker reads
-  those words as a prompt, and no turn of the crown's from the news on runs a
-  watch, a sleep or a poll of the pull request (`gh pr checks`, `--watch`,
-  `sleep`, Codex's own sleep tool) or patches the code itself.
+  CI fixed if it fails. The start must be the crown's, in that ticket's own
+  worktree. Once the worker's first turn and the crown's turn on its wake end,
+  the stub opens PR 42 on the worker's branch, running, then fails its one job,
+  `test-linux`. It passes when the board wakes the crown with the forge's
+  news, the crown's `ask_agent` reaches the worker, the words the worker reads
+  are the ask's own words (read off the crown's call where its arguments spell
+  them) and name the job or PR 42 and that it failed, and no turn of the
+  crown's from the news on runs a watch, a sleep or a poll of the pull request
+  (`gh pr checks`, `--watch`, `sleep`, Codex's own sleep tool), patches, writes
+  by shell naming the README, the worktree or the branch, or moves the
+  checkout.
+
+The shell-write test reads a command's words: a write it cannot see (a script
+that writes a file it does not name) is caught only by the checkout's HEAD and
+tree, and in the worker's worktree, where the worker's own writes are expected,
+not at all.
 
 The crown cases' daemon runs on a HOME of its own inside the fixture: the
 machine's tiers live under `$HOME` and a crown picks among them (a first run's
