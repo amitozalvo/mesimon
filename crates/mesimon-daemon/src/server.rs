@@ -24,7 +24,7 @@ use mesimon_core::command::{
     AgentQuestionView, AgentRepoView, AgentStateView, AgentTagView, AgentTicketRow,
     AgentTicketView, AskRoad, AskWake, Command, CrownTouch, Deliver, DiffTarget, Envelope, Event,
     ExternalItem, GraceItem, MergeOutcome, Notice, Pending, PendingAction, Resources, Response,
-    TerminalItem, WorktreeItem, WorktreeRepoItem, PROTOCOL_VERSION,
+    StartPrompt, TerminalItem, WorktreeItem, WorktreeRepoItem, PROTOCOL_VERSION,
 };
 use mesimon_core::crown;
 use mesimon_core::mcp;
@@ -7059,7 +7059,7 @@ impl Daemon {
                         return Response::Err { message };
                     }
                 }
-                let (session_started, woken, kind) = match start {
+                let (session_started, woken, kind, prompt) = match start {
                     // The crown's own parked agent (T-583): the person's `c`,
                     // the conversation kept, in the cwd it was parked in.
                     crown::Start::Wake(id) => {
@@ -7072,9 +7072,10 @@ impl Daemon {
                             .unwrap_or(SessionKind::Claude);
                         let resp = self.resume_session_in(id, false, plan);
                         self.persist_and_notify();
+                        let prompt = self.words_waiting_for(target, id);
                         match resp {
-                            Response::Spawned { .. } => (true, true, kind),
-                            Response::Provisioning => (false, true, kind),
+                            Response::Spawned { .. } => (true, true, kind, prompt),
+                            Response::Provisioning => (false, true, kind, prompt),
                             Response::Err { message } => {
                                 return Response::Err { message: format!("{key}: {message}") }
                             }
@@ -7096,8 +7097,8 @@ impl Daemon {
                         }
                         let kind = self.tier_book().start_provider(target).session_kind();
                         match self.spawn_session(target, kind, true, None, Some(ticket), plan) {
-                            Response::Spawned { .. } => (true, false, kind),
-                            Response::Provisioning => (false, false, kind),
+                            Response::Spawned { .. } => (true, false, kind, StartPrompt::Brief),
+                            Response::Provisioning => (false, false, kind, StartPrompt::Brief),
                             Response::Err { message } => return Response::Err { message },
                             other => {
                                 return Response::Err {
@@ -7120,6 +7121,7 @@ impl Daemon {
                     tier: self.tier_book().launch(target, kind).name,
                     woken,
                     workspace: crown::workspace_word(wanted).to_string(),
+                    prompt: Some(prompt),
                 }
             }
             // The crown's sleep (T-539): `x` on a card the crown started. The
@@ -7442,6 +7444,26 @@ impl Daemon {
                 held.join(", ")
             )
         })
+    }
+
+    /// What words wait for `session`, the agent a `start_agent` just woke
+    /// on `target` (T-920): the wake itself submits nothing, so the crown's
+    /// receipt says whether an ask already holds its next turn — queued, or
+    /// parked on a resume still waiting for its worktree — or a person's
+    /// send does, or nothing will start one.
+    fn words_waiting_for(&self, target: ulid::Ulid, session: uuid::Uuid) -> StartPrompt {
+        if let Some(q) = self.queued.iter().find(|q| q.ticket == target) {
+            return if q.held_for_person() {
+                StartPrompt::HeldForPerson
+            } else {
+                StartPrompt::Queued
+            };
+        }
+        if self.pending_resumes.iter().any(|r| r.session == session && r.prompt.is_some()) {
+            StartPrompt::Queued
+        } else {
+            StartPrompt::None
+        }
     }
 
     /// Why the crown's ask for `target` waits on a person's send, or `None`
@@ -17414,6 +17436,19 @@ impl Daemon {
                     evidence.display()
                 )),
             );
+        }
+        // An ask still queued for the parked seat (T-920) is now an ask for
+        // this pane: a delivery to `Wake` would find nothing asleep and
+        // drop the words, so it waits for the pane's idle as any ask does.
+        let mut reseated = false;
+        for q in &mut self.queued {
+            if matches!(q.seat, QueuedSeat::Wake(w) if w == id) {
+                q.seat = QueuedSeat::Pane(id);
+                reseated = true;
+            }
+        }
+        if reseated {
+            self.persist_queue();
         }
         self.recovery.remove(&id); // reset provider cursors for the new launch
         self.machines.insert(id, Machine::new(SessionState::Spawning, now));

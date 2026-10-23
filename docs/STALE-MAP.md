@@ -30783,3 +30783,70 @@ branch from landing until its review, on an armed train.
 **Not done.** The TUI shows no difference between a crown's hold and a person's beyond
 `get_ticket`; the card reads the same `auto-merge` hint for both. Nothing tells the held
 worker it is held. Its own `get_ticket` carries `held`, and that is all.
+
+## A wake is not the work going on: the start receipt says what was sent (T-920, 2026-10-23, "Make crown wake receipts distinguish session resume from actual work continuation")
+
+**What was wrong.** On T-919 a worker hit the account's limit; the crown parked it and called
+`start_agent` naming another tier. The receipt read `status: woken`, and `CROWN_WAKES` said the
+wake put it on that tier "to go on". The crown ended its turn and told the person the task had
+resumed. A wake is `resume_session_in(id, false, plan)`: Claude Code comes back in its
+conversation at an empty prompt box and nothing is submitted. A SessionStart idle is not a
+turn, so no wake ever came to the crown either. `get_ticket` read idle for 42 s, until an
+`ask_agent` with deliver now started the turn.
+
+**What shipped.**
+- `Response::AgentStarted.prompt: Option<StartPrompt>` (`#[serde(default)]`, omitted when
+  `None`, so a daemon from before it says nothing). The daemon fills it at the start:
+  `brief` for a spawn (the title and description are its first prompt, at launch or once the
+  worktree is cut); for a wake, `Daemon::words_waiting_for`: `queued` when an ask of anyone's
+  stands for the ticket and the queue will send it, or a resume still waiting for its worktree
+  carries words; `held_for_person` when that ask waits for `^y`; otherwise `none`.
+- The shim renders the word as `prompt` and a sentence beside it, `prompt_about`, as T-880 does
+  with `wake`/`wake_about`. For `none`: nothing was sent, the agent stays idle with no turn and
+  no wake for the crown until words reach it, `ask_agent` sends them once (deliver idle waits
+  for it to be up), and `start_agent` again is not needed. For `queued`: no second ask or
+  start. For `held_for_person`: the send is the person's step, raised with `raise_hand`. The
+  shim only translates the daemon's word; it reads no state of its own.
+- `CROWN_WAKES` (result data, so it may say what to do): the quota clause says the wake leaves
+  the agent at its prompt box with nothing sent and that its work goes on in the turn
+  `ask_agent`'s words start, sent once. The wake clause says a wake sends nothing and names the
+  four words. `start_agent`'s description (at the byte cap) now says "A turn's end wakes this
+  session", where it said "The board then wakes this session". The latter is false for a wake.
+- **A queued ask follows the woken record into its pane.** An ask queued at `QueuedSeat::Wake(id)`
+  (a crown's ask held for a person, or one the checkout held) survived a wake made by someone
+  else, because `seat_stands` holds for the same record. Its delivery then went through
+  `wake_with`, which found nothing asleep: a person's `^y` failed and the queue dropped the
+  words as `queued_wake_failed`. `resume_session_with_cleanup_ack` now re-aims every such entry
+  at `Pane(id)` on success. It then waits for the pane's idle like any ask, and
+  `persist_queue` runs (a pane ask stays memory-only, as before). Without this fix, the new e2e
+  fails at the person's send. This is what makes `queued` and `held_for_person` true.
+
+**Not done.** The conversation word is not in the receipt. A wake whose history is missing
+(`FreshWhenHistoryMissing`) starts a new conversation under the same record, and the receipt
+does not say so. A crown-started worker has always taken its brief, so this case does not come
+up. No continuation words are written by mesimon: the crown's `ask_agent` is the only road, so
+the zero-injection promise is unchanged.
+
+**Tests.** `cargo ut`: `a_start_prompt_is_its_own_word_and_absent_from_an_older_daemon`
+(command), `the_crown_is_told_a_wake_sends_nothing` and the quota test's two new phrases (core
+mcp), `a_start_receipt_says_what_reaches_the_agent_and_what_a_wake_did_not_send` (shim). In
+crown_e2e, `the_crown_lets_one_agent_edit_the_others` pins `prompt: brief` on a start parked
+behind its worktree cut. `a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker`
+now goes on past the tier wake:
+- The receipt reads `woken` / `none`. The record, its `--resume` and its worktree cwd are the
+  ones it parked with; a seeded transcript makes it a real resume, not a fresh one.
+- After `SessionStart` it stays idle 2 s and nothing is typed anywhere.
+- The crown's `ask_agent` (deliver idle) lands in W exactly once; its turn runs and ends on the
+  same record and cwd.
+- Parked again with a supervised crown's ask held: the next wake's receipt reads
+  `held_for_person`, nothing goes on its own, and the person's `SendQueuedAsk` lands it once.
+Rig L2 is strengthened. The worker's brief has two parts, and part two waits for a later
+prompt. The person's words ask the crown to carry it on with rig-alt "until it finishes". The
+step ends on the worker's next Stop and the board's wake, not on `SessionStart`. Checks:
+`crown:start_agent=2`, `crown:ask_agent_sent=1`, `prompts:2`, `replies:one,two`,
+`cwd:worktree`, `tier:rig-alt`.
+Run once on the real Sonnet (claude 2.1.309, mod road), 2026-10-23: L2 PASS in 80 s. The crown
+called `sleep_agent` and then `start_agent` on rig-alt. The worker came back with
+`SessionStart (resume)`, and the crown's single `ask_agent` ("Please go on with part two…") was
+queued and then sent 10.6 s later. The worker answered `two` in its second turn, and the board
+woke the crown with `answered`. Wakes, in order: finished, limited, answered.

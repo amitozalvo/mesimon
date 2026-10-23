@@ -564,7 +564,10 @@ may put an agent it started to sleep once that agent is idle, the same park as `
 the conversation is kept, `c` wakes it, and while it sleeps its seat is free for another start.
 The crown chooses each ticket's workspace when it files or starts it, a worktree of its own or the
 shared checkout, is refused the shared checkout while another ticket's agent works or sleeps
-there, and wakes an agent it parked itself, in the workspace it was parked in.
+there, and wakes an agent it parked itself, in the workspace it was parked in. A wake sends
+the agent nothing: it comes back to its prompt box, as after `c`, and sits idle until words reach
+it. The crown is told so when it wakes one (to carry a worker on with another model after a
+usage limit, say), and sends its words to go on once, the same way it asks anything else.
 Who merges a finished worker's branch depends on the board. The merge train lands it where the
 train is on and the ticket's column reaches a merge. Where the train will not — it is off, you
 took the ticket off it with `t`, or its column's train setting stops short of a merge — the crown

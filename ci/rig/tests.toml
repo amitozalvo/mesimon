@@ -1182,9 +1182,9 @@ checks = ["woke:limited", "not_fed:ask_agent", "final:needs_you"]
 id = "L2"
 title = "L2 · a worker stopped on a usage limit goes on another tier: do the steps below"
 workspace = "worktree"
-brief = "Reply with the single word done and end your turn. Read no file and run no command."
-expect = "the crown starts the worker, which answers and ends its turn; its session reports the account's usage limit and the board wakes the crown, hit a usage limit. Then the person asks the crown to carry the worker on with the rig-alt tier, naming no tool: the crown parks it (sleep_agent, which takes a stop on a limit since T-808: the turn has ended) and wakes it with start_agent naming rig-alt, and the worker comes back on that tier with its conversation kept."
-checks = ["woke:limited", "crown:sleep_agent", "tier:rig-alt"]
+brief = "The task has two parts. Part one, now: reply with the single word one and end your turn. Part two waits for a later prompt that asks you to go on: then reply with the single word two and end your turn. Read no file and run no command."
+expect = "the crown starts the worker, which answers one and ends its turn with part two left; its session reports the account's usage limit and the board wakes the crown, hit a usage limit. Then the person asks the crown to carry the worker on with the rig-alt tier until it finishes, naming no tool: the crown parks it (sleep_agent, which takes a stop on a limit since T-808: the turn has ended) and wakes it with start_agent naming rig-alt, whose receipt says nothing was sent (prompt: none, T-920), so the crown sends its words to go on with ask_agent, once. The worker comes back on that tier in the same conversation and worktree, takes those words as its second prompt and answers two in a turn of its own, and the board wakes the crown when that turn ends; an idle SessionStart alone is not the work going on."
+checks = ["woke:limited", "crown:sleep_agent", "crown:start_agent=2", "crown:ask_agent_sent=1", "tier:rig-alt", "cwd:worktree", "prompts:2", "replies:one,two"]
 
   [[test.steps]]
   crown = "L2: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: L2 started."
@@ -1195,8 +1195,9 @@ checks = ["woke:limited", "crown:sleep_agent", "tier:rig-alt"]
   rig = "limit"
 
   [[test.steps]]
-  crown = "L2: {key}'s agent hit the account's usage limit. Carry it on with the rig-alt tier, then end your turn with the single line: L2 moved."
-  until = { events = ["SessionStart"], state = "idle" }
+  crown = "L2: {key}'s agent hit the account's usage limit before its task was finished. Carry it on with the rig-alt tier until it finishes, then end your turn with the single line: L2 moved."
+  until = { stops = 1, state = "idle" }
+  wake = true
 
 [[test]]
 id = "X1"

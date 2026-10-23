@@ -26,7 +26,7 @@
 
 use mesimon_core::board::{CrownMode, MergeInto, SessionKind, SessionState, WorkspaceStrategy};
 use mesimon_core::command::{
-    AgentTicketView, AskRoad, AskWake, Command, CrownTouch, Deliver, Response,
+    AgentTicketView, AskRoad, AskWake, Command, CrownTouch, Deliver, Response, StartPrompt,
 };
 use mesimon_core::Principal;
 use serde_json::json;
@@ -533,10 +533,20 @@ fn the_crown_lets_one_agent_edit_the_others() {
     // carries the crown's id, the touch says so, and the receipt says what
     // is left.
     match start(&mut c, &k1, v1.seen) {
-        Response::AgentStarted { key, session_started, budget_left, woken, workspace, .. } => {
+        Response::AgentStarted {
+            key,
+            session_started,
+            budget_left,
+            woken,
+            workspace,
+            prompt,
+            ..
+        } => {
             assert_eq!(key, k1);
             assert!(!session_started, "waiting for its worktree first");
             assert!(!woken);
+            // T-920: a start's first prompt is its brief, once the cut lands.
+            assert_eq!(prompt, Some(StartPrompt::Brief));
             assert_eq!(workspace, "worktree");
             assert_eq!(budget_left, 1);
         }
@@ -6072,6 +6082,11 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
+    // W's conversation, as Claude's store keeps it: what `--resume` reads,
+    // so a wake carries it on rather than starting a new one (T-920).
+    let projects = h.dir.join("claude-home").join("projects").join("msmn");
+    std::fs::create_dir_all(&projects).unwrap();
+    std::fs::write(projects.join(format!("{ws}.jsonl")), "{\"type\":\"user\"}\n").unwrap();
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, ws);
 
@@ -6137,7 +6152,12 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
             workspace: Some("worktree".into()),
         },
     ) {
-        Response::AgentStarted { tier, .. } => assert_eq!(tier, "deep"),
+        // T-920: the wake sent nothing, and the receipt says so.
+        Response::AgentStarted { tier, woken, prompt, .. } => {
+            assert_eq!(tier, "deep");
+            assert!(woken);
+            assert_eq!(prompt, Some(StartPrompt::None), "a wake submits nothing");
+        }
         other => panic!("start_agent on another tier: {other:?}"),
     }
     wait_until(std::time::Duration::from_secs(15), "W woken on the deep tier", || {
@@ -6148,6 +6168,112 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
     assert_eq!(rec.tier, "01DEEP");
     let model = rec.argv.iter().position(|a| a == "--model").and_then(|at| rec.argv.get(at + 1));
     assert_eq!(model.map(String::as_str), Some("opus"), "{:?}", rec.argv);
+    // The same conversation in the same worktree: the record, its resume and
+    // its cwd are the ones it parked with.
+    assert!(rec.argv.iter().any(|a| a == "--resume"), "{:?}", rec.argv);
+    let cwd = rec.cwd.clone();
+    assert!(cwd.contains("/worktrees/"), "{cwd}");
+
+    // ---- T-920: up and idle, it stays idle until words reach it ------------
+    let lines = || std::fs::read_to_string(&got).unwrap_or_default().lines().count();
+    let before = lines();
+    hook_send(&hook_sock, &ws.to_string(), "SessionStart", r#"{"source":"resume"}"#);
+    c.await_state(ws, "idle after the wake", |s| matches!(s, SessionState::Idle { .. }));
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    let board = c.board();
+    let rec = board.live_agent(w).expect("W's seat");
+    assert!(matches!(rec.state, SessionState::Idle { .. }), "no turn began: {:?}", rec.state);
+    assert_eq!(lines(), before, "nothing was typed into W or the crown");
+
+    // The crown's words, sent once, are what carry it on: one paste into W.
+    let probe = "mesimon-probe-920 carry on where the limit stopped you";
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentAskTicket {
+            key: kw.clone(),
+            text: probe.into(),
+            seen: v.seen,
+            plan: false,
+            deliver: Deliver::Idle,
+        },
+    ) {
+        Response::AgentAsked { held_for_person: false, wake: None, .. } => {}
+        other => panic!("ask_agent to the woken worker: {other:?}"),
+    }
+    let count = || std::fs::read_to_string(&got).unwrap_or_default().matches(probe).count();
+    wait_until(std::time::Duration::from_secs(10), "the crown's words to reach W", || count() > 0);
+    start(&mut c, ws);
+    hook_send(&hook_sock, &ws.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(ws, "W's carried-on turn ended", |s| matches!(s, SessionState::Idle { .. }));
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(count(), 1, "the words went once");
+    let rec = c.board().live_agent(w).cloned().expect("W's seat");
+    assert_eq!((rec.id, rec.cwd.as_str()), (ws, cwd.as_str()), "one conversation, one worktree");
+
+    // ---- T-920: words a person holds wait for the person, after a wake too --
+    // Parked again with the crown's ask held for a person (supervised), the
+    // wake's receipt says the next turn is the person's send, and that send
+    // reaches the woken pane: an ask queued for the parked seat follows the
+    // record into its new pane rather than dropping as a failed wake.
+    let v = read(&mut c, sa, &kw).unwrap();
+    assert!(matches!(
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentSleepTicket { key: kw.clone(), seen: v.seen }
+        ),
+        Response::AgentTicket { .. }
+    ));
+    c.await_state(ws, "parked again", |s| *s == SessionState::Sleeping);
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Supervised }),
+        Response::Ok
+    ));
+    let held = "mesimon-probe-921 held for the person";
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentAskTicket {
+            key: kw.clone(),
+            text: held.into(),
+            seen: v.seen,
+            plan: false,
+            deliver: Deliver::Idle,
+        },
+    ) {
+        Response::AgentAsked { held_for_person: true, wake: Some(AskWake::WhenSent), .. } => {}
+        other => panic!("a held ask to the parked worker: {other:?}"),
+    }
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+        },
+    ) {
+        Response::AgentStarted { woken: true, prompt, .. } => {
+            assert_eq!(prompt, Some(StartPrompt::HeldForPerson));
+        }
+        other => panic!("start_agent over a held ask: {other:?}"),
+    }
+    wait_until(std::time::Duration::from_secs(15), "W woken again", || {
+        c.board().live_agent(w).is_some_and(|s| s.id == ws && s.state != SessionState::Sleeping)
+    });
+    hook_send(&hook_sock, &ws.to_string(), "SessionStart", r#"{"source":"resume"}"#);
+    c.await_state(ws, "idle after the second wake", |s| matches!(s, SessionState::Idle { .. }));
+    let held_count = || std::fs::read_to_string(&got).unwrap_or_default().matches(held).count();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(held_count(), 0, "held words wait for the person");
+    assert!(matches!(c.request(Command::SendQueuedAsk { ticket: w }), Response::Ok));
+    wait_until(std::time::Duration::from_secs(10), "the person's send to reach W", || {
+        held_count() > 0
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    assert_eq!(held_count(), 1, "once");
 }
 
 /// The crown answers a Codex worker's question (T-846). The worker's runtime

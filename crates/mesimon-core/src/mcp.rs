@@ -194,7 +194,9 @@ pub const CROWN_WAKES: &str = concat!(
      carries needs_you: quota) stopped mid-task on the account's limit, and its turn has \
      ended: no word of the crown's resumes it on that tier (ask_agent's words wait), and its \
      work stays where the turn left it. sleep_agent parks it, conversation kept, and \
-     start_agent naming another tier then wakes it on that tier to go on; otherwise the \
+     start_agent naming another tier then wakes it on that tier, at its prompt box with \
+     nothing sent (the receipt's prompt: none): its work goes on in the turn ask_agent's \
+     words start, sent once; otherwise the \
      person resumes it with credits, another model or the limit's reset. Nothing needs \
      polling: the board reads the forge on its own, within about 15 seconds while a pull \
      request's pipeline runs or the PR just opened, changed or merged, within about a \
@@ -242,7 +244,10 @@ pub const CROWN_WAKES: &str = concat!(
      checkout_held_by), and a ticket with a worktree or a parked agent keeps the workspace it \
      has. A started agent's first prompt is its ticket's title and description, so the \
      brief is what it works from. start_agent on a ticket whose agent the crown started and \
-     parked wakes that agent, conversation kept, in the workspace it was parked in. ask_agent's \
+     parked wakes that agent, conversation kept, in the workspace it was parked in, and sends \
+     it nothing: the receipt's prompt says what reaches it (brief for a new start, none, \
+     queued or held_for_person), and a woken agent with none stays idle, no turn and no wake, \
+     until words reach it. ask_agent's \
      words to such a parked agent wake it as well, as they are sent (the receipt's wake: woken, \
      or when_sent), so no start_agent follows them. A worker \
      stopped on a question or a \
@@ -817,14 +822,16 @@ pub fn tools() -> Vec<Value> {
             // workspace rules (T-583) by the refusals' list (each refusal is
             // in words), the brief-as-prompt clause and the list of what wakes
             // the crown (`CROWN_WAKES` in the same receipt has both whole),
-            // and the `key`, `seen` and `plan` descriptions.
+            // and the `key`, `seen` and `plan` descriptions. What a start sent
+            // its agent (T-920) is the receipt's `prompt`: the description
+            // says only that a turn's end, not the start, wakes the crown.
             "description": "Starts the board's agent on another mesimon ticket (crown only) in \
                             workspace: an unstarted ticket takes it, a worktree or parked agent \
                             keeps its own, no shared_checkout while list_board's \
                             checkout_held_by lists one. A parked agent the crown started is \
                             woken, a person's refused, as is a start with a tier where a person \
-                            started one. The receipt names the tier it launched on. The board \
-                            then wakes this session, so nothing is polled.",
+                            started one. The receipt names the tier it launched on. A turn's \
+                            end wakes this session, so nothing is polled.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2815,9 +2822,30 @@ mod tests {
             // T-808: the limit ended the turn, and the crown may move it.
             "sleep_agent parks it, conversation kept",
             "start_agent naming another tier then wakes it on that tier",
+            // T-920: and that the wake sends nothing; ask_agent's words go on.
+            "at its prompt box with nothing sent (the receipt's prompt: none)",
+            "its work goes on in the turn ask_agent's words start, sent once",
         ] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
         }
+        assert!(!CROWN_WAKES.contains("to go on;"), "a wake is not the work going on");
+    }
+
+    /// T-920: a crown that read `woken` as the work going on ended its turn
+    /// on a worker idle at its prompt box, which no turn and no wake would
+    /// ever leave. The paragraph says a wake sends nothing and names the
+    /// receipt's words for what does reach the agent.
+    #[test]
+    fn the_crown_is_told_a_wake_sends_nothing() {
+        for words in [
+            "wakes that agent, conversation kept, in the workspace it was parked in, and sends \
+             it nothing",
+            "brief for a new start, none, queued or held_for_person",
+            "a woken agent with none stays idle, no turn and no wake, until words reach it",
+        ] {
+            assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
+        }
+        assert_eq!(lint_tool_text(CROWN_WAKES), Ok(()));
     }
 
     /// T-895: the crown is told the board reads the forge and wakes it, in
@@ -3322,7 +3350,8 @@ mod tests {
             ("get_ticket", vec!["the columns move_ticket accepts and what each is for"]),
             // T-537: a crown that is not told the board wakes it goes
             // looking on its own, with a monitor that holds the wake.
-            ("start_agent", vec!["The board then wakes this session", "so nothing is polled"]),
+            // T-920: a turn's end is the wake, and a wake is not a turn.
+            ("start_agent", vec!["A turn's end wakes this session", "so nothing is polled"]),
             // T-550: which road the words take is the receipt's to say.
             (
                 "ask_agent",

@@ -2252,6 +2252,12 @@ pub enum Response {
         /// `shared_checkout` (T-583).
         #[serde(default)]
         workspace: String,
+        /// What words reach the agent once it is up (T-920): a wake
+        /// resumes the conversation and submits nothing, so a crown that
+        /// read `woken` as the work going on ended its turn on a worker
+        /// idle at its prompt box. `None` from a daemon before the field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt: Option<StartPrompt>,
     },
     /// AgentHoldTicket's receipt (T-919): the state the ticket is in now.
     /// `held` is the train hold as it stands and `by` whose it is (`crown`
@@ -3071,6 +3077,36 @@ impl AskWake {
     }
 }
 
+/// What a `start_agent` sends its agent (T-920), read by the daemon at the
+/// start: a start submits the ticket's own first prompt, a wake nothing of
+/// its own, and words an ask already parked for it go as they would have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StartPrompt {
+    /// A new conversation: the ticket's title and description are its first
+    /// prompt, submitted at launch (or once its worktree is cut).
+    Brief,
+    /// A wake, nothing submitted and nothing waiting: the agent sits at its
+    /// prompt box until words reach it.
+    None,
+    /// Words of an ask wait for the agent and go at its idle, by the queue
+    /// or with the wake itself: the turn they start is the next one.
+    Queued,
+    /// Words of an ask wait on its card for a person's send.
+    HeldForPerson,
+}
+
+impl StartPrompt {
+    pub fn word(self) -> &'static str {
+        match self {
+            StartPrompt::Brief => "brief",
+            StartPrompt::None => "none",
+            StartPrompt::Queued => "queued",
+            StartPrompt::HeldForPerson => "held_for_person",
+        }
+    }
+}
+
 /// One thing mesimon owes a ticket and will do on its own clock — the
 /// card's slow mark and the cursor card's `queued ∙ after T-12` row read this.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -3691,6 +3727,24 @@ pub enum Event {
 
 #[cfg(test)]
 mod tests {
+
+    /// T-920: a start receipt's `prompt` is the same word on the wire and on
+    /// the crown's receipt, and a daemon from before it sends none.
+    #[test]
+    fn a_start_prompt_is_its_own_word_and_absent_from_an_older_daemon() {
+        use super::StartPrompt::*;
+        for p in [Brief, None, Queued, HeldForPerson] {
+            assert_eq!(serde_json::to_string(&p).unwrap(), format!("\"{}\"", p.word()));
+        }
+        let old: super::Response = serde_json::from_str(
+            r#"{"resp":"agent_started","key":"T-1","session_started":true,"woken":true}"#,
+        )
+        .unwrap();
+        match old {
+            super::Response::AgentStarted { prompt, .. } => assert_eq!(prompt, Option::None),
+            other => panic!("{other:?}"),
+        }
+    }
 
     /// `Pending::action` is the wire word it was as a string (T-248): the
     /// five words round-trip byte for byte, and a word this build does not

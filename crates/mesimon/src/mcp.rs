@@ -33,7 +33,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
 use mesimon_core::board::AgentTools;
-use mesimon_core::command::{AskRoad, AskWake, Command, Envelope, PeerAnswer, Response};
+use mesimon_core::command::{
+    AskRoad, AskWake, Command, Envelope, PeerAnswer, Response, StartPrompt,
+};
 use mesimon_core::mcp::{self, ToolCall};
 use mesimon_core::Principal;
 use serde_json::{json, Value};
@@ -250,6 +252,35 @@ fn tool_result(params: &Value, sock: &std::path::Path, session: uuid::Uuid) -> V
 /// model is meant to read "that column does not exist" or "this would undo a
 /// move you just made" and act on it, and a transport-level error would be
 /// rendered as a malfunction instead of an answer.
+/// What a start receipt's `prompt` means for the agent's next turn (T-920):
+/// transient result data, so it may say what the crown does with it.
+fn start_prompt_about(key: &str, prompt: StartPrompt, running: bool) -> String {
+    let up = if running { "" } else { ", once its worktree is cut" };
+    match prompt {
+        StartPrompt::Brief => format!(
+            "{key}'s agent takes its ticket's title and description as its first prompt{up}; \
+             the board wakes this session when that turn ends"
+        ),
+        StartPrompt::None => format!(
+            "nothing was sent: {key}'s agent is back in its conversation at its prompt box{up}, \
+             and it stays idle, with no turn and no wake for this session, until words reach \
+             it. For it to carry on, ask_agent sends them once (deliver idle waits for it to be \
+             up), and the turn they start wakes this session at its end; start_agent again is \
+             not needed"
+        ),
+        StartPrompt::Queued => format!(
+            "an ask's words already wait for {key}'s agent and go once it is idle{up}: that turn \
+             is its next, and the board wakes this session when it ends. No second ask or \
+             start_agent is needed for it to go on"
+        ),
+        StartPrompt::HeldForPerson => format!(
+            "an ask's words wait on {key}'s card for a person's send (^y): until a person sends \
+             them, its agent stays idle at its prompt box and no turn starts. Work that waits on \
+             that send is the person's step, raised with raise_hand on this session's ticket"
+        ),
+    }
+}
+
 fn render(resp: Response) -> Value {
     match resp {
         Response::ShellOutput { output } => text(&output),
@@ -298,8 +329,20 @@ fn render(resp: Response) -> Value {
         // wake — and how it picks a tier (T-584). `tier` names the one the
         // agent launched on; a daemon from before it sends none. `woken`
         // (T-583) is the crown's own parked agent back in its conversation,
-        // and `workspace` where it runs.
-        Response::AgentStarted { key, session_started, budget_left, tier, woken, workspace } => {
+        // and `workspace` where it runs. `prompt` (T-920) is the daemon's
+        // word for what reaches the agent, and `prompt_about` says what it
+        // means for the next turn: a crown read `woken` as the work going
+        // on and ended its turn on a worker idle at its prompt box, where
+        // nothing would start a turn or wake the crown.
+        Response::AgentStarted {
+            key,
+            session_started,
+            budget_left,
+            tier,
+            woken,
+            workspace,
+            prompt,
+        } => {
             let mut body = json!({
                 "key": key,
                 "status": match (session_started, woken) {
@@ -315,6 +358,10 @@ fn render(resp: Response) -> Value {
             }
             if !workspace.is_empty() {
                 body["workspace"] = json!(workspace);
+            }
+            if let Some(prompt) = prompt {
+                body["prompt"] = json!(prompt.word());
+                body["prompt_about"] = json!(start_prompt_about(&key, prompt, session_started));
             }
             text(&body)
         }
@@ -746,6 +793,7 @@ mod tests {
                 tier: "deep".into(),
                 woken,
                 workspace: "worktree".into(),
+                prompt: None,
             });
             assert_eq!(v["isError"], false);
             serde_json::from_str::<Value>(v["content"][0]["text"].as_str().unwrap()).unwrap()
@@ -768,6 +816,65 @@ mod tests {
         assert_eq!(body(true, true)["status"], "woken");
         assert_eq!(body(false, true)["status"], "waiting_for_worktree", "a rebuild first");
         assert_eq!(now["workspace"], "worktree");
+        assert!(now.get("prompt").is_none(), "a daemon from before T-920 says nothing of it");
+    }
+
+    /// T-920: a wake is not the work going on. The receipt says, in the
+    /// daemon's word, what reaches the agent, and the words beside it say
+    /// that a wake with nothing sent stays idle until ask_agent's words
+    /// start a turn — once, with no second start_agent — while a start's
+    /// brief, an ask already waiting and one held for a person each say
+    /// what starts the next turn, so no advice doubles a prompt.
+    #[test]
+    fn a_start_receipt_says_what_reaches_the_agent_and_what_a_wake_did_not_send() {
+        let body = |session_started, woken, prompt| {
+            let v = render(Response::AgentStarted {
+                key: "T-7".into(),
+                session_started,
+                budget_left: 0,
+                tier: "coder".into(),
+                woken,
+                workspace: "worktree".into(),
+                prompt: Some(prompt),
+            });
+            serde_json::from_str::<Value>(v["content"][0]["text"].as_str().unwrap()).unwrap()
+        };
+        let about = |v: &Value| v["prompt_about"].as_str().unwrap().to_string();
+
+        let woke = body(true, true, StartPrompt::None);
+        assert_eq!(
+            (woke["status"].as_str(), woke["prompt"].as_str()),
+            (Some("woken"), Some("none"))
+        );
+        let words = about(&woke);
+        for said in [
+            "nothing was sent",
+            "stays idle",
+            "no turn and no wake for this session",
+            "ask_agent sends them once",
+            "start_agent again is not needed",
+        ] {
+            assert!(words.contains(said), "{said:?} in {words}");
+        }
+        assert!(!words.contains("worktree"), "{words}");
+        let rebuilt = about(&body(false, true, StartPrompt::None));
+        assert!(rebuilt.contains("once its worktree is cut"), "{rebuilt}");
+
+        let fresh = body(true, false, StartPrompt::Brief);
+        assert_eq!(fresh["prompt"], "brief");
+        assert!(about(&fresh).contains("title and description as its first prompt"));
+        let parked = about(&body(false, false, StartPrompt::Brief));
+        assert!(parked.contains("once its worktree is cut"), "{parked}");
+
+        let queued = body(true, true, StartPrompt::Queued);
+        assert_eq!(queued["prompt"], "queued");
+        let words = about(&queued);
+        assert!(words.contains("already wait") && words.contains("No second ask"), "{words}");
+
+        let held = body(true, true, StartPrompt::HeldForPerson);
+        assert_eq!(held["prompt"], "held_for_person");
+        let words = about(&held);
+        assert!(words.contains("person's send") && words.contains("no turn starts"), "{words}");
     }
 
     /// The crown's answer (T-569): the outcome the hooks saw, the answer as
