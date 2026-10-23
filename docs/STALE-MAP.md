@@ -31212,9 +31212,10 @@ clippy, and `cargo nextest run --workspace` (2816 passed, 7 skipped).
 **The rig's approver, matched exactly** (the same day, after a security review of the first
 commit). The crown fixtures answer approvals a live model writes, so they now allow only Codex
 0.163's one-tool approval for the server named `mesimon` and a tool in `BOARD_TOOLS` (the
-dialog's `Allow the mesimon MCP server to run tool "<tool>"?`), a worker's plain `git add`,
-`commit`, `status`, `diff`, `log` or `show` in its own worktree with no global option (`-c`,
-`-C`, `--git-dir`, …) or shell character, and only the allow-once row. The passing forge run
+dialog's `Allow the mesimon MCP server to run tool "<tool>"?`), a worker's git in three exact
+shapes (`status [--short]`, `add` of relative paths with no option, `commit -m|-am <message>`;
+no `diff`, `log` or `show`, whose options reach files) from a cwd that resolves to that worker's
+own worktree, no shell character, and only the allow-once row. The passing forge run
 was answered by the earlier substring rule; its approvals had the shape the exact rule takes
 (read off its terminal capture and T-846's record), but the exact rule has not run live.
 

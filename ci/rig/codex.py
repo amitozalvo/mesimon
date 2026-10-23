@@ -209,19 +209,34 @@ def answered_after(rows, index):
 
 # What the rig allows, matched exactly (a live model writes these requests):
 # Codex's one-tool approval for mesimon's own server, as 0.163 words it, and a
-# worker's plain git read or commit in its own worktree, with no global option.
+# worker committing in its own worktree in one of three plain shapes.
 MCP_APPROVAL = re.compile(r'Allow the mesimon MCP server to run tool "([a-z_]+)"\?')
-GIT_ALLOWED = ("add", "commit", "status", "diff", "log", "show")
-GIT_REFUSED = ("-c", "-C", "--git-dir", "--work-tree", "--exec-path", "--config-env", "--namespace")
 
 
-def approval_decision(request, role, worktrees):
+def plain_git(tokens):
+    """`git status`, `git add <paths>` (no option, no path outside the
+    worktree), or `git commit -m <message>` / `-am <message>`: nothing else."""
+    if tokens[:1] != ["git"] or len(tokens) < 2:
+        return False
+    verb, rest = tokens[1], tokens[2:]
+    if verb == "status":
+        return rest in ([], ["--short"], ["-s"])
+    if verb == "add":
+        return bool(rest) and all(not t.startswith("-") and ".." not in Path(t).parts
+                                  and not Path(t).is_absolute() for t in rest)
+    if verb == "commit":
+        return len(rest) == 2 and rest[0] in ("-m", "-am")
+    return False
+
+
+def approval_decision(request, role, worktree):
     """What the rig, as the person at the desk, does with a native approval
     on a crown fixture: (True, what) to allow it once, (False, why) to leave
     it standing. A board tool is allowed when the request names mesimon's
     server exactly and one of BOARD_TOOLS (the daemon's authorize is their
-    gate), and a worker's plain git in its own worktree; anything else stays
-    the person's and is recorded."""
+    gate); a worker's `plain_git` when the request's cwd resolves to that
+    worker's own worktree (`worktree`, None for the crown); anything else
+    stays the person's and is recorded."""
     what = request.get("what")
     command = str(request.get("command") or "").strip()
     reason = str(request.get("reason") or "").strip()
@@ -233,15 +248,15 @@ def approval_decision(request, role, worktrees):
         if server == "mesimon" and tool in BOARD_TOOLS and (not match or match.group(1) == tool):
             return True, tool
         return False, f"{what}: {words[:200]}"
-    cwd = str(request.get("cwd") or "")
-    if what == "command" and role == "worker" and cwd.startswith(str(worktrees) + "/") \
-            and not any(mark in command for mark in ";&|`$<>\n\r\\"):
+    cwd = request.get("cwd")
+    if (what == "command" and role == "worker" and worktree and cwd
+            and Path(cwd).resolve() == Path(worktree).resolve()
+            and not any(mark in command for mark in ";&|`$<>\n\r\\")):
         try:
             tokens = shlex.split(command)
         except ValueError:
             tokens = []
-        if (len(tokens) >= 2 and tokens[0] == "git" and tokens[1] in GIT_ALLOWED
-                and not any(token == bad or token.startswith(bad + "=") for token in tokens for bad in GIT_REFUSED)):
+        if plain_git(tokens):
             return True, command
     return False, f"{what}: {words[:200]}"
 
@@ -544,7 +559,10 @@ def adapter(base):
             if not request or request.get("kind") != "approval" or request.get("id") in self.answered:
                 return
             role = "crown" if sid == self.crown_sid else "worker"
-            allow, what = approval_decision(request, role, self.state / "worktrees")
+            worktree = session.get("cwd") if role == "worker" else None
+            if worktree and not Path(worktree).resolve().is_relative_to((self.state / "worktrees").resolve()):
+                worktree = None
+            allow, what = approval_decision(request, role, worktree)
             if not allow:
                 if request["id"] not in self.left:
                     self.left[request["id"]] = time.monotonic()

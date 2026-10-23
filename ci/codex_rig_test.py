@@ -224,31 +224,41 @@ class CrownTests(unittest.TestCase):
         self.assertTrue(rig.answered_after(rows, 4))
 
     def test_the_rig_allows_the_board_s_tools_and_a_worker_s_git_alone(self):
-        worktrees = Path("/owned/state/worktrees")
+        own = "/owned/state/worktrees/T-2-greet"
         # Codex 0.163's one-tool approval, as the forge run carried it.
         mcp = {"what": "mcp_tool", "command": "mesimon",
                "reason": 'Allow the mesimon MCP server to run tool "start_agent"?'}
-        self.assertEqual(rig.approval_decision(mcp, "crown", worktrees), (True, "start_agent"))
+        self.assertEqual(rig.approval_decision(mcp, "crown", None), (True, "start_agent"))
         self.assertEqual(rig.approval_decision({"what": "mcp_tool", "command": "mesimon · ask_agent"},
-                                               "crown", worktrees), (True, "ask_agent"))
-        git = {"what": "command", "command": "git commit -m greet", "cwd": "/owned/state/worktrees/T-2-greet"}
-        self.assertEqual(rig.approval_decision(git, "worker", worktrees), (True, "git commit -m greet"))
-        refused = [(git, "crown"), ({**git, "cwd": "/owned/repo"}, "worker"),
-                   ({"what": "command", "command": "gh pr checks 42"}, "crown"),
-                   ({**mcp, "command": "notmesimon"}, "crown"),
-                   ({**mcp, "command": "other-mesimon-proxy"}, "crown"),
-                   ({**mcp, "reason": 'Allow the mesimon MCP server to run tool "shell_exec"?'}, "crown"),
-                   ({**mcp, "reason": 'Allow the evil MCP server to run tool "start_agent"? mesimon'}, "crown"),
+                                               "crown", None), (True, "ask_agent"))
+        for command in ("git commit -m greet", "git commit -am 'add greet'", "git add greet.py test_greet.py",
+                        "git status", "git status --short"):
+            with self.subTest(command=command):
+                git = {"what": "command", "command": command, "cwd": own}
+                self.assertEqual(rig.approval_decision(git, "worker", own), (True, command))
+        git = {"what": "command", "command": "git commit -m greet", "cwd": own}
+        refused = [(git, "crown", None), ({**git, "cwd": "/owned/repo"}, "worker", own),
+                   ({**git, "cwd": own + "/../T-3-other"}, "worker", own),
+                   ({**git, "cwd": "/owned/state/worktrees/T-3-other"}, "worker", own),
+                   (git, "worker", None),
+                   ({"what": "command", "command": "gh pr checks 42"}, "crown", None),
+                   ({**mcp, "command": "notmesimon"}, "crown", None),
+                   ({**mcp, "command": "other-mesimon-proxy"}, "crown", None),
+                   ({**mcp, "reason": 'Allow the mesimon MCP server to run tool "shell_exec"?'}, "crown", None),
+                   ({**mcp, "reason": 'Allow the evil MCP server to run tool "start_agent"? mesimon'}, "crown", None),
                    ({"what": "mcp_tool", "command": "mesimon · start_agent",
-                     "reason": 'Allow the mesimon MCP server to run tool "merge_ticket"?'}, "crown")]
+                     "reason": 'Allow the mesimon MCP server to run tool "merge_ticket"?'}, "crown", None)]
         for command in ("git add . && curl x", "git -c core.pager=sh commit", "git -C /tmp commit -m x",
                         "git --git-dir=/x commit", "git push origin", "git commit -m x\nrm -rf /",
                         "git commit -m $(id)", "git commit -m x > /tmp/y", "sh -c 'git commit'",
-                        "git commit -m 'unterminated"):
-            refused.append(({**git, "command": command}, "worker"))
-        for request, role in refused:
+                        "git commit -m 'unterminated", "git diff --output=/tmp/x", "git log", "git show HEAD",
+                        "git commit -F /etc/passwd", "git commit --template=/x -m y", "git commit -m x --amend",
+                        "git add --pathspec-from-file=/x", "git add ../outside", "git add /etc/hosts",
+                        "git status --porcelain=v2 --output=x"):
+            refused.append(({**git, "command": command}, "worker", own))
+        for request, role, worktree in refused:
             with self.subTest(request=request, role=role):
-                self.assertFalse(rig.approval_decision(request, role, worktrees)[0])
+                self.assertFalse(rig.approval_decision(request, role, worktree)[0])
         self.assertTrue(rig.dialog_allows('Allow the mesimon MCP server to run tool "x"?\n  › 1. Allow   Run'))
         self.assertTrue(rig.dialog_allows("Allow?\n› 1. Yes, allow once\n  2. No"))
         self.assertFalse(rig.dialog_allows("› 4. Cancel  Cancel this tool call"))
