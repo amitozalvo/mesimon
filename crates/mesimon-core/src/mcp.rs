@@ -200,15 +200,10 @@ pub const CROWN_WAKES: &str = concat!(
      carries the reason as told_hand until the worker's next turn begins, it raises \
      another, or its ticket is archived, snoozed or deleted; a watch ending keeps it. \
      Nothing needs \
-     polling: the board reads the forge on its own, within about 15 seconds while a pull \
-     request's pipeline runs or the PR just opened, changed or merged, within about a \
-     minute otherwise, and in about five minutes for a repository whose last read failed or \
-     hit a rate limit, and wakes this session with the news for an agent it started, a \
-     ticket it watches or one with no agent, so a pipeline's pass or failure, \
-     a review, a conflict and a merge each arrive as a prompt. A watch command (gh pr checks \
-     --watch, glab ci status --live) or a sleep loop that waits for one of them keeps this \
-     session busy, which holds the merge train and the wake itself; the way to wait for a \
-     pull request's news is to end the turn. \
+     polling: the board reads the forge on its own (get_ticket's prs_about says how often). A \
+     watch command (gh pr checks --watch, glab ci status --live), a sleep loop or any loop \
+     that polls a ticket keeps this session busy, which holds the merge train and the wake \
+     itself; the way to wait for the board's news is to end the turn. \
      A background task or monitor left running does not hold the wake or a queued \
      word: they land at this session's composer as at any idle one. A worker the crown started \
      that sits idle with background tasks for 30 minutes wakes this session once (has been \
@@ -221,28 +216,15 @@ pub const CROWN_WAKES: &str = concat!(
      worktree ticket's on a board whose Merge into setting is pull requests — lands through its \
      pull request, merged on the forge, and merge_ticket refuses it; on a board that merges \
      into main nothing is the forge's. The train's lands by itself, \
-     and the crown hears it once, at the merge. hold_ticket (action hold) keeps a branch out \
-     of the train, which may land it as soon as its agent delivers: held, the train takes \
-     nothing of it, the delivery wakes this session, and ask_agent's words land while it \
-     stays held; action return hands it back, the train's own gates and order deciding when \
-     it merges. get_ticket's held says whose \
-     hold it is; a person's (t) is the person's to return. The crown's — the train off, the ticket out of it \
-     by t, or a column the train stops short of, under autonomous mode — is merged with \
-     merge_ticket while merge_state reads ahead; at needs_rebase the agent is asked to rebase \
-     with ask_agent and merged once its turn ends with the branch ahead. A person's — crown \
-     mode supervised — is the person's to merge, with m on its page. merge_ticket pastes the merged notice into the worker \
-     where the merged-notice pref is on, so the worker hears it from the board. \
-     A worker whose branch is merged is \
-     finished: sleep_agent parks it, which frees its seat in the crown's budget, and \
-     move_ticket to the board's done column closes it (its gate admits a merged branch). \
-     Where Settings → Agents → Crown archives tickets is on, archive_ticket also takes it off \
-     the board and reclaims its worktree; otherwise a person archives. A person's own agent \
-     is not the crown's to park, and sleep_agent refuses it. create_ticket and start_agent \
-     take workspace, which the crown names: worktree (the ticket's own branch, merged later) \
-     or shared_checkout (the repository's own checkout). shared_checkout is \
-     refused while another ticket's agent holds it, awake or parked (list_board's \
-     checkout_held_by), and a ticket with a worktree or a parked agent keeps the workspace it \
-     has. A started agent's first prompt is its ticket's title and description, so the \
+     and the crown hears it once, at the merge; it may land a branch as soon as its agent \
+     delivers, and ask_agent's words still land on one hold_ticket holds. The crown's is the \
+     train off, the ticket out of it by t, or a column the train stops short of, under \
+     autonomous mode. A person's — crown mode supervised — is the person's to merge, with m \
+     on its page. A merged branch's ticket is admitted to the board's done column; where \
+     Settings → Agents → Crown archives tickets is off, archiving it is a person's. A \
+     workspace is worktree (the ticket's own branch, merged later) or shared_checkout (the \
+     repository's own checkout, held by another ticket's agent there awake or parked). A \
+     started agent's first prompt is its ticket's title and description, so the \
      brief is what it works from. start_agent on a ticket whose agent the crown started and \
      parked wakes that agent, conversation kept, in the workspace it was parked in, and sends \
      it nothing: the receipt's prompt says what reaches it (brief for a new start, none, \
@@ -271,23 +253,12 @@ pub const CROWN_WAKES: &str = concat!(
      An ask dropped before it was sent (a person replaced it, took it back or talked past it, \
      or its agent went first) reads asked: dropped on that ticket's get_ticket, with who \
      dropped it. \
-     A ticket a person started wakes this session only once watched: where Settings → Agents \
-     → Crown watches tickets is on, watch_ticket on it has the board wake this session when it \
-     delivers, finishes a turn, raises its hand or is merged, as for an agent the crown \
-     started, and the watch ends at the merge or with unwatch. While it stands, ask_agent's \
-     words reach its agent as they reach one the crown started; its question or plan stays the \
-     person's, and the board sends its agent nothing else. A loop that polls for such a ticket keeps \
-     this session busy, which holds the merge train and the wake itself; the watch's news \
-     comes once the turn ends. A ticket with no agent that carries a pull request (one \
+     A ticket a person started wakes this session only once watch_ticket watches it. A ticket with no agent that carries a pull request (one \
      this session opened and named under its Summary) wakes this session for the forge's news \
      and the merge the same way, with no watch asked. \
-     Another board on this machine, where a person linked the two (list_board's \
-     linked_boards; empty means none), has a crown of its own that ask_board reaches, \
-     naming the board: the words land on that crown's card and reach it as its next prompt \
-     once idle, and its answer comes back the same way, as this session's next prompt, \
-     beginning with that board's name; a reply to an ask from there is ask_board naming \
-     the board that asked. A board that is not open or has no crown refuses \
-     in words, and a person opens or crowns it. ",
+     A linked board's answer arrives as this session's next prompt beginning with that \
+     board's name, and a reply to an ask from there is ask_board naming the board that \
+     asked; opening or crowning a board is a person's. ",
     crown_tiers!(),
     persons_plans!(),
     " ",
@@ -2895,26 +2866,24 @@ mod tests {
         assert_eq!(lint_tool_text(CROWN_WAKES), Ok(()));
     }
 
-    /// T-895: the crown is told the board reads the forge and wakes it, in
-    /// round seconds, and that a watch command or a sleep loop holds the
-    /// train and the wake; `get_ticket`'s `prs_about` says the same beside
-    /// the PRs. Both in the lint's voice.
+    /// T-895: the crown is told the board reads the forge and wakes it, and
+    /// that a watch command or a sleep loop holds the train and the wake;
+    /// `get_ticket`'s `prs_about` says how often, in round seconds, beside
+    /// the PRs, and only there (T-930). Both in the lint's voice.
     #[test]
     fn the_crown_is_told_the_board_reads_the_forge_and_polls_nothing() {
         for words in [
             "Nothing needs polling: the board reads the forge on its own",
-            "within about 15 seconds while a pull request's pipeline runs",
-            "within about a minute otherwise",
-            "in about five minutes for a repository whose last read failed or hit a rate limit",
-            "for an agent it started, a ticket it watches or one with no agent",
-            "a pipeline's pass or failure, a review, a conflict and a merge each arrive as a prompt",
+            "get_ticket's prs_about says how often",
             "gh pr checks --watch",
-            "a sleep loop that waits for one of them keeps this session busy",
+            "a sleep loop or any loop that polls a ticket keeps this session busy",
             "holds the merge train and the wake itself",
-            "the way to wait for a pull request's news is to end the turn",
+            "the way to wait for the board's news is to end the turn",
         ] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
         }
+        // T-930: the cadence is said once, beside the pull requests.
+        assert!(!CROWN_WAKES.contains("within about"), "the cadence is PRS_ABOUT's alone");
         for words in [
             "reads these off the forge on its own",
             "within about 15 seconds",
@@ -3190,10 +3159,8 @@ mod tests {
         assert!(sleep.contains("move_ticket then closes its ticket in the done column"), "{sleep}");
         assert!(sleep.contains("where the board lets it"), "{sleep}");
         for words in [
-            "move_ticket to the board's done column closes it",
-            "its gate admits a merged branch",
-            "Settings → Agents → Crown archives tickets is on",
-            "otherwise a person archives",
+            "A merged branch's ticket is admitted to the board's done column",
+            "Settings → Agents → Crown archives tickets is off, archiving it is a person's",
         ] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
         }
@@ -3256,12 +3223,11 @@ mod tests {
             seen: None
         }));
         assert!(!agent_allows(&Command::SetManualMerge { id: ulid::Ulid::nil(), on: false }));
+        // T-930: what the tool says is said there alone; the wake words add
+        // the train's timing and that a held ticket still takes words.
         for words in [
-            "hold_ticket (action hold) keeps a branch out of the train",
-            "which may land it as soon as its agent delivers",
-            "ask_agent's words land while it stays held",
-            "action return hands it back",
-            "a person's (t) is the person's to return",
+            "it may land a branch as soon as its agent delivers",
+            "ask_agent's words still land on one hold_ticket holds",
         ] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
         }
@@ -3313,16 +3279,12 @@ mod tests {
         assert!(!description.contains("Asked to wait"), "the script is the crown's own");
         assert_eq!(watch["inputSchema"]["required"], json!(["key", "seen"]));
         assert_eq!(tier_needed_by_tool("watch_ticket"), Some(AgentTools::Full));
-        for words in [
-            "Settings → Agents → Crown watches tickets is on",
-            "watch_ticket on it has the board wake this session",
-            "its question or plan stays the person's",
-            "ask_agent's words reach its agent as they reach one the crown started",
-            "A loop that polls for such a ticket keeps this session busy",
-            "the watch's news comes once the turn ends",
-        ] {
-            assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
-        }
+        // T-930: the tool says what a watch does; the wake words say only
+        // that a person's ticket wakes nobody without one.
+        assert!(CROWN_WAKES.contains(
+            "A ticket a person started wakes this session only once watch_ticket watches it"
+        ));
+        assert!(CROWN_WAKES.contains("any loop that polls a ticket keeps this session busy"));
         for text in [description, CROWN_WAKES] {
             lint_tool_text(text).unwrap();
         }
@@ -3374,8 +3336,9 @@ mod tests {
             assert!(bytes <= MAX_TOOL_BYTES, "{} is {bytes} bytes", t["name"]);
         }
         for words in [
-            "create_ticket and start_agent take workspace, which the crown names",
-            "list_board's checkout_held_by",
+            "A workspace is worktree (the ticket's own branch, merged later)",
+            "shared_checkout (the repository's own checkout, held by another ticket's agent there \
+             awake or parked)",
             "first prompt is its ticket's title and description",
             "wakes that agent",
         ] {
@@ -3711,10 +3674,7 @@ mod tests {
             "on a board that merges into main nothing is the forge's",
             "The train's lands by itself",
             "the train off, the ticket out of it by t, or a column the train stops short of",
-            "merged with merge_ticket while merge_state reads ahead",
-            "at needs_rebase the agent is asked to rebase with ask_agent",
             "A person's — crown mode supervised — is the person's to merge, with m on its page",
-            "merge_ticket pastes the merged notice into the worker",
         ] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES says {words:?}");
         }

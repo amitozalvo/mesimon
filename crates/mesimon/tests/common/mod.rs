@@ -276,8 +276,18 @@ impl TestClient {
     }
 
     /// Send as any principal and wait for the reply. Events interleave on a
-    /// subscribed connection; they are skipped here.
+    /// subscribed connection; they are skipped here. A crowned session's
+    /// first call comes back with the crown's rules beside it (T-930); this
+    /// hands back the call's own answer, and `send_raw` the whole of it.
     pub fn send(&mut self, principal: Principal, command: Command) -> Response {
+        match self.send_raw(principal, command) {
+            Response::CrownRules { inner, .. } => *inner,
+            other => other,
+        }
+    }
+
+    /// `send` with the crown's rules left on (T-930).
+    pub fn send_raw(&mut self, principal: Principal, command: Command) -> Response {
         let name = command.wire_name();
         self.send_result(principal, command)
             .unwrap_or_else(|error| panic!("daemon response to {name}: {error}"))
@@ -288,7 +298,10 @@ impl TestClient {
     /// thread outlives its shutdown, so a late connect succeeds and then
     /// closes — which is why the harness's teardown uses this one.
     pub fn try_send(&mut self, principal: Principal, command: Command) -> Option<Response> {
-        self.send_result(principal, command).ok()
+        match self.send_result(principal, command).ok()? {
+            Response::CrownRules { inner, .. } => Some(*inner),
+            other => Some(other),
+        }
     }
 
     fn send_result(&mut self, principal: Principal, command: Command) -> std::io::Result<Response> {
