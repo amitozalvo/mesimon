@@ -707,6 +707,10 @@ will not show up in our tests until they break something.
 - **A tmux pane id is unique per server, and the server exits with its last session.** A wake
   that kills the only session restarts the server, and the new pane is `%0` like the old one;
   a pane identity must carry the server pid (`#{pid}`) beside `#{pane_id}`.
+- **A distro tmux before 3.6 can lose a pane's exit** (T-917): with libutempter (Debian, Ubuntu),
+  a fast-exiting pane can read `pane_dead=1` with no status, stay a zombie and fire no
+  `pane-died`. `nudge_unreaped` raises SIGCHLD at the server; a GitHub runner also has `gh` in
+  `/usr/bin`, ahead of a test stub that only the daemon's PATH carries.
 - **tmux keeps one XTVERSION reply per client and types the next one.** Its own attach-time
   query takes iTerm2's `ESC P >|iTerm2 …`; a pane that asks again through a passthrough gets
   the reply back as M-P plus text (T-488). `extended-keys` stays `on`, never `always`: snacks.nvim

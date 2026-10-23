@@ -30926,3 +30926,76 @@ carries `check_for_update_on_startup`); the prompt's suppression was not observe
 
 **Not done.** `codex orphan kept: … its native pane remains live` appeared for the Codex pane of a
 ticket deleted while its session sat idle; not investigated here.
+
+## Ubuntu CI: the runner's own `gh`, and a pane tmux never reaped (T-917, 2026-10-23, "Restore Ubuntu CI: forge e2e failures and Codex startup-recovery timeout")
+
+Every push to main had failed CI since 2026-10-08. Two causes were current on main at `7fb99ec5`,
+and they are separate.
+
+**`forge_e2e`, 27 of 34 failing since 2026-10-15: a test environment fault, not a product defect.**
+The daemon looks for `gh`/`glab` on the captured login-shell `PATH` before its own
+(`forge::find_cli`). `shellenv::capture` starts that shell from `/usr/bin:/bin:…`. GitHub's
+Ubuntu runner ships a signed-out `/usr/bin/gh`, so it came before every test's stand-in, which sat
+only on the daemon's own `PATH`. macOS has no `gh` in `/usr/bin`, so the suite passed there. The
+GitLab tests passed on the runner too, because it has no `glab`. Reproduced on Debian 12 in
+Docker with Debian's `gh` installed: 7/27, the runner's exact split. The fix is in
+`Harness::boot_bare`: a `PATH` a test sets is also written to the fixture `HOME`'s `~/.profile`, so
+the login shell names it too. `ci/test-linux.sh` now installs `gh`, so the local Linux gate meets
+the same shadow. Product behaviour is unchanged: a person's login-shell CLI should win.
+
+**`codex_startup_recovery_e2e` timing out intermittently: a tmux bug, now repaired in the daemon.**
+A tmux before 3.6 built with libutempter (Debian's 3.3a and Ubuntu's 3.4 both link it) loses a
+pane's exit. When the pane's pty closes, `server_destroy_pane` calls `utempter_remove_record`.
+libutempter sets SIGCHLD to `SIG_DFL` while it waits for its helper, and on Linux that discards a
+SIGCHLD that arrives meanwhile, even a blocked one. A pane process that turns zombie inside that
+window is never waited for: tmux shows `pane_dead=1` with an empty `pane_dead_status`, never
+fires `pane-died`, and the record keeps its pane, its seat and its checkout.
+
+How it was established, on Ubuntu 24.04 with tmux 3.4 in Docker:
+- `ps` showed the runtime as `[python3] <defunct>`, a child of the tmux server, for the test's
+  whole 10 s.
+- The server's `/proc/<pid>/status` showed SIGCHLD caught (`SigCgt`), not blocked, not pending.
+- tmux 3.6a raises `kill(getpid(), SIGCHLD)` after that very call (`server-fn.c`); 3.3a through
+  3.5a do not.
+- macOS (tmux 3.6a, and a locally built 3.4 without utempter) never showed it.
+
+The repair is that same raise, from outside:
+- `pane_facts` now also reads `pane_dead_status`, `pane_dead_signal` and the server's `#{pid}`.
+- `PaneFacts::unreaped` is a pane that is dead with neither a status nor a signal.
+- The `nudge_unreaped` stage sends SIGCHLD to that pane's server (`nudge_reaper`) for any of our
+  records that still holds its pane. It nudges again on every sample that shows the pane, and the
+  journal says `unreaped pane: …` once per pane.
+- tmux then waits for the child and fires `pane-died`, so the death still comes up the hook road.
+  The stage decides nothing about the record, and "no polling for exits" stands.
+- A SIGCHLD with no exited child costs the server one empty `waitpid` loop.
+
+Results, with the 5-test binary run in a loop:
+
+| Ubuntu 24.04, tmux 3.4 | Failed |
+|---|---|
+| Before (three loops) | 2/60, 8/80, 1/50 |
+| After | 0/80 |
+
+Four of the tests in the after-loop journalled the nudge, and each of those would have failed
+without it. Debian 12's tmux 3.3a showed 0 failures in 40 runs before the fix: it has the same
+unprotected call, and how often a race like this hits depends on timing.
+
+Not covered:
+- A death whose `pane-died` fired but whose hook frame was lost. The reap already happened, so
+  there is nothing to nudge.
+- No e2e forces the lost SIGCHLD. It cannot be provoked from outside tmux. The evidence is the
+  Ubuntu loop above, and the unit test pins how the facts are parsed and what `unreaped` means.
+
+**Older reds, from 2026-10-08 to 2026-10-12** (a fixture-audit failure, and
+`worktree::the_init_script_runs_in_the_worktree…`), are from before current main and were not
+investigated.
+
+**Seen on macOS and not fixed here:**
+- `ui::tests::terminal_app_description_bar_fills_every_row_without_moving_the_text` and
+  `terminal_comparison::plain_progress_preserves_the_completed_share_and_the_rgb_card` (T-909)
+  compare two draws cell by cell, and a spinner glyph can advance between them under load.
+  Each passed 3/3 alone.
+- `forge_e2e::the_crown_hears_the_forges_edges` counts forge wakes after a fixed 1.5 s sleep, and
+  read 4 for 3 once under a concurrent suite. It passed 3/3 alone.
+- `diff_e2e::the_board_diffs_its_own_checkout`'s `git add .` raced the daemon's
+  `.mesimon/board/columns.tmp` once.
