@@ -572,6 +572,13 @@ fn a_submit_held_after_a_stop_is_pasted_into_the_empty_box() {
     wait_bridge(&h, sid);
     session_start(&hook_sock, sid);
     c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    // The refusal reads the box once, and the stub's first line can be held
+    // past `SessionStart` (its first exec's scan, T-738): wait for the box.
+    let sid16 = record(&mut c, sid).sid16();
+    wait_until(Duration::from_secs(10), "the stub's composer", || {
+        let out = tmux(&h.paths.tmux_sock()).args(["capture-pane", "-p", "-t", &sid16]).output();
+        out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("? for shortcuts"))
+    });
     assert!(matches!(prompt(&mut c, ticket, "mesimon-894 held words", false), Response::Ok));
     wait_feed(&h, &["\"cmd\":\"prompt_pasted_after_refusal\""]);
     wait_until(Duration::from_secs(8), "the words by paste", || {
