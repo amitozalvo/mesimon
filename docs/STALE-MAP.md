@@ -31637,6 +31637,17 @@ app, failed whenever a slow run crossed a step. Four tests flaked for this reaso
 `spin_epoch` itself, as before. Measured with `SPIN_STEP_MS` set to 1: 52 lib tests failed
 before and 8 after. The 8 are the animation tests that set the epoch.
 
+No state is shared between tests: each test's temp dirs carry its process id, and no render
+reads `$HOME`. The four needed a single render to stall ≥ 100 ms, which neither an idle
+machine nor 22 busy loops produced here; the crown's parallel builds did. Under
+`cargo nextest run -p mesimon-tui --lib` with `SPIN_STEP_MS` at 10, the old code failed the
+four in 3 of 3 runs (`plain_progress` in 2), and the held clock failed none of them. On the
+real step, under 22 busy loops: 10 of 10 runs green.
+
+The animation tests that set `spin_epoch` to `now` or `now − 410 ms` keep a narrow margin.
+A stall of about 90 ms within the render moves their frame. They test the clock itself, so
+they are not held.
+
 **Left open:** the marquee clocks (`marquee`, `menu_marquee`, `rail_marquee`) are keyed and
 still wall-clock. They hold 1.2 s before scrolling. With that hold forced to zero, 5 tests
 fail: `golden_train_manual_120`, `golden_codex_column_agent_behaviour`,
