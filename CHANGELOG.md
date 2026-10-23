@@ -6,6 +6,65 @@ notes, and the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-beta.13 — 2026-10-23
+
+### Added
+
+- **A card shows when its agent is compacting its conversation.** The card's
+  mark turns to a slow pulse and its activity row reads `compacting context`.
+  A compaction no longer moves the ticket or wakes the crown as if a turn had
+  ended.
+- **The header's linked-boards count can be selected.** Step onto it with
+  `h` and `l`, or click it, and press Enter to open Reaches boards. Esc
+  returns to the header.
+- **`mesimon doctor` says which color range the board uses, and why.**
+
+### Changed
+
+- **Prompts and asks up to 32 KiB arrive whole.** Before, words past 4 KiB
+  were cut without notice. A longer prompt is refused with its size. From
+  Remote Control while the terminal is away, the limit is 16 KiB, and the
+  phone says how much to cut and keeps the draft.
+- **Pull request news shows on the card within seconds.** A pull request an
+  agent opens, or one named under a ticket's Summary, is read right away
+  instead of within the minute. For three minutes after news on a pull
+  request, it is read every 15 seconds.
+- **A deployment never moves a ticket back to an earlier environment's
+  column.** With several environment columns, the ticket goes to the
+  right-most column its merge reached.
+- **The board no longer freezes while the daemon is slow.** A moved card, a
+  tag or a tier change is drawn at once. A key that changes a setting waits
+  up to 10 seconds for the board, and then reads
+  `daemon slow ∙ the board is behind ∙ nothing sent`.
+- **Ghostty, kitty, WezTerm, cmux and newer Terminal.app windows get full
+  color** without setting `COLORTERM`. Before, they could fall back to 256
+  or 16 colors, which flattened the theme.
+
+### Fixed
+
+- **Installing on macOS no longer hangs in Terminal.app or cmux.** The
+  installer prints its picture and next steps, and the intro plays on your
+  first board, where Ctrl+C ends it. If you saw the intro before, it plays
+  once more.
+- **Terminal.app:** `Shift+Enter` works on the board and in agent panes, a
+  card's title keeps its colors after the cursor leaves it, the ticket
+  description bar and the mascot draw without gaps, and the status line
+  hints `Ctrl+]` to detach, since `Ctrl+5` sends nothing there. Progress
+  underlines are plain in Terminal.app.
+- **A `/compact` sent from the board is no longer shown as unsent**, and
+  pressing Esc out of a compaction ends it on the card. Prompts sent during a
+  compaction wait for it to finish.
+- **A queued prompt is sent after a turn that ended in an API error.**
+  Before, the card read `after its turn` and the prompt never went. A turn
+  that ended on a usage limit still holds it.
+- **Send now into a working Codex agent no longer reports
+  `the agent is waiting on you` when nothing waits,** and its Enter is no
+  longer lost when the board is busy.
+- **A card's reply rows and Summary boxes show words, not markdown
+  symbols,** and a launch brief no longer shows Claude Code's pasted-text
+  wrapper.
+- **Remote Control shows why a message was refused while Sent is open.**
+
 ## v0.1.0-beta.12 — 2026-10-22
 
 ### Added
