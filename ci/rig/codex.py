@@ -447,9 +447,18 @@ def approval_decision(request, role, worktree):
             return True, tool
         return False, f"{what}: {words[:200]}"
     cwd = request.get("cwd")
+    # Codex 0.164 asks for an escalated command as the login shell's `-lc`
+    # string (`/bin/zsh -lc "git add …"`); that string is the command judged.
+    try:
+        wrapped = shlex.split(command)
+    except ValueError:
+        wrapped = []
+    judged = command
+    if len(wrapped) == 3 and wrapped[0] in ("/bin/zsh", "/bin/bash", "/bin/sh") and wrapped[1] == "-lc":
+        judged = wrapped[2]
     # Two plain shapes joined by one `&&` are one commit (T-930: Sol writes
     # `git add README.md && git commit -m …`); each half is judged alone.
-    parts = command.split(" && ")
+    parts = judged.split(" && ")
     if (what == "command" and role == "worker" and worktree and cwd
             and Path(cwd).resolve() == Path(worktree).resolve() and len(parts) <= 2
             and not any(mark in part for part in parts for mark in ";&|`$<>\n\r\\")):

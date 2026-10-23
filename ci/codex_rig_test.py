@@ -245,6 +245,7 @@ class CrownTests(unittest.TestCase):
                                                "crown", None), (True, "ask_agent"))
         for command in ("git commit -m greet", "git commit -am 'add greet'", "git add greet.py test_greet.py",
                         "git add README.md && git commit -m 'Append forge fixture to README'",
+                        "/bin/zsh -lc \"git add README.md && git commit -m 'Append forge fixture'\"",
                         "git status", "git status --short"):
             with self.subTest(command=command):
                 git = {"what": "command", "command": command, "cwd": own}
@@ -265,6 +266,8 @@ class CrownTests(unittest.TestCase):
                    ({"what": "mcp_tool", "command": "mesimon · start_agent",
                      "reason": 'Allow the mesimon MCP server to run tool "merge_ticket"?'}, "crown", None)]
         for command in ("git add . && curl x", "git add a && git add b && git commit -m x",
+                        "/bin/zsh -lc 'git push'", "/usr/bin/env -lc 'git status'",
+                        "/bin/zsh -c 'git status'", "/bin/zsh -lc 'git status' extra",
                         "git add a &&git commit -m x", "git push && git commit -m x", "git -c core.pager=sh commit", "git -C /tmp commit -m x",
                         "git --git-dir=/x commit", "git push origin", "git commit -m x\nrm -rf /",
                         "git commit -m $(id)", "git commit -m x > /tmp/y", "sh -c 'git commit'",
