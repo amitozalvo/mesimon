@@ -72,10 +72,22 @@ sys.path.insert(0, os.path.join(HERE, "rig"))
 from wire import Subscription, Wire, WireError, board_paths, feed_all, read_feed, ulid  # noqa: E402
 
 TIER_NAME = "rig"
-TIER_MODEL = "sonnet"  # Claude Code's alias for Sonnet 5.5 on 2.1.287
-TIER_MODEL_FULL = "claude-sonnet-5-5"
+# The workers' model, by its full id: the `sonnet` alias resolved to another
+# model on one build, and a tier saved with the alias is rewritten to this.
+TIER_MODEL = "claude-sonnet-5-5"
 TIER_EFFORT = "low"
-TIER_DESCRIPTION = "every rig test and the rig's crown"
+TIER_DESCRIPTION = "every rig test"
+# The crown's own tier (T-930): crown text is judged on the crown's real
+# tier, Opus, never on the workers' Sonnet. `--crown-model` and
+# `--crown-effort` change it.
+CROWN_TIER_NAME = "rig-crown"
+CROWN_MODEL = "claude-opus-5-5"
+CROWN_EFFORT = "high"
+CROWN_TIER_DESCRIPTION = "the rig's crown alone, never a worker"
+# TR1's tier (T-930): the person's words on when to use it, for a crown that
+# reads the tiers when it starts a ticket.
+SMALL_TIER_NAME = "rig-small"
+SMALL_TIER_DESCRIPTION = "a one-line edit to a single file"
 # A second board tier on the same model (T-808): where L2's crown moves a
 # worker stopped on a usage limit. Never the default, and never the built-in
 # `claude`, whose model is the account's own and may cost far more.
@@ -334,6 +346,58 @@ def tool_calls(rows):
             if isinstance(b, dict) and b.get("type") == "tool_use":
                 out.append((b.get("name"), results.get(b.get("id"))))
     return out
+
+
+def row_ms(row):
+    """A transcript row's time in epoch ms, or None."""
+    import datetime
+    try:
+        return int(datetime.datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00"))
+                   .timestamp() * 1000)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def crown_measures(rows, since_ms):
+    """What the crown spent on a test (T-930), from its transcript since
+    `since_ms`: its turns (a prompt that is not a tool result), its tokens
+    (each API message once, though Claude Code writes a row per block),
+    its tool calls, the calls before its first start_agent or create_ticket,
+    and the bytes of each start_agent and ask_agent receipt."""
+    rows = [r for r in rows if (row_ms(r) or 0) >= since_ms]
+    turns, seen, tokens = 0, set(), dict(input=0, cache_read=0, cache_write=0, output=0)
+    for r in rows:
+        msg = r.get("message") or {}
+        if r.get("type") == "user" and not r.get("isMeta"):
+            content = msg.get("content")
+            if isinstance(content, str) or (isinstance(content, list) and not any(
+                    isinstance(b, dict) and b.get("type") == "tool_result" for b in content)):
+                turns += 1
+        elif r.get("type") == "assistant" and msg.get("id") not in seen:
+            seen.add(msg.get("id"))
+            u = msg.get("usage") or {}
+            tokens["input"] += u.get("input_tokens", 0)
+            tokens["cache_read"] += u.get("cache_read_input_tokens", 0)
+            tokens["cache_write"] += u.get("cache_creation_input_tokens", 0)
+            tokens["output"] += u.get("output_tokens", 0)
+    calls = tool_calls(rows)
+    names = [(n or "").rsplit("__", 1)[-1] for n, _ in calls]
+    first = next((i for i, n in enumerate(names) if n in ("start_agent", "create_ticket")), None)
+    receipts = [len(r["text"].encode()) for (n, r), short in zip(calls, names)
+                if short in ("start_agent", "ask_agent") and r and not r["is_error"]]
+    return {"turns": turns, "tokens": tokens, "calls": len(calls),
+            "calls_before_start": first, "receipt_bytes": receipts}
+
+
+def measures_line(m):
+    if not m:
+        return "no crown transcript"
+    t = m["tokens"]
+    return (f"crown: {m['turns']} turns, {m['calls']} tool calls"
+            + (f" ({m['calls_before_start']} before its first start)" if m["calls_before_start"] is not None else "")
+            + f", tokens in {t['input']} + cache read {t['cache_read']} + cache write {t['cache_write']}"
+            f", out {t['output']}"
+            + (f", receipts {'/'.join(str(b) for b in m['receipt_bytes'])} bytes" if m["receipt_bytes"] else ""))
 
 
 def tool_inputs(rows):
@@ -996,7 +1060,7 @@ class Rig:
             "id": tier["id"] if tier else ulid(),
             "name": TIER_NAME,
             "provider": "claude_code",
-            "model": tier.get("model", TIER_MODEL) if tier else TIER_MODEL,
+            "model": TIER_MODEL,
             "effort": TIER_EFFORT,
             "description": TIER_DESCRIPTION,
         }
@@ -1011,6 +1075,18 @@ class Rig:
         if alt != alt_spec:
             self.wire.save_tier("board", alt_spec)
         self.alt_tier = alt_spec
+        small = next((t for t in board.get("tiers", []) if t["name"] == SMALL_TIER_NAME), None)
+        small_spec = {**spec, "id": small["id"] if small else ulid(), "name": SMALL_TIER_NAME,
+                      "description": SMALL_TIER_DESCRIPTION}
+        if small != small_spec:
+            self.wire.save_tier("board", small_spec)
+        crown = next((t for t in board.get("tiers", []) if t["name"] == CROWN_TIER_NAME), None)
+        crown_spec = {**spec, "id": crown["id"] if crown else ulid(), "name": CROWN_TIER_NAME,
+                      "model": self.args.crown_model, "effort": self.args.crown_effort,
+                      "description": CROWN_TIER_DESCRIPTION}
+        if crown != crown_spec:
+            self.wire.save_tier("board", crown_spec)
+        self.crown_tier = crown_spec
         # The permission tests' column (T-581): Claude Code in manual mode.
         col = next((c for c in board["columns"] if c["name"] == MANUAL_COLUMN), None)
         if col is None:
@@ -1035,7 +1111,8 @@ class Rig:
         if not board.get("crown_watches", True):
             self.wire.set_crown_watches(True)
         say(f"  tier {TIER_NAME} ({spec['model']}, effort {TIER_EFFORT}) is the board's default; "
-            f"the crown is autonomous")
+            f"the crown is autonomous on {CROWN_TIER_NAME} ({crown_spec['model']}, effort "
+            f"{crown_spec['effort']})")
 
     def gate_pipeline(self, on):
         """REVIEW's `entry needs a passed pipeline` (T-739), on or off."""
@@ -1099,6 +1176,10 @@ class Rig:
         # each title (T-577 found it), so its branches are its own.
         owner = re.match(r"msmn/(T-\d+)", self.branch or "")
         for test in tests:
+            # A blind test's ticket reads as any other on list_board: its
+            # title says nothing of what the crown is to decide.
+            if test.get("blind"):
+                test["title"] = f"{test['id']} · do the steps below"
             if owner and not test["title"].startswith(owner.group(1)):
                 test["title"] = f"{owner.group(1)} {test['title']}"
                 test["siblings"] = [f"{owner.group(1)} {t}" for t in test.get("siblings", [])]
@@ -1128,6 +1209,7 @@ class Rig:
         self.wire.write_note(crown, self.crown_brief(tests))
         self.wire.set_manual_merge(crown, True)
         self.wire.set_workspace(crown, "shared_checkout")
+        self.wire.request({"cmd": "set_ticket_tier", "id": crown, "tier": self.crown_tier["id"]})
         self.wire.crown(crown)
         self.crown = crown
         self.crown_key = self.ticket(self.board(), crown)["short_key"]
@@ -1158,7 +1240,9 @@ class Rig:
         return keys
 
     def test_card(self, test):
-        lines = [f"# {test['id']}: what the rig checks", "", f"**Expected.** {test['expect']}", ""]
+        lines = [f"# {test['id']}: what the rig checks", ""]
+        if not test.get("blind"):
+            lines += [f"**Expected.** {test['expect']}", ""]
         lines.append("**Steps.**")
         for step in test["steps"]:
             if "crown" in step:
@@ -1171,7 +1255,10 @@ class Rig:
         return "\n".join(lines)
 
     def crown_brief(self, tests):
-        order = "\n".join(f"- {t['id']} ({t['key']}): "
+        # A blind test (T-930) judges what the crown decides from the board's
+        # own words, so its brief names the test and nothing it checks.
+        order = "\n".join(f"- {t['id']} ({t['key']}): its steps come as prompts." if t.get("blind")
+                          else f"- {t['id']} ({t['key']}): "
                           f"{t['title'].split(' · ', 1)[-1].removesuffix(': do the steps below')}. "
                           f"{t['expect']}" for t in tests)
         return f"""You wear the crown of the rig: a mesimon board inside a ticket worktree, run by `ci/rig.py`, that tests mesimon's Claude Code mod road on the real Claude Code. You are the subject under test: each test proves a crown can drive a worker through the board while the mod relays every frame, with nothing read off a screen.
@@ -1224,24 +1311,10 @@ Reply with the single word ready and end your turn."""
         model = model_of(rows)
         say(f"  crown ready in {time.time() - t0:.0f} s ∙ road {rec.get('road', 'hooks')} ∙ "
             f"model {model} ∙ said {last_reply(rows)[:40]!r}")
-        if model and not model.startswith(TIER_MODEL_FULL) and self.tier["model"] == TIER_MODEL:
-            say(f"  `{TIER_MODEL}` resolved to {model} on this build: the tier takes "
-                f"{TIER_MODEL_FULL} and the crown starts again")
-            self.wire.save_tier("board", {**self.tier, "model": TIER_MODEL_FULL})
-            self.tier["model"] = TIER_MODEL_FULL
-            self.wire.save_tier("board", {**self.alt_tier, "model": TIER_MODEL_FULL})
-            self.alt_tier["model"] = TIER_MODEL_FULL
-            self.wire.sleep(rec["id"])
-            self.wait_for("crown parked", lambda: word_of(
-                self.agent_of(self.board(), self.crown)["state"]) == "sleeping", 60)
-            return self.restart_crown()
+        # A verdict on crown text is worth only the model it ran on (T-930).
+        if model and not model.startswith(self.crown_tier["model"]):
+            die(f"the crown ran on {model}, not its tier's {self.crown_tier['model']}")
         self.crown_model = model
-
-    def restart_crown(self):
-        rec = self.agent_of(self.board(), self.crown)
-        self.wire.request({"cmd": "resume_session", "id": rec["id"], "confirm": False})
-        self.wait_for("crown woken", self.crown_settled, 120, self.watch)
-        self.crown_model = model_of(transcript(self.agent_of(self.board(), self.crown)))
 
     def crown_settled(self, after_ms=None, quiet=QUIET):
         """The crown is idle and has been for `quiet` seconds; with
@@ -2429,6 +2502,7 @@ Reply with the single word ready and end your turn."""
             for name, ok, observed in self.check_ticket(test, tid, title, lines, record):
                 results.append((prefix + name, ok, observed))
         rec = self.agent_of(self.board(), test["ticket"])
+        crown = self.agent_of(self.board(), self.crown)
         rows = transcript(rec) if rec else []
         mine = [l for l in lines if rec and of_session(l, rec["id"])]
         hooks = [l["event"] for l in mine if l.get("kind") == "hook"]
@@ -2443,6 +2517,7 @@ Reply with the single word ready and end your turn."""
             "wakes": [l.get("cause") for l in lines if l.get("kind") == "crown_wake"
                       and l.get("worker") == test["ticket"]],
             "alive": record.get("alive"),
+            "crown": crown_measures(transcript(crown), record["t0_ms"]) if crown else None,
         }
 
     def check_ticket(self, test, tid, title, lines, record):
@@ -2844,6 +2919,13 @@ Reply with the single word ready and end your turn."""
             elif name == "reply":
                 said = last_reply(rows)
                 check(c, arg.lower() in said.lower(), f"said {said[:60]!r}")
+            elif name == "reply_never":
+                # T-930 (WR1): the worker's last reply names none of the
+                # words, which are the board's own doings.
+                said = last_reply(rows)
+                hit = [w for w in arg.split(",") if w.lower() in said.lower()]
+                check(c, not hit, f"names {', '.join(hit)}: {said[:80]!r}" if hit
+                      else f"said {said[:80]!r}")
             elif name == "shell_workflow":
                 said = last_reply(rows)
                 try:
@@ -3000,6 +3082,7 @@ Reply with the single word ready and end your turn."""
             say(f"    {'✓' if ok else '✗'} {name}: {observed}")
         for f in v["failures"]:
             say(f"    ✗ {f}")
+        say(f"    {measures_line(v['crown'])}")
         note = [f"# {test['id']} verdict: {mark}", "",
                 f"Run {self.run_id} ∙ {self.build} ∙ worker model {v['model']} ∙ {v['seconds']:.0f} s"
                 + (f" ∙ {v['timing']}" if v["timing"] else ""), "",
@@ -3010,7 +3093,8 @@ Reply with the single word ready and end your turn."""
         note += ["", f"**Frames the daemon ingested** (in order): {', '.join(v['hooks']) or 'none'}.",
                  f"**Card words seen:** {' → '.join(v['words']) or 'none'}.",
                  f"**The board woke the crown for it:** {', '.join(v['wakes']) or 'never'}.",
-                 f"**Its mod at the end:** {v['alive'] or 'no pane to ask'}."]
+                 f"**Its mod at the end:** {v['alive'] or 'no pane to ask'}.",
+                 f"**What the crown spent:** {measures_line(v['crown'])}."]
         self.wire.write_note(test["ticket"], "\n".join(note))
         for tid, key, _ in self.test_tickets(test):
             rec = self.agent_of(self.board(), tid)
@@ -3092,7 +3176,7 @@ Reply with the single word ready and end your turn."""
             failed = [f"✗ {n}: {o}" for n, ok, o in v["results"] if not ok] + [f"✗ {f}" for f in v["failures"]]
             observed = ("PASS ∙ " + "; ".join(o for _, _, o in v["results"])) if v["pass"] else (
                 "FAIL ∙ " + "; ".join(failed))
-            observed += f" ∙ ticket in {v.get('column')}"
+            observed += f" ∙ ticket in {v.get('column')} ∙ {measures_line(v.get('crown'))}"
             out.append(f"| {v['id']} {v['key']} | {v['expect']} | {observed} | {self.build} |")
         text = "\n".join(out) + "\n"
         for path in (os.path.join(self.out, "verdicts.md"),
@@ -3175,6 +3259,10 @@ def main():
     ap.add_argument("--stale", action="store_true",
                     help="list the dead rig boards every run clears; remove nothing")
     ap.add_argument("--no-build", action="store_true")
+    ap.add_argument("--crown-model", default=CROWN_MODEL,
+                    help=f"the Claude rig crown's model (default {CROWN_MODEL}; workers stay on {TIER_MODEL})")
+    ap.add_argument("--crown-effort", default=CROWN_EFFORT,
+                    help=f"the Claude rig crown's effort (default {CROWN_EFFORT})")
     ap.add_argument("--flags-off", action="store_true",
                     help="Claude Code's flags service off for the rig's sessions (T-598's seam)")
     args = ap.parse_args()

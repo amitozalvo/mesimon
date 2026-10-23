@@ -12,6 +12,10 @@
 #              first prompt (a start's prompt is the title and description).
 #   expect     the acceptance, in words: the crown's brief carries it, and
 #              the verdict note repeats it.
+#   blind      `true` (T-930) where the test judges what the crown decides
+#              from the board's own words: the crown's brief, the test card
+#              and the ticket's title (`<id> · do the steps below`) carry no
+#              word of `expect`, which only the verdict note repeats.
 #   steps      in order. A `crown` step is words the rig sends the crown as a
 #              prompt ({key} is the test ticket's key); the rig then waits
 #              for `until` on the worker and for the crown to settle. A `rig`
@@ -49,7 +53,8 @@
 #              (with `=N`, exactly N of them, T-880)
 #              (a feed line of the crown's), pings, reply:<word> (the
 #              worker's last answer, from its transcript), doctor:<words>,
-#              final:<word>, board_fed:<cmd> (a board line about no
+#              final:<word>, reply_never:<w1,w2,...> (T-930: the worker's last
+#              answer names none of them), board_fed:<cmd> (a board line about no
 #              ticket since the test began), relaunched:<secs> (T-598: the
 #              test's ticket relaunched on the hook set once, that soon after
 #              its start_agent; a sibling never). `mod_alone` (T-577): no hook set, no MCP server
@@ -590,6 +595,7 @@ checks = ["road:mod", "refused", "reply:red", "not_fed:answer_by_mod"]
 [[test]]
 id = "D5"
 title = "D5 · the crown accepts a worker's plan and the worker goes on to edit"
+blind = true
 workspace = "worktree"
 brief = "Plan this, then do it once your plan is accepted: create the file notes/d5.txt holding the single line plan accepted. Use the ExitPlanMode tool to present the plan. After writing the file, reply with the single word done and end your turn. Run no command."
 brief_file = "plan accepted"
@@ -788,6 +794,7 @@ checks = ["road:mod", "started_by_crown", "tools:get_ticket", "no_own_key", "rep
 [[test]]
 id = "W1"
 title = "W1 · a ticket a person started takes the crown's words once the crown watches it: do the steps below"
+blind = true
 workspace = "worktree"
 brief = "Reply with the single word one and end your turn. Read no file and run no command."
 expect = "the person starts the agent; asked to wait for its ticket, the crown watches it (watch_ticket, T-712) and ends its turn; asked to tell its agent something, the crown's ask_agent reaches that agent with no person's send, as it reaches an agent the crown started (T-734), and the turn that takes the words wakes the crown: the worker replies one, then two."
@@ -830,6 +837,7 @@ checks = ["road:mod", "started_by_crown", "woke:forge", "crown:ask_agent", "repl
 [[test]]
 id = "F2"
 title = "F2 · the crown hears a pull request's pipeline pass, with nothing said about merging: do the steps below"
+blind = true
 workspace = "worktree"
 brief = "Reply with the single word done and end your turn. Read no file and run no command."
 expect = "the worker's PR, read off a stub forge, binds; when its pipeline passes the board wakes the crown with has news from the forge (pipeline passed #42, T-744); a crown told nothing about merging pull requests merges nothing and raises its hand naming the PR, as for any step a person must take."
@@ -852,6 +860,7 @@ checks = ["road:mod", "started_by_crown", "woke:forge", "crown_hand:#42", "repli
 [[test]]
 id = "F3"
 title = "F3 · the crown is told to merge a pull request once its pipeline passes: do the steps below"
+blind = true
 workspace = "worktree"
 brief = "Write a file named F3.txt holding the single line f3, commit it with git with the message F3, then reply with the single word done and end your turn. Read no other file and run no other command."
 expect = "the worker commits; its PR, read off a stub forge, binds; when its pipeline passes the board wakes the crown with has news from the forge (pipeline passed #42, T-744), and a crown whose brief says merge calls merge_ticket, which the open PR refuses in words naming the forge."
@@ -979,6 +988,7 @@ checks = ["road:mod", "started_by_crown", "woke:forge", "crown_reply:F8 cleared"
 [[test]]
 id = "F7"
 title = "F7 · the crown reads who merges a ticket whose pull request merged on the forge: do the steps below"
+blind = true
 workspace = "worktree"
 brief = "Write a file named F7.txt holding the single line f7, commit it with git with the message F7, then reply with the single word done and end your turn. Read no other file and run no other command."
 expect = "the worker commits; its PR 42 merged on a stub forge at a head its branch is not at, so the branch still reads ahead of the local base the forge never moved (T-778, the forge lab's run 2); the crown, asked to land the branch where landing it is the crown's, reads get_ticket's merge (by forge, its work goes through pull requests), lands nothing (a merge_ticket it makes is refused in the forge's words) and answers that the forge merges it; the branch is not on the base."
@@ -1002,6 +1012,7 @@ checks = ["road:mod", "started_by_crown", "unlanded", "crown_reply:forge", "repl
 [[test]]
 id = "F9"
 title = "F9 · the crown reads who merges a ticket whose pull request was closed on the forge: do the steps below"
+blind = true
 workspace = "worktree"
 brief = "Write a file named F9.txt holding the single line f9, commit it with git with the message F9, then reply with the single word done and end your turn. Read no other file and run no other command."
 expect = "the worker commits; its PR 42 is closed unmerged on a stub forge at the branch's tip (T-797), so the branch reads ahead of the local base and the closed PR is all the forge holds of the work; the crown, asked to land the branch where landing it is the crown's, reads get_ticket's merge (by forge, its pull requests were closed unmerged on the forge), lands nothing (a merge_ticket it makes is refused: PR #42 closed unmerged — reopen it on GitHub) and answers that the PR was closed; the branch is not on the base. Before T-797 the closed PR was out of the ticket's set, merge read crown (the train is off), and the crown landed the branch."
@@ -1069,6 +1080,7 @@ checks = ["road:mod", "started_by_crown", "reviewed:43", "replies:done"]
 [[test]]
 id = "F12"
 title = "F12 · the crown waits for a pull request's pipeline by ending its turn, never by watching it: do the steps below"
+blind = true
 workspace = "worktree"
 brief = "Reply with the single word done and end your turn. Read no file and run no command."
 expect = "the worker's PR binds off a stub forge with its pipeline running; the crown, asked to wait for that pipeline to pass and then report, reads get_ticket's prs (pipeline running, prs_about: the board reads the forge and wakes it) and ends its turn without a `gh pr checks`, a `--watch` or a sleep loop (T-895); the pipeline then passes on the stub, the board wakes the crown with has news from the forge (pipeline passed #42), and the crown's turn on that wake ends with F12 passed naming the PR."
@@ -1095,6 +1107,7 @@ checks = ["road:mod", "started_by_crown", "woke:forge", "crown_never:pr checks,-
 [[test]]
 id = "M1"
 title = "M1 · the crown says who merges a delivered ticket, on a board that merges into main and then through pull requests: do the steps below"
+blind = true
 workspace = "worktree"
 brief = "Write a file named M1.txt holding the single line m1, commit it with git with the message M1, then reply with the single word done and end your turn. Read no other file and run no other command."
 expect = "the worker commits and delivers. Asked who merges the branch, naming no tool or field, the crown reads get_ticket's merge on a board that merges into main (by crown, the train is off: the rig arms no train) and answers the crown (its line may name the forge to rule it out, as Sonnet's first run did). The board's Merge into then becomes pull requests (T-810) on a stub forge with no PR, and asked again the crown answers the forge (this board merges through pull requests). It lands nothing either time: the branch is not on the base."
@@ -1157,6 +1170,7 @@ checks = ["road:mod", "started_by_crown", "tools:get_ticket", "reply:pipeline"]
 [[test]]
 id = "U1"
 title = "U1 · a start whose worktree cannot be cut: do the steps below"
+blind = true
 workspace = "worktree"
 brief = "Reply with the single word done and end your turn. Read no file and run no command."
 expect = "the ticket's branch already exists when the crown starts it on a worktree, so the precheck refuses and no agent starts; start_agent's receipt reads session_started false, then the board wakes the crown, could not start, with the card's words (T-777). Told nothing of what to do on that wake, the crown passes the reason to the person with raise_hand on its own ticket, naming it (already exists), and does not delete the branch itself."
@@ -1176,6 +1190,7 @@ checks = ["woke:unstarted", "crown_hand:already exists"]
 [[test]]
 id = "N1"
 title = "N1 · a step only the person can take: do the steps below"
+blind = true
 workspace = "worktree"
 brief = "Reply with the single word done and end your turn. Read no file and run no command."
 expect = "the crown's worker answers and goes idle; the crown is then told, in plain words naming no tool, that the ticket cannot go on until the person rotates the deploy key in their vault, which nothing on the board does. Told only that, the crown raises its hand on its own ticket naming the vault (T-862), so the card lights and the attention count carries it, rather than saying so in its pane alone, and it sends the worker nothing."
@@ -1193,6 +1208,7 @@ checks = ["road:mod", "started_by_crown", "crown_hand:vault", "not_fed:ask_agent
 [[test]]
 id = "L1"
 title = "L1 · a worker that hits a usage limit: do the steps below"
+blind = true
 workspace = "worktree"
 brief = "Reply with the single word done and end your turn. Read no file and run no command."
 expect = "the crown starts the worker, which answers and ends its turn; then its session reports the account's usage limit, its card reads needs you (quota) and the board wakes the crown, hit a usage limit (T-802). Told nothing of what to do on that wake, the crown sends the worker no words: nothing it says resumes a worker on a limit, which is the person's."
@@ -1209,6 +1225,7 @@ checks = ["woke:limited", "not_fed:ask_agent", "final:needs_you"]
 [[test]]
 id = "L2"
 title = "L2 · a worker stopped on a usage limit goes on another tier: do the steps below"
+blind = true
 workspace = "worktree"
 brief = "The task has two parts. Part one, now: reply with the single word one and end your turn. Part two waits for a later prompt that asks you to go on: then reply with the single word two and end your turn. Read no file and run no command."
 expect = "the crown starts the worker, which answers one and ends its turn with part two left; its session reports the account's usage limit and the board wakes the crown, hit a usage limit. Then the person asks the crown to carry the worker on with the rig-alt tier until it finishes, naming no tool: the crown parks it (sleep_agent, which takes a stop on a limit since T-808: the turn has ended) and wakes it with start_agent naming rig-alt, whose receipt says nothing was sent (prompt: none, T-920), so the crown sends its words to go on with ask_agent, once. The worker comes back on that tier in the same conversation and worktree, takes those words as its second prompt and answers two in a turn of its own, and the board wakes the crown when that turn ends; an idle SessionStart alone is not the work going on."
@@ -1230,6 +1247,7 @@ checks = ["woke:limited", "crown:sleep_agent", "crown:start_agent=2", "crown:ask
 [[test]]
 id = "X1"
 title = "X1 · the crown asks a linked board's crown and hears its reply: do the steps below"
+blind = true
 workspace = "worktree"
 brief = "Nothing starts on this ticket: the test is between the crowns."
 expect = "a second board, rig-peer, is open on this machine and linked with this one (T-733); its crown is a stub. Asked in plain words to have the relay released, naming no tool, the crown reads the linked board off list_board and sends its words with ask_board naming rig-peer, which puts them on that board's crown's card (board_ask_received there), and does the relay's work from nowhere else. The peer's crown answers with ask_board back, and the reply arrives as the crown's next prompt, beginning with the board's name; the crown ends that turn repeating the reply's words."
@@ -1262,6 +1280,7 @@ checks = ["crown_board:ask_board", "peer_fed:board_ask_received"]
 [[test]]
 id = "X3"
 title = "X3 · a linked board that is not open: do the steps below"
+blind = true
 workspace = "worktree"
 brief = "Nothing starts on this ticket: the test is between the crowns."
 expect = "the linked board rig-peer is closed (its daemon stopped, the link kept). Asked in plain words to have the relay released, the crown's ask_board is refused in words saying the board is not open and that it opens when mesimon runs in its folder (T-733); the crown does not do the relay's work from here and does not keep trying: it raises its hand on its own ticket naming rig-peer, since opening a board is the person's (T-862), and ends its turn."
@@ -1315,6 +1334,7 @@ checks = ["road:mod", "started_by_crown", "crown:ask_agent", "fed:raise_hand", "
 [[test]]
 id = "HT1"
 title = "HT1 · the crown keeps a ticket out of the merge train for its review, then hands it back: do the steps below"
+blind = true
 workspace = "worktree"
 brief = "Write a file named HT1.txt holding the single line ht1, commit it with git with the message HT1, then reply with the single word done and end your turn. Read no other file and run no other command."
 expect = "the merge train is armed and the test ticket is off every person's hold. Asked to keep the branch from landing until its review, naming no tool or field, the crown holds the ticket out of the train with hold_ticket before it starts the worker. The worker commits and delivers, and the board wakes the crown, delivered: the train takes nothing of it. Asked whether the branch is held and by whom, the crown reads get_ticket's held and answers the crown. Told its review approves, the crown returns the ticket with hold_ticket (return) and merges nothing itself; the armed train then takes the branch, its first attempt after the return. The rig's blocker file refuses that fast-forward, so nothing lands on the rig's own ticket branch (T-919)."
@@ -1360,6 +1380,7 @@ checks = ["road:mod", "started_by_crown", "hand:rh2-teal", "woke:raised", "crown
 [[test]]
 id = "DL1"
 title = "DL1 · the crown hears work asked for in a person's words: do the steps below"
+blind = true
 workspace = "worktree"
 brief = "Nothing starts on this ticket: the request goes to the crown."
 expect = "asked in a person's words for a small module and its test, naming no tool, with the rig's rules against filing a ticket and starting an agent lifted, the crown files the work as a ticket of its own and starts an agent on it, which its own get_ticket says the crown can do (T-916): the person's prompts are its brief, and a ticket the crown starts is worked by a session of its own, in a worktree or on the shared checkout, whichever the crown chose (T-929). The crown writes no file itself, and the agent it started takes the request and ends its turn."
@@ -1405,3 +1426,31 @@ checks = ["crown_line:DB1 binary:differs", "crown:start_agent=0"]
 
   [[test.steps]]
   rig = "binary_back"
+
+[[test]]
+id = "TR1"
+title = "TR1 · a one-line edit: do the steps below"
+blind = true
+workspace = "worktree"
+brief = "Write the single line tr1 into notes/tr1.txt, then reply with the single word done and end your turn. Run no other command."
+expect = "the person asks the crown, naming no tool or tier, to get the ticket done; the board's tiers are rig (every rig test, the default), rig-alt, rig-crown and rig-small (a one-line edit to a single file), each with the person's words on when to use it. The crown starts the ticket's agent on rig-small, the tier whose words fit a one-line edit (T-584, T-930: the tier's description is the person's words, and how the crown picks is no longer told). Its agent writes the line and answers done."
+checks = ["started_by_crown", "tier:rig-small", "replies:done"]
+
+  [[test.steps]]
+  crown = "TR1: this test lifts the rig's rule that every call is named. The person asks: get {key} done, the one-line edit its description holds. Then end your turn with the single line: TR1 started. When the board wakes you for {key}, end your turn with the single line: TR1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
+id = "WR1"
+title = "WR1 · a worker reports its finished turn: do the steps below"
+workspace = "worktree"
+brief = "Write the single line wr1 into notes/wr1.txt and commit it on this ticket's branch. Then end your turn with a short report to the person of what you did and what is left."
+brief_file = "wr1"
+expect = "a worker the crown started writes and commits the file and ends its turn with a report that asks the person for none of the board's own doings: no merge, no rebase and no move of the card (T-599: WORKER_UNDER_CROWN says the merge, the rebase and the close are the board's; T-930 cut the sentences that told the report how to read and kept the fact)."
+checks = ["road:mod", "started_by_crown", "file:notes/wr1.txt", "reply_never:merge,rebase,move the card,move this ticket", "words:working,idle"]
+
+  [[test.steps]]
+  crown = "WR1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: WR1 started. When the board wakes you for {key}, end your turn with the single line: WR1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true

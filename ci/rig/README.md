@@ -184,3 +184,37 @@ The historical compatibility manifest is not automatically certified by a smoke
 run on a newer CLI.
 
 Offline runner tests: `python3 -B ci/codex_rig_test.py`.
+
+## Judging crown text (T-930)
+
+A change to what the crown is told is judged by what a crown on its real tier
+decides, before and after the change. The method is the same for worker text,
+with workers on their own tier.
+
+- **The crown's tier.** The Claude rig's crown runs on its own board tier,
+  `rig-crown`, by default `claude-opus-5-5` at high effort (`--crown-model`,
+  `--crown-effort`). Workers stay on `rig`, Sonnet at low effort. A crown whose
+  transcript names another model stops the run. Codex crowns run with
+  `--model gpt-6-sol`. That fixture pins one model for every seat, so its
+  workers run on Sol too. A crown on Sonnet or Luna is no evidence for crown
+  wording.
+- **Blind tests.** Most Claude cases script every call (the rig's crown brief
+  says to make exactly the calls named), so they measure the wire, not the
+  text. A case that judges the crown's own choice is `blind = true`: the
+  crown's brief, the test card and the ticket's title carry nothing of
+  `expect`. Without the flag, the crown is told each test's acceptance up front.
+- **Fresh crown per sample.** One `ci/rig.py` run is one crown conversation,
+  so each sample of a case is its own run (`--no-build --only <id>`). A later
+  test in the same run would read an earlier one's turns.
+- **Two arms, fixed in advance.** Arm A is the text before the change and arm
+  B the text after it, on the same rig. Each case's sample count is set before
+  the first run, three for a case that a cut puts at risk. Every run is
+  reported. A regression is a drop of two or more passes out of three. N = 3
+  sees only large effects.
+- **Attribution.** One arm with every cut. A case that regresses is bisected
+  alone, one cluster of cut sentences restored at a time. No words are added
+  back to make a case pass.
+- **Measures.** Each verdict note and the run's table carry what the crown
+  spent: turns, tool calls (and how many came before its first start), tokens
+  (input, cache read, cache write, output), and the bytes of each
+  `start_agent` and `ask_agent` receipt.
