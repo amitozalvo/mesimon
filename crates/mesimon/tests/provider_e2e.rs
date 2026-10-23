@@ -526,6 +526,8 @@ fn codex_worktree_launches_expose_existing_trust_without_writing_settings() {
     )
     .unwrap();
     assert!(!config["config_flags"].to_string().contains("trust_level"));
+    // Codex's update prompt blocks the relay and its installer runs in the pane (T-923).
+    assert!(config["config_flags"].to_string().contains("check_for_update_on_startup=false"));
     assert!(!h.owner.dir.join("synthetic-codex-home").exists(), "no user trust configuration");
     assert!(!h.repo.join(".codex").exists());
 }

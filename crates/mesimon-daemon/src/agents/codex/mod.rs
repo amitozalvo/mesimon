@@ -239,6 +239,11 @@ fn prepare(context: &LaunchContext<'_>, resume: Option<String>) -> Result<Launch
     let stem = format!("cdx-{}-{:08x}", &id.simple().to_string()[..16], generation as u32);
     let mut config_flags = policy_flags(&context.column);
     config_flags.extend(tier_flags(&context.tier));
+    // Codex's startup update prompt draws before the native client dials the
+    // relay, so a launch that shows it times out, and its "Update now" runs
+    // the installer in the pane under the live app-server, replacing the
+    // binary both processes run (T-923). Codex updates outside mesimon.
+    config_flags.extend(["-c".into(), "check_for_update_on_startup=false".into()]);
     // Stable definitions let native /hooks trust survive ticket changes.
     // Identity and guarded roots are invocation environment, not hook text.
     // Codex 0.153.4 preserves user hooks from both config.toml and hooks.json

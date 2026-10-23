@@ -435,7 +435,7 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
             app.saw_board(true);
             handover::drain_stdin();
             if let Err(e) = ho {
-                app.status = format!("focus failed: {e}");
+                app.handover_failed(&e)?;
                 break;
             }
             app.after_handover()?; // may queue the post-GATE attach

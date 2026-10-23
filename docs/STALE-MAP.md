@@ -30894,3 +30894,29 @@ woke the crown with `answered`. Wakes, in order: finished, limited, answered.
   standing `#[ignore]`s). The two TUI spinner tests passed this time.
 - Live L2 was not rerun: the review's changes are a wording change and new deterministic tests,
   and the rebase brought in no conflict in code.
+
+## A failed attach gives the focus back, and Codex launches without its update prompt (T-923, 2026-10-23, "codex resumption is impossible now due to an update")
+
+**What happened.** A Codex wake showed Codex's own "Update available" prompt. That prompt draws
+before the native client dials mesimon's relay, so the runtime gave up ("native Codex connection
+timed out"). Choosing "Update now" in the pane ran `npm install -g @openai/codex` under the live
+app-server, which replaced the binary both processes ran: the attach came back non-zero
+("interrupted"), and the next launches failed with `start Codex app-server: No such file or
+directory` until the person repaired the install outside. From then on, every Enter on that
+board, Claude included, answered "another session is focused".
+
+**The focus leak.** `lib.rs`'s handover loop broke out on an attach error without telling the
+daemon. The daemon had granted the token to this board's connection, and that connection was
+still alive, so neither `FocusEnd` nor `on_client_gone` would release it: the board could not
+open any session until it quit (a `U`, or the next failed attach after one, reproduces it).
+`App::handover_failed` now gives the token back (`FocusEnd` for a session, `TerminalEnd` for the
+`!` terminal), drops a pending GATE second half, and keeps the `focus failed: …` status. Pinned by
+`a_failed_handover_gives_the_focus_back`.
+
+**The update prompt.** Every Codex launch carries `-c check_for_update_on_startup=false` (a
+per-launch flag on both the app-server and the native client; the person's `config.toml` is not
+touched). Codex is updated outside mesimon. `provider_e2e` checks the flag is in the runtime
+config.
+
+**Not done.** `codex orphan kept: … its native pane remains live` appeared for the Codex pane of a
+ticket deleted while its session sat idle; not investigated here.

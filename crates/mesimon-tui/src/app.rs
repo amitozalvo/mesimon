@@ -14870,6 +14870,24 @@ impl App {
         self.refresh_soon()
     }
 
+    /// Called by the main loop when a handover did not come back clean: the
+    /// attach exited non-zero (a pane that died under it, an agent's own
+    /// updater quitting it) or never ran. The daemon granted the token all
+    /// the same, and this board's connection is alive, so nothing else
+    /// would hand it back: every later focus read "another session is
+    /// focused" until the board quit (T-923). The GATE's second half is
+    /// dropped too — a failed ceremony proved nothing.
+    pub fn handover_failed(&mut self, error: &anyhow::Error) -> Result<()> {
+        self.pending_gate_then = None;
+        match self.focused_session_hint.take() {
+            Some(FocusTarget::Session(sid, _)) => self.send(Command::FocusEnd { session: sid })?,
+            Some(FocusTarget::Terminal) => self.send(Command::TerminalEnd)?,
+            None => self.refresh_soon()?,
+        }
+        self.status = format!("focus failed: {error}");
+        Ok(())
+    }
+
     // ---- links (T-256) ---------------------------------------------------
 
     /// Where a relative path in this ticket's notes is rooted: its worktree
@@ -24397,6 +24415,25 @@ mod tests {
         app.focused_session_hint = Some(FocusTarget::Session(sid, FocusOrigin::Ticket));
         app.after_handover().unwrap();
         assert_eq!(app.screen, Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 });
+    }
+
+    /// An attach that exits non-zero still held the daemon's token (T-923):
+    /// the failure gives it back, or this board never focuses again.
+    #[test]
+    fn a_failed_handover_gives_the_focus_back() {
+        let (mut app, sent, sid) = app_with_claude(SessionState::Running, false);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.pending_attach.take().is_some());
+        app.handover_failed(&anyhow::anyhow!("exited with exit status: 1")).unwrap();
+        assert!(sent_contains(&sent, &format!("FocusEnd {{ session: {sid} }}")), "{:?}", sent.borrow());
+        assert!(app.focused_session_hint.is_none());
+        assert_eq!(app.status, "focus failed: exited with exit status: 1");
+
+        press(&mut app, '!');
+        assert!(app.pending_attach.take().is_some());
+        app.handover_failed(&anyhow::anyhow!("attach child")).unwrap();
+        assert!(sent_contains(&sent, "TerminalEnd"), "{:?}", sent.borrow());
+        assert!(app.focused_session_hint.is_none());
     }
 
     /// `!` opens the SCREEN's directory (T-273): the board's is the checkout,
