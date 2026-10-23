@@ -15,7 +15,8 @@
 #   blind      `true` (T-930) where the test judges what the crown decides
 #              from the board's own words: the crown's brief, the test card
 #              and the ticket's title (`<id> · do the steps below`) carry no
-#              word of `expect`, which only the verdict note repeats.
+#              word of `expect`, which only the verdict note repeats; the
+#              crown brief's scripting rules are lifted in it.
 #   steps      in order. A `crown` step is words the rig sends the crown as a
 #              prompt ({key} is the test ticket's key); the rig then waits
 #              for `until` on the worker and for the crown to settle. A `rig`

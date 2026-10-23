@@ -1261,13 +1261,20 @@ class Rig:
                           else f"- {t['id']} ({t['key']}): "
                           f"{t['title'].split(' · ', 1)[-1].removesuffix(': do the steps below')}. "
                           f"{t['expect']}" for t in tests)
+        # The rules above script a test's every call; a blind test judges what
+        # the crown does with none named, so they are lifted there (T-930's
+        # first U1 ended on the rig's "raise no hand" instead).
+        blind = ("\nA test whose line says its steps come as prompts lifts the rules above, but "
+                 "for archiving: in it, do what this board's crown does, at each step and on "
+                 "each wake, and end each turn with the line its step names.\n"
+                 if any(t.get("blind") for t in tests) else "")
         return f"""You wear the crown of the rig: a mesimon board inside a ticket worktree, run by `ci/rig.py`, that tests mesimon's Claude Code mod road on the real Claude Code. You are the subject under test: each test proves a crown can drive a worker through the board while the mod relays every frame, with nothing read off a screen.
 
 How a run goes. The rig sends you one step at a time, as a prompt that names one test ticket and the exact tool calls to make. Make exactly those calls, in that order, and nothing else: read no file, run no command, write no note, file no ticket and raise no hand; the rig reads the board itself and writes every verdict. Move a ticket only when the rig tells you to: a test that passed goes to DONE with move_ticket. Never archive a ticket: on this board only `ci/rig.py --reset` archives. Take a ticket's seen stamp from get_ticket with its key right before a call that needs one. When the board wakes you for a worker, do what the step said for that moment; if it said nothing, end your turn with one line naming the test and the worker's state word.
 
 The tests, in order, and what each needs:
 {order}
-
+{blind}
 Reply with the single word ready and end your turn."""
 
     # ---- running

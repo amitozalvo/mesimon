@@ -202,7 +202,9 @@ with workers on their own tier.
   says to make exactly the calls named), so they measure the wire, not the
   text. A case that judges the crown's own choice is `blind = true`: the
   crown's brief, the test card and the ticket's title carry nothing of
-  `expect`. Without the flag, the crown is told each test's acceptance up front.
+  `expect`, and the brief's scripting rules (no hand, no file, the one line on
+  a wake) are lifted in it, archiving aside. Without the flag, the crown is told
+  each test's acceptance up front and does only what the steps name.
 - **Fresh crown per sample.** One `ci/rig.py` run is one crown conversation,
   so each sample of a case is its own run (`--no-build --only <id>`). A later
   test in the same run would read an earlier one's turns.
