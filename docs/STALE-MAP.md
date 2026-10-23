@@ -31409,9 +31409,10 @@ assessment: paste vs monitor" argued for keeping the paste road and holding it, 
   of ms on an idle machine and longer under load (T-856). A person who attaches and types
   inside it is not caught. The paste and its Enter are one call (`paste_text`), and no Enter
   is pressed later.
-- **Mod road.** The same window, plus the bridge's long-poll hand-off. `$.prompt.submit` types
-  nothing into the box. Whether a submit keeps a draft in the box is unmeasured, and the hold
-  stands either way.
+- **Mod road.** `$.prompt.submit` types nothing into the box, and a submit keeps a draft
+  in the box (measured in T-931, Claude Code 2.1.309), so since T-931 neither hold applies to a
+  wake that goes by the mod's submit. A mod that never polled, an older one, or a slash-command
+  wake keeps the paste road and the holds.
 - **Codex.** The paste and the Enter each rest on a sample read together and not older than the
   250 ms tick that reads it plus the sample's duration. The Enter needs a sample from after the
   paste. A person who types in the gap between that sample and the Enter is not caught.
@@ -31654,3 +31655,53 @@ fail: `golden_train_manual_120`, `golden_codex_column_agent_behaviour`,
 `test_the_peek_names_the_ticket`, `the_cursors_links_row_scrolls_its_cut_into_view` and
 `diff_pages_glide_and_file_changes_cancel_the_motion`. A run would have to stall 1.2 s
 between two renders to hit this.
+
+## A crown's wake by the mod's submit holds for nobody (T-931, 2026-10-24, "A crown wake on the mod road waits for the person to leave, though its submit cannot touch their box")
+
+**The problem.** T-918's `person_hold` held the crown's wake while a tmux client had the crown's
+pane open or its box held a draft. Both protect the paste road: a paste joins the draft and its
+Enter sends it. On the mod road the wake goes as `$.prompt.submit({ text, asUser: true })`, and
+nothing is typed into the box. `person_hold` never asked which road the delivery would take, so
+on 2026-10-23 a wake for a person chatting with their crown waited 62 s for them to leave.
+
+**Measured first** (`mod-spike/drive.py submit_draft`, Claude Code 2.1.309, Haiku):
+- A draft left in the box (`DRAFT_ALPHA keep these words`) is there, word for word, after a
+  submit's whole turn. It is not sent, and it is not in the transcript.
+- Keys typed one every 250 ms from 1 s before the submit to 4.8 s after it (its turn began 70 ms
+  after the spool) all landed in the box, in order. None were sent, none were lost, and the
+  transcript holds only the submit's words.
+
+So both holds go on that road, the attached one and the draft one.
+
+**What shipped.**
+- `takes_by_submit(id, text)` is the paste road's one test of the mod road: a Claude session
+  whose mod speaks `submit`, and words that are not a `/` or `!` command. `paste_at` asks it.
+  `relaunches(id, plan)` is `deliver`'s relaunch arm (plan mode, or a tier owed at rest).
+  `crown_wake_by_submit(id)` is "not a relaunch, and `takes_by_submit` on the wake's own text",
+  so the hold asks exactly what the delivery will do.
+- `person_hold` returns `None` for such a wake. The row (`crown_wake_person`),
+  `crown_wake_blocked` and the drain's `want_person` all ask `person_hold`, so `when you leave`
+  and `after your draft` show only where a hold applies. The drain also no longer waits for a
+  pane sample before a submit, since nothing about the box is read.
+- A relaunch, a mod that never polled or does not speak `submit`, a command text, the hook set's
+  road and Codex keep both holds, as T-918 shipped them.
+
+**Tests.**
+- `crown_e2e::a_mod_road_crown_takes_its_wake_with_a_person_at_its_box`: a mod-road crown with a
+  control-mode client attached and `half a thought` in its box gets the wake as a `submit` frame
+  within 4 s. No row is held, the draft is never read as a line, and the screen still shows it.
+  It uses `fake_claude_mod.py`'s new `mod-submit-aside` switch: the engine takes a submit past the
+  box, as 2.1.309 does.
+- `the_crown_wake_waits_for_a_person_at_the_crown_s_box` is the paste road's case and is now
+  pinned to `MESIMON_CLAUDE_ROAD=hooks`. Under `MESIMON_TEST_ROAD=mod` it would otherwise have a
+  submit-speaking crown and rightly see no hold. The Codex case is unchanged. `crown_e2e` is
+  31/31 green under both passes.
+- Rig A1's `held_for_person` is road-aware. On the hook set's road it is unchanged. On the mod
+  road, `person_leaves` stops waiting once the wake is sent, and the check asks for a
+  `prompt_by_mod` sent within 10 s of being owed, with the person still in and no row saying it
+  waited. Run on Sonnet (claude-sonnet-5-5, 2.1.309, mod road): PASS, sent 0 ms after it was
+  owed, the person attached, `A1 seen`.
+
+**Limits.** The measurement covers the box as Claude Code 2.1.309 draws it. If a later version
+puts a submit's words into the box, the spike's `submit_draft` scenario is the check to run
+again. The hook set's road still has no rig run of A1 since T-918; its e2e covers it.

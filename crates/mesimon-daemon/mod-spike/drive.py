@@ -926,7 +926,69 @@ def n_idle(ctx):
     ctx.done(events=[e["event"] for e in s.events()], notifications=n_facts(s, "classic.Notification"), measures=n_facts(s, "t651.session.measure"))
 
 
-SCENARIOS = {"coverage": sc_coverage, "submit": sc_submit, "submit_midturn": sc_submit_midturn, "load": sc_load, "ask": sc_ask, "permission": sc_permission,
+def box_text(screen):
+    """The words between the composer's two rules, joined, prompt glyph off."""
+    lines = screen.split("\n")
+    rules = [i for i, l in enumerate(lines) if COMPOSER_RULE in l]
+    if len(rules) < 2:
+        return None
+    body = lines[rules[-2] + 1:rules[-1]]
+    return " ".join(l.strip().lstrip("❯").strip() for l in body).strip()
+
+
+def sc_submit_draft(ctx):
+    """T-931: what a `$.prompt.submit` does to words a person has in the box,
+    left there (A) and being typed while the submit's turn runs (B)."""
+    s = Session(ctx, "main", mode="default").start()
+    s.wait_composer()
+    draft = "DRAFT_ALPHA keep these words"
+    s.tmux("send-keys", "-t", s.name, "-l", draft)
+    time.sleep(1.0)
+    a0 = box_text(s.screen("a-draft"))
+    s.mark()
+    s.spool_cmd({"kind": "submit", "text": "Reply with exactly SUBMIT_A_OK and nothing else. Do not use any tool."})
+    t = s.wait_event("turn.complete", timeout=90, where=lambda d: "SUBMIT_A_OK" in (d.get("answer") or ""))
+    ctx.say(f"A: turn answered {answer_of(t)}")
+    time.sleep(2.0)
+    a1 = box_text(s.screen("a-after"))
+    ctx.say(f"A: box before {a0!r}, after {a1!r}")
+    # B: keys typed one by one while a submit goes in and its turn runs.
+    tail = " BETA_TYPED_DURING_TURN"
+    typed = []
+
+    def typist():
+        for ch in tail:
+            s.tmux("send-keys", "-t", s.name, "-l", ch)
+            typed.append((time.time() * 1000, ch))
+            time.sleep(0.25)
+    th = threading.Thread(target=typist)
+    th.start()
+    time.sleep(1.0)
+    s.mark()
+    at = s.spool_cmd({"kind": "submit", "text": "Reply with exactly SUBMIT_B_OK and nothing else. Do not use any tool."})
+    mid = []
+    while th.is_alive():
+        mid.append(box_text(s.screen()))
+        time.sleep(0.3)
+    th.join()
+    t = s.wait_event("turn.complete", timeout=90, where=lambda d: "SUBMIT_B_OK" in (d.get("answer") or ""))
+    ts = [e for e in s.events() if e["event"] == "turn.start"]
+    ctx.say(f"B: turn answered {answer_of(t)}; typing ran {typed[0][0] - at:.0f}..{typed[-1][0] - at:.0f} ms around the spool")
+    time.sleep(2.0)
+    b1 = box_text(s.screen("b-after"))
+    ctx.say(f"B: box after {b1!r}")
+    s.end()
+    rows = [content_text(r)[:200] for r in user_rows(s.transcript())]
+    leaked = [r for r in rows if "DRAFT_ALPHA" in r or "BETA" in r]
+    ctx.say(f"user rows: {rows}; draft words in the transcript: {leaked}")
+    ctx.done(version=subprocess.run(["claude", "--version"], capture_output=True, text=True).stdout.strip(),
+             a_before=a0, a_after=a1, a_kept=(a1 == draft), b_after=b1, b_kept=(b1 == draft + tail),
+             b_mid=mid, typed_ms=[(t0 - at, ch) for t0, ch in typed],
+             turn_starts=[(e["t"] - at, e["data"].get("text", "")[:60]) for e in ts],
+             user_rows=rows, leaked=leaked)
+
+
+SCENARIOS = {"coverage": sc_coverage, "submit": sc_submit, "submit_midturn": sc_submit_midturn, "submit_draft": sc_submit_draft, "load": sc_load, "ask": sc_ask, "permission": sc_permission,
              "gate": sc_gate, "permit": sc_permit, "plan_result": sc_plan_result, "plan_allow": sc_plan_allow, "plan_native": sc_plan_native,
              "tools": sc_tools, "relay": sc_relay,
              "n_lifecycle": n_lifecycle, "n_tasks": n_tasks, "n_dialogs": n_dialogs, "n_compact": n_compact, "n_fail": n_fail, "n_idle": n_idle}

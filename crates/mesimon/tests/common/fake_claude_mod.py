@@ -32,7 +32,10 @@ and tmux's `TMUX`/`TMUX_PANE`. It does what `register.ts`'s bridge loop does:
   mods: `mod-silent` one that never comes up (the engine exits at once),
   `mod-speaks` an older one (its text is the `--speaks` list), and
   `mod-drop-submit` one whose engine drops every submit (it reports
-  `dropped` and delivers nothing); and `mod-late` one whose bridge first
+  `dropped` and delivers nothing), `mod-submit-aside` one whose engine takes
+  a submit to the model past the box, as Claude Code 2.1.309 does (T-931:
+  a draft in the box stays there, unsent), the words appended to
+  `submitted.txt` and never typed; and `mod-late` one whose bridge first
   polls the milliseconds its text names after the engine starts (T-879);
 - respawns a bridge that died, with the mod's backoff, and not one that was
   refused for good (exit 3, `BRIDGE_REFUSED_EXIT`);
@@ -197,6 +200,10 @@ def main():
                 # person's Esc (T-894): held until the person types.
                 relay("ModSubmit", frame_id, {"outcome": "dropped",
                       "reason": "the session was stopped and nobody has sent input since"})
+            elif kind == "submit" and switch("mod-submit-aside"):
+                with open(os.path.join(HERE, "submitted.txt"), "a") as f:
+                    f.write((frame.get("text") or "") + "\n")
+                relay("ModSubmit", frame_id, {"outcome": "entered"})
             elif kind == "submit":
                 ok = deliver(frame.get("text") or "")
                 relay("ModSubmit", frame_id,

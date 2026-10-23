@@ -1522,13 +1522,19 @@ const BOX_STUB: &str =
 /// they may be typing. It waits while a tmux client has the crown's pane
 /// open (`when you leave`), then while the box holds the draft they left
 /// (`after your draft`), and goes in on its own line once the box is
-/// empty — the person's words sent as they wrote them, never joined.
+/// empty — the person's words sent as they wrote them, never joined. The
+/// paste road's case, so the hook set's road under both passes: a mod that
+/// speaks `submit` takes the wake past the box (T-931, below).
 #[test]
 fn the_crown_wake_waits_for_a_person_at_the_crown_s_box() {
     let Some(h) = Harness::boot_bare(
         "crown_attended",
         Some(BOX_STUB),
-        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_CLAUDE_ROAD", "hooks"),
+        ],
     ) else {
         return;
     };
@@ -1669,6 +1675,143 @@ fn the_crown_wake_waits_for_a_person_at_the_crown_s_box() {
     wait_until(std::time::Duration::from_secs(5), "crown_wake_sent in the feed", || {
         std::fs::read_to_string(&feed).is_ok_and(|f| f.contains("\"crown_wake_sent\""))
     });
+}
+
+/// A crown whose mod speaks `submit` (T-931) takes its wake at once with a
+/// person in its pane and their draft in its box: the submit goes to the
+/// model past the box (measured on Claude Code 2.1.309), so nothing holds
+/// it, the row never says it waits for them, and the draft stays theirs.
+#[test]
+fn a_mod_road_crown_takes_its_wake_with_a_person_at_its_box() {
+    let Some(h) = Harness::boot_bare(
+        "crown_mod_attended",
+        Some(BOX_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_CLAUDE_ROAD", "mod"),
+        ],
+    ) else {
+        return;
+    };
+    std::fs::write(h.dir.join("mod-submit-aside"), "").unwrap();
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let tmux_sock = h.paths.tmux_sock();
+    let mut c = h.client("crown_mod_attended");
+    let got = h.dir.join("got.txt");
+    let submitted = h.dir.join("submitted.txt");
+    let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let up = |sid: uuid::Uuid| {
+        let pid = h.dir.join(format!("mod-bridge-{sid}.pid"));
+        wait_until(std::time::Duration::from_secs(10), "the mod's bridge", || pid.exists());
+        hook_send_with(
+            &hook_sock,
+            &sid.to_string(),
+            "SessionStart",
+            Some("startup"),
+            r#"{"session_id":"x","transcript_path":"/tmp/t-mod.jsonl","cwd":"/tmp"}"#,
+        );
+    };
+    let wake_rows = |c: &mut TestClient, t: ulid::Ulid| -> Vec<mesimon_core::command::Pending> {
+        pending_of(c, Some(t))
+            .into_iter()
+            .filter(|p| p.action == mesimon_core::command::PendingAction::CrownWake)
+            .collect()
+    };
+
+    let a = c.create_ticket("coordinate");
+    let w1 = c.create_ticket("mesimon-probe-931 worker");
+    let kw1 = key_of(&mut c, w1);
+    let sa = c.spawn_claude(a);
+    up(sa);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw1).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw1.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("shared_checkout".into()),
+        },
+    ) {
+        Response::AgentStarted { session_started: true, .. } => {}
+        other => panic!("start_agent {kw1}: {other:?}"),
+    }
+    let ws1 = c.board().live_agent(w1).expect("W1 holds a seat").id;
+    up(ws1);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // A person in the crown's pane, half a prompt in its box.
+    let crown = c.board().sessions.iter().find(|s| s.id == sa).unwrap().sid16();
+    let mut client = tmux(&tmux_sock)
+        .args(["-C", "attach", "-t", &crown])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("a control-mode tmux client");
+    wait_until(std::time::Duration::from_secs(10), "the client on the crown's session", || {
+        tmux(&tmux_sock)
+            .args(["list-clients", "-t", &crown, "-F", "#{client_name}"])
+            .output()
+            .is_ok_and(|o| !o.stdout.is_empty())
+    });
+    assert!(tmux(&tmux_sock)
+        .args(["send-keys", "-t", &crown, "-l", "half a thought"])
+        .status()
+        .unwrap()
+        .success());
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+
+    // W1 delivers: the wake goes down the crown's mod at once, the person
+    // still there and their draft still in the box.
+    let h1 = commit(&h.repo, "w1.txt");
+    start(&mut c, ws1);
+    stop(&mut c, ws1);
+    let delivered = format!("{kw1} \"mesimon-probe-931 worker\" delivered (commit {h1}");
+    let t0 = std::time::Instant::now();
+    let mut held = Vec::new();
+    wait_until(std::time::Duration::from_secs(10), "the wake through the crown's submit", || {
+        held.extend(wake_rows(&mut c, a).into_iter().filter_map(|p| p.held));
+        read_file(&submitted).contains(&delivered)
+    });
+    assert!(t0.elapsed() < std::time::Duration::from_secs(4), "at once: {:?}", t0.elapsed());
+    assert!(held.is_empty(), "nothing held it for the person: {held:?}");
+    let frames = read_file(&h.dir.join(format!("mod-{sa}.ndjson")));
+    assert!(
+        frames
+            .lines()
+            .any(|l| l.contains("\"submit\"") && l.contains(&format!("delivered (commit {h1}"))),
+        "{frames}"
+    );
+    assert!(
+        !read_file(&got).contains("half a thought"),
+        "the draft is theirs: {}",
+        read_file(&got)
+    );
+    let screen = tmux(&tmux_sock).args(["capture-pane", "-p", "-t", &crown]).output().unwrap();
+    assert!(String::from_utf8_lossy(&screen.stdout).contains("half a thought"), "still in the box");
+    let feed = h.paths.state_dir.join("activity.jsonl");
+    wait_until(std::time::Duration::from_secs(5), "crown_wake_sent in the feed", || {
+        read_file(&feed).contains("\"crown_wake_sent\"")
+            && read_file(&feed).contains("\"prompt_by_mod\"")
+    });
+    client.kill().unwrap();
+    let _ = client.wait();
 }
 
 /// A Codex crown's wake and a person at its box (T-918), on the synthetic

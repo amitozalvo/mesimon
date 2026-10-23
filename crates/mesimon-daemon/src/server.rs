@@ -8101,7 +8101,12 @@ impl Daemon {
     /// be typing), or its box holds words nobody sent (they left a draft,
     /// which the paste would join and its Enter send). Read off the newest
     /// pane sample; a delivery takes them from one sample (`person_read_at`).
+    /// A wake that goes by the mod's `submit` lands on nobody's (T-931,
+    /// `crown_wake_by_submit`): nothing is typed into the box.
     fn person_hold(&self, id: uuid::Uuid) -> Option<&'static str> {
+        if self.crown_wake_by_submit(id) {
+            return None;
+        }
         let rec = self.board.sessions.iter().find(|s| s.id == id && s.state.has_pane())?;
         let sid = rec.sid16();
         if self.attached.contains(&sid) {
@@ -8126,6 +8131,15 @@ impl Daemon {
             _ => false,
         });
         draft.then_some(WAKE_AFTER_YOUR_DRAFT)
+    }
+
+    /// The crown's wake into this pane goes by its mod's `submit` (T-931):
+    /// the road `deliver` takes for it, asked as `deliver` and `paste_at`
+    /// ask it. Claude Code 2.1.309 keeps a draft in the box through a
+    /// submit, and keys typed while its turn starts stay in the box unsent,
+    /// so neither a person in the pane nor their draft holds it.
+    fn crown_wake_by_submit(&self, id: uuid::Uuid) -> bool {
+        !self.relaunches(id, false) && self.takes_by_submit(id, &self.crown_wake_text())
     }
 
     /// The sample time at which this pane's clients and box were both read
@@ -8248,7 +8262,8 @@ impl Daemon {
         // stage's own pass asks for that sample, and its landing delivers,
         // so no read is a fork on the writer and none is older than the
         // sample's own reads.
-        if matches!(seat, QueuedSeat::Pane(_)) {
+        // A wake by the mod's `submit` reads nothing of the box (T-931).
+        if matches!(seat, QueuedSeat::Pane(_)) && !self.crown_wake_by_submit(id) {
             let Some(sid) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.sid16())
             else {
                 return false;
@@ -12116,7 +12131,7 @@ impl Daemon {
         // A Claude session whose mod is up takes the words by its `submit`
         // (T-575): a turn of its own, held behind a running one, never typed.
         // A slash command is for the box, and is typed into it.
-        if !immediately && self.mod_speaks(id, "submit") && !road::is_command(text) {
+        if !immediately && self.takes_by_submit(id, text) {
             let words = Parked { text: text.to_string(), brief: false, title: false };
             if !self.mod_submit(id, ticket, words, ack) {
                 return Err("nothing to send".into());
@@ -12137,6 +12152,16 @@ impl Daemon {
         }
         self.paste_entered(id, ticket, text, ack, None);
         Ok(())
+    }
+
+    /// Words for this session go down as its mod's `submit` (T-575): a
+    /// Claude session whose mod speaks it, and words that are not a command
+    /// for the box (`$.prompt.submit` refuses a `/`). The paste road's one
+    /// test of it, which the crown's wake hold asks too (T-931).
+    fn takes_by_submit(&self, id: uuid::Uuid, text: &str) -> bool {
+        self.session_kind(id) == SessionKind::Claude
+            && self.mod_speaks(id, "submit")
+            && !road::is_command(text)
     }
 
     /// The owed entry for words just pasted into a live Claude pane,
@@ -13058,7 +13083,7 @@ impl Daemon {
             // is idle: the words ride the relaunch. Owed but mid-turn, a
             // send-now pastes on the tier it has; `prompt_session` queues its
             // own.
-            QueuedSeat::Pane(id) if plan || (self.tier_owed(id) && self.session_at_rest(id)) => {
+            QueuedSeat::Pane(id) if self.relaunches(id, plan) => {
                 self.relaunch(ticket, id, Some(text), plan, "local")
             }
             // `ack` is a pane's alone: a wake and a start park their words
@@ -13084,6 +13109,12 @@ impl Daemon {
                 self.spawn_session(ticket, provider.session_kind(), true, words, None, plan)
             }
         }
+    }
+
+    /// Words for this pane ride a relaunch rather than going into it
+    /// (`deliver`): plan mode, or a tier switch owed at rest.
+    fn relaunches(&self, id: uuid::Uuid, plan: bool) -> bool {
+        plan || (self.tier_owed(id) && self.session_at_rest(id))
     }
 
     // ------------------------------------------------------------ queued asks

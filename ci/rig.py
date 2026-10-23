@@ -1624,8 +1624,11 @@ Reply with the single word ready and end your turn."""
             # A1 (T-918): with the worker's wake owed, the person stays
             # `hold` seconds, while the board must paste nothing into the
             # crown's box and its wake row must say why; then they leave,
-            # and the wake goes in, and the crown takes its turn on it.
+            # and the wake goes in, and the crown takes its turn on it. On
+            # the mod road (T-931) the wake goes by the mod's submit, which
+            # leaves the box alone, so it goes in while the person stays.
             tid = test["ticket"]
+            road = (self.agent_of(self.board(), self.crown) or {}).get("road", "hooks")
             mark = next((i for i, l in enumerate(self.feed_lines)
                          if l.get("at_ms", 0) >= record["person_came_ms"]), len(self.feed_lines))
             owed = self.wait_for("the board to owe the crown its wake", lambda: next((
@@ -1640,17 +1643,35 @@ Reply with the single word ready and end your turn."""
                              if p.get("action") == "crown_wake" and p.get("ticket") == self.crown),
                             None)
 
+            def sent_in():
+                return [l for l in self.feed_lines[mark:] if l.get("kind") == "board"
+                        and l.get("cmd") == "crown_wake_sent" and l.get("ticket") == self.crown]
+
             rows = []
             deadline = time.time() + step.get("hold", 10)
-            while time.time() < deadline:
+            while time.time() < deadline and not (road == "mod" and sent_in()):
                 rows.append(row())
                 self.watch()
                 time.sleep(1)
-            sent_while_in = [l for l in self.feed_lines[mark:] if l.get("kind") == "board"
-                             and l.get("cmd") == "crown_wake_sent" and l.get("ticket") == self.crown]
-            record["person"] = {"rows": rows, "sent_while_in": len(sent_while_in)}
+            sent_while_in = sent_in()
+            by_mod = any(l.get("kind") == "board" and l.get("cmd") == "prompt_by_mod"
+                         and l.get("ticket") == self.crown for l in self.feed_lines[mark:])
+            record["person"] = {"road": road, "rows": rows, "sent_while_in": len(sent_while_in),
+                                "by_mod": by_mod}
             self.person.kill()
             self.person.wait()
+            if road == "mod":
+                sent = sent_while_in[0] if sent_while_in else None
+                record["person"]["sent_in_ms"] = sent["at_ms"] - owed["at_ms"] if sent else None
+                if not sent:
+                    record["failures"].append(f"the mod road's wake waited for the person (rows {rows[-1:]})")
+                    return False
+                settled = lambda: self.crown_settled(after_ms=sent["at_ms"], quiet=0)  # noqa: E731
+                if not self.wait_for("crown", settled, STEP_TIMEOUT, self.watch):
+                    record["failures"].append("the crown did not settle on the wake")
+                    return False
+                self.closed()
+                return True
             left_ms = int(time.time() * 1000)
             sent = self.wait_for("the wake after the person left", lambda: next((
                 l for l in self.feed_lines[mark:] if l.get("kind") == "board"
@@ -2859,14 +2880,23 @@ Reply with the single word ready and end your turn."""
             elif name == "held_for_person":
                 # A1 (T-918): the wake waited the whole of the person's stay,
                 # its row said `when you leave` throughout, and it went in
-                # within seconds of their leaving.
+                # within seconds of their leaving. On the mod road (T-931)
+                # it went by the mod's submit while they stayed, within
+                # seconds of being owed, its row never saying it waited.
                 p = record.get("person") or {}
                 rows = p.get("rows") or []
-                after = p.get("sent_after_ms")
-                held = bool(rows) and all(r == "when you leave" for r in rows)
-                check(c, held and p.get("sent_while_in") == 0 and after is not None and after < 10_000,
-                      f"rows {sorted(set(map(str, rows)))}, {p.get('sent_while_in')} sent while in, "
-                      f"in {after} ms after leaving")
+                if p.get("road") == "mod":
+                    took = p.get("sent_in_ms")
+                    unheld = not any(r in ("when you leave", "after your draft") for r in rows)
+                    check(c, unheld and p.get("by_mod") and took is not None and took < 10_000,
+                          f"mod road: rows {sorted(set(map(str, rows)))}, by the mod {p.get('by_mod')}, "
+                          f"in {took} ms of being owed, the person still in")
+                else:
+                    after = p.get("sent_after_ms")
+                    held = bool(rows) and all(r == "when you leave" for r in rows)
+                    check(c, held and p.get("sent_while_in") == 0 and after is not None and after < 10_000,
+                          f"rows {sorted(set(map(str, rows)))}, {p.get('sent_while_in')} sent while in, "
+                          f"in {after} ms after leaving")
             elif name == "crown_line":
                 # The crown's last line beginning `prefix` (T-810), `word`
                 # within it, or with `!word` not: one test asks the crown
