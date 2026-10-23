@@ -30850,3 +30850,21 @@ called `sleep_agent` and then `start_agent` on rig-alt. The worker came back wit
 `SessionStart (resume)`, and the crown's single `ask_agent` ("Please go on with part two…") was
 queued and then sent 10.6 s later. The worker answered `two` in its second turn, and the board
 woke the crown with `answered`. Wakes, in order: finished, limited, answered.
+
+**Gates at b1c196a6.**
+- `cargo ut`: green, except two TUI unit tests that failed in the first run of the session:
+  `terminal_app_description_bar_fills_every_row_without_moving_the_text` and
+  `terminal_comparison::plain_progress_preserves_the_completed_share_and_the_rgb_card`. They pass
+  alone (3 of 3 runs) and under `cargo nextest run -p mesimon-tui` (1198 of 1198).
+- `cargo clippy -p mesimon-core -p mesimon-daemon -p mesimon --all-targets -- -D warnings`:
+  clean. `git diff --check`: clean.
+- `cargo test -p mesimon --test crown_e2e -- a_usage_limit_needs_you the_crown_lets_one_agent`:
+  2 passed. With the reseat turned off, the first fails at the person's `SendQueuedAsk`.
+- `cargo nextest run --workspace --no-fail-fast`: 2818 run, 2816 passed, 2 failed, 7 skipped.
+  - The two failures are the same TUI tests. Each compares two renders of one frame, and the
+    rail's braille spinner (`spin_frame`, wall clock) moved between them under full-workspace
+    load (`⠙` against `⠋`). The diff touches no `mesimon-tui` code. This is a load flake in
+    those tests, not this change.
+  - The 7 skips are the suite's standing skips.
+  - A first run without `--no-fail-fast` stopped at 2688 of 2818 on the same two tests.
+- Rig: `target/rig/verdicts-20261023-183010.md` and `target/rig/rig.log` in this worktree.
