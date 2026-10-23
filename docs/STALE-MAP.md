@@ -31224,3 +31224,49 @@ that `forge::find_cli` looks for `gh` on the captured login-shell PATH before th
 The e2e harness captures with `SHELL=/bin/sh`: on macOS that login PATH has no Homebrew, so the
 stub on the daemon's PATH answers, while an `ubuntu-24.04` runner ships `/usr/bin/gh` on it. A
 likely cause of the run's first-pass timeouts, not verified on a runner.
+
+**Crown review: three false positives closed, and the final runs** (the same day). The review
+found that `delegate` passed a shared-checkout worker, `forge` passed any ask followed by any
+worker prompt, and "no implementation" saw only `apply_patch` and Write/Edit. Now:
+- **Delegation is proven** (`delegation_problems`): the ticket's `created_by` is the crown's
+  session and `created_from` its ticket; an agent's `create_ticket` and `start_agent` for it are
+  in the feed; the worker is `started_by` the crown; and the snapshot's worktree for the ticket
+  has a branch and a path that resolves to the worker's cwd, away from the checkout and under the
+  board's worktrees. `forge` asks the same of the start, the ticket being a person's. The Claude
+  rig's `filed` asks the same through the snapshot.
+- **The forge ask carries the failure** (`heard_the_ask`): the prompt the worker reads holds
+  the ask's own words, read off the crown's call where its arguments spell them, and names
+  `test-linux` or PR 42 and that it failed (`conveys_failure`, whole words: "required" is not
+  "red"). Words not read off the call are judged on the failure alone, and the manifest says so.
+- **The crown's own work is any of these** (`implemented`): a native child, an `apply_patch`, a
+  shell command that writes naming the work's files, the worktree or the branch
+  (`command_writes`: redirection, the usual writers, `-c`/`-e` interpreters, and git's writes
+  after any `-C`/`-c`), or a checkout whose HEAD or working tree moved, a tip the board merged
+  from a worktree aside. The Claude rig's `crown_wrote_nothing:<names>` reads Bash the same way,
+  against the checkout as the test found it. A write a command does not name is caught only by
+  the checkout, and none in the worker's own worktree. Offline regressions cover each false
+  positive (`ci/codex_rig_test.py`, 28).
+
+Final runs, once each on the corrected cases, all cleanups clean:
+- `delegate` (before the rebase onto T-919): **failed**, the honest model outcome again: no
+  worker, one `apply_patch`, `greet.py` and `test_greet.py` untracked in the checkout (109,636
+  tokens, 1 turn).
+- `forge` (after the rebase): **failed** before any forge news: the crown read T-1 by key, never
+  its own ticket, and ended its turn saying it could not move T-1 to a worktree "because it isn't
+  crowned" (81,202 tokens, 1 turn). Every view carries `crowned`, false on any ticket but the
+  crown's, and Luna read T-1's as its own. A wording candidate, not changed or re-run here.
+  The earlier passing `forge` run is the evidence for the forge-news behaviour, under the
+  weaker assertions; the corrected assertions have not seen it pass.
+- Claude rig `DL1` on Sonnet (after the rebase, `e87f363a`): **passed**. T-8 was filed by the
+  crown's session in `msmn/T-8-add-greet.py-and-its-unittest`, with no write of the crown's and
+  the checkout as found. The crown ran on the hook-set road this time.
+
+The seven tests nextest skips are `#[ignore]`d with their reasons:
+- `restart_skew_e2e::client_connect_fixture_helper`: a subprocess helper the two restart-skew
+  tests run.
+- `search::tests::{how_long_a_big_board_takes, how_long_the_notes_take}`,
+  `crownledger::tests::how_long_a_big_crown_ledger_check_takes` and
+  `store::tests::how_long_a_big_sessions_save_takes`: they print a timing and are run by hand.
+- `intro::tests::pty_child`: the pty test's own child.
+- `release::tests::the_download_half_works_against_the_real_release_channel`: it needs the
+  network.
