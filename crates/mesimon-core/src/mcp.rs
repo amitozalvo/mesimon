@@ -217,7 +217,12 @@ pub const CROWN_WAKES: &str = concat!(
      worktree ticket's on a board whose Merge into setting is pull requests — lands through its \
      pull request, merged on the forge, and merge_ticket refuses it; on a board that merges \
      into main nothing is the forge's. The train's is waited for: \
-     the crown hears it once, at the merge. The crown's — the train off, the ticket out of it \
+     the crown hears it once, at the merge. A branch the crown reviews before it lands is \
+     held with hold_ticket (action hold) before its agent delivers: the train then takes \
+     nothing of it, the delivery wakes this session, ask_agent's corrections land while it \
+     stays held, and hold_ticket with action return hands it back once approved, the \
+     train's own gates and order deciding when it merges. get_ticket's held says whose \
+     hold it is; a person's (t) is the person's to return. The crown's — the train off, the ticket out of it \
      by t, or a column the train stops short of, under autonomous mode — is merged with \
      merge_ticket while merge_state reads ahead; at needs_rebase the agent is asked to rebase \
      with ask_agent and merged once its turn ends with the branch ahead. A person's — crown \
@@ -1017,6 +1022,31 @@ pub fn tools() -> Vec<Value> {
                 "additionalProperties": false,
             },
         }),
+        // The crown's train hold (T-919): `t` on another ticket's page, with
+        // the state asked for spelled out, so a crown that reviews before
+        // the train lands a branch can keep it out and hand it back. The
+        // never-tier's `SetManualMerge` stays where it is.
+        json!({
+            "name": "hold_ticket",
+            "description": "Holds another mesimon ticket out of the merge train, as t on its \
+                            page does, or returns it (crown only). hold: the train neither \
+                            merges its branch nor asks a rebase, so its delivery wakes this \
+                            session for review. return: the train's own gates and order \
+                            decide; nothing merges at once. Refused on this session's ticket, \
+                            a shared checkout, a merged branch (no merge is undone) and a \
+                            return of a person's hold; a return needs Crown mode autonomous. \
+                            get_ticket's held reads crown or person.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string" },
+                    "action": { "type": "string", "description": "hold or return." },
+                    "seen": { "type": "string", "description": "get_ticket's seen stamp." },
+                },
+                "required": ["key", "action", "seen"],
+                "additionalProperties": false,
+            },
+        }),
     ]
 }
 
@@ -1115,6 +1145,13 @@ pub enum ToolCall {
     WatchTicket {
         key: String,
         unwatch: bool,
+        seen: String,
+    },
+    /// The crown's train hold (T-919): `hold` true for `action: hold`,
+    /// false for `action: return`. A required word, never a toggle.
+    HoldTicket {
+        key: String,
+        hold: bool,
         seen: String,
     },
     AskAgent {
@@ -1337,6 +1374,15 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
         "watch_ticket" => Ok(ToolCall::WatchTicket {
             key: word(args, "key")?,
             unwatch: flag(args, "unwatch")?,
+            seen: word(args, "seen")?,
+        }),
+        "hold_ticket" => Ok(ToolCall::HoldTicket {
+            key: word(args, "key")?,
+            hold: match word(args, "action")?.as_str() {
+                "hold" => true,
+                "return" => false,
+                other => return Err(format!("action must be hold or return, not {other:?}")),
+            },
             seen: word(args, "seen")?,
         }),
         "ask_agent" => Ok(ToolCall::AskAgent {
@@ -1579,6 +1625,13 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // `crown_watches` — judged by the daemon at each call, admitted here
         // so a refusal names the row. Nothing reaches the watched agent.
         | Command::AgentWatchTicket { .. }
+        // The crown's train hold (T-919): `t` on another ticket, judged by
+        // the daemon through `Action::HoldFromTrain`, which only the crown
+        // passes, and a return against the board's `crown_mode` — admitted
+        // here so an uncrowned caller reads how a person grants the crown.
+        // `SetManualMerge` itself stays below: no agent names a ticket id,
+        // and a worker never decides whether its own branch lands.
+        | Command::AgentHoldTicket { .. }
         // The crown's ask (T-413): words HELD on another ticket's card until
         // a person sends them. `PromptSession` itself stays below: the
         // person's send is the road, and there is no other.
@@ -1891,6 +1944,7 @@ pub fn tier_needed_by(cmd: &Command) -> Option<AgentTools> {
         | Command::AgentSleepTicket { .. }
         | Command::AgentMergeTicket { .. }
         | Command::AgentWatchTicket { .. }
+        | Command::AgentHoldTicket { .. }
         | Command::AgentAskTicket { .. }
         | Command::AgentAskBoard { .. }
         | Command::AgentAnswerTicket { .. }
@@ -1916,6 +1970,7 @@ pub fn tier_needed_by_tool(name: &str) -> Option<AgentTools> {
         | "sleep_agent"
         | "merge_ticket"
         | "watch_ticket"
+        | "hold_ticket"
         | "ask_agent"
         | "ask_board"
         | "answer_agent"
@@ -2098,6 +2153,7 @@ mod tests {
                 Command::AgentWatchTicket { key: "T-1".into(), unwatch: false, seen: None },
                 "watch_ticket",
             ),
+            (Command::AgentHoldTicket { key: "T-1".into(), hold: true, seen: None }, "hold_ticket"),
             (
                 Command::AgentAskTicket {
                     key: "T-1".into(),
@@ -2193,7 +2249,7 @@ mod tests {
     #[test]
     fn exactly_twenty_two_tools() {
         let t = tools();
-        assert_eq!(t.len(), 22);
+        assert_eq!(t.len(), 23);
         let names: Vec<&str> = t.iter().filter_map(|v| v["name"].as_str()).collect();
         assert_eq!(
             names,
@@ -2219,7 +2275,8 @@ mod tests {
                 "answer_agent",
                 "accept_plan",
                 "merge_ticket",
-                "watch_ticket"
+                "watch_ticket",
+                "hold_ticket"
             ]
         );
     }
@@ -3028,6 +3085,73 @@ mod tests {
         }
     }
 
+    /// T-919: the crown's train hold names the state it asks for — a word,
+    /// hold or return, never a toggle or an optional flag — with the key and
+    /// the stamp every keyed writer needs; the description says what a hold
+    /// does and does not do, and `CROWN_WAKES` places it in the review the
+    /// crown runs. Inside the cap and the lint, on the top rung.
+    #[test]
+    fn the_crown_holds_a_ticket_out_of_the_train_by_name() {
+        let base = json!({ "key": " T-4 ", "action": "hold", "seen": "abc" });
+        assert_eq!(
+            parse_tool_call("hold_ticket", &base),
+            Ok(ToolCall::HoldTicket { key: "T-4".into(), hold: true, seen: "abc".into() })
+        );
+        assert_eq!(
+            parse_tool_call(
+                "hold_ticket",
+                &json!({ "key": "T-4", "action": " return ", "seen": "abc" })
+            ),
+            Ok(ToolCall::HoldTicket { key: "T-4".into(), hold: false, seen: "abc".into() })
+        );
+        for missing in ["key", "action", "seen"] {
+            let mut args = base.clone();
+            args.as_object_mut().unwrap().remove(missing);
+            assert!(parse_tool_call("hold_ticket", &args).is_err(), "{missing} is required");
+        }
+        for bad in [json!("toggle"), json!(true), json!(""), json!("Hold")] {
+            let mut args = base.clone();
+            args["action"] = bad.clone();
+            assert!(parse_tool_call("hold_ticket", &args).is_err(), "action {bad} refused");
+        }
+        let registry = tools();
+        let hold = registry.iter().find(|t| t["name"] == "hold_ticket").unwrap();
+        let description = hold["description"].as_str().unwrap();
+        for words in [
+            "crown only",
+            "as t on its page does",
+            "neither merges its branch nor asks a rebase",
+            "its delivery wakes this session for review",
+            "nothing merges at once",
+            "no merge is undone",
+            "a return of a person's hold",
+            "a return needs Crown mode autonomous",
+            "held reads crown or person",
+        ] {
+            assert!(description.contains(words), "hold_ticket says {words:?}");
+        }
+        assert_eq!(hold["inputSchema"]["required"], json!(["key", "action", "seen"]));
+        assert_eq!(tier_needed_by_tool("hold_ticket"), Some(AgentTools::Full));
+        assert!(agent_allows(&Command::AgentHoldTicket {
+            key: "T-1".into(),
+            hold: true,
+            seen: None
+        }));
+        assert!(!agent_allows(&Command::SetManualMerge { id: ulid::Ulid::nil(), on: false }));
+        for words in [
+            "held with hold_ticket (action hold) before its agent delivers",
+            "ask_agent's corrections land while it stays held",
+            "hold_ticket with action return hands it back once approved",
+            "a person's (t) is the person's to return",
+        ] {
+            assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
+        }
+        for text in [description, CROWN_WAKES] {
+            lint_tool_text(text).unwrap();
+        }
+        assert!(serde_json::to_string(hold).unwrap().len() <= MAX_TOOL_BYTES);
+    }
+
     /// T-712: the crown watches a ticket it did not start only where a person
     /// lets it. The tool parses like its keyed siblings, says it is gated and
     /// what it wakes for, and `CROWN_WAKES` tells a crown asked to wait to
@@ -3384,6 +3508,7 @@ mod tests {
             Command::AgentSleepTicket { key: "T-1".into(), seen: None },
             Command::AgentMergeTicket { key: "T-1".into(), seen: None },
             Command::AgentWatchTicket { key: "T-1".into(), unwatch: false, seen: None },
+            Command::AgentHoldTicket { key: "T-1".into(), hold: false, seen: None },
             Command::AgentAskTicket {
                 key: "T-1".into(),
                 text: "x".into(),

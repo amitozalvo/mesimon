@@ -53,6 +53,17 @@ pub enum Action {
     /// also move, rename and merge it. An agent's `write_note` stays a
     /// `Mutate` on its own ticket.
     Annotate,
+    /// Take one ticket off the merge train, or put it back (T-919): the
+    /// `t` key's flag, `Ticket::manual_merge`. Whether a branch lands
+    /// unattended is the owner's to decide at the keyboard, and the
+    /// crown's on the owner's grant — `crown` is the daemon's word that the
+    /// asking agent wears it (`Board::is_crowned`). Nobody else: a worker
+    /// may not decide whether its own branch lands, and a paired phone, a
+    /// teammate and the daemon's own rules gain it from no other grant, so
+    /// none of them reaches it through `Mutate`.
+    HoldFromTrain {
+        crown: bool,
+    },
 }
 
 /// What it is being attempted on.
@@ -152,6 +163,16 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
                 Decision::Allow
             }
             _ => deny("prompting requires an authenticated owner and an existing session"),
+        };
+    }
+    if let Action::HoldFromTrain { crown } = action {
+        return match (principal, resource) {
+            (Principal::Local, Resource::Ticket { .. }) => Decision::Allow,
+            (Principal::Agent { .. }, Resource::Ticket { .. }) if *crown => Decision::Allow,
+            _ => deny(
+                "holding a ticket out of the merge train, or returning it, is the owner's at \
+                 the keyboard or the crown's",
+            ),
         };
     }
     if *action == Action::ImportContent {
@@ -299,6 +320,36 @@ mod tests {
         }
         assert!(authorize(&paired, &Action::PromptExisting, &Resource::Board).denied());
         assert!(authorize_execution(&paired, crate::board::ExecutionPolicy::OwnerOnly).denied());
+    }
+
+    /// The train hold (T-919) is the owner's and the crown's, on a ticket,
+    /// and nobody else's: not a worker's (the same agent principal, uncrowned),
+    /// not a paired phone's, a teammate's, a linked board's or the daemon's
+    /// own rules', whatever `Mutate` they hold elsewhere.
+    #[test]
+    fn the_train_hold_is_the_owners_and_the_crowns_alone() {
+        let ticket = Resource::Ticket { id: ulid::Ulid::nil() };
+        let paired = Principal::Paired { device: "device".into(), grant: "grant".into() };
+        let peer = Principal::Peer { board: "other".into() };
+        for crown in [false, true] {
+            let hold = Action::HoldFromTrain { crown };
+            assert_eq!(authorize(&Principal::Local, &hold, &ticket), Decision::Allow);
+            assert_eq!(authorize(&agent(), &hold, &ticket).denied(), !crown);
+            for by in [&paired, &remote(), &automation(), &peer] {
+                assert!(authorize(by, &hold, &ticket).denied(), "{by:?} held a ticket");
+            }
+            for elsewhere in [
+                Resource::Board,
+                Resource::Column { name: "TODO".into() },
+                Resource::Session { id: uuid::Uuid::nil() },
+            ] {
+                assert!(authorize(&Principal::Local, &hold, &elsewhere).denied());
+                assert!(authorize(&agent(), &hold, &elsewhere).denied());
+            }
+        }
+        // The worker's generic `Mutate` on a ticket is not the hold.
+        assert_eq!(authorize(&agent(), &Action::Mutate, &ticket), Decision::Allow);
+        assert!(authorize(&agent(), &Action::HoldFromTrain { crown: false }, &ticket).denied());
     }
 
     /// The phone starts an agent on one ticket (T-498) and gains nothing a

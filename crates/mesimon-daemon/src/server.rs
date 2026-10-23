@@ -99,6 +99,7 @@ impl Mint {
 
 mod attachments;
 mod bridge;
+mod crownhold;
 mod crownledger;
 mod crownplan;
 mod crownwake;
@@ -888,6 +889,13 @@ pub struct Daemon {
     /// at the merge, with `unwatch`, when the ticket leaves the board, when
     /// the row is turned off, and with the crown. Kept in `crown.json`.
     crown_watched: Tracked<std::collections::BTreeSet<ulid::Ulid>>,
+    /// Tickets the crown holds out of the merge train (T-919,
+    /// `hold_ticket`): the `manual_merge` flags it set, so it returns only
+    /// those and a person's `t` stays the person's. An entry ends with the
+    /// crown's return, a person's `t` on the ticket, the ticket leaving the
+    /// board, and the crown, whose holds then stand as the person's. Kept in
+    /// `crown.json`; the flag itself is on the ticket.
+    crown_held: Tracked<std::collections::BTreeSet<ulid::Ulid>>,
     /// The session whose dialog the `answer_agent` call in hand queued an
     /// answer for (T-569): the writer loop parks that call's reply with the
     /// delivery (`control_park_reply`), which answers it when it settles.
@@ -1430,6 +1438,7 @@ pub fn run(paths: Paths) -> Result<()> {
         lingered: Default::default(),
         held: crate::movegate::HeldMoves::default(),
         crown_watched: Default::default(),
+        crown_held: Default::default(),
         answer_waits: None,
         modroad,
         mod_park: None,
@@ -3123,6 +3132,7 @@ impl Daemon {
             | Command::AgentStartTicket { .. }
             | Command::AgentSleepTicket { .. }
             | Command::AgentWatchTicket { .. }
+            | Command::AgentHoldTicket { .. }
             | Command::AgentMergeTicket { .. }
             | Command::AgentAskTicket { .. }
             | Command::AgentAskBoard { .. }
@@ -7221,6 +7231,12 @@ impl Daemon {
                     None => no_such_ticket(),
                 }
             }
+            // The crown's train hold (T-919): `t` on a worker's page, with
+            // the state asked for named, for a branch the crown reviews
+            // before the train lands it (`crownhold`).
+            Command::AgentHoldTicket { key, hold, seen } => {
+                self.agent_hold_ticket(ticket, session, key, hold, seen)
+            }
             // The crown's merge (T-613): `m` on a worker's page, for the
             // branches the train will not land. The road is `merge_ticket`'s
             // own — ff-only, refused under a working agent — under the
@@ -7633,6 +7649,9 @@ impl Daemon {
             t.workspace_strategy().word().hash(&mut h);
             t.is_archived().hash(&mut h);
             t.raised.as_ref().map(|r| r.reason.as_str()).hash(&mut h);
+            // The train hold and whose it is (T-919): a person's `t` after
+            // the crown's read makes the crown's next edit stale.
+            self.train_hold_word(id).hash(&mut h);
             if let Some(s) = self.board.live_agent(id) {
                 s.state_word().hash(&mut h);
                 s.state_changed_at.hash(&mut h);
@@ -7779,8 +7798,10 @@ impl Daemon {
             return Response::Ok;
         }
         // A new crown is owed nothing the old one was (T-414), and the old
-        // one's words go nowhere on their own (T-550).
+        // one's words go nowhere on their own (T-550); its train holds stand
+        // as the person's (T-919).
         self.drop_crown_wakes();
+        self.release_crown_holds();
         self.hold_crown_sends();
         self.revoke_shell_close_requests();
         self.board.crown = Some(id);
@@ -7797,6 +7818,7 @@ impl Daemon {
             return Response::Err { message: self.barred_message("columns") };
         }
         self.drop_crown_wakes();
+        self.release_crown_holds();
         self.hold_crown_sends();
         self.revoke_shell_close_requests();
         self.board.crown = None;
@@ -7808,14 +7830,20 @@ impl Daemon {
     /// A crowned ticket leaving the board — deleted, archived — takes the
     /// crown with it: a seat nobody can see is not a seat. Said in the
     /// feed as the daemon's own doing. A watched ticket leaving takes its
-    /// watch (T-712): nothing more will happen to it.
+    /// watch (T-712): nothing more will happen to it. A ticket the crown
+    /// held out of the train keeps the flag and leaves the crown's ledger
+    /// (T-919): the hold is the person's from here.
     fn drop_crown_if(&mut self, id: ulid::Ulid) {
         if self.crown_watched.remove(&id) {
             self.hold_unwatched_sends(id);
             self.feed.board("automation", "watch_ended", Some(id));
         }
+        if self.crown_held.contains(&id) {
+            self.crown_held.remove(&id);
+        }
         if self.board.crown == Some(id) {
             self.drop_crown_wakes();
+            self.release_crown_holds();
             self.hold_crown_sends();
             self.revoke_shell_close_requests();
             self.board.crown = None;
@@ -8556,11 +8584,20 @@ impl Daemon {
         if !t.effective_execution_policy().allows_automation() {
             return view("person", "this ticket's words came from outside; a person merges it");
         }
+        // A hold first (T-919): it outlasts the train's on and off, and a
+        // crown reviewing the branch reads that the merge waits on it.
+        match self.train_hold_word(id) {
+            Some("crown") => {
+                return view(
+                    "crown",
+                    "held out of the train by the crown (hold_ticket), until it returns it",
+                );
+            }
+            Some(_) => return view("crown", "out of the train (t)"),
+            None => {}
+        }
         if !self.train.is_armed() {
             return view("crown", "the train is off");
-        }
-        if t.manual_merge {
-            return view("crown", "out of the train (t)");
         }
         // The column it delivers in (T-795): a working ticket's turn ends
         // where its column's rules put the card, and the train merges it
@@ -8786,6 +8823,7 @@ impl Daemon {
                 .map(|m| mesimon_core::text::scrub_text(&m)),
             repos: self.agent_repo_views(id),
             merge: self.merge_state_word(id).is_some().then(|| self.merge_by(id)),
+            held: self.train_hold_word(id).map(str::to_string),
             // What the board does with them (T-895): reads the forge on its
             // own and wakes the crown, so no session watches a pipeline.
             prs_about: self.through_prs().then(|| mesimon_core::mcp::PRS_ABOUT.to_string()),
@@ -14074,12 +14112,18 @@ impl Daemon {
     /// already lists nothing for it; a person's gesture on the ticket also
     /// clears the train's memory of it, the way a hand `m` does. A no-op
     /// when nothing changes — no write, no broadcast.
+    /// Whatever it sets, the hold is no longer the crown's (T-919): off
+    /// ends the crown's, on keeps it as the person's.
     fn set_manual_merge(&mut self, id: ulid::Ulid, on: bool) -> Response {
         match self.board.ticket(id) {
             None => return no_such_ticket(),
-            Some(t) if t.manual_merge == on => return Response::Ok,
+            Some(t) if t.manual_merge == on => {
+                self.person_touched_hold(id);
+                return Response::Ok;
+            }
             Some(_) => {}
         }
+        self.person_touched_hold(id);
         self.train.hand_touched(id);
         self.with_ticket(id, |t| t.manual_merge = on)
     }

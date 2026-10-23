@@ -575,6 +575,15 @@ hand to say which ticket waits for your `m`. The crown reads who merges on every
 (`merge: by train, crown or person`, with the reason), and the sentence that wakes it on a
 delivery carries the word. A branch behind its base is never merged by the crown: it asks the
 worker to rebase first.
+The crown can also take one ticket off the train for its own review, the same flag as `t`, while
+the train stays on for every other ticket. Held, the train neither merges that branch nor asks its
+agent to rebase. The worker's delivery wakes the crown, and the crown's words still reach the
+worker. When the review passes, the crown hands the ticket back. Handing it back merges nothing
+at once: the train lands it on its usual terms. You can hand it back yourself with `t` on its
+page, as for a ticket you took off the train. The crown never hands back a
+ticket you took off the train yourself, and under **Crown mode** `supervised` the hand-back is
+yours. A hold cannot undo a merge already made. A rebase the train asked for before the hold
+still runs, but nothing is merged after it.
 Once that agent's branch is merged, the crown moves its ticket to DONE, so a finished worker is
 closed without asking you. Where **Crown archives tickets** is on, it may also archive the ticket,
 which reclaims the merged worktree; otherwise the ticket and its worktree stay until you archive it. An agent you started yourself is never slept by

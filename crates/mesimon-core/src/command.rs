@@ -1175,6 +1175,24 @@ pub enum Command {
         #[serde(default)]
         seen: Option<String>,
     },
+    /// Hold another ticket out of the merge train, or return it, by key
+    /// (T-919): the `t` key's `Ticket::manual_merge`, with the state asked
+    /// for spelled out — `hold` true keeps the train from merging the branch
+    /// or asking its agent to rebase, false hands it back to the train's own
+    /// gates. Never a toggle, so a retry cannot undo itself. Crown only
+    /// (`Action::HoldFromTrain`); refused on the crown's own ticket, on a
+    /// shared-checkout ticket (no branch for a train) and on a merged
+    /// branch, which no hold takes back. A hold a person made (`t`) stays
+    /// the person's: the crown's return is refused on it, and the return
+    /// waits on `Board::crown_mode` autonomous, as `merge_ticket` does.
+    /// `SetManualMerge` itself stays in the never-tier: no agent names a
+    /// ticket id.
+    AgentHoldTicket {
+        key: String,
+        hold: bool,
+        #[serde(default)]
+        seen: Option<String>,
+    },
     /// Merge another ticket's worktree branch, by key (T-613): the ff-only
     /// road a person's `m` and the merge train take (`Daemon::merge_ticket`),
     /// then the merged notice into its agent where the merged-notice pref is
@@ -1675,6 +1693,7 @@ impl Command {
             | AgentRequestCloseShell { .. }
             | AgentSleepTicket { .. }
             | AgentWatchTicket { .. }
+            | AgentHoldTicket { .. }
             | AgentMergeTicket { .. }
             | AgentAskTicket { .. }
             | AgentAskBoard { .. }
@@ -2234,6 +2253,25 @@ pub enum Response {
         #[serde(default)]
         workspace: String,
     },
+    /// AgentHoldTicket's receipt (T-919): the state the ticket is in now.
+    /// `held` is the train hold as it stands and `by` whose it is (`crown`
+    /// or `person`, empty when not held); `changed` is false where the
+    /// ticket already stood as asked, which is no error. `merge` is who
+    /// merges the branch from here and why, absent with no branch; `detail`
+    /// the one sentence that says what the hold does and does not do from
+    /// here; `seen` the target's fresh stamp. Every refusal is `Err`.
+    AgentHeld {
+        key: String,
+        held: bool,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        by: String,
+        changed: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        merge: Option<AgentMergeView>,
+        detail: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seen: Option<String>,
+    },
     /// AgentMergeTicket's receipt (T-613): the branch landed. `detail` is
     /// the merge's own words (`<branch> merged into <base>`), `notice` what
     /// became of the merged notice to the worker — `sent`, `off` (the pref),
@@ -2385,6 +2423,13 @@ pub struct AgentTicketView {
     /// reads it on its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge: Option<AgentMergeView>,
+    /// The ticket is out of the merge train (T-919): `crown` where the
+    /// crown's `hold_ticket` took it out, `person` where a person's `t`
+    /// did. Absent while the train may take it. On every read, the
+    /// worker's own included, and before any branch exists, which is when
+    /// a crown holds a ticket it means to review.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<String>,
     /// What the board does with `prs` (T-895), beside them: it reads the
     /// forge on its own and wakes the crown with each change, and a watch
     /// or a sleep loop on a pull request holds the merge train and that
@@ -3892,6 +3937,7 @@ mod tests {
             merged_in: None,
             repos: vec![],
             merge: None,
+            held: None,
             prs_about: None,
             prs: vec![],
             worktree_init: None,

@@ -1918,6 +1918,11 @@ still does both. Hint `t merge by hand` while `Ctx::train_reaches` (attached bin
 pref OR armed), `t auto-merge` while marked; the owed row reads `auto-merge ∙ next` / `auto-merge
 ∙ after T-3 +1` for a candidate and `auto-merge ∙ off` for a marked one (no owed mark: nothing is
 owed). Not Esc: that is the menu / `back`. (STALE-MAP "A ticket can be taken off the merge train".)
+**The crown reaches the same flag with `hold_ticket` (T-919)**: `action: hold|return` on another
+ticket, `Action::HoldFromTrain` (the owner and the crown only), whose hold is the crown ledger's
+(`crown_held` in `crown.json`, `get_ticket`'s `held`). A person's hold is never the crown's to
+return, a return waits on an autonomous crown, and neither clears the train's fuse or refusal
+memory as `t` does. (STALE-MAP "The crown holds one ticket out of the merge train".)
 
 **Test seams.** `MESIMON_CLAUDE_BIN` (stub agent binary), `MESIMON_HOOK_BIN` (hook binary path for
 the pane-died notify — required in e2e because the in-process daemon's `current_exe()` is the test

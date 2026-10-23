@@ -60,6 +60,12 @@ pub(super) struct Ledger {
     /// ends the watches, and narrows nothing else.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     watched: BTreeSet<ulid::Ulid>,
+    /// `Daemon::crown_held` (T-919): the train holds the crown made, so a
+    /// restart keeps them the crown's to return. Same schema: a build that
+    /// drops the field leaves each flag on its ticket, held as a person's,
+    /// which narrows what the crown may do and widens nothing.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    held: BTreeSet<ulid::Ulid>,
 }
 
 /// Startup loader: the ledger, any notices, and whether writes are barred.
@@ -85,6 +91,7 @@ impl Daemon {
             asks: self.turn_asks.iter().map(|(w, a)| (*w, *a)).collect(),
             lingered: self.lingered.iter().copied().collect(),
             watched: self.crown_watched.iter().copied().collect(),
+            held: self.crown_held.iter().copied().collect(),
         }
     }
 
@@ -99,6 +106,7 @@ impl Daemon {
             || self.turn_asks.is_dirty()
             || self.lingered.is_dirty()
             || self.crown_watched.is_dirty()
+            || self.crown_held.is_dirty()
     }
 
     fn mark_ledger_clean(&mut self) {
@@ -109,6 +117,7 @@ impl Daemon {
         self.turn_asks.mark_clean();
         self.lingered.mark_clean();
         self.crown_watched.mark_clean();
+        self.crown_held.mark_clean();
     }
 
     /// The single write path for `crown.json`: on the tick and on the way
@@ -153,6 +162,9 @@ impl Daemon {
         self.turns_open = ledger.turns_open.into_iter().filter(on_board).collect();
         self.crown_watched =
             ledger.watched.into_iter().filter(|w| *w != crown && on_board(w)).collect();
+        // A hold the flag no longer stands behind is no hold to return.
+        let flagged = |w: &ulid::Ulid| self.board.ticket(*w).is_some_and(|t| t.manual_merge);
+        self.crown_held = ledger.held.into_iter().filter(|w| *w != crown && flagged(w)).collect();
         self.turn_asks = ledger.asks.into_iter().filter(|(w, _)| on_board(w)).collect();
         self.crown_wakes = ledger
             .wakes
@@ -200,6 +212,7 @@ mod tests {
         ledger.turns_open.insert(w);
         ledger.asks.insert(w, TurnAsk::Crown(ulid::Ulid::from_parts(1, 1)));
         ledger.watched.insert(ulid::Ulid::from_parts(1, 9));
+        ledger.held.insert(ulid::Ulid::from_parts(1, 11));
         let text = serde_json::to_string_pretty(&ledger).unwrap();
         let back = parse(&text).unwrap();
         assert_eq!(serde_json::to_string_pretty(&back).unwrap(), text);
@@ -209,6 +222,7 @@ mod tests {
         // An empty file of this schema is an empty ledger.
         assert!(parse("{\"schema_version\": 1}").unwrap().heard.is_empty());
         assert!(parse("{\"schema_version\": 1}").unwrap().watched.is_empty());
+        assert!(parse("{\"schema_version\": 1}").unwrap().held.is_empty());
     }
 
     /// Not an assertion about wall clock (see `search.rs`): the number in

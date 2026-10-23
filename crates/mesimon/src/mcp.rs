@@ -202,6 +202,9 @@ fn tool_result(params: &Value, sock: &std::path::Path, session: uuid::Uuid) -> V
         ToolCall::WatchTicket { key, unwatch, seen } => {
             Command::AgentWatchTicket { key, unwatch, seen: Some(seen) }
         }
+        ToolCall::HoldTicket { key, hold, seen } => {
+            Command::AgentHoldTicket { key, hold, seen: Some(seen) }
+        }
         ToolCall::AskAgent { key, text, seen, plan, deliver } => {
             Command::AgentAskTicket { key, text, seen: Some(seen), plan, deliver }
         }
@@ -321,6 +324,33 @@ fn render(resp: Response) -> Value {
         Response::AgentMerged { key, detail, notice, seen } => {
             let mut body =
                 json!({ "key": key, "outcome": "merged", "detail": detail, "notice": notice });
+            if let Some(seen) = seen {
+                body["seen"] = json!(seen);
+            }
+            text(&body)
+        }
+        // The crown's train hold (T-919): the state the ticket is in now, in
+        // the words `get_ticket` reads — `held` and whose — whether this call
+        // changed it, who merges the branch from here, and what the hold
+        // does and does not do. Every refusal is `Err`.
+        Response::AgentHeld { key, held, by, changed, merge, detail, seen } => {
+            let mut body = json!({
+                "key": key,
+                "outcome": match (held, changed) {
+                    (true, true) => "held",
+                    (true, false) => "already_held",
+                    (false, true) => "returned",
+                    (false, false) => "not_held",
+                },
+                "changed": changed,
+                "detail": detail,
+            });
+            if held {
+                body["held"] = json!(by);
+            }
+            if let Some(merge) = merge {
+                body["merge"] = json!(merge);
+            }
             if let Some(seen) = seen {
                 body["seen"] = json!(seen);
             }

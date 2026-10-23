@@ -30704,3 +30704,82 @@ Tests in `app.rs`, on the `Slow`/`Hold` seam:
   colour and wear step from what was laid, with no wait after the first press.
 
 No golden changed. Clippy is clean apart from main's `large_enum_variant` on `Mode`.
+
+## The crown holds one ticket out of the merge train for review, and returns it (T-919, 2026-10-23, "Let the crown hold tickets out of the merge train for review and return them after approval")
+
+**Why.** A crown that wanted to review a worker's branch before it landed had no way to stop the
+train. Telling the worker "do not merge" does nothing: the worker never merges, the train does,
+as soon as the branch is ahead in a column it reaches and the agent's turn is over. So the person
+turned the whole train off for the review. The person's `t` key already had the per-ticket flag
+(`Ticket::manual_merge`, T-227). The crown had no road to it: `SetManualMerge` is in the
+never-tier.
+
+**What shipped.**
+- **`hold_ticket`** is a crown tool: `key`, `seen`, and `action`, a required word, `hold` or
+  `return`. It is never a toggle, so a retry cannot undo itself. On the wire it is
+  `Command::AgentHoldTicket { key, hold, seen }`, admitted by `agent_allows` and on the `Full`
+  rung. The tool is 820 bytes at the cap. Its `key` carries no description, as in
+  `watch_ticket`, and `action` carries no `enum`: an enum in a schema is model-visible prose
+  (`no_column_name_can_reach_a_schema`).
+- **Authorization** is a new `Action::HoldFromTrain { crown }` in `authorize`. `Local` passes on a
+  ticket. `Agent` passes only with `crown: true`, which the daemon sets from
+  `Board::is_crowned`. Paired, Remote, Automation and Peer are denied whatever `Mutate` they
+  hold. An agent's generic `Mutate` on a ticket is not the hold: an uncrowned worker is refused
+  at `crown_target` first and by `authorize` second.
+- **It is the person's own flag.** A hold sets `manual_merge`, so the planner (`train::lane`),
+  `train_could_take`, `merge_by` and the crown's wake (`train_takes`) all read it unchanged.
+  Who held it is the crown ledger's: `Daemon::crown_held`, kept in `crown.json` as `held` (same
+  schema; a build that drops it leaves the flag as a person's hold). `get_ticket` carries `held`
+  (`crown` or `person`) on every read, also before a branch exists. That is when a crown holds a
+  ticket it will review. `merge.why` reads `held out of the train by the crown`. The `seen`
+  stamp hashes the hold and whose it is, so a person's `t` after the crown's read makes the
+  crown's write stale.
+- **A person's `t` stays the person's.** The crown's return is refused on a person's hold. A
+  person's `SetManualMerge` on a crown hold ends the crown's claim either way: off returns it,
+  and an explicit on makes it the person's. When the crown leaves (uncrowned, crowned
+  elsewhere, its ticket archived or deleted), its holds stay on the tickets as the person's
+  (`release_crown_holds`, feed `hold_kept`). A review nobody will finish waits for a person,
+  never for the train. A held ticket that leaves the board leaves the ledger.
+- **Policy.** A hold is allowed under either crown mode, since it only withholds a merge. A
+  return waits on `crown_mode.merges()` (autonomous), like `merge_ticket`: under supervised,
+  the hand-back is a person's `t`. Refused: the crown's own ticket, a shared-checkout ticket
+  (no branch to hold), and a hold on a merged branch.
+- **A return is eligibility, not a merge.** Unlike a person's `t`, the crown's hold and return
+  do not call `train.hand_touched`. The train's fuse and its refused-merge memory are gates the
+  return does not clear. The ticket rejoins the planner's lists under the column's train
+  setting, the seat, board order and the train's own busy test.
+- **Receipt.** `Response::AgentHeld { key, held, by, changed, merge, detail, seen }`. The shim
+  renders `outcome` as `held`, `already_held`, `returned` or `not_held`. Asking for the state
+  the ticket is already in is no error and changes nothing. `detail` says what the hold does not
+  do: a rebase turn the train already asked for is not taken back, a PR board's forge still
+  merges, and a return under a disarmed train waits for the person.
+- **Feed and card.** Feed `hold_ticket` / `return_ticket` (the crown as actor), touch words
+  `held` / `returned`. `CROWN_WAKES` gains the review recipe in one paragraph: hold before
+  delivery, the delivery wakes the crown, corrections by `ask_agent` while held, return once
+  approved.
+
+**The in-flight boundary.** A merge runs whole on the writer thread, so a hold lands before it or
+after it, never during. After it, the branch reads `merged` and a hold is refused in words. A
+rebase ask the train already pasted runs its turn (words that reached an agent are not taken
+back); while held, the train merges nothing after it. Pinned by
+`a_hold_inside_the_trains_rebase_turn_lets_the_turn_run_and_merges_nothing`.
+
+**The delivery wake.** A held ticket has no train lane, so `train_takes` is false and a delivery
+wakes the crown at once (`merge: crown`) instead of being deferred for the train (T-554).
+`hear_deferred` already released a deferred delivery when a ticket left the train, so a hold
+made after a delivery was deferred wakes the crown on the next tick.
+
+**Tests.** Core: `the_train_hold_is_the_owners_and_the_crowns_alone` (authorize),
+`the_crown_holds_a_ticket_out_of_the_train_by_name` (parse, description, cap, lint, rung,
+`CROWN_WAKES`), the tool and command lists, and the ledger round trip. E2e, a new binary
+`crown_hold_e2e`: the review on an armed train (held before the start, the delivery wakes the
+crown, no merge and no rebase ask across passes, the correction lands while held, the return
+lets the train merge, a merged branch is refused a hold); who may hold (uncrowned, a worker,
+own ticket, checkout, no stamp, a person's `t` after the read, a person's hold, `t` on the
+crown's, supervised, restart, the real shim's receipt, the crown leaving); and the rebase turn
+above. `crown_e2e` and `mcp_e2e` pin 23 tools. Rig `HT1` asks the crown in plain words to keep a
+branch from landing until its review, on an armed train.
+
+**Not done.** The TUI shows no difference between a crown's hold and a person's beyond
+`get_ticket`; the card reads the same `auto-merge` hint for both. Nothing tells the held
+worker it is held. Its own `get_ticket` carries `held`, and that is all.

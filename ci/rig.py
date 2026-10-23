@@ -1688,6 +1688,46 @@ Reply with the single word ready and end your turn."""
                 git(self.repo, "branch", "-D", branch)
             self.log(f"{'held' if what == 'hold_branch' else 'freed'} {branch}")
             return True
+        if what in ("train_on", "train_off"):
+            # HT1 (T-919): the merge train armed on this connection, and the
+            # test ticket off the person's hold every test is filed under,
+            # so the crown's own hold is the only one; off disarms it and
+            # puts the person's hold back. The rig's base is this ticket
+            # worktree's own branch, which no test may land a commit on, so
+            # `block` is an untracked file at the checkout's root where the
+            # worker writes the same path: git will not overwrite it, and
+            # the train's fast-forward is refused (`merge_train_refused`),
+            # which is the train taking the ticket and landing nothing.
+            on = what == "train_on"
+            block = step.get("block")
+            try:
+                self.wire.request({"cmd": "set_automation", "merge_train": on, "merge_notice": False})
+                self.wire.set_manual_merge(test["ticket"], not on)
+            except WireError as error:
+                record["failures"].append(f"{what}: {error}")
+                return False
+            if block:
+                path = os.path.join(self.repo, block)
+                if on:
+                    with open(path, "w") as f:
+                        f.write("the rig's blocker: no train merge lands here\n")
+                elif os.path.exists(path):
+                    os.remove(path)
+            self.log(f"merge train {'armed' if on else 'disarmed'} for {test['key']}"
+                     + (f", {block} {'in the way' if on else 'removed'}" if block else ""))
+            return True
+        if what == "train_wait":
+            # HT1 (T-919): the armed train's first word on the ticket, a
+            # merge or its refusal, within a minute of the step.
+            said = self.wait_for("the merge train to take the ticket", lambda: next((
+                l for l in self.feed_lines if l.get("kind") == "board"
+                and l.get("ticket") == test["ticket"]
+                and str(l.get("cmd", "")).startswith("merge_train")), None), 60, self.watch)
+            if not said:
+                record["failures"].append("the merge train never took the returned ticket")
+                return False
+            self.log(f"the train took {test['key']}: {said.get('cmd')}")
+            return True
         if what == "restart":
             self.restart()
             self.restarted = True
@@ -2641,6 +2681,16 @@ Reply with the single word ready and end your turn."""
                     capture_output=True).returncode == 0
                 check(c, branch and not landed, f"{branch} landed on the base" if landed
                       else f"{branch} not on the base" if branch else "no branch")
+            elif name == "fed_after":
+                # `fed_after:<cmd>:<prefix>` (T-919): the ticket's first board
+                # line whose cmd begins <prefix> comes after its first <cmd>
+                # line, and none before it (HT1: the train takes nothing of
+                # a held ticket, and takes it once returned).
+                first, _, prefix = arg.partition(":")
+                at = next((i for i, f in enumerate(fed) if f == first), None)
+                hit = next((i for i, f in enumerate(fed) if str(f).startswith(prefix)), None)
+                check(c, at is not None and hit is not None and hit > at,
+                      f"{first} at {at}, first {prefix}* at {hit} ({fed[hit] if hit is not None else 'none'})")
             elif name == "crown_reply":
                 # The crown's last words on the test (T-774), `arg` within.
                 crown = self.agent_of(board, self.crown)

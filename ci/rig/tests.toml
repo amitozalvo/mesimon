@@ -87,7 +87,9 @@
 #              ticket, the reason naming <word>, case aside),
 #              crown_never:<w1,w2,...> (T-895: no Bash call of the crown's
 #              since the test began holds any of the words, and no Monitor
-#              ran: the board's wake is the wait).
+#              ran: the board's wake is the wait), fed_after:<cmd>:<prefix>
+#              (T-919: the ticket's first board line whose cmd begins
+#              <prefix> follows its first <cmd> line, none before it).
 #   siblings   more tickets the test files beside its own ({key2}, {key3}
 #              in a step; {crown} is the rig's crown's own key), each with
 #              the same brief and every check run on
@@ -111,7 +113,13 @@
 #              submit in each session is dropped). `prs_board` (T-810) sets
 #              Merge into: pull requests on a stub forge holding no PR; every
 #              `forge_*` step that starts the stub sets it too, and
-#              `forge_off` sets main back.
+#              `forge_off` sets main back. `train_on` (T-919) arms the merge
+#              train and takes the test ticket off the person's hold every
+#              test is filed under, and with `block` puts an untracked file
+#              at the checkout's root where the worker commits the same
+#              path, so the train's merge is refused and nothing lands on
+#              the ticket branch the rig runs in; `train_off` disarms it,
+#              holds the ticket again and removes the file.
 #
 # The prompts are explicit and small, so the repository's CLAUDE.md does not
 # send a Sonnet worker off to work: a run is a few turns per test, cents.
@@ -1274,3 +1282,35 @@ checks = ["road:mod", "started_by_crown", "crown:ask_agent", "fed:raise_hand", "
   crown = "RH1: call write_note on your own ticket {crown} with the text: # Review (one line, then a blank line, then: Rename the flag --quick to --fast.). Then call get_ticket on {crown} for that note's id, and call ask_agent for {key} with the words: Read the Review note on {crown} with read_note, key {crown} and that note id, and do what it says. End your turn with the single line: RH1 asked. When the board wakes you about {key}, end your turn with the single line: RH1 heard."
   until = { stops = 1, state = "idle" }
   wake = true
+
+[[test]]
+id = "HT1"
+title = "HT1 · the crown keeps a ticket out of the merge train for its review, then hands it back: do the steps below"
+workspace = "worktree"
+brief = "Write a file named HT1.txt holding the single line ht1, commit it with git with the message HT1, then reply with the single word done and end your turn. Read no other file and run no other command."
+expect = "the merge train is armed and the test ticket is off every person's hold. Asked to keep the branch from landing until its review, naming no tool or field, the crown holds the ticket out of the train with hold_ticket before it starts the worker. The worker commits and delivers, and the board wakes the crown, delivered: the train takes nothing of it. Asked whether the branch is held and by whom, the crown reads get_ticket's held and answers the crown. Told its review approves, the crown returns the ticket with hold_ticket (return) and merges nothing itself; the armed train then takes the branch, its first attempt after the return. The rig's blocker file refuses that fast-forward, so nothing lands on the rig's own ticket branch (T-919)."
+checks = ["road:mod", "started_by_crown", "crown:hold_ticket=1", "crown:return_ticket=1", "crown:merge_ticket=0", "woke:delivered", "crown_line:HT1 held:crown", "fed_after:return_ticket:merge_train", "unlanded", "replies:done"]
+
+  [[test.steps]]
+  rig = "train_on"
+  block = "HT1.txt"
+
+  [[test.steps]]
+  crown = "HT1: {key}'s branch must not land until you have reviewed it, and the board's merge train is on. Keep the train from merging it, then call start_agent for {key} with workspace worktree, no tier and no plan, and end your turn with the single line: HT1 started. When the board wakes you because {key}'s agent delivered, end your turn with the single line: HT1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  crown = "HT1: is {key}'s branch kept out of the merge train right now, and if so by whom: the crown or a person? Merge nothing and change nothing. End your turn with the single line: HT1 held, then your answer."
+  until = { state = "idle" }
+
+  [[test.steps]]
+  crown = "HT1: your review of {key} approves it. Let the merge train land it; merge nothing yourself. End your turn with the single line: HT1 returned."
+  until = { state = "idle" }
+
+  [[test.steps]]
+  rig = "train_wait"
+
+  [[test.steps]]
+  rig = "train_off"
+  block = "HT1.txt"
