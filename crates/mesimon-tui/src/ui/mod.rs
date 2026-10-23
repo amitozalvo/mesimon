@@ -24,6 +24,7 @@ mod tests;
 mod themes;
 mod ticket;
 mod tour;
+mod transcript;
 pub(crate) mod usage;
 
 pub(crate) use card::{CrownMark, Land};
@@ -269,6 +270,9 @@ fn draw_screen(f: &mut Frame, app: &App) {
     }
     if let Mode::Summary { ticket, idx } = &app.mode {
         dialog::draw_summary(f, app, *ticket, *idx);
+    }
+    if matches!(app.mode, Mode::Transcript { .. }) {
+        transcript::draw(f, app);
     }
     if let Mode::PullRequests { ticket, idx } = &app.mode {
         prs::draw(f, app, *ticket, *idx);

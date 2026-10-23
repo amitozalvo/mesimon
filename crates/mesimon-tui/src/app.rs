@@ -508,6 +508,12 @@ pub enum Mode {
         ticket: ulid::Ulid,
         idx: usize,
     },
+    /// The transcript dialog (T-921): the ticket's agent conversation, one
+    /// message at a time, hung under its card. The conversation and the
+    /// reading position are `App::transcript`.
+    Transcript {
+        ticket: ulid::Ulid,
+    },
     /// The pull requests dialog (T-759): every PR the forge bound to the
     /// ticket, over the board or the ticket page. Read off the snapshot each
     /// frame, the summary's way, so a pipeline turning over shows in place;
@@ -1748,6 +1754,8 @@ pub struct App {
     /// second performs what it names, Esc declines, or a stray key cancels
     /// — never while a merge is running inside it.
     pub(crate) merge_dialog: Option<MergeDialog>,
+    /// The transcript dialog's conversation (T-921), while it is open.
+    pub(crate) transcript: Option<crate::transcript::Transcript>,
     /// Enter on the terminal's ghost row armed adoption of this ticket's
     /// terminal (T-366): the next Enter adopts, any other key stands down.
     /// Two presses because adoption grows a session record that the archive
@@ -2303,6 +2311,7 @@ impl App {
             resume_refused: None,
             copy_cycle: None,
             merge_dialog: None,
+            transcript: None,
             adopt_armed: None,
             shell_close_armed: None,
             merge_sent: None,
@@ -2740,6 +2749,40 @@ impl App {
     /// card stays lit under the dialog, the dialog hangs from it, and the
     /// rest of the board recedes, so the board says which card it was. The
     /// ticket page has no board under it: `None` there.
+    /// The transcript dialog's conversation, while its mode is up (T-921).
+    pub(crate) fn open_transcript_view(&self) -> Option<&crate::transcript::Transcript> {
+        match self.mode {
+            Mode::Transcript { ticket } => self.transcript.as_ref().filter(|t| t.ticket == ticket),
+            _ => None,
+        }
+    }
+
+    /// `{ }` on a card: its agent's conversation under it, on the newest
+    /// message. Nothing said yet is a status line, never an empty dialog
+    /// (the summary's rule).
+    pub(crate) fn open_transcript(&mut self) {
+        let Some(ticket) = self.subject() else { return };
+        let key = self.board.ticket(ticket).map(|t| t.short_key.clone()).unwrap_or_default();
+        match crate::transcript::session_of(&self.board, ticket)
+            .and_then(crate::transcript::Transcript::open)
+        {
+            Some(t) => {
+                self.transcript = Some(t);
+                self.mode = Mode::Transcript { ticket };
+            }
+            None => self.status = format!("nothing in {key}'s transcript yet"),
+        }
+    }
+
+    /// The open transcript's pages landing and its tail read again (T-921).
+    fn poll_transcript(&mut self) -> bool {
+        if !matches!(self.mode, Mode::Transcript { .. }) {
+            self.transcript = None;
+            return false;
+        }
+        self.transcript.as_mut().is_some_and(|t| t.poll())
+    }
+
     pub(crate) fn dialog_card(&self) -> Option<ulid::Ulid> {
         if !matches!(self.screen, Screen::Board) {
             return None;
@@ -2747,6 +2790,7 @@ impl App {
         match &self.mode {
             Mode::Links { ticket, .. }
             | Mode::Summary { ticket, .. }
+            | Mode::Transcript { ticket }
             | Mode::PullRequests { ticket, .. } => Some(*ticket),
             _ => self.merge_dialog.as_ref().map(|d| d.ticket),
         }
@@ -2994,7 +3038,9 @@ impl App {
     /// place a paging verb asks which screen it is on.
     pub fn pager(&self) -> Option<&Pager> {
         match self.screen {
-            Screen::Board => None,
+            // The transcript dialog's message (T-921) is the board's one
+            // paged document.
+            Screen::Board => self.open_transcript_view().map(|t| &t.pager),
             Screen::Ticket { .. } => Some(&self.preview),
             Screen::Diff => self.diff.as_ref().map(|d| &d.pager),
             Screen::Releases => self.releases.as_ref().map(|r| &r.pager),
@@ -4227,6 +4273,7 @@ impl App {
             dirty |= self.poll_shell_tail();
             dirty |= self.poll_notes();
             dirty |= self.poll_summaries();
+            dirty |= self.poll_transcript();
             dirty |= self.poll_archive();
             dirty |= self.poll_held();
             self.poll_pickup();
@@ -4843,7 +4890,13 @@ impl App {
         let hit = self.hits.borrow().at(at.0, at.1);
         if self.hits.borrow().dialog() {
             let on_it = matches!(hit, Hit::Spot(_) | Hit::Nothing);
-            return if on_it && self.list_idx().is_some() { self.press(&[key]) } else { Ok(false) };
+            // The transcript dialog's wheel scrolls its message (T-921).
+            let reads = matches!(self.mode, Mode::Transcript { .. });
+            return if on_it && (self.list_idx().is_some() || reads) {
+                self.press(&[key])
+            } else {
+                Ok(false)
+            };
         }
         let target = match hit {
             Hit::Spot(Spot { target, .. }) => Some(target),
@@ -7104,6 +7157,7 @@ impl App {
             Mode::Brief { .. } => Scope::Brief,
             Mode::Links { .. } => Scope::Links,
             Mode::Summary { .. } => Scope::Summary,
+            Mode::Transcript { .. } => Scope::Transcript,
             Mode::PullRequests { .. } => Scope::PullRequests,
             Mode::Tour => Scope::Tour,
             Mode::Setup => Scope::Setup,
@@ -7302,6 +7356,14 @@ impl App {
             },
             ticket_linkable: subject.is_some_and(|t| self.ticket_linkable(t)),
             ticket_summarised: subject.is_some_and(|t| self.ticket_summarised(t)),
+            ticket_transcript: matches!(self.screen, Screen::Board)
+                && subject.is_some_and(|t| crate::transcript::session_of(&self.board, t).is_some()),
+            transcript_messages: self
+                .open_transcript_view()
+                .is_some_and(|t| t.messages().len() > 1),
+            transcript_scrolls: self
+                .open_transcript_view()
+                .is_some_and(|t| t.pager.view.get().max > 0),
             has_prs: subject.is_some_and(|t| self.prs.iter().any(|p| p.ticket == t)),
             summary_on_task: self.summary_cursor().is_some(),
             summary_on_link: self
@@ -9391,6 +9453,13 @@ impl App {
             }
             Verb::Links => self.open_links(),
             Verb::Summary => self.open_summary(),
+            Verb::Transcript => self.open_transcript(),
+            Verb::TranscriptNewer | Verb::TranscriptOlder => {
+                let dir = if verb == Verb::TranscriptNewer { 1 } else { -1 };
+                if let Some(t) = self.transcript.as_mut() {
+                    t.step(dir);
+                }
+            }
             Verb::PullRequests => {
                 if let Some(ticket) = self.subject() {
                     self.mode = Mode::PullRequests { ticket, idx: 0 };
@@ -9413,6 +9482,14 @@ impl App {
                     Mode::Links { links, idx, .. } => links.get(*idx).map(|l| l.text.clone()),
                     Mode::Summary { .. } => self.summary_cursor().map(|(_, r)| r.text),
                     Mode::PullRequests { .. } => self.pr_cursor().map(|p| p.url.clone()),
+                    // The message whole, as the transcript holds it (T-921).
+                    Mode::Transcript { .. } => {
+                        let text = self.open_transcript_view().and_then(|t| t.message());
+                        if let Some(m) = text {
+                            self.status = self.copy("message", &m.text.clone());
+                        }
+                        None
+                    }
                     _ => None,
                 };
                 if let Some(text) = text {
@@ -10299,6 +10376,10 @@ impl App {
             // Out of the tour, practice board and all.
             Scope::Tour => {
                 self.tour = None;
+                self.mode = Mode::Normal;
+            }
+            Scope::Transcript => {
+                self.transcript = None;
                 self.mode = Mode::Normal;
             }
             // Setup's q and Esc (T-850): out to the board as it is, nothing

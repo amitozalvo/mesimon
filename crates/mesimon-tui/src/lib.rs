@@ -46,6 +46,7 @@ mod text;
 mod theme;
 mod title;
 mod tour;
+mod transcript;
 mod ui;
 mod underline;
 mod update;

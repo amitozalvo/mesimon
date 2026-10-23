@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui   7 tickets
+
+   TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
+
+   Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y    z Painted accent bar  >1y
+                                   ✻ claude ⠋  $ bash ◦
+   Keymap validator       >1y                                  x Flaky e2e on runner  >1y
+          ╭─ TRANSCRIPT (4 of 4) ────────────┴─────────────────────────────────╮
+          │  claude                                                            │
+          │                                                                    │
+          │  Fixed the OSC-11 race: the query now runs once, before raw mode,  │
+          │  and its reply is read with a 150 ms deadline.                     │
+          │                                                                    │
+          │  What changed                                                      │
+          │  • detect_ground moved ahead of enable_raw_mode.                   │
+          │  • The deadline is 150 ms, up from 50 ms.                          │
+          │  • A reply after the deadline is swallowed, never typed into the   │
+          │    board.                                                          │
+          │  • The ground watch is untouched.                                  │
+          │                                                                    │
+          │  Tests                                                             │
+          │  • ground_reply_after_first_frame replays a reply 90 ms late.~     │
+          ╰───────────────────────────────── { } message ∙ jk scroll ∙ c copy ─╯
+
+
+
+
+
+
+ TRANSCRIPT  { } message ∙ jk scroll ∙ c copy ∙ esc close                                                        ? keys

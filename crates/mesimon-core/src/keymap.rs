@@ -284,13 +284,18 @@ pub enum Scope {
     Setup,
     /// Games over the live board; no global or board mutations fall through.
     Arcade,
+    /// The transcript dialog (T-921): the cursor card's agent conversation,
+    /// one message at a time under the card, over a receded board. `{ }`
+    /// opens it from the board and steps the messages inside it, `jk`
+    /// scrolls the message, `c` copies it.
+    Transcript,
 }
 
 impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 37] = [
+    pub const ALL: [Scope; 38] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -328,6 +333,7 @@ impl Scope {
         Scope::Setup,
         Scope::Arcade,
         Scope::Boards,
+        Scope::Transcript,
     ];
 
     /// The scope a key falls through to when this one does not bind it.
@@ -354,6 +360,7 @@ impl Scope {
             | Scope::Boards
             | Scope::Usage
             | Scope::Summary
+            | Scope::Transcript
             | Scope::PullRequests
             | Scope::Tour => Some(Scope::Global),
             Scope::Global
@@ -405,6 +412,7 @@ impl Scope {
             Scope::Releases => "RELEASES",
             Scope::Links => "LINKS",
             Scope::Summary => "SUMMARY",
+            Scope::Transcript => "TRANSCRIPT",
             Scope::PullRequests => "PULL REQUESTS",
             Scope::ColumnSettings => "COLUMN",
             Scope::Header => "HEADER",
@@ -521,6 +529,13 @@ pub enum Verb {
     /// dialog: close it and open the ticket's prompt field with the row's
     /// words quoted, for the person to finish and send.
     SummaryAsk,
+    /// `{` or `}` on a board card with an agent: the TRANSCRIPT dialog
+    /// under it (T-921), on the conversation's newest message.
+    Transcript,
+    /// `}` in the transcript dialog: the next message, toward the newest.
+    TranscriptNewer,
+    /// `{` in the transcript dialog: the message before.
+    TranscriptOlder,
     /// `^h` on the board or the ticket page: the PULL REQUESTS dialog over
     /// the ticket's pull requests (T-759). Inert while the forge has bound
     /// none, so the dialog is never opened empty.
@@ -1381,6 +1396,15 @@ pub struct Ctx {
     /// row (T-696), as the TUI's cache last read them — never the disk. What
     /// `^j` gates on.
     pub ticket_summarised: bool,
+    /// The cursor card's agent has a transcript on this machine (T-921):
+    /// what the board's `{ }` gates on.
+    pub ticket_transcript: bool,
+    /// The transcript dialog holds more than one message, so `{ }` has
+    /// somewhere to step.
+    pub transcript_messages: bool,
+    /// The transcript dialog's message is longer than its window, so `jk`
+    /// has rows to scroll.
+    pub transcript_scrolls: bool,
     /// The forge has bound at least one pull request to the subject ticket
     /// (T-739), as the last snapshot said. What `^h` gates on.
     pub has_prs: bool,
@@ -1940,6 +1964,7 @@ fn needs_repository(b: &Binding) -> bool {
                 | Verb::Terminal
                 | Verb::Peek
                 | Verb::PeekAll
+                | Verb::Transcript
                 | Verb::ExternalDrawer
         )
 }
@@ -2841,6 +2866,22 @@ static BOARD: &[Binding] = &[
         group: Group::Ticket,
         mutates: false,
         prio: 0,
+    },
+    Binding {
+        // The agent's conversation without entering its pane (T-921): the
+        // transcript dialog, hung under the card on the newest message.
+        // Both braces open it, since a dialog that is not open has no
+        // direction to step in; inside it they step the messages. Gated on
+        // a transcript on this machine, which is what the dialog reads.
+        keys: &[Key::Char('}'), Key::Char('{')],
+        verb: Verb::Transcript,
+        show: "{ }",
+        hint: |_| "transcript",
+        avail: |c| c.has_ticket && c.ticket_transcript,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 20,
     },
     Binding {
         // The ticket's summary (T-696): the boxes and lines its notes put
@@ -7192,6 +7233,57 @@ static SUMMARY: &[Binding] = &[
     },
 ];
 
+/// The transcript dialog (T-921). The braces step the messages and `jk`
+/// scrolls the one on show, the way the ticket page's preview reads a reply;
+/// `c` copies it whole. Esc is the footer's alone: the frame's edge names
+/// the keys that read.
+static TRANSCRIPT: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('}'), Key::Char('{')],
+        verb: Verb::TranscriptNewer,
+        show: "{ }",
+        hint: |_| "message",
+        avail: |c| c.transcript_messages,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
+        verb: Verb::ScrollDown,
+        show: "jk",
+        hint: |_| "scroll",
+        avail: |c| c.transcript_scrolls,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 15,
+    },
+    Binding {
+        keys: &[Key::Char('c')],
+        verb: Verb::LinkCopy,
+        show: "c",
+        hint: |_| "copy",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 30,
+    },
+    Binding {
+        keys: &[Key::Char('q'), Key::Esc],
+        verb: Verb::Back,
+        show: "esc",
+        hint: |_| "close",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 250,
+    },
+];
+
 /// The board's own top row (T-305), reached by `k` off a column header. It is
 /// a cursor position, not a screen: nothing is drawn over the board, the
 /// cursor column keeps its painted band, and `j` walks straight back into it.
@@ -8173,6 +8265,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::Releases => RELEASES,
         Scope::Links => LINKS,
         Scope::Summary => SUMMARY,
+        Scope::Transcript => TRANSCRIPT,
         Scope::PullRequests => PULL_REQUESTS,
         Scope::ColumnSettings => COLUMN,
         Scope::Header => HEADER,
@@ -8255,6 +8348,7 @@ fn directional(verb: Verb, key: Key) -> Verb {
         (Verb::PageDown, Key::Char('}')) => Verb::HalfPageDown,
         (Verb::PageDown, Key::Char('{')) => Verb::HalfPageUp,
         (Verb::PageDown, Key::PageUp) => Verb::PageUp,
+        (Verb::TranscriptNewer, Key::Char('{')) => Verb::TranscriptOlder,
         (Verb::NextFile, Key::Char('N')) => Verb::PrevFile,
         (v, _) => v,
     }
@@ -8576,6 +8670,7 @@ mod tests {
                 Scope::Setup => 34,
                 Scope::Arcade => 35,
                 Scope::Boards => 36,
+                Scope::Transcript => 37,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -11099,6 +11194,40 @@ mod tests {
         assert!(!menu_items(&control_only).iter().any(|row| row.verb == Verb::Mesophon));
     }
 
+    /// `{ }` open the transcript dialog from a card with a conversation
+    /// (T-921), and inside it step the messages; `jk` scroll only a message
+    /// that overflows, and a content-only board has no transcript to read.
+    #[test]
+    fn braces_open_the_transcript_and_step_its_messages() {
+        let card = Ctx { has_ticket: true, ticket_transcript: true, ..Default::default() };
+        for key in [Key::Char('{'), Key::Char('}')] {
+            assert_eq!(resolve(Scope::Board, key, &card), Some(Verb::Transcript));
+            assert_eq!(
+                resolve(Scope::Board, key, &Ctx { has_ticket: true, ..Default::default() }),
+                None
+            );
+            let joined = Ctx { content_only: true, ..card.clone() };
+            assert_eq!(
+                resolve(Scope::Board, key, &joined),
+                None,
+                "no conversation on this machine"
+            );
+        }
+        assert_eq!(hint_for(Scope::Board, Verb::Transcript, &card), Some(("{ }", "transcript")));
+        let open = Ctx { transcript_messages: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Transcript, Key::Char('}'), &open), Some(Verb::TranscriptNewer));
+        assert_eq!(resolve(Scope::Transcript, Key::Char('{'), &open), Some(Verb::TranscriptOlder));
+        assert_eq!(resolve(Scope::Transcript, Key::Char('}'), &Ctx::default()), None);
+        assert_eq!(resolve(Scope::Transcript, Key::Char('j'), &Ctx::default()), None);
+        let long = Ctx { transcript_scrolls: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Transcript, Key::Char('j'), &long), Some(Verb::ScrollDown));
+        assert_eq!(resolve(Scope::Transcript, Key::Char('k'), &long), Some(Verb::ScrollUp));
+        assert_eq!(
+            resolve(Scope::Transcript, Key::Char('c'), &Ctx::default()),
+            Some(Verb::LinkCopy)
+        );
+    }
+
     /// `q` pops one level and `?` is reachable from every screen — the two
     /// rules a new user needs before any other key matters.
     #[test]
@@ -11116,6 +11245,7 @@ mod tests {
             Scope::Releases,
             Scope::Links,
             Scope::Summary,
+            Scope::Transcript,
             Scope::PullRequests,
             Scope::ColumnSettings,
             Scope::Header,

@@ -207,7 +207,10 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         // The card the cursor rode away leaves a ghost that is open as it
         // was under the cursor, its rows listed, without the cursor's look.
         let shown = selected || (glide && app.glide_was_cursor(t.id));
-        let open = !bare && (app.peek_all || (shown && app.peek_showing(t.id)));
+        // Under its transcript dialog (T-921) the card is its title: the
+        // reply its peek would show is the dialog's.
+        let reading = app.dialog_card() == Some(t.id) && app.open_transcript_view().is_some();
+        let open = !bare && !reading && (app.peek_all || (shown && app.peek_showing(t.id)));
         // Transcript peek: the cursor card's highest-precedence session that
         // has a transcript (bash never does) — read through the draw cache.
         let peek_of = || {

@@ -30999,3 +30999,50 @@ investigated.
   read 4 for 3 once under a concurrent suite. It passed 3/3 alone.
 - `diff_e2e::the_board_diffs_its_own_checkout`'s `git add .` raced the daemon's
   `.mesimon/board/columns.tmp` once.
+
+## The transcript dialog: `{ }` on a card reads its agent's conversation (T-921, 2026-10-23)
+
+The author: "{ } on ticket card to reveal and scroll transcript messages … { } will scroll the
+*messages* not the text. j k will scroll the current message text. stay in board, maybe a medium
+dialog below the ticket." Designed as an interactive simulation first and approved after one
+round (title `TRANSCRIPT (i of n)` with no agent name or state, no `enter` hint, `c copy`, Esc in
+the footer only, the board receded as behind the other card dialogs).
+
+**What it is.** `{` or `}` on a board card whose agent has a transcript opens `Mode::Transcript`
+(`Scope::Transcript`, a dialog scope under Global), hung from the card by `dialog::placed` and
+its notch, 68 wide and 14 rows inside, over `board::recede`. It opens on the newest message, at
+its top. Inside, `{ }` step the messages (`TranscriptNewer`, with `{` derived to
+`TranscriptOlder`), `jk` and the wheel scroll the message on show (`ScrollDown` through
+`App::pager`, which now answers the board with the dialog's `Pager`), `c` copies it whole and
+Esc closes. Each message remembers where it was left. A message is a prompt, a reply or a notice;
+the tool calls that follow one are its `n steps ∙ Read, Edit` on its first row, beside who wrote
+it and when. A person's words wear the `▎` quote bar and keep their line breaks; a reply renders
+through `rich` as the ticket page's preview does, cut with `~` while more is below. The body
+starts in the title's column (two cells in), which fixes the one-cell offset the list dialogs
+have between their title and their rows.
+
+**Where the words come from.** The TUI reads the transcript itself, through
+`mesimon_daemon::agents::read_transcript_reply` — the pager Remote Control reads (T-626) — the
+same observe-tier read the card's peek makes (`peek.rs`). No wire command, no daemon change: a
+running daemon needs no restart. The newest page is read on the key; the pages before it are read
+on a thread of their own back to the file's start, so `(i of n)` counts the whole conversation
+once they land (the message on show keeps its place as they prepend). While the dialog is open
+the file is stat'ed every 250 ms and only what was written since is read; a reader on the newest
+message stays on it, and the title gains `∙ 1 new` until they step to it. A new conversation
+(`/clear`, `/resume`) starts over on its newest message. The session is the ticket's seat holder,
+else its newest agent record, so a parked or finished agent's conversation still opens.
+
+**Gates.** `Ctx::ticket_transcript` (the board, a card, an agent record with a transcript path),
+`transcript_messages` (more than one, for `{ }`), `transcript_scrolls` (the message overflows its
+window, for `jk`, measured by the last draw). `Verb::Transcript` joins `needs_repository`, so a
+joined content-only board offers none. A card with nothing said yet says so on the status line
+and opens nothing. Under its dialog the card is its title: the peek would repeat the dialog.
+
+**The footer.** `{ } transcript` (prio 20) sits after `space ticket page` on a card that has a
+conversation, so at 120 columns `tab describe` gives up its place there (three board goldens).
+
+Tests: `transcript::tests` (steps belong to the message before them; opens on the newest, `unseen`
+counts what came after, the ends hold), `golden_transcript_dialog_120`,
+`test_transcript_dialog_steps_messages_and_scrolls_the_one_on_show`,
+`test_transcript_needs_a_conversation`, and `braces_open_the_transcript_and_step_its_messages`
+in the keymap.

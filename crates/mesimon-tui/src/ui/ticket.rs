@@ -1545,7 +1545,7 @@ fn note_key(meta: &NoteMeta) -> u64 {
 /// window of it. Keyed the way the page scroll is (`doc_key` / `note_key`).
 /// `newline` is not in the cache key: it follows from the document (a
 /// reply's is `Space`, a note's is its author's), and the key names that.
-fn rendered(
+pub(super) fn rendered(
     app: &App,
     key: u64,
     width: usize,

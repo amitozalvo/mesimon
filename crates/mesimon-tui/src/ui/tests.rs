@@ -6629,6 +6629,133 @@ fn golden_summary_dialog_120() {
     golden("summary_dialog_120x30", &render(&app, 120, 30));
 }
 
+/// A board whose T-3 agent has a conversation on disk (T-921): the
+/// person's ask, a progress note and its steps, and a reply longer than
+/// the dialog's window.
+fn app_transcript(name: &str) -> (App, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("msmn-transcript-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("transcript dir");
+    let path = dir.join("t.jsonl");
+    let user = |text: &str| {
+        serde_json::json!({ "uuid": text, "type": "user", "message": { "role": "user", "content": text } })
+            .to_string()
+    };
+    let said = |text: &str| {
+        serde_json::json!({ "uuid": text, "type": "assistant", "message": { "role": "assistant",
+            "content": [{ "type": "text", "text": text }] } })
+        .to_string()
+    };
+    let tool = |name: &str, command: &str| {
+        serde_json::json!({ "uuid": command, "type": "assistant", "message": { "role": "assistant",
+            "content": [{ "type": "tool_use", "id": command, "name": name,
+                "input": { "command": command, "file_path": command } }] } })
+        .to_string()
+    };
+    let reply = "Fixed the OSC-11 race: the query now runs once, before raw mode, and its \
+                 reply is read with a 150 ms deadline.\n\n## What changed\n\
+                 - `detect_ground` moved ahead of `enable_raw_mode`.\n\
+                 - The deadline is 150 ms, up from 50 ms.\n\
+                 - A reply after the deadline is swallowed, never typed into the board.\n\
+                 - The ground watch is untouched.\n\n## Tests\n\
+                 - `ground_reply_after_first_frame` replays a reply 90 ms late.\n\
+                 - `ground_reply_never_comes` checks the fallback after 150 ms.\n\n\
+                 ```\n$ cargo test -p mesimon-tui ground\ntest result: ok. 2 passed\n```\n\n\
+                 Running the golden tests next.";
+    let lines = [
+        user("Fix OSC-11 detection. The board starts in the light theme on a dark terminal."),
+        said("Reading how the board asks the terminal for its background."),
+        tool("Read", "src/theme.rs"),
+        tool("Grep", "detect_ground"),
+        tool("Read", "src/lib.rs"),
+        user("Go ahead. Don't touch the ground watch."),
+        said(reply),
+    ];
+    let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    std::fs::write(&path, body).expect("transcript");
+    let mut b = fixture(false);
+    b.sessions.iter_mut().find(|s| s.id == uuid_n(31)).expect("session 31").transcript_path =
+        Some(path.to_string_lossy().into_owned());
+    let mut app = app_graphite(b);
+    app.cursor_col = 1;
+    app.cursor_row = Some(0);
+    (app, dir)
+}
+
+/// `}` on the card opens the dialog under it on the newest message; the
+/// rest of the board recedes and the footer wears the dialog's keys.
+#[test]
+fn golden_transcript_dialog_120() {
+    let (mut app, dir) = app_transcript("golden");
+    press(&mut app, '}');
+    assert!(matches!(app.mode, Mode::Transcript { .. }), "{:?}", app.mode);
+    // The first frame measures the message; the keys follow it.
+    let _ = render(&app, 120, 30);
+    golden("transcript_dialog_120x30", &render(&app, 120, 30));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `{ }` step the messages and land where each was left; `jk` scrolls the
+/// one on show; Esc closes. A person's words wear the quote bar.
+#[test]
+fn test_transcript_dialog_steps_messages_and_scrolls_the_one_on_show() {
+    let (mut app, dir) = app_transcript("keys");
+    press(&mut app, '{');
+    let lines = render(&app, 120, 30);
+    let text = lines.join("\n");
+    assert!(text.contains("TRANSCRIPT (4 of 4)"), "{text}");
+    assert!(text.contains("claude"), "{text}");
+    assert!(text.contains("Fixed the OSC-11 race"), "{text}");
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("jk scroll")), "a long reply scrolls");
+    assert!(lines.last().is_some_and(|l| l.contains("esc close")), "esc is the footer's");
+    press(&mut app, 'j');
+    press(&mut app, 'j');
+    let after = render(&app, 120, 30).join("\n");
+    assert!(!after.contains("Fixed the OSC-11 race"), "two rows down:\n{after}");
+    press(&mut app, '{');
+    let prompt = render(&app, 120, 30).join("\n");
+    assert!(prompt.contains("TRANSCRIPT (3 of 4)"), "{prompt}");
+    assert!(prompt.contains("▎ Go ahead"), "a person's words behind the bar:\n{prompt}");
+    assert!(prompt.contains("you"), "{prompt}");
+    press(&mut app, '{');
+    let first = render(&app, 120, 30).join("\n");
+    assert!(first.contains("TRANSCRIPT (2 of 4)"), "{first}");
+    assert!(first.contains("3 steps ∙ Read, Grep"), "the steps that followed:\n{first}");
+    press(&mut app, '}');
+    press(&mut app, '}');
+    let back = render(&app, 120, 30).join("\n");
+    assert!(!back.contains("Fixed the OSC-11 race"), "landed where it was left:\n{back}");
+    // A small terminal still frames it, under the card or over it.
+    for (w, h) in [(80, 24), (60, 20), (120, 20)] {
+        let small = render(&app, w, h).join("\n");
+        assert!(small.contains("TRANSCRIPT"), "{w}x{h}:\n{small}");
+    }
+    press(&mut app, 'c');
+    assert!(app.status.contains("message"), "{}", app.status);
+    {
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).expect("esc");
+    }
+    assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
+    assert!(
+        app.transcript.is_none() || render(&app, 120, 30).iter().all(|l| !l.contains("TRANSCRIPT"))
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A card with no agent conversation offers no `{ }`, and the key is inert.
+#[test]
+fn test_transcript_needs_a_conversation() {
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 0;
+    app.cursor_row = Some(0);
+    let footer = render(&app, 120, 30).join("\n");
+    assert!(!footer.contains("{ } transcript"), "{footer}");
+    press(&mut app, '}');
+    assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
+}
+
 /// At rest the title wears the boxes as an underline (T-696): the done
 /// share of its cells in the ramp's `dim1`, the rest in `dim3` — the
 /// cursor card's ramp here — never the accent, and the ladder tiers draw
