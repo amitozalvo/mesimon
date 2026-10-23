@@ -30883,3 +30883,14 @@ woke the crown with `answered`. Wakes, in order: finished, limited, answered.
   - The 7 skips are the suite's standing skips.
   - A first run without `--no-fail-fast` stopped at 2688 of 2818 on the same two tests.
 - Rig: `target/rig/verdicts-20261023-183010.md` and `target/rig/rig.log` in this worktree.
+**Gates after the review and the rebase onto `8dd1bf32` (T-919), at `3415e2bb`.**
+- The only conflict was STALE-MAP; both blocks are kept, T-919's first. The code merged on its
+  own: T-919's `hold_ticket` and its `CROWN_WAKES` clause sit beside this ticket's two
+  clauses, and `ci/rig/tests.toml` carries both `HT1` and `L2`.
+- `cargo build --workspace` ok. `cargo ut` green: core 683, daemon 578, tui 1198, mesimon 67.
+- `cargo nextest run -p mesimon --test crown_e2e --test mcp_e2e`: 29 of 29.
+- Clippy on the three crates (`-D warnings`) clean. `git diff --check main...HEAD` clean.
+- `cargo nextest run --workspace --no-fail-fast`: 2824 run, 2824 passed, 7 skipped (the
+  standing `#[ignore]`s). The two TUI spinner tests passed this time.
+- Live L2 was not rerun: the review's changes are a wording change and new deterministic tests,
+  and the rebase brought in no conflict in code.
