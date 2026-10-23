@@ -2513,10 +2513,13 @@ pub struct AgentTicketView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<AgentSummaryView>,
     /// Whether THIS ticket wears the crown (T-411) — whether its agent may
-    /// pass a `key` to the tools. False on every other ticket, and said
-    /// explicitly: an absent key would leave the model guessing.
-    #[serde(default)]
-    pub crowned: bool,
+    /// pass a `key` to the tools. On a session's read of its own ticket it
+    /// is said either way: an absent key would leave the model guessing. On
+    /// the crown's view of another ticket it is off the wire (T-916): that
+    /// `false` was always so and said nothing, and a Codex crown read it as
+    /// being about itself and declined to act.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crowned: Option<bool>,
     /// The crown watches this ticket (T-712): the board wakes it for the
     /// ticket as for a worker it started. On the crown's keyed read only,
     /// and off the wire while false.
@@ -4028,7 +4031,7 @@ mod tests {
             description_cut: None,
             notes: vec![],
             summary: None,
-            crowned: false,
+            crowned: None,
             watched: false,
             crown: None,
             under_crown: None,

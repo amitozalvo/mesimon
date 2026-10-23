@@ -6433,6 +6433,7 @@ impl Daemon {
                         // Its own ticket: the person reads it beside the
                         // ticket, where the key is a lookup (T-715).
                         view.key_about = Some(mesimon_core::mcp::KEY_ABOUT.to_string());
+                        view.crowned = Some(self.board.is_crowned(ticket));
                         // A worker the board's crown started reads who merges
                         // under it (T-599).
                         let crown = self.board.crown_holder().map(|t| t.id);
@@ -6474,6 +6475,9 @@ impl Daemon {
                     Some(mut view) => {
                         view.asked = self.crown_asked_view(ticket, target);
                         view.told_hand = self.told_hand_view(ticket, target);
+                        if target == ticket {
+                            view.crowned = Some(self.board.is_crowned(ticket));
+                        }
                         view.watched = target != ticket && self.crown_watched.contains(&target);
                         Response::AgentTicket { ticket: view }
                     }
@@ -9010,7 +9014,10 @@ impl Daemon {
                     })
                     .collect(),
             }),
-            crowned: self.board.is_crowned(id),
+            // On the crowned ticket alone; a session's read of its own
+            // ticket says it either way (`AgentGetTicket`), and the crown's
+            // view of another leaves it out (T-916).
+            crowned: self.board.is_crowned(id).then_some(true),
             watched: false,
             crown: self.board.is_crowned(id).then(mesimon_core::mcp::crown_view),
             under_crown: None,

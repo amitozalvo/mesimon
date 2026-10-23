@@ -50,8 +50,17 @@ BOARD_TOOLS = ("get_ticket", "list_board", "read_note", "write_note", "create_ti
                "sleep_agent", "merge_ticket", "watch_ticket", "set_workspace", "rename_ticket",
                "archive_ticket", "read_attachment", "read_shell", "ask_board", "request_close_shell")
 # A wait on a pull request that holds the session busy (T-895), in a command's
-# words; Codex's own sleep tool is the same wait by another name.
-POLL_WORDS = ("pr checks", "--watch", "sleep ", "ci status", "pr view", "run watch")
+# words; Codex's own sleep tool is the same wait by another name. One read of
+# the pull request (which job failed) is not a wait; the same read again in
+# the turn is (`polling`).
+POLL_WORDS = ("--watch", "sleep ", "run watch")
+FORGE_READ = re.compile(r"\b(?:gh|glab)\s+(?:pr\s+(?:view|checks)|ci\s+(?:status|view|list)|run\s+(?:view|list))"
+                        r"[^\"'\n;&|]*")
+
+
+class Inconclusive(Exception):
+    """A case that ran and proved neither way: the runner records it as
+    inconclusive (any exception but an AssertionError)."""
 
 
 def module(name, filename):
@@ -174,8 +183,13 @@ def board_calls(calls):
 
 
 def polling(calls):
+    """The calls that wait on the forge: a sleep, a watch, or a forge read
+    whose words come again in `calls` (the same `gh pr checks 42` twice)."""
+    reads = lambda call: {" ".join(m.split()) for m in FORGE_READ.findall(call["text"])}  # noqa: E731
+    seen = [read for call in calls for read in reads(call)]
     return [call for call in calls if call["name"] == "sleep" or "tools.sleep(" in call["text"]
-            or any(word in call["text"] for word in POLL_WORDS)]
+            or any(word in call["text"] for word in POLL_WORDS)
+            or any(seen.count(read) > 1 for read in reads(call))]
 
 
 def spawned(calls):
@@ -207,10 +221,12 @@ def answered_after(rows, index):
                and row["payload"].get("phase") in (None, "final_answer") for row in rows[index + 1:])
 
 
-# A shell command that writes, in a command's words: redirection, the usual
-# writers, an interpreter that may, and git's own writes. Searched together
-# with the names of what the case's work touches (`shell_writes`).
-WRITE_MARKS = (">", "tee ", "<<", "printf", "echo ", "touch ", "cp ", "mv ", "install ", "sed -i",
+# A shell command that writes, in a command's words: output redirected to a
+# file (REDIRECT: not `2>&1`, `>/dev/null`, `=>` or `>=`), the usual writers,
+# an interpreter that may, and git's own writes. Searched together with the
+# names of what the case's work touches (`shell_writes`).
+REDIRECT = re.compile(r"(?<![=<>-])[0-9&]?>>?(?![>&=])\s*(?!/dev/null\b)[^\s&|;)'\"]")
+WRITE_MARKS = ("tee ", "<<", "touch ", "cp ", "mv ", "install ", "sed -i",
                "python -c", "python3 -c", "perl -e", "perl -i", "node -e", "ruby -e")
 WRITE_GIT = re.compile(r"\bgit\b(?:\s+(?:-C|-c|--git-dir|--work-tree)(?:=|\s+)\S+)*\s+"
                        r"(?:add|commit|apply|am|cherry-pick|merge|rebase|reset|checkout|switch|stash|restore|rm|mv)\b")
@@ -220,7 +236,8 @@ def command_writes(command, names):
     """A shell command that names one of `names` and writes (WRITE_MARKS,
     WRITE_GIT). Shared with the Claude rig's `crown_wrote_nothing`."""
     return any(name in command for name in names) and (
-        any(mark in command for mark in WRITE_MARKS) or bool(WRITE_GIT.search(command)))
+        any(mark in command for mark in WRITE_MARKS) or bool(REDIRECT.search(command))
+        or bool(WRITE_GIT.search(command)))
 
 
 def shell_writes(calls, names):
@@ -242,10 +259,24 @@ def checkout_state(repo):
                                  if ".codex/" not in line))
 
 
+def board_tips(repo, worktrees):
+    """The commits a merge of the board's own may leave the checkout's HEAD
+    on: each worktree's `merged_oid` (a squash found by patch) and the tip of
+    each worktree's branch, which a fast-forward makes HEAD and which then
+    carries no `merged_oid` (an ancestor merge names no one commit)."""
+    tips = {w.get("merged_oid") for w in worktrees or []}
+    for w in worktrees or []:
+        if w.get("branch"):
+            tips.add(subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "-q",
+                                     "refs/heads/" + w["branch"]], capture_output=True, text=True,
+                                    timeout=5).stdout.strip())
+    return tips - {None, ""}
+
+
 def checkout_changes(before, after, merged=()):
     """What moved in the checkout between two `checkout_state`s: a HEAD
-    that is neither the one before nor a tip the board merged (`merged`,
-    the worktrees' merged oids), and every working-tree line that is new.
+    that is neither the one before nor a tip the board's merge left there
+    (`merged`, `board_tips`), and every working-tree line that is new.
     Empty is a checkout the crown left alone."""
     changes = []
     if after["head"] != before["head"] and after["head"] not in merged:
@@ -792,8 +823,7 @@ def adapter(base):
             `apply_patch`, a shell command that writes naming the work
             (`shell_writes`), and any move of the checkout's HEAD or working
             tree since `before`, a tip the board merged from a worktree aside."""
-            snapshot = self.snapshot()
-            merged = {w.get("merged_oid") for w in snapshot.get("worktrees") or [] if w.get("merged")} - {None, ""}
+            merged = board_tips(self.repo, self.snapshot().get("worktrees"))
             signs = [f"native child: {c['text'][:120]}" for c in spawned(calls)]
             signs += [f"apply_patch: {c['text'][:120]}" for c in patched(calls)]
             signs += [f"shell write: {c['text'][:160]}" for c in shell_writes(calls, names)]
@@ -971,6 +1001,11 @@ def adapter(base):
                 raise AssertionError("the crown fixed the pipeline itself instead of through its worker: "
                                      + "; ".join(signs))
             self.manifest["forge"]["branch_moved_after_news"] = branch_after != branch_before
+            if not asked:
+                # The worker's words carry the failure, but whether they are
+                # the crown's ask is unproven: inconclusive, never a pass.
+                raise Inconclusive("the ask_agent call's words could not be read off it, so the worker's "
+                                   "prompt is not shown to be the crown's ask")
             self.mark(assertion="the crown told its worker of the failed job and yielded: the worker read the "
                       "failure in the crown's words, and no watch, sleep, poll or fix of the crown's own",
                       passed=True, **self.manifest["forge"])

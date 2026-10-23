@@ -2468,13 +2468,15 @@ Reply with the single word ready and end your turn."""
                 check(c, not bad, " → ".join(repr(b[:60]) for b in bad)
                       or f"{len(ran)} bash calls, none of {words}")
             elif name == "filed":
-                # T-916: the crown's own session filed the person's request as
-                # a ticket from its ticket and started an agent on it, in that
-                # ticket's own worktree, which took a turn.
+                # T-916: every ticket the crown started an agent on was filed
+                # by the crown's own session from its ticket, and its agent
+                # works in that ticket's own worktree and took a turn.
                 crown_rec = self.agent_of(board, self.crown)
                 trees = {w["ticket"]: w for w in self.snapshot().get("worktrees", [])}
                 good, bad = [], []
-                for t in self.crown_filed(lines):
+                starts = [l.get("ticket") for l in lines if l.get("kind") == "board"
+                          and l.get("actor") == "agent" and l.get("cmd") == "start_agent"]
+                for t in dict.fromkeys(starts):
                     a, tk, tree = self.agent_of(board, t), self.ticket(board, t), trees.get(t, {})
                     why = []
                     if tk.get("created_by") != f"agent:{crown_rec and crown_rec['id']}" \
@@ -2491,14 +2493,16 @@ Reply with the single word ready and end your turn."""
                             why.append("took no turn")
                     (bad if why else good).append(f"{tk['short_key']} {tk['title'][:50]!r}"
                                                   + (": " + ", ".join(why) if why else f" in {tree.get('branch')}"))
-                check(c, good, "; ".join(good + bad) or "the crown filed and started nothing")
+                # Every start the crown made must hold: one good start
+                # beside a bad one fails, as the Codex rig's does.
+                check(c, bool(good) and not bad, "; ".join(good + bad) or "the crown filed and started nothing")
             elif name == "crown_wrote_nothing":
                 # T-916: the work went to the filed ticket's agent, not the
                 # crown's: no Write, Edit or NotebookEdit, no Bash command that
                 # writes naming the work (`codex.command_writes`), and the
                 # checkout's HEAD and tree where the test found them, a tip
                 # the board merged from a worktree aside.
-                from codex import checkout_changes, command_writes
+                from codex import board_tips, checkout_changes, command_writes
                 names = [n for n in arg.split(",") if n]
                 crown = self.agent_of(board, self.crown)
                 since = record.get("t0_ms", 0)
@@ -2508,8 +2512,8 @@ Reply with the single word ready and end your turn."""
                 signs = [f"{n} {i.get('file_path', '')}" for n, i in calls if n in ("Write", "Edit", "NotebookEdit")]
                 signs += [f"Bash {i.get('command', '')[:80]!r}" for n, i in calls
                           if n == "Bash" and command_writes(i.get("command", ""), names)]
-                merged = {w.get("merged_oid") for w in self.snapshot().get("worktrees", []) if w.get("merged")}
-                signs += checkout_changes(record["checkout0"], self.checkout(), merged - {None, ""})
+                merged = board_tips(self.repo, self.snapshot().get("worktrees"))
+                signs += checkout_changes(record["checkout0"], self.checkout(), merged)
                 check(c, not signs, "; ".join(signs) or f"no write of the crown's; {len(calls)} calls, "
                       "checkout as the test found it")
             elif name == "fed":

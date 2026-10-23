@@ -213,6 +213,17 @@ class CrownTests(unittest.TestCase):
         self.assertEqual(len(rig.spawned(calls)), 1)
         self.assertEqual([c["row"] for c in rig.tool_calls(rows, since=5)], [5, 6, 7])
 
+    def test_one_read_of_the_pull_request_is_no_poll_and_the_same_read_again_is(self):
+        exec_ = lambda cmd: call("exec", "text(await tools.exec_command(" + json.dumps({"cmd": cmd}) + "));")
+        once = rig.tool_calls([exec_("gh pr view 42 --json statusCheckRollup"), exec_("gh pr checks 42"),
+                               exec_("gh run view 7 --log-failed")])
+        self.assertEqual(rig.polling(once), [], "learning which job failed, then yielding")
+        again = rig.tool_calls([exec_("gh pr checks 42"), exec_("git -C /wt log -1"), exec_("gh  pr checks 42")])
+        self.assertEqual([c["row"] for c in rig.polling(again)], [0, 2], "the same read twice is a wait")
+        for cmd in ("gh pr checks 42 --watch", "gh run watch 7", "sleep 60; gh pr view 42"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(len(rig.polling(rig.tool_calls([exec_(cmd)]))), 1)
+
     def test_user_turns_skip_injected_context_and_a_final_answer_ends_one(self):
         rows = [said("user", "<environment_context>cwd</environment_context>"),
                 said("developer", "This session was started by mesimon"),
@@ -278,6 +289,10 @@ class CrownTests(unittest.TestCase):
                   call("exec_command", json.dumps({"cmd": "echo hi >> greet.py"}))]
         reads = [exec_("cat greet.py"), exec_("git -C /owned/wt/T-2-greet log --oneline"),
                  exec_("python3 -m unittest test_greet"), exec_("echo done > /tmp/unrelated.txt"),
+                 exec_("git -C /owned/wt/T-2-greet log --oneline 2>&1"),
+                 exec_("cat greet.py 2>/dev/null || true"), exec_("ls test_greet.py > /dev/null && echo ok"),
+                 exec_("git -C /owned/wt/T-2-greet diff main 2>&1 | head"),
+                 exec_("node -p \"['greet.py'].map(f => f.length >= 1)\""),
                  call("exec", 'text(await tools.mcp__mesimon__create_ticket({"title":"Add greet.py > tests"}));')]
         found = rig.shell_writes(rig.tool_calls(writes + reads), names)
         self.assertEqual([c["row"] for c in found], list(range(len(writes))))
@@ -289,7 +304,8 @@ class CrownTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertTrue(rig.command_writes(command, names))
         for command in ("cat greet.py", "python3 -m unittest test_greet", "git log -- greet.py",
-                        "echo done > /tmp/x"):
+                        "echo done > /tmp/x", "git log -- greet.py 2>&1", "cat greet.py 2>/dev/null",
+                        "python3 -m unittest test_greet >/dev/null 2>&1", "echo greet.py"):
             with self.subTest(command=command):
                 self.assertFalse(rig.command_writes(command, names))
 
@@ -315,6 +331,36 @@ class CrownTests(unittest.TestCase):
             self.assertTrue(changes[0].startswith("HEAD "), "a committed shell edit is no clean tree")
             self.assertEqual(rig.checkout_changes(before, after, merged={after["head"]}), [],
                              "the board's merge of a worker's tip is the follow-through")
+
+    def test_the_board_s_fast_forward_is_no_crown_write_though_it_names_no_merged_oid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            git = lambda *a: subprocess.run(["git", "-C", str(repo), "-c", "user.name=f", "-c",
+                                              "user.email=f@x.invalid", *a], check=True, capture_output=True)
+            git("init", "-q", "-b", "main")
+            (repo / "README.md").write_text("fixture\n")
+            git("add", "README.md")
+            git("commit", "-q", "-m", "fixture")
+            before = rig.checkout_state(repo)
+            git("switch", "-q", "-c", "msmn/T-2-greet")
+            (repo / "greet.py").write_text("x\n")
+            git("add", "greet.py")
+            git("commit", "-q", "-m", "the worker's commit")
+            git("switch", "-q", "main")
+            git("merge", "-q", "--ff-only", "msmn/T-2-greet")
+            after = rig.checkout_state(repo)
+            # A fast-forward is an ancestor merge: the board names no merged_oid.
+            trees = [{"ticket": "W", "branch": "msmn/T-2-greet", "merged": True, "merged_oid": ""},
+                     {"ticket": "X", "branch": "msmn/T-3-gone", "merged": False}]
+            tips = rig.board_tips(repo, trees)
+            self.assertEqual(tips, {after["head"]})
+            self.assertEqual(rig.checkout_changes(before, after, tips), [], "the board's merge, not the crown's")
+            (repo / "own.py").write_text("x\n")
+            git("add", "own.py")
+            git("commit", "-q", "-m", "the crown's own commit on top")
+            changes = rig.checkout_changes(before, rig.checkout_state(repo), rig.board_tips(repo, trees))
+            self.assertEqual(len(changes), 1)
+            self.assertTrue(changes[0].startswith("HEAD "), "a commit past the board's tip is still the crown's")
 
     def test_delegation_needs_the_crown_s_own_ticket_and_a_worktree_of_its_own(self):
         crown, sid, repo, root = "CROWN", "crown-sid", Path("/owned/repo"), Path("/owned/state/worktrees")
@@ -360,6 +406,8 @@ class CrownTests(unittest.TestCase):
                 self.assertFalse(rig.heard_the_ask(heard, asked))
         self.assertTrue(rig.heard_the_ask("The test-linux job failed on #42.", []),
                         "words not read off the call are judged on the failure alone")
+        self.assertTrue(issubclass(rig.Inconclusive, Exception) and not issubclass(rig.Inconclusive, AssertionError),
+                        "and such a case ends inconclusive, which the runner records apart from a failure")
         self.assertFalse(rig.heard_the_ask("Please check T-1.", []))
 
     def test_the_crown_fixture_s_home_hides_the_person_s_tiers_and_claude(self):

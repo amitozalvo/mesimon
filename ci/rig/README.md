@@ -91,8 +91,10 @@ and listed (`approvals_left`), and a crown kept waiting on one fails.
   native child (Codex's own child agents are on, `multi_agent`, its default, one
   thread, pinned to the selected model and effort), no `apply_patch`, no shell
   command that writes naming the work's files or the worker's worktree, and
-  the checkout's HEAD and working tree where the request found them (a tip the
-  board merged from a worktree aside). Then the worker's turn ends, the board
+  the checkout's HEAD and working tree where the request found them (a HEAD the
+  board's own merge left there aside: a worktree's `merged_oid`, or the tip of
+  a board worktree's branch, which is where a fast-forward leaves it and which
+  names no `merged_oid`). Then the worker's turn ends, the board
   wakes the crown with it, and the crown's turn on that wake ends, the same
   no-implementation evidence holding over every crown turn. The crown's calls,
   the worker's files and the wake's cause are recorded, not judged.
@@ -106,21 +108,26 @@ and listed (`approvals_left`), and a crown kept waiting on one fails.
   the stub opens PR 42 on the worker's branch, running, then fails its one job,
   `test-linux`. It passes when the board wakes the crown with the forge's
   news, the crown's `ask_agent` reaches the worker, the words the worker reads
-  are the ask's own words (read off the crown's call where its arguments spell
-  them) and name the job or PR 42 and that it failed, and no turn of the
-  crown's from the news on runs a watch, a sleep or a poll of the pull request
-  (`gh pr checks`, `--watch`, `sleep`, Codex's own sleep tool), patches, writes
-  by shell naming the README, the worktree or the branch, or moves the
-  checkout.
+  are the ask's own words and name the job or PR 42 and that it failed, and no
+  turn of the crown's from the news on waits on the pull request (`--watch`,
+  `gh run watch`, `sleep`, Codex's own sleep tool, or the same forge read such
+  as `gh pr checks 42` run twice; one read to learn which job failed is no
+  wait), patches, writes by shell naming the README, the worktree or the
+  branch, or moves the checkout. Where the ask's words cannot be read off the
+  crown's call, the case ends `inconclusive`, never passed.
 
-The shell-write test reads a command's words: a write it cannot see (a script
+The shell-write test reads a command's words: output redirected to a file
+(not `2>&1`, `>/dev/null`, `=>` or `>=`), `tee`, a heredoc, `cp`, `mv`,
+`touch`, `sed -i`, an interpreter's `-c`/`-e`, and git's writes. A write it cannot see (a script
 that writes a file it does not name) is caught only by the checkout's HEAD and
 tree, and in the worker's worktree, where the worker's own writes are expected,
 not at all.
 
-The crown cases' daemon runs on a HOME of its own inside the fixture: the
-machine's tiers live under `$HOME` and a crown picks among them (a first run's
-crown started its worker on the person's own Claude tier), so only the built-in
+The crown cases' daemon runs on a HOME of its own inside the fixture. A
+fixture daemon on the real `HOME` offers the person's machine tiers
+(`$HOME/.local/state/mesimon/tiers.toml`) to a crown, which picks among them: a
+first run's crown started its worker on the person's own Claude tier, whose
+`claude` then stopped at its trust dialog. In the fixture's HOME only the built-in
 tiers exist there, `claude` refuses to start, git has a fixture identity, no
 personal Codex skills are listed, and the captured login shell is the rig's
 PATH.

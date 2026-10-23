@@ -179,9 +179,7 @@ Additional targeted gates:
   the crown is told or does (tool text, `get_ticket`'s answer, the brief, a crown wake, a turn
   road) adds a test there and runs it once before the ticket is done, never on every build.
 - A real Codex crown: `python3 -B ci/rig.py --provider codex --live --only delegate` or
-  `--only forge` (Luna, low; `ci/rig/README.md`). A fixture daemon on the real `HOME` offers the
-  person's machine tiers to a crown, which may pick a Claude one: the crown cases run theirs on
-  a `HOME` of their own.
+  `--only forge` (Luna, low; `ci/rig/README.md`).
 - Linux release artifacts: `ci/build-linux.sh`.
 - Release rehearsal: `ci/release.sh --dry-run`; follow the script's current Docker policy and
   never publish as part of an ordinary development task. The author releases with one command,

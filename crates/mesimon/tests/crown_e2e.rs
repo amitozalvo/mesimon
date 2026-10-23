@@ -111,7 +111,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     }
     // A session may always address its OWN ticket by key, crown or not.
     let own = read(&mut c, sa, &ka).expect("own key");
-    assert!(!own.crowned);
+    assert_eq!(own.crowned, Some(false), "its own read says it either way");
     assert!(own.crown.is_none(), "an uncrowned ticket carries no wake words");
     assert!(own.seen.is_some(), "every read carries a stamp");
     // An unknown key is an answer, not a crown question.
@@ -157,7 +157,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         }
     }
     let own = read(&mut c, sa, &ka).unwrap();
-    assert!(own.crowned, "get_ticket says the caller wears it");
+    assert_eq!(own.crowned, Some(true), "get_ticket says the caller wears it");
     // T-916: what the crown is for, then (T-537) how the board wakes it, so
     // it arms no monitor of its own.
     assert_eq!(own.crown, Some(mesimon_core::mcp::crown_view()));
@@ -175,7 +175,9 @@ fn the_crown_lets_one_agent_edit_the_others() {
 
     // ---- read another ticket: the card's words and a stamp ------------------
     let view = read(&mut c, sa, &kb).expect("crowned");
-    assert!(!view.crowned);
+    // T-916: another ticket's view says nothing of a crown, which a Codex
+    // crown took for its own `false`.
+    assert_eq!(view.crowned, None);
     assert!(view.crown.is_none(), "the wake's words ride the crowned ticket alone");
     let seen = view.seen.clone().expect("a stamp");
     let state = view.state.expect("B has an agent");
@@ -904,7 +906,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     let other = shim.call_ok("get_ticket", json!({ "key": kb }));
     assert_eq!(other["key"], json!(kb));
     assert!(other["seen"].is_string(), "{other}");
-    assert_eq!(other["crowned"], json!(false));
+    assert!(other.get("crowned").is_none(), "another ticket's view leaves it out: {other}");
     let mine = shim.call_ok("get_ticket", json!({}));
     assert_eq!(mine["crowned"], json!(true));
     let r = shim.call("rename_ticket", json!({ "key": kb, "title": "x" }));

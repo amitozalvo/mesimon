@@ -91,13 +91,15 @@
 #              ran: the board's wake is the wait), fed_after:<cmd>:<prefix>
 #              (T-919: the ticket's first board line whose cmd begins
 #              <prefix> follows its first <cmd> line, none before it),
-#              filed (T-916: a ticket the crown's session filed since the
-#              test began carries an agent the crown started in that
-#              ticket's own worktree, which took a turn),
+#              filed (T-916: the crown started at least one agent since
+#              the test began, and every ticket it started one on was filed
+#              by the crown's session, its agent the crown's, in that
+#              ticket's own worktree, and took a turn; one bad start fails),
 #              crown_wrote_nothing:<names> (T-916: no Write, Edit or
 #              NotebookEdit of the crown's since the test began, no Bash
 #              command of its that writes naming one of the names, and the
-#              checkout's HEAD and tree as the test found them).
+#              checkout's HEAD and tree as the test found them, a board
+#              worktree branch's tip a fast-forward left there aside).
 #   siblings   more tickets the test files beside its own ({key2}, {key3}
 #              in a step; {crown} is the rig's crown's own key), each with
 #              the same brief and every check run on

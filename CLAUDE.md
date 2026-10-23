@@ -688,9 +688,6 @@ will not show up in our tests until they break something.
   says the dialog is gone, and it is the refusal road (`Signal::ToolStarted`, T-447).
 - **A tool in flight keeps the transcript still for its whole duration**, so an mtime-quiet rule
   reads a 3.5-minute `cargo` call as a dead turn.
-- **A fixture daemon on the real `HOME` offers the person's machine tiers to a crown**
-  (`$HOME/.local/state/mesimon/tiers.toml`, T-916): a Codex crown in the rig started its worker on
-  the person's own Claude tier. The Codex rig's crown cases give their daemon a `HOME` of its own.
 - **`pgrep -f <pattern>` matches the shell that runs it**, whose own argv holds the pattern: a
   `while pgrep -f …; do sleep 5; done` never ends (T-599's ten hours). Wait on a pid, a pidfile
   or `pgrep -x`, never on the command's own words.
