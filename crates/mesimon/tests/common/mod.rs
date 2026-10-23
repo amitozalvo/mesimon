@@ -700,11 +700,7 @@ impl Harness {
         if let Some((_, path)) = env.iter().find(|(key, _)| *key == "PATH") {
             assert!(!path.contains('\''), "a test PATH is quoted into ~/.profile: {path}");
             let home = PathBuf::from(&fixture.env.borrow()["HOME"]);
-            std::fs::write(
-                home.join(".profile"),
-                format!("PATH='{path}'\nexport PATH\n"),
-            )
-            .unwrap();
+            std::fs::write(home.join(".profile"), format!("PATH='{path}'\nexport PATH\n")).unwrap();
         }
         let stub = stub.map(|body| {
             let p = dir.join("claude-stub.sh");

@@ -680,6 +680,9 @@ pub struct Daemon {
     /// When the journal last named a slow sample: a loaded machine writes
     /// one line a minute, not one a sample.
     pane_slow_said: Option<Instant>,
+    /// The unreaped panes the journal has named (T-917), by server pid and
+    /// session name: one line a pane, however many samples nudge it.
+    unreaped_said: std::collections::HashSet<(i32, String)>,
     /// The newest input screen the sampler read of each pane, by session
     /// name, with the sample's time (T-857): what `settle_owed`'s composer
     /// read consults in place of a fork on the writer. Pruned with the
@@ -1377,6 +1380,7 @@ pub fn run(paths: Paths) -> Result<()> {
         pane_inflight: false,
         pane_gen: 0,
         pane_slow_said: None,
+        unreaped_said: std::collections::HashSet::new(),
         screens: HashMap::new(),
         compaction_clear: HashMap::new(),
         worktrees,
@@ -3699,6 +3703,31 @@ impl Daemon {
             self.terminals = terminals;
         }
         Panes { changed, repaint }
+    }
+
+    /// A pane of ours that tmux lists dead and never reaped (T-917): on a
+    /// Linux tmux before 3.6 its SIGCHLD can be lost, and then no `pane-died`
+    /// ever comes, so the record held its pane, its seat and its checkout for
+    /// good (CI's `codex_startup_recovery_e2e`, 1 run in 10 on Ubuntu's 3.4).
+    /// The server is asked to reap ([`mesimon_backend_tmux::nudge_reaper`]),
+    /// and its `pane-died` then comes up the hook road like any other: this
+    /// decides nothing about the record itself. Nudged on every sample that
+    /// still shows the pane, since another pane's death can eat the nudge's
+    /// own signal; journalled once.
+    fn nudge_unreaped(&mut self, facts: &[mesimon_backend_tmux::PaneFacts]) {
+        let ours: std::collections::HashSet<String> =
+            self.board.sessions.iter().filter(|r| r.state.has_pane()).map(|r| r.sid16()).collect();
+        for f in facts.iter().filter(|f| f.unreaped() && ours.contains(&f.session_name)) {
+            if mesimon_backend_tmux::nudge_reaper(f.server_pid)
+                && self.unreaped_said.insert((f.server_pid, f.session_name.clone()))
+            {
+                self.journal.line(&format!(
+                    "unreaped pane: {} died and tmux {} never waited for it; asked it to (SIGCHLD)",
+                    f.session_name, f.server_pid
+                ));
+            }
+        }
+        self.unreaped_said.retain(|(_, name)| ours.contains(name));
     }
 
     fn poll_tails(&mut self) -> bool {
@@ -16521,6 +16550,7 @@ impl Daemon {
                 stage!(self, "refresh_panes", self.absorb_panes(facts, s.rows.as_deref(), at));
             changed |= panes.changed;
             repaint |= panes.repaint;
+            stage!(self, "nudge_unreaped", self.nudge_unreaped(facts));
             if let Some(rss) = &s.rss {
                 changed |= stage!(self, "refresh_rss", self.absorb_rss(facts, rss));
             }

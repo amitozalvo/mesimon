@@ -119,39 +119,69 @@ fn pairs(out: &str) -> impl Iterator<Item = (&str, &str)> {
 }
 
 /// What one pane is doing, from the poll-bucket fork (`pane_facts`): its
-/// name, whether it is a `remain-on-exit` corpse, the foreground process's
-/// name (`#{pane_current_command}` — the shell's own at a prompt, the
-/// command's while one runs) and its OSC-0 title.
+/// name, whether it is a `remain-on-exit` corpse and whether tmux has reaped
+/// it, the server's pid, the foreground process's name
+/// (`#{pane_current_command}` — the shell's own at a prompt, the command's
+/// while one runs) and its OSC-0 title.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneFacts {
     pub session_name: String,
     /// The pane's process — the agent's own, since `mesimon exec` execs.
     pub pane_pid: i32,
     pub pane_dead: bool,
+    /// A dead pane whose exit status or signal tmux has read: its process
+    /// was waited for, so `pane-died` has fired. Dead and not reaped is the
+    /// pane [`nudge_reaper`] is for.
+    pub reaped: bool,
+    /// The server's own pid (`#{pid}`), from the same read.
+    pub server_pid: i32,
     pub current_command: String,
     pub title: String,
 }
 
-/// `session|pid|dead|command|title` rows. Four splits, so the title — the
-/// one free-text field, last — keeps any separator of its own.
+impl PaneFacts {
+    /// tmux saw the pane's pty close and never waited for its process.
+    pub fn unreaped(&self) -> bool {
+        self.pane_dead && !self.reaped
+    }
+}
+
+/// `session|pid|dead|status|signal|server|command|title` rows. Seven splits,
+/// so the title — the one free-text field, last — keeps any separator of
+/// its own.
 fn parse_facts(out: &str) -> Vec<PaneFacts> {
     out.lines()
         .filter_map(|l| {
-            let mut f = l.splitn(5, SEP);
-            let (Some(name), Some(pid), Some(dead), Some(cmd), Some(title)) =
-                (f.next(), f.next(), f.next(), f.next(), f.next())
-            else {
+            let f: Vec<&str> = l.splitn(8, SEP).collect();
+            let [name, pid, dead, status, signal, server, cmd, title] = f[..] else {
                 return None;
             };
             Some(PaneFacts {
                 session_name: name.to_string(),
                 pane_pid: pid.parse().unwrap_or(0),
                 pane_dead: dead == "1",
+                reaped: !status.is_empty() || !signal.is_empty(),
+                server_pid: server.parse().unwrap_or(0),
                 current_command: cmd.trim().to_string(),
                 title: title.trim().to_string(),
             })
         })
         .collect()
+}
+
+/// Make the server wait for its children (T-917). A tmux before 3.6 built
+/// with libutempter — Debian's and Ubuntu's — loses a child's exit:
+/// `server_destroy_pane` calls `utempter_remove_record`, whose wait for its
+/// helper sets SIGCHLD to `SIG_DFL` for its length, and a pane process that
+/// turns zombie inside that window has its SIGCHLD discarded. tmux never
+/// waits for it, never reads its status, and never fires `pane-died`. 3.6
+/// raises SIGCHLD at itself after the call (`server-fn.c`); this is the same
+/// raise, sent from outside. A SIGCHLD with no child to wait for costs the
+/// server one empty `waitpid` loop.
+pub fn nudge_reaper(server_pid: i32) -> bool {
+    // SAFETY: `kill` takes plain integers; a pid of 1 or less is never sent
+    // to (0 and -1 would signal a whole group).
+    server_pid > 1 && unsafe { libc::kill(server_pid, libc::SIGCHLD) } == 0
 }
 
 /// `Clone` so the daemon's pane sampler (T-857) can carry a copy onto its
@@ -614,6 +644,9 @@ impl TmuxBackend {
             "session_name",
             "pane_pid",
             "pane_dead",
+            "pane_dead_status",
+            "pane_dead_signal",
+            "pid",
             "pane_current_command",
             "pane_title",
         ]);
@@ -1149,15 +1182,19 @@ mod tests {
             "split once: the title keeps its own bar"
         );
 
-        let facts =
-            parse_facts("abc123|41|0|cargo|claude | T-12 fix\nmsmn-term-x|42|1|zsh|host\nbare\n");
+        let facts = parse_facts(
+            "abc123|41|0|||900|cargo|claude | T-12 fix\nmsmn-term-x|42|1|7||900|zsh|host\n\
+             c0dex|43|1|||900|python3|host\nkilled|44|1||9|900|sh|host\nbare\n",
+        );
         assert_eq!(
-            facts,
+            facts[..2],
             [
                 PaneFacts {
                     session_name: "abc123".into(),
                     pane_pid: 41,
                     pane_dead: false,
+                    reaped: false,
+                    server_pid: 900,
                     current_command: "cargo".into(),
                     title: "claude | T-12 fix".into(),
                 },
@@ -1165,12 +1202,20 @@ mod tests {
                     session_name: "msmn-term-x".into(),
                     pane_pid: 42,
                     pane_dead: true,
+                    reaped: true,
+                    server_pid: 900,
                     current_command: "zsh".into(),
                     title: "host".into(),
                 },
             ],
-            "four splits: the title, last, keeps its own bar"
+            "seven splits: the title, last, keeps its own bar"
         );
+        // Dead with no status and no signal: tmux never waited for it
+        // (T-917). A signal's death is reaped too.
+        let unreaped: Vec<_> =
+            facts.iter().filter(|f| f.unreaped()).map(|f| f.session_name.as_str()).collect();
+        assert_eq!(unreaped, ["c0dex"]);
+        assert_eq!(facts.len(), 4, "a line short of the fields is not a pane row");
     }
 
     #[test]
