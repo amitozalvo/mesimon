@@ -2554,6 +2554,15 @@ pub struct AgentTicketView {
     /// ticket clears it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asked: Option<AgentAskedView>,
+    /// The hand this ticket's agent raised that the board told the crown of
+    /// and so lowered (T-861), kept for its reason (T-922): the wake names
+    /// the hand and never its words, and `state.raised` is gone by the time
+    /// the woken crown reads. Not a hand up — nothing counts it, nothing
+    /// lights — and kept until the agent's next turn starts, the agent
+    /// raises again, or the crown changes. The crown's `get_ticket` with
+    /// `key` only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub told_hand: Option<AgentToldHandView>,
     /// An opaque stamp over everything a keyed edit may assume — column,
     /// order, title, tags, notes, workspace, the agent's state — returned
     /// to the daemon by every keyed mutation, which refuses when the ticket
@@ -2637,6 +2646,17 @@ pub struct AgentAskedView {
     /// Seconds since it was dropped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since_secs: Option<u64>,
+}
+
+/// A raised hand the crown was told of (T-922): the reason as the agent
+/// gave it (sanitized and capped by `board::sanitize_reason`), and how long
+/// ago the crown was told.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentToldHandView {
+    pub reason: String,
+    /// Seconds since the wake that named the hand reached the crown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub told_secs: Option<u64>,
 }
 
 /// One question a stopped agent asks (T-566): its words, its options'
@@ -4014,6 +4034,7 @@ mod tests {
             state: None,
             needs_you: None,
             asked: None,
+            told_hand: None,
             seen: None,
         };
         let json = serde_json::to_value(&t).unwrap();

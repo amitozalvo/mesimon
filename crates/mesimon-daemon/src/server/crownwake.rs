@@ -775,6 +775,19 @@ pub(super) struct Heard {
     pub(super) restored: bool,
 }
 
+/// A raised hand the crown was told of, kept for its reason (T-922). The
+/// telling lowers the hand (T-861), and the wake's sentence names the hand
+/// and never its words (T-414), so without this the crown that was woken to
+/// read the reason found none. Not a mark: nothing counts it and nothing
+/// lights for it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct ToldHand {
+    /// `Raised::reason`, as the worker gave it.
+    pub(super) reason: String,
+    /// When the wake that named it reached the crown.
+    pub(super) told_ms: u64,
+}
+
 /// A turn's end the crown's ledger has not judged yet (T-602): what its
 /// probe was for, kept until the look lands.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1947,6 +1960,7 @@ impl Daemon {
         self.crown_landed.clear();
         self.crown_recheck.clear();
         self.crown_watched.clear();
+        self.crown_hands.clear();
         if self.crown_wakes.is_empty() {
             return;
         }
@@ -1961,6 +1975,11 @@ impl Daemon {
     /// Only a wake whose cause IS the hand: a question or a plan folded
     /// over it (`WakeCause`'s order) comes down with its dialog (T-611),
     /// and a hand folded over a delivery is still the hand.
+    ///
+    /// The reason stays with the crown that was told (T-922): the sentence
+    /// sent it to `get_ticket` for it, and the hand it would have read
+    /// there is the one coming down here. A hand somebody lowered before
+    /// the sentence went keeps nothing: that person dealt with it.
     pub(super) fn lower_told_hands(&mut self) {
         let told: Vec<ulid::Ulid> = self
             .crown_wakes
@@ -1968,9 +1987,45 @@ impl Daemon {
             .filter(|w| w.cause == WakeCause::Raised)
             .map(|w| w.worker)
             .collect();
+        let now = now_ms();
         for worker in told {
+            let reason = self.board.ticket(worker).and_then(|t| t.raised.as_ref());
+            if let Some(reason) = reason.map(|r| r.reason.clone()) {
+                self.crown_hands.insert(worker, ToldHand { reason, told_ms: now });
+            }
             self.lower_hand_on(worker);
         }
+        let board = &self.board;
+        if self.crown_hands.keys().any(|w| board.ticket(*w).is_none()) {
+            self.crown_hands.retain(|w, _| board.ticket(*w).is_some());
+        }
+    }
+
+    /// The worker's agent was given something (T-922): its next turn began,
+    /// so the hand the crown was told of is answered or overtaken, and its
+    /// reason is no longer the worker's ask. Writes nothing for a worker
+    /// that kept none.
+    pub(super) fn forget_told_hand(&mut self, worker: ulid::Ulid) {
+        if self.crown_hands.contains_key(&worker) {
+            self.crown_hands.remove(&worker);
+        }
+    }
+
+    /// What the crown on `crown` reads of `worker`'s told hand (T-922):
+    /// only the board's crown, and never on its own ticket.
+    pub(super) fn told_hand_view(
+        &self,
+        crown: ulid::Ulid,
+        worker: ulid::Ulid,
+    ) -> Option<mesimon_core::command::AgentToldHandView> {
+        if self.board.crown != Some(crown) || worker == crown {
+            return None;
+        }
+        let hand = self.crown_hands.get(&worker)?;
+        Some(mesimon_core::command::AgentToldHandView {
+            reason: mesimon_core::text::scrub_text(&hand.reason),
+            told_secs: Some(now_ms().saturating_sub(hand.told_ms) / 1000),
+        })
     }
 
     /// The sentence the crown receives: the board's `crown_wake` template

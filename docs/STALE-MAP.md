@@ -31060,3 +31060,55 @@ counts what came after, the ends hold), `golden_transcript_dialog_120`,
 `test_transcript_dialog_steps_messages_and_scrolls_the_one_on_show`,
 `test_transcript_needs_a_conversation`, and `braces_open_the_transcript_and_step_its_messages`
 in the keymap.
+
+## The crown reads the reason of a hand it was told of (T-922, 2026-10-23, "Keep a raised-hand reason readable after its notification reaches the crown")
+
+**Seen on T-917.** A worker raised its hand mid-turn; the crown woke on `… raised its hand ∙
+get_ticket key=… for state and notes`, read the ticket at once and found `state: working` and no
+reason. **Cause:** two decisions that each held alone. T-414 keeps the reason out of the wake
+sentence (one agent's words do not start another's turn) and sends the crown to `get_ticket`;
+T-861's `lower_told_hands` takes `Ticket.raised` off in the same writer turn that sent the
+sentence, and `get_ticket`'s only spelling of the reason was `state.raised`, read from that
+field. T-888's five-minute memory of a lowered hand is the TUI's alone and never reached an
+agent. `crown_e2e` asserted the hand was down after the wake and never read the ticket.
+
+**Shipped.** The hand still comes down when the crown is told (T-861 unchanged: nothing counts
+or lights a told hand), and its reason stays with the crown that was told:
+- `Daemon::crown_hands` (worker → `ToldHand { reason, told_ms }`), filled by
+  `lower_told_hands` from `Ticket.raised` just before it lowers it. Kept in `crown.json` as
+  `hands` (same schema: a build that drops the field loses the reasons and narrows nothing), so a
+  restart between the wake and the read keeps it.
+- The crown's keyed `get_ticket` carries it as `told_hand { reason, told_secs }`
+  (`AgentTicketView::told_hand`, `told_hand_view`), the way `asked` (T-568) rides that read.
+  Not on the worker's own read, not on `list_board`, not on the crown's own ticket; another
+  agent's keyed read is refused as before. `state.raised` keeps meaning a hand that is up.
+- **Taken by:** the worker's next turn (`forget_told_hand` on the three turn-start roads beside
+  `lower_hand_on`: `UserPromptSubmit`, Codex's new turn, the High `Idle{EndTurn}`/dialog →
+  `Running` edge): it was given something, so the question is answered or overtaken. A new
+  `raise_hand` with other words (the new hand is `state.raised`, and its telling replaces the
+  entry). A new crown (`drop_crown_wakes`; it has heard nothing). A ticket gone from the board.
+  One entry per worker, at most `RAISE_REASON_MAX_BYTES`: bounded by the board.
+- **Not taken by** the other T-861 roads (focus in or out of the pane, a park, the page's
+  `LowerHand`): none of them gave the agent anything, and the crown is still the one holding the
+  question. **A hand lowered before the sentence went keeps nothing**: the person dealt with it,
+  and the wake that still names it does not resurrect it.
+- Not in `seen_token`: a reason kept or forgotten changes nothing a keyed edit assumes, and the
+  turn that forgets it already moves the stamp.
+- `CROWN_WAKES` gains one sentence saying the hand comes down at the telling and where its reason
+  is read; the wake template and `raise_hand`'s description are unchanged.
+
+**Considered and refused.** Putting the reason in the wake sentence (T-414's rule, and arbitrary
+worker text in an unsolicited prompt). Keeping the hand up until the crown acts (T-861's two
+cards for one question). Letting `state.raised` fall back to the told reason (a hand that is down
+would read as up). A note on the ticket (content made only to carry a pointer). A time window
+(a crown woken while busy may read an hour later; the events above bound it instead).
+
+**Tests.** `told_hand_e2e::the_crown_reads_the_reason_of_a_hand_it_was_told_of`: told and down,
+read by the crown with `state: working` and no `state.raised`, refused to another agent, absent
+on the worker's own read and the crown's own ticket, kept across a restart and the crown's own
+turn, overtaken by a new hand and replaced at its telling, kept past the worker's Stop and taken
+by its next prompt, nothing kept for a hand a person lowered first, and gone with an uncrown.
+Without the fix it fails at the first read exactly as T-917 read. `crown_e2e`'s two hand passages
+(a started worker, a watched one) now read `told_hand` after the wake. `crownledger`'s round-trip
+carries `hands`. Rig **RH2** (Sonnet): a worker asks a two-word question by its hand; the crown
+answers it with exactly one `ask_agent` naming the first word, and the worker replies with it.

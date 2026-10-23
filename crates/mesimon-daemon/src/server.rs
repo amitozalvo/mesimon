@@ -844,6 +844,13 @@ pub struct Daemon {
     /// and where a wake's delta runs from. Kept in `crown.json` with the
     /// wakes (T-602). A new crown starts with it empty.
     crown_heard: Tracked<HashMap<ulid::Ulid, crownwake::Heard>>,
+    /// The raised hands the crown was told of and that came down for it
+    /// (T-861), by worker, kept for their reason (T-922): the crown's keyed
+    /// `get_ticket` reads it as `told_hand`. One per worker, taken by the
+    /// worker's next turn or its next hand; kept in `crown.json`, so a
+    /// restart between the wake and the read keeps it. A new crown starts
+    /// with it empty.
+    crown_hands: Tracked<HashMap<ulid::Ulid, crownwake::ToldHand>>,
     /// Workers the restored ledger names, owed one look after the restart
     /// (T-602, `hear_restored`), with the turn the last daemon did not
     /// judge; let go at `crown_recheck_until`.
@@ -1430,6 +1437,7 @@ pub fn run(paths: Paths) -> Result<()> {
         asks_in: HashMap::new(),
         crown_wakes: Default::default(),
         crown_heard: Default::default(),
+        crown_hands: Default::default(),
         crown_recheck: HashMap::new(),
         crown_recheck_until: 0,
         crown_barred,
@@ -4191,6 +4199,7 @@ impl Daemon {
                 // owed on this pane, a turn began.
                 self.ack_owed(id);
                 self.lower_hand_on(ticket);
+                self.forget_told_hand(ticket);
             }
             let signal = match snapshot.state {
                 SessionState::Spawning => continue,
@@ -4860,6 +4869,7 @@ impl Daemon {
                     // same reasoning: whoever typed, the agent is no longer
                     // waiting on a person.
                     dirty |= self.lower_hand_on(t);
+                    self.forget_told_hand(t);
                 }
             }
             // A pane that dies within a second of its spawn, with a status,
@@ -6195,6 +6205,7 @@ impl Daemon {
             && matches!(change.to, SessionState::Running)
         {
             self.lower_hand_on(snapshot.ticket);
+            self.forget_told_hand(snapshot.ticket);
         }
         self.auto_move(snapshot.ticket, id, &change.to, change.confidence);
         // A turn ended (T-469): what it was asked for goes with it, and an
@@ -6462,6 +6473,7 @@ impl Daemon {
                 match self.agent_ticket_view(target) {
                     Some(mut view) => {
                         view.asked = self.crown_asked_view(ticket, target);
+                        view.told_hand = self.told_hand_view(ticket, target);
                         view.watched = target != ticket && self.crown_watched.contains(&target);
                         Response::AgentTicket { ticket: view }
                     }
@@ -8301,6 +8313,9 @@ impl Daemon {
         {
             return err;
         }
+        // A new hand overtakes the one the crown was told of (T-922): its
+        // reason is `state.raised` now, and the next telling keeps it.
+        self.forget_told_hand(ticket);
         self.feed.board(by.actor(), "raise_hand", Some(ticket));
         // A hand on an agent the crown started wakes the crown (T-414) —
         // that a hand went up, never the reason: one agent's words do not
@@ -8992,6 +9007,7 @@ impl Daemon {
             state: self.agent_state_view(id),
             needs_you: self.agent_needs_you(id),
             asked: None,
+            told_hand: None,
             seen: Some(self.seen_token(id)),
         })
     }
@@ -14132,6 +14148,10 @@ impl Daemon {
     /// told the hand went up (`lower_told_hands`). An autosleep, a bulk
     /// reclaim, a restart's park and a tier relaunch are nobody dealing
     /// with it and keep the mark.
+    ///
+    /// The three turn-start roads also forget the reason the crown was told
+    /// of (`forget_told_hand`, T-922); the others leave it with the crown,
+    /// since none of them gave the agent anything.
     ///
     /// The daemon cannot tell its own paste's ack from a line the user typed
     /// (the queued ask states the same limit), so a prompt mesimon delivers

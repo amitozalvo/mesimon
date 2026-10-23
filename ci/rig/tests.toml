@@ -1315,3 +1315,16 @@ checks = ["road:mod", "started_by_crown", "crown:hold_ticket=1", "crown:return_t
   [[test.steps]]
   rig = "train_off"
   block = "HT1.txt"
+
+[[test]]
+id = "RH2"
+title = "RH2 · a worker asks the crown a question with its raised hand: do the steps below"
+workspace = "worktree"
+brief = "Call the raise_hand tool on this ticket with the reason: Which word goes in the reply, rh2-teal or rh2-amber? Then end your turn with the single line: waiting. When an answer naming one of the two words arrives, reply with that single word and end your turn. Read no file and run no command."
+expect = "the crown starts the worker, which raises its hand with a question and ends its turn. The board wakes the crown, raised its hand, a sentence without the question, and lowers the hand. The crown reads the question on get_ticket (told_hand, T-922) and answers it with one ask_agent naming the first word offered, never asking the worker what it wants; the worker replies with that word."
+checks = ["road:mod", "started_by_crown", "hand:rh2-teal", "woke:raised", "crown:ask_agent=1", "crown_line:RH2 answered:rh2-teal", "reply:rh2-teal"]
+
+  [[test.steps]]
+  crown = "RH2: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: RH2 started. When the board wakes you because {key}'s agent raised its hand, answer its question with one ask_agent naming the first of the two words it offers, and end your turn with the single line: RH2 answered: and that word. When the board wakes you because {key}'s agent answered or finished, end your turn with the single line: RH2 seen."
+  until = { stops = 2, state = "idle" }
+  wake = true

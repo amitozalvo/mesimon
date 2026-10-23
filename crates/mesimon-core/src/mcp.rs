@@ -197,7 +197,10 @@ pub const CROWN_WAKES: &str = concat!(
      start_agent naming another tier then wakes it on that tier, at its prompt box with \
      nothing sent (the receipt's prompt: none): its work goes on in the turn ask_agent's \
      words start, sent once; otherwise the \
-     person resumes it with credits, another model or the limit's reset. Nothing needs \
+     person resumes it with credits, another model or the limit's reset. A worker's raised \
+     hand comes down once its sentence reaches this session, and get_ticket on that ticket \
+     carries the reason as told_hand until the worker's next turn begins or it raises \
+     another. Nothing needs \
      polling: the board reads the forge on its own, within about 15 seconds while a pull \
      request's pipeline runs or the PR just opened, changed or merged, within about a \
      minute otherwise, and in about five minutes for a repository whose last read failed or \

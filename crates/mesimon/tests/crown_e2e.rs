@@ -1267,6 +1267,10 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     // Told, the crown holds the question and the worker's hand is down
     // (T-861): one card asks a person one thing, never two.
     assert!(!c.board().ticket(w1).unwrap().hand_raised(), "the hand the crown was told of is down");
+    // …and the reason is the crown's to read where the sentence sent it
+    // (T-922): `told_hand` on its keyed `get_ticket`.
+    let told = read(&mut c, sa, &kw1).unwrap().told_hand.map(|h| h.reason);
+    assert_eq!(told.as_deref(), Some("mesimon-secret-73 need the sandbox key"));
 
     // ---- a person's ask on the crown goes first; the wake follows ----------
     start(&mut c, sa);
@@ -5840,6 +5844,10 @@ fn the_crown_watches_a_ticket_a_person_started() {
     assert!(lines_with(&worker)[2].starts_with(&format!("{worker} raised its hand")));
     assert!(!std::fs::read_to_string(&got).unwrap().contains("mesimon-probe-94"));
     assert!(!c.board().ticket(w).unwrap().hand_raised(), "told, the hand is down (T-861)");
+    // A watched ticket's reason is the crown's to read as a started one's
+    // (T-922).
+    let told = read(&mut c, sa, &kw).unwrap().told_hand.map(|h| h.reason);
+    assert_eq!(told.as_deref(), Some("mesimon-probe-94 the reason"));
     start(&mut c, sa);
     stop(&mut c, sa);
 

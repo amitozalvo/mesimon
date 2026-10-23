@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use super::crownwake::{CrownWake, Heard, TurnAsk};
+use super::crownwake::{CrownWake, Heard, ToldHand, TurnAsk};
 use super::*;
 
 pub const CROWN_SCHEMA: u32 = 1;
@@ -66,6 +66,11 @@ pub(super) struct Ledger {
     /// which narrows what the crown may do and widens nothing.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     held: BTreeSet<ulid::Ulid>,
+    /// `Daemon::crown_hands` (T-922): a hand the crown was told of keeps
+    /// its reason readable across a restart. Same schema: a build that
+    /// drops the field loses the reasons, and narrows nothing else.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    hands: BTreeMap<ulid::Ulid, ToldHand>,
 }
 
 /// Startup loader: the ledger, any notices, and whether writes are barred.
@@ -92,6 +97,7 @@ impl Daemon {
             lingered: self.lingered.iter().copied().collect(),
             watched: self.crown_watched.iter().copied().collect(),
             held: self.crown_held.iter().copied().collect(),
+            hands: self.crown_hands.iter().map(|(w, h)| (*w, h.clone())).collect(),
         }
     }
 
@@ -107,6 +113,7 @@ impl Daemon {
             || self.lingered.is_dirty()
             || self.crown_watched.is_dirty()
             || self.crown_held.is_dirty()
+            || self.crown_hands.is_dirty()
     }
 
     fn mark_ledger_clean(&mut self) {
@@ -118,6 +125,7 @@ impl Daemon {
         self.lingered.mark_clean();
         self.crown_watched.mark_clean();
         self.crown_held.mark_clean();
+        self.crown_hands.mark_clean();
     }
 
     /// The single write path for `crown.json`: on the tick and on the way
@@ -166,6 +174,7 @@ impl Daemon {
         let flagged = |w: &ulid::Ulid| self.board.ticket(*w).is_some_and(|t| t.manual_merge);
         self.crown_held = ledger.held.into_iter().filter(|w| *w != crown && flagged(w)).collect();
         self.turn_asks = ledger.asks.into_iter().filter(|(w, _)| on_board(w)).collect();
+        self.crown_hands = ledger.hands.into_iter().filter(|(w, _)| on_board(w)).collect();
         self.crown_wakes = ledger
             .wakes
             .into_iter()
@@ -213,6 +222,7 @@ mod tests {
         ledger.asks.insert(w, TurnAsk::Crown(ulid::Ulid::from_parts(1, 1)));
         ledger.watched.insert(ulid::Ulid::from_parts(1, 9));
         ledger.held.insert(ulid::Ulid::from_parts(1, 11));
+        ledger.hands.insert(w, ToldHand { reason: "which key?".into(), told_ms: 7 });
         let text = serde_json::to_string_pretty(&ledger).unwrap();
         let back = parse(&text).unwrap();
         assert_eq!(serde_json::to_string_pretty(&back).unwrap(), text);
@@ -223,6 +233,7 @@ mod tests {
         assert!(parse("{\"schema_version\": 1}").unwrap().heard.is_empty());
         assert!(parse("{\"schema_version\": 1}").unwrap().watched.is_empty());
         assert!(parse("{\"schema_version\": 1}").unwrap().held.is_empty());
+        assert!(parse("{\"schema_version\": 1}").unwrap().hands.is_empty());
     }
 
     /// Not an assertion about wall clock (see `search.rs`): the number in
