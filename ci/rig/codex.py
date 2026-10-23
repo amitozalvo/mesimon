@@ -447,14 +447,17 @@ def approval_decision(request, role, worktree):
             return True, tool
         return False, f"{what}: {words[:200]}"
     cwd = request.get("cwd")
+    # Two plain shapes joined by one `&&` are one commit (T-930: Sol writes
+    # `git add README.md && git commit -m …`); each half is judged alone.
+    parts = command.split(" && ")
     if (what == "command" and role == "worker" and worktree and cwd
-            and Path(cwd).resolve() == Path(worktree).resolve()
-            and not any(mark in command for mark in ";&|`$<>\n\r\\")):
+            and Path(cwd).resolve() == Path(worktree).resolve() and len(parts) <= 2
+            and not any(mark in part for part in parts for mark in ";&|`$<>\n\r\\")):
         try:
-            tokens = shlex.split(command)
+            tokens = [shlex.split(part) for part in parts]
         except ValueError:
-            tokens = []
-        if plain_git(tokens):
+            tokens = [[]]
+        if all(plain_git(t) for t in tokens):
             return True, command
     return False, f"{what}: {words[:200]}"
 
