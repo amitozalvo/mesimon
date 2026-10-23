@@ -1681,8 +1681,11 @@ fn the_crown_wake_waits_for_a_person_at_the_crown_s_box() {
 /// the pane, then their draft left behind; a person who comes in between
 /// the paste and its Enter; a parked crown woken with the words; a person
 /// who changes the pasted words, whose box is left as they made it, the
-/// wake told nothing and owed again; and a restart while the Enter waits
-/// on a person, after which the box is still the board's, never a draft.
+/// wake told nothing and owed again; a person's own prompt sent before the
+/// paste, and after clearing the pasted wake, neither of which tells it, so
+/// it is owed and delivered after; a restart while the Enter waits on a
+/// person, after which the box is still the board's, never a draft; and
+/// the crown taken off while its Enter waits, which presses nothing.
 /// Codex wraps the box mid-token (`boxed`).
 #[test]
 fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
@@ -1984,10 +1987,16 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     assert_eq!(enters(), before, "no Enter while they are in");
     client.kill().unwrap();
     let _ = client.wait();
+    // The Enter's `Theirs` drops the entry (`pending_submit`), and only then
+    // does the row wait on their draft: until it, the box is the Enter's to
+    // judge and the row says `sending`.
     wait_until(
         std::time::Duration::from_secs(10),
         "the wake owed again, after their draft",
-        || held(&mut c, a).as_deref() == Some("after your draft"),
+        || {
+            c.board().sessions.iter().any(|s| s.id == sa && !s.pending_submit)
+                && held(&mut c, a).as_deref() == Some("after your draft")
+        },
     );
     std::thread::sleep(std::time::Duration::from_millis(1500));
     assert_eq!(enters(), before, "their words are never sent by the wake");
@@ -2005,13 +2014,77 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     wait_until(std::time::Duration::from_secs(10), "told at its Enter", || told() == said + 1);
     crown_turn_ends(&mut c);
 
+    // A person's own prompt, typed in the pane and sent (T-918 review): the
+    // runtime begins a turn on it.
+    let person_sends = |words: &str| {
+        let sid = sa.simple().to_string();
+        let sent = tmux(&tmux_sock).args(["send-keys", "-t", &sid[..16], words, "Enter"]).status();
+        assert!(sent.is_ok_and(|s| s.success()), "send-keys");
+    };
+    let last_wake = || pastes().into_iter().rfind(|t| t.contains(&finished)).unwrap();
+    // The wake owed again after a person's turn: held while they stay,
+    // pasted once they leave, and told at its own Enter.
+    let delivered_again = |c: &mut TestClient, client: &mut std::process::Child, n: usize| {
+        wait_until(std::time::Duration::from_secs(10), "the wake owed again", || {
+            held(c, a).as_deref() == Some("when you leave")
+        });
+        let said = told();
+        client.kill().unwrap();
+        let _ = client.wait();
+        wait_until(std::time::Duration::from_secs(10), "the owed wake pasted", || {
+            wakes(&pastes()) == n + 1
+        });
+        let before = enters();
+        draw(sa, &last_wake(), idle.clone());
+        wait_until(std::time::Duration::from_secs(10), "its Enter", || enters() == before + 1);
+        wait_until(std::time::Duration::from_secs(10), "told at its Enter", || told() == said + 1);
+        crown_turn_ends(c);
+    };
+
+    // ---- a person's own prompt before the paste: never told, owed again ---
+    // The box hides its cursor (a frame mid-draw), so the wake is owed and
+    // its paste waits for the composer.
+    control(
+        sa,
+        json!({"state": idle.clone(),
+               "screen": "Synthetic provider fixture\r\n› \r\nanything the user wants",
+               "cursor": null}),
+    );
+    let (n, said) = (wakes(&pastes()), told());
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the wake owed, its paste waiting", || {
+        held(&mut c, a).as_deref() == Some("sending")
+    });
+    let mut client = attach();
+    person_sends("my own question");
+    crown_turn_ends(&mut c);
+    assert_eq!(wakes(&pastes()), n, "the wake never went in");
+    assert_eq!(told(), said, "the person's turn did not tell the wake");
+    delivered_again(&mut c, &mut client, n);
+
+    // ---- after the paste, a person clears the box and sends their own -----
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    let n = wakes(&pastes()) + 1;
+    wait_until(std::time::Duration::from_secs(10), "the wake pasted", || wakes(&pastes()) == n);
+    let said = told();
+    let mut client = attach();
+    draw(sa, "", idle.clone());
+    // The runtime takes the drawing first: a control it reads after the
+    // Enter would put its state back to idle.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    person_sends("something else entirely");
+    crown_turn_ends(&mut c);
+    assert_eq!(told(), said, "their turn on their own words did not tell the wake");
+    delivered_again(&mut c, &mut client, n);
+
     // ---- a restart while the Enter waits on a person ----------------------
     start(&mut c, ws);
     stop(&mut c, ws);
-    wait_until(std::time::Duration::from_secs(10), "the sixth wake pasted", || {
-        wakes(&pastes()) == 6
-    });
-    let wake6 = pastes().into_iter().filter(|t| t.contains(&finished)).nth(5).unwrap();
+    let n = wakes(&pastes()) + 1;
+    wait_until(std::time::Duration::from_secs(10), "the wake pasted", || wakes(&pastes()) == n);
+    let wake6 = last_wake();
     let mut client = attach();
     draw(sa, &wake6, idle.clone());
     wait_until(std::time::Duration::from_secs(10), "the Enter held for the person", || {
@@ -2035,9 +2108,26 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
         );
         enters() == before + 1
     });
-    assert_eq!(wakes(&pastes()), 6, "the box's words were not pasted again");
+    assert_eq!(wakes(&pastes()), n, "the box's words were not pasted again");
     wait_until(std::time::Duration::from_secs(10), "told at its Enter", || told() == said + 1);
     crown_turn_ends(&mut c);
+
+    // ---- the crown taken off while its Enter waits: nothing is pressed ----
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    let n = wakes(&pastes()) + 1;
+    wait_until(std::time::Duration::from_secs(10), "the wake pasted", || wakes(&pastes()) == n);
+    let mut client = attach();
+    draw(sa, &last_wake(), idle.clone());
+    let before = enters();
+    assert!(matches!(c.request(Command::Uncrown), Response::Ok));
+    wait_until(std::time::Duration::from_secs(10), "the seat owes nothing", || {
+        c.board().sessions.iter().any(|s| s.id == sa && !s.pending_submit)
+    });
+    client.kill().unwrap();
+    let _ = client.wait();
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    assert_eq!(enters(), before, "no Enter into a seat that is no crown's");
 }
 
 /// One ticket landing is three wakes, not four (T-469, seen on T-461; T-527):

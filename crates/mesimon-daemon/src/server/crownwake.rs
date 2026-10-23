@@ -2053,8 +2053,18 @@ impl Daemon {
         self.crown_recheck.clear();
         self.crown_watched.clear();
         self.crown_hands.clear();
-        let entering = self.crown_wake_entering.take().is_some();
-        if self.crown_wakes.is_empty() && !entering {
+        // A Codex box holding the wake for its Enter (T-918): the seat is
+        // no crown's now, so nothing presses it. The words stay in the box
+        // as they are, for whoever is at it.
+        let entering = self.crown_wake_entering.take().map(|e| e.session);
+        if let Some(id) = entering.filter(|id| {
+            self.owed.get(id).is_some_and(|o| o.ack.word == super::Ack::CROWN_WAKE.word)
+        }) {
+            self.codex_input_due.remove(&id);
+            self.control_cancel(id);
+            self.drop_owed(id);
+        }
+        if self.crown_wakes.is_empty() && entering.is_none() {
             return;
         }
         self.crown_wakes.clear();

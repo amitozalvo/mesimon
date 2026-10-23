@@ -31501,3 +31501,35 @@ once they leave. Four mutations each fail the e2e: no `resume_crown_entering`; `
 ignored; the compare joined at spaces; told at the paste. `crownledger`'s round trip carries
 `entering`; `app.rs` covers `sending`. `want_person`'s once a second has no test of its own:
 no unit test builds a `Daemon`.
+
+**Corrections from the review of f4a7df97 / 4471a8ff (T-925's crown).**
+- **A person's turn never tells the wake.** `ack_owed` told the wake whenever the crown's new
+  turn began while it was owed, so a person's own prompt, sent before the paste or after
+  clearing the pasted wake, counted it told and the crown never saw it. The review proposed
+  telling it there only when pasted and `!person_came`. That was refused because
+  `person_came` is sampled at most once a second, and a person who attached, cleared and sent
+  inside that second read as nobody: the e2e caught it. The board's own Enter already tells the
+  wake and closes `entering`, so a turn that begins while it is still open met a person's
+  Enter, and the wake is owed again (`wake_not_entered`, which now takes the seat). The cost:
+  a person who presses Enter on the unedited pasted wake has the crown hear it twice.
+- **A restart assumes a person came** (`resume_crown_entering` sets `person_came`): nobody
+  watched the pane while no daemon ran, so a box that no longer reads as the wake is the
+  person's, never entered.
+- **A crown change cancels the old seat's Enter.** `drop_crown_wakes` drops that seat's
+  `CROWN_WAKE` entry and `codex_input_due`. The words stay in the box as they are.
+- **The row says `sending` while the Enter judges the box**, never `after your draft`
+  (`crown_wake_person`). `after your draft` appears only once `Theirs` has owed the wake again.
+- The restore filters `entering.wakes` to tickets still on the board. The `entering` field's
+  comment says what an older build loses: the wakes moved into it, and their bookkeeping.
+
+**Tests.** Three more Codex e2e cases:
+- a person's own prompt while the wake waits for its paste (the box's cursor hidden);
+- a person who clears the pasted wake and sends their own words.
+
+  In both, nothing is told, and the wake is owed (`when you leave`), pasted once they leave
+  and told at its own Enter.
+- the crown taken off while its Enter waits on a person, which presses nothing.
+
+The edited-box case now waits for `Theirs` itself: the entry dropped, then `after your
+draft`. Two more mutations fail the e2e: the ack telling the wake, and `drop_crown_wakes`
+leaving the entry.

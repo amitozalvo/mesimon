@@ -73,8 +73,11 @@ pub(super) struct Ledger {
     hands: BTreeMap<ulid::Ulid, ToldHand>,
     /// `Daemon::crown_wake_entering` (T-918): the wake a Codex crown's box
     /// holds unentered, so the next daemon owns those words and does not
-    /// read them as a person's draft. Same schema: a build that drops the
-    /// field reads the words as a draft and waits, which sends nothing.
+    /// read them as a person's draft. Same schema, no bump: the wakes it
+    /// holds were moved out of `wakes`, so a build that drops the field
+    /// loses them and what they would tell, reads the words in the box as
+    /// a draft and waits on it, and pastes its next wake on top once the
+    /// box is cleared. It sends nothing a person wrote, which is the bar.
     #[serde(skip_serializing_if = "Option::is_none")]
     entering: Option<Entering>,
 }
@@ -203,7 +206,14 @@ impl Daemon {
         };
         self.crown_hands =
             ledger.hands.into_iter().filter(|(w, hand)| showing(w) && !answered(w, hand)).collect();
-        self.crown_wake_entering = ledger.entering.filter(|e| e.crown == crown).into();
+        self.crown_wake_entering = ledger
+            .entering
+            .filter(|e| e.crown == crown)
+            .map(|mut e| {
+                e.wakes.retain(|w| on_board(&w.worker));
+                e
+            })
+            .into();
         self.crown_wakes = ledger
             .wakes
             .into_iter()
