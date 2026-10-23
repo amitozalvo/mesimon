@@ -246,12 +246,6 @@ fn tool_result(params: &Value, sock: &std::path::Path, session: uuid::Uuid) -> V
     }
 }
 
-/// A daemon `Response` as the model sees it.
-///
-/// A refusal is a tool *result* with `isError`, never a JSON-RPC error: the
-/// model is meant to read "that column does not exist" or "this would undo a
-/// move you just made" and act on it, and a transport-level error would be
-/// rendered as a malfunction instead of an answer.
 /// What a start receipt's `prompt` means for the agent's next turn (T-920):
 /// transient result data, so it may say what the crown does with it.
 fn start_prompt_about(key: &str, prompt: StartPrompt, running: bool) -> String {
@@ -281,6 +275,12 @@ fn start_prompt_about(key: &str, prompt: StartPrompt, running: bool) -> String {
     }
 }
 
+/// A daemon `Response` as the model sees it.
+///
+/// A refusal is a tool *result* with `isError`, never a JSON-RPC error: the
+/// model is meant to read "that column does not exist" or "this would undo a
+/// move you just made" and act on it, and a transport-level error would be
+/// rendered as a malfunction instead of an answer.
 fn render(resp: Response) -> Value {
     match resp {
         Response::ShellOutput { output } => text(&output),
