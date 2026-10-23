@@ -31322,3 +31322,24 @@ cleanups clean:
   `msmn/T-11-add-greet.py-with-greet-name-and`, no write of the crown's, the checkout as found,
   and the crown's turn on the delivered wake ended. Its `expect` words were brought in line with
   the new role after the run; the checks are unchanged.
+
+**`delegate` on Sol** (the same day, after the merge, at the person's ask: Luna had failed it).
+The model was `--model gpt-6-sol --effort low`, the id exactly as the authenticated `model/list`
+names it, with `low` among its efforts. `gpt-6.1-sol` is listed too, as the account's default;
+the named id was used. One run with the same bounds, no retries, cleanup clean.
+- **Failed**, 123,297 tokens, 1 person's turn.
+- Unlike Luna, the crown delegated and wrote nothing itself: no `apply_patch`, no shell write,
+  no native child.
+- The crown's calls, in order: a tool search, `get_ticket`, a tool search, `list_board`,
+  `create_ticket` (T-2 "Add greet.py and unittest", tagged FEATURE, `workspace:
+  "shared_checkout"`, a description that says to run the test), `get_ticket` on T-2, then
+  `start_agent` on T-2 with `workspace: "shared_checkout"`. The rig approved `create_ticket` and
+  `start_agent` as the person.
+- It failed on the case's own requirement: a worker in a worktree of its own, away from the
+  checkout the crown works in. Sol chose the shared checkout for both calls.
+- `forge` was not run on Sol, since its `delegate` did not pass.
+
+This is one sample. It says Sol's choice here was to file and start, which is the delegation the
+person found missing, and that it picked the crown's own checkout as the worker's workspace.
+Whether that choice is wrong for a two-file change is the person's call, not the rig's: the
+case's requirement stands, and the verdict stands with it.

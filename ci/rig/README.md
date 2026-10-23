@@ -139,6 +139,19 @@ across the fixture's threads, children included (20 and 24), and takes a
 that a Codex crown delegates every request, nor that it merges, parks or
 closes a delivered worker: one run on one model is one sample of a choice.
 
+Measured so far (2026-10-23, Codex CLI 0.163, effort low, one run each, no
+retries; STALE-MAP's T-916 block has the details):
+
+| case | model | verdict | tokens | the crown's calls |
+|---|---|---|---|---|
+| `delegate` | `gpt-6-luna` | failed | 91,340 | `get_ticket`, then `apply_patch` writing `greet.py` and `test_greet.py` in the checkout; no worker |
+| `forge` | `gpt-6-luna` | passed | 579,292 | `start_agent`; on the forge's wake `get_ticket`, `ask_agent` naming PR #42 and `test-linux` |
+| `delegate` | `gpt-6-sol` | failed | 123,297 | `get_ticket`, `list_board`, `create_ticket` (T-2, `workspace: "shared_checkout"`), `get_ticket` T-2, `start_agent` T-2 on `shared_checkout`; no write of its own |
+
+Sol delegated the work to a board worker, but on the shared checkout, and the
+case asks for the ticket's own worktree. `forge` was not run on Sol because its
+`delegate` did not pass.
+
 Latest results are `target/rig/codex/verdicts.json` and `verdicts.md`. Every run
 also retains its own directory with per-case manifests, board snapshots,
 checkpoints, terminal observations and owned native histories. Treat these local
