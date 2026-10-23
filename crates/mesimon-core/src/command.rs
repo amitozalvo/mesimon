@@ -2558,9 +2558,11 @@ pub struct AgentTicketView {
     /// and so lowered (T-861), kept for its reason (T-922): the wake names
     /// the hand and never its words, and `state.raised` is gone by the time
     /// the woken crown reads. Not a hand up — nothing counts it, nothing
-    /// lights — and kept until the agent's next turn starts, the agent
-    /// raises again, or the crown changes. The crown's `get_ticket` with
-    /// `key` only.
+    /// lights — and kept until the agent's next turn starts (a prompt a
+    /// restart's transcript dates after the telling included), the agent
+    /// raises again, the ticket is archived, snoozed or deleted, or the
+    /// crown changes. A watch ending keeps it: this crown was told. The
+    /// crown's `get_ticket` with `key` only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub told_hand: Option<AgentToldHandView>,
     /// An opaque stamp over everything a keyed edit may assume — column,

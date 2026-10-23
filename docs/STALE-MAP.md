@@ -31090,6 +31090,17 @@ or lights a told hand), and its reason stays with the crown that was told:
   said where it leaves: archive and delete through `drop_crown_if`, a snooze in
   `snooze_ticket`; a restored ledger drops a worker missing or archived. One entry per worker, at
   most `RAISE_REASON_MAX_BYTES`: bounded by the board.
+- **A turn begun while no daemon listened** (crown review of `3d3c04b8`): its `UserPromptSubmit`
+  is lost, never queued, and the recovered turn comes back at Low, which takes no hand down, so
+  the restored entry stood over an answered question. `restore_crown` reads the worker's Claude
+  transcript (`tail::prompted_since`, the last 1 MiB, newest first, stopping at the first record
+  dated before `told_ms`) and drops an entry a person's prompt (`adopt::user_prompt`) postdates.
+  Not any Low edge: a tool's result or a reply after the telling is the hand's own turn going on
+  (T-917's hand was raised mid-turn). **Limits:** a prompt further back than the window, a Codex
+  worker (its rollout is another format) and a worker with no transcript keep the entry until
+  their next hooked turn; a restart is the only gap the hooks have, so the read is once per entry
+  at start and never on the tick.
+- **A watch ending keeps it**: the crown it was told is still the crown holding the question.
 - **Not taken by** the other T-861 roads (focus in or out of the pane, a park, the page's
   `LowerHand`): none of them gave the agent anything, and the crown is still the one holding the
   question. **A hand lowered before the sentence went keeps nothing**: the person dealt with it,
@@ -31120,6 +31131,10 @@ accepted, the stamp still after a second, the same words told again a new stamp;
 told hand, an archive takes it out of `crown.json` and an unarchive brings none back, a delete
 takes it out. Without the stamp change the stale ask is accepted; without `drop_crown_if`'s
 forget the archive keeps it.
+`told_hand_e2e::a_prompt_while_the_daemon_was_down_takes_the_told_hand`: a restart over a tool's
+result written in the gap keeps the reason, a restart over a prompt written there forgets it in
+the read and in `crown.json`; without `restore_crown`'s transcript read it is kept.
+`tail::prompted_since_reads_a_persons_prompt_and_nothing_else` covers the classifier.
 Without the fix it fails at the first read exactly as T-917 read. `crown_e2e`'s two hand passages
 (a started worker, a watched one) now read `told_hand` after the wake. `crownledger`'s round-trip
 carries `hands`. Rig **RH2** (Sonnet): a worker asks a two-word question by its hand; the crown

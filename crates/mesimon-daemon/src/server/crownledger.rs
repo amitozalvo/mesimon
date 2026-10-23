@@ -177,7 +177,23 @@ impl Daemon {
         // An archived worker's hand was forgotten as it went (T-922); one
         // still on file came from a ledger written before that.
         let showing = |w: &ulid::Ulid| self.board.ticket(*w).is_some_and(|t| !t.is_archived());
-        self.crown_hands = ledger.hands.into_iter().filter(|(w, _)| showing(w)).collect();
+        // A turn begun while no daemon listened answered it too: its
+        // `UserPromptSubmit` is lost, never queued, and the recovered turn
+        // comes back at Low, which takes no hand down. The worker's
+        // transcript dates its prompt; a prompt it does not show (none
+        // written, or past the window) keeps the reason, and so does a
+        // Codex worker, whose rollout is not that format.
+        let answered = |w: &ulid::Ulid, hand: &ToldHand| {
+            let seat = self.board.live_agent(*w).filter(|s| s.kind == SessionKind::Claude);
+            seat.and_then(|s| s.transcript_path.as_deref()).is_some_and(|path| {
+                crate::agents::claude::tail::prompted_since(
+                    std::path::Path::new(path),
+                    hand.told_ms,
+                )
+            })
+        };
+        self.crown_hands =
+            ledger.hands.into_iter().filter(|(w, hand)| showing(w) && !answered(w, hand)).collect();
         self.crown_wakes = ledger
             .wakes
             .into_iter()

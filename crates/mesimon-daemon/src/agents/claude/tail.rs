@@ -114,6 +114,35 @@ pub fn aborted_since(path: &Path, since: u64) -> bool {
     false
 }
 
+/// Did a person's prompt (`adopt::user_prompt`: a typed or pasted prompt, a
+/// `!` command's input, never a tool result, an interrupt or the harness's
+/// own words) reach this transcript at or after `since` (epoch ms)? A
+/// restart asks it of a told hand (T-922): the prompt that answered it may
+/// have come while no daemon listened, and its `UserPromptSubmit` is lost,
+/// never queued. Reads the last `PROMPT_WINDOW` bytes, newest first, and
+/// stops at the first dated record older than `since`; a prompt further
+/// back than the window is not seen, and the hand is kept.
+pub fn prompted_since(path: &Path, since: u64) -> bool {
+    let Some(len) = std::fs::metadata(path).ok().map(|m| m.len()) else { return false };
+    let Some(text) = window_text(path, len, PROMPT_WINDOW) else { return false };
+    let end = text.len();
+    for v in (TailRecords { text, end }) {
+        let Some(at) = record_ms(&v) else { continue };
+        if at < since {
+            return false;
+        }
+        if mesimon_core::adopt::user_prompt(&v).is_some() {
+            return true;
+        }
+    }
+    false
+}
+
+/// How far back `prompted_since` reads: once per told hand at a start, so
+/// wider than the per-second readers' 64 KiB, which one turn's tool output
+/// fills.
+const PROMPT_WINDOW: u64 = 1024 * 1024;
+
 /// The API error a failed turn ends on, as the transcript renders it.
 pub struct ApiError {
     /// The hook set's class word (`rate_limit`, `model_not_found`, …).
@@ -427,6 +456,34 @@ mod tests {
         writeln!(f, "{{\"uuid\":\"u4\",\"type\":\"attachment\"}}").unwrap();
         assert!(!turn_done_since(&p, close - 60_000));
         assert!(!turn_done_since(Path::new("/nonexistent/x.jsonl"), 0));
+        std::fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn prompted_since_reads_a_persons_prompt_and_nothing_else() {
+        let p = tmp("prompted");
+        // The hand's turn: a prompt, a tool's result, the close.
+        std::fs::write(
+            &p,
+            "{\"uuid\":\"u0\",\"type\":\"user\",\"timestamp\":\"2026-09-05T16:50:00.000Z\",\"message\":{\"content\":\"go\"}}\n\
+             {\"uuid\":\"u1\",\"type\":\"user\",\"timestamp\":\"2026-09-05T16:51:00.000Z\",\"message\":{\"content\":[{\"type\":\"tool_result\"}]}}\n\
+             {\"uuid\":\"u2\",\"type\":\"assistant\",\"timestamp\":\"2026-09-05T16:52:00.000Z\",\"message\":{\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n\
+             {\"type\":\"mode\"}\n",
+        )
+        .unwrap();
+        let go = 1_788_627_000_000;
+        assert!(prompted_since(&p, go), "the prompt at the stamp itself");
+        assert!(!prompted_since(&p, go + 1), "a tool's result and a close are no prompt");
+        // An interrupt and the harness's wake-up are no person's words either.
+        let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        writeln!(f, "{{\"uuid\":\"u3\",\"type\":\"user\",\"timestamp\":\"2026-09-05T16:53:00.000Z\",\"message\":{{\"content\":\"[Request interrupted by user]\"}}}}").unwrap();
+        writeln!(f, "{{\"uuid\":\"u4\",\"type\":\"user\",\"timestamp\":\"2026-09-05T16:54:00.000Z\",\"message\":{{\"content\":\"<task-notification><task-id>x</task-id>\"}}}}").unwrap();
+        assert!(!prompted_since(&p, go + 1));
+        // The next turn's prompt.
+        writeln!(f, "{{\"uuid\":\"u5\",\"type\":\"user\",\"timestamp\":\"2026-09-05T16:55:00.000Z\",\"message\":{{\"content\":\"staging\"}}}}").unwrap();
+        assert!(prompted_since(&p, go + 1));
+        assert!(!prompted_since(&p, go + 300_001), "a prompt older than the stamp");
+        assert!(!prompted_since(Path::new("/nonexistent/x.jsonl"), 0));
         std::fs::remove_dir_all(p.parent().unwrap()).ok();
     }
 

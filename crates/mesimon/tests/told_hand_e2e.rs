@@ -377,3 +377,136 @@ fn an_answer_read_against_one_told_hand_is_refused_for_the_next() {
         kept(&h, w).is_none()
     });
 }
+
+/// `YYYY-MM-DDTHH:MM:SS.fffZ` for an epoch ms, as Claude Code stamps a
+/// transcript record (`adopt::iso_ms` reads it back).
+fn iso(ms: u64) -> String {
+    let (days, rem) = (ms / 86_400_000, ms % 86_400_000);
+    // civil_from_days (Hinnant): proleptic Gregorian, 1970-01-01 = day 0.
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}Z",
+        rem / 3_600_000,
+        rem % 3_600_000 / 60_000,
+        rem % 60_000 / 1000,
+        rem % 1000
+    )
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
+}
+
+/// A turn begun while no daemon listened answered the told hand too (T-922):
+/// its `UserPromptSubmit` is lost, and the recovered turn comes back at Low,
+/// which takes no hand down. The restart reads the worker's transcript for
+/// a prompt dated after the telling. A restart over the hand's own turn
+/// going on (a tool's result, a reply) keeps the reason; one over the next
+/// prompt forgets it.
+#[test]
+fn a_prompt_while_the_daemon_was_down_takes_the_told_hand() {
+    let Some(h) = Harness::boot_with_env(
+        "told_gap",
+        Some(RECORDING_STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("told_gap");
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| -> usize {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .count()
+    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-88 worker");
+    let kw = key_of(&mut c, w);
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("shared_checkout".into()),
+        },
+    ) {
+        Response::AgentStarted { session_started: true, .. } => {}
+        other => panic!("start_agent {kw}: {other:?}"),
+    }
+    let ws = c.board().live_agent(w).expect("the worker holds a seat").id;
+    let transcript = h.dir.join(format!("{ws}.jsonl"));
+    let line = |kind: &str, at: u64, content: &str| {
+        format!(
+            r#"{{"uuid":"u{at}{kind}","type":"user","timestamp":"{}","message":{{"content":{content}}}}}"#,
+            iso(at)
+        ) + "\n"
+    };
+    std::fs::write(&transcript, line("p", now_ms(), r#""the brief""#)).unwrap();
+    let begun = format!(
+        r#"{{"session_id":"x","transcript_path":"{}","cwd":"/tmp"}}"#,
+        transcript.display()
+    );
+    hook_send_with(&hook_sock, &ws.to_string(), "SessionStart", Some("startup"), &begun);
+    c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    start(&mut c, ws);
+
+    // ---- 1. told, then a restart over the same turn going on ---------------
+    let reason = "mesimon-secret-88 which sandbox key?";
+    raise(&mut c, ws, reason);
+    wait_until(std::time::Duration::from_secs(10), "the hand's wake to land", || {
+        lines_with(&format!("{kw} \"mesimon-probe-88 worker\" raised its hand")) == 1
+    });
+    wait_until(std::time::Duration::from_secs(5), "the told hand", || {
+        told(&mut c, sa, &kw).as_deref() == Some(reason)
+    });
+    drop(c);
+    let append = |text: String| {
+        let mut f = std::fs::OpenOptions::new().append(true).open(&transcript).unwrap();
+        std::io::Write::write_all(&mut f, text.as_bytes()).unwrap();
+    };
+    h.restart_after(|| append(line("r", now_ms(), r#"[{"type":"tool_result"}]"#)));
+    let mut c = h.client("told_gap_2");
+    assert_eq!(
+        told(&mut c, sa, &kw).as_deref(),
+        Some(reason),
+        "a tool's result is the hand's own turn going on"
+    );
+
+    // ---- 2. a restart over the next prompt forgets it ----------------------
+    drop(c);
+    h.restart_after(|| append(line("p", now_ms(), r#""staging""#)));
+    let mut c = h.client("told_gap_3");
+    assert_eq!(told(&mut c, sa, &kw), None, "the prompt in the gap answered it");
+    wait_until(std::time::Duration::from_secs(10), "the ledger to forget it", || {
+        kept(&h, w).is_none()
+    });
+}
