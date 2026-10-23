@@ -8,6 +8,7 @@ import datetime
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import shutil
@@ -206,33 +207,54 @@ def answered_after(rows, index):
                and row["payload"].get("phase") in (None, "final_answer") for row in rows[index + 1:])
 
 
+# What the rig allows, matched exactly (a live model writes these requests):
+# Codex's one-tool approval for mesimon's own server, as 0.163 words it, and a
+# worker's plain git read or commit in its own worktree, with no global option.
+MCP_APPROVAL = re.compile(r'Allow the mesimon MCP server to run tool "([a-z_]+)"\?')
+GIT_ALLOWED = ("add", "commit", "status", "diff", "log", "show")
+GIT_REFUSED = ("-c", "-C", "--git-dir", "--work-tree", "--exec-path", "--config-env", "--namespace")
+
+
 def approval_decision(request, role, worktrees):
     """What the rig, as the person at the desk, does with a native approval
     on a crown fixture: (True, what) to allow it once, (False, why) to leave
-    it standing. The board's own tools are allowed (the daemon's authorize is
-    their gate), and a worker's git in its own worktree; anything else stays
+    it standing. A board tool is allowed when the request names mesimon's
+    server exactly and one of BOARD_TOOLS (the daemon's authorize is their
+    gate), and a worker's plain git in its own worktree; anything else stays
     the person's and is recorded."""
     what = request.get("what")
-    words = " ".join(str(request.get(key) or "") for key in ("command", "reason"))
-    if what == "mcp_tool" and "mesimon" in words.lower():
-        return True, next((tool for tool in BOARD_TOOLS if tool in words), "mesimon")
-    cwd = str(request.get("cwd") or "")
     command = str(request.get("command") or "").strip()
-    if (what == "command" and role == "worker" and cwd.startswith(str(worktrees) + "/")
-            and command.startswith("git ") and not any(mark in command for mark in (";", "&&", "|", "`", "$("))):
-        return True, command
-    return False, f"{what}: {words.strip()[:200]}"
+    reason = str(request.get("reason") or "").strip()
+    words = (command + " " + reason).strip()
+    if what == "mcp_tool":
+        server, _, named = command.partition(" · ")
+        match = MCP_APPROVAL.fullmatch(reason)
+        tool = named or (match.group(1) if match else "")
+        if server == "mesimon" and tool in BOARD_TOOLS and (not match or match.group(1) == tool):
+            return True, tool
+        return False, f"{what}: {words[:200]}"
+    cwd = str(request.get("cwd") or "")
+    if what == "command" and role == "worker" and cwd.startswith(str(worktrees) + "/") \
+            and not any(mark in command for mark in ";&|`$<>\n\r\\"):
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            tokens = []
+        if (len(tokens) >= 2 and tokens[0] == "git" and tokens[1] in GIT_ALLOWED
+                and not any(token == bad or token.startswith(bad + "=") for token in tokens for bad in GIT_REFUSED)):
+            return True, command
+    return False, f"{what}: {words[:200]}"
 
 
 def dialog_allows(screen):
-    """The native approval dialog is drawn with an allowing row selected: a
-    numbered row under the cursor (`› 1. Yes, …`), or, where the dialog draws
-    no numbered rows, its Allow (the scoped MCP case's measured shape)."""
+    """The native approval dialog is drawn with its allow-once row under the
+    cursor (`› 1. Allow`, `› 1. Yes, …`). Anything else, a remembering row
+    and the composer's `›` included, is not one."""
     rows = [line.strip()[1:].strip() for line in screen.splitlines()
             if line.strip().startswith("›") and line.strip()[1:].strip()[:2].rstrip(".").isdigit()]
-    if rows:
-        return any(word in rows[-1] for word in ("Yes", "Allow", "Approve"))
-    return "Allow" in screen
+    number, _, label = rows[-1].partition(".") if rows else ("", "", "")
+    # Row 1 is once; a later Allow or Yes remembers the choice.
+    return number == "1" and label.strip().startswith(("Allow", "Yes"))
 
 
 def pull_requests(branch, tip, pipeline):

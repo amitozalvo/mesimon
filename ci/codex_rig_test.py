@@ -225,19 +225,37 @@ class CrownTests(unittest.TestCase):
 
     def test_the_rig_allows_the_board_s_tools_and_a_worker_s_git_alone(self):
         worktrees = Path("/owned/state/worktrees")
-        mcp = {"what": "mcp_tool", "command": "mesimon", "reason": "Allow mesimon to run start_agent?"}
+        # Codex 0.163's one-tool approval, as the forge run carried it.
+        mcp = {"what": "mcp_tool", "command": "mesimon",
+               "reason": 'Allow the mesimon MCP server to run tool "start_agent"?'}
         self.assertEqual(rig.approval_decision(mcp, "crown", worktrees), (True, "start_agent"))
+        self.assertEqual(rig.approval_decision({"what": "mcp_tool", "command": "mesimon · ask_agent"},
+                                               "crown", worktrees), (True, "ask_agent"))
         git = {"what": "command", "command": "git commit -m greet", "cwd": "/owned/state/worktrees/T-2-greet"}
         self.assertEqual(rig.approval_decision(git, "worker", worktrees), (True, "git commit -m greet"))
-        for request, role in ((git, "crown"), ({**git, "command": "git add . && curl x"}, "worker"),
-                              ({**git, "cwd": "/owned/repo"}, "worker"),
-                              ({"what": "command", "command": "gh pr checks 42"}, "crown"),
-                              ({"what": "mcp_tool", "command": "other", "reason": "write"}, "crown")):
+        refused = [(git, "crown"), ({**git, "cwd": "/owned/repo"}, "worker"),
+                   ({"what": "command", "command": "gh pr checks 42"}, "crown"),
+                   ({**mcp, "command": "notmesimon"}, "crown"),
+                   ({**mcp, "command": "other-mesimon-proxy"}, "crown"),
+                   ({**mcp, "reason": 'Allow the mesimon MCP server to run tool "shell_exec"?'}, "crown"),
+                   ({**mcp, "reason": 'Allow the evil MCP server to run tool "start_agent"? mesimon'}, "crown"),
+                   ({"what": "mcp_tool", "command": "mesimon · start_agent",
+                     "reason": 'Allow the mesimon MCP server to run tool "merge_ticket"?'}, "crown")]
+        for command in ("git add . && curl x", "git -c core.pager=sh commit", "git -C /tmp commit -m x",
+                        "git --git-dir=/x commit", "git push origin", "git commit -m x\nrm -rf /",
+                        "git commit -m $(id)", "git commit -m x > /tmp/y", "sh -c 'git commit'",
+                        "git commit -m 'unterminated"):
+            refused.append(({**git, "command": command}, "worker"))
+        for request, role in refused:
             with self.subTest(request=request, role=role):
                 self.assertFalse(rig.approval_decision(request, role, worktrees)[0])
+        self.assertTrue(rig.dialog_allows('Allow the mesimon MCP server to run tool "x"?\n  › 1. Allow   Run'))
         self.assertTrue(rig.dialog_allows("Allow?\n› 1. Yes, allow once\n  2. No"))
+        self.assertFalse(rig.dialog_allows("› 4. Cancel  Cancel this tool call"))
+        self.assertFalse(rig.dialog_allows("› 2. Allow for this session  Run the tool and remember"))
         self.assertFalse(rig.dialog_allows("› 2. No, and tell Codex what to do"))
-        self.assertFalse(rig.dialog_allows("› Ask Codex to do anything"), "the composer is no dialog")
+        self.assertFalse(rig.dialog_allows("Allow this?\n› Ask Codex to do anything"),
+                         "an Allow anywhere with the composer's cursor is no dialog row")
 
     def test_the_crown_fixture_s_home_hides_the_person_s_tiers_and_claude(self):
         with tempfile.TemporaryDirectory() as directory:
