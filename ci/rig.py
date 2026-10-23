@@ -1458,7 +1458,11 @@ Reply with the single word ready and end your turn."""
                 for l in self.feed_lines[mark:]
             ):
                 return False
-            return word_of(rec["state"]) == until.get("state", "idle")
+            want = until.get("state", "idle")
+            # A blind test's crown may park a worker that went idle (T-930:
+            # N1's parked its finished worker), which is idle and then some.
+            return word_of(rec["state"]) == want or (
+                test.get("blind") and want == "idle" and word_of(rec["state"]) == "sleeping")
 
         def worker_done():
             return all(one_done(t) for t in tickets)
