@@ -923,6 +923,9 @@ pub struct Daemon {
     /// a second one. On the writer, so the probe that runs off it cannot
     /// race the next turn's start.
     turns_open: Tracked<std::collections::HashSet<ulid::Ulid>>,
+    /// A Claude seat's failed turn, by when the board saw it fail (T-936):
+    /// what a refined reason names, while the seat stays failed.
+    failing: HashMap<uuid::Uuid, String>,
     /// Records whose stretch idle with background tasks the crown has been
     /// told of (T-599, `hear_lingering`), forgotten on the record's next
     /// foreground turn. Kept in `crown.json` (T-602).
@@ -1507,6 +1510,7 @@ pub fn run(paths: Paths) -> Result<()> {
         turn_asks: Default::default(),
         late_asks: HashMap::new(),
         turns_open: Default::default(),
+        failing: HashMap::new(),
         lingered: Default::default(),
         tasks_since: HashMap::new(),
         held: crate::movegate::HeldMoves::default(),
@@ -4320,6 +4324,8 @@ impl Daemon {
                 continue;
             }
             rec.codex_pending_seq = Some(snapshot.sequence);
+            let turn = snapshot.turn_id.clone().unwrap_or_default();
+            let observed = snapshot.state.clone();
             rec.codex_turn_id = snapshot.turn_id;
             dirty = true;
             if new_turn {
@@ -4371,8 +4377,28 @@ impl Daemon {
                 }
             }
             self.feed.state_decision(id, "codex", &decision);
-            if let Some(change) = change {
-                dirty |= self.apply_change(id, &change, None, Some("codex"));
+            if let Some(change) = &change {
+                dirty |= self.apply_change(id, change, None, Some("codex"));
+            }
+            // A failed turn wakes the crown by its turn (T-936): a second
+            // turn that fails between two polls into the state the first one
+            // left changes no state, and is a failure all the same.
+            let last = self
+                .board
+                .sessions
+                .iter()
+                .find(|s| s.id == id)
+                .and_then(|s| s.codex_failed_turn.clone());
+            if let Some(failure) =
+                crownwake::codex_failure(&observed, &turn, last.as_deref(), change.as_ref())
+            {
+                if failure.new && !turn.is_empty() {
+                    if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                        rec.codex_failed_turn = Some(turn.clone());
+                    }
+                    dirty = true;
+                }
+                self.hear_failure(ticket, id, turn, failure);
             }
         }
         let orphans: Vec<_> = stopped
@@ -6499,7 +6525,18 @@ impl Daemon {
         // A turn that ended on an error wakes it too (T-936): no turn's end
         // is probed for it, so nothing else would tell the crown.
         if let Some(failure) = crownwake::failure_edge(snapshot.kind, change) {
-            self.hear_failure(snapshot.ticket, failure);
+            let turn = if failure.new {
+                let turn = format!("@{}", now_ms());
+                self.failing.insert(id, turn.clone());
+                Some(turn)
+            } else {
+                self.failing.get(&id).cloned()
+            };
+            if let Some(turn) = turn {
+                self.hear_failure(snapshot.ticket, id, turn, failure);
+            }
+        } else if !matches!(change.to, SessionState::Failed { .. }) {
+            self.failing.remove(&id);
         }
         // A turn ended, or a target died: the queued asks look again. The
         // settle that lands `Idle{EndTurn}` comes through here from the

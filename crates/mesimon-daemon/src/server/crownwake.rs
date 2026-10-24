@@ -363,10 +363,20 @@ pub(super) struct CrownWake {
     /// worktree that was not cut, said in the line's brackets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     unstarted: Option<String>,
-    /// What a failed turn ended on (T-936), as the board saw it fail: said
-    /// first in the line's brackets, never read off a later state.
+    /// The failed turn this wake is about (T-936), as the board saw it fail:
+    /// its reason said first in the line's brackets, never read off a later
+    /// state, and its identity what a refined reason must match.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    failed: Option<mesimon_core::board::FailReason>,
+    failed: Option<FailedTurn>,
+}
+
+/// One failed turn (T-936): the seat, the turn (Codex's own turn id; on
+/// Claude, the moment the board saw the failure), and what it ended on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct FailedTurn {
+    pub(super) session: uuid::Uuid,
+    pub(super) turn: String,
+    pub(super) reason: mesimon_core::board::FailReason,
 }
 
 /// What rides a wake beside its cause and delta, as `owe_wake` folds it.
@@ -546,7 +556,7 @@ impl CrownWake {
         if let (WakeCause::Unstarted, Some(why)) = (self.cause, &self.unstarted) {
             return vec![why.clone()];
         }
-        let failed = self.failed.filter(|_| self.cause == WakeCause::Failed);
+        let failed = self.failed.as_ref().filter(|_| self.cause == WakeCause::Failed);
         let mut out = match &self.to {
             None => Vec::new(),
             Some(to) if self.cause != WakeCause::Finished => delta(self.from.as_ref(), to),
@@ -557,7 +567,7 @@ impl CrownWake {
             }
         };
         if let Some(reason) = failed {
-            out.insert(0, mesimon_core::board::agent_fail_word(reason).to_string());
+            out.insert(0, mesimon_core::board::agent_fail_word(reason.reason).to_string());
         }
         if self.late {
             out.push("after a restart".to_string());
@@ -646,16 +656,19 @@ pub(super) fn limits_the_crown(kind: SessionKind, change: &Change) -> Option<Wak
         .then_some(WakeCause::Limited)
 }
 
-/// An agent's turn ending on an error (T-936), as `hear_failure` takes it:
-/// the reason, and whether it is a failure of its own. Only a change into
+/// A Claude turn ending on an error (T-936), as `hear_failure` takes it:
+/// the reason, and whether it is a failure of its own. A Claude turn's
+/// hooks arrive one by one, a prompt between two turns, so a change into
 /// `Failed` is one: a repeated hook changes nothing. One from another
 /// failure is the same failure read again (T-659's transcript class), which
 /// refines its reason and wakes nobody; and only a hook's or a proven
 /// close's (High, Medium) is a failure the board saw: the restart's
-/// re-derivation at Low reads one already told, or one nobody saw.
+/// re-derivation at Low reads one already told, or one nobody saw. A Codex
+/// seat is polled, and two turns can fail between two polls into the same
+/// state: `codex_failure` judges it by its turn.
 pub(super) fn failure_edge(kind: SessionKind, change: &Change) -> Option<Failure> {
     let SessionState::Failed { reason } = change.to else { return None };
-    if !kind.is_agent() || change.from == change.to {
+    if !matches!(kind, SessionKind::Claude) || change.from == change.to {
         return None;
     }
     if matches!(change.from, SessionState::Failed { .. }) {
@@ -665,7 +678,32 @@ pub(super) fn failure_edge(kind: SessionKind, change: &Change) -> Option<Failure
         .then_some(Failure { reason, new: true })
 }
 
-/// `failure_edge`'s answer.
+/// A Codex snapshot that reads `Failed` (T-936), judged by its turn id: a
+/// turn other than the last one the seat reported failed (`last`) is a
+/// failure of its own, even where the state it leaves reads as the last one
+/// did (two turns failed between two polls); the same turn read in another
+/// failure is that failure refined; and the same turn read again, a
+/// restart's included, is nothing. A snapshot with no turn id is judged by
+/// its change, as a Claude seat's.
+pub(super) fn codex_failure(
+    state: &SessionState,
+    turn: &str,
+    last: Option<&str>,
+    change: Option<&Change>,
+) -> Option<Failure> {
+    let SessionState::Failed { reason } = *state else { return None };
+    let from_failed = change.map(|c| matches!(c.from, SessionState::Failed { .. }));
+    let new = Some(Failure { reason, new: true });
+    let refined = Some(Failure { reason, new: false });
+    match from_failed {
+        _ if !turn.is_empty() && last != Some(turn) => new,
+        Some(true) => refined,
+        Some(false) if turn.is_empty() => new,
+        _ => None,
+    }
+}
+
+/// `failure_edge`'s and `codex_failure`'s answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Failure {
     pub(super) reason: mesimon_core::board::FailReason,
@@ -2008,15 +2046,26 @@ impl Daemon {
     }
 
     /// A worker's turn ended on an error (T-936): the crown that hears it
-    /// is woken once, the reason as the board saw it on the wake. A refined
-    /// reason moves the one still owed and wakes nobody. A failure is no
-    /// turn's end the board looks at: it says nothing delivered or finished.
-    pub(super) fn hear_failure(&mut self, worker: ulid::Ulid, failure: Failure) {
+    /// is woken once per failed turn (`session`, `turn`), the reason as the
+    /// board saw it on the wake. A refined reason moves the one still owed
+    /// for that same turn, and wakes nobody. A failure is no turn's end the
+    /// board looks at: it says nothing delivered or finished.
+    pub(super) fn hear_failure(
+        &mut self,
+        worker: ulid::Ulid,
+        session: uuid::Uuid,
+        turn: String,
+        failure: Failure,
+    ) {
+        let failed = FailedTurn { session, turn, reason: failure.reason };
         if !failure.new {
-            if let Some(w) =
-                self.crown_wakes.iter_mut().find(|w| w.worker == worker && w.failed.is_some())
+            let same = |f: &FailedTurn| f.session == failed.session && f.turn == failed.turn;
+            if let Some(w) = self
+                .crown_wakes
+                .iter_mut()
+                .find(|w| w.worker == worker && w.failed.as_ref().is_some_and(same))
             {
-                w.failed = Some(failure.reason);
+                w.failed = Some(failed);
             }
             return;
         }
@@ -2026,7 +2075,7 @@ impl Daemon {
         }
         self.enter_wake(crown, worker, WakeCause::Failed, None, None, Owed::default());
         if let Some(w) = self.crown_wakes.iter_mut().find(|w| w.worker == worker) {
-            w.failed = Some(failure.reason);
+            w.failed = Some(failed);
         }
         self.drain_crown_wakes(None);
         self.broadcast();
@@ -2199,7 +2248,7 @@ impl Daemon {
                 first.linger = w.linger.or(first.linger);
                 first.late |= w.late;
                 first.unstarted = w.unstarted.or(first.unstarted.take());
-                first.failed = w.failed.or(first.failed);
+                first.failed = w.failed.or(first.failed.take());
             } else {
                 self.crown_wakes.push(w);
             }
@@ -2946,14 +2995,12 @@ mod tests {
         };
         let server = failed(FailReason::Server);
         let fell = change(SessionState::Running, server.clone(), Confidence::High);
-        for kind in [SessionKind::Claude, SessionKind::Codex] {
-            assert_eq!(
-                failure_edge(kind, &fell),
-                Some(Failure { reason: FailReason::Server, new: true }),
-                "{kind:?}"
-            );
-        }
+        assert_eq!(
+            failure_edge(SessionKind::Claude, &fell),
+            Some(Failure { reason: FailReason::Server, new: true })
+        );
         assert_eq!(failure_edge(SessionKind::Bash, &fell), None, "a shell's turn is no agent's");
+        assert_eq!(failure_edge(SessionKind::Codex, &fell), None, "a Codex turn is its own");
         let proven = change(SessionState::Running, server.clone(), Confidence::Medium);
         assert!(failure_edge(SessionKind::Claude, &proven).is_some_and(|f| f.new));
         let guessed = change(
@@ -2983,7 +3030,11 @@ mod tests {
             linger: None,
             late: false,
             unstarted: None,
-            failed: Some(FailReason::Server),
+            failed: Some(FailedTurn {
+                session: uuid::Uuid::nil(),
+                turn: "turn-a".into(),
+                reason: FailReason::Server,
+            }),
         };
         assert_eq!(wake.clause(), "ended its turn on an error");
         assert_eq!(wake.changed(), ["server error"]);
@@ -2997,6 +3048,44 @@ mod tests {
         // A stronger cause folded over it says its own line, not the reason.
         wake.fold(WakeCause::Raised, None, None);
         assert!(!wake.changed().iter().any(|c| c == "server error"));
+    }
+
+    /// T-936: a Codex seat is polled, so its failure is judged by its turn
+    /// id. Two turns that failed between two polls into the same state are
+    /// two failures with no change between them; the same turn read again,
+    /// a restart's `Unknown` edge into it included, is nothing; the same
+    /// turn in another failure is that failure refined; a snapshot with no
+    /// turn id falls back to its change.
+    #[test]
+    fn a_codex_failure_is_its_turn() {
+        use mesimon_core::board::FailReason;
+        let failed = |reason| SessionState::Failed { reason };
+        let change = |from: SessionState, to: SessionState| Change {
+            from,
+            to,
+            attention_added: false,
+            confidence: Confidence::High,
+        };
+        let server = failed(FailReason::Server);
+        let new = Some(Failure { reason: FailReason::Server, new: true });
+        let into = change(SessionState::Running, server.clone());
+        assert_eq!(codex_failure(&server, "turn-a", None, Some(&into)), new, "the first");
+        assert_eq!(codex_failure(&server, "turn-b", Some("turn-a"), None), new, "no poll between");
+        assert_eq!(codex_failure(&server, "turn-b", Some("turn-b"), None), None, "read again");
+        let restart = change(
+            SessionState::Unknown { reason: UnknownReason::DaemonRestarted },
+            server.clone(),
+        );
+        assert_eq!(codex_failure(&server, "turn-b", Some("turn-b"), Some(&restart)), None);
+        let refined = change(failed(FailReason::Unknown), server.clone());
+        assert_eq!(
+            codex_failure(&server, "turn-b", Some("turn-b"), Some(&refined)),
+            Some(Failure { reason: FailReason::Server, new: false })
+        );
+        assert_eq!(codex_failure(&server, "turn-c", Some("turn-b"), Some(&refined)), new);
+        assert_eq!(codex_failure(&server, "", None, Some(&into)), new, "no turn id: its change");
+        assert_eq!(codex_failure(&server, "", None, None), None);
+        assert_eq!(codex_failure(&SessionState::Running, "turn-d", None, None), None);
     }
 
     #[test]

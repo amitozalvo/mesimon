@@ -384,6 +384,7 @@ mod tests {
             codex_observed_seq: 0,
             codex_pending_seq: None,
             codex_turn_id: None,
+            codex_failed_turn: None,
             agent_preview_path: None,
             agent_plan_key: None,
             observation_hold: kind == SessionKind::Codex,

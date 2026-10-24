@@ -8337,3 +8337,128 @@ fn the_crown_answers_a_codex_worker_s_question() {
         landed(&format!("{kw} \"mesimon-probe-846 worker\" answered your ask"))
     });
 }
+
+/// T-936: a Codex seat is polled, so a failed turn is told by its turn id,
+/// never by a state change. On the synthetic runtime: turn A fails; turn B
+/// fails into the same state with no poll reading `Running` between them,
+/// which changes no state, and wakes the crown a second time; turn B read
+/// again wakes nobody, nor does its reason refined; and a new session that
+/// reports a turn of the same id fails a turn of its own.
+#[test]
+fn a_codex_worker_s_failed_turns_are_told_by_turn() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\n\
+                        while IFS= read -r line; do \
+                        printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+    const FAKE_RUNTIME: &str = include_str!("common/fake_codex_runtime.py");
+    let Some(h) = Harness::boot_with_env(
+        "crown_codex_failed",
+        Some(STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let runtime = h.dir.join("fake-codex-runtime.py");
+    std::fs::write(&runtime, FAKE_RUNTIME).unwrap();
+    std::fs::set_permissions(&runtime, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+        .unwrap();
+    h.set_env("MESIMON_CODEX_RUNTIME_BIN", &runtime);
+    h.set_env("MESIMON_CODEX_BIN", h.dir.join("must-not-launch-real-codex"));
+    h.set_env("MESIMON_CODEX_HOME", h.dir.join("synthetic-codex-home"));
+    h.restart();
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_codex_failed");
+    let feed = h.paths.state_dir.join("activity.jsonl");
+    let control = |id: uuid::Uuid, value: serde_json::Value| {
+        let path = mesimon_daemon::agents::codex::snapshot_path(&h.paths, id);
+        let control = std::path::PathBuf::from(format!("{}.control", path.display()));
+        mesimon_daemon::agents::codex::write_json(&control, &value).unwrap();
+    };
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-936 codex worker");
+    let kw = key_of(&mut c, w);
+    let failed_wakes = || -> usize {
+        std::fs::read_to_string(&feed)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|l| {
+                l["kind"] == "crown_wake" && l["cause"] == "failed" && l["worker"] == w.to_string()
+            })
+            .count()
+    };
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    assert!(matches!(
+        c.request(Command::SetAgentProvider {
+            provider: mesimon_core::board::AgentProvider::Codex
+        }),
+        Response::Ok
+    ));
+    let start = |c: &mut TestClient| -> uuid::Uuid {
+        let v = read(c, sa, &kw).unwrap();
+        assert!(matches!(
+            c.send(
+                Principal::Agent { session: sa },
+                Command::AgentStartTicket {
+                    key: kw.clone(),
+                    seen: v.seen,
+                    plan: false,
+                    tier: None,
+                    workspace: Some("worktree".into()),
+                },
+            ),
+            Response::AgentStarted { .. }
+        ));
+        wait_until(std::time::Duration::from_secs(20), "W's Codex seat", || {
+            c.board().live_agent(w).is_some_and(|s| s.kind == SessionKind::Codex)
+        });
+        let ws = c.board().live_agent(w).unwrap().id;
+        c.await_state(ws, "the synthetic Codex at its composer", |s| {
+            matches!(s, SessionState::Idle { .. })
+        });
+        ws
+    };
+    let fail = |id: uuid::Uuid, turn: &str, reason: &str, screen: &str| {
+        control(
+            id,
+            json!({"state":{"state":"failed","reason":reason},"turn_id":turn,
+                   "screen":screen,"cursor":null}),
+        );
+    };
+    let server = SessionState::Failed { reason: FailReason::Server };
+    let ws = start(&mut c);
+
+    // ---- 1. two turns fail, no poll reading Running between them -----------
+    fail(ws, "turn-a", "server", "A failed");
+    c.await_state(ws, "turn A failed", |s| *s == server);
+    wait_until(std::time::Duration::from_secs(10), "turn A's wake", || failed_wakes() == 1);
+    fail(ws, "turn-b", "server", "B failed");
+    wait_until(std::time::Duration::from_secs(10), "turn B's wake", || failed_wakes() == 2);
+    // ---- 2. turn B read again, and its reason refined: nobody woken ---------
+    fail(ws, "turn-b", "server", "B failed, drawn again");
+    fail(ws, "turn-b", "invalid_request", "B failed, read again");
+    c.await_state(ws, "B refined", |s| {
+        *s == SessionState::Failed { reason: FailReason::InvalidRequest }
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(failed_wakes(), 2, "turn B read again is no new failure");
+
+    // ---- 3. a new session's turn of the same id is a failure of its own ----
+    assert!(matches!(c.request(Command::KillSession { id: ws }), Response::Ok));
+    wait_until(std::time::Duration::from_secs(10), "W's seat gone", || {
+        c.board().live_agent(w).is_none()
+    });
+    let ws2 = start(&mut c);
+    assert_ne!(ws2, ws, "another session");
+    fail(ws2, "turn-b", "server", "B failed in the new session");
+    wait_until(std::time::Duration::from_secs(10), "the new session's wake", || {
+        failed_wakes() == 3
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    assert_eq!(failed_wakes(), 3);
+}

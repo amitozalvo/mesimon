@@ -305,12 +305,50 @@ mod tests {
         assert_eq!((old.wakes.len(), old.heard.len()), (1, 1));
         let v2 = format!(
             r#"{{"schema_version": 2, "crown": "{crown}",
-                "wakes": [{{"worker": "{w}", "cause": "failed", "failed": "server"}}]}}"#
+                "wakes": [{{"worker": "{w}", "cause": "failed",
+                    "failed": {{"session": "{}", "turn": "turn-a", "reason": "server"}}}}]}}"#,
+            uuid::Uuid::nil()
         );
         let ledger = parse(&v2).unwrap();
         let text = serde_json::to_string_pretty(&ledger).unwrap();
-        assert!(text.contains(r#""cause": "failed""#) && text.contains(r#""failed": "server""#));
+        assert!(text.contains(r#""cause": "failed""#) && text.contains(r#""reason": "server""#));
         assert_eq!(serde_json::to_string_pretty(&parse(&text).unwrap()).unwrap(), text);
+    }
+
+    /// T-936: a schema-1 build (its reader asks for schema 1) meets a
+    /// schema-2 ledger that holds a failed turn's wake, a cause it cannot
+    /// read: the file is left byte for byte, its writes are barred, and
+    /// nothing is quarantined, so a newer build gets its ledger back whole.
+    #[test]
+    fn a_schema_1_reader_leaves_a_schema_2_ledger_alone() {
+        let dir = std::env::temp_dir().join(format!("msmn-crown-ledger-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("crown.json");
+        let text = format!(
+            r#"{{"schema_version": 2, "crown": "{}",
+                "wakes": [{{"worker": "{}", "cause": "failed",
+                    "failed": {{"session": "{}", "turn": "turn-a", "reason": "server"}}}}]}}"#,
+            ulid::Ulid::from_parts(1, 1),
+            ulid::Ulid::from_parts(1, 7),
+            uuid::Uuid::nil()
+        );
+        std::fs::write(&file, &text).unwrap();
+        let (ledger, notices, barred) =
+            store::load_versioned::<Ledger>(&file, 1, "the crown's ledger", "");
+        assert!(ledger.is_none(), "nothing read");
+        assert!(barred, "its writes are barred: {notices:?}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text, "the bytes are untouched");
+        let names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, ["crown.json"], "no quarantine");
+        // This build reads it.
+        let (ledger, _, barred) =
+            store::load_versioned::<Ledger>(&file, CROWN_SCHEMA, "the crown's ledger", "");
+        assert!(ledger.is_some_and(|l| l.wakes.len() == 1) && !barred);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Not an assertion about wall clock (see `search.rs`): the number in

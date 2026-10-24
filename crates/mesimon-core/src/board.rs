@@ -406,6 +406,10 @@ pub struct SessionRecord {
     /// cannot acknowledge a newly queued prompt merely by showing its ID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_turn_id: Option<String>,
+    /// The last turn this seat reported failed (T-936): read again, after a
+    /// restart too, it is no new failure for the crown to hear.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_failed_turn: Option<String>,
     /// Mesimon's bounded normalized preview artifact, separate from native
     /// provider history in `transcript_path` and never parsed as that format.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -656,6 +660,7 @@ impl SessionRecord {
             codex_observed_seq: 0,
             codex_pending_seq: None,
             codex_turn_id: None,
+            codex_failed_turn: None,
             agent_preview_path: None,
             agent_plan_key: None,
             observation_hold: kind == SessionKind::Codex,

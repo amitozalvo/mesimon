@@ -32744,3 +32744,29 @@ Tests: `mesophon::a_long_plan_is_kept_whole_and_cut_where_it_is_shown`;
 `crown_e2e::a_worker_s_dialog_outlives_a_daemon_restart` section 4 (a 26 KiB plan whole and an 80
 KiB plan's head marked cut, both with their request, from the hook stream and again after a
 restart; with the old bound it fails at the hook stream's dialog).
+
+**Review (Astra), first round: a failure's identity is its turn, not a state edge.** The first cut
+woke on a change into `Failed`. A Codex seat is polled, though: turn B can start and fail between
+two polls into the state turn A left, which changes nothing and never reached `hear_failure`; and
+with another reason it read as A's reason refined, folded into A's wake owed by ticket alone.
+- **A Codex failure is judged by its turn id** (`codex_failure`, in the Codex observer).
+  - A turn other than the last one the seat reported failed (`SessionRecord::codex_failed_turn`,
+    `#[serde(default)]`) is a failure of its own, whatever the state did.
+  - The same turn read again is nothing, including after a restart, whose `Unknown` edge into it
+    reads as a change.
+  - The same turn in another failure is that failure refined.
+  - A snapshot with no turn id falls back to the change, as a Claude seat does.
+- **A Claude failure keeps the edge** (`failure_edge`, Claude only). Its hooks come one by one with
+  a prompt between two turns. Its identity is the session and the moment the board saw the edge
+  (`Daemon::failing`), dropped once the seat leaves `Failed`.
+- **The wake carries the identity** (`CrownWake::failed: FailedTurn { session, turn, reason }`). A
+  refined reason moves only the wake owed for that same session and turn; two failures owed
+  together say the later one's reason.
+
+Tests: `crownwake::a_codex_failure_is_its_turn`;
+`crownledger::a_schema_1_reader_leaves_a_schema_2_ledger_alone` (`load_versioned` at schema 1 over a
+schema-2 ledger holding a failed wake: nothing read, writes barred, bytes untouched, no quarantine;
+schema 2 reads it); `crown_e2e::a_codex_worker_s_failed_turns_are_told_by_turn` (on the synthetic
+runtime: turn A, then turn B into the same state with no `Running` read between, two wakes; B read
+again and refined, none; a new session's turn of the same id, a third; with the change rule it
+fails at B).
