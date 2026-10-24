@@ -1,4 +1,4 @@
-"""Offline checks of the Claude rig's readiness predicates (A2, T-945)."""
+"""Offline checks of the Claude rig's readiness predicates (A3, T-945)."""
 import importlib.util
 import os
 from pathlib import Path
@@ -39,6 +39,20 @@ class ComposerTests(unittest.TestCase):
     def test_a_box_holding_wrapped_words_is_not_empty(self):
         lines = [RULE, "❯ ", "  words wrapped under the glyph", RULE]
         self.assertFalse(rig.composer_empty(lines))
+
+
+class SuiteTests(unittest.TestCase):
+    def test_the_suite_names_each_test_once(self):
+        tests = rig.load_tests(Path(__file__).parent / "rig" / "tests.toml")
+        self.assertIn("A3", [t["id"] for t in tests])
+
+    def test_a_second_test_under_one_id_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "tests.toml")
+            with open(path, "w") as f:
+                f.write('[[test]]\nid = "A2"\n\n[[test]]\nid = "B1"\n\n[[test]]\nid = "A2"\n')
+            with self.assertRaisesRegex(ValueError, "two tests are named A2"):
+                rig.load_tests(path)
 
 
 class RestartEnvironmentTests(unittest.TestCase):

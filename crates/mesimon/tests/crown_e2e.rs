@@ -1555,11 +1555,11 @@ const BOX_STUB: &str =
 
 /// The crown's wake row while a client attached to its pane holds it, at
 /// the default bound (T-945): ten minutes after tmux last recorded activity.
-const WHEN_YOU_LEAVE: &str = "when you leave or after 10 min without activity";
+const WHEN_YOU_LEAVE: &str = "leave or 10 min idle";
 
 /// A person at the crown's box (T-918): the wake is not pasted into what
 /// they may be typing. It waits while a tmux client has the crown's pane
-/// open and active (`when you leave or after 10 min without activity`),
+/// open and active (`leave or 10 min idle`),
 /// then while the box holds the draft they left
 /// (`after your draft`), and goes in on its own line once the box is
 /// empty — the person's words sent as they wrote them, never joined. The
@@ -1719,7 +1719,7 @@ fn the_crown_wake_waits_for_a_person_at_the_crown_s_box() {
 
 /// The idle bound the T-945 tests run on, and the row's words under it.
 const IDLE_MS: &str = "5000";
-const WHEN_YOU_LEAVE_5S: &str = "when you leave or after 5 s without activity";
+const WHEN_YOU_LEAVE_5S: &str = "leave or 5 s idle";
 
 /// A control-mode tmux client on `session`, as the board's focus attaches
 /// one, and its name. It sends no input, so tmux records no activity from
@@ -3124,6 +3124,8 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
 /// The client was there at the paste, so the box is the board's only while
 /// it reads exactly as pasted: its Enter goes then, and a box that reads
 /// otherwise, changed or clipped, is the person's, its Enter never pressed.
+/// So too when that client edits the box and leaves before the next sample,
+/// with or without a restart before the Enter.
 #[test]
 fn a_codex_crown_s_wake_goes_past_an_idle_client_and_enters_only_its_own_box() {
     const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\n\
@@ -3337,8 +3339,46 @@ fn a_codex_crown_s_wake_goes_past_an_idle_client_and_enters_only_its_own_box() {
     std::thread::sleep(std::time::Duration::from_millis(1500));
     assert_eq!(enters(), before, "no Enter into a box nobody can show is the wake");
     assert_eq!(told(), said, "not told");
-    client.kill().unwrap();
-    let _ = client.wait();
+
+    // The idle client there at the paste edits the box and leaves before
+    // the next sample (one a second while the Enter waits): the paste's own
+    // sample saw them, so the box is theirs, never the long box's `Ours`.
+    let pasted_then_left = |n: usize, client: &mut std::process::Child| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while wakes() < n {
+            assert!(std::time::Instant::now() < deadline, "the wake pasted");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        client.kill().unwrap();
+        let _ = client.wait();
+        draw(sa, "my own words instead", idle.clone());
+    };
+    // ---- edited and gone before the next sample: theirs --------------------
+    let (before, said) = (enters(), told());
+    draw(sa, "", idle.clone());
+    pasted_then_left(4, &mut client);
+    wait_until(std::time::Duration::from_secs(10), "owed again, after their words", || {
+        c.board().sessions.iter().any(|s| s.id == sa && !s.pending_submit)
+            && held(&mut c, a).as_deref() == Some("after your draft")
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(enters(), before, "their words are never entered by the wake");
+    assert_eq!(told(), said, "not told");
+
+    // ---- the same, with a restart before the Enter: the same answer -------
+    let (mut client, _) = attach_client(&tmux_sock, &crown);
+    let (before, said) = (enters(), told());
+    draw(sa, "", idle.clone());
+    pasted_then_left(5, &mut client);
+    h.restart();
+    let mut c = h.client("crown_codex_idle_again");
+    wait_until(std::time::Duration::from_secs(15), "owed again across the restart", || {
+        c.board().sessions.iter().any(|s| s.id == sa && !s.pending_submit)
+            && held(&mut c, a).as_deref() == Some("after your draft")
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(enters(), before, "never entered across the restart");
+    assert_eq!(told(), said, "not told across the restart");
 }
 
 /// One ticket landing is three wakes, not four (T-469, seen on T-461; T-527):

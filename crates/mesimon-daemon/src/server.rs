@@ -4881,6 +4881,13 @@ impl Daemon {
                     owed.sent = owed.parked.clone();
                 }
             }
+            // A client attached on the sample that let the wake's paste go
+            // was there at it (T-945), idle or not.
+            if wake && self.attached.contains(&sid) {
+                if let Some(e) = self.crown_wake_entering.as_mut().filter(|e| e.session == id) {
+                    e.person_came = true;
+                }
+            }
             self.control_pasted(id);
             // The words are in; the entry stays for its ack (the new-turn
             // edge), so a queued ask's word still lands on the feed. Words
@@ -8931,19 +8938,27 @@ impl Daemon {
             }
             // A Codex box takes the words and its Enter comes later, held
             // for a person (`drive_codex_inputs`): the crown has heard
-            // nothing until it goes.
+            // nothing until it goes. A client attached on the sample that
+            // let the paste go, idle or not (T-945), was there at the paste:
+            // the box is the board's only while it reads as the wake.
             _ if pane
                 && self.session_kind(id) == SessionKind::Codex
                 && self.crown_wake_owed(id) =>
             {
                 let wakes = std::mem::take(&mut *self.crown_wakes);
+                let present = self
+                    .board
+                    .sessions
+                    .iter()
+                    .find(|s| s.id == id)
+                    .is_some_and(|s| self.attached.contains(&s.sid16()));
                 let entering = crownwake::Entering {
                     crown,
                     session: id,
                     text,
                     wakes,
                     telling,
-                    person_came: false,
+                    person_came: present,
                     frame: None,
                     pane: None,
                     expires_ms: None,

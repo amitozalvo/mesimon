@@ -118,7 +118,7 @@ esac
 WAKE_GRACE = 60
 # The crown's wake row while a client in its pane holds it, at the default
 # bound (T-945).
-WHEN_YOU_LEAVE = "when you leave or after 10 min without activity"
+WHEN_YOU_LEAVE = "leave or 10 min idle"
 QUIET = 6.0
 SWEEP_WAIT = 1.0  # the last frames' feed lines, after the worker's end
 # The column the permission tests' workers start in (T-581): Claude Code in
@@ -177,7 +177,7 @@ COMPOSER_RULE_MIN = 8
 
 
 def composer_empty(lines, cursor=None):
-    """Claude Code's composer drawn with nothing typed in it (A2, T-945), by
+    """Claude Code's composer drawn with nothing typed in it (A3, T-945), by
     the shape `agents::claude::composer::read` measured: the bottom-most `❯`
     row with a rule of eight or more `─` directly above it and a rule below
     it, nothing after the glyph and nothing wrapped under it, or a
@@ -205,6 +205,20 @@ def composer_empty(lines, cursor=None):
         start = len(lines[row]) - len(body) + 2
         return cursor == (start, row)
     return False
+
+
+def load_tests(path):
+    """The suite from `tests.toml`. An id names one test: `--only`, the
+    failure retry and the verdict columns all find a test by it, so a second
+    test under the same id is refused rather than run beside the first."""
+    with open(path, "rb") as f:
+        tests = tomllib.load(f)["test"]
+    seen = set()
+    for t in tests:
+        if t["id"] in seen:
+            raise ValueError(f"{path}: two tests are named {t['id']}")
+        seen.add(t["id"])
+    return tests
 
 
 def file_generation(path):
@@ -996,7 +1010,7 @@ class Rig:
         for attempt in range(1, 11):
             self.stop_daemon()
             # The shell environment as it stood before this attempt's daemon
-            # (A2, T-945): only a write after it is the winner's own.
+            # (A3, T-945): only a write after it is the winner's own.
             self.env_before = file_generation(env_file)
             hello = self.start_daemon(extra_env)
             want = {**self.seams, **(extra_env or {})}
@@ -1833,7 +1847,7 @@ Reply with the single word ready and end your turn."""
             record["person_came_ms"] = int(time.time() * 1000)
             return True
         if what == "crown_road":
-            # A2 (T-945): the rig's crown on `road` (hooks|mod). The road
+            # A3 (T-945): the rig's crown on `road` (hooks|mod). The road
             # is read at each launch, so the daemon restarts with the seam
             # and the crown is parked and woken onto it; `idle_ms` is the
             # bound a client attached to its pane holds a wake for.
@@ -1887,7 +1901,7 @@ Reply with the single word ready and end your turn."""
                 return False
             return True
         if what == "person_idles":
-            # A2 (T-945): the person stays in the crown's pane and sends it
+            # A3 (T-945): the person stays in the crown's pane and sends it
             # no input. The board owes the crown its wake and holds it while
             # tmux's record of the client's activity is inside the bound;
             # past it, the wake goes in with the person still attached.
@@ -3241,7 +3255,7 @@ Reply with the single word ready and end your turn."""
                 said = last_reply(transcript(crown)) if crown else ""
                 check(c, arg.lower() in said.lower(), f"said {said[:100]!r}")
             elif name == "went_past_idle_person":
-                # A2 (T-945): the wake row named the bound while the client
+                # A3 (T-945): the wake row named the bound while the client
                 # was fresh, and the wake went in once, the person still
                 # attached, no sooner than the bound after their attach and
                 # within 10 s past it (`arg`: the bound in seconds).
@@ -3249,7 +3263,7 @@ Reply with the single word ready and end your turn."""
                 rows = [r for r in p.get("rows") or [] if r]
                 secs = int(arg)
                 span = f"{secs // 60} min" if secs % 60 == 0 else f"{secs} s"
-                words = f"when you leave or after {span} without activity"
+                words = f"leave or {span} idle"
                 after = p.get("sent_after_attach_ms")
                 bound = int(arg) * 1000
                 ok = (bool(rows) and all(r == words for r in rows) and p.get("sent_while_in") == 1
@@ -3266,8 +3280,8 @@ Reply with the single word ready and end your turn."""
                 rows = p.get("rows") or []
                 if p.get("road") == "mod":
                     took = p.get("sent_in_ms")
-                    unheld = not any(r and (r.startswith("when you leave") or r.startswith("activity unknown")
-                                            or r == "after your draft") for r in rows)
+                    unheld = not any(r and (r.startswith("leave") or r == "after your draft")
+                                     for r in rows)
                     check(c, unheld and p.get("by_mod") and took is not None and took < 10_000,
                           f"mod road: rows {sorted(set(map(str, rows)))}, by the mod {p.get('by_mod')}, "
                           f"in {took} ms of being owed, the person still in")
@@ -3560,8 +3574,10 @@ def main():
         rig.reset()
         return
 
-    with open(os.path.join(HERE, "rig", "tests.toml"), "rb") as f:
-        tests = tomllib.load(f)["test"]
+    try:
+        tests = load_tests(os.path.join(HERE, "rig", "tests.toml"))
+    except ValueError as e:
+        die(str(e))
     if args.only:
         want = [x.strip() for x in args.only.split(",")]
         tests = [t for t in tests if t["id"] in want or t["id"][0] in want]

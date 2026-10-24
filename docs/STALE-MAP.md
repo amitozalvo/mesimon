@@ -33682,6 +33682,13 @@ neither implies the other.
   keeps reading raw `attached`. A client in the pane at a Codex paste, idle or not, makes a box
   that no longer reads exactly as the wake the person's (`Theirs`). It never reads `Ours` under
   the long-box allowance, which would press Enter on someone's edit.
+- **The paste latches its own sample's clients** (round 2, the cold read). `absorb_panes`
+  latches `person_came` only on a sample after the paste, so a client attached (and idle) on
+  the sample that let the paste go, who edited the box and left before the next one, left
+  `person_came` false: the long-box fallback read their words as `Ours` and pressed Enter, where
+  a restart in that interval (`resume_crown_entering`) refused the same box. Both Codex pastes
+  (the live pane's `deliver`, and a woken crown's in `drive_codex_inputs`) now OR the raw
+  `attached` of the sample that authorized them into `person_came`.
 - **The reading is `#{session_activity}` on the existing `list-panes` fork.** Every crown pane
   is its own session. `#{client_activity}` is a `list-clients` field, a second fork the tick may
   not make on the writer (T-857). The two clocks are not required to agree anywhere. Measured on
@@ -33716,8 +33723,13 @@ neither implies the other.
     sample, a paste still needs `person_read_at == landed`, and a failed `list-panes` lands no
     facts at all.
 - **The words** (`PersonHold::word`):
-  - `when you leave or after 10 min without activity`, the bound's own duration in it.
-  - `activity unknown ∙ when you leave` for `Unknown`.
+  - `leave or 10 min idle`, the bound's own duration in it: the card's owed row,
+    `crown wakes ∙ leave or 10 min idle`, is 34 cells, and the widest card's interior is 35 (a
+    40-cell column less its bar, pads and glyph). At the 26-cell minimum the row ends at
+    `crown wakes ∙ leave ~` (`ui::tests::the_crown_wake_row_shows_its_bound_on_the_widest_card`
+    draws both). A longer form (`when you leave or after 10 min without activity`,
+    61 cells) never showed the bound on any card.
+  - `leave ∙ idle unknown` for `Unknown`.
   - `after your draft` once the client hold clears with words in the box.
   - There is no countdown. "Activity" is tmux's record of input from a client, not a person's
     last key or their presence.
@@ -33744,22 +33756,28 @@ neither implies the other.
   - `an_idle_client_and_a_draft_hold_a_wake_the_launch_handed_back`: T-936's hand-back.
   - `a_codex_crown_s_wake_goes_past_an_idle_client_and_enters_only_its_own_box`: the exact box
     is entered; a changed box and a clipped box are the person's, and nothing is entered. A
-    mutation pointing `person_came` at the filtered set fails this test.
+    mutation pointing `person_came` at the filtered set fails this test. Round 2 adds the idle
+    client that edits and leaves within milliseconds of the paste, before the next sample, and
+    the same with a restart before the Enter: never entered, not told, owed behind their words.
+    A mutation turning the paste's latch off fails the first of them.
   - `the_crown_wake_waits_for_a_person_at_the_crown_s_box`, unchanged on the default bound, is
     the active client that holds.
-- Rig A2: the rig's crown is parked and woken onto the hook set at a 120 s bound. A person
+- Rig A3 (filed as `A2`, which T-938 also used; renamed): the rig's crown is parked and woken onto the hook set at a 120 s bound. A person
   attaches and sends nothing, and the wake goes in once with them still attached. `crown_road`
   puts the crown back on the mod road. Its readiness waits (the woken crown's empty composer,
   by `agents::claude::composer`'s measured shape, and a shell environment written by the winning
   restart attempt's daemon) have offline cases in `ci/rig_test.py`.
 
-**Limits of this specimen.** A2's first two runs failed in the rig's own setup, and what they
+**Limits of this specimen.** A3's first two runs failed in the rig's own setup, and what they
 hit is product behaviour, not only harness timing. A person's ordinary words sent after
 `SessionStart` and before Claude Code's composer is ready go in unacked (`paste_unacked`), and a
 launch made while a restarted daemon is still capturing the shell environment probes no
 `claude` and falls to the hook set. The rig's waits avoid both; they neither fix nor disprove
-them. A2's pass is evidence for the hold on the road it reached, not for those readiness
+them. A3's pass is evidence for the hold on the road it reached, not for those readiness
 predicates.
+
+The e2e's one-second allowance and the Codex case's single "row names the bound" check prove
+less than an end-to-end "never before expiry"; the arithmetic unit test is the boundary.
 
 **Not done.**
 - The bound's value, which wants observed wake durations.

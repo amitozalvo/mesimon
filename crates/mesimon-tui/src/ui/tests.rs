@@ -13276,3 +13276,26 @@ fn the_snake_comes_out_idle_on_a_calm_board_and_nowhere_else() {
     app.drive_arcade(Instant::now());
     assert!(app.arcade.borrow().is_some());
 }
+
+/// The crown's wake held for a client in its pane (T-945) names the bound
+/// on the card as drawn, not only in the row's string: whole on the widest
+/// column (40 cells), and cut after `leave` on the narrowest one (26).
+#[test]
+fn the_crown_wake_row_shows_its_bound_on_the_widest_card() {
+    let mut app = app_graphite(fixture(false));
+    let mut p = pending_ask(1, &[]);
+    p.action = mesimon_core::command::PendingAction::CrownWake;
+    p.held = Some("leave or 10 min idle".into());
+    app.pending = vec![p];
+    app.cursor_col = 0;
+    app.cursor_row = Some(0);
+    let row = |w: u16| -> String {
+        let lines = render(&app, w, 30);
+        lines.iter().find(|l| l.contains("crown wakes")).cloned().unwrap_or_default()
+    };
+    assert!(row(200).contains("crown wakes ∙ leave or 10 min idle"), "{}", row(200));
+    // Four columns at 109 cells: 104 to share, every column at the 26 floor.
+    let narrow = row(109);
+    assert!(narrow.contains("crown wakes ∙ leave"), "{narrow}");
+    assert!(!narrow.contains("10 min idle"), "the narrowest card cuts it: {narrow}");
+}

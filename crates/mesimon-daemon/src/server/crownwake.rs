@@ -538,19 +538,18 @@ impl PersonHold {
     pub(super) fn word(self) -> &'static str {
         match self {
             PersonHold::Client(ClientHold::Recent) => wake_when_you_leave(),
-            PersonHold::Client(ClientHold::Unknown) => "activity unknown ∙ when you leave",
+            PersonHold::Client(ClientHold::Unknown) => "leave ∙ idle unknown",
             PersonHold::Draft => "after your draft",
         }
     }
 }
 
-/// `when you leave or after 10 min without activity`, the bound's own
-/// duration in it: tmux's activity record, never a person's last key.
+/// `leave or 10 min idle`, the bound's own duration in it: tmux's activity
+/// record, never a person's last key. Short enough that the card's owed row,
+/// `crown wakes ∙ leave or 10 min idle`, fits the widest column whole.
 fn wake_when_you_leave() -> &'static str {
     static WORDS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    WORDS.get_or_init(|| {
-        format!("when you leave or after {} without activity", span_words(person_idle_ms()))
-    })
+    WORDS.get_or_init(|| format!("leave or {} idle", span_words(person_idle_ms())))
 }
 
 /// `10 min`, `5 s`, `1500 ms`: a bound in the largest unit it fills whole.
@@ -3488,13 +3487,8 @@ mod tests {
         assert_eq!(span_words(90_000), "90 s");
         assert_eq!(span_words(1500), "1500 ms");
         assert_eq!(PersonHold::Draft.word(), "after your draft");
-        assert_eq!(
-            PersonHold::Client(ClientHold::Unknown).word(),
-            "activity unknown ∙ when you leave"
-        );
-        assert!(PersonHold::Client(ClientHold::Recent)
-            .word()
-            .starts_with("when you leave or after "));
+        assert_eq!(PersonHold::Client(ClientHold::Unknown).word(), "leave ∙ idle unknown");
+        assert!(PersonHold::Client(ClientHold::Recent).word().starts_with("leave or "));
     }
 
     #[test]
