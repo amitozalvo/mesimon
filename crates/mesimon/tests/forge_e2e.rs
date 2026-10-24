@@ -2760,13 +2760,32 @@ fn a_conflict_said_before_a_restart_says_its_clear_after_it() {
 
     // D1: a restart with the conflict standing. The first read after it
     // says nothing; the clear after that is said.
+    let feed = h.paths.state_dir.join("activity.jsonl");
+    let worker_looked = format!("\"ticket\":\"{}\"", k.worker);
+    let looked_since = |at: usize| {
+        let text = std::fs::read_to_string(&feed).unwrap_or_default();
+        text.get(at..)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| {
+                l.contains("\"cmd\":\"crown_restart_looked\"") && l.contains(&worker_looked)
+            })
+            .count()
+    };
     drop(c);
-    h.restart_after(|| {});
+    // The feed's length while no daemon runs: what follows is this start's.
+    let mut started_at = 0;
+    h.restart_after(|| started_at = std::fs::metadata(&feed).map_or(0, |m| m.len() as usize));
     let mut c = h.client("forge_clear-2");
     h.one_turn(&mut c, k.crown);
     wait_until(Duration::from_secs(20), "the first live read", || sampled(&mut c) > 0);
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(wakes(&h, k.worker, "forge"), 1, "{}", std::fs::read_to_string(&got).unwrap());
+    // The restart's look at the worker has landed (T-937), so the clear
+    // below is current news: read before it, T-602 says `after a restart`.
+    wait_until(Duration::from_secs(20), "the restart's look at the worker", || {
+        looked_since(started_at) == 1
+    });
 
     // A: the clear is heard while the crown's turn runs, and the card is
     // moved before the turn ends. The line says where the card is now.

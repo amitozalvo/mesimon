@@ -1393,12 +1393,18 @@ impl Daemon {
         let worker = p.worker;
         self.judge_probe(p);
         // Looked at since the restart (T-602): what is owed from here is
-        // current, and every turn it was asked for is judged.
+        // current, and every turn it was asked for is judged. The feed says
+        // so once per worker per start (T-937), the fact an e2e waits on
+        // before news it expects said as current.
+        let mut looked = false;
         if let Some(h) = self.crown_heard.get_mut(&worker) {
-            h.restored = false;
+            looked = std::mem::take(&mut h.restored);
             if h.looks == 0 {
                 h.unjudged = None;
             }
+        }
+        if looked {
+            self.feed.board("automation", "crown_restart_looked", Some(worker));
         }
     }
 
