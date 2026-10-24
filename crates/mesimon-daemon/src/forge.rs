@@ -1581,6 +1581,12 @@ pub struct State {
     /// conflict was. In `forge.json` beside the sets (T-785), so a conflict
     /// said before a restart says its clear after it.
     pub conflicted: HashMap<ulid::Ulid, Vec<(String, u64)>>,
+    /// The tickets whose set came back from `forge.json` and no whole read
+    /// of this daemon's has answered since (T-937): an edge that read finds
+    /// happened while no daemon read, and its line says `after a restart`
+    /// by this fact, not by whether the restart's look at the worker landed
+    /// first.
+    pub restored: HashSet<ulid::Ulid>,
     /// URLs the backfill found in a ticket's old transcripts (T-810), each
     /// bound as a baseline by the read that first finds its PR
     /// (`baseline`): the work is old, so its binding is no news. Memory
@@ -1653,6 +1659,17 @@ impl State {
             }
         }
         opens
+    }
+
+    /// Whether a read of `t` reads against the set `forge.json` brought
+    /// back (T-937), so its news is owed across the restart; a whole read
+    /// answers it, and the next read's news is current.
+    pub fn since_restart(&mut self, t: ulid::Ulid, whole: bool) -> bool {
+        if whole {
+            self.restored.remove(&t)
+        } else {
+            self.restored.contains(&t)
+        }
     }
 
     /// Keeps the conflict edges that are news (T-769): a conflict once,
@@ -1861,6 +1878,7 @@ impl State {
         self.at_ms.retain(|t, _| live.contains(t));
         self.held.retain(|t, _| live.contains(t));
         self.conflicted.retain(|t, _| live.contains(t));
+        self.restored.retain(|t| live.contains(t));
         self.basis.retain(|t, _| live.contains(t));
         self.local.retain(|t, _| live.contains(t));
         self.owed.retain(|t, _| live.contains(t));
@@ -2175,6 +2193,7 @@ impl State {
                 self.landed.insert(t, landed);
             }
             self.sets.insert(t, set);
+            self.restored.insert(t);
         }
         for (t, said) in file.conflicts {
             if self.sets.contains_key(&t) {
@@ -3034,9 +3053,14 @@ mod tests {
         assert_eq!(said(&mut s, &stuck, &clean), ["conflict cleared #4"]);
         let mut s = restart(&s);
         assert!(said(&mut s, &stuck, &clean).is_empty(), "cleared once, across a restart");
-        // Said, and cleared while the daemon was down: the first read says it.
+        // Said, and cleared while the daemon was down: the first read says
+        // it, as owed across the restart (T-937); a partial read leaves that
+        // to the first whole one, and the read after is current.
         assert_eq!(said(&mut s, &clean, &stuck), ["conflict #4"]);
         let mut s = restart(&s);
+        assert!(s.since_restart(t, false), "a partial read");
+        assert!(s.since_restart(t, true), "the first whole read");
+        assert!(!s.since_restart(t, true), "and only it");
         assert_eq!(said(&mut s, &stuck, &clean), ["conflict cleared #4"]);
         // Never said: a restart does not make its clear news.
         s.sets.insert(t, vec![stuck.clone()]);

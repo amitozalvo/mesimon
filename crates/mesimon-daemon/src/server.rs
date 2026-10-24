@@ -16767,7 +16767,7 @@ impl Daemon {
             }
         }
         let mut changed = false;
-        let mut news: Vec<(ulid::Ulid, String)> = Vec::new();
+        let mut news: Vec<(ulid::Ulid, String, bool)> = Vec::new();
         let mut openings: HashMap<ulid::Ulid, String> = HashMap::new();
         let mut arrivals: Vec<(ulid::Ulid, crate::forge::Edge)> = Vec::new();
         // The read found an edge on some ticket (T-811): the board's
@@ -16784,6 +16784,9 @@ impl Daemon {
                 continue;
             }
             let old = self.forge.sets.get(&t).cloned();
+            // Read against `forge.json`'s set (T-937): its news happened
+            // while no daemon read, and says so.
+            let late = self.forge.since_restart(t, read.contains(&t));
             let set = crate::forge::carry(old.as_deref(), set, &answered);
             // A PR the backfill's URLs name binds as a baseline (T-810): read
             // as the last read's too, so it is no opening, line or edge.
@@ -16881,7 +16884,7 @@ impl Daemon {
                 });
                 let words = heard.news(&set);
                 if !words.is_empty() {
-                    news.push((t, words.join(", ")));
+                    news.push((t, words.join(", "), late));
                 }
                 // An opening is said on the wake of the turn that opened
                 // it, never on its own (T-773).

@@ -958,9 +958,13 @@ fn the_crown_lets_one_agent_edit_the_others() {
 }
 
 /// The stub every wake test runs: each line it reads is appended to one file
-/// beside it, so the crown's sentences and the workers' words are all there.
+/// beside it, so the crown's sentences and the workers' words are all there,
+/// and to one per ticket (`got-<key>.txt`), so a count of what reached one
+/// pane reads that pane alone (T-937).
 const RECORDING_STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
-                              printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+                              printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; \
+                              printf '%s\\n' \"$line\" \
+                              >> \"$(dirname \"$0\")/got-${MESIMON_TICKET:-none}.txt\"; done\n";
 
 /// One commit in `repo` touching `file`; the new HEAD, short.
 fn commit(repo: &std::path::Path, file: &str) -> String {
@@ -7617,9 +7621,13 @@ fn a_wake_s_receipt_names_what_waits_and_it_goes_once() {
         assert!(matches!(c.request(Command::UnarchiveTicket { id: w2 }), Response::Ok));
     };
 
-    // Nothing waiting: none, and nothing goes once it is up.
+    // Nothing waiting: none, and nothing goes once it is up. Counted in W2's
+    // own pane (T-937): the crown's wake for W2's turn writes `got.txt` too,
+    // and it can go out in this window, held 10 s behind the crown's
+    // unacknowledged wake for W, or pasted late under load.
     reclaim(&mut c);
-    let lines = || std::fs::read_to_string(&got).unwrap_or_default().lines().count();
+    let got_w2 = h.dir.join(format!("got-{kw2}.txt"));
+    let lines = || std::fs::read_to_string(&got_w2).unwrap_or_default().lines().count();
     match start_agent(&mut c, &kw2, "worktree") {
         Response::AgentStarted { session_started: false, woken: true, prompt, .. } => {
             assert_eq!(prompt, Some(StartPrompt::None));
@@ -7654,6 +7662,8 @@ fn a_wake_s_receipt_names_what_waits_and_it_goes_once() {
     wait_until(std::time::Duration::from_secs(10), "the words to reach W2", || count(probe) > 0);
     settle();
     assert_eq!(count(probe), 1, "once");
+    let w2_got = std::fs::read_to_string(&got_w2).unwrap_or_default();
+    assert_eq!(w2_got.matches(probe).count(), 1, "in W2's own pane: {w2_got}");
 }
 
 /// The crown answers a Codex worker's question (T-846). The worker's runtime

@@ -32211,3 +32211,57 @@ cluster bisect ran, since none was owed):
   session on those accounts in that span, the author's other boards included. On the price
   tables: Opus crowns $28.88 over both arms; Codex Sol about 9.5M observed tokens, about 90%
   cached, roughly $4–5 at third-party list prices.
+
+## T-937 — two e2es that flaked under load: one counted the crown's pane, one rode a daemon race (2026-10-24)
+
+Row 14 of T-925's gap log: `crown_e2e::a_wake_s_receipt_names_what_waits_and_it_goes_once`
+(`nothing was sent`) and `forge_e2e::a_conflict_said_before_a_restart_says_its_clear_after_it`
+(failed once in a 51 s nextest run) each failed under parallel load and passed alone. Neither
+reproduced in 80 runs beside two full-suite rounds; both reproduced at once when the step that
+load stretches was stretched on purpose, which is how each race was named.
+
+**The crown test counted every pane.** `RECORDING_STUB` appends every pane's lines to one
+`got.txt`, and the "nothing goes once it is up" step compared that file's line count across W2's
+wake. The crown's own wake for W2's finished turn writes there too, and when it lands depends on
+two daemon facts the test never waited on. Whether that wake is queued at all races the test's
+park of W2 (~50 ms apart; parked first, a finished turn is no news). When it is queued, it waits
+behind the crown's earlier wake about W, which the stub never acknowledges, so it goes out when
+that paste's ack window (`INFLIGHT_MS`, 10 s) expires. A 4.5 s sleep before the count's
+baseline puts that expiry inside the window: 3 of 3 failed with the reported `left: 3, right: 2`.
+**Fix:** the stub also appends each line to `got-<MESIMON_TICKET>.txt`, and the step counts W2's
+own file. It asserts the same thing, now about W2's pane alone. The last step also asserts that
+the riding words reached that file, so the per-pane count cannot pass by reading nothing. Under
+the same 4.5 s stretch: 3 of 3 green.
+
+**The forge test pinned a daemon race.** A wake says `after a restart` when it is `late`.
+`enter_wake` sets `late` when the wake was owed across the restart or the worker's
+`crown_heard.restored` is still set. That flag clears when the restart's turn probe on the worker
+lands (`on_turn_probed`). The test clears the PR while the daemon is down and expects the first
+read after the restart to say `conflict cleared #42, after a restart` (T-785's record says so in
+those words). The suffix therefore depended on the forge pass (a `gh` call) landing before the git
+probe. With `gh pr list` held 2 s or 4 s (`MSMN_GH_SLOW`), every run said `conflict cleared #42`
+and timed out after 20 s, in 54 s and 65 s; the reported failure took 51 s.
+**Fix (daemon):** `forge::State::restored` holds the tickets whose set came back from
+`forge.json` and that no whole read of this daemon has answered. `since_restart` answers the read
+and clears the ticket on a whole one. `absorb_forge` passes that fact with each ticket's news, and
+`hear_forge` owes the wake with `Owed { late }`. Forge news found against the restored set says
+`after a restart` because of what the read compared, not because of which thread won. The
+look-based `restored` is still OR'd in by `enter_wake`, so T-602's rule for a wake about a worker
+no look has reached is unchanged. The test is unchanged. With `gh` slowed: 4 of 4 green (2 s and
+4 s).
+
+**What is left.** The same OR keeps the mirror case racy. After the first restart, the test
+clears the PR on a later read and expects no suffix, so the worker's look must land first. The
+test gets that order from `sampled_at_ms > 0` plus a 1.5 s window. The look writes nothing a test
+can wait on, and a git probe slower than about 2 s would still add the suffix there. That was
+not the observed failure, and the suffix it would add is T-602's rule working as written.
+
+**Tests.** The unit `forge::tests::a_conflict_cleared_follows_a_conflict_said` covers
+`since_restart`. A cleared-while-down restore reads as owed on a partial read, then on the first
+whole read, and not after it.
+
+**Verified.** One full `cargo nextest run --workspace` (2859 passed) ran as load while each test
+looped in two parallel slots beside it: crown 24/24, forge 20/20. Also `cargo ut`, clippy
+`-D warnings` on `mesimon-daemon` and `mesimon`, and `git diff --check`. No rig run: the crown's
+words are T-785's (rig F8, Sonnet, 2026-10-15). Only the condition under which they appear
+changed, from a race to the read's own fact.

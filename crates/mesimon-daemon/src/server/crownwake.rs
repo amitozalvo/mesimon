@@ -1986,11 +1986,12 @@ impl Daemon {
     /// A pass that also flipped the branch to merged (the forge's merged
     /// clause, T-769) says the merge in this line, as `merged`, and moves
     /// both baselines to it as `hear_merges` does: the flags' wake on the
-    /// tick then finds it told and folds into it.
-    pub(super) fn hear_forge(&mut self, news: Vec<(ulid::Ulid, String)>) -> bool {
+    /// tick then finds it told and folds into it. News the first whole read
+    /// after a restart found (`late`, T-937) says `after a restart`.
+    pub(super) fn hear_forge(&mut self, news: Vec<(ulid::Ulid, String, bool)>) -> bool {
         let Some(crown) = self.board.crown_holder().map(|t| t.id) else { return false };
         let mut woke = false;
-        for (worker, words) in news {
+        for (worker, words, late) in news {
             if worker == crown || !self.crown_hears(worker, crown) {
                 continue;
             }
@@ -2023,7 +2024,8 @@ impl Daemon {
                         heard.deferred = None;
                     }
                     let from = heard.told.replace(now.clone());
-                    self.owe_crown_wake(crown, worker, cause, from, Some(now), false);
+                    let owed = Owed { late, ..Owed::default() };
+                    self.owe_wake(crown, worker, cause, from, Some(now), owed);
                     woke = true;
                 }
                 Due::Hold(_) | Due::Silent => {}
