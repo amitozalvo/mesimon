@@ -33329,3 +33329,13 @@ one. Tests: `osc.rs` (five, `a_late_colour_reply_types_nothing_and_counts_both_h
 `every_osc_reply_and_every_terminator_is_dropped` new), the two `app.rs` late-reply tests now
 feed colorsaurus's real reply (both halves, `BEL`) with a group-10 tag on the board, and the pty
 test above.
+
+## T-956: a merged branch draws no `auto-merge ∙ off` row
+
+The card's `auto-merge ∙ off` row (a ticket taken off the train with `t`) said nothing true
+once the branch was merged: the train has nothing to land and the `⎇✓` glyph already says it.
+`App::pending_row` now draws the row only while the worktree's `merged` is false (the field
+the glyph reads, so the two agree), on every column. `App::ctx()` follows: `train_reaches`
+and `manual_merge` are false for a merged branch, so `t` is inert and unhinted where the row is
+gone (`ticket_merged_upstream_120x30` loses its `t merge by hand` hint, deliberately). An
+unmerged branch is unchanged, train on or off. Golden: `merged_no_train_row_120x30`.

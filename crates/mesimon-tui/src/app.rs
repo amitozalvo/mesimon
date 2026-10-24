@@ -6667,8 +6667,10 @@ impl App {
             if let Some(row) = self.tasks_row(ticket) {
                 return Some(row);
             }
+            // A merged branch owes the train nothing (T-956): the card's
+            // merged glyph already says it, so the row is not drawn.
             let off = self.board.ticket(ticket).is_some_and(|t| t.manual_merge)
-                && self.wt_item(ticket).is_some_and(|w| w.status == "attached");
+                && self.wt_item(ticket).is_some_and(|w| w.status == "attached" && !w.merged);
             return off.then(|| "auto-merge ∙ off".to_string());
         };
         let own = self.board.ticket(ticket).map(|t| t.short_key.as_str()).unwrap_or("");
@@ -7740,11 +7742,12 @@ impl App {
             merge_train_armed: self.automation.merge_train,
             // The preference OR the daemon's word: the reconcile lags the
             // toggle by a snapshot, and the key must not flicker across it.
-            train_reaches: wt.is_some_and(|w| w.status == "attached")
+            train_reaches: wt.is_some_and(|w| w.status == "attached" && !w.merged)
                 && (self.prefs.merge_train || self.automation.merge_train),
             manual_merge: subject
                 .and_then(|t| self.board.ticket(t))
-                .is_some_and(|t| t.manual_merge),
+                .is_some_and(|t| t.manual_merge)
+                && !wt.is_some_and(|w| w.merged),
             crowned: subject.is_some_and(|t| self.board.is_crowned(t)),
             // Board-wide, because the ten digits share one binding and `avail`
             // never sees which one was pressed. A digit whose own group is

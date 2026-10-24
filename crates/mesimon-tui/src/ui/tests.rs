@@ -5446,6 +5446,22 @@ fn golden_train_manual_120() {
     let lines = render(&app, 120, 30);
     assert!(lines.iter().any(|l| l.contains("∙ auto-merge ∙ off")), "{}", lines.join("\n"));
     assert!(lines.last().is_some_and(|l| l.contains("t auto-merge")), "{:?}", lines.last());
+    // Merged (T-956): the branch is in, so the row and the `t` key go, though
+    // the ticket still wears the mark.
+    app.worktrees[0].merged = true;
+    app.worktrees[0].merged_in = "origin/main".into();
+    app.screen = crate::app::Screen::Board;
+    let lines = render(&app, 120, 30);
+    assert!(!lines.iter().any(|l| l.contains("auto-merge ∙ off")), "{}", lines.join("\n"));
+    assert!(
+        !lines.last().is_some_and(|l| l.contains("t auto-merge") || l.contains("merge by hand")),
+        "{:?}",
+        lines.last()
+    );
+    golden("merged_no_train_row_120x30", &lines);
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    assert!(!lines.iter().any(|l| l.contains("auto-merge ∙ off")), "{}", lines.join("\n"));
 }
 
 /// An empty field says what it is for, in the same words the key was hinted
