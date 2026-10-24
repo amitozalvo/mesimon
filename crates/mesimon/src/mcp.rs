@@ -842,7 +842,7 @@ mod tests {
         // T-537, T-930: the receipt names where the rules are read (that the
         // board wakes the crown, so it polls nothing), not the rules again.
         assert_eq!(now["wakes"], mcp::CROWN_RULES_AT);
-        assert!(mcp::CROWN_WAKES.contains("Nothing needs polling"));
+        assert!(mcp::CROWN_WAKES.contains("The board reads the forge on its own"));
         let parked = body(false, false);
         assert_eq!(parked["status"], "waiting_for_worktree");
         assert!(parked.get("session_started").is_none(), "no bool to read as a refusal");

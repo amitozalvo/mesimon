@@ -404,6 +404,7 @@ mod tests {
             releases: 0,
             last_release: None,
             steers: 0,
+            compactions: 0,
             collaboration_mode: None,
         };
         assert_eq!(codex_runtime(&path, &record, 1_200)["status"], "missing");

@@ -508,6 +508,10 @@ pub struct Snapshot {
     /// The daemon's ack for a steer it pasted is this count rising.
     #[serde(default)]
     pub steers: u64,
+    /// How many times a `contextCompaction` item started or completed on
+    /// this seat (T-930): each is a context the crown's rules may not be in.
+    #[serde(default)]
+    pub compactions: u64,
     /// The foreground thread's collaboration mode as the wire last said it
     /// (T-847): `plan` or `default`, from the server's
     /// `thread/settings/updated` and the native client's own
@@ -1108,6 +1112,7 @@ mod tests {
             releases: 0,
             last_release: None,
             steers: 0,
+            compactions: 0,
             collaboration_mode: None,
         }
     }

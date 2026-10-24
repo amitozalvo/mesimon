@@ -385,10 +385,17 @@ struct ClientReply {
     response: Response,
     /// Shutdown waits for the connection writer to put the response on wire.
     delivered: Option<Sender<()>>,
+    /// A crowned session this reply carries the crown's rules to, with the
+    /// reset count it was sent under (T-930): the connection writer reports
+    /// it once the line is written (`Msg::CrownTold`), and only then is the
+    /// session counted as told.
+    told: Option<(uuid::Uuid, u64)>,
 }
 
 enum Msg {
     Request(Envelope, Sender<ClientReply>, Arc<Mutex<UnixStream>>),
+    /// A reply carrying the crown's rules reached its connection (T-930).
+    CrownTold(uuid::Uuid, u64),
     Hook(HookFrame),
     /// A frame the mod relayed (`road: mod`, T-574): since T-577 the frames
     /// a mod launch reports by, ingested as the hook set's were
@@ -723,6 +730,12 @@ pub struct Daemon {
     /// again, and the rules are the binary's own text, so a new build is a
     /// restart and needs no version beside them.
     crown_told: std::collections::HashSet<uuid::Uuid>,
+    /// How many times any crown's rules were forgotten (T-930): a write
+    /// confirmed under an older count tells nobody.
+    crown_rules_gen: u64,
+    /// Each Codex seat's thread and compaction count as its snapshot last
+    /// said them (T-930): a change is a context the rules may not be in.
+    codex_contexts: HashMap<uuid::Uuid, (Option<String>, u64)>,
     /// Per-ticket worktree bindings (M4), persisted as worktrees.json.
     worktrees: worktree::Bindings,
     /// Spawn requests parked behind provisioning: replayed on Provisioned(Ok).
@@ -1445,6 +1458,8 @@ pub fn run(paths: Paths) -> Result<()> {
         screens: HashMap::new(),
         compaction_clear: HashMap::new(),
         crown_told: std::collections::HashSet::new(),
+        crown_rules_gen: 0,
+        codex_contexts: HashMap::new(),
         worktrees,
         pending_spawns: Vec::new(),
         pending_resumes: Vec::new(),
@@ -1638,6 +1653,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::Hook(f) => format!("hook {}", f.event).into(),
             Msg::RemotePermission(..) => "remote permission".into(),
             Msg::Request(env, ..) => format!("request {}", env.command.wire_name()).into(),
+            Msg::CrownTold(..) => "crown told".into(),
             Msg::Provisioned(..) => "provisioned".into(),
             Msg::ProvisionInit(..) => "provision init".into(),
             Msg::ProvisionProgress(..) => "provision progress".into(),
@@ -1713,7 +1729,14 @@ pub fn run(paths: Paths) -> Result<()> {
                 d.control_transcript_read(&peer, grant, command, reply)
             }
             Msg::ShelfRead(build, pages) => d.shelf_read(*build, pages),
+            Msg::CrownTold(session, gen) => d.crown_told_at(session, gen),
             Msg::Request(env, reply, stream) => {
+                // The mod's bridge poll is no tool call, so it tells no crown.
+                let caller = match (&env.principal, &env.command) {
+                    (_, Command::ModNext { .. }) => None,
+                    (Principal::Agent { session }, _) => Some(*session),
+                    _ => None,
+                };
                 let resp = d.handle(env, &stream);
                 // `answer_agent` (T-569) answers when its delivery settles:
                 // the reply waits with it, and the shim's call with the reply.
@@ -1731,9 +1754,14 @@ pub fn run(paths: Paths) -> Result<()> {
                 if let Some(reply) = reply {
                     let shutdown = matches!(resp, Response::Ok) && d.shutting_down;
                     let (delivered, receipt) = channel();
+                    let (resp, told) = match caller {
+                        Some(session) => d.with_crown_rules(session, resp),
+                        None => (resp, None),
+                    };
                     let _ = reply.send(ClientReply {
                         response: resp,
                         delivered: shutdown.then_some(delivered),
+                        told,
                     });
                     if shutdown {
                         // Sending to the connection thread is not delivery:
@@ -2624,6 +2652,7 @@ fn client_loop(stream: UnixStream, tx: Sender<Msg>, diff_ctx: Arc<DiffCtx>) {
             continue;
         }
         let mut delivered = None;
+        let mut told = None;
         let resp = match serde_json::from_str::<Envelope>(&line) {
             Ok(env) => match env.command {
                 // Read-only diff service: answered here, never forwarded —
@@ -2637,6 +2666,7 @@ fn client_loop(stream: UnixStream, tx: Sender<Msg>, diff_ctx: Arc<DiffCtx>) {
                     match rrx.recv() {
                         Ok(reply) => {
                             delivered = reply.delivered;
+                            told = reply.told;
                             reply.response
                         }
                         Err(_) => Response::Err { message: "daemon gone".into() },
@@ -2658,6 +2688,9 @@ fn client_loop(stream: UnixStream, tx: Sender<Msg>, diff_ctx: Arc<DiffCtx>) {
         }
         if let Some(delivered) = delivered {
             let _ = delivered.send(());
+        }
+        if let Some((session, gen)) = told {
+            let _ = tx.send(Msg::CrownTold(session, gen));
         }
     }
     // Same `tx` as the requests above, so it orders after them: whatever
@@ -2704,10 +2737,7 @@ impl Daemon {
         // is this an agent?" that somebody eventually forgets. Here the answer
         // is settled once, before any board state is touched.
         if let Principal::Agent { session } = env.principal {
-            // The mod's bridge poll is no tool call, so no crown is told by it.
-            let call = !matches!(env.command, Command::ModNext { .. });
-            let resp = self.handle_agent(session, env.command);
-            return if call { self.with_crown_rules(session, resp) } else { resp };
+            return self.handle_agent(session, env.command);
         }
         // `Automation` is the daemon's own rules acting on their own; it is
         // constructed internally and never arrives over a socket. A client
@@ -3290,13 +3320,18 @@ impl Daemon {
         let mut changed = self.drive_codex_inputs(now);
         // A compaction window past `COMPACT_STALE_MS` closes (T-894): the
         // record stops carrying it.
+        let mut expired = Vec::new();
         for (id, m) in self.machines.iter_mut() {
             if m.expire_compaction(now) {
                 if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == *id) {
                     rec.compacting = false;
                 }
+                expired.push(*id);
                 changed = true;
             }
+        }
+        for id in expired {
+            self.forget_crown_rules(Some(id));
         }
         for (id, change) in fired {
             changed |= stage!(self, "apply_change", self.apply_change(id, &change, None, None));
@@ -4146,6 +4181,12 @@ impl Daemon {
             if snapshot.sequence < rec.codex_observed_seq {
                 continue;
             }
+            // A new thread or a compaction is a context the crown's rules
+            // may not be in (T-930).
+            let context = (snapshot.thread_id.clone(), snapshot.compactions);
+            if self.codex_contexts.insert(id, context.clone()).is_some_and(|was| was != context) {
+                self.forget_crown_rules(Some(id));
+            }
             let rec = &mut self.board.sessions[at];
             // T-845: a steer the running turn took is acked by its count,
             // which moves without a new sequence.
@@ -4903,7 +4944,7 @@ impl Daemon {
             && frame.payload.get("source").and_then(serde_json::Value::as_str).or(frame.reason.as_deref())
                 != Some("resume")
         {
-            self.crown_told.remove(&id);
+            self.forget_crown_rules(Some(id));
         }
         // D32c invariant 2: the hook-driven path passes the chokepoint too.
         //
@@ -5046,11 +5087,13 @@ impl Daemon {
             // record carries the window: the card paints it, and the queue
             // holds words against it (`quiet::holds_against_words`).
             if decision.before.compacting != decision.after.compacting {
-                // A compaction keeps no tool result whole (T-930): the crown
-                // is told its rules again on its next call.
-                if decision.after.compacting {
-                    self.crown_told.remove(&id);
-                }
+                // A compaction keeps no tool result whole (T-930): at either
+                // edge, finished or abandoned, the crown is told its rules on
+                // its next call, so a reply sent inside the window counts for
+                // nothing. (`forget_crown_rules`, spelt by field: `machine`
+                // still borrows the machines.)
+                self.crown_rules_gen = self.crown_rules_gen.wrapping_add(1);
+                self.crown_told.remove(&id);
                 if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                     rec.compacting = decision.after.compacting;
                     dirty = true;
@@ -5923,6 +5966,7 @@ impl Daemon {
             if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                 rec.compacting = false;
             }
+            self.forget_crown_rules(Some(id));
             self.feed.board("daemon", "compaction_ended_on_screen", Some(ticket));
             changed = true;
         }
@@ -6544,26 +6588,54 @@ impl Daemon {
         }
     }
 
-    /// A crowned session's first call since it was crowned, compacted or
-    /// cleared, or since the daemon started, answered with the crown's rules
-    /// beside it (T-930), whichever tool it called: a person may crown an
-    /// agent mid-run, which never read them. Its own `get_ticket` view
-    /// carries them already (`crown`), so that read tells it and adds
-    /// nothing; every later receipt names where they are read.
-    fn with_crown_rules(&mut self, session: uuid::Uuid, resp: Response) -> Response {
+    /// A crowned session's reply, as it is emitted (deferred ones too), with
+    /// the crown's rules beside it until a reply carrying them has reached
+    /// that session's connection since it was crowned, compacted or cleared,
+    /// or since the daemon started (T-930), whichever tool it called: a
+    /// person may crown an agent mid-run, which never read them. Its own
+    /// `get_ticket` view carries them already (`crown`), so that read adds
+    /// nothing. The second value is what the connection writer reports once
+    /// the line is written. A written line is not a read one, so nothing is
+    /// promised from it: the crown's own `get_ticket` is where they are.
+    fn with_crown_rules(
+        &self,
+        session: uuid::Uuid,
+        resp: Response,
+    ) -> (Response, Option<(uuid::Uuid, u64)>) {
         let crowned = self
             .board
             .sessions
             .iter()
             .find(|s| s.id == session)
             .is_some_and(|rec| self.board.is_crowned(rec.ticket));
-        if !crowned || !self.crown_told.insert(session) {
-            return resp;
+        if !crowned || self.crown_told.contains(&session) {
+            return (resp, None);
         }
+        let told = Some((session, self.crown_rules_gen));
         if matches!(&resp, Response::AgentTicket { ticket } if ticket.crown.is_some()) {
-            return resp;
+            return (resp, told);
         }
-        Response::CrownRules { rules: mcp::crown_view(), inner: Box::new(resp) }
+        (Response::CrownRules { rules: mcp::crown_view(), inner: Box::new(resp) }, told)
+    }
+
+    /// A reply carrying the crown's rules was written to its connection
+    /// (T-930); one sent before a reset since tells nobody.
+    fn crown_told_at(&mut self, session: uuid::Uuid, gen: u64) {
+        if gen == self.crown_rules_gen {
+            self.crown_told.insert(session);
+        }
+    }
+
+    /// A context the crown's rules may not be in (T-930): every crown's, at
+    /// a crowning, or one session's, at its compaction or a new conversation.
+    fn forget_crown_rules(&mut self, session: Option<uuid::Uuid>) {
+        self.crown_rules_gen = self.crown_rules_gen.wrapping_add(1);
+        match session {
+            Some(id) => {
+                self.crown_told.remove(&id);
+            }
+            None => self.crown_told.clear(),
+        }
     }
 
     fn handle_agent(&mut self, session: uuid::Uuid, cmd: Command) -> Response {
@@ -8078,7 +8150,7 @@ impl Daemon {
         self.release_crown_holds();
         self.hold_crown_sends();
         self.revoke_shell_close_requests();
-        self.crown_told.clear();
+        self.forget_crown_rules(None);
         self.board.crown = Some(id);
         self.persist_columns();
         self.broadcast();
@@ -8096,7 +8168,7 @@ impl Daemon {
         self.release_crown_holds();
         self.hold_crown_sends();
         self.revoke_shell_close_requests();
-        self.crown_told.clear();
+        self.forget_crown_rules(None);
         self.board.crown = None;
         self.persist_columns();
         self.broadcast();
@@ -8124,7 +8196,7 @@ impl Daemon {
             self.release_crown_holds();
             self.hold_crown_sends();
             self.revoke_shell_close_requests();
-            self.crown_told.clear();
+            self.forget_crown_rules(None);
             self.board.crown = None;
             self.persist_columns();
             self.feed.board("automation", "uncrown", Some(id));
@@ -9365,7 +9437,10 @@ impl Daemon {
             held: self.train_hold_word(id).map(str::to_string),
             // What the board does with them (T-895): reads the forge on its
             // own and wakes the crown, so no session watches a pipeline.
-            prs_about: self.through_prs().then(|| mesimon_core::mcp::PRS_ABOUT.to_string()),
+            // On any board where the ticket has one (T-930): `CROWN_WAKES`
+            // points here for the cadence.
+            prs_about: (self.through_prs() || self.forge.sets.get(&id).is_some_and(|s| !s.is_empty()))
+                .then(|| mesimon_core::mcp::PRS_ABOUT.to_string()),
             // The ticket's pull requests as the forge last said (T-739),
             // newest first: a worker sees its own red pipeline on the next
             // read, and the crown reads a worker's.

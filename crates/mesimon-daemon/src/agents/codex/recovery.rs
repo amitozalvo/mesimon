@@ -513,6 +513,7 @@ mod tests {
             releases: 0,
             last_release: None,
             steers: 0,
+            compactions: 0,
             collaboration_mode: None,
         };
         (paths, record, config, snapshot)

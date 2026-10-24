@@ -132,10 +132,10 @@ pub const PRS_ABOUT: &str = "The board reads these off the forge on its own: wit
      about a minute otherwise, and in about five minutes for a repository whose last read \
      failed or hit a rate limit. Each change (a pipeline's pass or failure, a review, a \
      conflict, a merge, a deployment) wakes the crown for a ticket it started, watches with \
-     watch_ticket or that has no agent; the session on the ticket itself is not woken and \
-     reads the change here. A watch command (gh pr checks --watch, glab ci status --live) or a \
-     sleep loop on a pull request keeps a session busy, which holds the merge train and the \
-     crown's wake; the way to wait for its news is to end the turn.";
+     watch_ticket, holds with hold_ticket or that has no agent; the session on the ticket \
+     itself is not woken and reads the change here. A watch command (gh pr checks --watch, \
+     glab ci status --live) or a sleep loop on a pull request keeps a session busy, which \
+     holds the merge train and the crown's wake.";
 
 /// Which tier a ticket the crown starts runs on (T-584), as one clause
 /// inside `CROWN_WAKES`: the order of the fallbacks and where the person's
@@ -199,13 +199,12 @@ pub const CROWN_WAKES: &str = concat!(
      hand comes down once its sentence reaches this session, and get_ticket on that ticket \
      carries the reason as told_hand until the worker's next turn begins, it raises \
      another, or its ticket is archived, snoozed or deleted; a watch ending keeps it. \
-     Nothing needs \
-     polling: the board reads the forge on its own (get_ticket's prs_about says how often). A \
-     watch command (gh pr checks --watch, glab ci status --live), a sleep loop or any loop \
-     that polls a ticket keeps this session busy, which holds the merge train and the wake \
-     itself; the way to wait for the board's news is to end the turn. \
-     A background task or monitor left running does not hold the wake or a queued \
-     word: they land at this session's composer as at any idle one. A worker the crown started \
+     The board \
+     reads the forge on its own (get_ticket's prs_about says how often). A busy session, a \
+     watch command (gh pr checks --watch, glab ci status --live) or a loop that polls \
+     included, holds the merge train and its own wake. A background task or monitor left \
+     running does not hold the wake or a queued word: they reach this session as at any \
+     idle one. A worker the crown started \
      that sits idle with background tasks for 30 minutes wakes this session once (has been \
      idle with N background tasks), and get_ticket on it carries background (tasks, \
      since_secs). The wait may be the work (a long suite, a build) or a loop that will not end, \
@@ -243,8 +242,8 @@ pub const CROWN_WAKES: &str = concat!(
      Every other stop, an agent a person started, and a board that does not let the crown \
      answer stay a person's. \
      ask_agent's words wait for the agent's idle by default (deliver idle). With deliver now \
-     they go at once, as a person's send-now does: a working agent reads them at its running \
-     turn's next step, or after that turn ends on the mod road. With deliver immediately, \
+     they are sent at once, as a person's send-now does; on the mod road a working agent \
+     reads them after its running turn ends. With deliver immediately, \
      Claude Code's own send-now, a working agent reads them before its running tool call \
      ends, that call moved to the background and not stopped; a Claude agent only. Neither \
      goes while the agent stands at a dialog, and the receipt's road says which \
@@ -253,7 +252,8 @@ pub const CROWN_WAKES: &str = concat!(
      An ask dropped before it was sent (a person replaced it, took it back or talked past it, \
      or its agent went first) reads asked: dropped on that ticket's get_ticket, with who \
      dropped it. \
-     A ticket a person started wakes this session only once watch_ticket watches it. A ticket with no agent that carries a pull request (one \
+     A ticket a person started wakes this session only once watch_ticket watches it or \
+     hold_ticket holds it. A ticket with no agent that carries a pull request (one \
      this session opened and named under its Summary) wakes this session for the forge's news \
      and the merge the same way, with no watch asked. \
      A linked board's answer arrives as this session's next prompt beginning with that \
@@ -301,16 +301,16 @@ pub fn crown_view() -> String {
 
 /// Where a crown reads its rules (T-930), in every `start_agent` and
 /// `ask_agent` receipt (`wakes`) in place of the 10 KB `CROWN_WAKES` they
-/// once repeated: said once per crowning, compaction or clear, and on the
-/// crown's own `get_ticket`.
+/// once repeated. The crown's own `get_ticket` carries them always; a reply
+/// carries them too until one that did reached the session's connection
+/// since its crowning, compaction or clear, which nothing here promises.
 pub const CROWN_RULES_AT: &str = "The board's rules for the crown (what wakes it, who merges, \
-     what is a person's) are on this session's own get_ticket, under crown. The first call after \
-     a crowning, a compaction, a clear or a board restart carries them whole.";
+     what is a person's) are on this session's own get_ticket, under crown.";
 
 /// The words before the rules where a call carries them (T-930): the
 /// call's own answer comes first, then this, then `crown_view()`.
-pub const CROWN_RULES_HEAD: &str = "The board's rules for this session's crown, said once since \
-     it was crowned, compacted, cleared or the board restarted (get_ticket's crown repeats them):";
+pub const CROWN_RULES_HEAD: &str = "The board's rules for this session's crown (this session's \
+     own get_ticket carries them under crown):";
 
 /// What the worktree init script is (T-614), on every `get_ticket`
 /// (`worktree_init.about`): the one place an agent learns that a cold
@@ -2867,20 +2867,23 @@ mod tests {
     }
 
     /// T-895: the crown is told the board reads the forge and wakes it, and
-    /// that a watch command or a sleep loop holds the train and the wake;
-    /// `get_ticket`'s `prs_about` says how often, in round seconds, beside
-    /// the PRs, and only there (T-930). Both in the lint's voice.
+    /// that a busy session, a watch command or a loop that polls included,
+    /// holds the train and the wake; `get_ticket`'s `prs_about` says how
+    /// often, in round seconds, beside the PRs, and only there (T-930). How
+    /// to wait is the crown's (T-940's review). Both in the lint's voice.
     #[test]
     fn the_crown_is_told_the_board_reads_the_forge_and_polls_nothing() {
         for words in [
-            "Nothing needs polling: the board reads the forge on its own",
+            "The board reads the forge on its own",
             "get_ticket's prs_about says how often",
             "gh pr checks --watch",
-            "a sleep loop or any loop that polls a ticket keeps this session busy",
-            "holds the merge train and the wake itself",
-            "the way to wait for the board's news is to end the turn",
+            "A busy session, a watch command",
+            "or a loop that polls included, holds the merge train and its own wake",
         ] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
+        }
+        for text in [CROWN_WAKES, PRS_ABOUT] {
+            assert!(!text.contains("the way to wait"), "how to wait is the crown's: {text}");
         }
         // T-930: the cadence is said once, beside the pull requests.
         assert!(!CROWN_WAKES.contains("within about"), "the cadence is PRS_ABOUT's alone");
@@ -2892,12 +2895,12 @@ mod tests {
             // The review's point: the wake is the crown's, for a ticket it
             // started, watches or that has no agent; a worker reading its
             // own view is not woken.
-            "wakes the crown for a ticket it started, watches with watch_ticket or that has no agent",
+            "wakes the crown for a ticket it started, watches with watch_ticket, holds with \
+             hold_ticket or that has no agent",
             "the session on the ticket itself is not woken",
             "gh pr checks --watch",
             "sleep loop",
             "holds the merge train and the crown's wake",
-            "the way to wait for its news is to end the turn",
         ] {
             assert!(PRS_ABOUT.contains(words), "PRS_ABOUT names {words:?}");
         }
@@ -3281,10 +3284,12 @@ mod tests {
         assert_eq!(tier_needed_by_tool("watch_ticket"), Some(AgentTools::Full));
         // T-930: the tool says what a watch does; the wake words say only
         // that a person's ticket wakes nobody without one.
+        // T-927: a crown's hold subscribes as a watch does.
         assert!(CROWN_WAKES.contains(
-            "A ticket a person started wakes this session only once watch_ticket watches it"
+            "A ticket a person started wakes this session only once watch_ticket watches it or \
+             hold_ticket holds it"
         ));
-        assert!(CROWN_WAKES.contains("any loop that polls a ticket keeps this session busy"));
+        assert!(CROWN_WAKES.contains("a loop that polls included, holds the merge train"));
         for text in [description, CROWN_WAKES] {
             lint_tool_text(text).unwrap();
         }
@@ -3365,8 +3370,8 @@ mod tests {
         assert!(bytes <= MAX_TOOL_BYTES, "ask_agent is {bytes} bytes");
         for words in [
             "wait for the agent's idle by default (deliver idle)",
-            "With deliver now they go at once",
-            "at its running turn's next step, or after that turn ends on the mod road",
+            "With deliver now they are sent at once",
+            "on the mod road a working agent reads them after its running turn ends",
             "With deliver immediately, Claude Code's own send-now",
             "before its running tool call ends, that call moved to the background",
             "Neither goes while the agent stands at a dialog",

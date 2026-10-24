@@ -794,6 +794,7 @@ impl Observation {
                 releases: 0,
                 last_release: None,
                 steers: 0,
+                compactions: 0,
                 collaboration_mode: None,
             },
             ledger: None,
@@ -898,6 +899,11 @@ impl Observation {
 
     fn incoming(&mut self, config: &RuntimeConfig, frame: Value) -> Result<()> {
         self.note_rate_limits(&frame);
+        if matches!(frame["method"].as_str(), Some("item/started" | "item/completed"))
+            && frame["params"]["item"]["type"] == "contextCompaction"
+        {
+            self.snapshot.compactions = self.snapshot.compactions.saturating_add(1);
+        }
         if frame.get("method").is_none() {
             if let Some(id) = frame.get("id") {
                 self.native_requests.remove(&id.to_string());
@@ -1848,6 +1854,9 @@ mod tests {
             observer.snapshot.state,
             SessionState::Idle { stop_reason: StopReason::Unknown }
         );
+        // T-930: the compaction is counted, a context the crown's rules may
+        // not be in, and no other item is.
+        assert_eq!(observer.snapshot.compactions, 1);
         assert!(!observer.snapshot.observation_hold);
         assert!(!observer.published_completions.contains(&("main".into(), "compact".into())));
         assert!(observer.apply_audit(&config(), idle_audit(&observer, &["main"])));

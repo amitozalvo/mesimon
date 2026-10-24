@@ -175,7 +175,7 @@ impl Silence {
 }
 
 fn reply_now(reply: Sender<ClientReply>, response: Response) {
-    let _ = reply.send(ClientReply { response, delivered: None });
+    let _ = reply.send(ClientReply { response, delivered: None, told: None });
 }
 
 impl Daemon {

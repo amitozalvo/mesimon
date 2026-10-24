@@ -421,8 +421,8 @@ Follow-ups default to **Queue**: they wait for the current turn to end, includin
 approval stops. A question holds them instead: words queued before or while the agent asks one
 wait for your answer and then your Ctrl+Y (`agent asked ∙ you send`), and an ask behind another
 ticket's question says so (`queued ∙ after T-3's answer`). Cycle a composer with
-Shift+Tab to send otherwise: `now`, `queued`, and on a Claude agent `immediately`. Sent `now`, a working agent
-reads your words at its next step (on the mod road, after its turn ends). Sent `immediately`,
+Shift+Tab to send otherwise: `now`, `queued`, and on a Claude agent `immediately`. Sent `now`, your words go at
+once (on the mod road a working agent reads them after its turn ends). Sent `immediately`,
 mesimon puts them in Claude Code's prompt box and presses its send-now (Ctrl+X Ctrl+S), so a
 working agent reads them before its running command ends. That command keeps running in the
 background, and the turn goes on. On the mod road a draft you are typing in the agent's own

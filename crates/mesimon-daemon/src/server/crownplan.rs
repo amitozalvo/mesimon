@@ -288,8 +288,8 @@ impl Daemon {
         }
         for (id, why) in queued {
             let Some(plan) = self.crown_plans.get_mut(&id) else { continue };
-            let (ticket, reply) = (plan.ticket, plan.reply.take());
-            self.crown_plan_reply(reply, ticket, "queued", Some(why));
+            let (ticket, session, reply) = (plan.ticket, plan.session, plan.reply.take());
+            self.crown_plan_reply(reply, session, ticket, "queued", Some(why));
         }
         let changed = !settled.is_empty();
         for (id, status, reason) in settled {
@@ -337,12 +337,13 @@ impl Daemon {
             self.crown_touched(plan.crown, plan.ticket, "accepted plan");
             self.broadcast();
         }
-        self.crown_plan_reply(plan.reply, plan.ticket, status, reason);
+        self.crown_plan_reply(plan.reply, plan.session, plan.ticket, status, reason);
     }
 
     fn crown_plan_reply(
         &mut self,
         reply: Option<Sender<ClientReply>>,
+        session: uuid::Uuid,
         ticket: ulid::Ulid,
         outcome: &str,
         reason: Option<String>,
@@ -358,7 +359,9 @@ impl Daemon {
         // The receipt goes mid-tick, before the tick's own flush: what it
         // says is on disk first, so a reader of the feed after it finds it.
         let _ = self.feed.flush();
-        let _ = reply.send(ClientReply { response, delivered: None });
+        // The reply the crown reads is this one, not the call's own (T-930).
+        let (response, told) = self.with_crown_rules(session, response);
+        let _ = reply.send(ClientReply { response, delivered: None, told });
     }
 }
 

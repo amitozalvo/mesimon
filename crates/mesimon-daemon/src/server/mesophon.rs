@@ -1699,7 +1699,7 @@ impl Daemon {
             Deliverer::Board => {
                 self.feed.board_outcome(by.actor(), "trust_accept", Some(pending.ticket), status);
             }
-            Deliverer::Crown { crown, answer, reply, prior, .. } => {
+            Deliverer::Crown { crown, session, answer, reply, prior, .. } => {
                 self.crown_answer_settled(
                     id,
                     pending.ticket,
@@ -1728,7 +1728,9 @@ impl Daemon {
                     // Mid-tick, before the tick's own flush (T-582): the
                     // feed line the receipt speaks for is on disk first.
                     let _ = self.feed.flush();
-                    let _ = reply.send(ClientReply { response, delivered: None });
+                    // The reply the crown reads is this one (T-930).
+                    let (response, told) = self.with_crown_rules(session, response);
+                    let _ = reply.send(ClientReply { response, delivered: None, told });
                 }
             }
         }
