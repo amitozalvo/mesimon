@@ -459,9 +459,14 @@ impl ClaudeRecovery {
                 answered = Some((call, false));
             } else if tail::speaks(&value) {
                 let ended = self.ended.take();
-                if classify_tail_record(&value) == TailEvent::Aborted {
-                    attributed = ended.is_some();
-                    answered = ended.map(|call| (call, true));
+                // Only an interrupt right after a result is that dialog's
+                // end; a repeat of it finds `ended` already taken and leaves
+                // the end it read standing (round 8).
+                if let Some(call) =
+                    ended.filter(|_| classify_tail_record(&value) == TailEvent::Aborted)
+                {
+                    attributed = true;
+                    answered = Some((call, true));
                 }
             }
             // A person's prompt after an interrupt in the same read is a newer
@@ -1117,6 +1122,45 @@ mod recovery_tests {
         record.state = SessionState::Running;
         history.append(abort());
         assert!(ended(&recovery.poll(&record, RecoverySample::Transcript, 11_500), "plan5", true));
+        // Round 8: the same split with the interrupt record presented twice
+        // in the second read. One High end for the plan, no Low copy, and the
+        // machine at `Running` settles interrupted, unpinned and pinned.
+        history.append(call("plan13", "ExitPlanMode"));
+        record.state = plan.clone();
+        assert!(stays(&recovery.poll(&record, RecoverySample::Transcript, 11_520)));
+        history.append(result("plan13", true, stop, 6));
+        assert!(left(&recovery.poll(&record, RecoverySample::Transcript, 11_540), "plan13"));
+        record.state = SessionState::Running;
+        let mut twice = abort();
+        twice["uuid"] = serde_json::json!("abort-13");
+        history.append(twice.clone());
+        history.append(twice);
+        let seen = recovery.poll(&record, RecoverySample::Transcript, 11_560);
+        assert!(ended(&seen, "plan13", true) && seen.len() == 1, "one end, no X: {seen:?}");
+        for pinned in [false, true] {
+            let mut m = attention::Machine::new(SessionState::Running, 0);
+            if pinned {
+                // More than four committed changes in 20 s arm the pin.
+                let ask = Signal::PreToolUse { tool: attention::AttentionTool::ExitPlanMode };
+                let done = Signal::PostToolUse { tool: attention::AttentionTool::ExitPlanMode };
+                for k in 0..3u64 {
+                    m.apply(&ask, 100 + k * 2_000);
+                    m.apply(&done, 200 + k * 2_000);
+                    m.tick(1_900 + k * 2_000);
+                }
+                assert!(m.view().pinned_until.is_some_and(|until| until > 7_000), "pinned");
+            }
+            assert!(m.apply(&seen[0].signal, 7_000).is_none());
+            let c = m.tick(7_000 + attention::SETTLE_MS).expect("the Esc settles");
+            assert_eq!(
+                (c.to, c.confidence),
+                (
+                    SessionState::Idle { stop_reason: StopReason::Interrupted },
+                    mesimon_core::board::Confidence::High
+                ),
+                "pinned: {pinned}"
+            );
+        }
         // An interrupt after anything else is not the dialog's.
         history.append(call("plan6", "ExitPlanMode"));
         record.state = plan.clone();

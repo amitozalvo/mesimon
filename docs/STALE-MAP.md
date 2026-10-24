@@ -34102,6 +34102,12 @@ belongs to a later turn.
   record `uuid`. The interrupts tied to a dialog's end, by the live read on an owned seat or by
   the look back, are collected, and `without_interrupts` `retain`s away every hint of theirs.
   The seed and index bookkeeping is gone; a different abort keeps its hint.
+- **A repeat keeps the end it repeats (round 8).** With the result read in one poll and `X → X`
+  in the next, the second X found `self.ended` already taken, and the unconditional assignment
+  set the interrupted answer to `None`. The retain then removed its Low copy, and nothing
+  reached the machine: the seat stayed `Running` after the Esc. The interrupted answer is now
+  assigned only when an interrupt takes a dialog's result (`ended` is `Some`). A newer prompt or
+  dialog call still clears it.
 - **After a restart** a dialog this daemon never projected counts from the daemon's start.
 - **In the read:** a person's prompt (`adopt::user_prompt`) after an interrupt in the same read
   drops the interrupted end and every `AbortedMidStream` read before it.
@@ -34132,6 +34138,9 @@ belongs to a later turn.
     is the hint;
   - a plan's Esc split across reads ends interrupted from `Running`, and an interrupt after a
     reply is not the dialog's;
+  - the same split with the interrupt record twice in the second read (round 8) gives one High
+    interrupted end and no Low copy, and the machine at `Running` settles `Idle{Interrupted}`,
+    High, unpinned and pinned. With the old assignment the read gives nothing;
   - another dialog's result says nothing;
   - a cursor minted after the call learns it;
   - a refusal or an Esc already on the tail inside the spell is read on the first look, once,
