@@ -3399,6 +3399,8 @@ impl Daemon {
                         let (doing, said) = self.control_words(s);
                         self.control_agent(t, s, doing, said)
                     });
+                    row.shell =
+                        projected_shell(&self.board, &self.terminals, &self.foregrounds, t.id);
                     row
                 })
                 .collect(),
@@ -3456,6 +3458,7 @@ impl Daemon {
             ),
             workspace: self.control_workspace_of(t),
             agent: None,
+            shell: None,
         }
     }
 
@@ -4330,6 +4333,31 @@ fn projected_tags(board: &Board, t: &Ticket) -> Vec<api::TagOption> {
         .iter()
         .map(|g| api::TagOption { group: g.group, name: g.name.clone(), tint: board.tint_of(g) })
         .collect()
+}
+
+/// The ticket's open shell for a phone (T-948), as the TUI's card reads it
+/// (`glyphs::card_glyph`): its unadopted `!` terminal, or a `Bash` record
+/// with a pane; busy while a command runs in either (`glyphs::is_working`).
+fn projected_shell(
+    board: &Board,
+    terminals: &BTreeMap<Option<ulid::Ulid>, Option<String>>,
+    foregrounds: &HashMap<uuid::Uuid, String>,
+    ticket: ulid::Ulid,
+) -> Option<api::Shell> {
+    let terminal = terminals.get(&Some(ticket));
+    let shells: Vec<&SessionRecord> = board
+        .sessions
+        .iter()
+        .filter(|s| s.ticket == ticket && s.kind == SessionKind::Bash && s.state.has_pane())
+        .collect();
+    if terminal.is_none() && shells.is_empty() {
+        return None;
+    }
+    let busy = terminal.is_some_and(Option::is_some)
+        || shells
+            .iter()
+            .any(|s| s.state == SessionState::Running && foregrounds.contains_key(&s.id));
+    Some(api::Shell { busy })
 }
 
 /// The crown's latest edit of a ticket for a phone (T-623), while it is
@@ -6726,6 +6754,43 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
 
     fn agent(ticket: ulid::Ulid, kind: SessionKind, state: SessionState) -> SessionRecord {
         SessionRecord::new(uuid::Uuid::new_v4(), kind, ticket, Vec::new(), "/".into(), state)
+    }
+
+    /// A phone's card sees the ticket's open shell (T-948), as the TUI's
+    /// does: a `!` terminal and an adopted `Bash` record each, busy only
+    /// while a command runs; never another ticket's, the checkout's own
+    /// terminal, a dead shell or an agent.
+    #[test]
+    fn a_phone_sees_a_ticket_s_open_shell() {
+        let (a, b) = (ulid::Ulid(1), ulid::Ulid(2));
+        let mut board = Board::with_default_columns();
+        let mut terminals = BTreeMap::new();
+        let mut foregrounds = HashMap::new();
+        let shell = |board: &Board, terminals: &_, foregrounds: &_, t| {
+            projected_shell(board, terminals, foregrounds, t)
+        };
+        let open = Some(api::Shell { busy: false });
+        let busy = Some(api::Shell { busy: true });
+        // An agent, idle or working, is `agent`'s, never a shell.
+        board.sessions.push(agent(a, SessionKind::Claude, SessionState::Running));
+        terminals.insert(None, Some("cargo".to_string()));
+        assert_eq!(shell(&board, &terminals, &foregrounds, a), None, "the checkout's own terminal");
+        // The `!` terminal, at its prompt and then running a command.
+        terminals.insert(Some(a), None);
+        assert_eq!(shell(&board, &terminals, &foregrounds, a), open);
+        assert_eq!(shell(&board, &terminals, &foregrounds, b), None, "another ticket's");
+        terminals.insert(Some(a), Some("cargo".to_string()));
+        assert_eq!(shell(&board, &terminals, &foregrounds, a), busy);
+        // An adopted shell: there while its pane lives, busy on a foreground.
+        let rec = agent(b, SessionKind::Bash, SessionState::Running);
+        let id = rec.id;
+        board.sessions.push(rec);
+        assert_eq!(shell(&board, &terminals, &foregrounds, b), open);
+        foregrounds.insert(id, "vim".to_string());
+        assert_eq!(shell(&board, &terminals, &foregrounds, b), busy);
+        board.sessions[1].state =
+            SessionState::Exited { reason: mesimon_core::board::ExitReason::UserQuit };
+        assert_eq!(shell(&board, &terminals, &foregrounds, b), None, "a dead shell");
     }
 
     /// A phone is offered the desk's `^n` ring (T-643): both built-ins while

@@ -475,6 +475,20 @@ pub struct Ticket {
     /// Absent from an older host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created: Option<u64>,
+    /// A shell open on the ticket (T-948): its `!` terminal or an adopted
+    /// shell, which the TUI's card counts and `agent` never carries.
+    /// Absent where none is open, and from an older host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<Shell>,
+}
+
+/// A ticket's open shell as a phone reads it (T-948), the TUI card's law:
+/// a command running in it is work and spins, a shell at its prompt is
+/// only there. No command line: the card says no more than that.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Shell {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub busy: bool,
 }
 
 /// A ticket's workspace as a phone reads it (T-642): the TUI card's
@@ -1225,6 +1239,7 @@ mod tests {
             workspace: None,
             tier: None,
             created: None,
+            shell: None,
         };
         let json = serde_json::to_value(&bare).unwrap();
         assert_eq!(
@@ -1248,6 +1263,7 @@ mod tests {
             }),
             tier: Some("01K".into()),
             created: Some(1_789_000_000_000),
+            shell: Some(Shell { busy: true }),
             agent: bare.agent.clone().map(|a| Agent {
                 since: Some(1_790_000_000_000),
                 doing: Some("Bash(cargo test)".into()),
@@ -1266,6 +1282,10 @@ mod tests {
         assert_eq!(back.workspace, full.workspace);
         assert_eq!(back.tier.as_deref(), Some("01K"));
         assert_eq!(back.created, Some(1_789_000_000_000));
+        assert_eq!(back.shell, Some(Shell { busy: true }));
+        // A shell at its prompt (T-948) is the bare object.
+        let prompt = Ticket { shell: Some(Shell::default()), ..back.clone() };
+        assert_eq!(serde_json::to_value(&prompt).unwrap()["shell"], serde_json::json!({}));
         let agent = back.agent.unwrap();
         assert_eq!(agent.tier.as_deref(), Some("claude"));
         assert_eq!(
@@ -1498,6 +1518,7 @@ mod tests {
             workspace: None,
             tier: None,
             created: None,
+            shell: None,
         };
         let json = serde_json::to_value(ticket(Some(Queue::default()))).unwrap();
         assert_eq!((&json["queued"], &json["queue"]), (&"next".into(), &serde_json::json!({})));

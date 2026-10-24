@@ -2955,6 +2955,13 @@ select {
   gap: 1px;
   color: var(--ink3);
 }
+/* A shell open on a card (T-948): the terminal glyph, quiet as the
+   worktree's; a running command is the face mark's spinner. */
+.shell-mark {
+  display: inline-flex;
+  align-items: center;
+  color: var(--ink3);
+}
 .wt-dormant {
   color: var(--ink4);
 }

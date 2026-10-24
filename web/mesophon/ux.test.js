@@ -3422,10 +3422,39 @@ try {
             "Recently created1",
           );
           assert.match(await page.locator("#count").textContent(), / · 1 new$/);
+          // A shell open on a ticket (T-948) is the terminal glyph in the
+          // corner, at its prompt or busy; a running command spins the face
+          // mark as an agent's work does, over an idle agent's mark too.
+          const card = (id) => `.ticket[data-id="${id}"]`;
           await page.evaluate(() => {
+            fixture.tickets.at(-1).shell = {};
+            fixture.update();
+          });
+          await page.locator(`${card("ticket-new")} .shell-mark`).waitFor();
+          assert.equal(await page.locator(`${card("ticket-new")} .face-mark`).count(), 0, "a shell at its prompt is no work");
+          assert.equal(await page.locator(`${card("ticket-new")} .shell-mark`).getAttribute("title"), "terminal");
+          await page.evaluate(() => {
+            fixture.tickets.at(-1).shell = { busy: true };
+            fixture.tickets[4].shell = { busy: true };
+            fixture.update();
+          });
+          await page.locator(`${card("ticket-new")} .face-mark .spin`).waitFor();
+          await page.locator(`${card("ticket-4")} .spin`).waitFor();
+          assert.equal(await page.locator(`${card("ticket-4")} .mark-idle`).count(), 0);
+          assert.equal(await page.locator(`${card("ticket-4")} .shell-mark`).count(), 1);
+          await page.evaluate(() => {
+            fixture.tickets[4].shell = {};
+            fixture.update();
+          });
+          await page.locator(`${card("ticket-4")} .mark-idle`).waitFor();
+          assert.equal(await page.locator(`${card("ticket-4")} .spin`).count(), 0);
+          assert.equal(await page.locator(`${card("ticket-4")} .shell-mark`).count(), 1);
+          await page.evaluate(() => {
+            delete fixture.tickets[4].shell;
             fixture.tickets.pop();
             fixture.update();
           });
+          await until(page, () => !document.querySelector('.ticket[data-id="ticket-4"] .shell-mark'));
           await until(page, () => !document.querySelector('.ticket[data-id="ticket-new"]'));
           // A ticket is one card in Now and on the Board (T-533): its tags
           // show in both, a needs-you card wears the same face, and Now adds

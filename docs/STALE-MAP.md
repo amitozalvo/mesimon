@@ -32002,3 +32002,39 @@ Tests:
   must land within [8 s, 10.5 s) of the original park, not at 11 s; with the stamp removed it came
   at 11.28 s and failed. Exactly one wake comes per stretch, and a foreground turn's new park
   brings the next.
+
+## A phone's card shows the ticket's open shell (T-948, 2026-10-24, "Remote Control shows no sign of a ticket's open shell: the card reads idle in IN PROGRESS while a terminal is open on it")
+
+**Measured.** The projection dropped shells. `control_board` filled a card's `agent` from
+`Board::live_agent`, which is `holds_agent_seat`: Claude and Codex alone. A `Bash` record never
+reached the phone, and neither did `Daemon::terminals` (the unadopted `!` terminals). The page
+was not ignoring anything; it had nothing to draw. On the TUI the same ticket spins while a
+command runs in the shell (`card_glyph`'s `terminal_busy`, `is_working` for a `Bash` record).
+With an idle agent beside the shell, the phone drew the agent's idle mark and nothing else.
+
+**Shipped.**
+- `mesophon::Ticket.shell: Option<Shell { busy }>`, additive. It is absent where no shell is
+  open. `{}` is a shell at its prompt and `{"busy":true}` a command running. No command line
+  rides it; the TUI's card shows none either.
+- `projected_shell` (daemon, pure) reads the ticket's `!` terminal (busy on a foreground) and its
+  `Bash` records with a pane (busy while `Running` with a foreground in `Daemon::foregrounds`).
+  These are the TUI's two facts. It never reads another ticket's shell or the checkout's own
+  terminal (`None` key). A foreground change already repaints (`absorb_panes` → `broadcast` →
+  `control_changed`), so the phone hears it on the next board.
+- The page: the `terminal` glyph in the card's corner whenever a shell is open (the TUI's rail
+  word, `terminal`, as its title). A busy shell spins the face mark; a ticket with no agent gets
+  a face mark for that alone. Under needs-you, and over an idle agent's mark: the phone has no
+  done mark to give it, and the spinner is the moving fact. A shell at its prompt adds no face
+  mark, as the TUI's card adds no glyph for one.
+
+**Not changed.** Now's groups still read the agent's state word alone, so a busy shell neither
+lists a ticket on Now nor moves it out of Recently idle. A browser's remembered board keeps no
+shell (`snapshot`), since it is live state. The shelf's board carries it like the agents' state
+words. The TUI, its goldens, the phone's writes and `authorize_execution` are untouched. A
+crown's shell close request (the TUI card's `!`) does not reach the phone.
+
+**Tests.** `mesophon::tests::a_phone_sees_a_ticket_s_open_shell` (daemon): a terminal and an
+adopted shell, at a prompt and busy, plus another ticket's, the checkout's, a dead shell and an
+agent. The core wire test adds `shell` round-trips and pins `{}`. `ux.test.js` (the cards case):
+a no-agent ticket's corner glyph with no face mark, then its spinner; an idle agent's ticket
+spinning over its idle mark, then back.
