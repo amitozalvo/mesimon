@@ -597,6 +597,26 @@ pub fn wait_until(timeout: Duration, what: &str, mut f: impl FnMut() -> bool) {
     }
 }
 
+/// `wait_until` for a fact the board reads off a value (T-937): `read`
+/// polls it, `done` judges it, and a timeout says the last value read, so
+/// a red names the state it stopped in.
+pub fn wait_until_says<T: std::fmt::Debug>(
+    timeout: Duration,
+    what: &str,
+    mut read: impl FnMut() -> T,
+    done: impl Fn(&T) -> bool,
+) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let value = read();
+        if done(&value) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for {what}; last read: {value:#?}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// A tmux client for the private server at `sock` — the SAME build the daemon
 /// runs, via `tmux_bin()`. The release gate runs this suite under
 /// `MESIMON_TMUX_BIN`, and a client from another build refuses the server

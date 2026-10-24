@@ -2987,10 +2987,14 @@ fn an_open_pr_holds_done_and_a_ticket_there_reads_unmerged() {
     git(&repo, &["merge", "-q", "--ff-only", &a_branch]);
     let (b, _, b_branch, b_path) = ready(&mut c, "beta");
     git(&repo, &["merge", "-q", "--ff-only", &b_branch]);
-    wait_until(Duration::from_secs(20), "both branches to read merged", || {
-        let wts = worktrees_of(&mut c);
-        [a, b].iter().all(|t| wts.iter().any(|w| w.ticket == *t && w.merged))
-    });
+    // A timeout says what the flags read last (T-937): one red under load
+    // had nothing else to go on.
+    wait_until_says(
+        Duration::from_secs(20),
+        "both branches to read merged",
+        || worktrees_of(&mut c),
+        |wts| [a, b].iter().all(|t| wts.iter().any(|w| w.ticket == *t && w.merged)),
+    );
     assert!(matches!(
         c.request(Command::MoveTicket { id: a, column: "DONE".into(), before: None }),
         Response::Ok

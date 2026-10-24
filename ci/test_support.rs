@@ -120,9 +120,22 @@ impl Fixture {
     /// fixture root, which the supervisor removes on cleanup. A FAILING test
     /// echoes them here first, so the daemon's side of the story lands in the
     /// captured output beside the assertion, where the in-process daemon's
-    /// used to. Long logs keep their tail.
+    /// used to. Long logs keep their tail. The daemon's own journal and feed
+    /// (`daemon.log`, `activity.jsonl`, anywhere under the root) follow
+    /// them (T-937): a wait that timed out with an empty child log said
+    /// nothing of what the daemon did meanwhile.
     fn echo_child_logs(&self) {
         const KEEP: usize = 200;
+        let echo = |log: &Path, keep: usize| {
+            let body = std::fs::read_to_string(log).unwrap_or_default();
+            let lines: Vec<&str> = body.lines().collect();
+            let skip = lines.len().saturating_sub(keep);
+            let cut = if skip > 0 { format!(", last {keep}") } else { String::new() };
+            eprintln!("--- {} ({} lines{cut}) ---", log.display(), lines.len());
+            for line in &lines[skip..] {
+                eprintln!("{line}");
+            }
+        };
         let Ok(entries) = std::fs::read_dir(&self.dir) else { return };
         let mut logs: Vec<PathBuf> = entries
             .flatten()
@@ -135,14 +148,24 @@ impl Fixture {
             .collect();
         logs.sort();
         for log in logs {
-            let body = std::fs::read_to_string(&log).unwrap_or_default();
-            let lines: Vec<&str> = body.lines().collect();
-            let skip = lines.len().saturating_sub(KEEP);
-            let cut = if skip > 0 { format!(", last {KEEP}") } else { String::new() };
-            eprintln!("--- {} ({} lines{cut}) ---", log.display(), lines.len());
-            for line in &lines[skip..] {
-                eprintln!("{line}");
+            echo(&log, KEEP);
+        }
+        let mut daemon_logs = Vec::new();
+        let mut dirs = vec![self.dir.clone()];
+        while let Some(dir) = dirs.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for path in entries.flatten().map(|e| e.path()) {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+                if path.is_dir() && !path.is_symlink() && name != ".git" {
+                    dirs.push(path);
+                } else if name == "daemon.log" || name == "activity.jsonl" {
+                    daemon_logs.push(path);
+                }
             }
+        }
+        daemon_logs.sort();
+        for log in daemon_logs {
+            echo(&log, KEEP);
         }
     }
 }
