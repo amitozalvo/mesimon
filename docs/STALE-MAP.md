@@ -32562,7 +32562,7 @@ word and needs a rig case that measures reading before work, which none does tod
 | KEY_ABOUT | 221 | 0 |
 | all worker text | 6,649 | 5,234 |
 
-- Every own `get_ticket` carries 1,090 bytes of fixed prose fewer: 467 where it was 1,090.
+- The summary/key prose on an own `get_ticket` falls from 1,090 to 467 bytes, saving 623 bytes.
 - The brief stays at 362 bytes.
 
 **Rig** (Sonnet workers, Opus crown, the cases once each, no retries, against the last
