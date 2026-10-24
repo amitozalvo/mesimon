@@ -1386,3 +1386,93 @@ fn a_question_too_big_to_draw_still_ends_on_its_own_result() {
         assert!(needs.is_none(), "no dialog stands (restart: {restart}): {needs:?}");
     }
 }
+
+/// T-957 round 11: an id-less `PermissionRequest` names a call only as a
+/// repeat. Plan A is named and projected; question B arrives as an id-less
+/// `PermissionRequest` alone (its `PreToolUse` lost, a hook failing open),
+/// its call on the transcript. It is no repeat of A, another tool, so A's
+/// call is let go: after a restart B is rebuilt from its line, and B's own
+/// result and Esc end it. Control: an id-less `PermissionRequest` repeating
+/// A keeps A's call (after a restart A's refusal with words, which has no
+/// interrupt to fall back on, ends A by that call alone, A's call line kept
+/// off the transcript) and A's prompt-count fence (a new prompt, then A's
+/// Esc, which ends nothing).
+#[test]
+fn an_id_less_permission_request_keeps_a_call_only_as_a_repeat() {
+    const STOP: &str =
+        "The user doesn't want to proceed with this tool use. STOP what you are doing.";
+    let interrupted =
+        SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Interrupted };
+    let esc = |b: &Bed, id: &str| {
+        b.append_all(&[
+            Bed::result_of(id, true, STOP),
+            serde_json::json!({"uuid": format!("esc-{id}"), "type": "user",
+                "timestamp": now_iso(), "message": {"content": [{"type": "text",
+                    "text": "[Request interrupted by user for tool use]"}]}}),
+        ]);
+    };
+    let needs = |b: &mut Bed| match b
+        .c
+        .send(mesimon_core::Principal::Agent { session: b.sid }, Command::AgentGetTicket)
+    {
+        Response::AgentTicket { ticket } => ticket.needs_you,
+        other => panic!("get_ticket: {other:?}"),
+    };
+    let id_less = |b: &Bed, tool: &str| {
+        let frame = serde_json::json!({"tool_name": tool, "tool_input": Bed::input(tool)});
+        b.hook("PermissionRequest", &frame.to_string());
+    };
+
+    // ---- the replacement: B names no call, and A's is let go ---------------
+    let Some(mut b) = Bed::boot("planidless") else { return };
+    b.start();
+    std::thread::sleep(Duration::from_millis(2500));
+    b.call("ExitPlanMode", "toolu_a");
+    b.stop_on("ExitPlanMode", "toolu_a");
+    b.call("AskUserQuestion", "toolu_b");
+    id_less(&b, "AskUserQuestion");
+    b.c.await_state(b.sid, "on the question", |s| {
+        *s == SessionState::RequiresAction { reason: Reason::Question }
+    });
+    b.h.restart_after(|| {});
+    b.c = b.h.client("planidless_2");
+    wait_until(Duration::from_secs(10), "B rebuilt from its line", || {
+        needs(&mut b).and_then(|n| n.request).as_deref() == Some("toolu_b")
+    });
+    esc(&b, "toolu_b");
+    b.c.await_state(b.sid, "off the question its own Esc ended", |s| *s == interrupted);
+    assert!(needs(&mut b).is_none(), "no dialog stands");
+
+    // ---- the control, after a restart: a repeat keeps A's call -------------
+    let Some(mut b) = Bed::boot("planrepeatcall") else { return };
+    b.start();
+    std::thread::sleep(Duration::from_millis(2500));
+    // A's call line stays off the transcript (as if past the window), so
+    // only the call the record names can tie A's result to A.
+    b.stop_on("ExitPlanMode", "toolu_a");
+    id_less(&b, "ExitPlanMode");
+    std::thread::sleep(Duration::from_millis(500));
+    b.h.restart_after(|| {});
+    b.c = b.h.client("planrepeatcall_2");
+    std::thread::sleep(Duration::from_millis(2500));
+    b.result("toolu_a", true, REFUSED);
+    b.c.await_state(b.sid, "A's refusal ended A by its call", |s| *s == SessionState::Running);
+    assert!(needs(&mut b).is_none(), "no dialog stands");
+
+    // ---- the control, live: a repeat keeps A's prompt-count fence ----------
+    let Some(mut b) = Bed::boot("planrepeatfence") else { return };
+    b.start();
+    std::thread::sleep(Duration::from_millis(2500));
+    b.call("ExitPlanMode", "toolu_a");
+    b.stop_on("ExitPlanMode", "toolu_a");
+    id_less(&b, "ExitPlanMode");
+    b.hook("UserPromptSubmit", r#"{"prompt":"Plan it again."}"#);
+    esc(&b, "toolu_a");
+    wait_until(Duration::from_secs(10), "A's Esc fenced as the turn before", || {
+        std::fs::read_to_string(b.h.paths.state_dir.join("activity.jsonl"))
+            .unwrap_or_default()
+            .contains("\"cmd\":\"tail_interrupt_before_prompt\"")
+    });
+    std::thread::sleep(Duration::from_millis(2000));
+    assert_eq!(b.state(), Some(SessionState::Running), "the new turn runs");
+}

@@ -1173,15 +1173,22 @@ impl Daemon {
             return;
         }
         let Some(tool) = frame.payload["tool_name"].as_str() else { return };
+        let content = dialog_content(tool, &frame.payload["tool_input"]);
+        // An id-less `PermissionRequest` repeating the dialog projected for
+        // the seat, the same tool's same content: it keeps that dialog's
+        // identity, its request below and its named call here (round 11).
+        let repeat = frame.event == "PermissionRequest"
+            && frame.payload["tool_use_id"].is_null()
+            && content
+                .as_ref()
+                .is_some_and(|c| self.control.dialogs.get(&id).is_some_and(|d| d.content == *c));
         // The call the record is held on (T-957 rounds 9, 10), observed from
         // the hook whether or not its content projects: a dialog too big to
         // draw still names its call, and a replacement that gives no id
-        // names none, never the call before it. A `PermissionRequest` that
-        // repeats its `PreToolUse` without an id keeps the one it had.
+        // names none, never the call before it; only a repeat keeps it.
         if matches!(tool, "ExitPlanMode" | "AskUserQuestion") {
             let call =
                 frame.payload["tool_use_id"].as_str().filter(|s| s.len() <= 256).map(String::from);
-            let repeat = frame.event == "PermissionRequest" && call.is_none();
             // The prompts heard when it was named (round 4): an Esc read for
             // it after another is heard ended an earlier turn.
             if let Some(call) = &call {
@@ -1197,13 +1204,10 @@ impl Daemon {
                 }
             }
         }
-        let Some(content) = dialog_content(tool, &frame.payload["tool_input"]) else { return };
+        let Some(content) = content else { return };
         // PermissionRequest may repeat the same PreToolUse payload. Keep its
         // identity stable while a browser is selecting that exact dialog.
-        if frame.event == "PermissionRequest"
-            && frame.payload["tool_use_id"].is_null()
-            && self.control.dialogs.get(&id).is_some_and(|d| d.content == content)
-        {
+        if repeat {
             return;
         }
         let request = frame.payload["tool_use_id"]

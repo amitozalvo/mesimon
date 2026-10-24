@@ -34177,6 +34177,21 @@ belongs to a later turn.
     snapshot and the mod bridge's park and restore.
   - The guard's drop is a feed line too, `tail_end_of_another_dialog`, so a test can tell which
     read decided.
+- **Round 11: a repeat is the same dialog, not any id-less request.** Round 10 kept the prior
+  call on every `PermissionRequest` without a `tool_use_id`. So a question B that arrived as an
+  id-less `PermissionRequest` alone (its `PreToolUse` lost: a hook fails open) kept plan A's
+  call, and after a restart B's rebuild and its own end were refused against A. Now an id-less
+  `PermissionRequest` is a repeat only when it matches the dialog projected for the seat, the
+  same tool's same content (the predicate the projection already used, computed once). A repeat
+  keeps that call and its prompt count; anything else names its own call or none, before the
+  content's early return. Test
+  `plan_accept_e2e::an_id_less_permission_request_keeps_a_call_only_as_a_repeat`:
+  - The replacement: across a restart, B is rebuilt from its line and its own Esc ends it. With
+    round 10's rule it is never rebuilt.
+  - The control: a repeat of A keeps A's call. After a restart, A's refusal with words ends A
+    with A's call line off the transcript; with every id-less request taken as a replacement it
+    stays on the plan.
+  - The control, live: a repeat keeps A's prompt-count fence.
 - **After a restart** a dialog this daemon never projected counts from the daemon's start.
 - **In the read:** a person's prompt (`adopt::user_prompt`) after an interrupt in the same read
   drops the interrupted end and every `AbortedMidStream` read before it.
