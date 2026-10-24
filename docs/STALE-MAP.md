@@ -33002,3 +33002,11 @@ Tests:
   `crown_e2e::a_crown_launch_abandoned_on_a_dialog_keeps_no_unsent_copy` (the composer never
   draws, a permission request comes, the words are abandoned; no unsent copy on the crown's seat,
   the hand up, the wake owed; fails without the exclusion).
+- **The Codex wordless wake through a tier switch (test only).** The road `relaunch(None)` takes
+  had no test. `a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words` now gives
+  the Codex crown's ticket a Codex tier while the crown is idle, with the runtime's stop
+  delayed. The switch parks and marks the crown, and a worker's turn owes a wake meanwhile. That
+  wake stays owed and untold, and only the crown wake is pending for the crown, no person's ask.
+  The stop's confirmation brings one wake on the new tier (one runtime launch) with nothing
+  pasted. Then the box's paste and Enter deliver the wake and tell it. A Codex crown seat that
+  never takes words keeps its wake owed and shown, with no deadline turning it into told.

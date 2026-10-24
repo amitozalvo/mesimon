@@ -2622,6 +2622,76 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     wait_until(std::time::Duration::from_secs(10), "told at its Enter", || told() == said + 1);
     crown_turn_ends(&mut c);
 
+    // ---- (T-936) a tier switch on the crown: its stop, one wake, no words -
+    // The switch parks the crown and marks it; a wake owed meanwhile waits
+    // for the stop's confirmation and the tier's one wake, rides neither,
+    // and goes on no person's queue; the live pane's box then delivers it.
+    let reviewer = mesimon_core::tier::Tier {
+        id: "01REVIEW".into(),
+        name: "reviewer".into(),
+        provider: mesimon_core::board::AgentProvider::Codex,
+        model: "gpt-6-astra".into(),
+        effort: mesimon_core::tier::Effort::High,
+        description: String::new(),
+    };
+    assert!(matches!(
+        c.request(Command::SaveTier {
+            scope: mesimon_core::tier::TierScope::Board,
+            tier: reviewer
+        }),
+        Response::Ok
+    ));
+    let launches = || {
+        std::fs::read_to_string(h.dir.join("runtime-launches.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+    let crown_rec =
+        |c: &mut TestClient| c.board().sessions.iter().find(|s| s.id == sa).cloned().unwrap();
+    let (launched, said, pasted) = (launches(), told(), wakes(&pastes()));
+    control(sa, json!({"stop_delay": 2}));
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    assert!(matches!(
+        c.request(Command::SetTicketTier { id: a, tier: Some("01REVIEW".into()) }),
+        Response::Ok
+    ));
+    wait_until(std::time::Duration::from_secs(15), "the crown parked for the switch", || {
+        let rec = crown_rec(&mut c);
+        rec.tier_wake && rec.state == SessionState::Sleeping
+    });
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let rows = pending_of(&mut c, Some(a));
+    assert!(
+        rows.iter().any(|p| p.action == mesimon_core::command::PendingAction::CrownWake),
+        "the wake owed while the crown switches: {rows:?}"
+    );
+    assert!(
+        rows.iter().all(|p| p.action == mesimon_core::command::PendingAction::CrownWake),
+        "no person's ask filed for the crown: {rows:?}"
+    );
+    assert_eq!(told(), said, "not told across the switch");
+    wait_until(std::time::Duration::from_secs(20), "the crown woken on the new tier", || {
+        let rec = crown_rec(&mut c);
+        !rec.tier_wake && rec.tier == "01REVIEW" && rec.state != SessionState::Sleeping
+    });
+    wait_until(std::time::Duration::from_secs(10), "the new runtime up", || {
+        launches() == launched + 1
+    });
+    assert_eq!(wakes(&pastes()), pasted, "nothing rode the relaunch");
+    draw(sa, "", idle.clone());
+    wait_until(std::time::Duration::from_secs(20), "the wake pasted into the new box", || {
+        wakes(&pastes()) == pasted + 1
+    });
+    let before = enters();
+    draw(sa, &last_wake(), idle.clone());
+    wait_until(std::time::Duration::from_secs(10), "its Enter", || enters() > before);
+    wait_until(std::time::Duration::from_secs(10), "told at its Enter", || told() == said + 1);
+    assert_eq!(launches(), launched + 1, "still one wake");
+    crown_turn_ends(&mut c);
+
     // ---- the crown taken off while its Enter waits: nothing is pressed ----
     start(&mut c, ws);
     stop(&mut c, ws);
