@@ -386,6 +386,17 @@ pub fn describe(text: &str, note: ulid::Ulid, max: usize) -> (String, Option<Str
     (format!("{head}…"), Some(words))
 }
 
+/// What the ticket's own key is to the person (T-715), on a session's read
+/// of its own ticket (`key_about`): everything the session says is read
+/// beside the ticket, so its key is a lookup for the card already in view.
+/// A worker wrote "the open items on the T-132 card" on T-132's own page.
+/// Transient result data, so it may instruct: the first wording only
+/// described the reader, and the rig's Sonnet worker read it and wrote
+/// "Nothing is still open on T-1" all the same.
+pub const KEY_ABOUT: &str = "Words to the person about this ticket call it \"this ticket\", not \
+     its key: the person reads this session beside it, in its pane, its page and its notes, \
+     where the key is one more lookup. A key is for naming another ticket.";
+
 /// What `list_board`'s `daemon` field is (T-941): a stamp comparison and
 /// the reload fact, nothing about what to do. A crown merged daemon fixes,
 /// the binary was rebuilt, and the daemon that ran the night was the old one.

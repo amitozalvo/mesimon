@@ -32528,12 +32528,19 @@ Sonnet at low effort.
   says the reason is the card's words). Kept: its effects, "words in the pane reach no one",
   "an ordinary finished turn already reads as done". T-908's refusal still names the hand at
   the moment a read is refused.
-- `KEY_ABOUT` and the `key_about` field (T-715): how to name the ticket to the person is
-  phrasing. Its history is a measured failure of a descriptive wording on K1, but K1's
-  acceptance is itself the method.
+
+**`KEY_ABOUT` is kept under the rule** (after both reads, crown 17:51; first cut, then put back
+before the merge on Fable's read):
+- T-715 recorded the failure that made it: a worker wrote "the open items on the T-132 card" on
+  T-132's own page.
+- T-715 also recorded that a fact-only wording was tried and failed on the rig's Sonnet worker.
+- Today's run reproduced the failure the moment the sentence was cut: K1 FAIL, "T-3 has no open
+  Summary boxes and nothing is needed from you".
+- Sonnet is the board's `quick` and `fix` tier, and the person filed T-715 for this wording.
+  Whether to pay nothing for the phrasing is theirs to say.
 
 **Kept whole:** `move_ticket`, `read_note`, `read_attachment`, `read_shell`, `tag_ticket`,
-`PRS_ABOUT`, `WORKTREE_INIT_ABOUT`, `DAEMON_ABOUT` and `WORKER_UNDER_CROWN` (T-930 cut it to
+`KEY_ABOUT`, `PRS_ABOUT`, `WORKTREE_INIT_ABOUT`, `DAEMON_ABOUT` and `WORKER_UNDER_CROWN` (T-930 cut it to
 facts and measured it; its pane sentence repeats `raise_hand`'s and was left alone so as not to
 stack risk on that measurement).
 
@@ -32559,10 +32566,10 @@ word and needs a rig case that measures reading before work, which none does tod
 | write_note | 441 | 298 |
 | raise_hand | 531 | 327 |
 | SUMMARY_ABOUT | 869 | 467 |
-| KEY_ABOUT | 221 | 0 |
-| all worker text | 6,649 | 5,234 |
+| KEY_ABOUT | 221 | 221 |
+| all worker text | 6,649 | 5,455 |
 
-- The summary/key prose on an own `get_ticket` falls from 1,090 to 467 bytes, saving 623 bytes.
+- The summary/key prose on an own `get_ticket` falls from 1,090 to 688 bytes, saving 402 bytes.
 - The brief stays at 362 bytes.
 
 **Rig** (Sonnet workers, Opus crown, the cases once each, no retries, against the last
@@ -32583,11 +32590,9 @@ crown, Sonnet workers at low effort, 6.2 minutes.
 | WR1 | PASS (T-930) | PASS | report asks the person for nothing of the board's |
 | K1 | PASS (T-715) | **FAIL** | "T-3 has no open Summary boxes and nothing is needed from you" |
 
-- **K1's fail is the cut's expected cost**, reported as it is and not answered with words.
-  Untold, a Sonnet worker names its own ticket by key. Whether that matters is the person's to
-  say in their own prompts. **K1 is retired with `KEY_ABOUT`** (the crown's acceptance): its
-  acceptance judged the wording, which is the method itself. This FAIL is its final raw reading,
-  and it is gone from `ci/rig/tests.toml`.
+- **K1 ran with `KEY_ABOUT` cut**, and the failure T-715 recorded came back. With the sentence
+  restored, the text is main's again, which passed K1 twice (T-715). No rerun: the restored
+  sentence is the one that passed. K1 is not retired.
 - **Spend, as quota, 16:21 to 16:28:** Claude's 5-hour window went from 59% to 62% and its
   weekly from 23% to 23%, every session on the account included.
 
@@ -32595,12 +32600,14 @@ crown, Sonnet workers at low effort, 6.2 minutes.
 - `ticket_creation_guidance_is_bounded_and_descriptive` and
   `the_summary_convention_is_in_the_tools` assert the kept facts and the absence of the cut
   words.
-- `notes_e2e` asserts that an own `get_ticket` carries no `key_about`.
 - The rig gains CT1 (a filed job is not done in the worker's own session, with a new
-  `no_file:<path>` check) and loses K1. S1's, S2's, RH1's and F11's `expect` say what T-932
-  cut.
+  `no_file:<path>` check). S1's, S2's, RH1's and F11's `expect` say what T-932 cut. K1 and
+  `notes_e2e`'s `key_about` assertion are main's.
 
 **Limits.**
 - N = 1 per case sees only a case that breaks outright.
 - No case measures filing judgement (what deserves a ticket, duplicates), because that
   guidance is gone on purpose.
+- **Fable's one risk, for T-935:** S2's brief says "keep the card current as each stage
+  lands", and T-727's failures came from briefs that said no such thing. A variant of S2 with a
+  bare brief would measure what the cut box criterion cost, which this run did not.

@@ -781,6 +781,19 @@ checks = ["road:mod", "started_by_crown", "tools:write_note", "summary:3/3", "bo
   wake = true
 
 [[test]]
+id = "K1"
+title = "K1 · say what is still open on this ticket: do the steps below"
+workspace = "worktree"
+brief = "Call get_ticket. Then end your turn with one sentence to the person about the ticket: what is still open on it and whether anything is needed from them. Read no file and run no command."
+expect = "a worker speaking to the person about its own ticket calls it this ticket and never by its key: get_ticket's key_about says the person reads the session beside the ticket. Its replies spell no key of its own and its last one names the ticket."
+checks = ["road:mod", "started_by_crown", "tools:get_ticket", "no_own_key", "reply:ticket"]
+
+  [[test.steps]]
+  crown = "K1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: K1 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: K1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
 id = "CT1"
 title = "CT1 · write one file and file the second job for later: do the steps below"
 workspace = "worktree"
