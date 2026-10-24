@@ -1209,6 +1209,32 @@ impl Daemon {
         }
     }
 
+    /// A plan sent back whose dialog the window's screen read saw gone
+    /// leaves needs-you with it (T-955). No frame says so on the hook set or
+    /// the classic mod: the plan's rejection fires no hook (T-447) and
+    /// neither road sends an ordinary tool's `PreToolUse`. So the record's
+    /// machine is given the refusal road's signal, `ToolStarted`, as a
+    /// synthetic departure of the dialog, never as a tool start anyone saw
+    /// (source `plan_sent_back`). The machine's leave settle stands, so a
+    /// replan inside it keeps the plan. Only while no dialog is projected
+    /// for the seat and its record still stands on a plan.
+    fn sent_back_left(&mut self, id: uuid::Uuid) {
+        use mesimon_core::board::Reason;
+        let planned = SessionState::RequiresAction { reason: Reason::Plan };
+        if self.control.dialogs.contains_key(&id)
+            || !self.board.sessions.iter().any(|s| s.id == id && s.state == planned)
+        {
+            return;
+        }
+        let signal = Signal::ToolStarted { nested: false };
+        let Some(change) = self.observe_signal(id, &signal, now_ms(), "plan_sent_back") else {
+            return;
+        };
+        if self.apply_change(id, &change, None, Some("plan_sent_back")) {
+            self.persist_and_notify();
+        }
+    }
+
     /// A Claude seat stopped on a plan or a question with no dialog to show
     /// for it (T-933): a restart empties `dialogs`, which only the hook
     /// stream filled, and the record's `RequiresAction` outlives it, so the
@@ -1413,11 +1439,19 @@ impl Daemon {
                     match settled {
                         Some((status, reason)) => {
                             let reason = reason.map(str::to_string);
+                            // Only a screen read that found the composer
+                            // shows the dialog gone (T-955); any other read
+                            // keeps the projection, as a failed one does.
+                            let left = status == "input_sent" && matches!(seen, Some(Some(_)));
                             let screen = match &seen {
-                                Some(read) => read.as_deref(),
+                                Some(read) if left => read.as_deref(),
+                                Some(_) => None,
                                 None => Some(""),
                             };
-                            self.control_settle_seen(id, pending, status, reason, screen)
+                            self.control_settle_seen(id, pending, status, reason, screen);
+                            if left {
+                                self.sent_back_left(id);
+                            }
                         }
                         None => {
                             pending.next = Instant::now() + Duration::from_millis(250);
@@ -5614,7 +5648,9 @@ fn plan_dialog_drawn(screen: &str) -> bool {
 /// the dialog gone (`input_sent`); an accept that ended it is not this
 /// answer (`unknown`, `plan_accepted`). At the window's end with the
 /// projection still standing, only a screen read that succeeded can say the
-/// dialog is gone; one that shows it is `dialog_stands`, and a capture that
+/// dialog is gone, and only by showing what it left for: Claude's composer
+/// (T-955). One that shows the plan is `dialog_stands`, any other screen
+/// (blank, clipped, unfamiliar) is `shape_unrecognised`, and a capture that
 /// failed is `pane_unreachable`. `capture` is read at most once, then.
 fn revise_settled(
     edge: Option<DialogEdge>,
@@ -5632,9 +5668,19 @@ fn revise_settled(
         None => match capture() {
             None => Some(("unknown", Some("pane_unreachable"))),
             Some(screen) if plan_dialog_drawn(&screen) => Some(("unknown", Some("dialog_stands"))),
-            Some(_) => Some(("input_sent", None)),
+            Some(screen) if composer_drawn(&screen) => Some(("input_sent", None)),
+            Some(_) => Some(("unknown", Some("shape_unrecognised"))),
         },
     }
+}
+
+/// Whether `screen` shows Claude's composer (T-955), read as a launch's
+/// words read it (`agents::claude::composer`): the screen a plan's dialog
+/// leaves for, and one a dialog never reads as.
+fn composer_drawn(screen: &str) -> bool {
+    use crate::agents::claude::composer::{self, Composer};
+    let lines = screen.lines().map(str::to_string).collect();
+    composer::read(&mesimon_backend_tmux::InputScreen { lines, cursor: None }) != Composer::Absent
 }
 
 /// The plan dialog's cursor row on `screen`, if it shows exactly one.
@@ -8180,10 +8226,23 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
             revise_settled(None, true, true, || Some(up.clone())),
             Some(("unknown", Some("dialog_stands")))
         );
+        // Gone only on a screen that shows what the dialog left for (T-955).
+        let rule = "─".repeat(40);
+        let composer = format!("✻ Thinking…\n{rule}\n❯ \n{rule}\n  ? for shortcuts");
         assert_eq!(
-            revise_settled(None, true, true, || Some("❯ the composer".into())),
+            revise_settled(None, true, true, || Some(composer.clone())),
             Some(("input_sent", None))
         );
+        let clipped = "   Claude has written up a plan and is ready to execute. Would you like \
+                       to proceed?\n   ❯ 3. Tell Claude what to change\n";
+        let question = "Would you like to proceed?";
+        for unseen in ["", "   ", question, clipped, "❯ the composer"] {
+            assert_eq!(
+                revise_settled(None, true, true, || Some(unseen.into())),
+                Some(("unknown", Some("shape_unrecognised"))),
+                "{unseen:?}"
+            );
+        }
         assert_eq!(revise_settled(None, false, false, never), Some(("input_sent", None)));
         assert_eq!(
             revise_settled(Some(DialogEdge::Dismissed), true, false, never),

@@ -7459,6 +7459,187 @@ fn a_plan_sent_back_stops_at_any_hand_but_the_crown_s() {
     assert_eq!(revised(again), ("unknown".to_string(), Some("field_touched".to_string())));
 }
 
+/// A plan sent back leaves needs-you with its dialog, and only on a screen
+/// that shows it gone (T-955). Neither road sends a `PreToolUse` for an
+/// ordinary tool and the plan's rejection fires no hook, so on 2.1.310's mod
+/// road the window's screen read is the one departure (the board's own
+/// daemon, 19:11). A sibling tool's end is not one, before the Enter or
+/// after it (T-595): with the plan still drawn the request, the plan and the
+/// record stay. With the composer drawn and no frame at all, the record
+/// leaves `RequiresAction{Plan}`, `get_ticket` reads no `needs_you`, and
+/// `ask_agent` is admitted (taken into the queue, not yet read by the agent).
+#[test]
+fn a_plan_sent_back_leaves_needs_you_only_on_a_screen_without_it() {
+    let Some(mut b) = PlanBed::boot("crown_revise_leaves") else { return };
+    let kw = b.kw.clone();
+    let words = "Use echo in Bash instead of the Write tool.";
+    let at_plan = SessionState::RequiresAction { reason: mesimon_core::board::Reason::Plan };
+    let changed = b.changed();
+    let state = |b: &mut PlanBed| {
+        b.c.board().sessions.iter().find(|s| s.id == b.ws).map(|s| s.state.clone())
+    };
+    let ended = |b: &PlanBed| {
+        b.feed()
+            .lines()
+            .filter(|l| {
+                l.contains("\"kind\":\"hook\"")
+                    && l.contains(&format!("\"session\":\"{}\"", b.ws))
+                    && l.contains("\"event\":\"PostToolUse\"")
+            })
+            .count()
+    };
+
+    // ---- a sibling's end before the Enter and after it: the plan stands -----
+    let keep = b.h.dir.join(format!("keep-{kw}"));
+    std::fs::write(&keep, "").unwrap();
+    b.show_plan("toolu_w1");
+    b.hook("PostToolUse", "Bash", "toolu_s0");
+    let receipt = b.call("toolu_w1", words);
+    wait_until(std::time::Duration::from_secs(10), "the Enter on the words", || changed.exists());
+    let seen = ended(&b);
+    b.hook("PostToolUse", "Bash", "toolu_s1");
+    wait_until(std::time::Duration::from_secs(10), "the sibling's end ingested", || {
+        ended(&b) > seen
+    });
+    let needs = read(&mut b.c, b.sa, &kw).unwrap().needs_you.expect("the plan stands");
+    assert_eq!(needs.request.as_deref(), Some("toolu_w1"));
+    assert_eq!(needs.plan.as_deref(), Some(BED_PLAN));
+    assert_eq!(state(&mut b), Some(at_plan.clone()));
+    assert!(!receipt.is_finished(), "no departure receipt on a sibling's end");
+    assert_eq!(revised(receipt), ("unknown".to_string(), Some("dialog_stands".to_string())));
+    let needs = read(&mut b.c, b.sa, &kw).unwrap().needs_you.expect("the plan still stands");
+    assert_eq!(needs.request.as_deref(), Some("toolu_w1"));
+    assert_eq!(state(&mut b), Some(at_plan.clone()));
+    // The person ends the turn and starts the next.
+    std::fs::remove_file(&keep).unwrap();
+    std::fs::remove_file(b.h.dir.join(format!("dialog-{kw}.json"))).unwrap();
+    wait_until(std::time::Duration::from_secs(10), "the dialog gone", || {
+        !b.pane().contains("Would you like to proceed?")
+    });
+    b.stop(b.ws);
+    b.start(b.ws);
+
+    // ---- the composer drawn and no frame at all: the plan leaves ------------
+    std::fs::remove_file(&changed).unwrap();
+    b.show_plan("toolu_w2");
+    let receipt = b.call("toolu_w2", words);
+    wait_until(std::time::Duration::from_secs(10), "the second Enter", || changed.exists());
+    assert_eq!(revised(receipt), ("input_sent".to_string(), None));
+    b.c.await_state(b.ws, "running once the screen shows the composer", |s| {
+        *s == SessionState::Running
+    });
+    assert!(read(&mut b.c, b.sa, &kw).unwrap().needs_you.is_none(), "no plan stands");
+    b.hook("PostToolUse", "Bash", "toolu_s2");
+
+    // ---- the crown's words are admitted, not refused as at a plan -----------
+    let v = read(&mut b.c, b.sa, &kw).unwrap();
+    match b.c.send(
+        Principal::Agent { session: b.sa },
+        Command::AgentAskTicket {
+            key: kw.clone(),
+            text: "mesimon-probe-955 one more line".into(),
+            seen: v.seen,
+            plan: false,
+            deliver: Deliver::Idle,
+        },
+    ) {
+        Response::AgentAsked { .. } => {}
+        other => panic!("ask_agent after a plan sent back: {other:?}"),
+    }
+}
+
+/// A replan inside the leave a plan sent back started (T-955 with T-943's
+/// re-stop). The window's screen read shows the composer, so the record's
+/// machine is given the departure with its 1500 ms settle; the worker's next
+/// `ExitPlanMode` comes inside it, on the frames the engine sends. The leave
+/// is cancelled, never committed: the record stays on its plan through the
+/// deadline, `get_ticket` reads the new request, and the crown is woken once
+/// for it, by the re-stop, with no second wake owed.
+#[test]
+fn a_replan_inside_a_sent_back_plan_s_leave_keeps_it_and_wakes_once() {
+    let Some(mut b) = PlanBed::boot("crown_revise_restop") else { return };
+    let (kw, ws, w) = (b.kw.clone(), b.ws, b.w);
+    let at_plan = SessionState::RequiresAction { reason: mesimon_core::board::Reason::Plan };
+    let wake = format!("{kw} \"mesimon-probe-943 worker\" stops on a plan");
+    let owed = |b: &PlanBed| {
+        b.feed()
+            .lines()
+            .filter(|l| {
+                l.contains("\"kind\":\"crown_wake\"")
+                    && l.contains(&format!("\"worker\":\"{w}\""))
+                    && l.contains("\"cause\":\"planned\"")
+            })
+            .count()
+    };
+    b.stop(b.sa);
+    b.show_plan("toolu_w1");
+    wait_until(std::time::Duration::from_secs(10), "the plan's wake", || {
+        b.typed().matches(&wake).count() == 1
+    });
+    b.start(b.sa);
+    let receipt = b.call("toolu_w1", "Name the file b.txt instead.");
+    let changed = b.changed();
+    wait_until(std::time::Duration::from_secs(10), "the Enter on the words", || changed.exists());
+    b.stop(b.sa);
+    let before = owed(&b);
+    assert_eq!(revised(receipt), ("input_sent".to_string(), None));
+    let left = std::time::Instant::now();
+    std::fs::write(
+        b.h.dir.join(format!("dialog-{kw}.json")),
+        json!({ "plan": BED_PLAN }).to_string(),
+    )
+    .unwrap();
+    b.hook("PreToolUse", "ExitPlanMode", "toolu_w2");
+    assert!(left.elapsed() < std::time::Duration::from_millis(1500), "inside the settle");
+    wait_until(std::time::Duration::from_secs(10), "the replan's wake", || {
+        b.typed().matches(&wake).count() == 2
+    });
+    // The departure was a pending leave, and the replan's frame cancelled it.
+    // The wake may be typed before the replan's decision line is written.
+    let decisions = |b: &PlanBed| -> Vec<serde_json::Value> {
+        b.feed()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|v| v["kind"] == "state_decision" && v["session"] == ws.to_string())
+            .collect()
+    };
+    let departure =
+        |d: &[serde_json::Value]| d.iter().rposition(|v| v["source"] == "plan_sent_back");
+    wait_until(std::time::Duration::from_secs(10), "the replan's decision", || {
+        let d = decisions(&b);
+        departure(&d).is_some_and(|at| d.len() > at + 1)
+    });
+    let decisions = decisions(&b);
+    let at = departure(&decisions).expect("the departure given to the machine");
+    assert_eq!(decisions[at]["decision"]["after"]["pending"]["state"]["state"], "running");
+    let next = &decisions[at + 1];
+    assert_eq!(next["source"], "PreToolUse");
+    assert!(next["decision"]["after"]["pending"].is_null(), "the leave cancelled: {next}");
+    // An observation past the settle's deadline.
+    while left.elapsed() < std::time::Duration::from_millis(2500) {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert_eq!(
+        b.c.board().sessions.iter().find(|s| s.id == ws).map(|s| s.state.clone()),
+        Some(at_plan)
+    );
+    let departed = decisions[at]["seq"].as_u64().unwrap();
+    let left_plan =
+        b.feed().lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).any(
+            |v| {
+                v["kind"] == "session_state"
+                    && v["session"] == ws.to_string()
+                    && v["seq"].as_u64().is_some_and(|q| q > departed)
+            },
+        );
+    assert!(!left_plan, "no committed leave: {}", b.feed());
+    b.start(b.sa);
+    let needs = read(&mut b.c, b.sa, &kw).unwrap().needs_you.expect("the new plan");
+    assert_eq!(needs.request.as_deref(), Some("toolu_w2"));
+    assert_eq!(b.typed().matches(&wake).count(), 2, "one wake for the new plan");
+    assert_eq!(owed(&b), before + 1, "one wake owed for it: {}", b.feed());
+}
+
 /// T-933: a worker stopped on a plan or a question across a daemon restart
 /// keeps its dialog. The hook stream filled the dialog the crown reads and
 /// answers, and a restart emptied it: `needs_you` carried the reason alone

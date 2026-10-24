@@ -33579,3 +33579,84 @@ both roads; it fails on the mod pass without the change).
 
 **Not covered by an e2e:** send-now keys failing after a filled box, since the harness has no
 backend failure seam there. The code path is the `unknown` edge in `on_mod_fill`.
+
+## A plan sent back leaves needs-you with its dialog (T-955, 2026-10-24, "A plan sent back with words on the mod road leaves the ticket at needs-you: plan while the worker replans")
+
+**Seen.** This was the first real use of T-943's road (main `93321ac2`, Claude Code 2.1.310,
+the classic mod road). The crown sent T-945's plan back at 19:10:31. The transcript shows the
+rejection as the `ExitPlanMode` result (`is_error`), then `get_ticket` and `read_note`, then
+Bash at 19:11:07. `get_ticket` and `read_note` are registered tools and fire no `PostToolUse`.
+The 30 s window ended at 19:11:01 with a screen read that showed no plan. The receipt was
+`input_sent` and the projection was dropped, but the record stayed `RequiresAction{Plan}`.
+`get_ticket` read `needs_you: plan` with no request, and every later `PostToolUse` was
+`ToolCompleted`, `no_transition_rule`.
+
+**Why.** T-447's refusal road is the session's next `PreToolUse`, and **neither real road sends
+one for an ordinary tool**:
+- The hook set's observer matcher is `AskUserQuestion,ExitPlanMode`. The `Edit,Write,NotebookEdit`
+  entry is `mesimon gate`, which reports only denials.
+- The classic mod relays `PreToolUse` for the same two tools (`PRE_TOOL_USE_TOOLS`).
+
+Only the native road relays every `tool.call`. T-943's e2e cleared the dialog with a `PreToolUse`
+of `Edit`, a frame the engine never sends on these roads. `PostToolUse` is broad on every road,
+the plan's own call fires none, and a sibling's completion says nothing about the plan (T-595).
+
+**What shipped.**
+- **The window's end needs the screen the dialog left for.** At the end of `PLAN_CHANGE_CONFIRM`,
+  `revise_settled` reads the screen and settles one of three ways:
+  - the plan drawn: `dialog_stands`, and the projection is kept;
+  - Claude's composer drawn (`composer_drawn`, through the launch road's
+    `agents::claude::composer::read`, which a dialog never matches): `input_sent`, and the
+    projection is dropped;
+  - any other capture (blank, a clipped plan, a question alone, an unfamiliar screen):
+    `unknown`, `shape_unrecognised`. The projection and the record are kept, as for
+    `pane_unreachable`.
+
+  Before this, any capture that missed one of `plan_dialog_drawn`'s two lines read as gone. A
+  dialog-ending event (`Dismissed`, the mod's `declined`, an answer) still settles without a
+  screen, as T-943 shipped.
+- **The record follows the projection** (`sent_back_left`). It runs only on that recognised
+  composer read, only while no dialog is projected for the seat, and only while its record
+  stands at `RequiresAction{Plan}`. Then the record's machine is handed `ToolStarted { nested:
+  false }` with source `plan_sent_back`. That is a synthetic departure of the dialog, not a tool
+  start anyone saw: it is the refusal road's signal, given where no road sends that road's frame.
+  It is High confidence, so it passes the flap pin. The 1500 ms leave settle stands, so a replan
+  inside it (`PreToolUse ExitPlanMode`) cancels the leave, and T-943's re-stop wakes the crown
+  once.
+- **No frame shortcut.** The first delivery treated the session's next `PostToolUse` after the
+  Enter as the dialog's `Dismissed`. The independent read refuted it. Event order is not
+  tool-start order: a sibling's completion can be queued before the Enter or finish after it,
+  with the plan still drawn. The shortcut and its mark (`Control::sent_back`) are gone. A worker
+  replanning stays at needs-you until the window's end, 30 s at most.
+- Nothing changes for a dialog no words went into, for `dialog_edge`, for T-595, for the hook
+  set or for the mod.
+
+**Tests.**
+- Unit: `mesophon::tests::a_plan_sent_back_claims_the_dialog_gone_only_on_a_screen_read` now
+  checks the composer (`input_sent`), and the blank, spaces, question-only, clipped-plan and bare
+  `❯` screens (`shape_unrecognised`), beside the failed capture, the plan drawn and the edges.
+- `crown_e2e::a_plan_sent_back_leaves_needs_you_only_on_a_screen_without_it`:
+  - With the plan kept drawn, a sibling's `PostToolUse` before the Enter and one after it leave
+    the request, the plan and `Plan` in place. No receipt comes before the window; it is then
+    `dialog_stands`.
+  - With the composer drawn and no frame at all, the receipt is `input_sent`, the record is
+    `Running` and there is no `needs_you`.
+  - Then `ask_agent` returns `AgentAsked`. That proves the words were admitted to the queue, not
+    that the agent read them.
+- `crown_e2e::a_replan_inside_a_sent_back_plan_s_leave_keeps_it_and_wakes_once`, on real frames
+  only:
+  - The composer read gives the machine the departure, and its feed decision shows the pending
+    leave to `running`.
+  - The worker's `PreToolUse ExitPlanMode` comes inside the settle. Its decision shows no
+    pending, and no `session_state` line follows the departure.
+  - Past the deadline the record is still `Plan` and `get_ticket` reads the new request.
+  - The crown got one new wake, and one more `planned` obligation was written.
+- Reproduction (round 0's run, on the unfixed `mesophon.rs`): round 0's e2e failed. The feed
+  showed the live trace, `PostToolUse` → `ToolCompleted` `no_transition_rule` at `plan`, and an
+  `input_sent` receipt only at the window's end. Its first failing assertion is the receipt's
+  under-20 s bound, not the `Running` wait after it.
+- All of these pass on the hook road and on the mod pass.
+
+**Not done (seen, not changed).** A person's own "Tell Claude what to change", or an Esc in the
+pane with no crown walk, has the same hole on the hook set and the classic mod. The crown filed
+it as T-957. T-447's e2e passes on a frame those roads do not send.
