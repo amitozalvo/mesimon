@@ -437,6 +437,18 @@ pub(super) struct Entering {
     pub(super) parked: bool,
 }
 
+/// Whether a crown wake's failed delivery still holds the drain (T-936):
+/// `hold` is the seat it failed on and that seat's state's moment, `seat`
+/// the current crown's seat and its moment now. Only that same seat, not
+/// yet moved: another crown's seat, or this one after its state moved, is
+/// tried again.
+pub(super) fn failed_hold(
+    hold: Option<(uuid::Uuid, Option<u64>)>,
+    seat: Option<(uuid::Uuid, Option<u64>)>,
+) -> bool {
+    hold.is_some() && hold == seat
+}
+
 /// Whether a mod report about `frame` from `session` is the crown's
 /// submitted wake (T-936): the attempt's own frame, from its seat, while
 /// that seat has a live pane and it is the pane the frame went to. A killed
@@ -2289,6 +2301,8 @@ impl Daemon {
     /// with it, said once in the feed, and what it was told goes too — a
     /// new crown has heard nothing.
     pub(super) fn drop_crown_wakes(&mut self) {
+        // A failed delivery's hold was the old seat's (T-936).
+        self.crown_wake_failed_on = None;
         self.crown_heard.clear();
         self.crown_landed.clear();
         self.crown_recheck.clear();
@@ -3155,6 +3169,20 @@ mod tests {
         rec.pane_key = Some("200:%0".into());
         assert!(!submitted_fence(&e, Some(&rec), session, "01FRAME"), "a replacement pane");
         assert!(!submitted_fence(&e, None, session, "01FRAME"), "no seat");
+    }
+
+    /// T-936, the fourth read: a failed delivery holds the drain for the
+    /// current crown's seat alone, until that seat's state moves; crown B's
+    /// seat is never held by crown A's failure.
+    #[test]
+    fn a_failed_wake_holds_only_the_seat_it_failed_on() {
+        let (a, b) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2));
+        let hold = Some((a, Some(10)));
+        assert!(failed_hold(hold, Some((a, Some(10)))), "the same seat, not moved");
+        assert!(!failed_hold(hold, Some((a, Some(11)))), "the seat moved");
+        assert!(!failed_hold(hold, Some((b, Some(10)))), "another crown's seat");
+        assert!(!failed_hold(hold, None), "no seat");
+        assert!(!failed_hold(None, Some((a, Some(10)))), "no hold");
     }
 
     #[test]

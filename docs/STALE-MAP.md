@@ -32962,3 +32962,8 @@ Tests:
     has the crown woken with no words, no person's ask filed, and nothing told. The wake stays owed
     across a restart, then the box's paste and Enter tell it. A Codex tier relaunch has no test of
     its own.
+- **The failed-delivery hold is the current crown seat's.** `crown_wake_failed_on` was read
+  against the seat it saved, so an error on crown A could hold crown B's wakes for as long as A's
+  saved state did not move. The drain now holds only when the current crown's seat is that seat,
+  at that same moment (`crownwake::failed_hold`), and a crown reset (`drop_crown_wakes`) drops the
+  hold. Test: `crownwake::a_failed_wake_holds_only_the_seat_it_failed_on`.

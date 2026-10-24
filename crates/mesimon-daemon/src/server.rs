@@ -8596,10 +8596,19 @@ impl Daemon {
             self.drop_crown_wakes();
             return true;
         };
-        // A delivery that failed is tried again once its seat moves (T-936).
-        if let Some((id, at)) = self.crown_wake_failed_on {
-            let moved = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.state_changed_at);
-            if moved == Some(at) {
+        // A delivery that failed is tried again once its seat moves (T-936),
+        // and the hold is the current crown seat's alone.
+        if self.crown_wake_failed_on.is_some() {
+            let seat = match self.seat_of(crown) {
+                QueuedSeat::Pane(id) | QueuedSeat::Wake(id) => self
+                    .board
+                    .sessions
+                    .iter()
+                    .find(|s| s.id == id)
+                    .map(|s| (id, s.state_changed_at)),
+                QueuedSeat::Start(_) => None,
+            };
+            if crownwake::failed_hold(self.crown_wake_failed_on, seat) {
                 return lost;
             }
             self.crown_wake_failed_on = None;
