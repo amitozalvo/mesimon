@@ -1794,10 +1794,21 @@ Reply with the single word ready and end your turn."""
             env = {"MESIMON_CLAUDE_ROAD": "hooks"} if road == "hooks" else {}
             if step.get("idle_ms"):
                 env["MESIMON_PERSON_IDLE_MS"] = str(step["idle_ms"])
-            ok = self.restart(env, want_probe=None if road == "hooks" else "the mod validated")
+            # The road is judged by the woken crown's record below, never by
+            # `road.json`, which a restarted daemon rewrites only when it
+            # changes its mind.
+            began = time.time()
+            ok = self.restart(env)
             self.restarted = True
             if not ok:
                 record["failures"].append(f"the daemon would not restart for the {road} road")
+                return False
+            # A launch before the new daemon has the person's shell
+            # environment finds no `claude` to probe and takes the hook set.
+            env_file = os.path.join(self.paths.rt_dir, "shellenv.env")
+            if not self.wait_for("the daemon's shell environment", lambda: os.path.exists(
+                    env_file) and os.path.getmtime(env_file) >= began, 60, self.watch):
+                record["failures"].append("the restarted daemon never captured the shell environment")
                 return False
             crown = self.agent_of(self.board(), self.crown)
             self.wire.sleep(crown["id"])
@@ -1815,6 +1826,16 @@ Reply with the single word ready and end your turn."""
                 record["failures"].append(f"the crown woke on {rec.get('road', 'hooks')}, "
                                           f"{word_of(rec.get('state'))}, not idle on {road}")
                 return False
+            # `SessionStart` fires during Claude Code's startup, before its
+            # composer takes a paste: the next step's words wait for the box.
+            drawn = self.wait_for("the crown's composer", lambda: any(
+                l.lstrip().startswith("❯") for l in self.tmux(
+                    "capture-pane", "-p", "-t", sid16(crown["id"])).stdout.splitlines()),
+                60, self.watch)
+            if not drawn:
+                record["failures"].append("the woken crown never drew its composer")
+                return False
+            time.sleep(2)
             return True
         if what == "person_idles":
             # A2 (T-945): the person stays in the crown's pane and sends it
