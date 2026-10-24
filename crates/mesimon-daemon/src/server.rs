@@ -6375,23 +6375,25 @@ impl Daemon {
                     if let Some(owed) = self.owed.get_mut(&id) {
                         owed.sent_at = Some(now_ms());
                     }
-                    // A crown wake parked on this launch (T-936): its own
-                    // paste and Enter are its delivery edge, as a live pane's
-                    // paste is.
+                    // A crown wake (T-936) is handed back before it gets here
+                    // (above), so no road pastes one from a launch. Should
+                    // one: a paste that went in tells it and takes no further
+                    // key, its prompt waited for one window; one that failed
+                    // keeps it owed and untold for the live pane's road, with
+                    // no unsent copy and no retry key.
                     let wake =
                         self.owed.get(&id).is_some_and(|o| o.ack.word == Ack::CROWN_WAKE.word);
-                    let parked_wake = self
-                        .crown_wake_entering
-                        .as_ref()
-                        .is_some_and(|e| e.session == id && e.parked);
-                    if wake && parked_wake && pasted && !text.is_empty() {
-                        self.wake_entered(id);
-                        // No automatic Enter after the wake's own (T-936): a
-                        // person may be in the box by the next one. Its
-                        // prompt is waited for one window, never pressed for.
-                        if let Some(owed) = self.owed.get_mut(&id) {
-                            owed.next_press = None;
-                            owed.expires.get_or_insert(now_ms() + INFLIGHT_MS);
+                    if wake {
+                        if pasted && !text.is_empty() {
+                            self.wake_entered(id);
+                            if let Some(owed) = self.owed.get_mut(&id) {
+                                owed.presses = 0;
+                                owed.next_press = None;
+                                owed.expires.get_or_insert(now_ms() + INFLIGHT_MS);
+                            }
+                        } else {
+                            self.drop_owed(id);
+                            self.wake_not_entered(id);
                         }
                         changed = true;
                         continue;

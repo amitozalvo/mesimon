@@ -10128,15 +10128,18 @@ fn a_person_at_the_crown_before_its_launch_paste_gets_no_keys() {
     assert_eq!(typed(), 1, "once");
 }
 
-/// T-936, the fifth read (2b): once a parked wake's own paste and Enter
-/// went in, the board presses no more Enters for it. Here no prompt hook
-/// follows, and a person then types a draft into the crown's box: no retry
-/// Enter sends it.
+/// T-936, the fifth and sixth reads (2b, 2): once a crown wake's paste and
+/// Enter went in, the board presses no more Enters for it. Here no prompt
+/// hook follows; a person types a draft into the crown's box, and a
+/// repeated `SessionStart` frame comes: no Enter sends their words. The
+/// paste's entry expires (`paste_unacked`) with no unsent copy and nothing
+/// owed again for the told wake, while a hand raised meanwhile stays owed
+/// on its own, held on their draft.
 #[test]
 fn no_retry_enter_follows_a_wake_s_own_paste() {
-    let Some(h) = Harness::boot_with_env(
+    let Some(h) = Harness::boot_bare(
         "crown_launch_retry",
-        Some(RECORDING_STUB),
+        Some(BOX_STUB),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -10149,25 +10152,54 @@ fn no_retry_enter_follows_a_wake_s_own_paste() {
     let hook_sock = h.paths.hook_sock();
     let tmux_sock = h.paths.tmux_sock();
     let mut c = h.client("crown_launch_retry");
-    let (_a, sa, w, line) = crown_woken_with_its_wake_parked(&h, &mut c, "launch retry");
+    let (a, sa, w, line) = crown_woken_with_its_wake_parked(&h, &mut c, "launch retry");
     let got = h.dir.join("got.txt");
+    let feed = h.paths.state_dir.join("activity.jsonl");
     let read_got = || std::fs::read_to_string(&got).unwrap_or_default();
+    let typed = || read_got().lines().filter(|l| l.contains(&line)).count();
+    let wake_rows = |c: &mut TestClient| -> Vec<mesimon_core::command::Pending> {
+        pending_of(c, Some(a))
+            .into_iter()
+            .filter(|p| p.action == mesimon_core::command::PendingAction::CrownWake)
+            .collect()
+    };
     hook_send(&hook_sock, &sa.to_string(), "SessionStart", r#"{"source":"resume"}"#);
-    wait_until(std::time::Duration::from_secs(15), "the wake's own paste and Enter", || {
-        read_got().lines().any(|l| l.contains(&line))
-    });
+    wait_until(std::time::Duration::from_secs(15), "the wake's paste and Enter", || typed() == 1);
     wait_until(std::time::Duration::from_secs(5), "told at its paste", || {
         c.board().ticket(w).unwrap().raised.is_none()
     });
-    // No prompt hook comes. A person types into the box.
+    // No prompt hook comes. A person types into the box, and a repeated
+    // Startup/Resume frame arrives.
     let crown = c.board().sessions.iter().find(|s| s.id == sa).unwrap().sid16();
     assert!(tmux(&tmux_sock)
         .args(["send-keys", "-t", &crown, "-l", "half a thought"])
         .status()
         .unwrap()
         .success());
+    hook_send(&hook_sock, &sa.to_string(), "SessionStart", r#"{"source":"resume"}"#);
     std::thread::sleep(std::time::Duration::from_millis(4000));
     assert!(!read_got().contains("half a thought"), "no Enter sent their draft: {}", read_got());
+    // A hand raised meanwhile: news of its own.
+    let ws = c.board().live_agent(w).unwrap().id;
+    match c.send(
+        Principal::Agent { session: ws },
+        Command::AgentRaiseHand { reason: "which key, again?".into() },
+    ) {
+        Response::AgentRaised { .. } => {}
+        other => panic!("raise_hand: {other:?}"),
+    }
+    wait_until(std::time::Duration::from_secs(15), "the paste's entry expired", || {
+        std::fs::read_to_string(&feed).unwrap_or_default().contains("\"paste_unacked\"")
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let rec = c.board().sessions.iter().find(|s| s.id == sa).cloned().unwrap();
+    assert!(rec.unsent.is_none(), "no unsent copy: {:?}", rec.unsent);
+    assert!(!read_got().contains("half a thought"), "their draft never sent");
+    assert_eq!(typed(), 1, "the told wake not owed again, nor typed again");
+    let rows = wake_rows(&mut c);
+    assert_eq!(rows.len(), 1, "the new hand owed: {rows:?}");
+    assert_eq!(rows[0].held.as_deref(), Some("after your draft"), "held on their draft");
+    assert!(c.board().ticket(w).unwrap().raised.is_some(), "the new hand up");
 }
 
 /// T-936, the fifth read (2c): a crown launch abandoned on a dialog (here a

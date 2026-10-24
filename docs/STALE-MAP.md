@@ -33025,3 +33025,21 @@ Tests:
   `crown_e2e::a_detached_draft_holds_a_crown_wake_the_launch_handed_back` (draft typed, client
   gone, `SessionStart` at once: held `after your draft`, nothing typed; their words sent, the box
   empty, the wake typed once; fails on round five's code).
+- **A5 (2). No key after a crown wake's paste, on either outcome.**
+  - **Why the read's two retry paths no longer occur.** Both were on the launch road. After (1)
+    a crown wake is pasted only by the live pane's road. That paste's owed entry
+    (`Owed::pasted`) carries no presses, so a repeated Startup/Resume frame's `arm_owed` presses
+    nothing. A failed live paste returns an error before any owed entry is made (`paste_entered`
+    follows the paste only on `Ok`), so there is no entry to retry, and the wake stays owed under
+    the failed-delivery hold.
+  - **The launch's paste site, guarded anyway.** It now handles a crown wake should a road ever
+    reach it. A paste that went in tells the wake with zero presses and no next press, its prompt
+    waited for one window. One that failed drops the entry and owes the wake again, untold, with
+    no unsent copy and no key.
+  - **Test.** `crown_e2e::no_retry_enter_follows_a_wake_s_own_paste`, on `BOX_STUB`. The wake is
+    pasted and told; a person types a draft and a repeated `SessionStart` arrives, and no Enter
+    sends the draft (round five's code sent it). The paste's entry reaches `paste_unacked` with
+    no unsent copy and nothing typed or owed again for the told wake, while a hand raised
+    meanwhile stays owed, held `after your draft`.
+  - **Not covered by a test.** There is no deterministic failed-paste fixture: tmux's paste does
+    not fail on demand.
