@@ -86,7 +86,9 @@ shell's `-lc` too, with paths and messages that hold nothing a shell expands), a
 allowed once each and listed in the manifest (`approvals`); anything else is left standing
 and listed (`approvals_left`), and a crown kept waiting on one fails.
 
-- `delegate`: the person asks for a small module and its test. It passes only
+- `delegate`: the person asks for a small module and its test, on a ticket of
+  its own by its own agent (T-930: whether to delegate is otherwise the crown's
+  judgement, so the outcome is in the person's words). It passes only
   when the crown's own session files a board ticket from its ticket (the
   ticket's `created_by` and `created_from`, and an agent's `create_ticket` and
   `start_agent` for it in the feed) and starts a Codex worker on it, the one
@@ -216,11 +218,17 @@ with workers on their own tier.
   B the text after it, on the same rig. Each case's sample count is set before
   the first run, three for a case that a cut puts at risk. Every run is
   reported. A regression is a drop of two or more passes out of three. N = 3
-  sees only large effects.
+  sees only large effects. A rig fix made during the runs applies to both
+  arms, which then run again under it: a run kept from before the fix is
+  reported raw and apart, never regraded into the comparison.
 - **Attribution.** One arm with every cut. A case that regresses is bisected
   alone, one cluster of cut sentences restored at a time. No words are added
   back to make a case pass.
 - **Measures.** Each verdict note and the run's table carry what the crown
-  spent: turns, tool calls (and how many came before its first start), tokens
-  (input, cache read, cache write, output), and the bytes of each
-  `start_agent` and `ask_agent` receipt.
+  spent: its model, turns, tool calls (how many failed, and how many came
+  before its first start), tokens (input, cache read, cache write, output),
+  the bytes of every result and of each result that carries the crown's rules
+  wherever they ride, and the bytes of each `start_agent` and `ask_agent`
+  receipt. The worker's model is in the note beside them. A Codex run's
+  manifest carries `models` and `crown_results` (results, bytes, the rules'
+  results, failed scripts) beside its token usage.

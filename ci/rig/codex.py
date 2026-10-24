@@ -41,9 +41,12 @@ CASE_TOKENS = {"delegate": 1000000, "forge": 2000000}
 # delegate case) where Codex's own default (`multi_agent` on) is the competing
 # road the crown could take instead of a board ticket.
 CHILDREN = {"child", "delegate"}
-# The person's one request in the delegate case: concrete work, no tool named.
-DELEGATE_ASK = ("Add a small Python module greet.py with a function greet(name) that returns "
-                "\"Hello, <name>!\", and a unittest for it in test_greet.py.")
+# The person's one request in the delegate case: concrete work, no tool named,
+# and the outcome the person wants said (T-930's review: whether to delegate
+# is otherwise the crown's judgement, so doing it itself is no failure).
+DELEGATE_ASK = ("Have greet.py done on a ticket of its own, by its own agent: a small Python "
+                "module with a function greet(name) that returns \"Hello, <name>!\", and a "
+                "unittest for it in test_greet.py.")
 FORGE_WORKER = "Append the line forge fixture to README.md, then reply done."
 FORGE_ASK = "Please start {key} in its own worktree and look after its pull request. If its CI fails, get it fixed."
 BOARD_TOOLS = ("get_ticket", "list_board", "read_note", "write_note", "create_ticket", "tag_ticket",
@@ -174,6 +177,23 @@ def tool_calls(rows, since=0):
             calls.append(dict(row=index, name=payload.get("name") or payload["type"],
                               text=words if isinstance(words, str) else json.dumps(words)))
     return calls
+
+
+def result_measures(rows):
+    """What the crown's tool results weighed (T-930): every output's bytes,
+    those that carry the crown's rules (CROWN_ROLE's opening words), and the
+    scripts that failed."""
+    outs = []
+    for row in rows:
+        payload = row.get("payload") or {}
+        if payload.get("type") in ("custom_tool_call_output", "function_call_output"):
+            body = payload.get("output")
+            text = body if isinstance(body, str) else " ".join(
+                part.get("text", "") for part in body or [] if isinstance(part, dict))
+            outs.append(text)
+    return dict(results=len(outs), bytes=sum(len(t.encode()) for t in outs),
+                rules_bytes=[len(t.encode()) for t in outs if "wears the board's crown" in t],
+                failed=sum(1 for t in outs if t.startswith("Script failed") or '"isError": true' in t))
 
 
 def board_calls(calls):
@@ -1265,6 +1285,13 @@ def adapter(base):
                                    for row in contexts):
                 raise AssertionError("native turn contexts did not confirm the selected model and effort")
             self.manifest["submitted_user_turns"] = self.calls
+            self.manifest["models"] = sorted({f"{row.get('model')}/{row.get('effort', row.get('reasoning_effort'))}"
+                                              for row in contexts})
+            if self.args.case in CROWN and getattr(self, "crown_sid", None):
+                try:
+                    self.manifest["crown_results"] = result_measures(self.crown_rows(self.snapshot()["board"]))
+                except Exception as error:  # a measure never fails the audit
+                    self.manifest["crown_results"] = dict(error=str(error)[:200])
             self.mark(assertion="actual native turns used the selected model and effort", passed=True)
 
     return Verification

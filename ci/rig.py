@@ -76,7 +76,9 @@ TIER_NAME = "rig"
 # model on one build, and a tier saved with the alias is rewritten to this.
 TIER_MODEL = "claude-sonnet-5-5"
 TIER_EFFORT = "low"
-TIER_DESCRIPTION = "every rig test"
+# The person's words name one tier alone for TR1's one-line edit (T-930's
+# review: "every rig test" fitted it as well as rig-small did).
+TIER_DESCRIPTION = "rig tests that are not a one-line edit"
 # The crown's own tier (T-930): crown text is judged on the crown's real
 # tier, Opus, never on the workers' Sonnet. `--crown-model` and
 # `--crown-effort` change it.
@@ -358,6 +360,11 @@ def row_ms(row):
         return None
 
 
+# A result that carries the crown's rules: `CROWN_ROLE`'s first words, which
+# open `crown_view()` wherever it rides.
+CROWN_RULES_MARK = "wears the board's crown"
+
+
 def crown_measures(rows, since_ms):
     """What the crown spent on a test (T-930), from its transcript since
     `since_ms`: its turns (a prompt that is not a tool result), its tokens
@@ -385,15 +392,24 @@ def crown_measures(rows, since_ms):
     first = next((i for i, n in enumerate(names) if n in ("start_agent", "create_ticket")), None)
     receipts = [len(r["text"].encode()) for (n, r), short in zip(calls, names)
                 if short in ("start_agent", "ask_agent") and r and not r["is_error"]]
+    # Every result, and those that carry the crown's rules wherever they
+    # ride (T-930's review: a first list_board carries them too).
+    results = [r for _, r in calls if r]
+    rules = [len(r["text"].encode()) for r in results if CROWN_RULES_MARK in r["text"]]
     return {"turns": turns, "tokens": tokens, "calls": len(calls),
-            "calls_before_start": first, "receipt_bytes": receipts}
+            "calls_before_start": first, "receipt_bytes": receipts,
+            "result_bytes": sum(len(r["text"].encode()) for r in results),
+            "rules_bytes": rules, "failed": sum(1 for r in results if r["is_error"]),
+            "model": model_of(rows)}
 
 
 def measures_line(m):
     if not m:
         return "no crown transcript"
     t = m["tokens"]
-    return (f"crown: {m['turns']} turns, {m['calls']} tool calls"
+    return (f"crown ({m.get('model')}): {m['turns']} turns, {m['calls']} tool calls, "
+            f"{m.get('failed', 0)} failed, results {m.get('result_bytes', 0)} bytes, rules in "
+            f"{len(m.get('rules_bytes', []))} ({sum(m.get('rules_bytes', []))} bytes)"
             + (f" ({m['calls_before_start']} before its first start)" if m["calls_before_start"] is not None else "")
             + f", tokens in {t['input']} + cache read {t['cache_read']} + cache write {t['cache_write']}"
             f", out {t['output']}"

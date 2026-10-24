@@ -235,6 +235,16 @@ class CrownTests(unittest.TestCase):
         rows.append(said("assistant", "T-2 is done", phase="final_answer"))
         self.assertTrue(rig.answered_after(rows, 4))
 
+    def test_the_crown_s_results_are_weighed_with_the_rules_among_them(self):
+        rows = [{"payload": {"type": "custom_tool_call_output",
+                             "output": [{"type": "input_text", "text": "Script completed\n"},
+                                        {"type": "input_text", "text": "This session wears the board's crown"}]}},
+                {"payload": {"type": "function_call_output", "output": "Script failed: boom"}},
+                {"payload": {"type": "message", "content": []}}]
+        got = rig.result_measures(rows)
+        self.assertEqual((got["results"], got["failed"], len(got["rules_bytes"])), (2, 1, 1))
+        self.assertEqual(got["bytes"], sum(got["rules_bytes"]) + len("Script failed: boom"))
+
     def test_the_rig_allows_the_board_s_tools_and_a_worker_s_git_alone(self):
         own = "/owned/state/worktrees/T-2-greet"
         # Codex 0.163's one-tool approval, as the forge run carried it.

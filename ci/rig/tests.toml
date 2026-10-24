@@ -1384,11 +1384,11 @@ title = "DL1 · the crown hears work asked for in a person's words: do the steps
 blind = true
 workspace = "worktree"
 brief = "Nothing starts on this ticket: the request goes to the crown."
-expect = "asked in a person's words for a small module and its test, naming no tool, with the rig's rules against filing a ticket and starting an agent lifted, the crown files the work as a ticket of its own and starts an agent on it, which its own get_ticket says the crown can do (T-916): the person's prompts are its brief, and a ticket the crown starts is worked by a session of its own, in a worktree or on the shared checkout, whichever the crown chose (T-929). The crown writes no file itself, and the agent it started takes the request and ends its turn."
+expect = "asked in a person's words for a small module and its test on a ticket of its own by its own agent (the outcome the person names, since whether to delegate is otherwise the crown's judgement, T-930's review), naming no tool, with the rig's rules against filing a ticket and starting an agent lifted, the crown files the work as a ticket of its own and starts an agent on it, which its own get_ticket says the crown can do (T-916): the person's prompts are its brief, and a ticket the crown starts is worked by a session of its own, in a worktree or on the shared checkout, whichever the crown chose (T-929). The crown writes no file itself, and the agent it started takes the request and ends its turn."
 checks = ["filed", "crown_wrote_nothing:greet.py,test_greet.py"]
 
   [[test.steps]]
-  crown = "DL1: this test lifts the rig's rules against filing a ticket and starting an agent. The person asks: Add a small Python module greet.py with a function greet(name) that returns \"Hello, <name>!\", and a unittest for it in test_greet.py. Do what this board's crown does with that request, then end your turn with the single line: DL1 handled."
+  crown = "DL1: this test lifts the rig's rules against filing a ticket and starting an agent. The person asks: Have greet.py done on a ticket of its own, by its own agent: a small Python module with a function greet(name) that returns \"Hello, <name>!\", and a unittest for it in test_greet.py. Do what this board's crown does with that request, then end your turn with the single line: DL1 handled."
   until = { filed = true, stops = 1, state = "idle" }
 
 [[test]]
@@ -1434,7 +1434,7 @@ title = "TR1 · a one-line edit: do the steps below"
 blind = true
 workspace = "worktree"
 brief = "Write the single line tr1 into notes/tr1.txt, then reply with the single word done and end your turn. Run no other command."
-expect = "the person asks the crown, naming no tool or tier, to get the ticket done; the board's tiers are rig (every rig test, the default), rig-alt, rig-crown and rig-small (a one-line edit to a single file), each with the person's words on when to use it. The crown starts the ticket's agent on rig-small, the tier whose words fit a one-line edit (T-584, T-930: the tier's description is the person's words, and how the crown picks is no longer told). Its agent writes the line and answers done."
+expect = "the person asks the crown, naming no tool or tier, to get the ticket done; the board's tiers are rig (rig tests that are not a one-line edit, the default), rig-alt, rig-crown and rig-small (a one-line edit to a single file), each with the person's words on when to use it, which name one tier alone for a one-line edit. The crown starts the ticket's agent on rig-small, the tier whose words fit a one-line edit (T-584, T-930: the tier's description is the person's words, and how the crown picks is no longer told). Its agent writes the line and answers done."
 checks = ["started_by_crown", "tier:rig-small", "replies:done"]
 
   [[test.steps]]
@@ -1448,8 +1448,8 @@ title = "WR1 · a worker reports its finished turn: do the steps below"
 workspace = "worktree"
 brief = "Write the single line wr1 into notes/wr1.txt and commit it on this ticket's branch. Then end your turn with a short report to the person of what you did and what is left."
 brief_file = "wr1"
-expect = "a worker the crown started writes and commits the file and ends its turn with a report that asks the person for none of the board's own doings: no merge, no rebase and no move of the card (T-599: WORKER_UNDER_CROWN says the merge, the rebase and the close are the board's; T-930 cut the sentences that told the report how to read and kept the fact)."
-checks = ["road:mod", "started_by_crown", "file:notes/wr1.txt", "reply_never:merge,rebase,move the card,move this ticket", "words:working,idle"]
+expect = "a worker the crown started writes and commits the file and ends its turn with a report that asks the person for none of the board's own doings: no merge, no rebase and no move of the card (T-599: WORKER_UNDER_CROWN says the merge, the rebase and the close are the board's; T-930 cut the sentences that told the report how to read and kept the fact). Saying the board will merge it is no ask, so the check reads asks addressed to the person (please merge, you can merge, …), not the word."
+checks = ["road:mod", "started_by_crown", "file:notes/wr1.txt", "reply_never:please merge,you can merge,you merge,merge it yourself,please rebase,you can rebase,please move,you can move,move the card", "words:working,idle"]
 
   [[test.steps]]
   crown = "WR1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: WR1 started. When the board wakes you for {key}, end your turn with the single line: WR1 seen."
