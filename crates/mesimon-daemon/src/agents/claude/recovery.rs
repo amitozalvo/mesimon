@@ -331,6 +331,9 @@ impl ClaudeRecovery {
         // The restart's seed has one proof before the hint (T-663): the
         // turn the last daemon left open closed on the tail after it did.
         let mut closed = None;
+        // The stamp of the abort a seed reads, for the same fence a live
+        // read's abort meets (round 3).
+        let mut backfill_at = None;
         let backfill = if unknown && !self.rested {
             self.rested = true;
             if turn_closed_in_the_gap(record, &path) {
@@ -342,14 +345,17 @@ impl ClaudeRecovery {
                 // a restart seeded `Idle` here, and the crown was told the
                 // turn had finished. The record stays `Unknown` until a
                 // hook or the next line says.
-                resting_hint(&path, now)
-                    .filter(|h| *h != TailHint::StaleQuiet || !self.claude_busy(record, now))
+                let hint = resting_hint(&path, now)
+                    .filter(|h| *h != TailHint::StaleQuiet || !self.claude_busy(record, now));
+                if hint == Some(TailHint::AbortedMidStream) {
+                    backfill_at = tail::aborted_since(&path, 0);
+                }
+                hint
             }
         } else if fresh && abort_only {
-            record
-                .state_changed_at
-                .filter(|since| tail::aborted_since(&path, *since))
-                .map(|_| TailHint::AbortedMidStream)
+            backfill_at =
+                record.state_changed_at.and_then(|since| tail::aborted_since(&path, since));
+            backfill_at.map(|_| TailHint::AbortedMidStream)
         } else {
             None
         };
@@ -437,7 +443,7 @@ impl ClaudeRecovery {
         // dialog that stands again; an interrupt right after it is the Esc
         // that stopped the turn.
         let mut answered = None;
-        let mut aborted_at = None;
+        let mut aborted_at = backfill_at;
         for line in &lines {
             let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { continue };
             let stamp = mesimon_core::adopt::record_ms(&value);
@@ -1163,11 +1169,16 @@ mod recovery_tests {
             history.append(call("plan7", "ExitPlanMode"));
             history.append(result("plan7", true, text, 12));
             if esc {
-                history.append(abort());
+                let mut stamped = abort();
+                stamped["timestamp"] = serde_json::json!(at(13));
+                history.append(stamped);
             }
             let mut recovery = fresh(&mut record, &history, 10);
             let seen = recovery.poll(&record, RecoverySample::Transcript, 20_000);
             assert!(ended(&seen, "plan7", esc), "{seen:?}");
+            // Round 3: the first read's Esc, its end and the abort hint it
+            // seeds, carry their stamps for the daemon's prompt fence.
+            assert!(!esc || seen.iter().all(|o| o.at.is_some()), "{seen:?}");
             assert!(stays(&recovery.poll(&record, RecoverySample::Transcript, 22_000)), "once");
             if !esc {
                 // The interrupt after it, a read later, is still its Esc.

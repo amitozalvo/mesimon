@@ -1002,10 +1002,13 @@ pub struct Daemon {
     /// and gone at the next state edge (`apply_change`). In memory: a
     /// restart's first edge would clear it anyway.
     crown_answer_lines: HashMap<uuid::Uuid, String>,
-    /// When each seat's last `UserPromptSubmit` was heard (T-957 round 2):
-    /// an interrupt the tail reads, stamped before it, ended an earlier
-    /// turn and is dropped. In memory: a restart's records hear their next.
-    prompted_at: HashMap<uuid::Uuid, u64>,
+    /// Each seat's last `UserPromptSubmit` (T-957 round 2): its words and
+    /// when the writer heard it. An interrupt the tail reads that is older
+    /// than the prompt ended an earlier turn and is dropped; the prompt's
+    /// time is its own transcript line's (round 3), the hearing only while
+    /// that line is not written yet. In memory: a prompt already written is
+    /// a fence without it.
+    prompted: HashMap<uuid::Uuid, (Option<String>, u64)>,
     /// The machine's agent tiers (T-443), `tiers.toml` as last read — the
     /// layer under `board.tiers`, re-read when another board changes it.
     machine_tiers: tiers::MachineTierCache,
@@ -1550,7 +1553,7 @@ pub fn run(paths: Paths) -> Result<()> {
         crown_plans: HashMap::new(),
         plan_waits: None,
         crown_answer_lines: HashMap::new(),
-        prompted_at: HashMap::new(),
+        prompted: HashMap::new(),
         machine_tiers: tiers::MachineTierCache::new(crate::paths::machine_tiers_file().ok()),
         usage: crate::usage::UsageState::new(crate::usage::shared_file()),
         tier_set_at: HashMap::new(),
@@ -3647,6 +3650,26 @@ impl Daemon {
         changed
     }
 
+    /// Whether the seat's last prompt came after `at`, a transcript stamp
+    /// (T-957 rounds 2 and 3). The prompt's time is its own line's, never
+    /// when the writer heard its hook: `mesimon hook` does not wait for the
+    /// writer, so a busy writer hears a prompt late, after the dialog and
+    /// the Esc that followed it. Only a prompt whose line is not written yet
+    /// is dated by its hearing, which is then after every line on the file.
+    fn prompted_after(&self, id: uuid::Uuid, at: u64) -> bool {
+        let Some((words, heard)) = self.prompted.get(&id) else { return false };
+        let path = self
+            .board
+            .sessions
+            .iter()
+            .find(|s| s.id == id)
+            .and_then(|s| s.transcript_path.as_deref());
+        let written = words.as_deref().zip(path).and_then(|(words, path)| {
+            crate::agents::claude::tail::prompt_written_at(std::path::Path::new(path), words)
+        });
+        written.unwrap_or(*heard) > at
+    }
+
     /// One sample into a record's recovery adapter, and each observation it
     /// makes into the machine, authorized as `agent_recovery`.
     fn feed_recovery(&mut self, id: uuid::Uuid, sample: RecoverySample, now: u64) -> bool {
@@ -3677,7 +3700,9 @@ impl Daemon {
             // An interrupt older than the seat's last prompt ended the turn
             // before it (round 2): the person Esc'd and spoke again at once,
             // and the prompt's hook beat the tail's read.
-            if observation.at.is_some_and(|at| self.prompted_at.get(&id).is_some_and(|p| *p > at)) {
+            if observation.at.is_some_and(|at| self.prompted_after(id, at)) {
+                let ticket = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket);
+                self.feed.board("automation", "tail_interrupt_before_prompt", ticket);
                 continue;
             }
             if let Some(change) =
@@ -5169,8 +5194,9 @@ impl Daemon {
             }
             if matches!(sig, Signal::UserPromptSubmit) {
                 let board = &self.board;
-                self.prompted_at.retain(|s, _| board.sessions.iter().any(|r| r.id == *s));
-                self.prompted_at.insert(id, now);
+                self.prompted.retain(|s, _| board.sessions.iter().any(|r| r.id == *s));
+                let words = frame.payload["prompt"].as_str().map(mesimon_core::adopt::prompt_words);
+                self.prompted.insert(id, (words, now));
                 if let Some(t) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket) {
                     self.moves.asked_by_hand(t);
                     // Our own paste's ack — the owed Enter paid, by us or by

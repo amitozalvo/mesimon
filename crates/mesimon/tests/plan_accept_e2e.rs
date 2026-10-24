@@ -537,8 +537,14 @@ impl Bed {
 
 /// Now, as Claude Code stamps a transcript record.
 fn now_iso() -> String {
+    iso_ago(0)
+}
+
+/// `ms` milliseconds before now, as Claude Code stamps a transcript record.
+fn iso_ago(ago: u64) -> String {
     let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
-        as u64;
+        as u64
+        - ago;
     let (secs, milli) = (ms / 1000, ms % 1000);
     let days = (secs / 86_400) as i64;
     let rem = secs % 86_400;
@@ -947,4 +953,112 @@ fn an_esc_then_a_prompt_at_once_leaves_the_new_turn_running() {
         esc(&b, "toolu_alone");
         b.c.await_state(b.sid, "interrupted by the Esc alone", |s| *s == interrupted);
     }
+}
+
+/// T-957 round 3: an Esc and the next prompt before a fresh cursor's first
+/// read. A seat that rested has no cursor; it stops on a plan, the person
+/// Escs it and submits a new prompt at once, and the daemon hears the
+/// prompt (a pending `Running`) while the file ends at the old interrupt,
+/// the new prompt's line not landed yet. The first read seeds the abort
+/// from history and looks the closed plan up: neither the High end nor the
+/// Low hint may reach the machine, and the new turn stays `Running`. The
+/// poll's phase is not the test's to set, so a case repeats, staggered,
+/// until the feed shows the fence took the old interrupt.
+#[test]
+fn an_esc_and_a_prompt_before_a_fresh_cursor_s_first_read_leave_the_new_turn_running() {
+    let fenced = |b: &Bed| {
+        std::fs::read_to_string(b.h.paths.state_dir.join("activity.jsonl"))
+            .unwrap_or_default()
+            .matches("\"cmd\":\"tail_interrupt_before_prompt\"")
+            .count()
+    };
+    let mut met = false;
+    // A seat of its own each try, so the flap pin is off at the first read,
+    // as it is after a restart: the pin would drop the Low hint whatever
+    // the fence did.
+    for n in 0..8u64 {
+        let Some(mut b) = Bed::boot(&format!("planfresh{n}")) else { return };
+        b.start();
+        b.hook("Stop", r#"{"stop_hook_active":false}"#);
+        b.c.await_state(b.sid, "at rest", |s| matches!(s, SessionState::Idle { .. }));
+        // A tail poll at rest forgets the cursor; then the phase stagger.
+        std::thread::sleep(Duration::from_millis(2200 + n * 700 % 2000));
+        b.call("ExitPlanMode", "toolu_f");
+        b.stop_on("ExitPlanMode", "toolu_f");
+        b.result(
+            "toolu_f",
+            true,
+            "The user doesn't want to proceed with this tool use. STOP what you are doing.",
+        );
+        b.append(serde_json::json!({"uuid": "abort-f", "type": "user",
+            "timestamp": now_iso(), "message": {"content": [{"type": "text",
+                "text": "[Request interrupted by user for tool use]"}]}}));
+        b.hook("UserPromptSubmit", r#"{"prompt":"again"}"#);
+        std::thread::sleep(Duration::from_millis(2500));
+        b.append(serde_json::json!({"uuid": "next-f", "type": "user",
+            "timestamp": now_iso(), "message": {"content": "again"}}));
+        std::thread::sleep(Duration::from_millis(2500));
+        let pinned = b.decisions().iter().any(|d| {
+            d["source"] == "PreToolUse"
+                && d["decision"]["after"]["pinned_until"]
+                    .as_u64()
+                    .is_some_and(|until| until > d["at_ms"].as_u64().unwrap())
+        });
+        assert!(!pinned, "the pin is off at the plan, try {n}");
+        assert_eq!(
+            b.state(),
+            Some(SessionState::Running),
+            "the new turn, try {n}: {:?}",
+            b.decisions().iter().rev().take(4).collect::<Vec<_>>()
+        );
+        if fenced(&b) > 0 {
+            met = true;
+            break;
+        }
+    }
+    assert!(met, "no first read met the heard prompt in eight tries");
+}
+
+/// T-957 round 3: a prompt heard late is still dated by its own line. The
+/// writer was busy: the prompt, the plan's call, its result and the Esc's
+/// interrupt are on the file (stamped seconds ago) before the prompt's and
+/// the plan's hooks are consumed, and no prompt comes after. The Esc is
+/// this turn's: the seat rests interrupted, never held on the plan.
+#[test]
+fn a_prompt_heard_late_keeps_its_own_turn_s_esc() {
+    let Some(mut b) = Bed::boot("planlate") else { return };
+    b.start();
+    // A tail read while running mints the cursor these lines are read by.
+    std::thread::sleep(Duration::from_millis(2500));
+    b.hook("UserPromptSubmit", r#"{"prompt":"Plan it."}"#);
+    b.stop_on("ExitPlanMode", "toolu_late");
+    let line = |v: serde_json::Value, ago: u64| {
+        let mut v = v;
+        v["timestamp"] = serde_json::json!(iso_ago(ago));
+        b.append(v);
+    };
+    line(
+        serde_json::json!({"uuid": "late-p", "type": "user", "message": {"content": "Plan it."}}),
+        3000,
+    );
+    line(
+        serde_json::json!({"uuid": "late-c", "type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": "toolu_late", "name": "ExitPlanMode",
+            "input": {"plan": "# Plan"}}]}}),
+        2900,
+    );
+    line(
+        serde_json::json!({"uuid": "late-r", "type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "toolu_late", "is_error": true,
+            "content": "The user doesn't want to proceed with this tool use. STOP what you are doing."}]}}),
+        2800,
+    );
+    line(
+        serde_json::json!({"uuid": "late-a", "type": "user", "message": {"content": [
+        {"type": "text", "text": "[Request interrupted by user for tool use]"}]}}),
+        2790,
+    );
+    b.c.await_state(b.sid, "interrupted by its own turn's Esc", |s| {
+        *s == SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Interrupted }
+    });
 }

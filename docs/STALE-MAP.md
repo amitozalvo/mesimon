@@ -34067,6 +34067,24 @@ ended:
   it.
 - An Esc with no prompt after it still ends `Interrupted`. A non-interrupted end is not fenced
   this way: it moves to `Running`, which a new turn is.
+**Round 3 (the third read of `3fb3ec53`).** Round 2's stamp check had two gaps:
+- **The first read's seed lost its stamp.** `aborted_since` reduced a fresh cursor's dated abort
+  to a bare `AbortedMidStream`, so a seat whose next prompt was heard before the first read
+  (after a restart, or a rest) had its pending `Running` replaced by the unstamped Low
+  `Interrupted`, with no pin after a restart to refuse it. `aborted_since` now returns the
+  abort's stamp, and the seed's hint carries it, the resting history's abort included.
+- **The check compared the writer's receipt time with the engine's stamps.** `mesimon hook`
+  writes once and does not wait for the writer, so a busy writer hears a prompt after the dialog
+  and the Esc that followed it, and dropped that turn's own Esc. The hook frame carries no stamp
+  of its own, so the prompt's time is now its own transcript line (`tail::prompt_written_at`,
+  matched by `adopt::prompt_words` of the hook's `prompt`). The hearing (`Daemon::prompted`)
+  dates it only while that line is not written yet, which keeps the hook-before-its-line case
+  fenced.
+
+A drop is now a feed line, `tail_interrupt_before_prompt`. The limit: two identical prompts in a
+row, the second's line not yet written at the read, date the second by the first's line, and its
+turn's stale interrupt can pass.
+
 - `a_stop_heard_before_the_dialog_s_result_is_read_keeps_its_turn_end` failed eight tries in a
   row on round 2's runs with no fault in the code. A try lasts about 6.2 s, nearly three tail
   polls, so every try met the poll at the same phase, and round 1's passes were luck. The tries
@@ -34127,6 +34145,14 @@ ended:
   - `a_refusal_in_a_restart_s_window_is_read_when_the_cursor_starts`: a plan refused with words
     and a question Esc'd while no daemon ran are read on the new daemon's first look (`Running`,
     `Idle{Interrupted}`). It fails without the look back.
+  - `an_esc_and_a_prompt_before_a_fresh_cursor_s_first_read_leave_the_new_turn_running` (round
+    3): a seat at rest stops on a plan, the person Escs and speaks, and the prompt is heard while
+    the file ends at the old interrupt. The first read's seed and look back reach the machine
+    neither High nor Low, and the turn stays `Running`, unpinned (a fresh seat each try), until
+    the feed shows the fence took it. It fails without the seed's stamp (`Interrupted`).
+  - `a_prompt_heard_late_keeps_its_own_turn_s_esc` (round 3): the prompt, the call, its result and
+    the interrupt are on the file before the prompt's and the plan's hooks are consumed; the
+    seat rests `Interrupted`. With the receipt time as the prompt's it stays on the plan.
   - `an_esc_then_a_prompt_at_once_leaves_the_new_turn_running`: an Esc then a prompt, unpinned
     and pinned (asserted), with the prompt's line in the interrupt's read and with its hook first
     and its line 2.5 s later. Each new turn reads `Running` past the settle and two tail reads,
