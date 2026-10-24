@@ -500,6 +500,23 @@ def approval_decision(request, role, worktree):
     return False, f"{what}: {words[:200]}"
 
 
+def worker_push(request):
+    """A worker's `git push` approval, inside a login shell's `-lc` or not
+    (T-930): the fixture's remote is never reached, so the person at the
+    desk declines it, which ends the worker's turn as a refusal does."""
+    command = str(request.get("command") or "").strip()
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    if len(words) == 3 and words[0] in ("/bin/zsh", "/bin/bash", "/bin/sh") and words[1] == "-lc":
+        try:
+            words = shlex.split(words[2])
+        except ValueError:
+            return False
+    return request.get("what") == "command" and words[:2] == ["git", "push"]
+
+
 def dialog_allows(screen):
     """The native approval dialog is drawn with its allow-once row under the
     cursor (`› 1. Allow`, `› 1. Yes, …`). Anything else, a remembering row
@@ -809,6 +826,12 @@ def adapter(base):
                                  or Path(worktree).resolve() == self.repo.resolve()):
                 worktree = None
             allow, what = approval_decision(request, role, worktree)
+            if not allow and role == "worker" and worker_push(request) and dialog_allows(screen):
+                self.tm("send-keys", "-t", sid.replace("-", "")[:16], "Escape")
+                self.answered[key] = what
+                self.manifest.setdefault("declined", []).append(dict(session=sid, role=role, request=what))
+                self.mark(action="person_declines_worker_push", session=sid, request=what)
+                return
             if not allow:
                 if key not in self.left:
                     self.left[key] = time.monotonic()

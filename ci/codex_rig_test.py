@@ -235,6 +235,14 @@ class CrownTests(unittest.TestCase):
         rows.append(said("assistant", "T-2 is done", phase="final_answer"))
         self.assertTrue(rig.answered_after(rows, 4))
 
+    def test_a_worker_s_push_is_declined_and_nothing_else_is(self):
+        push = lambda c: {"what": "command", "command": c}  # noqa: E731
+        for command in ("git push -u origin msmn/T-1-x", "/bin/zsh -lc 'git push -u origin msmn/T-1-x'"):
+            self.assertTrue(rig.worker_push(push(command)), command)
+        for command in ("git commit -m push", "/bin/zsh -lc 'git status'", "gh pr create", "git pushx"):
+            self.assertFalse(rig.worker_push(push(command)), command)
+        self.assertFalse(rig.worker_push({"what": "mcp_tool", "command": "git push"}))
+
     def test_the_crown_s_results_are_weighed_with_the_rules_among_them(self):
         rows = [{"payload": {"type": "custom_tool_call_output",
                              "output": [{"type": "input_text", "text": "Script completed\n"},

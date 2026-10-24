@@ -83,7 +83,9 @@ a board tool, and a worker's plain `git` in its own folder (its worktree, or
 the checkout for a worker on the shared checkout; plain shapes joined by `&&`,
 as Sol writes `git add`, `git commit` and `git status`, count as one, inside a login
 shell's `-lc` too, with paths and messages that hold nothing a shell expands), are
-allowed once each and listed in the manifest (`approvals`); anything else is left standing
+allowed once each and listed in the manifest (`approvals`); a worker's `git push`
+is declined with the dialog's own Esc, since the fixture's remote is never reached,
+and listed (`declined`, T-930: Sol's forge worker pushes to open its PR); anything else is left standing
 and listed (`approvals_left`), and a crown kept waiting on one fails.
 
 - `delegate`: the person asks for a small module and its test, on a ticket of
