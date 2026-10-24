@@ -32079,3 +32079,119 @@ icons, the badges and the labels' lines keep the same boxes across every choice.
 `test-results/<engine>-phone-tabs-<graphite|chalk>.png`.
 
 Phones get it with the next release: the relay serves `web/mesophon` as it ships.
+
+## The crown is told what the board does, once per crowning, and never how to work (T-930, 2026-10-24, "Crown text says what the board does, never how the crown should work")
+
+**The rule, the person's** (2026-10-23): "make sure we don't tell the crown how to do stuff,
+leave that to the user, mesimon harness should be the minimal that will produce the maximum value
+for the users in most situations". Text an agent or the crown is told states what the board does
+and what is the person's, never how to work; CLAUDE.md and AGENTS.md carry it as one line. Every
+sentence of `CROWN_WAKES`, `CROWN_ROLE`, `crown_tiers!`, the three `persons_*!` clauses, the
+crown tools' descriptions and `WORKER_UNDER_CROWN` was classed mechanics, boundary or method.
+Method went, in clusters measured apart:
+- **C1, tiers:** how to pick one went; the fallbacks and "each tier's description is the
+  person's words on when to use it" stay.
+- **C2, a hand's form:** "naming the worker and the X, puts one card", "before the turn ends,
+  in one line", in the clauses, `answer_agent`, `accept_plan` and three daemon refusals. The
+  road stays as a fact: raise_hand on the crown's own ticket lights its card and counts in the
+  attention; the person reads the cards, not the pane.
+- **C3, the role's steer:** "For work the person asks for…" and "the board's own work … is the
+  crown's, done here". What `create_ticket` and `start_agent` do stays.
+- **C4, the worker's report:** how it reads, and "a finished turn leaves no background task" as
+  an order; the facts stay.
+- **C5, rewordings:** "what comes next is the crown's to decide", the review workflow around
+  hold, "the park and the move are the crown's to do", "the crown decides each workspace", "the
+  crown answers by default", "asked to wait…, the crown watches", the other board's repository.
+- **C6, the receipts (the person's addition):** `CROWN_WAKES` (11 KB) rode every `start_agent`
+  and `ask_agent` receipt. Now `crown_view()` rides beside a crowned session's reply as it is
+  emitted, the deferred `answer_agent` and `accept_plan` receipts included
+  (`Response::CrownRules`, a second text block), until a reply carrying it has been written to
+  that session's connection (`Msg::CrownTold`, under the reset count it was sent with). A
+  crowning or uncrowning, a compaction at either edge of its window however it closes, a
+  `SessionStart` other than `resume`, a Codex seat's new thread or `contextCompaction` (the
+  snapshot's `compactions`), and a daemon start all forget it. The receipts name where it is
+  read (`CROWN_RULES_AT`); the crown's own `get_ticket` carries it always. Nothing is promised
+  from the record: a written line is not a read one.
+- **C7, one statement per fact (the person's addition):** the forge cadence lives in
+  `PRS_ABOUT` alone, which now rides any ticket with a pull request; what a tool's description
+  already says left `CROWN_WAKES`.
+
+`CROWN_WAKES` went from 11,080 characters to 7,660, `CROWN_ROLE` from 727 to 481 and
+`WORKER_UNDER_CROWN` from 890 to 500.
+
+**T-940's review (Codex Astra), fixed before the measured runs.**
+- The rules were marked told while wrapping a reply the writer then discarded (deferred answers).
+- Codex had no resets.
+- A compaction reset was consumed inside its own window.
+- A send attempt was taken for retention.
+- "The way to wait … is to end the turn" was method: now "a busy session holds the merge train
+  and its own wake".
+- "Only once watched" was false since T-927: a hold subscribes too.
+- `deliver now` claimed a next step that T-934 did not measure.
+- `prs_about` was missing where `CROWN_WAKES` pointed.
+
+**How a cut was judged (`ci/rig/README.md`, "Judging crown text").**
+- The crown runs on its real tier: the Claude rig's `rig-crown` is Opus 5.5 at high effort,
+  workers stay on Sonnet; Codex is `gpt-6-sol` at medium.
+- Judgement cases are `blind`: the crown's brief, card and title carry nothing of `expect`, and
+  the brief's scripting rules are lifted in them.
+- Every sample starts a fresh crown.
+- Arm A is the old text and daemon, run from a scratch worktree of the rebased base. Arm B is
+  the branch. Both share one rig, CLAUDE.md and AGENTS.md.
+- A rig fix made mid-run applied to both arms, and every sample it spoiled is kept raw and
+  replaced, never regraded.
+
+**Results** (2026-10-24, raw runs in the ticket's note "Rerun on the corrected rig"):
+
+| case | A (old text) | B (cuts) |
+|---|---|---|
+| U1, X3, F2, N1, HT1, W1, TR1 | 3/3 each | 3/3 each |
+| DL1 (valid samples) | 3/3 | 3/3 |
+| F7, F9, F12, M1, X1, RH1, WR1, D5 | 1/1 each | 1/1 each |
+| F3 | 0/1 | 0/1 |
+| L2 | 0/1 | 0/1 |
+| L1 (N=3, the arms differed at N=1) | 1/3 | 3/3 |
+| Codex delegate (valid) | 3/3 | 3/3 |
+| Codex forge (final rule) | 3/3 | 3/3 |
+
+- **No case regresses in B by the plan's rule, so no bisect was owed.**
+- **L1** is the one difference, B's way. Arm A's crown parked its worker with `sleep_agent` and
+  moved it to DONE the moment its first turn ended, so the usage limit came to a parked worker
+  and never woke the crown. Its text said "the park and the move are the crown's to do".
+- **F3 fails in both arms the same way.** The check wants a `merge_ticket` call, and the crown,
+  reading that the forge merges the PR, raised a hand or asked its worker instead.
+- **L2 fails in both arms the same way.** A blind crown carries the worker on at the limit's
+  wake, before the person's step, then sends again on the step.
+
+**The rig's own defects, found by these runs and fixed for both arms:**
+- `git merge-base` read as a write.
+- A Codex approval known by its id alone: the worker's request `0` was taken for the crown's
+  answered one, and every forge commit approval stood.
+- The approver could not see inside `/bin/zsh -lc`, `&&` chains or `git diff --check`, which led
+  to the zsh-expansion allowlist (a security finding).
+- A worker's push or `gh` was left standing; the person at the desk now declines with the
+  dialog's Esc.
+- The interrupted turn after that decline wakes no crown.
+- My own copies of `ci/rig/codex.py` into a checkout, made while a DL1 sample ran, read as the
+  crown's writes twice. Never touch a checkout while a Claude sample runs.
+
+**Measured.**
+- **Receipts:** median 11,434 bytes in A, 458 in B.
+- **Rule-bearing results per case:** about 12.3 KB in A, about 15.6 KB in B, because B's first
+  call and the crown's own `get_ticket` both carry the rules.
+- **All results per case:** median 20.6 KB in A, 18.9 KB in B.
+- **What this means:** the rig's cases make about one start or ask each, so they show little of
+  the saving, which grows with every further receipt in a long crown session.
+- **Failed tool calls:** 11 in A, 12 in B over the arms.
+- **Crown cost on the board's price table:** A $14.13, B $14.75.
+
+**Limits.**
+- N = 3 sees only large effects.
+- The Codex compaction counter has a unit test, not an e2e.
+- No e2e drops a connection mid-reply.
+- Quota is account-wide, so it bounds the spend from above.
+- **Spend, as quota, 13:26 to 15:24.** Claude's weekly window went from 4% to 17% (the 5-hour
+  window reached 37%). Codex's weekly went from 3% to 10% (read at 15:13). Both cover every
+  session on those accounts in that span, the author's other boards included. On the price
+  tables: Opus crowns $28.88 over both arms; Codex Sol about 9.5M observed tokens, about 90%
+  cached, roughly $4–5 at third-party list prices.
