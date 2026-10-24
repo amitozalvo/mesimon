@@ -275,6 +275,8 @@ mod tests {
             person_came: true,
             frame: Some("01SUBMIT".into()),
             pane: Some("123:%4".into()),
+            expires_ms: Some(9),
+            parked: false,
         });
         let text = serde_json::to_string_pretty(&ledger).unwrap();
         let back = parse(&text).unwrap();

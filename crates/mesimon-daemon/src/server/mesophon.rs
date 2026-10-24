@@ -2576,7 +2576,7 @@ impl Daemon {
             .filter(|s| matches!(s.state, SessionState::Sleeping))
             .map(|s| s.id);
         let answer = match (asleep, words) {
-            (Some(_), Some(text)) => self.prompt_sleeping(id, text, false),
+            (Some(_), Some(text)) => self.prompt_sleeping(id, text, false, super::Ack::PROMPT),
             (Some(sid), None) => self.resume_session_in(sid, false, false),
             (None, words) => {
                 let kind = self.tier_book().start_provider(id).session_kind();

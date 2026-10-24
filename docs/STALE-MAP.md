@@ -32864,3 +32864,50 @@ delivers it once, settling both; `a_mod_road_crown_s_refused_wake_is_never_paste
 `a_crown_wake_refused_while_unknown_is_owed_until_it_goes` (a prompt into the crown while the submit
 is out tells nothing, then a restart mid-turn, `Unknown`, and the refusal lands; the hand stays up
 until the next delivery, `after a restart`). All four fail with the submit told at its dispatch.
+
+**Third read: the submitted wake's edges, bounded (item 6, A1–A6).**
+- **A1. The fence needs a live pane.** `submitted_wake` matches only a seat that has a pane, since a
+  killed record keeps its `pane_key`. A retired attempt never settles a replacement.
+- **A2. An `entered` is resolved to its owner before any effect** (`SubmitOwner`): the crown's
+  submitted wake (told, and the feed says `crown_wake_delivered` on this receipt), the delivery
+  an owed entry holds with that frame on a live seat (its seat's unsent words went in), or no one
+  (journalled `entered, no owner`). Unsent words are cleared only for the delivery that owns
+  them. T-938's crown ask joins as a fourth owner at its rebase, resolved the same way, never read
+  off whether an ask's state changed.
+- **A3. No delivery is read off a prompt.** While a submitted wake waits for its frame, a prompt
+  that acks its owed entry says nothing in the feed; the frame's own receipt says it.
+- **A4. The wait is bounded.** The attempt carries its window (`Entering::expires_ms`, the owed
+  entry's ten seconds), where no prompt can erase it. Past it the attempt is retired
+  (`retire_submitted_wake`) and its wakes are owed again with the hands as they were. An untaken
+  frame leaves the mod's outbox with no copy kept as unsent words (`crown_wake_unreceived`); a
+  taken one is `crown_wake_unconfirmed`, never a made-up `entered` or refusal. Any later report
+  for the retired frame belongs to no one, so it settles nothing newer.
+- **A5. A wake that brings the crown up first is told at its delivery edge.** A parked crown's
+  wake (`QueuedSeat::Wake`), or a Claude relaunch onto its tier, parks the words on the launch with
+  `Ack::CROWN_WAKE`, threaded through `wake_with`, `relaunch` and a rebuild's `PendingResume`. The
+  drain's final arm no longer tells it: `Spawned` and `Provisioning` hold it as a parked attempt.
+  It is told at the launch's own receipt on the paste road, or bound to its frame once the words
+  go down the mod, and settled there.
+  - A failed delivery keeps the wake owed and goes again once its seat moves, never every tick
+    (`crown_wake_failed_on`).
+  - At a restart a parked attempt is owed again, and a submitted attempt whose seat keeps the same
+    live pane is kept for one more window. Either way, the unsent copy of its words that the last
+    daemon left on the seat is cleared.
+  - A Codex crown's launch keeps its own input road and is told at the drain, as before.
+- **A6. One specimen per claim.** The restart case keeps the attempt, and that frame's refusal
+  lands matched while the crown reads `Unknown`; the late reports of retired frames are A4's.
+
+Tests:
+- `crown_e2e::a_crown_wake_refused_while_unknown_is_owed_until_it_goes`, rewritten. The submit is
+  out and taken; a prompt into the crown tells nothing and writes no `crown_wake_delivered`. A
+  restart mid-turn keeps the attempt, and that frame's refusal, correlated in the journal, lands
+  while the crown reads `Unknown`. The hand stays up and the wake owed, then one typed delivery
+  says `after a restart`. Under the old restart rule the refusal matched nothing.
+- `a_crown_wake_nobody_answers_is_retired_and_goes_again`. Never taken (the crown's bridge
+  stopped), then taken and never answered, each past ten seconds with a second worker's hand
+  behind it. Each attempt is retired with both hands up, the next attempt carries both wakes,
+  and the held frame's late `entered` is `no owner`. It fails with the window off.
+- `a_wake_parked_on_a_crown_s_launch_outlives_two_restarts`. A parked crown is woken for a hand,
+  with two restarts before the words are taken. The hand stays up and the wake owed throughout,
+  no unsent copy is kept, and one delivery confirmed by its prompt settles it. It fails with the
+  final arm telling a launch.

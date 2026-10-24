@@ -426,6 +426,15 @@ pub(super) struct Entering {
     pub(super) frame: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) pane: Option<String>,
+    /// When a submitted wake's frame stops being waited for (T-936): the
+    /// window its owed entry had, kept here, where no prompt erases it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) expires_ms: Option<u64>,
+    /// Parked on a crown seat a wake or a relaunch is bringing up (T-936):
+    /// told at its delivery edge, the launch's own receipt, or once its
+    /// words go down the mod as a frame (`frame` then).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) parked: bool,
 }
 
 /// A worker idle with background tasks (T-599): how many, and for how long

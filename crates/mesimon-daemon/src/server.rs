@@ -315,6 +315,9 @@ struct PendingResume {
     brief: bool,
     /// Wake in plan mode (T-434), carried across the rebuild.
     plan: bool,
+    /// The receipt `prompt` is owed (T-936): a person's, or the crown's
+    /// wake, which is told only at it.
+    ack: Ack,
 }
 
 /// What `refresh_panes` moved: a record's title, which persists, and a
@@ -926,6 +929,10 @@ pub struct Daemon {
     /// Crown seats whose mod refused the wake's `submit` (T-936): their next
     /// wake is typed, until a prompt goes in.
     crown_submit_refused: std::collections::HashSet<uuid::Uuid>,
+    /// A crown wake whose delivery failed (T-936): the seat it failed on and
+    /// that seat's state's moment. The wake stays owed and is tried again
+    /// once that seat moves, never every tick.
+    crown_wake_failed_on: Option<(uuid::Uuid, Option<u64>)>,
     /// A Claude seat's failed turn, by when the board saw it fail (T-936):
     /// what a refined reason names, while the seat stays failed.
     failing: HashMap<uuid::Uuid, String>,
@@ -1515,6 +1522,7 @@ pub fn run(paths: Paths) -> Result<()> {
         turns_open: Default::default(),
         failing: HashMap::new(),
         crown_submit_refused: Default::default(),
+        crown_wake_failed_on: None,
         lingered: Default::default(),
         tasks_since: HashMap::new(),
         held: crate::movegate::HeldMoves::default(),
@@ -1994,6 +2002,14 @@ impl Daemon {
 /// `UserPromptSubmit` is given up on (a modal in the pane, a box that is
 /// not reading).
 const INFLIGHT_MS: u64 = 10_000;
+
+/// Whose a mod's `entered` is (T-936), resolved before its effects: the
+/// crown's submitted wake, the delivery an owed entry holds, or no one.
+enum SubmitOwner {
+    Wake,
+    Delivery,
+    Nobody,
+}
 
 /// A spawn parked behind worktree provisioning, replayed by `on_provisioned`.
 struct PendingSpawn {
@@ -5469,7 +5485,7 @@ impl Daemon {
         let brief = Parked { text: String::new(), brief: true, title: true };
         match seat {
             QueuedSeat::Pane(id) if plan || self.tier_owed(id) => {
-                self.relaunch_with(ticket, id, Some(brief), plan, "local")
+                self.relaunch_with(ticket, id, Some(brief), plan, "local", Ack::PROMPT)
             }
             QueuedSeat::Pane(id) => {
                 // The title a plain start typed would sit in the box under
@@ -5492,7 +5508,7 @@ impl Daemon {
                 }
                 self.send_launch_words(id, ticket, brief, "prompt_brief")
             }
-            QueuedSeat::Wake(_) => self.wake_with(ticket, brief, plan),
+            QueuedSeat::Wake(_) => self.wake_with(ticket, brief, plan, Ack::PROMPT),
             QueuedSeat::Start(_) => Response::Err { message: "nothing to send".into() },
         }
     }
@@ -5537,6 +5553,19 @@ impl Daemon {
         // read.
         let read = words.brief && self.description_body(ticket).is_some();
         let frame = self.mod_enqueue(id, ModCommand::Submit { text });
+        // A crown wake parked on a launch goes down as this frame (T-936):
+        // from here it is that frame's to settle, by seat and pane.
+        if ack.word == Ack::CROWN_WAKE.word {
+            let pane = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.pane_key.clone());
+            if let Some(e) =
+                self.crown_wake_entering.as_mut().filter(|e| e.session == id && e.parked)
+            {
+                e.frame = Some(frame.clone());
+                e.pane = pane.flatten();
+                e.expires_ms = Some(now_ms() + INFLIGHT_MS);
+                e.parked = false;
+            }
+        }
         self.owed.insert(id, Owed::submitted(ticket, words, frame, ack, now_ms()));
         if read {
             if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
@@ -5684,19 +5713,42 @@ impl Daemon {
         let Some(fid) = frame.reason.as_deref() else { return };
         let outcome = frame.payload["outcome"].as_str().unwrap_or("");
         if outcome == "entered" {
-            // The crown's wake it carried is the crown's now (T-936).
-            if self.submitted_wake(id, fid) {
-                self.wake_entered(id);
-            }
+            // Whose frame it is, resolved before any effect (T-936), by seat,
+            // frame and live pane: the crown's submitted wake, the delivery
+            // its owed entry holds, or no one (a retired attempt's, a frame
+            // from a pane since replaced). Each owner's effects, once.
+            let live = self.board.sessions.iter().any(|s| s.id == id && s.state.has_pane());
+            let owner = if self.submitted_wake(id, fid) {
+                SubmitOwner::Wake
+            } else if live && self.owed.get(&id).is_some_and(|o| o.frame.as_deref() == Some(fid)) {
+                SubmitOwner::Delivery
+            } else {
+                SubmitOwner::Nobody
+            };
             self.mod_taken(id, fid);
-            let delivered = self
-                .board
-                .sessions
-                .iter_mut()
-                .find(|s| s.id == id)
-                .is_some_and(|rec| rec.unsent.take().is_some());
-            if delivered {
-                self.persist_and_notify();
+            match owner {
+                // Told on its own receipt, which the feed says.
+                SubmitOwner::Wake => {
+                    let crown = self.board.crown;
+                    self.feed.board(Ack::CROWN_WAKE.by, Ack::CROWN_WAKE.word, crown);
+                    self.wake_entered(id);
+                    self.persist_and_notify();
+                }
+                // The words the card called unsent went in.
+                SubmitOwner::Delivery => {
+                    let delivered = self
+                        .board
+                        .sessions
+                        .iter_mut()
+                        .find(|s| s.id == id)
+                        .is_some_and(|rec| rec.unsent.take().is_some());
+                    if delivered {
+                        self.persist_and_notify();
+                    }
+                }
+                SubmitOwner::Nobody => self
+                    .journal
+                    .line(&format!("mod submit {fid} for session {id}: entered, no owner")),
             }
             return;
         }
@@ -5708,6 +5760,7 @@ impl Daemon {
             if self.owed.get(&id).is_some_and(|o| o.frame.as_deref() == Some(fid)) {
                 self.drop_owed(id);
             }
+            self.journal.line(&format!("crown wake {fid} in session {id}: refused, {outcome}"));
             self.wake_not_entered(id);
             self.crown_submit_refused.insert(id);
             let ticket = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket);
@@ -5830,11 +5883,20 @@ impl Daemon {
             // a second, too slow to say: it is owed again. Heard twice beats
             // never heard.
             // A wake down the mod's `submit` (T-936) is its frame's to settle:
-            // no prompt says it went, or that it did not.
-            let boxed = self.crown_wake_entering.as_ref().is_some_and(|e| e.frame.is_none());
-            let owed_again =
-                owed.ack.word == Ack::CROWN_WAKE.word && boxed && self.wake_not_entered(id);
-            if !owed_again {
+            // no prompt says it went, or that it did not, and the feed says
+            // nothing of it here. A wake parked on a launch has this, the
+            // launch's own receipt, for its delivery edge.
+            let wake = owed.ack.word == Ack::CROWN_WAKE.word;
+            let entering = self.crown_wake_entering.as_ref().filter(|e| e.session == id);
+            let (submitted, parked) =
+                entering.map_or((false, false), |e| (e.frame.is_some(), e.parked));
+            let owed_again = wake && !submitted && !parked && entering.is_some() && {
+                self.wake_not_entered(id)
+            };
+            if wake && parked {
+                self.wake_entered(id);
+            }
+            if !owed_again && !(wake && submitted) {
                 self.feed.board(owed.ack.by, owed.ack.word, Some(ticket));
             }
             // A phone's words that waited for this pane (a relaunch onto
@@ -6054,6 +6116,13 @@ impl Daemon {
             .map(|(id, _)| *id)
             .collect();
         for id in expired {
+            // The crown's submitted wake (T-936): its attempt retires, words
+            // kept nowhere as unsent.
+            let frame = self.owed.get(&id).and_then(|o| o.frame.clone());
+            if frame.is_some_and(|f| self.submitted_wake(id, &f)) {
+                changed |= self.retire_submitted_wake(id);
+                continue;
+            }
             if let Some(owed) = self.drop_owed(id) {
                 // Taken, and unacked only because a turn is still running
                 // (T-600): the crown's mark waits for the turn that takes
@@ -8483,6 +8552,14 @@ impl Daemon {
             self.drop_crown_wakes();
             return true;
         };
+        // A delivery that failed is tried again once its seat moves (T-936).
+        if let Some((id, at)) = self.crown_wake_failed_on {
+            let moved = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.state_changed_at);
+            if moved == Some(at) {
+                return lost;
+            }
+            self.crown_wake_failed_on = None;
+        }
         // A wake held for a person (T-918) has the crown's pane read again,
         // once a second (`want_person`): the person is heard leaving by the
         // next read, and a draft's box is sampled at all.
@@ -8527,11 +8604,39 @@ impl Daemon {
         let text = self.crown_wake_text();
         let telling = self.telling();
         let pane = matches!(seat, QueuedSeat::Pane(_));
-        match self.deliver(crown, seat, text.clone(), Ack::CROWN_WAKE, false, false) {
+        // A wake that brings the crown's seat up first (T-936): a parked
+        // seat's, or a relaunch's onto its tier, parks the words on the
+        // launch, and the crown has heard nothing until they are taken.
+        // A Claude seat's alone: a Codex launch's words take its own input
+        // road (`drive_codex_inputs`), told at the drain as before.
+        let launch =
+            (!pane || self.relaunches(id, false)) && self.session_kind(id) == SessionKind::Claude;
+        let ack = if !pane && !launch { Ack::PROMPT } else { Ack::CROWN_WAKE };
+        match self.deliver(crown, seat, text.clone(), ack, false, false) {
+            // Kept owed (T-936): a failed delivery tells nothing, and goes
+            // again once the seat moves.
             Response::Err { message } => {
                 eprintln!("mesimon: crown wake failed: {message}");
-                self.crown_wakes.clear();
+                let at =
+                    self.board.sessions.iter().find(|s| s.id == id).map(|s| s.state_changed_at);
+                self.crown_wake_failed_on = at.map(|at| (id, at));
                 self.feed.board("automation", "crown_wake_failed", Some(crown));
+            }
+            Response::Spawned { .. } | Response::Provisioning if launch => {
+                let wakes = std::mem::take(&mut *self.crown_wakes);
+                let entering = crownwake::Entering {
+                    crown,
+                    session: id,
+                    text,
+                    wakes,
+                    telling,
+                    person_came: false,
+                    frame: None,
+                    pane: None,
+                    expires_ms: None,
+                    parked: true,
+                };
+                *self.crown_wake_entering = Some(entering);
             }
             // A Codex box takes the words and its Enter comes later, held
             // for a person (`drive_codex_inputs`): the crown has heard
@@ -8550,6 +8655,8 @@ impl Daemon {
                     person_came: false,
                     frame: None,
                     pane: None,
+                    expires_ms: None,
+                    parked: false,
                 };
                 *self.crown_wake_entering = Some(entering);
             }
@@ -8568,6 +8675,8 @@ impl Daemon {
                     person_came: false,
                     frame,
                     pane: at.and_then(|s| s.pane_key.clone()),
+                    expires_ms: Some(now_ms() + INFLIGHT_MS),
+                    parked: false,
                 };
                 *self.crown_wake_entering = Some(entering);
             }
@@ -8620,6 +8729,34 @@ impl Daemon {
         }) else {
             return;
         };
+        // A Claude crown's wake (T-936): a submitted one whose seat has the
+        // same live pane is still that frame's to answer, its bridge coming
+        // back to this daemon, for one more window; any other is owed again,
+        // `after a restart`. The words the last daemon kept on the seat as
+        // unsent are this wake's, owed here, never a second copy.
+        let claude = self
+            .board
+            .sessions
+            .iter()
+            .find(|s| s.id == id && s.kind == SessionKind::Claude)
+            .map(|s| (s.state.has_pane(), s.pane_key.clone()));
+        if let Some((paned, pane)) = claude {
+            if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                if rec.unsent.as_ref().is_some_and(|u| u.text == text) {
+                    rec.unsent = None;
+                }
+            }
+            let kept = self
+                .crown_wake_entering
+                .as_mut()
+                .filter(|e| e.frame.is_some() && paned && e.pane == pane);
+            if let Some(e) = kept {
+                e.expires_ms = Some(now_ms() + INFLIGHT_MS);
+                return;
+            }
+            self.wake_not_entered(id);
+            return;
+        }
         let seat = self
             .board
             .sessions
@@ -8662,6 +8799,9 @@ impl Daemon {
         // became of the owed entry: only a seat gone, or a pane replaced,
         // owes it again unanswered. Delivery is never read off a prompt.
         if e.frame.is_some() {
+            if e.expires_ms.is_some_and(|at| at <= now_ms()) {
+                return self.retire_submitted_wake(id);
+            }
             let pane = e.pane.clone();
             let same = self
                 .board
@@ -8677,11 +8817,47 @@ impl Daemon {
         self.wake_not_entered(id)
     }
 
+    /// A submitted wake whose frame nobody answered inside its window
+    /// (T-936): the attempt is retired and its wakes owed again, hands as
+    /// they were. An untaken frame leaves the mod's outbox, with no copy
+    /// kept as unsent words; a taken one is unconfirmed, never a made-up
+    /// `entered` or refusal. A report for it from here is no one's.
+    fn retire_submitted_wake(&mut self, id: uuid::Uuid) -> bool {
+        let Some(frame) = self
+            .crown_wake_entering
+            .as_ref()
+            .filter(|e| e.session == id)
+            .and_then(|e| e.frame.clone())
+        else {
+            return false;
+        };
+        let taken =
+            self.owed.get(&id).filter(|o| o.frame.as_deref() == Some(&frame)).map(|o| o.taken);
+        if taken.is_some() {
+            self.drop_owed(id);
+        }
+        if taken == Some(false) {
+            self.mod_unqueue(id, &frame);
+        }
+        let word =
+            if taken == Some(false) { "crown_wake_unreceived" } else { "crown_wake_unconfirmed" };
+        self.journal.line(&format!("crown wake {frame} in session {id}: {word}"));
+        let crown = self.board.crown;
+        self.feed.board("automation", word, crown);
+        self.wake_not_entered(id)
+    }
+
     /// The crown's submitted wake this mod report is for (T-936): found by
     /// seat, frame and pane, as a crown ask's is (T-938). A report delayed
     /// from a pane since replaced is no one's.
     fn submitted_wake(&self, id: uuid::Uuid, frame: &str) -> bool {
-        let pane = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.pane_key.clone());
+        // A live paned seat alone (T-936): a killed record keeps its key.
+        let pane = self
+            .board
+            .sessions
+            .iter()
+            .find(|s| s.id == id && s.state.has_pane())
+            .map(|s| s.pane_key.clone());
         self.crown_wake_entering.as_ref().is_some_and(|e| {
             e.session == id && e.frame.as_deref() == Some(frame) && pane.as_ref() == Some(&e.pane)
         })
@@ -13407,7 +13583,7 @@ impl Daemon {
             // send-now pastes on the tier it has; `prompt_session` queues its
             // own.
             QueuedSeat::Pane(id) if self.relaunches(id, plan) => {
-                self.relaunch(ticket, id, Some(text), plan, "local")
+                self.relaunch(ticket, id, Some(text), plan, "local", ack)
             }
             // `ack` is a pane's alone: a wake and a start park their words
             // as the user's prompt (`park`), whichever road asked.
@@ -13423,7 +13599,7 @@ impl Daemon {
                 Ok(()) => Response::Ok,
                 Err(message) => Response::Err { message },
             },
-            QueuedSeat::Wake(_) => self.prompt_sleeping(ticket, text, plan),
+            QueuedSeat::Wake(_) => self.prompt_sleeping(ticket, text, plan, ack),
             // The provider the start was accepted with, whatever changed
             // since; the ticket's tier gives it a model only where the two
             // agree (`Book::launch`, T-443).
@@ -14518,8 +14694,14 @@ impl Daemon {
     /// reason the composer sets it — the launching arc on the card is how the
     /// user watches the ask land — and the seat is still ONE claude: a wake
     /// re-enters the record, it never mints a second.
-    fn prompt_sleeping(&mut self, ticket: ulid::Ulid, text: String, plan: bool) -> Response {
-        self.wake_with(ticket, Parked { text, brief: false, title: false }, plan)
+    fn prompt_sleeping(
+        &mut self,
+        ticket: ulid::Ulid,
+        text: String,
+        plan: bool,
+        ack: Ack,
+    ) -> Response {
+        self.wake_with(ticket, Parked { text, brief: false, title: false }, plan, ack)
     }
 
     /// A person's plain wake that came up fresh (T-603): the conversation
@@ -14554,7 +14736,7 @@ impl Daemon {
     /// Wake the ticket's parked claude and hold `words` for its first tick:
     /// an ask (`prompt_sleeping`), or the brief of a conversation that never
     /// took a prompt (T-603).
-    fn wake_with(&mut self, ticket: ulid::Ulid, words: Parked, plan: bool) -> Response {
+    fn wake_with(&mut self, ticket: ulid::Ulid, words: Parked, plan: bool, ack: Ack) -> Response {
         let Some(id) = self
             .board
             .live_agent(ticket)
@@ -14567,7 +14749,7 @@ impl Daemon {
         };
         let resp = self.resume_session_in(id, false, plan);
         match &resp {
-            Response::Spawned { .. } => self.park(id, ticket, words, Ack::PROMPT),
+            Response::Spawned { .. } => self.park(id, ticket, words, ack),
             // The worktree is being rebuilt under the wake (T-278): the
             // words ride the parked resume and land when it replays.
             Response::Provisioning => {
@@ -14575,6 +14757,7 @@ impl Daemon {
                     r.prompt = Some(words.text);
                     r.brief = words.brief;
                     r.plan = plan;
+                    r.ack = ack;
                 }
             }
             _ => {}
@@ -16236,7 +16419,7 @@ impl Daemon {
                         Response::Spawned { .. } => {
                             if let Some(text) = r.prompt {
                                 let words = Parked { text, brief: r.brief, title: r.brief };
-                                self.park(r.session, r.ticket, words, Ack::PROMPT);
+                                self.park(r.session, r.ticket, words, r.ack);
                             }
                         }
                         Response::Err { message } => {
@@ -18168,6 +18351,7 @@ impl Daemon {
                             prompt: None,
                             brief: false,
                             plan,
+                            ack: Ack::PROMPT,
                         });
                     }
                     self.persist_and_notify();

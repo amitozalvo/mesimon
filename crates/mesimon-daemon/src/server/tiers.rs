@@ -478,7 +478,8 @@ impl Daemon {
             }
             let ticket = rec.ticket;
             changed = true;
-            if let Response::Err { message } = self.relaunch(ticket, id, None, false, "automation")
+            if let Response::Err { message } =
+                self.relaunch(ticket, id, None, false, "automation", super::Ack::PROMPT)
             {
                 eprintln!("mesimon: tier switch failed: {message}");
                 self.feed.board("automation", "tier_switch_failed", Some(ticket));
@@ -508,9 +509,10 @@ impl Daemon {
         text: Option<String>,
         plan: bool,
         actor: &str,
+        ack: super::Ack,
     ) -> Response {
         let words = text.map(|text| Parked { text, brief: false, title: false });
-        self.relaunch_with(ticket, id, words, plan, actor)
+        self.relaunch_with(ticket, id, words, plan, actor, ack)
     }
 
     /// `relaunch` with the words as a launch parks them: the brief of a seat
@@ -522,6 +524,7 @@ impl Daemon {
         words: Option<Parked>,
         plan: bool,
         actor: &str,
+        ack: super::Ack,
     ) -> Response {
         let why = if plan { "plan mode" } else { "a tier switch" };
         if !(if plan { self.session_idle(id) } else { self.session_at_rest(id) }) {
@@ -558,7 +561,7 @@ impl Daemon {
             return Response::Ok;
         }
         match words {
-            Some(words) => self.wake_with(ticket, words, plan),
+            Some(words) => self.wake_with(ticket, words, plan, ack),
             None => self.resume_session_in(id, false, plan),
         }
     }
