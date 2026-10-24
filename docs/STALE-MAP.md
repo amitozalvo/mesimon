@@ -33952,8 +33952,9 @@ into the hidden rows, and their mouse rects clipped to nothing.
 like `rail_marquee`. `ticket::rail_offset` keeps it still while the selected row's lines are in
 view, and otherwise moves it the least distance that brings them in. A row taller than the rail
 shows its first line. The offset is clamped so that a rail which has shrunk comes home. A session
-row, the terminal and the offer count from line 0, so they bring back the SESSIONS heading. The
-last row counts to the last line, so its `n new note` trailer shows with it. The offset goes
+row, the terminal and the offer count from line 0, so they bring back the SESSIONS heading. A
+note asks for its own line alone, and the `n new note` trailer under the last note shows only when
+it fits. The offset goes
 through `Paragraph::scroll`, and each `owners` rect is shifted by it before `hits.record`. A row
 scrolled off the top records nothing, and a click lands on the row it shows. The page draws
 nothing extra: no scrollbar and no cut mark. The `NOTES 165` count is the only sign of more rows.
@@ -33965,3 +33966,12 @@ note hits `Rail(last)`, one press up keeps the window, a session row brings it h
 
 **Not done.** A dim `…` row at a cut edge is the person's call. The footer's `jk select
 session` on a note row predates this ticket.
+
+**Round 1 after the merge.** Main went red on
+`ticket_prompt_field_sits_over_the_footer_on_a_narrow_page`. At 100x24 with the prompt field
+open the rail is 9 rows tall and holds 10 lines, and the cursor sits on the last note (line 8),
+already in view. The last row's range had been stretched over the trailer (line 9), so the
+offset went to 1 and the SESSIONS heading scrolled off for a hint. That was a scroll the
+selected row did not need. A note now asks for its own lines alone, and the test stands as
+written. The miss: the delivery's `cargo ut` was read through `grep … | head -20`, and passing
+test names containing "failed" filled the 20 lines before mesimon-tui's result line.

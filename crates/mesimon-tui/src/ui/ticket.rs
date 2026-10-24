@@ -1879,14 +1879,12 @@ fn draw_rail(
     // The rail scrolls to keep the selected row in view (T-970): a ticket
     // with more notes than the rail is tall cut its tail, and the cursor
     // walked into rows the page did not show. A session row, the terminal
-    // and the offer reach the top (the heading with them), the last row the
-    // bottom (its trailer with it).
-    let last = notes_start + notes.len();
-    let at = owners.iter().find(|(_, _, idx)| *idx == rail_idx).map(|&(from, to, _)| {
-        let from = if rail_idx < notes_start { 0 } else { from };
-        let to = if rail_idx + 1 == last { lines.len() } else { to };
-        (from, to)
-    });
+    // and the offer reach the top (the heading with them); a note's own
+    // lines are all it asks for, so a row already in view moves nothing.
+    let at = owners
+        .iter()
+        .find(|(_, _, idx)| *idx == rail_idx)
+        .map(|&(from, to, _)| (if rail_idx < notes_start { 0 } else { from }, to));
     let prev = match app.rail_scroll.get() {
         Some((id, top)) if id == ticket_id => top,
         _ => 0,
