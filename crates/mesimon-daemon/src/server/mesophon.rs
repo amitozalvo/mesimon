@@ -4250,9 +4250,12 @@ impl Daemon {
             }
             // Refused before any key for a person at the pane (T-958): the
             // board knows nothing was sent, and the phone hears why in the
-            // refusal word it already reads.
+            // refusal word it already reads. Only the pending request this
+            // attempt installed goes: an older prompt's owed entry, a due
+            // paste and `pending_submit` were none of its making, and
+            // `ahead_of_queue` puts back any older phone pending it took.
             Err(message) if self.refused_for_person == Some(id) => {
-                self.control_cancel(id);
+                self.control.pending.remove(&id);
                 Reply::Rejected { message }
             }
             Err(_) => {

@@ -33915,6 +33915,25 @@ keys go into, never the board's or the crown's.
   harness in this repository drives a phone's steer (the relay's tests do), so that caller is
   covered by the shared road alone.
 
+**Round 3 (the cold reader's second read).** The phone's steer, refused before any key for a
+person, still called the broad `control_cancel`. That reached `drop_owed` and deleted the
+tracking of an older prompt this attempt never touched. It now removes only the pending request
+the attempt installed, then returns `Reply::Rejected`. No owed entry, due paste or
+`pending_submit` changes, and `ahead_of_queue` puts back any older phone pending that
+`take_queued` took. The broad cancel stays on the error arm that may have sent part of a paste.
+- The specimen, traced; nothing in this repository drives a phone's steer:
+  1. A local prompt P is pasted and entered, and its `UserPromptSubmit` is not yet heard
+     (`Owed::pasted` with `sent_at`).
+  2. A non-phone ask A is queued after P.
+  3. A person attaches, and the phone steers B. `take_queued` takes A with no phone pending to
+     keep, and B installs its own.
+  4. B is refused before any key. The old `control_cancel` found B's pending and dropped P's
+     owed entry. `ahead_of_queue` restored A, with no control state to restore.
+  5. P's late ack then found no `sent_at`, called `forget_queued_before(None)`, and dropped A as
+     a person talking ahead of it.
+- With the removal, P's owed entry outlives B's refusal. P's ack forgets only asks queued before
+  P's `sent_at`, so A stays queued and goes once.
+
 **Not done (seen, not changed).**
 - A Codex pane's parked words (`drive_codex_inputs`) and steer (`codex_steer`) have no such guard.
 - A plan or tier relaunch of an attached pane is not held either.
