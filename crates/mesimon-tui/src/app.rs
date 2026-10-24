@@ -6617,8 +6617,22 @@ impl App {
     /// what the merge train owes the branch — `auto-merge ∙ …`, `rebase ask
     /// ∙ …` — rides the pull requests' row, where the work goes. The words
     /// are `pending_row`'s either way; the ticket page reads them whole.
+    ///
+    /// The crown's wake held for a client in its pane (T-945) reaches the
+    /// card as `crown wakes` and its reason on two lines: the card draws them
+    /// as one row where the whole fits and as two where it does not.
     pub(crate) fn card_owed(&self, ticket: ulid::Ulid) -> (Option<String>, Option<String>) {
-        let row = self.pending_row(ticket);
+        let row = self.pending_row(ticket).map(|row| match self.pending_of(ticket) {
+            Some(p) if p.action == mesimon_core::command::PendingAction::CrownWake => {
+                match p.held.as_deref().filter(|why| held_for_a_client(why)) {
+                    Some(why) if row == format!("crown wakes ∙ {why}") => {
+                        format!("crown wakes\n{why}")
+                    }
+                    _ => row,
+                }
+            }
+            _ => row,
+        });
         let ships = !self.ticket_trust_ready(ticket)
             && self.unsent_of(ticket).is_none()
             && self.tier_owed_row(ticket).is_none()
@@ -6728,7 +6742,8 @@ impl App {
             });
         }
         // The crown's wake held for a person at the crown's box (T-918):
-        // the daemon's word for why — `10m idle` (T-945), `on leaving`,
+        // the daemon's word for why — `leave or 10m idle` (T-945),
+        // `idle unknown ∙ leave`,
         // `after your draft`, `sending` (a Codex
         // box holding it for its Enter) —
         // outranks its turn, which a person's leaving does not end.
@@ -16786,6 +16801,12 @@ pub(crate) fn shared_team_fixture() -> mesimon_core::team::TeamInfo {
     }
 }
 
+/// Is the crown's wake held for a client in its pane (T-945), by the
+/// daemon's word for it: every hold but the draft's and a Codex box's Enter.
+fn held_for_a_client(why: &str) -> bool {
+    !matches!(why, "after your draft" | "sending")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -23558,8 +23579,17 @@ mod tests {
         // box (T-918), whose word is the daemon's and outranks the turn.
         assert_eq!(row(&mut app, vec![], false, CrownWake), "crown wakes next");
         assert_eq!(row(&mut app, vec![&own], false, CrownWake), "crown wakes ∙ after its turn");
-        app.pending[0].held = Some("10m idle".into());
-        assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("crown wakes ∙ 10m idle"));
+        app.pending[0].held = Some("leave or 10m idle".into());
+        assert_eq!(
+            app.pending_row(ulid::Ulid(1)).as_deref(),
+            Some("crown wakes ∙ leave or 10m idle"),
+            "the ticket page's row, whole"
+        );
+        assert_eq!(
+            app.card_owed(ulid::Ulid(1)).0.as_deref(),
+            Some("crown wakes\nleave or 10m idle"),
+            "the card's, its subject and reason apart"
+        );
         // A Codex box holding the wake for its Enter.
         app.pending[0].held = Some("sending".into());
         assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("crown wakes ∙ sending"));

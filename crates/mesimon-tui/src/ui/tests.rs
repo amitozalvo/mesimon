@@ -13277,27 +13277,35 @@ fn the_snake_comes_out_idle_on_a_calm_board_and_nowhere_else() {
     assert!(app.arcade.borrow().is_some());
 }
 
-/// The crown's wake held for a client in its pane (T-945) names the bound
-/// on the card as drawn, not only in the row's string: whole on an ordinary
-/// card (a 29-cell column, the four-column 120-cell board) and the widest
-/// (40 cells); on the 26-cell floor it reads `crown wakes ∙ 10m id~`.
+/// The crown's wake held for a client in its pane (T-945) keeps its subject,
+/// its release and its bound (or the unknown reading) on the card as drawn:
+/// one row on the widest card (a 40-cell column), and `crown wakes` over the
+/// reason on an ordinary one (29 cells, the four-column 120-cell board) and
+/// on the 26-cell floor.
 #[test]
-fn the_crown_wake_row_shows_its_bound_on_an_ordinary_card() {
-    let mut app = app_graphite(fixture(false));
-    let mut p = pending_ask(1, &[]);
-    p.action = mesimon_core::command::PendingAction::CrownWake;
-    p.held = Some("10m idle".into());
-    app.pending = vec![p];
-    app.cursor_col = 0;
-    app.cursor_row = Some(0);
-    let row = |w: u16| -> String {
-        let lines = render(&app, w, 30);
-        lines.iter().find(|l| l.contains("crown wakes")).cloned().unwrap_or_default()
-    };
-    // Four columns at 120 cells: 115 to share, the cursor's column 29.
-    assert!(row(120).contains("crown wakes ∙ 10m idle"), "{}", row(120));
-    assert!(row(200).contains("crown wakes ∙ 10m idle"), "{}", row(200));
-    // Four columns at 109 cells: 104 to share, every column at the 26 floor.
-    let narrow = row(109);
-    assert!(narrow.contains("crown wakes ∙ 10m id~"), "the floor cuts it: {narrow}");
+fn the_crown_wake_row_keeps_its_release_and_bound_on_every_card() {
+    for reason in ["leave or 10m idle", "idle unknown ∙ leave"] {
+        let mut app = app_graphite(fixture(false));
+        let mut p = pending_ask(1, &[]);
+        p.action = mesimon_core::command::PendingAction::CrownWake;
+        p.held = Some(reason.into());
+        app.pending = vec![p];
+        app.cursor_col = 0;
+        app.cursor_row = Some(0);
+        // The row that names the crown, and the row under it.
+        let rows = |w: u16| -> (String, String) {
+            let lines = render(&app, w, 30);
+            let at = lines.iter().position(|l| l.contains("crown wakes")).expect("the owed row");
+            (lines[at].clone(), lines.get(at + 1).cloned().unwrap_or_default())
+        };
+        let (wide, _) = rows(200);
+        assert!(wide.contains(&format!("crown wakes ∙ {reason}")), "40 cells: {wide}");
+        // 120 cells: 115 to share, the cursor's column 29. 109: 104, every
+        // column at the 26 floor.
+        for w in [120, 109] {
+            let (lead, under) = rows(w);
+            assert!(lead.trim_end().ends_with("crown wakes"), "{w}: {lead}");
+            assert!(under.contains(reason), "{w}: the reason whole under it: {under}");
+        }
+    }
 }

@@ -538,19 +538,18 @@ impl PersonHold {
     pub(super) fn word(self) -> &'static str {
         match self {
             PersonHold::Client(ClientHold::Recent) => wake_when_you_leave(),
-            PersonHold::Client(ClientHold::Unknown) => "on leaving",
+            PersonHold::Client(ClientHold::Unknown) => "idle unknown ∙ leave",
             PersonHold::Draft => "after your draft",
         }
     }
 }
 
-/// `10m idle`, the bound's own duration in it: tmux's activity record, never
-/// a person's last key. Short enough that the card's owed row, `crown wakes ∙
-/// 10m idle`, fits an ordinary card whole (a 29-cell column's 24 cells);
-/// leaving, which also lets it go, is the one thing it does not fit.
+/// `leave or 10m idle`, the bound's own duration in it: the release a person
+/// has and tmux's activity record, never a person's last key. The card draws
+/// `crown wakes` over it where the whole row does not fit (`App::card_owed`).
 fn wake_when_you_leave() -> &'static str {
     static WORDS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    WORDS.get_or_init(|| format!("{} idle", span_words(person_idle_ms())))
+    WORDS.get_or_init(|| format!("leave or {} idle", span_words(person_idle_ms())))
 }
 
 /// `10m`, `5s`, `1500ms`: a bound in the largest unit it fills whole.
@@ -3488,8 +3487,8 @@ mod tests {
         assert_eq!(span_words(90_000), "90s");
         assert_eq!(span_words(1500), "1500ms");
         assert_eq!(PersonHold::Draft.word(), "after your draft");
-        assert_eq!(PersonHold::Client(ClientHold::Unknown).word(), "on leaving");
-        assert!(PersonHold::Client(ClientHold::Recent).word().ends_with(" idle"));
+        assert_eq!(PersonHold::Client(ClientHold::Unknown).word(), "idle unknown ∙ leave");
+        assert!(PersonHold::Client(ClientHold::Recent).word().starts_with("leave or "));
     }
 
     #[test]

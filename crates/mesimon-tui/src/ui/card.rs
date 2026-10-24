@@ -1119,7 +1119,21 @@ pub(super) fn render(
         }
         // What mesimon will do to this card next, and what it waits on —
         // the same slot, the same voice: `queued ∙ after T-12`.
-        if let Some(words) = owed_row.filter(|_| selected) {
+        // A crown's wake held for a client in its pane (T-945) comes as its
+        // subject and its reason (`App::card_owed`): one row where the whole
+        // fits, else `crown wakes` over the reason, so the release and the
+        // bound are never the cells a cut takes.
+        let held_for_client = owed_row.filter(|_| selected).and_then(|w| w.split_once('\n'));
+        if let Some((lead, reason)) = held_for_client {
+            let inner = t_cells.saturating_sub(glyph_cells);
+            let whole = format!("{lead} ∙ {reason}");
+            let rows =
+                if whole.width() <= inner { vec![whole] } else { vec![lead.into(), reason.into()] };
+            for words in rows {
+                let words = truncate(&words, inner);
+                push(vec![Span::raw(" ".repeat(glyph_cells)), Span::styled(words, faint)]);
+            }
+        } else if let Some(words) = owed_row.filter(|_| selected) {
             let inner = t_cells.saturating_sub(glyph_cells);
             // A held ask's keys ride the same row, right-aligned under the
             // age (T-551, user: "it's not obvious that user needs to press

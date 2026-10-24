@@ -1555,11 +1555,11 @@ const BOX_STUB: &str =
 
 /// The crown's wake row while a client attached to its pane holds it, at
 /// the default bound (T-945): ten minutes after tmux last recorded activity.
-const WHEN_YOU_LEAVE: &str = "10m idle";
+const WHEN_YOU_LEAVE: &str = "leave or 10m idle";
 
 /// A person at the crown's box (T-918): the wake is not pasted into what
 /// they may be typing. It waits while a tmux client has the crown's pane
-/// open and active (`10m idle`),
+/// open and active (`leave or 10m idle`),
 /// then while the box holds the draft they left
 /// (`after your draft`), and goes in on its own line once the box is
 /// empty — the person's words sent as they wrote them, never joined. The
@@ -1719,7 +1719,7 @@ fn the_crown_wake_waits_for_a_person_at_the_crown_s_box() {
 
 /// The idle bound the T-945 tests run on, and the row's words under it.
 const IDLE_MS: &str = "5000";
-const WHEN_YOU_LEAVE_5S: &str = "5s idle";
+const WHEN_YOU_LEAVE_5S: &str = "leave or 5s idle";
 
 /// A control-mode tmux client on `session`, as the board's focus attaches
 /// one, and its name. It sends no input, so tmux records no activity from

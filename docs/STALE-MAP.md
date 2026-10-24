@@ -33727,17 +33727,21 @@ neither implies the other.
     sample, a paste still needs `person_read_at == landed`, and a failed `list-panes` lands no
     facts at all.
 - **The words** (`PersonHold::word`):
-  - `10m idle`, the bound's own duration in it (`5s idle` under a 5 s seam). The card's owed
-    row, `crown wakes ∙ 10m idle`, is 22 cells. An ordinary card (a 29-cell column, the
-    four-column 120-cell board) has 24 for it, the column less its bar, pads and glyph, so the
-    bound shows whole there and on the widest (40-cell) card. On the 26-cell floor (21 cells)
-    it reads `crown wakes ∙ 10m id~`. `ui::tests::the_crown_wake_row_shows_its_bound_on_an_ordinary_card`
-    draws all three.
-  - Leaving, which also releases the hold, does not fit beside the bound: `wakes ∙ leave or
-    10m idle` is 25 cells. The bound is the fact a card reader cannot see elsewhere, so it
-    takes the row. Earlier forms (`when you leave or after 10 min without activity`, 61 cells;
-    `leave or 10 min idle`, 34) never showed the bound on an ordinary card.
-  - `on leaving` for `Unknown` (`crown wakes ∙ on leaving`, 24 cells).
+  - `leave or 10m idle`, the release a person has and the bound's own duration (`leave or 5s
+    idle` under a 5 s seam), and `idle unknown ∙ leave` for `Unknown`. The ticket page reads
+    the row whole: `crown wakes ∙ leave or 10m idle`.
+  - The card (`App::card_owed` hands it `crown wakes` and the reason apart, only while the wake
+    is held for a client in the pane) draws one row where the whole fits and `crown wakes` over
+    the reason where it does not. `ui::tests::the_crown_wake_row_keeps_its_release_and_bound_on_every_card`
+    draws both reasons on three cards:
+    - 40-cell column (35 cells inside): `crown wakes ∙ leave or 10m idle` (34) and `crown wakes
+      ∙ idle unknown ∙ leave` (34), one row each.
+    - 29-cell column, the ordinary four-column 120-cell board (24 inside), and the 26-cell floor
+      (21 inside): `crown wakes`, then `leave or 10m idle` (17) or `idle unknown ∙ leave` (20).
+  - Round 3's one-row `crown wakes ∙ 10m idle` was dropped (round 4, the cold reader's third
+    read). It named the crown as the only subject, so it could read as the crown's own idle, and
+    it lost the release. Before it, `when you leave or after 10 min without activity` (61 cells)
+    and `leave or 10 min idle` (34) never showed the bound on an ordinary card.
   - `after your draft` once the client hold clears with words in the box.
   - There is no countdown. "Activity" is tmux's record of input from a client, not a person's
     last key or their presence.

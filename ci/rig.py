@@ -118,7 +118,7 @@ esac
 WAKE_GRACE = 60
 # The crown's wake row while a client in its pane holds it, at the default
 # bound (T-945).
-WHEN_YOU_LEAVE = "10m idle"
+WHEN_YOU_LEAVE = "leave or 10m idle"
 QUIET = 6.0
 SWEEP_WAIT = 1.0  # the last frames' feed lines, after the worker's end
 # The column the permission tests' workers start in (T-581): Claude Code in
@@ -3263,7 +3263,7 @@ Reply with the single word ready and end your turn."""
                 rows = [r for r in p.get("rows") or [] if r]
                 secs = int(arg)
                 span = f"{secs // 60}m" if secs % 60 == 0 else f"{secs}s"
-                words = f"{span} idle"
+                words = f"leave or {span} idle"
                 after = p.get("sent_after_attach_ms")
                 bound = int(arg) * 1000
                 ok = (bool(rows) and all(r == words for r in rows) and p.get("sent_while_in") == 1
@@ -3280,7 +3280,7 @@ Reply with the single word ready and end your turn."""
                 rows = p.get("rows") or []
                 if p.get("road") == "mod":
                     took = p.get("sent_in_ms")
-                    unheld = not any(r and (r.endswith(" idle") or r == "on leaving"
+                    unheld = not any(r and (r.startswith("leave or ") or r.startswith("idle unknown")
                                             or r == "after your draft") for r in rows)
                     check(c, unheld and p.get("by_mod") and took is not None and took < 10_000,
                           f"mod road: rows {sorted(set(map(str, rows)))}, by the mod {p.get('by_mod')}, "
