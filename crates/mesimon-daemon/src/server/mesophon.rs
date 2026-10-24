@@ -5528,9 +5528,10 @@ struct MenuRow {
 /// screen, through blank and box-drawing lines, since a person's draft in the
 /// native field may hold any of them. No footer is cut: 2.1.310 draws none,
 /// and a line that merely holds `Enter to select` is the field's. From the
-/// end of the last row come off, in turn, trailing blank lines, the editor
-/// line (`ctrl+g to edit in <editor> · <file>`), and the approve hint line
-/// exactly above it, each once and never the row's own first line; whatever
+/// end of the last row come off trailing blank lines, then the editor line
+/// (`ctrl+g to edit in <editor> · <file>`) with the approve hint line
+/// directly above it when it is there, never the row's own first line. The
+/// approve hint without its editor line under it is the field's. Whatever
 /// is left is the field, compared whole. The cursor is read from the same
 /// rows.
 fn plan_menu(screen: &str) -> Option<Vec<MenuRow>> {
@@ -5567,10 +5568,14 @@ fn plan_menu(screen: &str) -> Option<Vec<MenuRow>> {
         if at != last {
             continue;
         }
-        if block.len() > 1 && block.last().is_some_and(|l| editor_line(l)) {
-            block.pop();
-        }
-        if block.len() > 1 && block.last() == Some(&APPROVE_HINT) {
+        // The pair, or nothing: the approve hint is the hint only directly
+        // above the editor line it is drawn with; alone, it is the field's.
+        if block.len() > 2
+            && block.last().is_some_and(|l| editor_line(l))
+            && block[block.len() - 2] == APPROVE_HINT
+        {
+            block.truncate(block.len() - 2);
+        } else if block.len() > 1 && block.last().is_some_and(|l| editor_line(l)) {
             block.pop();
         }
     }
@@ -8218,6 +8223,38 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
             revise_step(&d, "Use echo", &plan_screen("Use echo", 2), &pasted),
             Ok(DialogStep::Submit)
         );
+    }
+
+    /// T-943, the third read: the approve hint comes off only with the editor
+    /// line under it. A capture that ends on it alone (the real footer cut
+    /// off, or the line the person's own) keeps it as field text, so the
+    /// field is not the crown's words, nor the empty label.
+    #[test]
+    fn the_approve_hint_alone_is_the_field_s() {
+        let d = plan_dialog();
+        let alone = |field: &str| {
+            let screen = plan_screen(field, 2);
+            let cut = screen.find("   ctrl+g to edit").expect("the editor line");
+            screen[..cut].to_string()
+        };
+        let pasted = Walk { pasted: vec![2], at: Some(2), ..Walk::default() };
+        assert_eq!(
+            revise_step(&d, "Use echo", &alone("Use echo"), &pasted),
+            Err(Miss::FieldTouched)
+        );
+        let walk = Walk { at: Some(2), ..Walk::default() };
+        assert_eq!(
+            revise_step(&d, "Use echo", &alone("Tell Claude what to change"), &walk),
+            Err(Miss::FieldTouched)
+        );
+        // The pair still comes off whole, and an editor line alone too.
+        assert_eq!(
+            revise_step(&d, "Use echo", &plan_screen("Use echo", 2), &pasted),
+            Ok(DialogStep::Submit)
+        );
+        let editor_only = plan_screen("Use echo", 2)
+            .replace("        shift+tab to approve with this feedback\n", "");
+        assert_eq!(revise_step(&d, "Use echo", &editor_only, &pasted), Ok(DialogStep::Submit));
     }
 
     /// T-943, the third read: a draft in the field that holds a numbered

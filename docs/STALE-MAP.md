@@ -33143,6 +33143,12 @@ into that row.
     own `1. … 2. … ❯ 3. Use echo` replace the dialog's menu: Submit after the paste, or a Paste
     into the draft when its last row read the label. A numbered line out of order, or a second
     question, is now `shape_unrecognised`.
+  - **The approve hint comes off only with its editor line** (the third read): as the line
+    directly above an editor line removed in the same suffix. Before, it came off alone, so a
+    capture ending `❯ 3. Use echo` / `shift+tab to approve with this feedback`, with the real
+    footer out of the capture or that line the person's, read as exactly `Use echo`. The
+    empty-label case read as the empty field. Alone, the hint is now field text and the walk
+    stops `field_touched`.
   - Anything else stops the walk with nothing more typed, and the receipt is `unknown` with its
     word: `field_touched`, `cursor_moved`, `a_person_attached`, `state_changed`,
     `shape_unrecognised`. Nothing falls back to the composer or an accept row.
@@ -33197,6 +33203,7 @@ into that row.
   `a_draft_that_spells_a_hint_is_never_the_field_the_crown_wants`,
   `a_draft_past_a_blank_or_beside_a_footer_s_words_is_still_the_field`,
   `a_draft_s_own_numbered_menu_never_restarts_the_plan_menu`,
+  `the_approve_hint_alone_is_the_field_s`,
   `a_plan_sent_back_claims_the_dialog_gone_only_on_a_screen_read` and
   `a_plan_change_is_refused_never_rewritten`, all on the screen captured above.
 - **The stand-in.** `fake_claude_dialog.py` draws 2.1.310's rows and hint lines and keeps row 3
