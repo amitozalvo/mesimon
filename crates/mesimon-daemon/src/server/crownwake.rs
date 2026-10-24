@@ -1824,6 +1824,18 @@ impl Daemon {
             // whatever became of the seat since.
             let started =
                 worker != crown && (heard.deferred.is_some() || self.crown_hears(worker, crown));
+            // A merge read while this crown does not hear the worker (T-936)
+            // still moves the baselines it has: they would read it as news
+            // once the crown hears the worker again (a watch, a new hold, a
+            // restart's look). Only the baselines: nothing is told, no hand
+            // comes down, and no entry is made for a worker never heard.
+            if !started {
+                if let Some(h) = self.crown_heard.get_mut(&worker) {
+                    h.judged = Some(now.clone());
+                    h.told = Some(now);
+                }
+                continue;
+            }
             let cause = merge_verdict(started, &heard, &now);
             match due(cause, None, &self.pending_on(worker, None)) {
                 Due::Step(cause) => self.hold_for_step(worker, cause, now, false),

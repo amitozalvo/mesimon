@@ -32669,3 +32669,38 @@ Test: `crown_e2e::a_mod_road_crown_s_refused_wake_is_never_pasted_under_a_person
 empty box, the refusal: unsent on the crown's seat, the refusal in the feed, no paste, the person's
 typing alone in the box; it fails with the client check removed). The T-894 pair in
 `mod_turns_e2e` stay green.
+
+**Old news after a restart: two specimens, two causes (item 2).** Both were traced on this board's
+own feed and `crown.json`, and neither is the missing baseline the ticket first named:
+`drop_crown_wakes` clears every baseline at a handover, a restart looks only at workers the ledger
+names, and `set_ticket_agg` takes a first reading as a landing only when a baseline awaits one.
+- **T-920, `merged` hours after its merge.** The crown had a baseline for T-920 from an
+  `answered your ask` look (ahead at tip X). T-920 merged while the predicate before T-927 said the
+  crown did not hear it, so `hear_merges` was silent and left `told` at ahead@X. After the
+  restart T-920 was heard, and the restart's look (`merge_verdict`: told ahead@X, now merged@X)
+  said `merged`. The rule: a merge read while this crown does not hear the worker still moves
+  the baselines it already has (`judged`, `told`) to the merge. Bookkeeping only: nothing is told,
+  no hand comes down, no wake or mark is cleared, and no entry is made for a worker never heard.
+  The road still open under T-927 was a held ticket the person takes back with `t`, merges, and
+  the crown later watches or holds again.
+- **T-934, `finished its turn (… after a restart)` for a told, parked worker in DONE, same crown.**
+  Its Codex seat lost its observation (`idle → unknown`), which `quiet::is_working` counts as work,
+  so the edge put the ticket in `turns_open`; the park (`park_record` sets `Sleeping` without
+  `apply_change`) never closed it; the ledger kept it, and the restart's look took `fresh: true`
+  and said a finished turn. The rule: a seat with no pane has no turn open. A park, or an edge
+  into a state with no pane, drops the ticket from `turns_open`; its next turn opens on its own
+  edge into work. Codex's `Unknown` counting as work is not changed: the train's seat reads it on
+  purpose.
+- Refused: seeding baselines at the handover from the board (neither specimen lacked one); muting
+  parked or DONE workers or every restart wake (a turn that really ended in the gap is news); a
+  probe fence by crown epoch or seat generation (`judge_probe`'s crown check and the tip compares
+  already cover what was seen).
+
+Tests: `crown_e2e::a_told_worker_parked_in_done_is_not_news_after_a_restart` (a merged and a
+finished worker, told, parked and in DONE, with work no turn's end closed; a bare restart, then a
+handover and a restart, say nothing of either, and a worker that delivers and merges after the
+handover still wakes the crown worn now; without the park's close it fails at the bare restart);
+`crown_hold_e2e::a_merge_the_crown_did_not_hear_is_not_news_later` (T-920's shape through `t`, a
+hand merge and a watch; without the baseline move it reads `merged (…, after a restart)`). A turn
+that ended in the gap is still heard (`a_worker_mid_turn_across_a_restart_delivers_at_its_real_end`,
+`a_merge_while_the_daemon_is_down_wakes_the_crown_after_the_restart`).

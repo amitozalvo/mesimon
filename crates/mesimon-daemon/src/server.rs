@@ -6463,6 +6463,10 @@ impl Daemon {
                     matches!(change.to, SessionState::Idle { stop_reason: StopReason::EndTurn })
                         && matches!(change.confidence, Confidence::High | Confidence::Medium);
                 self.turn_ended(snapshot.ticket, end_turn);
+                // A seat with no pane has no turn open (T-936), as a park.
+                if !change.to.has_pane() && self.turns_open.contains(&snapshot.ticket) {
+                    self.turns_open.remove(&snapshot.ticket);
+                }
                 // The person's banner waits for a look at what the turn
                 // left, where the train may take it (T-678).
                 if end_turn {
@@ -18340,6 +18344,15 @@ impl Daemon {
             self.lower_hand_of(id);
         }
         self.recovery.remove(&id);
+        // A parked seat has no turn open (T-936): one marked open by an edge
+        // no turn ended (a Codex seat's lost observation reads as working)
+        // read as a finished turn at the next restart. Its next turn opens
+        // on its own edge into work.
+        if let Some(t) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket) {
+            if self.turns_open.contains(&t) {
+                self.turns_open.remove(&t);
+            }
+        }
     }
 
     /// A Claude session the user left on purpose is PARKED, not buried.

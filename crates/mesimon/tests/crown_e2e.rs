@@ -7694,6 +7694,190 @@ fn a_failed_turn_wakes_the_crown_once_with_why() {
     assert!(all.iter().all(|l| l.contains("ended its turn on an error")), "{all:?}");
 }
 
+/// T-936: what the crown was told of a parked worker in DONE is not news
+/// after a restart, with the same crown or a new one. W1 delivered and
+/// merged and was told both; W2 finished a turn and was told, then ended
+/// another with background tasks running (an edge into work that no turn's
+/// end closed, as a Codex seat's lost observation is), and was parked. A
+/// bare restart says nothing of either, nor does a handover and a restart
+/// after it; a worker that delivers and merges after the handover still
+/// wakes the crown worn now. A turn genuinely ended in the restart's gap
+/// is heard (`a_worker_mid_turn_across_a_restart_delivers_at_its_real_end`).
+#[test]
+fn a_told_worker_parked_in_done_is_not_news_after_a_restart() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_parked_news",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_parked_news");
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let a = c.create_ticket("the first crown");
+    let b = c.create_ticket("the second crown");
+    let w1 = c.create_ticket("mesimon-probe-936 merged and parked");
+    let w2 = c.create_ticket("mesimon-probe-936 finished and parked");
+    let w3 = c.create_ticket("mesimon-probe-936 merged after the handover");
+    let (k1, k2, k3) = (key_of(&mut c, w1), key_of(&mut c, w2), key_of(&mut c, w3));
+    let sa = c.spawn_claude(a);
+    let sb = c.spawn_claude(b);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let start_agent = |c: &mut TestClient, key: &str, workspace: &str| {
+        let v = read(c, sa, key).unwrap();
+        match c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket {
+                key: key.into(),
+                seen: v.seen,
+                plan: false,
+                tier: None,
+                workspace: Some(workspace.into()),
+            },
+        ) {
+            Response::AgentStarted { .. } => {}
+            other => panic!("start_agent {key}: {other:?}"),
+        }
+    };
+    start_agent(&mut c, &k1, "worktree");
+    start_agent(&mut c, &k2, "worktree");
+    start_agent(&mut c, &k3, "worktree");
+    let p1 = std::path::PathBuf::from(wait_attached(&mut c, w1).path.expect("a path"));
+    wait_attached(&mut c, w2);
+    let p3 = std::path::PathBuf::from(wait_attached(&mut c, w3).path.expect("a path"));
+    wait_until(std::time::Duration::from_secs(15), "the three starts to land", || {
+        [w1, w2, w3].iter().all(|w| c.board().live_agent(*w).is_some())
+    });
+    let seat = |c: &mut TestClient, w: ulid::Ulid| c.board().live_agent(w).unwrap().id;
+    let (ws1, ws2, ws3) = (seat(&mut c, w1), seat(&mut c, w2), seat(&mut c, w3));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let worker = |key: &str, title: &str| format!("{key} \"mesimon-probe-936 {title}\" ");
+    let (n1, n2, n3) = (
+        worker(&k1, "merged and parked"),
+        worker(&k2, "finished and parked"),
+        worker(&k3, "merged after the handover"),
+    );
+    // A delivery and its merge, each a line the crown takes in a turn.
+    let deliver_and_merge =
+        |c: &mut TestClient, crown, key: &str, path: &std::path::Path, sid, name: &str| {
+            // On the base as it stands, so the merge is a fast-forward.
+            git(path, &["rebase", "-q", "main"]);
+            commit(path, &format!("{key}.txt"));
+            wait_until(std::time::Duration::from_secs(15), "the flags to read it ahead", || {
+                read(c, crown, key).unwrap().merge_state.as_deref() == Some("ahead")
+            });
+            start(c, sid);
+            stop(c, sid);
+            wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
+                lines_with(&format!("{name}delivered")).len() == 1
+            });
+            start(c, crown);
+            stop(c, crown);
+            let branch = read(c, crown, key).unwrap().branch.expect("a branch");
+            git(&h.repo, &["merge", "--ff-only", "-q", &branch]);
+            wait_until(std::time::Duration::from_secs(10), "the merge's wake", || {
+                lines_with(&format!("{name}merged")).len() == 1
+            });
+            start(c, crown);
+            stop(c, crown);
+        };
+
+    // ---- 1. W1 delivered and merged, told; parked and in DONE --------------
+    deliver_and_merge(&mut c, sa, &k1, &p1, ws1, &n1);
+    // ---- 2. W2 finished, told; then work no turn's end closed; parked -------
+    start(&mut c, ws2);
+    stop(&mut c, ws2);
+    wait_until(std::time::Duration::from_secs(10), "W2's finish", || {
+        lines_with(&format!("{n2}finished its turn")).len() == 1
+    });
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    start(&mut c, ws2);
+    hook_send(
+        &hook_sock,
+        &ws2.to_string(),
+        "PostToolUse",
+        r#"{"tool_name":"Bash","tool_response":{"stdout":"","stderr":"","backgroundTaskId":"loop1"}}"#,
+    );
+    hook_send(
+        &hook_sock,
+        &ws2.to_string(),
+        "Stop",
+        r#"{"stop_hook_active":false,"background_tasks":[{"id":"loop1","type":"shell","status":"running"}]}"#,
+    );
+    let background =
+        SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Background };
+    c.await_state(ws2, "idle with a task", |s| *s == background);
+    for (w, sid) in [(w1, ws1), (w2, ws2)] {
+        assert!(matches!(c.request(Command::SleepSession { id: sid }), Response::Ok));
+        c.await_state(sid, "parked", |s| *s == SessionState::Sleeping);
+        assert!(matches!(
+            c.request(Command::MoveTicket { id: w, column: "DONE".into(), before: None }),
+            Response::Ok
+        ));
+    }
+    let told = (lines_with(&n1).len(), lines_with(&n2).len());
+    assert_eq!(told, (2, 1), "{}", std::fs::read_to_string(&got).unwrap_or_default());
+
+    // ---- 3. a bare restart: nothing of either -------------------------------
+    drop(c);
+    h.restart();
+    let mut c = h.client("crown_parked_news_2");
+    // A fence the restart's looks come before: the crown's own turn ends.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    std::thread::sleep(std::time::Duration::from_millis(3000));
+    assert_eq!(
+        (lines_with(&n1).len(), lines_with(&n2).len()),
+        told,
+        "after a bare restart: {}",
+        std::fs::read_to_string(&got).unwrap_or_default()
+    );
+
+    // ---- 4. a handover and a restart: nothing of either, W3 still heard -----
+    assert!(matches!(c.request(Command::CrownTicket { id: b }), Response::Ok));
+    start(&mut c, sb);
+    stop(&mut c, sb);
+    drop(c);
+    h.restart();
+    let mut c = h.client("crown_parked_news_3");
+    start(&mut c, sb);
+    stop(&mut c, sb);
+    deliver_and_merge(&mut c, sb, &k3, &p3, ws3, &n3);
+    assert_eq!(
+        (lines_with(&n1).len(), lines_with(&n2).len()),
+        told,
+        "after a handover and a restart: {}",
+        std::fs::read_to_string(&got).unwrap_or_default()
+    );
+}
+
 /// What a start_agent wake's receipt says waits for the agent (T-920), read
 /// off the daemon's own state, and that whatever waited goes exactly once.
 /// Queued: the crown's ask to a parked worker on the shared checkout waits
