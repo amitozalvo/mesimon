@@ -4882,7 +4882,9 @@ impl Daemon {
                 }
             }
             // A client attached on the sample that let the wake's paste go
-            // was there at it (T-945), idle or not.
+            // was there at it (T-945), idle or not: the box is the board's
+            // only while it reads as the wake. The one paste of a Codex
+            // crown's wake: `deliver` only parks it for this road.
             if wake && self.attached.contains(&sid) {
                 if let Some(e) = self.crown_wake_entering.as_mut().filter(|e| e.session == id) {
                     e.person_came = true;
@@ -8938,27 +8940,19 @@ impl Daemon {
             }
             // A Codex box takes the words and its Enter comes later, held
             // for a person (`drive_codex_inputs`): the crown has heard
-            // nothing until it goes. A client attached on the sample that
-            // let the paste go, idle or not (T-945), was there at the paste:
-            // the box is the board's only while it reads as the wake.
+            // nothing until it goes.
             _ if pane
                 && self.session_kind(id) == SessionKind::Codex
                 && self.crown_wake_owed(id) =>
             {
                 let wakes = std::mem::take(&mut *self.crown_wakes);
-                let present = self
-                    .board
-                    .sessions
-                    .iter()
-                    .find(|s| s.id == id)
-                    .is_some_and(|s| self.attached.contains(&s.sid16()));
                 let entering = crownwake::Entering {
                     crown,
                     session: id,
                     text,
                     wakes,
                     telling,
-                    person_came: present,
+                    person_came: false,
                     frame: None,
                     pane: None,
                     expires_ms: None,

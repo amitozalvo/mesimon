@@ -114,12 +114,12 @@
 #              rest is a shared-checkout agent's own), a board worktree
 #              branch's tip a fast-forward left there aside),
 #              went_past_idle_person:<secs> (T-945: the wake row named
-#              the bound, `leave or <the bound> idle`, while the client was
+#              the bound, `<the bound> idle` (`2m idle`), while the client was
 #              fresh, and the wake went in
 #              once with the person still attached, between the bound and
 #              the bound plus 10 s after their attach),
 #              held_for_person (T-918: the crown's wake waited the whole of
-#              `person_leaves`' stay, its row `leave or 10 min idle`, and
+#              `person_leaves`' stay, its row `10m idle`, and
 #              went in
 #              within 10 s of the person leaving; on the mod road, T-931, it
 #              went by the mod's submit within 10 s of being owed, the person
@@ -1479,7 +1479,7 @@ id = "A1"
 title = "A1 · the board holds the crown's wake while a person is in its pane: do the steps below"
 workspace = "worktree"
 brief = "Reply with the single word done and end your turn. Read no file and run no command."
-expect = "a person has the crown's pane open (a tmux client attached) while the crown starts the worker; the worker answers and goes idle, and the board owes the crown its wake and holds it: nothing is pasted into the crown's box while the person stays, and the wake row reads leave or 10 min idle. The person leaves; the wake goes in within seconds onto the crown's empty box (a real Claude Code composer reads as empty, never as a draft), and the crown's turn on it ends with A1 seen (T-918). On the mod road the wake goes by the mod's submit, which leaves the box alone, so it goes in within seconds while the person stays, its row never saying it waits (T-931)."
+expect = "a person has the crown's pane open (a tmux client attached) while the crown starts the worker; the worker answers and goes idle, and the board owes the crown its wake and holds it: nothing is pasted into the crown's box while the person stays, and the wake row reads 10m idle. The person leaves; the wake goes in within seconds onto the crown's empty box (a real Claude Code composer reads as empty, never as a draft), and the crown's turn on it ends with A1 seen (T-918). On the mod road the wake goes by the mod's submit, which leaves the box alone, so it goes in within seconds while the person stays, its row never saying it waits (T-931)."
 checks = ["started_by_crown", "held_for_person", "crown_line:A1:seen"]
 
   [[test.steps]]
@@ -1498,7 +1498,7 @@ id = "A3"
 title = "A3 · the board stops holding the crown's wake for a person idle in its pane: do the steps below"
 workspace = "worktree"
 brief = "Reply with the single word done and end your turn. Read no file and run no command."
-expect = "the crown runs on the hook set, where its wake is pasted into its box. A person has the crown's pane open (a tmux client attached) and sends it no input while the crown starts the worker; the worker answers and goes idle, and the board owes the crown its wake and holds it while tmux's record of the client's activity is under 2 min old, the wake row reading leave or 2 min idle. Past that bound the wake goes in once onto the crown's empty box with the person still attached, and the crown's turn on it ends with A3 seen (T-945)."
+expect = "the crown runs on the hook set, where its wake is pasted into its box. A person has the crown's pane open (a tmux client attached) and sends it no input while the crown starts the worker; the worker answers and goes idle, and the board owes the crown its wake and holds it while tmux's record of the client's activity is under 2 min old, the wake row reading 2m idle. Past that bound the wake goes in once onto the crown's empty box with the person still attached, and the crown's turn on it ends with A3 seen (T-945)."
 checks = ["started_by_crown", "went_past_idle_person:120", "crown_line:A3:seen"]
 
   [[test.steps]]

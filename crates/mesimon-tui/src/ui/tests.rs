@@ -13278,14 +13278,15 @@ fn the_snake_comes_out_idle_on_a_calm_board_and_nowhere_else() {
 }
 
 /// The crown's wake held for a client in its pane (T-945) names the bound
-/// on the card as drawn, not only in the row's string: whole on the widest
-/// column (40 cells), and cut after `leave` on the narrowest one (26).
+/// on the card as drawn, not only in the row's string: whole on an ordinary
+/// card (a 29-cell column, the four-column 120-cell board) and the widest
+/// (40 cells); on the 26-cell floor it reads `crown wakes ∙ 10m id~`.
 #[test]
-fn the_crown_wake_row_shows_its_bound_on_the_widest_card() {
+fn the_crown_wake_row_shows_its_bound_on_an_ordinary_card() {
     let mut app = app_graphite(fixture(false));
     let mut p = pending_ask(1, &[]);
     p.action = mesimon_core::command::PendingAction::CrownWake;
-    p.held = Some("leave or 10 min idle".into());
+    p.held = Some("10m idle".into());
     app.pending = vec![p];
     app.cursor_col = 0;
     app.cursor_row = Some(0);
@@ -13293,9 +13294,10 @@ fn the_crown_wake_row_shows_its_bound_on_the_widest_card() {
         let lines = render(&app, w, 30);
         lines.iter().find(|l| l.contains("crown wakes")).cloned().unwrap_or_default()
     };
-    assert!(row(200).contains("crown wakes ∙ leave or 10 min idle"), "{}", row(200));
+    // Four columns at 120 cells: 115 to share, the cursor's column 29.
+    assert!(row(120).contains("crown wakes ∙ 10m idle"), "{}", row(120));
+    assert!(row(200).contains("crown wakes ∙ 10m idle"), "{}", row(200));
     // Four columns at 109 cells: 104 to share, every column at the 26 floor.
     let narrow = row(109);
-    assert!(narrow.contains("crown wakes ∙ leave"), "{narrow}");
-    assert!(!narrow.contains("10 min idle"), "the narrowest card cuts it: {narrow}");
+    assert!(narrow.contains("crown wakes ∙ 10m id~"), "the floor cuts it: {narrow}");
 }

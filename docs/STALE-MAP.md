@@ -33686,9 +33686,13 @@ neither implies the other.
   latches `person_came` only on a sample after the paste, so a client attached (and idle) on
   the sample that let the paste go, who edited the box and left before the next one, left
   `person_came` false: the long-box fallback read their words as `Ours` and pressed Enter, where
-  a restart in that interval (`resume_crown_entering`) refused the same box. Both Codex pastes
-  (the live pane's `deliver`, and a woken crown's in `drive_codex_inputs`) now OR the raw
-  `attached` of the sample that authorized them into `person_came`.
+  a restart in that interval (`resume_crown_entering`) refused the same box. The Codex wake's one
+  paste, in `drive_codex_inputs`, now ORs the raw `attached` of the sample that authorized it
+  into `person_came`. `deliver` is not a paste: for a live Codex crown `paste_at` parks the words
+  (`codex_park`, `sent_at` unset) for that road. Round 3 (the cold reader's second read) took
+  back a seed round 2 put at the park. A client attached at the park who left before the paste's
+  own sample would have made the unedited, clipped wake read `Theirs`, owed again behind its own
+  words.
 - **The reading is `#{session_activity}` on the existing `list-panes` fork.** Every crown pane
   is its own session. `#{client_activity}` is a `list-clients` field, a second fork the tick may
   not make on the writer (T-857). The two clocks are not required to agree anywhere. Measured on
@@ -33723,13 +33727,17 @@ neither implies the other.
     sample, a paste still needs `person_read_at == landed`, and a failed `list-panes` lands no
     facts at all.
 - **The words** (`PersonHold::word`):
-  - `leave or 10 min idle`, the bound's own duration in it: the card's owed row,
-    `crown wakes ∙ leave or 10 min idle`, is 34 cells, and the widest card's interior is 35 (a
-    40-cell column less its bar, pads and glyph). At the 26-cell minimum the row ends at
-    `crown wakes ∙ leave ~` (`ui::tests::the_crown_wake_row_shows_its_bound_on_the_widest_card`
-    draws both). A longer form (`when you leave or after 10 min without activity`,
-    61 cells) never showed the bound on any card.
-  - `leave ∙ idle unknown` for `Unknown`.
+  - `10m idle`, the bound's own duration in it (`5s idle` under a 5 s seam). The card's owed
+    row, `crown wakes ∙ 10m idle`, is 22 cells. An ordinary card (a 29-cell column, the
+    four-column 120-cell board) has 24 for it, the column less its bar, pads and glyph, so the
+    bound shows whole there and on the widest (40-cell) card. On the 26-cell floor (21 cells)
+    it reads `crown wakes ∙ 10m id~`. `ui::tests::the_crown_wake_row_shows_its_bound_on_an_ordinary_card`
+    draws all three.
+  - Leaving, which also releases the hold, does not fit beside the bound: `wakes ∙ leave or
+    10m idle` is 25 cells. The bound is the fact a card reader cannot see elsewhere, so it
+    takes the row. Earlier forms (`when you leave or after 10 min without activity`, 61 cells;
+    `leave or 10 min idle`, 34) never showed the bound on an ordinary card.
+  - `on leaving` for `Unknown` (`crown wakes ∙ on leaving`, 24 cells).
   - `after your draft` once the client hold clears with words in the box.
   - There is no countdown. "Activity" is tmux's record of input from a client, not a person's
     last key or their presence.
@@ -33757,9 +33765,13 @@ neither implies the other.
   - `a_codex_crown_s_wake_goes_past_an_idle_client_and_enters_only_its_own_box`: the exact box
     is entered; a changed box and a clipped box are the person's, and nothing is entered. A
     mutation pointing `person_came` at the filtered set fails this test. Round 2 adds the idle
-    client that edits and leaves within milliseconds of the paste, before the next sample, and
-    the same with a restart before the Enter: never entered, not told, owed behind their words.
-    A mutation turning the paste's latch off fails the first of them.
+    client that edits and leaves within milliseconds of the paste, and the same with a restart:
+    never entered, not told, owed behind their words. That e2e proves the outcome under the
+    scheduling observed. It does not fence a facts sample landing between the paste and the edit
+    (that sample latches the same way), nor whether the restart came before the old daemon
+    classified the box. A mutation turning the paste's latch off fails the first of them. Round 3
+    adds the complement: attached at the park, gone before the paste's sample. The unedited
+    clipped wake is entered and told, and putting the park's seed back fails it.
   - `the_crown_wake_waits_for_a_person_at_the_crown_s_box`, unchanged on the default bound, is
     the active client that holds.
 - Rig A3 (filed as `A2`, which T-938 also used; renamed): the rig's crown is parked and woken onto the hook set at a 120 s bound. A person

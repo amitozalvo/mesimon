@@ -538,28 +538,29 @@ impl PersonHold {
     pub(super) fn word(self) -> &'static str {
         match self {
             PersonHold::Client(ClientHold::Recent) => wake_when_you_leave(),
-            PersonHold::Client(ClientHold::Unknown) => "leave ∙ idle unknown",
+            PersonHold::Client(ClientHold::Unknown) => "on leaving",
             PersonHold::Draft => "after your draft",
         }
     }
 }
 
-/// `leave or 10 min idle`, the bound's own duration in it: tmux's activity
-/// record, never a person's last key. Short enough that the card's owed row,
-/// `crown wakes ∙ leave or 10 min idle`, fits the widest column whole.
+/// `10m idle`, the bound's own duration in it: tmux's activity record, never
+/// a person's last key. Short enough that the card's owed row, `crown wakes ∙
+/// 10m idle`, fits an ordinary card whole (a 29-cell column's 24 cells);
+/// leaving, which also lets it go, is the one thing it does not fit.
 fn wake_when_you_leave() -> &'static str {
     static WORDS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    WORDS.get_or_init(|| format!("leave or {} idle", span_words(person_idle_ms())))
+    WORDS.get_or_init(|| format!("{} idle", span_words(person_idle_ms())))
 }
 
-/// `10 min`, `5 s`, `1500 ms`: a bound in the largest unit it fills whole.
+/// `10m`, `5s`, `1500ms`: a bound in the largest unit it fills whole.
 fn span_words(ms: u64) -> String {
     if ms.is_multiple_of(60_000) {
-        format!("{} min", ms / 60_000)
+        format!("{}m", ms / 60_000)
     } else if ms.is_multiple_of(1000) {
-        format!("{} s", ms / 1000)
+        format!("{}s", ms / 1000)
     } else {
-        format!("{ms} ms")
+        format!("{ms}ms")
     }
 }
 
@@ -3482,13 +3483,13 @@ mod tests {
         assert_eq!(idle_bound(Some("soon")), PERSON_IDLE_MS);
         assert_eq!(idle_bound(Some("-5")), PERSON_IDLE_MS);
         assert_eq!(idle_bound(Some("5000")), 5000);
-        assert_eq!(span_words(PERSON_IDLE_MS), "10 min");
-        assert_eq!(span_words(5000), "5 s");
-        assert_eq!(span_words(90_000), "90 s");
-        assert_eq!(span_words(1500), "1500 ms");
+        assert_eq!(span_words(PERSON_IDLE_MS), "10m");
+        assert_eq!(span_words(5000), "5s");
+        assert_eq!(span_words(90_000), "90s");
+        assert_eq!(span_words(1500), "1500ms");
         assert_eq!(PersonHold::Draft.word(), "after your draft");
-        assert_eq!(PersonHold::Client(ClientHold::Unknown).word(), "leave ∙ idle unknown");
-        assert!(PersonHold::Client(ClientHold::Recent).word().starts_with("leave or "));
+        assert_eq!(PersonHold::Client(ClientHold::Unknown).word(), "on leaving");
+        assert!(PersonHold::Client(ClientHold::Recent).word().ends_with(" idle"));
     }
 
     #[test]

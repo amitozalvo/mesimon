@@ -3336,7 +3336,7 @@ pub struct Pending {
     /// say, so the words wait for a person's `^y` the way a crown's ask
     /// does, and the reason is the row's word (`agent asked`). On the
     /// crown's wake (T-918) it is why the wake waits on a person rather than
-    /// a turn — `leave or 10 min idle` (T-945), `leave ∙ idle unknown`,
+    /// a turn — `10m idle` (T-945), `on leaving`,
     /// `after your draft` — or
     /// `sending`, a Codex
     /// box holding it for its Enter; nobody's send is asked for: the wake
