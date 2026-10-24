@@ -32648,3 +32648,24 @@ Tests: `crownwake::a_failed_turn_wakes_the_crown_on_its_edge`;
 silent, a refined reason on the wake still owed across a restart after the worker moved on, a later
 failure of its own a second line, none saying delivered or finished; both roads); the rig's `E1`
 (the `fail` step, the `limit` step's frame with a server error's class).
+
+**A refused submit is never pasted under a person (item 6, the interim for T-931's exemption).**
+T-931 let the crown's wake past the person hold because a `submit` types nothing. When Claude Code
+refuses that submit after the person's Esc ("the session was stopped and nobody has sent input
+since", T-894), `on_mod_submit` falls back to the paste road, which is keys, into an empty box,
+and nothing asked whether a person was still there. The fallback now asks tmux for the pane's
+clients (`has_clients`, a fork at the edge, beside the box read it already made) and takes the
+existing refusal road when one is there, or when the server cannot say: the words stay `unsent`
+on the seat for the resend, as a box holding text keeps them. For every owed entry, not the
+crown's wake alone: a paste's Enter under anyone's typing sends their keys.
+- Refused: holding the wake again while the crown's seat reads `Idle{Interrupted}` (the state
+  after the Esc). It is more code for the same limit.
+- **The limit, T-938's:** a wake that reaches this refusal was already told when
+  `drain_crown_wakes` handed it to the mod: its baselines moved and its hands came down. The board
+  says it unsent, and nothing tells it again by itself. Telling only once the crown's session
+  took it is item 4 (this ticket's notes), left to T-938's ledger of words sent and not taken.
+
+Test: `crown_e2e::a_mod_road_crown_s_refused_wake_is_never_pasted_under_a_person` (attached,
+empty box, the refusal: unsent on the crown's seat, the refusal in the feed, no paste, the person's
+typing alone in the box; it fails with the client check removed). The T-894 pair in
+`mod_turns_e2e` stay green.

@@ -5686,7 +5686,12 @@ impl Daemon {
         // set: the same words go in by it, owed and acked as a paste is, and
         // the crown's ask stays the turn's. Only into an EMPTY box: an Esc
         // out of `/compact` puts `/compact` back in it (measured), and words
-        // pasted after it would run as the compaction's instructions.
+        // pasted after it would run as the compaction's instructions. And
+        // never into a pane a tmux client has open (T-936): the person there
+        // may be typing, and the paste's Enter would send their keys with it;
+        // a crown's wake was let past that hold only because a submit types
+        // nothing (T-931). Such words stay unsent below, as a box holding
+        // text keeps them; a client the server cannot list counts as there.
         if said.is_some_and(input_held_after_stop) {
             use crate::agents::claude::composer::{self, Composer};
             let pane = self
@@ -5695,12 +5700,14 @@ impl Daemon {
                 .iter()
                 .find(|s| s.id == id && s.kind == SessionKind::Claude && s.state.has_pane())
                 .map(|s| s.sid16());
-            let empty = pane.as_deref().is_some_and(|sid| {
-                self.backend
-                    .capture_input_screen(sid)
-                    .is_ok_and(|screen| composer::read(&screen) == Composer::Empty)
+            let free = pane.as_deref().is_some_and(|sid| {
+                !self.backend.has_clients(&format!("={sid}")).unwrap_or(true)
+                    && self
+                        .backend
+                        .capture_input_screen(sid)
+                        .is_ok_and(|screen| composer::read(&screen) == Composer::Empty)
             });
-            if let (Some(sid), Some(words), true) = (pane, owed.sent.clone(), empty) {
+            if let (Some(sid), Some(words), true) = (pane, owed.sent.clone(), free) {
                 let text = self.launch_words(ticket, &words);
                 match self.backend.paste_text(&sid, &text) {
                     Ok(()) => {
@@ -5721,8 +5728,8 @@ impl Daemon {
                 }
             }
         }
-        // Any other refusal (a hook beneath blocked it, or a box holding
-        // text) keeps the words unsent for the person's resend — which goes
+        // Any other refusal (a hook beneath blocked it, a box holding text,
+        // or a person in the pane) keeps the words unsent for the person's resend — which goes
         // once the person has typed in the pane or cleared its box — and
         // the crown reads its ask dropped by
         // the agent's own side (`get_ticket`'s `asked: dropped, by: agent`),

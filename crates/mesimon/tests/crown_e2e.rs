@@ -1820,6 +1820,131 @@ fn a_mod_road_crown_takes_its_wake_with_a_person_at_its_box() {
     let _ = client.wait();
 }
 
+/// T-936: a crown's wake goes by its mod's `submit` past a person in its
+/// pane (T-931), and Claude Code refuses it after their Esc ("the session
+/// was stopped and nobody has sent input since", T-894). The refusal's
+/// paste road is keys, so it is never taken into a pane a tmux client has
+/// open, empty box or not: the wake stays unsent on the crown's seat for
+/// the resend, nothing is typed under the person, and what they type next
+/// is theirs alone. That the wake was already told (`drain_crown_wakes`)
+/// is T-938's to undo.
+#[test]
+fn a_mod_road_crown_s_refused_wake_is_never_pasted_under_a_person() {
+    let Some(h) = Harness::boot_bare(
+        "crown_mod_refused",
+        Some(BOX_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_CLAUDE_ROAD", "mod"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let tmux_sock = h.paths.tmux_sock();
+    let mut c = h.client("crown_mod_refused");
+    let got = h.dir.join("got.txt");
+    let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let up = |sid: uuid::Uuid| {
+        let pid = h.dir.join(format!("mod-bridge-{sid}.pid"));
+        wait_until(std::time::Duration::from_secs(10), "the mod's bridge", || pid.exists());
+        hook_send_with(
+            &hook_sock,
+            &sid.to_string(),
+            "SessionStart",
+            Some("startup"),
+            r#"{"session_id":"x","transcript_path":"/tmp/t-mod.jsonl","cwd":"/tmp"}"#,
+        );
+    };
+
+    let a = c.create_ticket("coordinate");
+    let w1 = c.create_ticket("mesimon-probe-936 worker");
+    let kw1 = key_of(&mut c, w1);
+    let sa = c.spawn_claude(a);
+    up(sa);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw1).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw1.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("shared_checkout".into()),
+        },
+    ) {
+        Response::AgentStarted { session_started: true, .. } => {}
+        other => panic!("start_agent {kw1}: {other:?}"),
+    }
+    let ws1 = c.board().live_agent(w1).expect("W1 holds a seat").id;
+    up(ws1);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // A person in the crown's pane, its box empty; the crown's mod refuses
+    // a submit as Claude Code does after their Esc.
+    let crown = c.board().sessions.iter().find(|s| s.id == sa).unwrap().sid16();
+    let mut client = tmux(&tmux_sock)
+        .args(["-C", "attach", "-t", &crown])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("a control-mode tmux client");
+    wait_until(std::time::Duration::from_secs(10), "the client on the crown's session", || {
+        tmux(&tmux_sock)
+            .args(["list-clients", "-t", &crown, "-F", "#{client_name}"])
+            .output()
+            .is_ok_and(|o| !o.stdout.is_empty())
+    });
+    std::fs::write(h.dir.join("mod-stopped-submit"), "").unwrap();
+
+    // W1 delivers: the submit is refused, and nothing is pasted under them.
+    let h1 = commit(&h.repo, "w1.txt");
+    start(&mut c, ws1);
+    stop(&mut c, ws1);
+    let delivered = format!("{kw1} \"mesimon-probe-936 worker\" delivered (commit {h1}");
+    wait_until(std::time::Duration::from_secs(10), "the refused wake kept unsent", || {
+        c.board()
+            .sessions
+            .iter()
+            .find(|s| s.id == sa)
+            .and_then(|s| s.unsent.clone())
+            .is_some_and(|u| u.text.contains(&delivered))
+    });
+    let feed = h.paths.state_dir.join("activity.jsonl");
+    wait_until(std::time::Duration::from_secs(5), "the refusal in the feed", || {
+        read_file(&feed).contains("\"prompt_submit_refused\"")
+    });
+    assert!(!read_file(&feed).contains("prompt_pasted_after_refusal"));
+    // What the person types next is theirs alone.
+    assert!(tmux(&tmux_sock)
+        .args(["send-keys", "-t", &crown, "-l", "half a thought"])
+        .status()
+        .unwrap()
+        .success());
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let screen = tmux(&tmux_sock).args(["capture-pane", "-p", "-t", &crown]).output().unwrap();
+    let screen = String::from_utf8_lossy(&screen.stdout).to_string();
+    assert!(screen.contains("half a thought") && !screen.contains("delivered"), "{screen}");
+    assert!(!read_file(&got).contains(&delivered), "nothing typed: {}", read_file(&got));
+    client.kill().unwrap();
+    let _ = client.wait();
+}
+
 /// A Codex crown's wake and a person at its box (T-918), on the synthetic
 /// runtime, whose screen the test draws (`fake_codex_runtime.py` echoes no
 /// paste at an idle). The wake is pasted only on a sample that read the
