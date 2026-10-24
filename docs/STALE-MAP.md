@@ -32988,3 +32988,10 @@ Tests:
   untouched. Test: `crown_e2e::a_person_at_the_crown_before_its_launch_paste_gets_no_keys` (a
   client on the crown's pane before its `SessionStart`: nothing typed, the hand up, the row
   `when you leave`; they leave and one paste delivers it; fails with the guard off).
+- **A5 (2b). No retry Enter after a wake's own paste.** After a parked wake's paste and Enter
+  succeeded, the launch loop still scheduled its retry Enters, unchecked against a person or a
+  changed box when the prompt hook was late or missing. Once that paste and Enter succeed, the
+  entry gets no more presses; it waits one window for its prompt (`INFLIGHT_MS`) and then expires
+  as `paste_unacked`, with no key. A person's own launch keeps its presses. Test:
+  `crown_e2e::no_retry_enter_follows_a_wake_s_own_paste` (the paste goes in, no hook follows, a
+  person types; four seconds on, their words were not sent; fails with the presses kept).

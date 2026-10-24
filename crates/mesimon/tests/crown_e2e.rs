@@ -10057,3 +10057,45 @@ fn a_person_at_the_crown_before_its_launch_paste_gets_no_keys() {
     std::thread::sleep(std::time::Duration::from_millis(1000));
     assert_eq!(typed(), 1, "once");
 }
+
+/// T-936, the fifth read (2b): once a parked wake's own paste and Enter
+/// went in, the board presses no more Enters for it. Here no prompt hook
+/// follows, and a person then types a draft into the crown's box: no retry
+/// Enter sends it.
+#[test]
+fn no_retry_enter_follows_a_wake_s_own_paste() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_launch_retry",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_CLAUDE_ROAD", "hooks"),
+            ("MESIMON_SLEEP_MIN_AGE_MS", "0"),
+        ],
+    ) else {
+        return;
+    };
+    let hook_sock = h.paths.hook_sock();
+    let tmux_sock = h.paths.tmux_sock();
+    let mut c = h.client("crown_launch_retry");
+    let (_a, sa, w, line) = crown_woken_with_its_wake_parked(&h, &mut c, "launch retry");
+    let got = h.dir.join("got.txt");
+    let read_got = || std::fs::read_to_string(&got).unwrap_or_default();
+    hook_send(&hook_sock, &sa.to_string(), "SessionStart", r#"{"source":"resume"}"#);
+    wait_until(std::time::Duration::from_secs(15), "the wake's own paste and Enter", || {
+        read_got().lines().any(|l| l.contains(&line))
+    });
+    wait_until(std::time::Duration::from_secs(5), "told at its paste", || {
+        c.board().ticket(w).unwrap().raised.is_none()
+    });
+    // No prompt hook comes. A person types into the box.
+    let crown = c.board().sessions.iter().find(|s| s.id == sa).unwrap().sid16();
+    assert!(tmux(&tmux_sock)
+        .args(["send-keys", "-t", &crown, "-l", "half a thought"])
+        .status()
+        .unwrap()
+        .success());
+    std::thread::sleep(std::time::Duration::from_millis(4000));
+    assert!(!read_got().contains("half a thought"), "no Enter sent their draft: {}", read_got());
+}

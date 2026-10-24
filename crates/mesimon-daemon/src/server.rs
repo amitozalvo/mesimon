@@ -6380,6 +6380,15 @@ impl Daemon {
                         .is_some_and(|e| e.session == id && e.parked);
                     if wake && parked_wake && pasted && !text.is_empty() {
                         self.wake_entered(id);
+                        // No automatic Enter after the wake's own (T-936): a
+                        // person may be in the box by the next one. Its
+                        // prompt is waited for one window, never pressed for.
+                        if let Some(owed) = self.owed.get_mut(&id) {
+                            owed.next_press = None;
+                            owed.expires.get_or_insert(now_ms() + INFLIGHT_MS);
+                        }
+                        changed = true;
+                        continue;
                     }
                     if !text.is_empty() {
                         // A shell line or a slash command at a wake (T-876,
