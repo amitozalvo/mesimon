@@ -1429,12 +1429,23 @@ impl Daemon {
         // Only a proven end settles the crown's ask (T-938): a dialog mid-turn,
         // a guess or an observation lost (a wait gone stale `Unknown`) is no
         // end, and the ask the turn rides stays with it for the end that is.
+        // A turn a hook says failed or was interrupted is over too (round 4):
+        // its ask settles, or it would block the crown's next one for good.
+        // Probes, looks and `turns_open` still take only `end_turn`.
         let dialog = self
             .board
             .live_agent(worker)
             .is_some_and(|s| matches!(s.state, SessionState::RequiresAction { .. }));
+        let ended = end_turn
+            || self.board.live_agent(worker).is_some_and(|s| {
+                matches!(
+                    s.state,
+                    SessionState::Failed { .. }
+                        | SessionState::Idle { stop_reason: StopReason::Interrupted }
+                ) && !guessed(s)
+            });
         let asked = self.turn_asks.remove(&worker);
-        let asked = if dialog || !end_turn {
+        let asked = if dialog || !ended {
             if let Some(a @ TurnAsk::Asked { .. }) = asked {
                 self.turn_asks.insert(worker, a);
             }

@@ -33570,5 +33570,12 @@ rebase" and "Main moved again"):
   block. A rerun with the corrected oracle is deferred, and the block on real Claude stays
   unverified.
 
+**Round 4** (the crown's note "Round 4 after the second independent read"): a turn that a hook
+says failed or was interrupted (`Failed`, `Idle{Interrupted}`, not a guess) settles the crown's
+ask in `turn_ended` as `end_turn` does, so a `handed` ask whose own turn dies on an API error
+reads `taken` and no longer refuses the crown's next ask for good. Probes, looks and
+`turns_open` still take only `end_turn` (`an_ask_whose_turn_fails_settles_and_the_next_ask_goes`,
+both roads; it fails on the mod pass without the change).
+
 **Not covered by an e2e:** send-now keys failing after a filled box, since the harness has no
 backend failure seam there. The code path is the `unknown` edge in `on_mod_fill`.

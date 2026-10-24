@@ -4528,6 +4528,117 @@ fn the_crown_sends_now_into_a_working_turn() {
     assert!(!feed.contains("mesimon-probe-8"), "the feed never carries the words");
 }
 
+/// T-938, round 4: an ask whose own turn ends on an error is settled by
+/// that end, a hook's `StopFailure`, as an `end_turn` settles it. On the mod
+/// road the `entered` handed it and the turn it started has ended: `taken`,
+/// which says nothing of whether the work succeeded. On either road the
+/// crown's next ask to the worker goes, where it was refused for good.
+#[test]
+fn an_ask_whose_turn_fails_settles_and_the_next_ask_goes() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_ask_failed",
+        Some(RECORDING_STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_ask_failed");
+    let got = h.dir.join("got.txt");
+    let landed = |probe: &str| std::fs::read_to_string(&got).unwrap_or_default().contains(probe);
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let mod_road = test_road() == "mod";
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-9401 worker");
+    let kw = key_of(&mut c, w);
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
+        Response::Ok
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("shared_checkout".into()),
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    let ws = c.board().live_agent(w).expect("W holds a seat").id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "W's finish on the crown", || {
+        landed(&format!("{kw} \"mesimon-probe-9401 worker\" finished its turn"))
+    });
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let word = |c: &mut TestClient| read(c, sa, &kw).unwrap().asked.map(|a| a.status);
+    let ask = |c: &mut TestClient, text: &str| {
+        let v = read(c, sa, &kw).unwrap();
+        match c.send(
+            Principal::Agent { session: sa },
+            Command::AgentAskTicket {
+                key: kw.clone(),
+                text: text.into(),
+                seen: v.seen,
+                plan: false,
+                deliver: Deliver::Idle,
+            },
+        ) {
+            Response::AgentAsked { asked: Some(a), .. } => a,
+            other => panic!("ask_agent {text:?}: {other:?}"),
+        }
+    };
+
+    let first = ask(&mut c, "mesimon-probe-9402 then the API fails");
+    // The crown's own wake holds the shared checkout's queue for its window
+    // while the stub acks nothing for it (T-936), so the wait is generous.
+    wait_until(std::time::Duration::from_secs(25), "the words in W's pane", || {
+        landed("mesimon-probe-9402 then the API fails")
+    });
+    if mod_road {
+        wait_until(std::time::Duration::from_secs(10), "the mod's entered", || {
+            word(&mut c).as_deref() == Some("handed")
+        });
+    }
+    start(&mut c, ws);
+    let body = json!({ "error": "server_error", "last_assistant_message": "API Error" });
+    hook_send_with(
+        &hook_sock,
+        &ws.to_string(),
+        "StopFailure",
+        Some("server_error"),
+        &body.to_string(),
+    );
+    c.await_state(ws, "failed", |s| *s == SessionState::Failed { reason: FailReason::Server });
+    if mod_road {
+        wait_until(std::time::Duration::from_secs(10), "the failed end takes it", || {
+            word(&mut c).as_deref() == Some("taken")
+        });
+    }
+    let next = ask(&mut c, "mesimon-probe-9403 after the failure");
+    assert_ne!(next.ask, first.ask, "the failed turn's end lifted the block");
+}
+
 /// T-938: the crown's ask is one record, which the receipt and `get_ticket`'s
 /// `asked` both read in one word, and a second ask is refused while the
 /// first is out. The T-930 sequence first: `now` into a working agent reads
