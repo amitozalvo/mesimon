@@ -1914,7 +1914,8 @@ async function editFlow(browser, engineName, size, viewport) {
     assert.equal(await page.locator('.ticket.card[data-id="ticket-3"] .ticket-meta').textContent(), "moved · 2m·T-3");
     // A phone draws one column at a time, and the crown's is the other one.
     if (size !== "phone")
-      assert.equal(await page.locator('.ticket.card[data-id="ticket-0"] .ticket-title.crowned > .crown-mark:first-child').count(), 1);
+      // The agent's state glyph leads the title (T-948), the crown after it.
+      assert.equal(await page.locator('.ticket.card[data-id="ticket-0"] .ticket-title.crowned > .title-glyph:first-child + .crown-mark').count(), 1);
     await shot("crown-touched");
     // The ticket that wears it: the crown before its title on its card and
     // its page, the title in the crown's ink, and no line about it.
@@ -3422,33 +3423,37 @@ try {
             "Recently created1",
           );
           assert.match(await page.locator("#count").textContent(), / · 1 new$/);
-          // A shell open on a ticket (T-948) is the terminal glyph in the
-          // corner, at its prompt or busy; a running command spins the face
-          // mark as an agent's work does, over an idle agent's mark too.
+          // A shell open on a ticket (T-948) is the terminal glyph at the
+          // title's start, at its prompt or busy; a running command spins
+          // the state mark as an agent's work does, over an idle agent's
+          // mark too. Both are the title's: nothing of the card is outside it.
           const card = (id) => `.ticket[data-id="${id}"]`;
+          const glyphs = (id) =>
+            page.locator(`${card(id)} .title-glyph`).evaluateAll((ns) =>
+              ns.map((n) => [n.parentElement.classList.contains("ticket-title"), n.querySelector(".spin") ? "spin" : n.classList.contains("shell-mark") ? "terminal" : n.firstElementChild.classList[1]]),
+            );
           await page.evaluate(() => {
             fixture.tickets.at(-1).shell = {};
             fixture.update();
           });
           await page.locator(`${card("ticket-new")} .shell-mark`).waitFor();
-          assert.equal(await page.locator(`${card("ticket-new")} .face-mark`).count(), 0, "a shell at its prompt is no work");
+          assert.deepEqual(await glyphs("ticket-new"), [[true, "terminal"]], "a shell at its prompt is no work");
           assert.equal(await page.locator(`${card("ticket-new")} .shell-mark`).getAttribute("title"), "terminal");
           await page.evaluate(() => {
             fixture.tickets.at(-1).shell = { busy: true };
             fixture.tickets[4].shell = { busy: true };
             fixture.update();
           });
-          await page.locator(`${card("ticket-new")} .face-mark .spin`).waitFor();
+          await page.locator(`${card("ticket-new")} .spin`).waitFor();
           await page.locator(`${card("ticket-4")} .spin`).waitFor();
-          assert.equal(await page.locator(`${card("ticket-4")} .mark-idle`).count(), 0);
-          assert.equal(await page.locator(`${card("ticket-4")} .shell-mark`).count(), 1);
+          assert.deepEqual(await glyphs("ticket-new"), [[true, "spin"], [true, "terminal"]]);
+          assert.deepEqual(await glyphs("ticket-4"), [[true, "spin"], [true, "terminal"]]);
           await page.evaluate(() => {
             fixture.tickets[4].shell = {};
             fixture.update();
           });
           await page.locator(`${card("ticket-4")} .mark-idle`).waitFor();
-          assert.equal(await page.locator(`${card("ticket-4")} .spin`).count(), 0);
-          assert.equal(await page.locator(`${card("ticket-4")} .shell-mark`).count(), 1);
+          assert.deepEqual(await glyphs("ticket-4"), [[true, "mark-idle"], [true, "terminal"]]);
           await page.evaluate(() => {
             delete fixture.tickets[4].shell;
             fixture.tickets.pop();
@@ -3511,6 +3516,53 @@ try {
           await mode("board");
           if (size === "phone") await page.locator('[data-column="IN PROGRESS"]').click();
           assert.deepEqual(await anatomy(), inNow);
+          // A glyph never moves a card's lower lines (T-948): two neighbouring
+          // cards, one with the agent's mark and a shell's glyph and one with
+          // neither, hold their tags' line at the same place in the card, and
+          // side by side, in two columns, at the same y.
+          const rows = (ids) =>
+            page.evaluate(
+              (ids) =>
+                ids.map((id) => {
+                  const c = document.querySelector(`#tickets .ticket[data-id="${id}"]`).getBoundingClientRect();
+                  const l = document.querySelector(`#tickets .ticket[data-id="${id}"] .card-line`).getBoundingClientRect();
+                  return { card: c.top, x: l.left - c.left, dy: l.top - c.top, y: l.top, h: c.height, left: c.left };
+                }),
+              ids,
+            );
+          const pair = (other) =>
+            page.evaluate((other) => {
+              const card = (id, title, column, agent, shell) => ({ id, key: id === "glyph-on" ? "T-90" : "T-91", title, column, agent, shell,
+                tags: [{ group: 1, name: "BUG", tint: 0 }] });
+              fixture.tickets.unshift(
+                card("glyph-on", "Glyph", "IN PROGRESS", { session: "s-on", provider: "claude", state: "working", promptable: true }, { busy: false }),
+                card("glyph-off", "Glyph", other, null, undefined),
+              );
+              fixture.update();
+            }, other);
+          const unpair = () =>
+            page.evaluate(() => {
+              fixture.tickets.splice(0, 2);
+              fixture.update();
+            });
+          await pair("IN PROGRESS");
+          await page.locator('#tickets .ticket[data-id="glyph-off"]').waitFor();
+          assert.deepEqual(await glyphs("glyph-on"), [[true, "spin"], [true, "terminal"]]);
+          assert.deepEqual(await glyphs("glyph-off"), []);
+          {
+            const [on, off] = await rows(["glyph-on", "glyph-off"]);
+            assert.deepEqual([on.x, on.dy, on.h], [off.x, off.dy, off.h], "the same lines in the same places, glyph or none");
+          }
+          await unpair();
+          if (size === "desktop") {
+            await pair("TODO");
+            await page.locator('#tickets .ticket[data-id="glyph-off"]').waitFor();
+            const [on, off] = await rows(["glyph-on", "glyph-off"]);
+            assert.notEqual(on.left, off.left, "two columns, side by side");
+            assert.deepEqual([on.card, on.y], [off.card, off.y], "the tags' lines at the same y");
+            await unpair();
+          }
+          await until(page, () => !document.querySelector('#tickets .ticket[data-id="glyph-on"]'));
           if (size === "phone") {
             // A swipe across the Board steps the columns (T-624): left for
             // the next, right for the previous, nothing past either end, and

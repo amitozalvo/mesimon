@@ -32021,11 +32021,20 @@ With an idle agent beside the shell, the phone drew the agent's idle mark and no
   These are the TUI's two facts. It never reads another ticket's shell or the checkout's own
   terminal (`None` key). A foreground change already repaints (`absorb_panes` → `broadcast` →
   `control_changed`), so the phone hears it on the next board.
-- The page: the `terminal` glyph in the card's corner whenever a shell is open (the TUI's rail
-  word, `terminal`, as its title). A busy shell spins the face mark; a ticket with no agent gets
-  a face mark for that alone. Under needs-you, and over an idle agent's mark: the phone has no
-  done mark to give it, and the spinner is the moving fact. A shell at its prompt adds no face
-  mark, as the TUI's card adds no glyph for one.
+- The page: the `terminal` glyph whenever a shell is open (the TUI's rail word, `terminal`, as
+  its title). A busy shell spins the state mark, on a ticket with no agent too. It sits under
+  needs-you and over an idle agent's mark: the phone has no done mark to give it, and the
+  spinner is the moving fact. A shell at its prompt adds no state mark, as the TUI's card adds
+  no glyph for one.
+- **One rule for the card's status glyphs (the person, from the phone, 2026-10-24).** The
+  agent's mark and the shell's glyph are inline at the title's start (`.title-glyph`, in that
+  order, then the crown). They are never a slot or a row of their own, and take no width where
+  there is none. The agent's mark had a grid column of its own (`.face-mark`, T-855). That
+  column started every line under the title 24 px further in on a card with a mark (x 38 against
+  14 on a desktop card, measured by running the new test on the old page). A glyph appearing
+  therefore moved the card's tags and key. The glyph box is 1em high with `vertical-align:
+  middle`, so the title's line keeps its height either way. A wrapped title's second line starts
+  under the glyph, as the crown's already did.
 
 **Not changed.** Now's groups still read the agent's state word alone, so a busy shell neither
 lists a ticket on Now nor moves it out of Recently idle. A browser's remembered board keeps no
@@ -32035,6 +32044,11 @@ crown's shell close request (the TUI card's `!`) does not reach the phone.
 
 **Tests.** `mesophon::tests::a_phone_sees_a_ticket_s_open_shell` (daemon): a terminal and an
 adopted shell, at a prompt and busy, plus another ticket's, the checkout's, a dead shell and an
-agent. The core wire test adds `shell` round-trips and pins `{}`. `ux.test.js` (the cards case):
-a no-agent ticket's corner glyph with no face mark, then its spinner; an idle agent's ticket
-spinning over its idle mark, then back.
+agent. The core wire test adds `shell` round-trips and pins `{}`. `ux.test.js`, Now's cards: a
+no-agent ticket's terminal glyph with no state mark, then its spinner; an idle agent's ticket
+spinning over its idle mark, then back; every glyph a child of `.ticket-title`. Board's
+alignment: two neighbouring cards, one with the agent's spinner and the shell's glyph and one
+with neither. Their tags' lines sit at the same x and the same offset in the card, and the cards
+are the same height, on every size. On desktop, side by side in two columns, the tags' lines are
+at the same y. This fails on the old layout. The crown case pins the order: the glyph first,
+then the crown.

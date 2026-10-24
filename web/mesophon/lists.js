@@ -150,26 +150,30 @@ function FromHere({ store, ticket }) {
     : null;
 }
 
-// A command running in the ticket's shell (T-948) spins as an agent's work
-// does, under anything the agent needs and over its idle mark.
+// The ticket's state at its title's start (T-948): the agent's mark, and a
+// command running in the ticket's shell spins as an agent's work does,
+// under anything the agent needs and over its idle mark.
 function StateMark({ ticket }) {
   const state = ticket.agent?.state;
-  if (state === "needs attention") return html`<span class="mark mark-attn" aria-hidden="true"></span>`;
-  if (state === "starting" || state === "working" || ticket.shell?.busy) return html`<${Icon} name="spinner" size=${16} width=${2.4} cls="spin mark-icon" />`;
-  if (!ticket.agent) return html`<span class="mark mark-none" aria-hidden="true"></span>`;
-  return html`<span class="mark mark-idle" aria-hidden="true"></span>`;
+  if (state === "needs attention") return html`<span class="title-glyph"><span class="mark mark-attn" aria-hidden="true"></span></span>`;
+  if (state === "starting" || state === "working" || ticket.shell?.busy) return html`<span class="title-glyph"><${Icon} name="spinner" size=${15} width=${2.4} cls="spin mark-icon" /></span>`;
+  if (!ticket.agent) return null;
+  return html`<span class="title-glyph"><span class="mark mark-idle" aria-hidden="true"></span></span>`;
 }
 
 // A shell open on the ticket (T-948), the TUI's `!` terminal or an adopted
-// one: the terminal glyph in the corner, busy or at its prompt. Live only.
+// one: the terminal glyph beside the state's, busy or at its prompt. Live
+// only.
 function ShellMark({ ticket }) {
   if (!ticket.shell) return null;
-  return html`<span class="shell-mark" title="terminal"><${Icon} name="terminal" size=${13} width=${2.2} /><span class="sr-only">terminal</span></span>`;
+  return html`<span class="title-glyph shell-mark" title="terminal"><${Icon} name="terminal" size=${13} width=${2.2} /><span class="sr-only">terminal</span></span>`;
 }
 
 // A ticket, drawn the same wherever it is listed (T-533), in the TUI card's
-// order (T-855): the agent's mark, the title, and at the right its worktree
-// mark and the agent's age; the tags, with the key at the right (after
+// order (T-855): the title, led on its first line by the agent's mark and
+// an open shell's glyph (T-948: a glyph takes width there alone, so no line
+// under it moves from card to card), and at the right its worktree mark and
+// the agent's age; the tags, with the key at the right (after
 // what the crown last did, and the column, where the list around it is not
 // that column); and, live, what it is on. The agent's state is its mark and
 // the card's ink, never words, and the crown's word has no line of its own
@@ -179,9 +183,8 @@ function Face({ store, ticket, board, column, archived }) {
   const agent = ticket.agent;
   const since = stateAge(board, agent);
   return html`<span class="face">
-    ${(agent || ticket.shell?.busy) && html`<span class="face-mark"><${StateMark} ticket=${ticket} /></span>`}
-    <span class=${`ticket-title${ticket.crown ? " crowned" : ""}`} dir="auto"><${CrownMark} ticket=${ticket} size=${15} />${ticket.title}</span>
-    <span class="card-corner"><${ShellMark} ticket=${ticket} /><${WorktreeMark} ticket=${ticket} />${since && html`<span class="card-age">${since}</span>`}</span>
+    <span class=${`ticket-title${ticket.crown ? " crowned" : ""}`} dir="auto"><${StateMark} ticket=${ticket} /><${ShellMark} ticket=${ticket} /><${CrownMark} ticket=${ticket} size=${15} />${ticket.title}</span>
+    <span class="card-corner"><${WorktreeMark} ticket=${ticket} />${since && html`<span class="card-age">${since}</span>`}</span>
     <span class="card-line"><${Tags} ticket=${ticket} /><span class="ticket-meta">${crownTouch(board, ticket) && html`<${CrownWord} board=${board} ticket=${ticket} /><span aria-hidden="true">·</span>`}${(column || archived) && html`<span class=${archived ? "archived-word" : undefined}>${archived ? "Archived" : ticket.column}</span><span aria-hidden="true">·</span>`}<span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span></span>
     <${Headline} agent=${agent} />
   </span>`;
