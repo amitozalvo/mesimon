@@ -2038,6 +2038,50 @@ fn golden_ticket_screen_120() {
     golden("ticket_120x30", &render(&app, 120, 30));
 }
 
+/// A ticket with more notes than the rail is tall (T-970): the cursor on
+/// the first note draws the rail from its top, as before; on the last, the
+/// rail scrolls so the last rows show (the heading off the top) and a click
+/// on a row lands on the row it shows. Back on a session, it is home.
+#[test]
+fn golden_ticket_rail_scrolls_to_the_cursor() {
+    let mut b = fixture(true);
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
+        for n in 0..40u128 {
+            t.notes.push(note_meta(200 + n, &format!("run log {}", n + 1), "local"));
+        }
+    }
+    let mut app = app_graphite(b);
+    let rows = app.rail_rows(ulid_n(3)).len();
+    let first = rows - 40;
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: first };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains(" SESSIONS")), "{lines:#?}");
+    assert!(!lines.iter().any(|l| l.contains("run log 40")), "{lines:#?}");
+    golden("ticket_rail_first_note_120x30", &lines);
+
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: rows - 1 };
+    let lines = render(&app, 120, 30);
+    assert!(!lines.iter().any(|l| l.contains(" SESSIONS")), "{lines:#?}");
+    let y = lines.iter().position(|l| l.contains("run log 40")).expect("the last note shows");
+    assert!(lines[y - 1].contains("run log 39"), "{lines:#?}");
+    let x = lines[y].find("run log 40").map(|i| lines[y][..i].chars().count()).unwrap_or(0);
+    match app.hits.borrow().at(x as u16, y as u16) {
+        crate::mouse::Hit::Spot(s) => {
+            assert_eq!(s.target, crate::mouse::Target::Rail(rows - 1), "the row it shows")
+        }
+        other => panic!("no spot under the last note: {other:?}"),
+    }
+    golden("ticket_rail_last_note_120x30", &lines);
+
+    // One up stays put: the row is in view.
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: rows - 2 };
+    let up = render(&app, 120, 30);
+    assert_eq!(up.iter().position(|l| l.contains("run log 40")), Some(y), "{up:#?}");
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains(" SESSIONS")), "{lines:#?}");
+}
+
 /// The ticket's `!` terminal on the rail (T-366): a ghost row under the
 /// sessions, its pane in the preview zone, and the adoption's two presses.
 #[test]

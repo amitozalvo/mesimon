@@ -1832,6 +1832,9 @@ pub struct App {
     pub marquee: Cell<Option<(ulid::Ulid, std::time::Instant)>>,
     /// Same clock for the ticket rail's selected session name.
     pub rail_marquee: Cell<Option<(uuid::Uuid, std::time::Instant)>>,
+    /// The ticket rail's first shown line, and the ticket it belongs to
+    /// (T-970): draw-side, moved only to keep the selected row in view.
+    pub rail_scroll: Cell<Option<(ulid::Ulid, usize)>>,
     /// Same clock for the selected menu or settings row's subtitle, keyed to
     /// the WORDS: a different row is a new sentence, and so is the same row
     /// relabelled by its own toggle, which is exactly when the pass replays.
@@ -2352,6 +2355,7 @@ impl App {
             col_window: Cell::new(0),
             marquee: Cell::new(None),
             rail_marquee: Cell::new(None),
+            rail_scroll: Cell::new(None),
             menu_marquee: Cell::new(None),
             scroll_row: Cell::new(0),
             peek: false,

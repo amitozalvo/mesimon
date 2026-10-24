@@ -33941,3 +33941,27 @@ the attempt installed, then returns `Reply::Rejected`. No owed entry, due paste 
   train's own 10 s bucket. Each attempt writes `prompt_not_sent`/`a_person_attached` and
   `merge_train_refused:deliver_failed`, as any delivery failure does. The smallest cleanup is one
   line per ticket and reason until the hold ends.
+
+## The ticket page's rail scrolls to its cursor (T-970, 2026-10-25, reported by the person on T-925's 165 notes: "the NOTES list on the ticket page is not scrollable")
+
+`draw_rail` painted every session row, the terminal, the offer and every note into one
+`Paragraph` with no scroll, so `area.height` cut the tail. The cursor (`rail_idx`) still walked
+into the hidden rows, and their mouse rects clipped to nothing.
+
+**Shipped.** The rail keeps a first shown line, `App::rail_scroll`, keyed by ticket and draw-side
+like `rail_marquee`. `ticket::rail_offset` keeps it still while the selected row's lines are in
+view, and otherwise moves it the least distance that brings them in. A row taller than the rail
+shows its first line. The offset is clamped so that a rail which has shrunk comes home. A session
+row, the terminal and the offer count from line 0, so they bring back the SESSIONS heading. The
+last row counts to the last line, so its `n new note` trailer shows with it. The offset goes
+through `Paragraph::scroll`, and each `owners` rect is shifted by it before `hits.record`. A row
+scrolled off the top records nothing, and a click lands on the row it shows. The page draws
+nothing extra: no scrollbar and no cut mark. The `NOTES 165` count is the only sign of more rows.
+
+**Tests.** `ticket_rail_first_note_120x30` (cursor on the first of 40 notes: the old frame) and
+`ticket_rail_last_note_120x30` (the last rows, the heading off the top, the click on the last
+note hits `Rail(last)`, one press up keeps the window, a session row brings it home).
+`rail_tests::the_rail_moves_only_to_bring_the_selected_row_in` covers the arithmetic.
+
+**Not done.** A dim `…` row at a cut edge is the person's call. The footer's `jk select
+session` on a note row predates this ticket.

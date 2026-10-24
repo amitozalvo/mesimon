@@ -1,0 +1,30 @@
+ TICKET (T-3)   mesimon › kanban-tui  !1
+
+ Fix OSC-11 detection
+ IN PROGRESS for >1y ∙ created >1y ago ∙ description unread
+
+
+  NOTE                                                                                     ≡ run log 19        you >1y
+                                                                                           ≡ run log 20        you >1y
+    fetching                                                                               ≡ run log 21        you >1y
+                                                                                           ≡ run log 22        you >1y
+                                                                                           ≡ run log 23        you >1y
+                                                                                           ≡ run log 24        you >1y
+                                                                                           ≡ run log 25        you >1y
+                                                                                           ≡ run log 26        you >1y
+                                                                                           ≡ run log 27        you >1y
+                                                                                           ≡ run log 28        you >1y
+                                                                                           ≡ run log 29        you >1y
+                                                                                           ≡ run log 30        you >1y
+                                                                                           ≡ run log 31        you >1y
+                                                                                           ≡ run log 32        you >1y
+                                                                                           ≡ run log 33        you >1y
+                                                                                           ≡ run log 34        you >1y
+                                                                                           ≡ run log 35        you >1y
+                                                                                           ≡ run log 36        you >1y
+                                                                                           ≡ run log 37        you >1y
+                                                                                           ≡ run log 38        you >1y
+                                                                                           ≡ run log 39        you >1y
+                                                                                           ≡ run log 40        you >1y
+                                                                                           N new note
+ jk select session ∙ enter edit note ∙ r rename ∙ d delete ∙ n edit note                                         ? keys
