@@ -33317,6 +33317,12 @@ reply is counted (`ReplySwallow::dropped`). `MESIMON_TTY_LOG=<file>`, read in `l
 only, appends a timed line for the startup query (its answer and how long it took) and for each
 reply dropped (its text), so the next sighting says which query and how late.
 
+**A reload asks nothing (round 1).** `lib::reexec` hands the new image the ground it knows in
+`MESIMON_RELOAD_GROUND` (`dark`/`light`); `detect::take_reload_ground` reads it as `known`, ahead
+of the OS probe, and unsets it so nothing the board starts inherits it. The terminal is the same
+across an `exec`, so a `U` sends no query and no reply can be late; a fresh start still asks once,
+behind the widened swallow. Test: `detect::tests::a_known_ground_asks_the_terminal_nothing`.
+
 **Not done.** The split-at-Esc gap stands (a bare Esc is not an opener). A DCS reply
 (`ESC P`, XTVERSION's, CLAUDE.md's tmux trap) is not in the grammar: nothing of the board's asks
 one. Tests: `osc.rs` (five, `a_late_colour_reply_types_nothing_and_counts_both_halves` and

@@ -37,6 +37,10 @@ pub(crate) struct Detected {
 /// `known` is a ground somebody else already answered (the OS, for a board
 /// that follows it); with one, the terminal is not asked.
 pub(crate) fn detect(known: Option<Ground>) -> Detected {
+    detect_with(known, query_ground)
+}
+
+fn detect_with(known: Option<Ground>, query: impl FnOnce() -> Option<Ground>) -> Detected {
     let profile = profile_from_env();
     // Mono never queries the tty — there is nothing to colour, so there is
     // no flavor to pin either.
@@ -46,8 +50,26 @@ pub(crate) fn detect(known: Option<Ground>) -> Detected {
     let forced = forced_flavor();
     // Asked even under a pin: the picker sets the slot the terminal is on,
     // and a one-shot query corrects nothing.
-    let ground = known.or_else(query_ground).unwrap_or(Ground::Dark);
+    let ground = known.or_else(query).unwrap_or(Ground::Dark);
     Detected { profile, ground, forced }
+}
+
+/// The variable a `U` re-exec hands the new image the ground in (T-953).
+pub(crate) const RELOAD_GROUND: &str = "MESIMON_RELOAD_GROUND";
+
+/// The ground the process this one replaced already knew: the terminal is
+/// the same across an `exec`, so a reload asks it nothing, and no reply can
+/// come in late (all three sightings of T-953 were on that road). Taken
+/// once and unset, so nothing this board starts — a `mesimon open` from
+/// its shell, a pane — inherits it.
+pub(crate) fn take_reload_ground() -> Option<Ground> {
+    let word = std::env::var_os(RELOAD_GROUND)?;
+    std::env::remove_var(RELOAD_GROUND);
+    ground_from_word(&word.to_string_lossy())
+}
+
+fn ground_from_word(word: &str) -> Option<Ground> {
+    [Ground::Dark, Ground::Light].into_iter().find(|g| g.word() == word)
 }
 
 #[derive(Default)]
@@ -352,6 +374,30 @@ mod tests {
         }
         assert_eq!(Flavor::from_name("dark"), Some(Flavor::Graphite));
         assert_eq!(Flavor::from_name("light"), Some(Flavor::Chalk));
+    }
+
+    /// T-953: a ground handed over by a reload sends no query; without one
+    /// the query is asked. The handed word is a ground's own and nothing else.
+    #[test]
+    fn a_known_ground_asks_the_terminal_nothing() {
+        let asked = std::cell::Cell::new(0);
+        let query = || {
+            asked.set(asked.get() + 1);
+            Some(Ground::Dark)
+        };
+        // Mono never asks either way; the test is about the colour roads.
+        if profile_from_env() == Profile::Mono {
+            return;
+        }
+        assert_eq!(detect_with(Some(Ground::Light), query).ground, Ground::Light);
+        assert_eq!(asked.get(), 0, "a reload asked the terminal");
+        assert_eq!(detect_with(None, query).ground, Ground::Dark);
+        assert_eq!(asked.get(), 1, "a fresh start did not ask");
+        for g in [Ground::Dark, Ground::Light] {
+            assert_eq!(ground_from_word(g.word()), Some(g));
+        }
+        assert_eq!(ground_from_word(""), None);
+        assert_eq!(ground_from_word("Dark"), None);
     }
 
     /// The pty test's child: the startup colour query on the terminal it was

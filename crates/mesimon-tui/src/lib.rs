@@ -163,7 +163,10 @@ pub fn run(repo_root: &Path) -> Result<()> {
     // with an answer the terminal is not asked at all. Nothing re-asks the terminal later, ever: `appearance::Watch`
     // is the live half, and it asks the OS on a thread of its own.
     crate::osc::set_tty_log(std::env::var_os("MESIMON_TTY_LOG").map(std::path::PathBuf::from));
-    let known = resolved.follows_os().then(appearance::probe).flatten();
+    // A `U` re-exec hands its ground over, and then neither the OS nor the
+    // terminal is asked (T-953).
+    let known = detect::take_reload_ground()
+        .or_else(|| resolved.follows_os().then(appearance::probe).flatten());
     let detected = detect::detect(known);
     // The pin outranks the slot; the slot is the ground's.
     let flavor = detected.forced.unwrap_or(resolved.for_ground(detected.ground));
@@ -308,7 +311,7 @@ pub fn run(repo_root: &Path) -> Result<()> {
     drop(app.caffeine.take());
     restore_terminal()?;
     if result.is_ok() && app.pending_reexec {
-        return reexec(repo_root);
+        return reexec(repo_root, app.ground);
     }
     if let (Ok(()), Some(root)) = (&result, app.pending_switch.take()) {
         return switch_board(&root);
@@ -332,7 +335,7 @@ fn switch_board(root: &Path) -> Result<()> {
 /// U on `update ready`: swap this process for the new binary at our own
 /// path. The daemon was asked to shut down first; wait for it to be gone so
 /// the fresh TUI's connect-spawn doesn't race the old flock.
-fn reexec(repo_root: &Path) -> Result<()> {
+fn reexec(repo_root: &Path, ground: theme::Ground) -> Result<()> {
     // The primary screen is on display from here to the new client's first
     // draw, and it still holds whatever was last printed there — tmux's
     // `[detached (from session …)]` line, after any focus. Under a busy box
@@ -351,7 +354,12 @@ fn reexec(repo_root: &Path) -> Result<()> {
     }
     use std::os::unix::process::CommandExt;
     let exe = mesimon_core::exe::current_exe()?;
-    let err = std::process::Command::new(exe).args(std::env::args_os().skip(1)).exec();
+    // The terminal is the same one: its ground goes along, so the new image
+    // asks nothing a late reply could answer (T-953).
+    let err = std::process::Command::new(exe)
+        .args(std::env::args_os().skip(1))
+        .env(detect::RELOAD_GROUND, ground.word())
+        .exec();
     Err(anyhow::anyhow!("exec of the new binary failed: {err}"))
 }
 
