@@ -1182,8 +1182,31 @@ impl Daemon {
         {
             return;
         }
+        // A new dialog on a record already stopped on that kind of dialog
+        // has no state edge to wake the crown with (T-943): a plan sent
+        // back is replanned and stopped on again inside the attention
+        // settle, so the record never left `RequiresAction{Plan}`. This
+        // runs before the frame reaches the machine, so a record anywhere
+        // else gets its edge and its wake there, and no wake twice.
+        let reason = match content {
+            api::DialogContent::Plan { .. } => Some(Reason::Plan),
+            api::DialogContent::Questions { .. } => Some(Reason::Question),
+            api::DialogContent::Trust { .. } => None,
+        };
+        let restop = reason
+            .and_then(|reason| {
+                let stopped = SessionState::RequiresAction { reason };
+                self.board.sessions.iter().find(|s| s.id == id && s.state == stopped)
+            })
+            .and_then(|s| {
+                super::crownwake::stop_cause(self.board.crown_mode, s.kind, &s.state)
+                    .map(|cause| (s.ticket, cause))
+            });
         self.control.dialogs.insert(id, api::Dialog { request, content });
         self.control_changed();
+        if let Some((ticket, cause)) = restop {
+            self.note_crown_wake(ticket, cause, None, None);
+        }
     }
 
     /// A Claude seat stopped on a plan or a question with no dialog to show

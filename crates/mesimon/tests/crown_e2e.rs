@@ -6254,6 +6254,35 @@ fn the_crown_sends_a_plan_back_with_words() {
     let needs = read(&mut b.c, b.sa, &kw).unwrap().needs_you.expect("the next plan");
     assert_eq!(needs.reason, "plan");
     assert_eq!(needs.request.as_deref(), Some("toolu_w2"));
+
+    // ---- replanned at once, inside the attention settle: no state edge -----
+    // The rig's worker (2.1.310) called `ExitPlanMode` again under a second
+    // after the Enter, so its record never left `RequiresAction{Plan}`; the
+    // new request wakes the crown all the same.
+    std::fs::remove_file(&changed).unwrap();
+    let receipt = b.call("toolu_w2", "Name the file b.txt instead.");
+    wait_until(std::time::Duration::from_secs(10), "the second plan sent back", || {
+        changed.exists()
+    });
+    b.stop(b.sa);
+    std::fs::write(
+        b.h.dir.join(format!("dialog-{kw}.json")),
+        json!({ "plan": BED_PLAN }).to_string(),
+    )
+    .unwrap();
+    b.hook("PreToolUse", "ExitPlanMode", "toolu_w3");
+    assert_eq!(revised(receipt), ("input_sent".to_string(), None));
+    wait_until(std::time::Duration::from_secs(10), "the replanned plan's wake", || {
+        b.typed().matches(&wake).count() == 3
+    });
+    let at_plan = SessionState::RequiresAction { reason: mesimon_core::board::Reason::Plan };
+    assert_eq!(
+        b.c.board().sessions.iter().find(|s| s.id == ws).map(|s| s.state.clone()),
+        Some(at_plan)
+    );
+    b.start(b.sa);
+    let needs = read(&mut b.c, b.sa, &kw).unwrap().needs_you.expect("the replanned plan");
+    assert_eq!(needs.request.as_deref(), Some("toolu_w3"));
 }
 
 /// A plan sent back stops at any hand but the crown's (T-943), and the

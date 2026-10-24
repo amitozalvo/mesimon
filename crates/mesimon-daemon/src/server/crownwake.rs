@@ -678,10 +678,26 @@ pub(super) fn asks_the_crown(
     kind: SessionKind,
     change: &Change,
 ) -> Option<WakeCause> {
-    if change.from == change.to || !mode.takes_stop(kind, &change.to) {
+    if change.from == change.to {
         return None;
     }
-    match change.to {
+    stop_cause(mode, kind, &change.to)
+}
+
+/// `asks_the_crown`'s judgement of the stop alone: a question or a plan the
+/// crown is woken for at `state`. A new dialog that replaces the one an
+/// agent is stopped on, with no state edge between them, asks it too
+/// (T-943): a plan sent back is replanned and stopped on again inside the
+/// attention settle, so the record never leaves `RequiresAction{Plan}`.
+pub(super) fn stop_cause(
+    mode: CrownMode,
+    kind: SessionKind,
+    state: &SessionState,
+) -> Option<WakeCause> {
+    if !mode.takes_stop(kind, state) {
+        return None;
+    }
+    match state {
         SessionState::RequiresAction { reason: Reason::Question } => Some(WakeCause::Asked),
         SessionState::RequiresAction { reason: Reason::Plan } => Some(WakeCause::Planned),
         _ => None,
