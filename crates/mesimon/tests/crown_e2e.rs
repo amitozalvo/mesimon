@@ -10218,3 +10218,92 @@ fn a_crown_launch_abandoned_on_a_dialog_keeps_no_unsent_copy() {
         "the wake owed again"
     );
 }
+
+/// T-936, the sixth read (1): a launch's cached screen is no evidence of
+/// an empty box. A person comes into the woken crown's pane, types a draft
+/// and leaves before the launch would paste; the pane's `SessionStart`
+/// follows at once. The launch hands the wake back, and the live pane's
+/// road reads the pane's clients and box on one fresh sample: the draft
+/// holds it (`after your draft`), and nothing is typed. Once they send
+/// their words and the box reads empty, the wake goes in, once.
+#[test]
+fn a_detached_draft_holds_a_crown_wake_the_launch_handed_back() {
+    let Some(h) = Harness::boot_bare(
+        "crown_launch_draft",
+        Some(BOX_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_CLAUDE_ROAD", "hooks"),
+            ("MESIMON_SLEEP_MIN_AGE_MS", "0"),
+        ],
+    ) else {
+        return;
+    };
+    let hook_sock = h.paths.hook_sock();
+    let tmux_sock = h.paths.tmux_sock();
+    let mut c = h.client("crown_launch_draft");
+    let (a, sa, w, line) = crown_woken_with_its_wake_parked(&h, &mut c, "launch draft");
+    let got = h.dir.join("got.txt");
+    let read_got = || std::fs::read_to_string(&got).unwrap_or_default();
+    let typed = || read_got().lines().filter(|l| l.contains(&line)).count();
+    let hand_up = |c: &mut TestClient| c.board().ticket(w).unwrap().raised.is_some();
+    let held = |c: &mut TestClient| {
+        pending_of(c, Some(a))
+            .into_iter()
+            .find(|p| p.action == mesimon_core::command::PendingAction::CrownWake)
+            .and_then(|p| p.held)
+    };
+    let crown = c.board().sessions.iter().find(|s| s.id == sa).unwrap().sid16();
+    // The box drawn empty, then a person's draft, typed while attached.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let mut client = tmux(&tmux_sock)
+        .args(["-C", "attach", "-t", &crown])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("a control-mode tmux client");
+    wait_until(std::time::Duration::from_secs(10), "the client on the crown's session", || {
+        tmux(&tmux_sock)
+            .args(["list-clients", "-t", &crown, "-F", "#{client_name}"])
+            .output()
+            .is_ok_and(|o| !o.stdout.is_empty())
+    });
+    assert!(tmux(&tmux_sock)
+        .args(["send-keys", "-t", &crown, "-l", "half a thought"])
+        .status()
+        .unwrap()
+        .success());
+    client.kill().unwrap();
+    let _ = client.wait();
+    // They left; the launch would paste now.
+    hook_send(&hook_sock, &sa.to_string(), "SessionStart", r#"{"source":"resume"}"#);
+    wait_until(std::time::Duration::from_secs(10), "the wake held on their draft", || {
+        held(&mut c).as_deref() == Some("after your draft")
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(typed(), 0, "nothing typed into their draft: {}", read_got());
+    assert!(!read_got().contains("half a thought"), "no Enter sent their draft");
+    assert!(hand_up(&mut c), "the hand still up");
+    // They send their words: the box reads empty, and the wake goes once.
+    assert!(tmux(&tmux_sock)
+        .args(["send-keys", "-t", &crown, "Enter"])
+        .status()
+        .unwrap()
+        .success());
+    wait_until(std::time::Duration::from_secs(5), "their words sent", || {
+        read_got().lines().any(|l| l.trim() == "half a thought")
+    });
+    wait_until(std::time::Duration::from_secs(15), "the wake typed into the empty box", || {
+        typed() == 1
+    });
+    wait_until(std::time::Duration::from_secs(5), "the hand down once it went", || {
+        !hand_up(&mut c)
+    });
+    assert!(
+        read_got().lines().all(|l| !(l.contains("half a thought") && l.contains(&line))),
+        "never joined: {}",
+        read_got()
+    );
+}

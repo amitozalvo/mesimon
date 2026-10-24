@@ -33010,3 +33010,18 @@ Tests:
   The stop's confirmation brings one wake on the new tier (one runtime launch) with nothing
   pasted. Then the box's paste and Enter deliver the wake and tell it. A Codex crown seat that
   never takes words keeps its wake owed and shown, with no deadline turning it into told.
+
+**Sixth read (item 6).**
+- **A5 (1). A crown wake is never pasted from a launch.** Round five's guard read fresh clients
+  but a cached composer: `screen_since` only asks for a screen newer than the launch entry, the
+  sampler runs on its one-second bucket, and a missing new screen leaves the old one. A person who
+  attached, typed a draft and left before the launch's pass got the wake pasted into their draft.
+  Of the two fixes the read allowed, the smaller is taken: once the launch's pane draws a box, a
+  crown-tagged launch hands the wake back to owed (`crown_wake_held`) and presses nothing. The
+  live pane's road then delivers it on a sample that read the clients and the box together, on
+  that sample's landing (T-918). It goes only into a box that same sample shows empty
+  (`crown_wake_empty_box`, cleared once a delivery goes); a draft holds it `after your draft`.
+  The submit road keeps its exemption, and a person's launch is unchanged. Test:
+  `crown_e2e::a_detached_draft_holds_a_crown_wake_the_launch_handed_back` (draft typed, client
+  gone, `SessionStart` at once: held `after your draft`, nothing typed; their words sent, the box
+  empty, the wake typed once; fails on round five's code).
