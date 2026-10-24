@@ -33825,9 +33825,9 @@ keys go into, never the board's or the crown's.
   still goes. The crown's `answer_agent` feed line now carries the receipt's `reason` when it has
   one (`FeedWriter::board_answer`, a new optional field).
 - **A fill's send-now** (`on_mod_fill`'s `filled` arm). A person there takes the existing
-  send-now-failed arm: `prompt_send_now_failed` with outcome `a_person_attached`. The words stand
-  in the box the mod filled, and a crown ask reads `unknown` with that reason. The board cannot
-  read what becomes of words a person may send.
+  send-now-failed arm: `prompt_send_now_failed` with outcome `a_person_attached`, and a crown
+  ask reads `unknown`. The mod reported the box filled; what the person did with the words
+  since is not the board's to read (round 2's words).
 - **The paste road** (`paste_at`). The guard goes after the mod's fill and submit branches, which
   type nothing, and before `paste_input`/`paste_text`. It skips the crown's wake
   (`Ack::CROWN_WAKE`), which goes on its own coherent sample of the pane's clients and box (T-918,
@@ -33882,13 +33882,38 @@ keys go into, never the board's or the crown's.
 1. The paste's guard also ran for the crown's wake. A refusal there reads as a failed delivery
    (`crown_wake_failed_on`) and holds the wake until the crown's seat changes state, which
    detaching does not do. It also refused T-945's release past an idle client. Crown wakes now
-   keep their own policy. No test stages a client arriving between the wake's sample and its
-   paste, because both happen in one writer turn; with the exemption no presence refusal can
-   reach `crown_wake_failed_on`.
+   keep their own policy, and with the exemption no presence refusal can reach
+   `crown_wake_failed_on`. That policy keeps a residual race, there since T-918 and outside this
+   ticket: an external tmux client can attach and type after the wake's sample read the pane's
+   clients and before its paste. No test measures it; that needs a barrier between the two.
 2. Three dequeue roads removed the entry before the guard could refuse it: a submit-only mod's
    `immediately`, the send after a plan, and the drain's fresh precheck racing `paste_at`'s own
    read. Removal now follows the dispatch's answer, and the prechecks are gone, which leaves one
    `has_clients` per paste.
+
+**Round 2 (the cold read).**
+1. A send now drops the ticket's queued ask first (the person talking to the agent ahead of it),
+   and with the guard that send can be refused before any key, which lost the ask the person
+   never chose to drop. A direct send, a column's send and a phone's steer now share one road
+   (`ahead_of_queue`). `take_queued` returns what it took: the entry, the crown's record as it
+   was, and the phone's cancelled pending with the receipts it overwrote, its owed entry and its
+   due paste (`control_cancel_kept`). On the zero-key person refusal alone, all of it goes back
+   (`control_restore`, `queue_kept`). Every other outcome drops the ask as before, and only then
+   writes its `queued_ask_dropped`/`queued_ask_replaced` line.
+2. The fill's receipt says only what the board knows: "its mod reported the words filled; the
+   board pressed no send-now because a person has its pane open; what became of the words is
+   unconfirmed". The outcome and the no-retry are unchanged.
+3. The phone's steer refused for a person returns `Reply::Rejected` with the reason. The phone
+   already reads that word for a dialog's refusal, so this adds nothing to its wire, and the
+   stored receipt is the same reply. Any other paste failure stays `unknown`.
+- Test fences. The fill's "no send-now" now checks every byte W's pane read for `^X` or `^S`,
+  wherever they fall. The drain race repeats its specimen (attach, then the idle right away)
+  until the dispatch's own refusal is seen (`queued_ask_kept`), at most five times. A pane sample
+  landing in that window of milliseconds holds the ask first, and every try must still keep the
+  words and send them once. A queued ask outlives a refused direct send and a refused column
+  send, then goes once after the person leaves, and neither refused send ever lands. No e2e
+  harness in this repository drives a phone's steer (the relay's tests do), so that caller is
+  covered by the shared road alone.
 
 **Not done (seen, not changed).**
 - A Codex pane's parked words (`drive_codex_inputs`) and steer (`codex_steer`) have no such guard.

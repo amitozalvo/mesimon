@@ -6048,7 +6048,9 @@ fn the_crown_sends_immediately_into_a_working_turn() {
     let client = person_attaches(&tmux_sock, &sid);
     if test_road() == "mod" {
         // The mod fills the words, and the send-now over them is a key:
-        // withheld, the words left standing in the box, and the ask unknown.
+        // withheld, and the ask unknown. Every byte W's pane read from here
+        // on is checked for the send-now's keys, wherever they fall.
+        let mark = read_got().len();
         assert_eq!(
             road_of(ask(&mut c, "mesimon-probe-76 under hands", Deliver::Immediately)),
             (false, AskRoad::SentImmediately)
@@ -6057,7 +6059,12 @@ fn the_crown_sends_immediately_into_a_working_turn() {
         wait_until(std::time::Duration::from_secs(5), "the words filled", || {
             landed("mesimon-probe-76 under hands")
         });
-        assert!(!sent_now("mesimon-probe-76 under hands"), "no send-now under their hands");
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        let delta = read_got()[mark..].to_string();
+        assert!(
+            !delta.contains('\u{18}') && !delta.contains('\u{13}'),
+            "no send-now key under their hands: {delta:?}"
+        );
         let out = asked(&mut c);
         assert_eq!(out.status, "unknown");
         assert!(out.why.contains("a person has its pane open"), "{out:?}");
@@ -6092,42 +6099,118 @@ fn the_crown_sends_immediately_into_a_working_turn() {
         }
         feed_has("daemon", "queued_ask_kept", Some("a_person_attached"));
         assert_eq!(asked(&mut c).status, "queued");
+        // A person's direct send now, ahead of that queued ask, is refused
+        // before any key: nothing was said ahead of it, so the ask stays
+        // queued and its record with it (round 2).
+        match c.request(Command::PromptSession {
+            ticket: w,
+            text: "mesimon-probe-79 ahead".into(),
+            queued: false,
+            immediately: false,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+            resend: false,
+            uploads: Vec::new(),
+        }) {
+            Response::Err { message } => assert!(message.contains("were not sent"), "{message}"),
+            other => panic!("a send ahead of the queue: {other:?}"),
+        }
+        assert_eq!(asked(&mut c).status, "queued", "the queued ask outlives the refusal");
+        assert!(pending_of(&mut c, Some(w)).iter().any(|p| !p.in_flight), "still on the queue");
+        // And a column's send: W's refusal leaves its ask as it was. (The
+        // crown's own pane may share the column; it is no one's ask here.)
+        let column = c.board().ticket(w).unwrap().column.clone();
+        match c.request(Command::PromptColumn {
+            column,
+            text: "mesimon-probe-80 by column".into(),
+            queued: false,
+            accept_plan: false,
+        }) {
+            Response::Asked { failed, .. } => assert!(failed >= 1, "W's send refused"),
+            other => panic!("a column's send: {other:?}"),
+        }
+        assert_eq!(asked(&mut c).status, "queued", "the column's refusal keeps it too");
+        assert!(pending_of(&mut c, Some(w)).iter().any(|p| !p.in_flight), "still on the queue");
+        let by_column = read_got().matches("mesimon-probe-80").count();
         // W at its idle takes words, and the person is still there.
         stop(&mut c, ws);
         std::thread::sleep(std::time::Duration::from_millis(2000));
         assert!(!landed("mesimon-probe-76"), "nothing typed under their hands");
         assert!(!landed("mesimon-probe-77"));
+        assert!(!landed("mesimon-probe-79"));
         assert_eq!(asked(&mut c).status, "queued");
-        // The person gone, the queued words go.
+        // The person gone, the queued words go, once; the refused ones never.
         person_leaves(&tmux_sock, &sid, client);
         wait_until(std::time::Duration::from_secs(10), "the queued words", || {
             landed("mesimon-probe-76 under hands")
         });
         assert_eq!(asked(&mut c).status, "sent");
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        assert_eq!(read_got().matches("mesimon-probe-76").count(), 1, "the queued ask once");
+        assert!(!landed("mesimon-probe-79"), "the refused send never");
+        assert_eq!(
+            read_got().matches("mesimon-probe-80").count(),
+            by_column,
+            "nor W's column send"
+        );
         // The turn those words started ends, and the next one runs.
         start(&mut c, ws);
         stop(&mut c, ws);
         start(&mut c, ws);
-        // A person who opens the pane just before the idle that drains an
-        // ask: whichever reads it first, the pane sample or the paste's own
-        // guard (whose refusal puts the entry back), the words stay queued,
-        // and go once after the person leaves.
-        assert_eq!(
-            road_of(ask(&mut c, "mesimon-probe-78 at the idle", Deliver::Idle)),
-            (false, AskRoad::Queued)
-        );
-        let client = person_attaches(&tmux_sock, &sid);
-        stop(&mut c, ws);
-        std::thread::sleep(std::time::Duration::from_millis(2000));
-        assert!(!landed("mesimon-probe-78"), "nothing typed under their hands");
-        assert_eq!(asked(&mut c).status, "queued");
-        person_leaves(&tmux_sock, &sid, client);
-        wait_until(std::time::Duration::from_secs(10), "the idle ask", || {
-            landed("mesimon-probe-78 at the idle")
-        });
-        std::thread::sleep(std::time::Duration::from_millis(1500));
-        assert_eq!(read_got().matches("mesimon-probe-78").count(), 1, "once");
-        start(&mut c, ws);
+        // A person who opens the pane just before an ask drains: W idle,
+        // the crown's `idle` ask drains in the same writer turn it is made
+        // in, while the pane sample (every 2 s) still says nobody is there,
+        // so the paste's own read refuses it and the entry goes back
+        // (`queued_ask_kept`). A sample that lands inside the milliseconds
+        // between the attach and the ask holds it first instead, so the
+        // specimen goes again until the dispatch's refusal is seen. Either
+        // way the words stay queued while the person is there and go once
+        // after they leave.
+        let kept = || {
+            std::fs::read_to_string(&feed_path)
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| l.contains("\"cmd\":\"queued_ask_kept\""))
+                .count()
+        };
+        let wakes_sent = || {
+            std::fs::read_to_string(&feed_path)
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| l.contains("\"cmd\":\"crown_wake_sent\""))
+                .count()
+        };
+        let mut refused_at_dispatch = false;
+        for n in 0..5 {
+            let probe = format!("mesimon-probe-78{n} at the idle");
+            // W's stop wakes the crown, in the same checkout: the crown
+            // takes that wake and goes idle, so nothing holds the queue.
+            let woken = wakes_sent();
+            stop(&mut c, ws);
+            wait_until(std::time::Duration::from_secs(10), "the crown's wake", || {
+                wakes_sent() > woken
+            });
+            start(&mut c, sa);
+            stop(&mut c, sa);
+            let before = kept();
+            let client = person_attaches(&tmux_sock, &sid);
+            let _ = ask(&mut c, &probe, Deliver::Idle);
+            std::thread::sleep(std::time::Duration::from_millis(2000));
+            assert!(!landed(&probe), "nothing typed under their hands");
+            assert_eq!(asked(&mut c).status, "queued");
+            refused_at_dispatch = kept() > before;
+            person_leaves(&tmux_sock, &sid, client);
+            wait_until(std::time::Duration::from_secs(10), "the idle ask", || landed(&probe));
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            assert_eq!(read_got().matches(probe.as_str()).count(), 1, "once");
+            // The turn those words start runs; the next try's stop ends it.
+            start(&mut c, ws);
+            if refused_at_dispatch {
+                break;
+            }
+        }
+        assert!(refused_at_dispatch, "the dispatch's own refusal kept the entry");
     }
     stop(&mut c, ws);
 

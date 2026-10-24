@@ -266,6 +266,17 @@ struct StartWait {
     /// The record the spawn made; `None` while the worktree is being cut.
     session: Option<uuid::Uuid>,
 }
+/// What `control_cancel_kept` took, to be put back whole (T-958).
+pub(super) struct Cancelled {
+    id: uuid::Uuid,
+    pending: Pending,
+    /// Each receipt it overwrote, with what was there before.
+    receipts: Vec<(BoardId, u64, Option<Reply>)>,
+    owed: Option<Owed>,
+    codex_due: Option<u64>,
+    pending_submit: bool,
+}
+
 #[derive(Clone)]
 struct Pending {
     grant: BoardId,
@@ -4144,15 +4155,19 @@ impl Daemon {
                 .or_else(|| q.held.map(|_| "held".into()))
                 .unwrap_or_else(|| "you".into()),
         });
-        self.forget_queued(ticket, "queued_ask_replaced", "mesophon", "person");
-        self.control.pending.insert(
-            id,
-            Pending { grant, device, command, ticket, pasted: false, send_now_receipt: None },
-        );
+        let pending =
+            Pending { grant, device, command, ticket, pasted: false, send_now_receipt: None };
         let reply = if queued {
+            self.forget_queued(ticket, "queued_ask_replaced", "mesophon", "person");
+            self.control.pending.insert(id, pending);
             self.control_queue_prompt(grant, command, (ticket, id), text)
         } else {
-            self.control_steer((grant, device, command), (ticket, id), &text)
+            // A steer refused before any key leaves the ask it would have
+            // replaced as it was (T-958), and says so with no `replaced`.
+            self.ahead_of_queue(ticket, "queued_ask_replaced", "mesophon", |d| {
+                d.control.pending.insert(id, pending);
+                d.control_steer((grant, device, command), (ticket, id), &text)
+            })
         };
         match reply {
             Reply::Delivery { status, reason, .. } => Reply::Delivery { status, reason, replaced },
@@ -4232,6 +4247,13 @@ impl Daemon {
                     Some(ticket),
                 );
                 Reply::delivery(if waiting { "awaiting_delivery" } else { "submitted" })
+            }
+            // Refused before any key for a person at the pane (T-958): the
+            // board knows nothing was sent, and the phone hears why in the
+            // refusal word it already reads.
+            Err(message) if self.refused_for_person == Some(id) => {
+                self.control_cancel(id);
+                Reply::Rejected { message }
             }
             Err(_) => {
                 self.control_cancel(id);
@@ -4349,23 +4371,50 @@ impl Daemon {
         }
     }
     pub(super) fn control_cancel(&mut self, id: uuid::Uuid) {
-        if let Some(p) = self.control.pending.remove(&id) {
-            self.queued.retain(|q| !matches!(q.seat, QueuedSeat::Pane(s) if s == id));
-            self.codex_input_due.remove(&id);
-            self.drop_owed(id);
-            if let Some((grant, _, command)) = p.send_now_receipt {
-                self.control.remember(
-                    grant,
-                    command,
-                    Reply::delivery(if p.pasted { "unknown" } else { "rejected" }),
-                );
-            }
-            self.control.remember(
-                p.grant,
-                p.command,
-                Reply::delivery(if p.pasted { "unknown" } else { "rejected" }),
-            );
+        self.control_cancel_kept(id);
+    }
+
+    /// `control_cancel`, keeping what it took (T-958): the phone's pending
+    /// delivery, the receipts it overwrote as they were, and the pane's owed
+    /// entry and due paste, so `control_restore` can put them back when the
+    /// send that replaced a queued ask was refused before any key.
+    pub(super) fn control_cancel_kept(&mut self, id: uuid::Uuid) -> Option<Cancelled> {
+        let p = self.control.pending.remove(&id)?;
+        self.queued.retain(|q| !matches!(q.seat, QueuedSeat::Pane(s) if s == id));
+        let codex_due = self.codex_input_due.remove(&id);
+        let pending_submit =
+            self.board.sessions.iter().find(|s| s.id == id).is_some_and(|s| s.pending_submit);
+        let owed = self.drop_owed(id);
+        let word = if p.pasted { "unknown" } else { "rejected" };
+        let mut receipts = Vec::new();
+        let slots = p.send_now_receipt.map(|(grant, _, command)| (grant, command));
+        for (grant, command) in slots.into_iter().chain([(p.grant, p.command)]) {
+            let before = self.control.receipts.get(&grant).and_then(|r| r.get(&command)).cloned();
+            receipts.push((grant, command, before));
+            self.control.remember(grant, command, Reply::delivery(word));
         }
+        Some(Cancelled { id, pending: p, receipts, owed, codex_due, pending_submit })
+    }
+
+    /// Put back what `control_cancel_kept` took (T-958), as it was.
+    pub(super) fn control_restore(&mut self, c: Cancelled) {
+        for (grant, command, before) in c.receipts.into_iter().rev() {
+            let receipts = self.control.receipts.entry(grant).or_default();
+            match before {
+                Some(reply) => receipts.insert(command, reply),
+                None => receipts.remove(&command),
+            };
+        }
+        if let Some(due) = c.codex_due {
+            self.codex_input_due.insert(c.id, due);
+        }
+        if let Some(owed) = c.owed {
+            self.owed.entry(c.id).or_insert(owed);
+        }
+        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == c.id) {
+            rec.pending_submit |= c.pending_submit;
+        }
+        self.control.pending.insert(c.id, c.pending);
     }
     fn control_revoke(&mut self, grant: BoardId) {
         // The agent started stays: it is the owner's, like one started at

@@ -2297,6 +2297,16 @@ impl Owed {
     }
 }
 
+/// What `Daemon::take_queued` took off a ticket (T-958): the entry, the
+/// crown's record as it was before it read dropped, and the phone's pending
+/// delivery it cancelled, put back whole by `ahead_of_queue` when the send
+/// that replaced them was refused before any key.
+struct Forgotten {
+    entry: QueuedAsk,
+    ask: Option<crownask::CrownAsk>,
+    control: Option<mesophon::Cancelled>,
+}
+
 /// An ask parked until its checkout is quiet (see `Daemon::queued`). The
 /// list holds the entries and the BOARD holds their order (`queue_order`):
 /// a card moved up its column goes first, the way the merge train reads
@@ -5675,9 +5685,9 @@ impl Daemon {
             let ticket = self.owed.get(&id).map(|o| o.ticket);
             // Never under a person's hands (T-958): one typing since the
             // fill would have their keys sent with the words. `None` is that
-            // refusal, before any key: the words stand in the box as after
-            // keys that failed, and what becomes of them is not the board's
-            // to read.
+            // refusal, before any key. The `filled` report says only that the
+            // mod filled the box; what the person did since is not the
+            // board's to read.
             let sent = if self.person_at_pane(&sid) {
                 Err(None)
             } else {
@@ -5702,8 +5712,9 @@ impl Daemon {
                             ));
                             (
                                 A_PERSON_ATTACHED,
-                                "the words were filled into its box, and a person has its pane open, \
-                                 so the board pressed no send-now: they stand in the box unsent",
+                                "its mod reported the words filled; the board pressed no send-now \
+                                 because a person has its pane open; what became of the words is \
+                                 unconfirmed",
                             )
                         }
                     };
@@ -13710,8 +13721,9 @@ impl Daemon {
         // Sending now while an ask waits is the user talking to the agent
         // ahead of it: the waiting words are theirs to drop, and they just
         // did (the TUI's status says so).
-        self.forget_queued(ticket, "queued_ask_dropped", "local", "person");
-        self.deliver(ticket, seat, text, Ack::PROMPT, plan, immediately)
+        self.ahead_of_queue(ticket, "queued_ask_dropped", "local", |d| {
+            d.deliver(ticket, seat, text, Ack::PROMPT, plan, immediately)
+        })
     }
 
     /// Why Claude Code's send-now (T-601) cannot reach this ticket's agent,
@@ -13825,8 +13837,10 @@ impl Daemon {
                 }
                 continue;
             }
-            self.forget_queued(ticket, "queued_ask_dropped", "local", "person");
-            match self.deliver(ticket, seat, text, Ack::PROMPT, false, false) {
+            let resp = self.ahead_of_queue(ticket, "queued_ask_dropped", "local", |d| {
+                d.deliver(ticket, seat, text, Ack::PROMPT, false, false)
+            });
+            match resp {
                 Response::Err { message } => {
                     eprintln!("mesimon: column ask failed: {message}");
                     self.feed.board("local", "prompt_column_failed", Some(ticket));
@@ -14754,29 +14768,72 @@ impl Daemon {
         {
             return false;
         }
-        let before = self.queued.len();
-        let queued = self.queued.iter().find(|q| q.ticket == ticket);
-        let session = queued.and_then(|q| match q.seat {
-            QueuedSeat::Pane(id) => Some(id),
-            _ => None,
-        });
-        if queued.is_some_and(|q| q.by.is_some()) {
+        if self.take_queued(ticket, dropped_by).is_none() {
+            return false;
+        }
+        self.feed.board(actor, why, Some(ticket));
+        self.persist_queue();
+        true
+    }
+
+    /// Take the ticket's queued ask off the queue, with what goes with it:
+    /// the crown's record reads dropped, by `dropped_by`, and a phone's
+    /// pending delivery for its pane is cancelled. What was taken comes back
+    /// (`Forgotten`) for `ahead_of_queue` to put back; the feed line and the
+    /// save are the caller's.
+    fn take_queued(&mut self, ticket: ulid::Ulid, dropped_by: &'static str) -> Option<Forgotten> {
+        let i = self.queued.iter().position(|q| q.ticket == ticket)?;
+        let ask = self.crown_asks.get(&ticket).cloned();
+        if self.queued[i].by.is_some() {
             let why = match dropped_by {
                 "person" => "a person took them back, or talked to the agent ahead of them",
                 _ => "the board dropped them from its queue",
             };
             self.crown_ask_dropped(ticket, None, dropped_by, why);
         }
+        let entry = self.queued.remove(i);
         self.queued.retain(|q| q.ticket != ticket);
-        if let Some(id) = session {
-            self.control_cancel(id);
+        let control = match entry.seat {
+            QueuedSeat::Pane(id) => self.control_cancel_kept(id),
+            _ => None,
+        };
+        Some(Forgotten { entry, ask, control })
+    }
+
+    /// Send now ahead of the ticket's queued ask: the person talking to the
+    /// agent ahead of it, whose waiting words are theirs to drop, and are
+    /// dropped (`why`, by `actor`). The one road a direct send, a column's
+    /// send and a phone's steer share (T-958): when `send` is refused
+    /// before any key because a person has the pane open, nothing was said
+    /// ahead of the ask, so it is put back as it was, its crown record and
+    /// its phone's receipt with it (`queued_ask_kept`). Any other outcome
+    /// drops it as before.
+    fn ahead_of_queue<R>(
+        &mut self,
+        ticket: ulid::Ulid,
+        why: &str,
+        actor: &str,
+        send: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let taken = self.take_queued(ticket, "person");
+        self.refused_for_person = None;
+        let sent = send(self);
+        if let Some(f) = taken {
+            if self.refused_for_person.is_some() {
+                let i = self.queued.len();
+                if let Some(ask) = f.ask {
+                    self.crown_asks.insert(ticket, ask);
+                }
+                if let Some(c) = f.control {
+                    self.control_restore(c);
+                }
+                self.queue_kept(i, f.entry);
+            } else {
+                self.feed.board(actor, why, Some(ticket));
+                self.persist_queue();
+            }
         }
-        if self.queued.len() != before {
-            self.feed.board(actor, why, Some(ticket));
-            self.persist_queue();
-            return true;
-        }
-        false
+        sent
     }
 
     fn deliver_queued_ask(
