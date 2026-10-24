@@ -33133,7 +33133,14 @@ into that row.
 - **Who sees it.** `♛ sent plan back` on the card; `plan sent back by T-…: <words>` on the
   agent's line until the next state edge; the feed's `accept_plan` line with its outcome and the
   words. The turn takes `TurnAsk::Crown` at the Enter, as an answer's does. The agent's next plan
-  wakes the crown `stops on a plan` from the state edge.
+  wakes the crown `stops on a plan` from the state edge. **A replan inside the settle is woken
+  too.** The rig's first run found it: the worker called `ExitPlanMode` again under a second after
+  the Enter, inside the attention machine's 1500 ms leave settle, so the record never left
+  `RequiresAction{Plan}`, no edge came, and the crown slept on the new plan. A new dialog projected
+  (`control_observe_dialog`) on a record already stopped on that kind of dialog now wakes the
+  crown as the edge would (`crownwake::stop_cause`, which `asks_the_crown` now calls). That
+  runs before the frame reaches the machine, so a record anywhere else wakes by its edge, and
+  never twice. A question replaced by a question is the same road.
 - **Words.**
   - The tool's text describes the input, not the model: "the words go in through the feedback row,
     Tell Claude what to change, instead".
@@ -33168,8 +33175,13 @@ into that row.
   - a `PostToolUseFailure` on the call mid-walk;
   - the plan replaced mid-walk;
   - an Enter the dialog did not take: `dialog_stands` after the window, never retried.
+  - The send-back test's last step: a replan at once, with no tool call between, wakes the crown
+    a third time, the record still at `Plan`. Without the fix it times out.
 - Both pass on the hook road and on the mod pass, with `the_crown_accepts_a_plan_by_default`
   beside them.
+- `crown_rules_e2e::a_deferred_plan_sent_back_as_the_first_call_carries_the_rules` (with T-930):
+  the deferred `input_sent` receipt goes through the rule-delivery wrapper, and the next call
+  carries no rules.
 - Rig `D6`: the crown, asked to send the plan back with one correction, reads `input_sent`, and
   then accepts the next plan, whose request is new. The worker writes the corrected line.
 

@@ -300,3 +300,69 @@ fn a_deferred_plan_accept_as_the_first_call_carries_the_rules() {
     }
     assert_eq!(listed(&mut c, sa), None, "told by the deferred reply");
 }
+
+/// The same for a plan sent back with words (T-943), whose receipt waits
+/// for the dialog to leave: the agent's next tool call after the Enter.
+#[test]
+fn a_deferred_plan_sent_back_as_the_first_call_carries_the_rules() {
+    use mesimon_core::board::{Reason, SessionState};
+    const STUB: &str = include_str!("common/fake_claude_dialog.py");
+    const PLAN: &str = "1. Read the code\n2. Write the code";
+    let Some(h) = Harness::boot_bare(
+        "crown-rules-revise",
+        Some(STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    let mut c = h.client("crown-rules-revise");
+    let (sa, ws, kw) = crown_and_worker(&mut c, &h);
+    std::fs::write(
+        h.dir.join(format!("dialog-{kw}.json")),
+        serde_json::json!({ "plan": PLAN }).to_string(),
+    )
+    .unwrap();
+    wait_until(std::time::Duration::from_secs(10), "the plan drawn", || {
+        match c.request(Command::PaneTail { session: ws, lines: 60 }) {
+            Response::PaneTail { lines, .. } => {
+                lines.join("\n").contains("Would you like to proceed?")
+            }
+            _ => false,
+        }
+    });
+    let frame = serde_json::json!({
+        "tool_name": "ExitPlanMode", "tool_use_id": "toolu_p1", "tool_input": { "plan": PLAN }
+    });
+    hook_send(&h.paths.hook_sock(), &ws.to_string(), "PreToolUse", &frame.to_string());
+    c.await_state(ws, "on its plan", |s| {
+        *s == SessionState::RequiresAction { reason: Reason::Plan }
+    });
+    let seen = read_seen(&mut c, sa, &kw);
+    crown_again(&mut c, sa);
+    let changed = h.dir.join(format!("changed-{kw}.json"));
+    let (hook_sock, worker) = (h.paths.hook_sock(), ws.to_string());
+    let next = std::thread::spawn(move || {
+        wait_until(std::time::Duration::from_secs(10), "the plan sent back", || changed.exists());
+        let edit =
+            serde_json::json!({ "tool_name": "Edit", "tool_use_id": "toolu_e1", "tool_input": {} });
+        hook_send(&hook_sock, &worker, "PreToolUse", &edit.to_string());
+    });
+    let revise = Command::AgentRevisePlan {
+        key: kw.clone(),
+        seen: Some(seen),
+        request: "toolu_p1".into(),
+        text: "Use echo, not Write.".into(),
+    };
+    match c.send_raw(Principal::Agent { session: sa }, revise) {
+        Response::CrownRules { rules, inner } => {
+            assert_eq!(rules, crown_view());
+            assert!(
+                matches!(&*inner, Response::AgentPlanAccepted { outcome, .. } if outcome == "input_sent"),
+                "the deferred receipt: {inner:?}"
+            );
+        }
+        other => panic!("the first call, deferred: {other:?}"),
+    }
+    next.join().unwrap();
+    assert_eq!(listed(&mut c, sa), None, "told by the deferred reply");
+}
