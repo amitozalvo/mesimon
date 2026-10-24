@@ -175,7 +175,7 @@ pub const CROWN_TIERS: &str = crown_tiers!();
 pub const CROWN_WAKES: &str = concat!(
     "The board wakes this session on its own: when an agent the crown started delivers, \
      finishes a turn with nothing pending on it (no words queued for it, no hand up, no merge \
-     the merge train will make), is merged, answers the crown's ask, raises its hand, asks a \
+     the merge train will make), is merged, ends a turn after the crown's ask went out, raises its hand, asks a \
      question, stops on a plan, hits a usage limit, ends its turn on an error (get_ticket's state \
      carries why, under failed), or its pull request has news from the forge (a pipeline failed \
      or passed, a job waiting, a deployment, a conflict, a review, a later PR merged, each \
@@ -246,12 +246,12 @@ pub const CROWN_WAKES: &str = concat!(
      reads them after its running turn ends. With deliver immediately, \
      Claude Code's own send-now, a working agent reads them before its running tool call \
      ends, that call moved to the background and not stopped; a Claude agent only. Neither \
-     goes while the agent stands at a dialog, and the receipt's road says which \
-     (sent_now, sent_immediately, queued or held_for_person); a new ask replaces the \
-     crown's last on that ticket. \
-     An ask dropped before it was sent (a person replaced it, took it back or talked past it, \
-     or its agent went first) reads asked: dropped on that ticket's get_ticket, with who \
-     dropped it. \
+     goes while the agent stands at a dialog. The receipt's asked and get_ticket's say \
+     where the words stand: queued, sent (out, no receipt of the agent's yet), handed (the \
+     agent's own receipt named them), taken (the turn they started ended), dropped (by a \
+     person, the agent's side or the board, with why) or unknown (with why), none of \
+     them resent. A new ask replaces the crown's last on that ticket while it is queued, and is \
+     refused while that one is out: sent or handed, before the turn it went into ends. \
      A ticket a person started wakes this session only once watch_ticket watches it or \
      hold_ticket holds it. A ticket with no agent that carries a pull request (one \
      this session opened and named under its Summary) wakes this session for the forge's news \
@@ -894,9 +894,9 @@ pub fn tools() -> Vec<Value> {
             "description": "Queues words on another ticket's card for its agent (crown \
                             only). A person sends (^y) or takes back (^u); if the crown is \
                             autonomous, an agent it started or whose ticket it watches gets them \
-                            as deliver says (road says which). Refused with no agent, on this session's ticket, or \
-                            at once at a dialog. The turn taking them wakes this session at \
-                            its end.",
+                            as deliver says (asked says where they stand). Refused with no agent, \
+                            on this session's ticket, at once at a dialog, or while its last ask \
+                            is sent or handed. A turn ending after them wakes this session.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -3323,7 +3323,7 @@ mod tests {
     /// T-568: the crown learns where an ask of its that never went is read.
     #[test]
     fn the_crown_is_told_where_a_dropped_ask_is_read() {
-        for words in ["asked: dropped", "dropped before it was sent", "who dropped it"] {
+        for words in ["dropped (by a person, the agent's side or the board", "none of them resent"] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
         }
     }
@@ -3400,7 +3400,9 @@ mod tests {
             "With deliver immediately, Claude Code's own send-now",
             "before its running tool call ends, that call moved to the background",
             "Neither goes while the agent stands at a dialog",
-            "sent_now, sent_immediately, queued or held_for_person",
+            "The receipt's asked and get_ticket's say",
+            "sent (out, no receipt of the agent's yet)",
+            "refused while that one is out",
         ] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
         }
@@ -3435,9 +3437,9 @@ mod tests {
             (
                 "ask_agent",
                 vec![
-                    "The turn taking them wakes this session",
-                    "gets them as deliver says (road says which)",
-                    "or at once at a dialog",
+                    "A turn ending after them wakes this session",
+                    "gets them as deliver says (asked says where they stand)",
+                    "at once at a dialog, or while its last ask",
                 ],
             ),
         ] {

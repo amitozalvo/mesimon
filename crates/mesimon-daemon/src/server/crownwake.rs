@@ -15,8 +15,10 @@
 //!    queued for it or on their way, no hand up, no merge the train will
 //!    make. A worker whose answer is words — notes, a review, a test — is
 //!    done with what it was asked, and the crown decides what comes next;
-//! 3. **answered your ask** — the turn that took the crown's `ask_agent`
-//!    words ended, whatever it left behind;
+//! 3. **ended its turn after your ask went in** — a turn the crown's
+//!    `ask_agent` words, an answer or a plan's accept rode has ended,
+//!    whatever it left behind; an ask's line names it and its word then
+//!    (`crownask`, T-938);
 //! 4. **raised its hand** — `raise_hand`, as before, and **asks a
 //!    question** — a worker it started stopped on `AskUserQuestion`, where
 //!    the board lets the crown answer (T-569); and **hit a usage limit**
@@ -115,25 +117,75 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum TurnAsk {
-    /// The crown's `ask_agent` words, sent by a person's `^y`.
+    /// The crown's answer to a worker's question or its plan accepted
+    /// (T-569, T-582), and, in a `crown.json` from before T-938, its
+    /// `ask_agent` words.
     Crown(ulid::Ulid),
+    /// The crown's `ask_agent` words, by the ask's id (T-938): handed to
+    /// the turn running them by the agent's own edge (`crownask`), and
+    /// `said` set at that turn's end to the ask's word then, which the
+    /// wake carries as it was.
+    Asked { crown: ulid::Ulid, ask: ulid::Ulid, said: Said },
     /// A merge-flow sentence: a rebase ask or the merged notice, by `m` or
     /// by the train.
     Merge,
 }
 
-/// The crown's words that went into a running turn and were not acked
-/// inside `INFLIGHT_MS` (T-600): a `now` ask, or a person's `^y`, at a
-/// worker in a long turn. Claude Code takes them either way, and the mark
-/// their ack would have set (`mark_turn`) is kept for the turn that does.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct LateAsk {
-    pub(super) ask: TurnAsk,
-    /// Down the mod as a `submit`: held until the running turn ends and
-    /// run as a turn of its own, whose `UserPromptSubmit` takes the mark.
-    /// A paste is shown to the running turn at its next step, so with no
-    /// ack before that turn's end, the turn took it.
-    pub(super) by_mod: bool,
+impl TurnAsk {
+    /// The crown the turn answers, for a crown's turn of either kind.
+    pub(super) fn crown(self) -> Option<ulid::Ulid> {
+        match self {
+            TurnAsk::Crown(c) | TurnAsk::Asked { crown: c, .. } => Some(c),
+            TurnAsk::Merge => None,
+        }
+    }
+}
+
+/// The crown ask's word at the end of a turn it rode (T-938): `taken` where
+/// its words started that turn, `handed` where they went into one already
+/// running, `unknown` where a restart lost what became of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum Said {
+    /// The words went in and no edge of the agent's named them (a paste,
+    /// a fill): the turn ended after them, and that is all it says.
+    Sent,
+    Handed,
+    Taken,
+    Unknown,
+}
+
+impl Said {
+    fn word(self) -> &'static str {
+        match self {
+            Said::Sent => "sent",
+            Said::Handed => "handed",
+            Said::Taken => "taken",
+            Said::Unknown => "unknown",
+        }
+    }
+
+    /// A receipt of the agent's named the words.
+    fn received(self) -> bool {
+        matches!(self, Said::Handed | Said::Taken)
+    }
+}
+
+/// The ask a turn-end wake was owed for, as it stood then (T-938): the line
+/// names this one, never whichever ask is latest when the wake is sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct AskSaid {
+    pub(super) ask: ulid::Ulid,
+    pub(super) said: Said,
+}
+
+impl AskSaid {
+    pub(super) fn of(asked: Option<TurnAsk>) -> Option<AskSaid> {
+        match asked? {
+            TurnAsk::Asked { ask, said, .. } => Some(AskSaid { ask, said }),
+            _ => None,
+        }
+    }
 }
 
 /// A worker's work at one turn's end: the baseline the next turn is judged
@@ -303,7 +355,9 @@ impl WakeCause {
             WakeCause::Forge => "has news from the forge",
             WakeCause::Merged => "merged",
             WakeCause::Delivered => "delivered",
-            WakeCause::Answered => "answered your ask",
+            // What a turn's end proves (T-938): the ask's own word rides
+            // the brackets, and the clause names no ask it cannot tie.
+            WakeCause::Answered => "ended its turn after your ask went in",
             WakeCause::Failed => "ended its turn on an error",
             WakeCause::Limited => "hit a usage limit",
             WakeCause::Raised => "raised its hand",
@@ -368,6 +422,9 @@ pub(super) struct CrownWake {
     /// state, and its identity what a refined reason must match.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     failed: Option<FailedTurn>,
+    /// The crown ask the turn rode, as it stood at the turn's end (T-938).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ask: Option<AskSaid>,
 }
 
 /// One failed turn (T-936): the seat, the turn (Codex's own turn id; on
@@ -385,6 +442,7 @@ pub(super) struct Owed {
     finished: bool,
     linger: Option<Linger>,
     late: bool,
+    ask: Option<AskSaid>,
 }
 
 /// What a sentence to the crown tells it (`Daemon::telling`), kept until
@@ -581,6 +639,13 @@ impl CrownWake {
         if let (WakeCause::Lingering, Some(l)) = (self.cause, self.linger) {
             return lingering_clause(l);
         }
+        // An ask no receipt named (T-938): the turn ended after it went out,
+        // and that is all the end proves.
+        if let (WakeCause::Answered, Some(a)) = (self.cause, self.ask) {
+            if !a.said.received() {
+                return format!("ended a turn after ask {} was sent; receipt unconfirmed", a.ask);
+            }
+        }
         let clause = self.cause.clause();
         if self.finished && matches!(self.cause, WakeCause::Merged | WakeCause::Delivered) {
             format!("{clause} and finished its turn")
@@ -599,7 +664,13 @@ impl CrownWake {
             return vec![why.clone()];
         }
         let failed = self.failed.as_ref().filter(|_| self.cause == WakeCause::Failed);
-        let mut out = match &self.to {
+        let mut out: Vec<String> = self
+            .ask
+            .filter(|a| self.cause == WakeCause::Answered && a.said.received())
+            .map(|a| format!("ask {}: {}", a.ask, a.said.word()))
+            .into_iter()
+            .collect();
+        out.extend(match &self.to {
             None => Vec::new(),
             Some(to) if self.cause != WakeCause::Finished => delta(self.from.as_ref(), to),
             Some(to) => {
@@ -607,7 +678,7 @@ impl CrownWake {
                 out.extend(changes(self.from.as_ref(), to, false));
                 out
             }
-        };
+        });
         if let Some(reason) = failed {
             out.insert(0, mesimon_core::board::agent_fail_word(reason.reason).to_string());
         }
@@ -1022,7 +1093,7 @@ impl Unjudged {
     /// crown's ask is kept over a merge step, as `mark_turn` keeps it.
     pub(super) fn join(self, other: Unjudged) -> Unjudged {
         let asked = match (self.asked, other.asked) {
-            (Some(a @ TurnAsk::Crown(_)), _) | (_, Some(a @ TurnAsk::Crown(_))) => Some(a),
+            (Some(a), _) | (_, Some(a)) if a.crown().is_some() => Some(a),
             (a, b) => a.or(b),
         };
         Unjudged { asked, fresh: self.fresh || other.fresh }
@@ -1068,6 +1139,7 @@ impl Heard {
             late: self.restored || late,
             unstarted: None,
             failed: None,
+            ask: None,
         });
         true
     }
@@ -1317,30 +1389,16 @@ impl Daemon {
     /// over a merge step on the same entry.
     pub(super) fn tag_owed(&mut self, ticket: ulid::Ulid, ask: TurnAsk) {
         if let Some(o) = self.owed.values_mut().find(|o| o.ticket == ticket) {
-            if o.asked.is_none() || matches!(ask, TurnAsk::Crown(_)) {
+            if o.asked.is_none() || ask.crown().is_some() {
                 o.asked = Some(ask);
             }
-        }
-    }
-
-    /// Words that carried `ask` went in and their ack did not come inside
-    /// the window (T-600): the mark waits for the turn that takes them.
-    pub(super) fn ask_unacked(&mut self, ticket: ulid::Ulid, ask: TurnAsk, by_mod: bool) {
-        self.late_asks.insert(ticket, LateAsk { ask, by_mod });
-    }
-
-    /// A prompt reached `ticket`'s agent with nothing owed: the words that
-    /// outlived their window, if any, are what this turn runs on.
-    pub(super) fn late_ask_acked(&mut self, ticket: ulid::Ulid) {
-        if let Some(late) = self.late_asks.remove(&ticket) {
-            self.mark_turn(ticket, late.ask);
         }
     }
 
     /// The owed words reached the agent: the turn now running is theirs.
     pub(super) fn mark_turn(&mut self, ticket: ulid::Ulid, ask: TurnAsk) {
         match ask {
-            TurnAsk::Crown(_) => {
+            TurnAsk::Crown(_) | TurnAsk::Asked { .. } => {
                 self.turn_asks.insert(ticket, ask);
             }
             TurnAsk::Merge => {
@@ -1368,9 +1426,22 @@ impl Daemon {
         {
             return;
         }
-        let pasted = self.late_asks.get(&worker).is_some_and(|l| !l.by_mod);
-        let late = if pasted { self.late_asks.remove(&worker).map(|l| l.ask) } else { None };
-        let asked = self.turn_asks.remove(&worker).or(late);
+        // Only a proven end settles the crown's ask (T-938): a dialog mid-turn,
+        // a guess or an observation lost (a wait gone stale `Unknown`) is no
+        // end, and the ask the turn rides stays with it for the end that is.
+        let dialog = self
+            .board
+            .live_agent(worker)
+            .is_some_and(|s| matches!(s.state, SessionState::RequiresAction { .. }));
+        let asked = self.turn_asks.remove(&worker);
+        let asked = if dialog || !end_turn {
+            if let Some(a @ TurnAsk::Asked { .. }) = asked {
+                self.turn_asks.insert(worker, a);
+            }
+            asked
+        } else {
+            self.crown_ask_turn_ended(worker, asked)
+        };
         // Only a turn's end that is one says the turn finished (T-731): a
         // guessed idle read a model still thinking as done. A proven close
         // in the gap is Medium (T-663).
@@ -1480,11 +1551,12 @@ impl Daemon {
         if worker == crown {
             return;
         }
-        let answered = matches!(
-            why,
-            ProbeWhy::Turn { asked: Some(TurnAsk::Crown(c)), .. }
-                | ProbeWhy::Restart { asked: Some(TurnAsk::Crown(c)), .. } if c == crown
-        );
+        let answered = match why {
+            ProbeWhy::Turn { asked, .. } | ProbeWhy::Restart { asked, .. } => {
+                asked.and_then(TurnAsk::crown) == Some(crown)
+            }
+            ProbeWhy::Baseline => false,
+        };
         if !answered && !self.crown_hears(worker, crown) {
             return;
         }
@@ -1561,7 +1633,8 @@ impl Daemon {
             ProbeWhy::Restart { asked, fresh } => (asked, fresh, true),
             ProbeWhy::Baseline => (None, false, false),
         };
-        let answered = matches!(asked, Some(TurnAsk::Crown(c)) if c == p.crown);
+        let answered = asked.and_then(TurnAsk::crown) == Some(p.crown);
+        let said = AskSaid::of(asked);
         let merge_step = asked == Some(TurnAsk::Merge);
         let (now, branch) = match p.found {
             Found::Branch(look) => (look.told(column), Some(look)),
@@ -1576,7 +1649,7 @@ impl Daemon {
                 let cause = verdict(None, &Told::default(), answered, merge_step, fresh);
                 if let Due::Wake(cause) = due(cause, None, &self.pending_on(p.worker, None)) {
                     if self.crown_claims(p.worker, p.crown, cause) {
-                        self.owe_turn_end(p.crown, p.worker, cause, None, None);
+                        self.owe_turn_end(p.crown, p.worker, cause, None, None, said);
                     }
                 }
                 return;
@@ -1625,7 +1698,7 @@ impl Daemon {
         // Held, so the claim was judged when it was: the seat may have gone
         // since.
         if held.is_some() || self.crown_claims(p.worker, p.crown, cause) {
-            self.owe_turn_end(p.crown, p.worker, cause, from, Some(now));
+            self.owe_turn_end(p.crown, p.worker, cause, from, Some(now), said);
         }
     }
 
@@ -1639,18 +1712,20 @@ impl Daemon {
         cause: WakeCause,
         from: Option<Told>,
         mut to: Option<Told>,
+        ask: Option<AskSaid>,
     ) {
         let heard = self.crown_heard.entry(worker).or_default();
         if let Some(words) = heard.opening.take() {
             say_first(&mut to, words);
         }
         if !self.forge.awaited(worker) {
-            self.owe_crown_wake(crown, worker, cause, from, to, false);
+            self.owe_wake(crown, worker, cause, from, to, Owed { ask, ..Owed::default() });
             return;
         }
         let heard = self.crown_heard.entry(worker).or_default();
         if let Some(f) = heard.forging.as_mut() {
             f.wake.fold(cause, from, to);
+            f.wake.ask = ask.or(f.wake.ask);
             return;
         }
         let late = heard.restored;
@@ -1664,6 +1739,7 @@ impl Daemon {
             late,
             unstarted: None,
             failed: None,
+            ask,
         };
         heard.forging = Some(Forging { wake, since_ms: now_ms() });
         self.feed.board("automation", "crown_wake_deferred:forge", Some(worker));
@@ -1716,7 +1792,8 @@ impl Daemon {
             // The column the read's arrival left the card in.
             let mut to = wake.to;
             h.land(&mut to, column);
-            let owed = Owed { finished: wake.finished, linger: None, late: wake.late };
+            let owed =
+                Owed { finished: wake.finished, linger: None, late: wake.late, ask: wake.ask };
             self.enter_wake(crown, worker, wake.cause, wake.from, to, owed);
             woke = true;
         }
@@ -1868,7 +1945,7 @@ impl Daemon {
             let column = self.board.ticket(worker).map(|t| t.column.clone());
             let Some(heard) = self.crown_heard.get_mut(&worker) else { continue };
             let Some(wake) = heard.step_over(column) else { continue };
-            let held = Owed { finished: true, linger: None, late: wake.late };
+            let held = Owed { finished: true, linger: None, late: wake.late, ask: wake.ask };
             self.owe_wake(crown, worker, wake.cause, wake.from, wake.to, held);
             woke = true;
         }
@@ -2054,7 +2131,7 @@ impl Daemon {
         to: Option<Told>,
         owed: Owed,
     ) {
-        let Owed { finished, linger, late } = owed;
+        let Owed { finished, linger, late, ask } = owed;
         let late = late || self.crown_heard.get(&worker).is_some_and(|h| h.restored);
         let landed =
             cause == WakeCause::Merged || to.as_ref().is_some_and(|t| t.merge == Some("merged"));
@@ -2063,6 +2140,7 @@ impl Daemon {
             w.finished |= finished;
             w.linger = w.linger.or(linger);
             w.late |= late;
+            w.ask = ask.or(w.ask);
         } else {
             self.crown_wakes.push(CrownWake {
                 worker,
@@ -2074,6 +2152,7 @@ impl Daemon {
                 late,
                 unstarted: None,
                 failed: None,
+                ask,
             });
         }
         // A watch ends at the merge (T-712): the wait it was for is over,
@@ -2432,6 +2511,53 @@ impl Daemon {
 mod tests {
     use super::*;
 
+    /// T-938: the turn-end wake says what the end proves and names the ask
+    /// it was owed for, as it stood then. A fold keeps the latest owed; a
+    /// wake for an answer or a plan names none.
+    #[test]
+    fn a_turn_end_wake_names_its_own_ask_and_says_no_more_than_the_end() {
+        let old = ulid::Ulid::from_parts(1, 1);
+        let mut w = CrownWake {
+            worker: ulid::Ulid::from_parts(1, 7),
+            cause: WakeCause::Answered,
+            from: None,
+            to: None,
+            finished: false,
+            linger: None,
+            late: false,
+            unstarted: None,
+            failed: None,
+            ask: Some(AskSaid { ask: old, said: Said::Handed }),
+        };
+        assert_eq!(w.clause(), "ended its turn after your ask went in");
+        assert_eq!(w.changed(), vec![format!("ask {old}: handed")]);
+        let json = serde_json::to_string(&w).unwrap();
+        let back: CrownWake = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.ask, w.ask, "the snapshot rides crown.json: {json}");
+        // No receipt named the words: the line claims the turn's end alone.
+        for said in [Said::Sent, Said::Unknown] {
+            w.ask = Some(AskSaid { ask: old, said });
+            assert_eq!(
+                w.clause(),
+                format!("ended a turn after ask {old} was sent; receipt unconfirmed")
+            );
+            assert!(w.changed().is_empty(), "no second word for it: {:?}", w.changed());
+        }
+        // An answer's turn carries no ask; nor does a v1 wake.
+        w.ask = None;
+        assert!(w.changed().is_empty());
+        assert_eq!(AskSaid::of(Some(TurnAsk::Crown(old))), None);
+        let newer = ulid::Ulid::from_parts(1, 2);
+        let said = AskSaid::of(Some(TurnAsk::Asked { crown: old, ask: newer, said: Said::Taken }));
+        assert_eq!(said, Some(AskSaid { ask: newer, said: Said::Taken }));
+        // Joined with a merge step, the crown's ask is kept.
+        let joined = Unjudged { asked: Some(TurnAsk::Merge), fresh: true }.join(Unjudged {
+            asked: Some(TurnAsk::Asked { crown: old, ask: newer, said: Said::Handed }),
+            fresh: false,
+        });
+        assert_eq!(joined.asked.and_then(TurnAsk::crown), Some(old));
+    }
+
     fn branch(tip: &str, merge: &'static str, ahead: u32, column: &str) -> Told {
         Told {
             tip: tip.into(),
@@ -2595,6 +2721,7 @@ mod tests {
             late: false,
             unstarted: None,
             failed: None,
+            ask: None,
         };
         assert_eq!(w.clause(), "has been idle with 3 background tasks for 30 min");
         assert!(w.changed().is_empty(), "no delta: nothing about the work moved");
@@ -2842,6 +2969,7 @@ mod tests {
             late: false,
             unstarted: None,
             failed: None,
+            ask: None,
         };
         let head = checkout("1234567890abcdef", "REVIEW");
         assert_eq!(
@@ -3095,6 +3223,7 @@ mod tests {
                 turn: "turn-a".into(),
                 reason: FailReason::Server,
             }),
+            ask: None,
         };
         assert_eq!(wake.clause(), "ended its turn on an error");
         assert_eq!(wake.changed(), ["server error"]);
@@ -3233,6 +3362,7 @@ mod tests {
             late: false,
             unstarted: None,
             failed: None,
+            ask: None,
         };
         assert_eq!(wake.changed(), ["column PROD", "deployed to production !11"]);
         assert_eq!(wake.sent_at("DONE").changed(), ["column DONE", "deployed to production !11"]);
@@ -3310,6 +3440,7 @@ mod tests {
             late: false,
             unstarted: None,
             failed: None,
+            ask: None,
         };
         let h = heard(Some(delivered.clone()), Some(delivered.clone()));
         let cause = merge_verdict(true, &h, &landed).unwrap();
@@ -3443,6 +3574,7 @@ mod tests {
             late: false,
             unstarted: None,
             failed: None,
+            ask: None,
         };
         assert_eq!(wake.clause(), "merged");
     }
@@ -3563,6 +3695,7 @@ mod tests {
             late: h.restored,
             unstarted: None,
             failed: None,
+            ask: None,
         };
         h.judged = Some(landed.clone());
         assert_eq!(wake.changed(), ["merge_state ahead → merged", "after a restart"]);
@@ -3613,6 +3746,7 @@ mod tests {
             late: false,
             unstarted: None,
             failed: None,
+            ask: None,
         };
         assert_eq!(wake.changed(), ["merge_state merged", "column DONE"]);
         // Owed across the restart, it says so; a fold keeps saying it.
@@ -3649,6 +3783,7 @@ mod tests {
             late: false,
             unstarted: None,
             failed: None,
+            ask: None,
         };
         wake.fold(WakeCause::Forge, None, Some(news("review approved !1")));
         assert_eq!(wake.changed(), ["pipeline passed !1, review approved !1"]);
@@ -3710,6 +3845,7 @@ mod tests {
             late: false,
             unstarted: None,
             failed: None,
+            ask: None,
         };
         let passed = Told {
             forge: Some("pipeline passed !2".into()),

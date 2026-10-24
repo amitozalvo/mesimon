@@ -99,6 +99,7 @@ impl Mint {
 
 mod attachments;
 mod bridge;
+mod crownask;
 mod crownhold;
 mod crownledger;
 mod crownplan;
@@ -850,11 +851,11 @@ pub struct Daemon {
     /// (T-783), by the receiving ticket, for the card's line under its
     /// title. In memory, like the touches: the transcript is the record.
     crown_said: HashMap<ulid::Ulid, mesimon_core::command::CrownSaid>,
-    /// The crown's asks dropped before they were sent (T-568), by the
-    /// ticket they were for: what the crown's `get_ticket` on it reads as
-    /// `asked`. In memory, like the asks themselves (T-413); the crown's
-    /// next ask to the ticket clears it.
-    crown_dropped: HashMap<ulid::Ulid, CrownDrop>,
+    /// The crown's last ask to each ticket's agent (T-568, T-938), by the
+    /// ticket it was for: one record the ask's receipt and the crown's
+    /// `get_ticket` on it (`asked`) both read (`crownask`). In memory, like
+    /// the asks themselves (T-413, T-550).
+    crown_asks: HashMap<ulid::Ulid, crownask::CrownAsk>,
     /// The machine's board links (T-733), `links.toml` as last read: which
     /// boards this one reaches. Every board's daemon shares the file.
     links: peer::MachineLinksCache,
@@ -915,10 +916,6 @@ pub struct Daemon {
     /// that turn's end: the crown's ask comes back as an answer, a
     /// merge-flow sentence as a merge step the crown is not woken for.
     turn_asks: Tracked<HashMap<ulid::Ulid, TurnAsk>>,
-    /// The crown's words that went in mid-turn and whose ack outlived the
-    /// in-flight window (T-600), by ticket: the mark the ack would have
-    /// set, kept for the turn that takes them (`crownwake::LateAsk`).
-    late_asks: HashMap<ulid::Ulid, crownwake::LateAsk>,
     /// Tickets whose agent has worked since its last end of turn (T-591),
     /// set on an edge into a working state and taken by the next `EndTurn`:
     /// that end is a finished turn, and an idle re-entered with no turn
@@ -1502,7 +1499,7 @@ pub fn run(paths: Paths) -> Result<()> {
         agent_replay: HashMap::new(),
         crown_touches: HashMap::new(),
         crown_said: HashMap::new(),
-        crown_dropped: HashMap::new(),
+        crown_asks: HashMap::new(),
         links: peer::MachineLinksCache::new(crate::paths::machine_links_file().ok()),
         board_touches: Vec::new(),
         asks_out: HashMap::new(),
@@ -1518,7 +1515,6 @@ pub fn run(paths: Paths) -> Result<()> {
         crown_written_for: None,
         crown_landed: Vec::new(),
         turn_asks: Default::default(),
-        late_asks: HashMap::new(),
         turns_open: Default::default(),
         failing: HashMap::new(),
         crown_submit_refused: Default::default(),
@@ -2004,10 +2000,12 @@ impl Daemon {
 const INFLIGHT_MS: u64 = 10_000;
 
 /// Whose a mod's `entered` is (T-936), resolved before its effects: the
-/// crown's submitted wake, the delivery an owed entry holds, or no one.
+/// crown's submitted wake, the delivery an owed entry holds, a crown ask
+/// past its owed window (T-938), or no one.
 enum SubmitOwner {
     Wake,
     Delivery,
+    Ask,
     Nobody,
 }
 
@@ -2162,8 +2160,12 @@ struct Owed {
     fill: bool,
     ack: Ack,
     /// Why these words were sent, when that matters to the crown (T-469):
-    /// its ack marks the turn that took them (`Daemon::turn_asks`).
+    /// its ack marks the turn that took them (`Daemon::turn_asks`). A
+    /// merge step's; the crown's `ask_agent` rides `ask`.
     asked: Option<TurnAsk>,
+    /// The crown's ask these words are (T-938): this entry's own ack, and
+    /// no other prompt, hands it (`crownask`).
+    ask: Option<ulid::Ulid>,
     /// Words pasted into a running Codex turn (T-845), with the runtime's
     /// steer count at the paste: the count passing it is the ack, and the
     /// Enter repeats while the words still stand in the box.
@@ -2237,6 +2239,7 @@ impl Owed {
             fill: false,
             ack,
             asked: None,
+            ask: None,
             steer: None,
             screen_after: now_ms(),
             sent_at: None,
@@ -2262,6 +2265,7 @@ impl Owed {
             fill: false,
             ack,
             asked: None,
+            ask: None,
             steer: None,
             screen_after: now,
             sent_at: Some(now),
@@ -2340,14 +2344,6 @@ struct QueuedAsk {
     /// where it came from and the words before the template. Held for a
     /// person like a crown's ask unless `sends`; never persisted, like one.
     from_board: Option<peer::FromBoard>,
-}
-
-/// A crown's ask that left the queue unsent (T-568): whose crown it was,
-/// who dropped it (`person` or `board`, `AgentAskedView::by`) and when.
-struct CrownDrop {
-    crown: ulid::Ulid,
-    by: &'static str,
-    at_ms: u64,
 }
 
 impl QueuedAsk {
@@ -3381,6 +3377,7 @@ impl Daemon {
             changed |= stage!(self, "rescue_silent_mods", self.rescue_silent_mods(now));
             self.want_owed_screens(now);
             changed |= stage!(self, "settle_owed", self.settle_owed(now));
+            changed |= stage!(self, "settle_crown_asks", self.settle_crown_asks());
             self.want_compaction_screens();
             changed |= stage!(self, "settle_compactions", self.settle_compactions(now));
             changed |= stage!(self, "settle_plan_accepts", self.settle_plan_accepts(now));
@@ -5610,6 +5607,28 @@ impl Daemon {
         let ours = self.owed.get(&id).is_some_and(|o| o.fill && o.frame.as_deref() == Some(fid));
         if !ours {
             self.journal.line(&format!("mod fill {fid} for session {id}: {outcome}, nothing owed"));
+            // A crown ask's refused fill after its owed window (T-938): still
+            // that ask's, by seat, frame and pane. A late `filled` presses
+            // nothing: whether its keys would still be the board's is not
+            // known.
+            // Only the known `refused` is a confirmed drop; a late `filled`,
+            // or a word the board does not read, is unknown.
+            let changed = match outcome {
+                "refused" => self.crown_ask_refused(id, fid, "its mod refused to fill the words"),
+                "filled" => self.crown_ask_unread(
+                    id,
+                    fid,
+                    "its mod filled the words after the board stopped waiting",
+                ),
+                _ => self.crown_ask_unread(
+                    id,
+                    fid,
+                    "its mod reported the fill in a word the board does not read",
+                ),
+            };
+            if changed {
+                self.persist_and_notify();
+            }
             return;
         }
         let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { return };
@@ -5623,6 +5642,12 @@ impl Daemon {
                     // The words stand in the box; the person sends them.
                     self.journal.line(&format!("send-now for session {id} failed: {e}"));
                     self.feed.board_outcome("daemon", "prompt_send_now_failed", ticket, "keys");
+                    // The crown's ask (T-938): the keys may have half gone.
+                    self.crown_ask_unread(
+                        id,
+                        fid,
+                        "the send-now keys failed after the words were filled into its box",
+                    );
                 }
             }
             self.persist_and_notify();
@@ -5634,6 +5659,18 @@ impl Daemon {
         let Some(owed) = self.owed.remove(&id) else { return };
         let asked = owed.asked;
         let ticket = owed.ticket;
+        // The crown's ask is not slowed to the turn's end behind its back
+        // (T-938): the refusal stands, and `asked` says it. Whose fill it
+        // was is the delivery's crown tag, whatever the record could take.
+        if owed.ask.is_some() {
+            self.crown_ask_refused(id, fid, why);
+            if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                rec.pending_submit = false;
+            }
+            self.feed.board_outcome("daemon", "prompt_send_now_refused", Some(ticket), why);
+            self.persist_and_notify();
+            return;
+        }
         let Some(words) = owed.sent else { return };
         self.feed.board_outcome("daemon", "prompt_send_now_refused", Some(ticket), why);
         if self.mod_submit(id, ticket, words, owed.ack) {
@@ -5687,13 +5724,23 @@ impl Daemon {
         }
         let Some(owed) = self.owed.remove(&id) else { return false };
         let Some(words) = owed.parked else { return false };
-        let asked = owed.asked;
+        let (asked, ask) = (owed.asked, owed.ask);
         if !self.mod_submit(id, owed.ticket, words, owed.ack) {
             self.drop_owed(id);
             return true;
         }
         if let Some(o) = self.owed.get_mut(&id) {
             o.asked = asked;
+            o.ask = ask;
+        }
+        // A parked wake's words went down the mod: the ask's frame is this
+        // one, and it runs as a turn of its own (T-938).
+        if let (Some(ask), Some(frame)) = (ask, self.owed.get(&id).and_then(|o| o.frame.clone())) {
+            if let Some(a) = self.crown_asks.values_mut().find(|a| a.id == ask) {
+                a.frame = Some(frame);
+                a.submit = true;
+                a.own_turn = true;
+            }
         }
         true
     }
@@ -5720,11 +5767,12 @@ impl Daemon {
         if outcome == "entered" {
             // Whose frame it is, resolved before any effect (T-936), by seat,
             // frame and live pane: the crown's submitted wake, the delivery
-            // its owed entry holds, or no one (a retired attempt's, a frame
-            // from a pane since replaced). Each owner's effects, once. A
-            // crown wake's entry is never an ordinary delivery: a duplicate
-            // report after the wake was told is still the wake's, and does
-            // nothing.
+            // its owed entry holds, a crown ask whose owed window has passed
+            // (T-938: its record outlives the entry, which any prompt's ack
+            // takes), or no one (a retired attempt's, a frame from a pane
+            // since replaced). Each owner's effects, once. A crown wake's
+            // entry is never an ordinary delivery: a duplicate report after
+            // the wake was told is still the wake's, and does nothing.
             let live = self.board.sessions.iter().any(|s| s.id == id && s.state.has_pane());
             let owner = if self.submitted_wake(id, fid) {
                 SubmitOwner::Wake
@@ -5734,6 +5782,8 @@ impl Daemon {
                 })
             {
                 SubmitOwner::Delivery
+            } else if self.crown_ask_owns(id, fid) {
+                SubmitOwner::Ask
             } else {
                 SubmitOwner::Nobody
             };
@@ -5765,7 +5815,16 @@ impl Daemon {
                             })
                         })
                         .is_some_and(|rec| rec.unsent.take().is_some());
-                    if delivered {
+                    // A crown ask's delivery hands its ask (fenced again by
+                    // seat, frame and pane), whatever the seat's unsent.
+                    let handed = self.crown_ask_entered(id, fid);
+                    if delivered || handed {
+                        self.persist_and_notify();
+                    }
+                }
+                // Only that ask's receipt: no owed entry, no unsent words.
+                SubmitOwner::Ask => {
+                    if self.crown_ask_entered(id, fid) {
                         self.persist_and_notify();
                     }
                 }
@@ -5795,6 +5854,30 @@ impl Daemon {
         if !ours {
             self.journal
                 .line(&format!("mod submit {fid} for session {id}: {outcome}, nothing owed"));
+            // A crown ask's frame outlives its owed window (T-938): a
+            // refusal after it is still that ask's, found by seat, frame
+            // and pane, and a report the board cannot read leaves it
+            // unknown, never a newer delivery's.
+            let said = frame.payload["error"].as_str().or(frame.payload["reason"].as_str());
+            let changed = match outcome {
+                "dropped" | "rejected" => self.crown_ask_refused(
+                    id,
+                    fid,
+                    &format!(
+                        "its Claude Code refused the prompt: {outcome}{}",
+                        said.map(|s| format!(" ({})", mesimon_core::text::cap_bytes(s, 120)))
+                            .unwrap_or_default()
+                    ),
+                ),
+                _ => self.crown_ask_unread(
+                    id,
+                    fid,
+                    "its mod reported the words in a word the board does not read",
+                ),
+            };
+            if changed {
+                self.persist_and_notify();
+            }
             return;
         }
         let said = frame.payload["error"].as_str().or(frame.payload["reason"].as_str());
@@ -5839,6 +5922,10 @@ impl Daemon {
                         self.paste_entered(id, ticket, &text, owed.ack, Some(words));
                         if let Some(o) = self.owed.get_mut(&id) {
                             o.asked = owed.asked;
+                            o.ask = owed.ask;
+                        }
+                        if let Some(ask) = owed.ask {
+                            self.crown_ask_repasted(id, ask);
                         }
                         self.feed.board_outcome(
                             "daemon",
@@ -5860,9 +5947,7 @@ impl Daemon {
         // the agent's own side (`get_ticket`'s `asked: dropped, by: agent`),
         // never silently.
         self.mark_unsent(id, owed.sent);
-        if let Some(TurnAsk::Crown(crown)) = owed.asked {
-            self.crown_dropped_ask(ticket, crown, "agent");
-        }
+        self.crown_ask_refused(id, fid, &format!("its Claude Code refused the prompt: {outcome}"));
         self.feed.board_outcome("daemon", "prompt_submit_refused", Some(ticket), outcome);
         self.persist_and_notify();
     }
@@ -5928,13 +6013,15 @@ impl Daemon {
             // A phone's words that waited for this pane (a relaunch onto
             // its tier pick, T-643, or a composer still coming up) went in.
             self.control_submitted(id);
-            self.late_asks.remove(&ticket);
             if let Some(ask) = owed.asked {
                 self.mark_turn(ticket, ask);
             }
+            // This entry's own ack hands the crown's ask it carries (T-938);
+            // no other prompt does.
+            if let Some(ask) = owed.ask {
+                self.crown_ask_acked(ticket, id, ask);
+            }
             changed = true;
-        } else {
-            self.late_ask_acked(ticket);
         }
         if command {
             return changed;
@@ -6150,22 +6237,22 @@ impl Daemon {
                 continue;
             }
             if let Some(owed) = self.drop_owed(id) {
-                // Taken, and unacked only because a turn is still running
-                // (T-600): the crown's mark waits for the turn that takes
-                // the words, not for this window. A fill's send-now (T-601)
-                // went into the running turn, as a paste does.
-                if let (Some(ask @ TurnAsk::Crown(_)), true) =
-                    (owed.asked, owed.frame.is_none() || owed.taken)
-                {
-                    self.ask_unacked(owed.ticket, ask, owed.frame.is_some() && !owed.fill);
-                }
+                // A crown ask outliving this window keeps its record (T-938):
+                // the mod's `entered` finds it by frame, and a paste's turn
+                // end or the tick settles it (`crownask`).
                 match &owed.frame {
                     // The session's mod never took the words (T-575): they
                     // are taken back and kept unsent, as a paste into a box
-                    // that never painted is.
+                    // that never painted is. A response may still be on its
+                    // way to the bridge: the crown's ask is unknown.
                     Some(frame) if !owed.taken => {
                         self.mod_unqueue(id, frame);
-                        self.mark_unsent(id, owed.sent);
+                        self.crown_ask_unread(
+                            id,
+                            frame,
+                            "its mod did not acknowledge the words in time; they may still arrive",
+                        );
+                        self.mark_unsent(id, owed.sent.clone());
                         self.feed.board("daemon", "prompt_submit_unreceived", Some(owed.ticket));
                     }
                     // Taken and queued behind a turn that is still running:
@@ -6650,7 +6737,7 @@ impl Daemon {
             // whether the wait is the work, and the words are the answer.
             let answered_with_tasks = change.to
                 == (SessionState::Idle { stop_reason: StopReason::Background })
-                && matches!(self.turn_asks.get(&snapshot.ticket), Some(TurnAsk::Crown(_)))
+                && self.turn_asks.get(&snapshot.ticket).is_some_and(|a| a.crown().is_some())
                 && matches!(change.confidence, Confidence::High | Confidence::Medium);
             if answered_with_tasks {
                 self.turn_ended(snapshot.ticket, true);
@@ -6954,7 +7041,7 @@ impl Daemon {
                 }
                 match self.agent_ticket_view(target) {
                     Some(mut view) => {
-                        view.asked = self.crown_asked_view(ticket, target);
+                        view.asked = self.crown_asked_view(target);
                         view.told_hand = self.told_hand_view(ticket, target);
                         if target == ticket {
                             view.crowned = Some(self.board.is_crowned(ticket));
@@ -7327,6 +7414,12 @@ impl Daemon {
                         };
                     }
                 }
+                // A second ask while the first is out with the agent (T-938):
+                // refused, naming it, so a resend never puts a second copy in
+                // behind the board's back. One still on the queue is replaced.
+                if let Some(message) = self.crown_ask_blocks(target, &key) {
+                    return Response::Err { message };
+                }
                 // The road (T-550): held for a person's send, unless the
                 // board lets the crown send and the crown started this agent.
                 let held_because = self.crown_ask_hold(ticket, target, &seat);
@@ -7426,6 +7519,7 @@ impl Daemon {
                     held_because,
                     road: Some(road),
                     wake,
+                    asked: self.crown_asked_view(target),
                 }
             }
             // The crown's answer (T-569): a question an agent the crown
@@ -8319,28 +8413,6 @@ impl Daemon {
             CrownTouch { ticket: target, action: action.to_string(), at_ms: now, from: Some(own) },
         );
         Some(self.seen_token(target))
-    }
-
-    /// The crown's ask to `ticket` left the queue unsent (T-568): its next
-    /// `get_ticket` on the ticket reads `asked: dropped`, and who.
-    fn crown_dropped_ask(&mut self, ticket: ulid::Ulid, crown: ulid::Ulid, by: &'static str) {
-        let board = &self.board;
-        self.crown_dropped.retain(|t, _| board.ticket(*t).is_some());
-        self.crown_dropped.insert(ticket, CrownDrop { crown, by, at_ms: now_ms() });
-    }
-
-    /// What the crown on `crown` reads of its last ask to `ticket` (T-568).
-    fn crown_asked_view(
-        &self,
-        crown: ulid::Ulid,
-        ticket: ulid::Ulid,
-    ) -> Option<mesimon_core::command::AgentAskedView> {
-        let drop = self.crown_dropped.get(&ticket).filter(|d| d.crown == crown)?;
-        Some(mesimon_core::command::AgentAskedView {
-            status: "dropped".into(),
-            by: drop.by.into(),
-            since_secs: Some(now_ms().saturating_sub(drop.at_ms) / 1000),
-        })
     }
 
     /// Words went between the crown and `ticket`'s agent (T-783): the card
@@ -14026,14 +14098,15 @@ impl Daemon {
         // and its `get_ticket` says so. The crown's own new ask supersedes
         // whatever became of its last.
         match by {
-            Some(_) => {
-                self.crown_dropped.remove(&ticket);
-            }
+            Some(crown) => self.crown_ask_queued(ticket, crown),
             None => {
-                if let Some(crown) =
-                    self.queued.iter().find(|q| q.ticket == ticket).and_then(|q| q.by)
-                {
-                    self.crown_dropped_ask(ticket, crown, "person");
+                if self.queued.iter().any(|q| q.ticket == ticket && q.by.is_some()) {
+                    self.crown_ask_dropped(
+                        ticket,
+                        None,
+                        "person",
+                        "a person's words replaced them on the board",
+                    );
                 }
             }
         }
@@ -14341,11 +14414,17 @@ impl Daemon {
             let words = by.map(|_| text.clone());
             if !self.seat_stands(ticket, &seat) {
                 self.feed.board("automation", "queued_ask_dropped_target_gone", Some(ticket));
-                if let Some(crown) = by {
-                    self.crown_dropped_ask(ticket, crown, "board");
+                if by.is_some() {
+                    self.crown_ask_dropped(
+                        ticket,
+                        None,
+                        "board",
+                        "its agent's seat was gone when the queue reached it",
+                    );
                 }
                 continue;
             }
+            let (seat_id, working) = self.ask_seat(&seat);
             // A pane's paste is owed an ack, so the checkout is held by its
             // `owed` entry until it lands (`Ack::QUEUED`: the card says
             // `queued ∙ sending`). A wake and a start hold it through their
@@ -14361,14 +14440,17 @@ impl Daemon {
                 {
                     match self.deliver_queued_ask(ticket, seat, text, Ack::QUEUED, plan, false) {
                         Response::Ok => true,
-                        _ => {
+                        resp => {
                             self.feed.board("automation", "queued_ask_failed", Some(ticket));
+                            self.crown_ask_failed(ticket, by, &resp);
                             false
                         }
                     }
                 }
                 seat => match self.deliver(ticket, seat, text, Ack::PROMPT, plan, false) {
-                    Response::Err { message } => {
+                    resp @ Response::Err { .. } => {
+                        self.crown_ask_failed(ticket, by, &resp);
+                        let Response::Err { message } = resp else { unreachable!() };
                         eprintln!("mesimon: queued {word} failed: {message}");
                         self.feed.board(
                             "automation",
@@ -14390,7 +14472,9 @@ impl Daemon {
                 // answer (T-469), as after a person's `^y`.
                 Some(crown) => {
                     self.feed.board("agent", "ask_agent_sent", Some(ticket));
-                    self.tag_owed(ticket, TurnAsk::Crown(crown));
+                    if let Some(seat_id) = seat_id {
+                        self.crown_ask_sent(ticket, seat_id, working);
+                    }
                     self.crown_touched(crown, ticket, "sent");
                     if let Some(words) = &words {
                         self.crown_said(ticket, words);
@@ -14502,8 +14586,12 @@ impl Daemon {
             QueuedSeat::Pane(id) => Some(id),
             _ => None,
         });
-        if let Some(crown) = queued.and_then(|q| q.by) {
-            self.crown_dropped_ask(ticket, crown, dropped_by);
+        if queued.is_some_and(|q| q.by.is_some()) {
+            let why = match dropped_by {
+                "person" => "a person took them back, or talked to the agent ahead of them",
+                _ => "the board dropped them from its queue",
+            };
+            self.crown_ask_dropped(ticket, None, dropped_by, why);
         }
         self.queued.retain(|q| q.ticket != ticket);
         if let Some(id) = session {
@@ -14785,21 +14873,32 @@ impl Daemon {
         let q = self.queued.remove(i);
         self.persist_queue();
         if !self.seat_stands(ticket, &q.seat) {
-            if let Some(crown) = q.by {
-                self.crown_dropped_ask(ticket, crown, "board");
+            if q.by.is_some() {
+                self.crown_ask_dropped(
+                    ticket,
+                    None,
+                    "board",
+                    "its agent's seat changed before the words were sent",
+                );
             }
             self.broadcast();
             return Response::Err { message: "queued session changed".into() };
         }
         let immediately = q.deliver == Deliver::Immediately;
         let words = q.by.map(|_| q.text.clone());
+        let (seat_id, working) = self.ask_seat(&q.seat);
         let response =
             self.deliver_queued_ask(ticket, q.seat, q.text, Ack::QUEUED, q.plan, immediately);
-        // The crown's words, sent by a person: the turn that takes them is
-        // the crown's answer (T-469).
-        if let (Some(crown), false) = (q.by, matches!(response, Response::Err { .. })) {
-            self.tag_owed(ticket, TurnAsk::Crown(crown));
-            if let Some(words) = words {
+        // The crown's words, sent by a person or on its say-so: the record
+        // reads `sent` once the dispatch went through (T-938), and the
+        // turn they start is the crown's answer (T-469).
+        if q.by.is_some() {
+            match (&response, seat_id) {
+                (Response::Err { .. }, _) => self.crown_ask_failed(ticket, q.by, &response),
+                (_, Some(seat_id)) => self.crown_ask_sent(ticket, seat_id, working),
+                _ => {}
+            }
+            if let (Some(words), false) = (words, matches!(response, Response::Err { .. })) {
                 self.crown_said(ticket, &words);
             }
         }
@@ -16571,11 +16670,18 @@ impl Daemon {
                             if let Some(text) = r.prompt {
                                 let words = Parked { text, brief: r.brief, title: r.brief };
                                 self.park(r.session, r.ticket, words, r.ack);
+                                self.crown_ask_retag(r.ticket, r.session);
                             }
                         }
                         Response::Err { message } => {
                             eprintln!("mesimon: parked wake replay failed: {message}");
                             self.feed.board("daemon", "resume_replay_failed", Some(ticket));
+                            self.crown_ask_dropped(
+                                r.ticket,
+                                None,
+                                "board",
+                                "its agent's wake failed after the worktree was rebuilt",
+                            );
                         }
                         _ => {}
                     }

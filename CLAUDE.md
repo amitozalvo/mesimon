@@ -637,6 +637,10 @@ will not show up in our tests until they break something.
   `disableAllHooks` are a different thing (the module is not loaded at all).
 - **A mod's `submit` fires `UserPromptSubmit` as a typed prompt does, but an answer the mod
   returns in a dialog's place fires no `PostToolUse`**: the mod's `ModAnswer` report is that edge.
+- **A `$.prompt.submit` made mid-turn resolves only when its words are consumed** (2.1.309,
+  T-934): held to the running turn's end and run as a turn of its own, its `entered` is that
+  turn starting, an hour later in T-930's case. A crown ask down the mod reads `sent` until then
+  (`crownask`, T-938); a composer Enter's `UserPromptSubmit` is its enqueue, not its absorption.
 - **A mod's `$` call in flight fails with its dispatch when that dispatch is abandoned**
   (interrupt, a hook above settled first, budget), and the first read rides the first event's:
   the mod keeps a value only once read whole and never caches a failed read (T-594), and no

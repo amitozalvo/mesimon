@@ -35,8 +35,13 @@ and tmux's `TMUX`/`TMUX_PANE`. It does what `register.ts`'s bridge loop does:
   `dropped` and delivers nothing), `mod-submit-aside` one whose engine takes
   a submit to the model past the box, as Claude Code 2.1.309 does (T-931:
   a draft in the box stays there, unsent), the words appended to
-  `submitted.txt` and never typed; and `mod-late` one whose bridge first
-  polls the milliseconds its text names after the engine starts (T-879);
+  `submitted.txt` and never typed; `mod-hold-entered` one whose engine holds
+  a submit's result as Claude Code 2.1.309 holds a plugin's prompt to the
+  running turn's end (T-938): the words are typed as ever, and `entered` is
+  relayed only once a `mod-release` file appears (reading `dropped`, a late
+  refusal instead); and `mod-late` one whose
+  bridge first polls the milliseconds its text names after the engine
+  starts (T-879);
 - respawns a bridge that died, with the mod's backoff, and not one that was
   refused for good (exit 3, `BRIDGE_REFUSED_EXIT`);
 - exits when its parent (the stub, standing in for Claude Code) goes.
@@ -140,6 +145,18 @@ def answer(frame):
     })
 
 
+def held_entered(frame_id):
+    """`entered` once the test releases it (`mod-hold-entered`); a release
+    file reading `dropped` reports the engine's refusal instead, late."""
+    release = os.path.join(HERE, "mod-release")
+    while not os.path.exists(release):
+        time.sleep(0.05)
+    with open(release) as f:
+        dropped = f.read().strip() == "dropped"
+    relay("ModSubmit", frame_id,
+          {"outcome": "dropped", "reason": "a hook blocked it"} if dropped else {"outcome": "entered"})
+
+
 def switch(name):
     return os.path.exists(os.path.join(HERE, name))
 
@@ -210,6 +227,9 @@ def main():
                 with open(os.path.join(HERE, "submitted.txt"), "a") as f:
                     f.write((frame.get("text") or "") + "\n")
                 relay("ModSubmit", frame_id, {"outcome": "entered"})
+            elif kind == "submit" and switch("mod-hold-entered"):
+                deliver(frame.get("text") or "")
+                threading.Thread(target=held_entered, args=(frame_id,), daemon=True).start()
             elif kind == "submit":
                 ok = deliver(frame.get("text") or "")
                 relay("ModSubmit", frame_id,

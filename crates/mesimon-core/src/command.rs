@@ -2379,6 +2379,11 @@ pub enum Response {
         road: Option<AskRoad>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wake: Option<AskWake>,
+        /// The ask's record as it stands once the handler is done (T-938),
+        /// the view `get_ticket`'s `asked` reads: the true word where `road`
+        /// is the road chosen. A daemon from before it sends none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        asked: Option<AgentAskedView>,
     },
     /// AgentAskBoard's receipt (T-733): which board took the words, by
     /// name, and the peer's answer beside it, flattened, so the bytes are
@@ -2628,10 +2633,9 @@ pub struct AgentTicketView {
     /// only — `list_board` keeps its one word.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub needs_you: Option<AgentNeedsYouView>,
-    /// What became of the crown's last ask to this ticket's agent where
-    /// nothing else would tell it (T-568): words dropped before they were
-    /// sent. The crown's `get_ticket` with `key` only; its next ask to the
-    /// ticket clears it.
+    /// The crown's last ask to this ticket's agent (T-568, T-938): the same
+    /// record the ask's receipt read, as it stands now. The crown's
+    /// `get_ticket` with `key` only; its next ask to the ticket replaces it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asked: Option<AgentAskedView>,
     /// The hand this ticket's agent raised that the board told the crown of
@@ -2719,19 +2723,38 @@ pub struct AgentNeedsYouView {
     pub plan: Option<String>,
 }
 
-/// The crown's last ask, where it did not go (T-568). `status` is a word —
-/// `dropped` — so an older client drops what it cannot read. `by` says who
-/// dropped it: `person` (words replaced from the board or Remote Control,
-/// taken back, or talked past in the pane), `board` (the seat the words
-/// waited at went, or the ticket did) or `agent` (the agent's own Claude
-/// Code refused them, T-894: a hook beneath blocked the prompt).
+/// The crown's last ask to a ticket's agent (T-568, T-938), one record read
+/// by the receipt and by `get_ticket` alike. `status` is one word, a string
+/// so an older client drops what it cannot read:
+///
+/// - `queued`: on the board, waiting for the agent's idle or a person's
+///   `^y`; a new ask replaces it;
+/// - `sent`: out of the queue, into the pane or down the mod, and no edge
+///   of the agent's has said it has them yet;
+/// - `handed`: the agent's own edge for these words came — the prompt hook
+///   the paste fired, the mod's `entered`, a Codex steer counted;
+/// - `taken`: the turn these words started has ended;
+/// - `dropped`: they did not go, `by` whom: `person` (words of their own
+///   over the crown's, taken back, or talked past in the pane), `board`
+///   (the seat went, the delivery failed, the mod never took them) or
+///   `agent` (its Claude Code refused them, T-894), with `why`;
+/// - `unknown`: the board restarted, and it keeps no ask across one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentAskedView {
     pub status: String,
+    /// Always written, `""` where no one dropped it: a reader from before
+    /// T-938 requires the field.
+    #[serde(default)]
     pub by: String,
-    /// Seconds since it was dropped.
+    /// Seconds since the status was reached.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since_secs: Option<u64>,
+    /// The ask's id, as a refusal names it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ask: String,
+    /// What dropped it, or why the board cannot say.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub why: String,
 }
 
 /// A raised hand the crown was told of (T-922): the reason as the agent
@@ -4230,12 +4253,38 @@ mod tests {
             status: "dropped".into(),
             by: "person".into(),
             since_secs: Some(4),
+            ask: "01J".into(),
+            why: String::new(),
         });
         let json = serde_json::to_value(&t).unwrap();
         assert_eq!(
             json["asked"],
-            serde_json::json!({"status": "dropped", "by": "person", "since_secs": 4})
+            serde_json::json!({"status": "dropped", "by": "person", "since_secs": 4, "ask": "01J"})
         );
+        // A reader from before T-938 (`by` required, no `ask` or `why`)
+        // reads a view this build writes, `by` empty included.
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct OldView {
+            status: String,
+            by: String,
+            #[serde(default)]
+            since_secs: Option<u64>,
+        }
+        let sent = AgentAskedView {
+            status: "sent".into(),
+            by: String::new(),
+            since_secs: Some(0),
+            ask: "01J".into(),
+            why: String::new(),
+        };
+        let old: OldView = serde_json::from_value(serde_json::to_value(&sent).unwrap()).unwrap();
+        assert_eq!((old.status.as_str(), old.by.as_str()), ("sent", ""));
+        // An older daemon's view, with no id: it reads.
+        let old: AgentAskedView =
+            serde_json::from_value(serde_json::json!({"status": "dropped", "by": "board"}))
+                .unwrap();
+        assert!(old.ask.is_empty() && old.why.is_empty());
         let back: AgentTicketView = serde_json::from_value(json).unwrap();
         assert_eq!(back.repos, t.repos);
         assert_eq!(back.column_descriptions, t.column_descriptions);

@@ -435,14 +435,30 @@ fn render(resp: Response) -> Value {
         // `wake` (T-880): words to a parked agent are its wake, said
         // outright, because a crown that read `queued` there took the agent
         // for still asleep and called start_agent after it.
-        Response::AgentAsked { key, replaced, seen, held_for_person, held_because, road, wake } => {
+        // `asked` (T-938): the ask's record as it stands after the send,
+        // the same one get_ticket's `asked` reads, in place of the road the
+        // daemon chose; a daemon from before it sends none, and the road
+        // stands in.
+        Response::AgentAsked {
+            key,
+            replaced,
+            seen,
+            held_for_person,
+            held_because,
+            road,
+            wake,
+            asked,
+        } => {
             let mut body = json!({
                 "key": key,
                 "replaced": replaced,
-                "road": AskRoad::of(road, held_for_person).word(),
                 "held_for_person": held_for_person,
                 "wakes": mcp::CROWN_RULES_AT
             });
+            match asked {
+                Some(asked) => body["asked"] = json!(asked),
+                None => body["road"] = json!(AskRoad::of(road, held_for_person).word()),
+            }
             if let Some(seen) = seen {
                 body["seen"] = json!(seen);
             }
@@ -766,6 +782,7 @@ mod tests {
                 held_because: None,
                 road,
                 wake: None,
+                asked: None,
             });
             assert_eq!(v["isError"], false);
             serde_json::from_str::<Value>(v["content"][0]["text"].as_str().unwrap()).unwrap()
@@ -778,6 +795,32 @@ mod tests {
         assert_eq!(body(false, None)["road"], "queued");
         assert_eq!(body(false, None)["wakes"], mcp::CROWN_RULES_AT);
         assert!(body(false, None).get("wake").is_none(), "a pane's ask wakes nothing");
+    }
+
+    /// T-938: a daemon that sends the ask's record has it printed in place
+    /// of the road, which named the road chosen and not what the agent has.
+    #[test]
+    fn an_ask_receipt_prints_the_record_in_place_of_the_road() {
+        let v = render(Response::AgentAsked {
+            key: "T-7".into(),
+            replaced: false,
+            seen: None,
+            held_for_person: false,
+            held_because: None,
+            road: Some(AskRoad::SentNow),
+            wake: None,
+            asked: Some(mesimon_core::command::AgentAskedView {
+                status: "sent".into(),
+                by: String::new(),
+                since_secs: Some(0),
+                ask: "01JASK".into(),
+                why: String::new(),
+            }),
+        });
+        let body: Value = serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["asked"]["status"], "sent");
+        assert_eq!(body["asked"]["ask"], "01JASK");
+        assert!(body.get("road").is_none(), "{body}");
     }
 
     /// T-880: words to a parked agent say they are its wake, so the crown
@@ -793,6 +836,7 @@ mod tests {
                 held_because: None,
                 road: Some(AskRoad::Queued),
                 wake: Some(wake),
+                asked: None,
             });
             serde_json::from_str::<Value>(v["content"][0]["text"].as_str().unwrap()).unwrap()
         };

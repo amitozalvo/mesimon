@@ -33339,3 +33339,201 @@ the glyph reads, so the two agree), on every column. `App::ctx()` follows: `trai
 and `manual_merge` are false for a merged branch, so `t` is inert and unhinted where the row is
 gone (`ticket_merged_upstream_120x30` loses its `t merge by hand` hint, deliberately). An
 unmerged branch is unchanged, train on or off. Golden: `merged_no_train_row_120x30`.
+
+## The crown's ask says what the agent has, and a second ask is refused while the first is out (T-938, 2026-10-24, "Crown asks: one road-free promise, one outstanding ask, a receipt that says what the agent actually has")
+
+**Seen.** The crown sent T-930's worker an `ask_agent` with `deliver: now`. On the mod road a
+`$.prompt.submit` made mid-turn is held to the running turn's end, which was an hour away. The
+receipt said `sent_now`, `get_ticket` said nothing, and the crown's resend with `immediately` put a
+second copy in. T-934 measured why: the receipt named the road the handler chose before anything
+was sent (`AskRoad`), and nothing tied an acknowledgement to the words it acknowledged.
+`late_ask_acked` gave the crown's mark to whatever prompt came next, and `turn_ended` called the
+running turn's end an answer for a paste that had no ack.
+
+**Measured (T-934, Claude Code 2.1.309).** A mid-turn submit's promise resolves when its words
+are consumed: the first turn's `Stop` at +9,535 ms, the queued prompt's `UserPromptSubmit` at
++9,551 ms, the promise at +9,555 ms. So `ModSubmit entered` is the held prompt's own turn
+starting, never the queueing. `road::MOD_SUBMIT`'s doc said otherwise and now says this.
+
+**Shipped.** The brief went through two independent reads (T-940, T-942). The crown took the small
+shape with Astra's four revisions: no request key, no persistence of crown asks (T-550), no fill
+road, no absorption-id correlation, no new wake kind.
+
+- **One record per ticket, memory only** (`server/crownask.rs`, `Daemon::crown_asks`, in place
+  of `crown_dropped`). The receipt (`AgentAsked.asked`) and `get_ticket`'s `asked` read it, in
+  one word:
+  - `queued`: on the board's queue.
+  - `sent`: set only after the dispatch went through (the paste into the pane, the frame into
+    the mod's outbox), never at the dequeue or the road choice.
+  - `handed`: a receipt that names these words. On the mod road that is the mod's `entered`
+    for the record's seat, frame and pane, found after the owed window too. On Codex it is the
+    owed steer's or launch's ack, by its tag. A prompt hook names no words (a person's prompt
+    fires one too), so **a paste-road ask never reads `handed`**. The hook acking its tagged
+    owed entry only marks the turn after it (`Said::Sent`); a held `submit`'s record ignores
+    it entirely (`crownask::ack_edge`).
+  - `taken`: **the turn these words started has ended.** It says nothing about absorption
+    inside a turn already running, which stays `handed`. An end, normal or not, says nothing
+    about whether the work succeeded. "Started" means words sent to an idle or parked agent,
+    or a mod `submit`, which always runs as its own turn.
+  - `dropped`, with `by` and `why`: only a confirmed refusal or a cancellation before receipt.
+    That is the mod refusing the submit or the fill (`agent`); a take-back, a replacement or a
+    drop while queued (`person`); or the seat gone at the drain, or a wake that failed after a
+    rebuild (`board`).
+  - `unknown`, with `why`: an effect the board cannot read. That is send-now keys failing after
+    a fill, a dispatch erroring part-way, a mod frame not acknowledged inside the owed window,
+    a mod `submit` whose session or pane changed, an unread late mod report, or a non-submit
+    ask whose owed entry ended unacked with its agent not working ("delivery is no longer
+    tracked; the agent's receipt was not confirmed"). It is never resent.
+- **The turn carries the ask id.** `TurnAsk::Asked { crown, ask, said }` replaces the crown's
+  `ask_agent` use of `TurnAsk::Crown`, which stays for `answer_agent`'s and `accept_plan`'s
+  turns.
+  - The handed edge marks the turn with it.
+  - `turn_ended` takes only the ask id the ending turn carries, and sets `said` to the word at
+    that end.
+  - A dialog mid-turn keeps the mark for the end that is one.
+  - `crown.json` goes to schema 2, because a schema-1 build cannot read the variant and now
+    bars its writes rather than quarantine the file. A v1 file reads
+    (`a_schema_one_ledger_reads_and_an_ask_by_id_round_trips`).
+- **The wake says what the end proves.** The wake carries a snapshot of the ask
+  (`CrownWake.ask`, taken when the wake is owed and never looked up at send time), so an old
+  wake sent after a newer ask names the right one. Where a receipt of the agent's named the
+  words, `WakeCause::Answered`'s clause is "ended its turn after your ask went in" and its
+  brackets lead with `ask <id>: taken` or `handed`. Where none did (`sent`, `unknown`), the
+  line is "ended a turn after ask <id> was sent; receipt unconfirmed" and claims no more (item
+  11, at the rebase). The variant and the feed word `answered` stay.
+- **A second ask is refused while the first is out.** `AgentAskTicket` refuses while the record
+  reads `sent` or `handed`, naming the ask, its age and its word. One still `queued` is
+  replaced, as before. The block lifts only at an observed edge:
+  - `taken`, `dropped` or `unknown`;
+  - for an ask that went into a running turn (a paste or send-now mid-turn, a Codex steer), the
+    end of that turn, after which it reads as it was and no longer blocks;
+  - a mod `submit` lifts only at its own turn's end or a drop.
+
+  There is no timer. The one tick stage (`settle_crown_asks`) reads only the board.
+- **No refusal quietly weakens the mode.** A crown ask's refused fill is `dropped` and sends no
+  plain `submit`. A person's `immediately` keeps the fallback. Codex `immediately` is refused as
+  before.
+- **After a restart** (`restore_crown_asks`), each worker whose restored ledger carries a crown
+  ask of the recorded crown reads `unknown`, "an earlier crown ask is recorded; its outcome was
+  not retained". That record never blocks.
+- **Removed:** `LateAsk`, `late_asks`, `ask_unacked`, `late_ask_acked`, `turn_ended`'s
+  late-paste branch and `settle_owed`'s crown branch.
+
+**Limits, stated.**
+- Without a request key, a lost receipt or a retry after a restart can still run twice. The rule
+  refuses a second ask while the first is out, and claims no more. `AgentReplay` is there if a
+  key is ever wanted.
+- A restart between `sent` and `handed`: a paste or fill whose own ack marked the turn
+  (`Asked`, said `sent`) leaves a ledger entry and reads `unknown` after it; an unmarked `sent`
+  ask (a mod `submit` still held, a paste not yet acked) may leave none. No `asked` after a
+  restart is no retained evidence, not proof that nothing was sent.
+- On the paste road nothing names the words, so the ask reads `sent` until the settle stage
+  or a proven turn end, and its wake says `sent`.
+
+**Audit (T-934's rows).**
+
+| Row | Status |
+|---|---|
+| High 1 (two copies) | Partly closed (the limits above) |
+| High 2 (the wrong ack) | Partly closed |
+| High 3 (restart) | Out by T-550, with `unknown` where the ledger records an ask |
+| High 5 (a weakened mode) | Closed for crown asks |
+| Medium 6 (the receipt states an intent) | Closed |
+| Medium 7 (failure after the dequeue) | Partly: `unknown` with the error, words not kept |
+| Medium 8 (a printed frame read as the receipt) | Closed for crown asks |
+| Medium 9 (bounded dedupe) | Out |
+| Medium 10 (attribution) | Closed: callbacks found by frame and session |
+| Medium 11 (a drop seen only if polled) | Through `asked` |
+| High 4, Medium 12 | T-936 |
+
+**Tests.**
+- Unit tests: `crownask`'s words, view and refusal;
+  `a_turn_end_wake_names_its_own_ask_and_says_no_more_than_the_end`; the v1 ledger;
+  `an_ask_receipt_prints_the_record_in_place_of_the_road`; the view's back-compat in `command.rs`.
+- `crown_e2e::a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out`, on both
+  roads, covers:
+  - the T-930 sequence, with the stand-in engine's new `mod-hold-entered` holding `entered` to
+    the turn's end on the mod pass;
+  - a person's prompt in the ack window;
+  - a restart while `sent` and a restart while `handed`;
+  - the mod's refused fill and refused submit as `dropped` by `agent`, with no submit after the
+    fill.
+- `the_crown_sends_now_into_a_working_turn`'s late-ack block now asserts the last word seen and
+  the refusal, not an answer.
+- Rig `A2` (real Sonnet, Claude Code 2.1.310, mod road), run three times:
+  - **Run 1 passed every check**, but its crown reused a stale `seen`, so the second ask was
+    refused as stale and the new rule was not exercised. The step now names the receipt's
+    `seen`.
+  - **Runs 2 and 3 exercised the rule on real Claude Code.** The receipt read `sent`. The
+    second ask was refused with "ask … is still out (sent, 2s); Claude Code runs a plugin's
+    prompt when the running turn ends". There were 2 prompts in the transcript, the held
+    prompt entered +0.1 s and +0.6 s after the first `Stop`, and the crown woke on `answered`.
+  - **Both runs failed on the worker's brief alone.** Claude Code refused a foreground
+    `sleep 60`, and it moved a longer `find` to the background, so the first reply was not
+    `first` and run 3 timed out. The case is back on run 1's `find /usr` and is not re-run.
+
+**Corrections after the delivery read** (the crown's note "Corrections after the independent
+delivery read"):
+- A prompt hook hands no paste-road ask, and a held `submit` only by its matching `entered`.
+- A confirmed `dropped`/`rejected`, or a refused fill, after the owed window drops that ask
+  alone, found by seat, frame and pane. Any other late report is `unknown`.
+- `turn_ended` settles an ask only on a proven end (`end_turn`, not a dialog). An observation
+  loss or a guessed idle keeps the mark.
+- The end edge and the mod's reports check the record's pane. A delayed frame from a replaced
+  pane marks nobody.
+- `AgentAskedView.by` is always written, because a pre-T-938 reader requires it (a
+  new-writer/old-reader test).
+- A schema-2 `crown.json` read by a schema-1 loader is barred, untouched and not quarantined
+  (tested). T-936's `Failed` variant shares this schema 2 at the rebase.
+- A refused fill's fallback branches on the delivery's crown tag.
+
+**Round 2** (the crown's note "Round 2 after the third independent read"):
+- **An `entered` changes only what its own delivery touched.**
+  - It clears `unsent` only when the report belongs to the same delivery. At the rebase this
+    folded into T-936's owner rule (the owed entry waiting on that frame, carrying those very
+    words), the smaller fence, and `unsent_frames` went: a late `entered` after the window
+    clears nothing.
+  - A late `fill` report drops the ask only on the known `refused`; any other word is `unknown`,
+    and no keys are pressed.
+- **The end edge resolves a mismatched ask as `unknown`.** An ask whose pane was replaced
+  becomes `unknown`, and the replacement's turn carries none of it. The tick resolves a
+  `handed` ask in a replaced pane as `unknown` too, so it never blocks for good.
+- **The end edge matches stages explicitly** (`end_said`). A dropped ask gets no attribution.
+- **An ask sent to a parked seat binds its pane at the first edge that names one**
+  (`bind_pane`), so a wake's new pane is the ask's own.
+
+**At the rebase onto T-930, T-936 and T-943** (main `93321ac2`; the crown's notes "Before the
+rebase" and "Main moved again"):
+- **One receiving edge (round 2, D).** The crown ask is the fourth owner in T-936's
+  `SubmitOwner` ledger, never a second fence: `on_mod_submit` resolves the owner once, by seat,
+  frame and live pane, before any effect. `Wake` settles the crown's wake; `Delivery` (the owed
+  entry waiting on the frame) clears its own unsent words and hands the ask it carries; `Ask`
+  (`crown_ask_owns`: a crown ask past its owed window, whose entry another prompt's ack took)
+  hands that ask alone; `Nobody` is journalled. A refusal routes the same way: the wake's first,
+  then a late refusal by the ask's record.
+- **Item 10.** A refused `submit` that goes in by paste after a stop (T-894's road) moves its ask
+  to the paste's route (`crown_ask_repasted`: no frame, not a submit, its own turn), so the
+  paste's turn end releases the block. Without it, the ask kept `submit` and the refused
+  frame, and its block outlived the paste's turn.
+- **Item 11.** `ask_agent`: "gets them as deliver says (asked says where they stand)", refused
+  "while its last ask is sent or handed", and "A turn ending after them wakes this session",
+  never "the turn taking them". `CROWN_WAKES` names the six words and the block, with "now"
+  as dispatch ("sent at once"), and the wake list says "ends a turn after the crown's ask went
+  out", never "answers the crown's ask".
+- `CROWN_SCHEMA` stays 2 for both T-936's `Failed` and `Asked`; one schema-1 reader test holds
+  both.
+- The stand-in engine's switch is `mod-hold-entered` (T-936 took `mod-hold-submit` for a hold
+  of the whole bridge loop).
+- **Composition with T-943** (`a_refused_ask_and_a_plan_sent_back_are_not_the_outstanding_ask`):
+  an ask at a plan is refused before any record is made, and the plan sent back is a dialog's
+  answer. Neither is the outstanding ask, so the ask after the accepted plan goes out.
+- **Tests:** item 10's case at the end of
+  `a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out` (mod pass), the
+  wording in the unit test beside the wake, and every hook-road e2e that waited on "your ask went
+  in" for a paste now takes either line (`ask_ends`).
+- **Measured:** in an e2e whose crown and worker share a checkout, the crown's own wake submit
+  holds the checkout's queue for its 10 s window when the stub sends no `UserPromptSubmit` for
+  it (T-936's retention). Real Claude Code sends that prompt, so this is test timing only.
+
+**Not covered by an e2e:** send-now keys failing after a filled box, since the harness has no
+backend failure seam. The code path is the `unknown` edge in `on_mod_fill`.

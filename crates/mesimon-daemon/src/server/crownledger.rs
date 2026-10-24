@@ -25,10 +25,13 @@ use serde::{Deserialize, Serialize};
 use super::crownwake::{CrownWake, Entering, Heard, ToldHand, TurnAsk};
 use super::*;
 
-/// 2 since T-936: a wake may be `failed`, a cause a schema-1 build cannot
-/// read, and a same-schema file that fails to parse is quarantined, which
-/// would lose the whole ledger. A newer schema is left untouched with its
-/// writes barred instead. A schema-1 file reads as it is.
+/// 2 since T-936 and T-938, one schema for both (no released build carried
+/// either): a wake may be `failed`, a turn's ask may be `TurnAsk::Asked`
+/// (the crown's ask by its id), and a wake carries the ask it was owed for.
+/// A schema-1 build cannot read those, and a same-schema file that fails to
+/// parse is quarantined, which would lose the whole ledger; a newer schema
+/// is left untouched with its writes barred instead. A schema-1 file reads
+/// as it is.
 pub const CROWN_SCHEMA: u32 = 2;
 
 /// How long after a start the restart's look waits for a worker's agent to
@@ -243,6 +246,9 @@ impl Daemon {
             self.crown_heard.entry(worker).or_default().restored = true;
         }
         self.crown_recheck_until = now_ms() + RECHECK_MS;
+        // The crown's asks the turns rode come back `unknown` (T-938): the
+        // record was memory, what became of the words was not kept.
+        self.restore_crown_asks();
     }
 }
 
@@ -319,10 +325,11 @@ mod tests {
         assert_eq!(serde_json::to_string_pretty(&parse(&text).unwrap()).unwrap(), text);
     }
 
-    /// T-936: a schema-1 build (its reader asks for schema 1) meets a
-    /// schema-2 ledger that holds a failed turn's wake, a cause it cannot
-    /// read: the file is left byte for byte, its writes are barred, and
-    /// nothing is quarantined, so a newer build gets its ledger back whole.
+    /// T-936, T-938: a schema-1 build (its reader asks for schema 1) meets
+    /// a schema-2 ledger that holds a failed turn's wake and a crown ask by
+    /// its id, neither of which it can read: the file is left byte for byte,
+    /// its writes are barred, and nothing is quarantined, so a newer build
+    /// gets its ledger back whole.
     #[test]
     fn a_schema_1_reader_leaves_a_schema_2_ledger_alone() {
         let dir = std::env::temp_dir().join(format!("msmn-crown-ledger-{}", std::process::id()));
@@ -330,12 +337,18 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("crown.json");
         let text = format!(
-            r#"{{"schema_version": 2, "crown": "{}",
-                "wakes": [{{"worker": "{}", "cause": "failed",
+            r#"{{"schema_version": 2, "crown": "{c}", "asks": {{"{w}": {asked}}},
+                "wakes": [{{"worker": "{w}", "cause": "failed",
                     "failed": {{"session": "{}", "turn": "turn-a", "reason": "server"}}}}]}}"#,
-            ulid::Ulid::from_parts(1, 1),
-            ulid::Ulid::from_parts(1, 7),
-            uuid::Uuid::nil()
+            uuid::Uuid::nil(),
+            c = ulid::Ulid::from_parts(1, 1),
+            w = ulid::Ulid::from_parts(1, 7),
+            asked = serde_json::to_string(&TurnAsk::Asked {
+                crown: ulid::Ulid::from_parts(1, 1),
+                ask: ulid::Ulid::from_parts(1, 9),
+                said: crownwake::Said::Sent,
+            })
+            .unwrap(),
         );
         std::fs::write(&file, &text).unwrap();
         let (ledger, notices, barred) =
@@ -351,8 +364,32 @@ mod tests {
         // This build reads it.
         let (ledger, _, barred) =
             store::load_versioned::<Ledger>(&file, CROWN_SCHEMA, "the crown's ledger", "");
-        assert!(ledger.is_some_and(|l| l.wakes.len() == 1) && !barred);
+        assert!(ledger.is_some_and(|l| l.wakes.len() == 1 && l.asks.len() == 1) && !barred);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A schema 1 ledger (before T-938) reads at schema 2: its crown turn
+    /// is the old variant, its wake has no ask. An ask by id round-trips.
+    #[test]
+    fn a_schema_one_ledger_reads_and_an_ask_by_id_round_trips() {
+        let w = ulid::Ulid::from_parts(1, 7);
+        let c = ulid::Ulid::from_parts(1, 1);
+        let v1 = format!(
+            r#"{{"schema_version": 1, "crown": "{c}", "asks": {{"{w}": {{"crown": "{c}"}}}},
+               "wakes": [{{"worker": "{w}", "cause": "answered", "finished": false, "late": false}}]}}"#
+        );
+        let old = parse(&v1).unwrap();
+        assert_eq!(old.asks.get(&w), Some(&TurnAsk::Crown(c)));
+        assert_eq!(old.wakes.len(), 1);
+        let ask = ulid::Ulid::from_parts(1, 9);
+        let mut ledger = Ledger { schema_version: CROWN_SCHEMA, ..Ledger::default() };
+        ledger.asks.insert(w, TurnAsk::Asked { crown: c, ask, said: crownwake::Said::Taken });
+        let text = serde_json::to_string(&ledger).unwrap();
+        assert!(text.contains(r#""said":"taken""#), "{text}");
+        assert_eq!(
+            parse(&text).unwrap().asks.get(&w),
+            Some(&TurnAsk::Asked { crown: c, ask, said: crownwake::Said::Taken })
+        );
     }
 
     /// Not an assertion about wall clock (see `search.rs`): the number in

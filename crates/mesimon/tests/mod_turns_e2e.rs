@@ -345,6 +345,54 @@ fn a_submit_the_mod_refuses_is_kept_unsent_and_its_resend_goes_down_the_mod() {
     let _ = c.request(Command::KillSession { id: sid });
 }
 
+/// T-938, round 2 A: every effect of a mod's `entered` is fenced by the
+/// delivery it names (T-936's owner). A late `entered` for an earlier
+/// frame, after a newer delivery failed and left its own words unsent,
+/// clears none of them.
+#[test]
+fn an_old_entered_clears_no_newer_delivery_s_unsent_words() {
+    let Some(h) = Harness::boot_bare("modstale", Some(READER), &[MOD]) else { return };
+    std::fs::write(h.dir.join("mod-drop-submit"), "").unwrap();
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("modstale");
+    let ticket = ticket_with_brief(&mut c, "stale me", "## Brief\n\nmesimon-stale-1 the brief");
+    let sid = spawn(&mut c, ticket, true);
+    wait_bridge(&h, sid);
+    session_start(&hook_sock, sid);
+    wait_until(Duration::from_secs(5), "the brief marked unsent", || {
+        record(&mut c, sid).unsent.is_some()
+    });
+    // A newer delivery, the person's own words, refused too.
+    assert!(matches!(prompt(&mut c, ticket, "mesimon-stale-2 newer words", false), Response::Ok));
+    wait_until(Duration::from_secs(5), "the newer words unsent", || {
+        record(&mut c, sid).unsent.is_some_and(|u| u.text.contains("mesimon-stale-2"))
+    });
+    let submits = frames(&h, sid, "submit");
+    assert_eq!(submits.len(), 2, "{submits:?}");
+    let (old, new) = (submits[0]["id"].as_str().unwrap(), submits[1]["id"].as_str().unwrap());
+    let entered = |fid: &str| {
+        hook_send_road(
+            &hook_sock,
+            &sid.to_string(),
+            "ModSubmit",
+            Some(fid),
+            None,
+            r#"{"outcome":"entered"}"#,
+            Some("mod"),
+        )
+    };
+    entered(old);
+    std::thread::sleep(Duration::from_millis(800));
+    let rec = record(&mut c, sid);
+    assert!(
+        rec.unsent.as_ref().is_some_and(|u| u.text.contains("mesimon-stale-2")),
+        "an earlier delivery's report keeps the newer words: {:?}",
+        rec.unsent
+    );
+    let _ = new;
+    let _ = c.request(Command::KillSession { id: sid });
+}
+
 /// T-879: a seat on the mod road reads idle at its `SessionStart`, a moment
 /// before its mod's bridge first polls; words the queue held for that idle
 /// (a person's queued ask, the crown's wake, a linked board's ask) were

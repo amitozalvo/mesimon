@@ -37,6 +37,17 @@ use serde_json::json;
 mod common;
 use common::*;
 
+/// The two lines a turn's end after a crown ask can wake the crown with
+/// (T-938), for `head` (the worker's key and title): a receipt of the
+/// agent's named the words (the mod's `entered`), or none did (a paste, a
+/// fill) and the line says only that they were sent.
+fn ask_ends(head: &str) -> [String; 2] {
+    [
+        format!("{head} ended its turn after your ask went in"),
+        format!("{head} ended a turn after ask "),
+    ]
+}
+
 fn key_of(c: &mut TestClient, id: ulid::Ulid) -> String {
     c.board().ticket(id).unwrap().short_key.clone()
 }
@@ -727,7 +738,16 @@ fn the_crown_lets_one_agent_edit_the_others() {
     }
     // The ask: held on B's card, authored by A, delivered to nobody.
     let seen_after = match ask(&mut c, sa, &kb, "mesimon-probe-62 commit it", bv.seen) {
-        Response::AgentAsked { key, replaced, seen, held_for_person, held_because, road, wake } => {
+        Response::AgentAsked {
+            key,
+            replaced,
+            seen,
+            held_for_person,
+            held_because,
+            road,
+            wake,
+            ..
+        } => {
             assert_eq!(key, kb);
             assert!(!replaced);
             assert_eq!(wake, None, "B's agent has a pane: the words wake nothing");
@@ -778,7 +798,8 @@ fn the_crown_lets_one_agent_edit_the_others() {
         Response::AgentAsked { held_for_person, .. } => assert!(held_for_person),
         other => panic!("the re-ask: {other:?}"),
     }
-    assert_eq!(dropped(&mut c), None, "a new ask clears the dropped one");
+    // T-938: the record is the new ask's now, on the board.
+    assert_eq!(dropped(&mut c).map(|d| d.0), Some("queued".into()), "a new ask replaces it");
     // A person's own queued ask is never overwritten by the crown's.
     match c.request(Command::PromptSession {
         ticket: b,
@@ -812,7 +833,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         Response::AgentAsked { replaced, .. } => assert!(!replaced),
         other => panic!("the third ask: {other:?}"),
     }
-    assert_eq!(dropped(&mut c), None, "the third ask clears the record");
+    assert_eq!(dropped(&mut c).map(|d| d.0), Some("queued".into()), "the third ask's record");
     assert!(!landed("mesimon-probe-66"));
     assert!(matches!(c.request(Command::SendQueuedAsk { ticket: b }), Response::Ok));
     wait_until(std::time::Duration::from_secs(10), "the sent words to land", || {
@@ -822,10 +843,18 @@ fn the_crown_lets_one_agent_edit_the_others() {
     // every other (T-244): the card says `sending` until Claude takes it.
     let p = pending_of(&mut c, Some(b));
     assert!(p.iter().all(|p| p.in_flight), "only the paste's own mark remains: {p:?}");
+    // Pasted and not yet confirmed; the mod pass's stand-in engine reports
+    // `entered` with the words, which hands them at once.
+    let want = if test_road() == "mod" { "handed" } else { "sent" };
+    assert_eq!(dropped(&mut c).map(|d| d.0), Some(want.into()));
     hook_send(&h.paths.hook_sock(), &sb.to_string(), "UserPromptSubmit", "{}");
     wait_until(std::time::Duration::from_secs(5), "the paste's ack to clear it", || {
         pending_of(&mut c, Some(b)).is_empty()
     });
+    // A prompt hook names no words (T-938): on the hook set the paste stays
+    // `sent`; the mod pass's `entered` handed it.
+    let want = if test_road() == "mod" { "handed" } else { "sent" };
+    assert_eq!(dropped(&mut c).map(|d| d.0), Some(want.into()));
     // The feed names the tool and the actor, never the words; the words are
     // in no state file either.
     wait_until(std::time::Duration::from_secs(5), "the ask_agent feed line", || {
@@ -2833,11 +2862,23 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
         lines_with(&worker).len() == 2
     });
     let answer = lines_with(&worker).pop().unwrap();
-    assert!(
-        answer
-            .starts_with(&format!("{worker} answered your ask (merge_state needs_rebase → ahead")),
-        "{answer}"
-    );
+    // T-938: the line says what the turn's end proves, and names the ask:
+    // the mod's `entered` handed it and its words started this turn, so it
+    // reads `taken`; a paste no receipt named was sent, its receipt
+    // unconfirmed, and the line claims no more.
+    if test_road() == "mod" {
+        assert!(
+            answer.starts_with(&format!("{worker} ended its turn after your ask went in (ask ")),
+            "{answer}"
+        );
+        assert!(answer.contains(": taken, merge_state needs_rebase → ahead"), "{answer}");
+    } else {
+        assert!(answer.starts_with(&format!("{worker} ended a turn after ask ")), "{answer}");
+        assert!(
+            answer.contains(" was sent; receipt unconfirmed (merge_state needs_rebase → ahead"),
+            "{answer}"
+        );
+    }
     assert!(answer.ends_with(&format!("∙ get_ticket key={kw} for state and notes")), "{answer}");
     start(&mut c, sa);
     stop(&mut c, sa);
@@ -3983,7 +4024,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     start(&mut c, ws);
     stop(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the answer's wake on the crown", || {
-        landed(&format!("{kw} \"mesimon-probe-91 worker\" answered your ask"))
+        ask_ends(&format!("{kw} \"mesimon-probe-91 worker\"")).iter().any(|l| landed(l))
     });
     start(&mut c, sa);
     stop(&mut c, sa);
@@ -4324,13 +4365,13 @@ fn the_crown_sends_now_into_a_working_turn() {
         start(&mut c, ws);
         stop(&mut c, ws);
         wait_until(std::time::Duration::from_secs(20), "the answer's wake on the crown", || {
-            landed(&format!("{kw} \"mesimon-probe-81 worker\" answered your ask"))
+            ask_ends(&format!("{kw} \"mesimon-probe-81 worker\"")).iter().any(|l| landed(l))
         });
         start(&mut c, sa);
         stop(&mut c, sa);
     }
-    let answered = format!("{kw} \"mesimon-probe-81 worker\" answered your ask");
-    let answers = || read_got().matches(answered.as_str()).count();
+    let answered = ask_ends(&format!("{kw} \"mesimon-probe-81 worker\""));
+    let answers = || answered.iter().map(|l| read_got().matches(l.as_str()).count()).sum::<usize>();
     let ask = |c: &mut TestClient, text: &str, deliver: Deliver| {
         let v = read(c, sa, &kw).unwrap();
         c.send(
@@ -4422,9 +4463,12 @@ fn the_crown_sends_now_into_a_working_turn() {
     hook_send(&hook_sock, &ws.to_string(), "PostToolUse", permission);
     c.await_state(ws, "past the dialog", |s| *s == SessionState::Running);
 
-    // ---- an ack that outlives the in-flight window keeps the mark -----------
-    // A long turn takes the words at its next step (a paste) or after it
-    // ends (the mod's submit): the window's give-up is not the turn's end.
+    // ---- an ack that outlives the in-flight window (T-938) -----------------
+    // No ack inside the window is no ack: the record stays at the last word
+    // the board saw, no later prompt pays for it, and the end of the turn
+    // the words went into lifts the block without calling them taken. On
+    // the mod pass the stand-in engine's `entered` came with the submit,
+    // which runs as a turn of its own: its end takes it.
     let before = answers();
     assert_eq!(
         road_of(ask(&mut c, "mesimon-probe-85 late", Deliver::Now)),
@@ -4437,13 +4481,27 @@ fn the_crown_sends_now_into_a_working_turn() {
         std::fs::read_to_string(&feed_path)
             .is_ok_and(|f| f.contains("\"paste_unacked\"") || f.contains("\"submit_unacked\""))
     });
-    stop(&mut c, ws);
+    let word = |c: &mut TestClient| read(c, sa, &kw).unwrap().asked.map(|a| a.status);
     if test_road() == "mod" {
-        // Held behind the turn, the submit runs as a turn of its own.
-        start(&mut c, ws);
+        assert_eq!(word(&mut c).as_deref(), Some("handed"));
         stop(&mut c, ws);
+        answer_heard(&mut c, before);
+        assert_eq!(word(&mut c).as_deref(), Some("taken"));
+    } else {
+        assert_eq!(word(&mut c).as_deref(), Some("sent"), "the window closed unacked");
+        // A second ask meanwhile is refused, naming the first.
+        match ask(&mut c, "mesimon-probe-85b again", Deliver::Immediately) {
+            Response::Err { message } => {
+                assert!(message.contains("(sent,") && message.contains("is refused"), "{message}")
+            }
+            other => panic!("a second ask while the first is out: {other:?}"),
+        }
+        stop(&mut c, ws);
+        settle();
+        assert_eq!(answers(), before, "no turn of the ask's own ended");
+        assert_eq!(word(&mut c).as_deref(), Some("sent"), "the last word the board saw");
+        assert!(!landed("mesimon-probe-85b"), "the refused ask sent nothing");
     }
-    answer_heard(&mut c, before);
 
     // ---- supervised: held for a person, the send preset to now --------------
     assert!(matches!(
@@ -4468,6 +4526,430 @@ fn the_crown_sends_now_into_a_working_turn() {
 
     let feed = std::fs::read_to_string(&feed_path).unwrap();
     assert!(!feed.contains("mesimon-probe-8"), "the feed never carries the words");
+}
+
+/// T-938: the crown's ask is one record, which the receipt and `get_ticket`'s
+/// `asked` both read in one word, and a second ask is refused while the
+/// first is out. The T-930 sequence first: `now` into a working agent reads
+/// `sent`, a resend with `immediately` is refused naming it and puts nothing
+/// in, and the words reach the agent once. On the mod pass the stand-in
+/// engine holds the submit's result to the turn's end as Claude Code does:
+/// the running turn's end leaves it `sent` and still refused, `entered`
+/// hands it, and the end of the turn it started takes it, the wake naming
+/// the ask. On the hook set the paste's own prompt hook hands it, and the
+/// end of the turn it went into wakes the crown with it still `handed`.
+/// Then a person's prompt racing the paste's ack leaves it `sent`; a
+/// restart keeps nothing of an ask still `sent`, and an ask a turn carried
+/// comes back `unknown`, resent by nothing; and on the mod pass the mod's
+/// refusals drop it, by the agent, with no slower road taken.
+#[test]
+fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_ask_words",
+        Some(RECORDING_STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_ask_words");
+    let got = h.dir.join("got.txt");
+    let read_got = || std::fs::read_to_string(&got).unwrap_or_default();
+    let landed = |probe: &str| read_got().contains(probe);
+    let copies = |probe: &str| read_got().matches(probe).count();
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
+    let mod_road = test_road() == "mod";
+    let switch = |name: &str, on: bool| {
+        let f = h.dir.join(name);
+        if on {
+            std::fs::write(f, "").unwrap();
+        } else {
+            let _ = std::fs::remove_file(f);
+        }
+    };
+
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-938 worker");
+    let kw = key_of(&mut c, w);
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
+        Response::Ok
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("shared_checkout".into()),
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    let ws = c.board().live_agent(w).expect("W holds a seat").id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "W's finish on the crown", || {
+        landed(&format!("{kw} \"mesimon-probe-938 worker\" finished its turn"))
+    });
+    start(&mut c, sa);
+    stop(&mut c, sa);
+
+    let asked = |c: &mut TestClient| read(c, sa, &kw).unwrap().asked;
+    let word = |c: &mut TestClient| asked(c).map(|a| a.status);
+    let ask = |c: &mut TestClient, text: &str, deliver: Deliver| {
+        let v = read(c, sa, &kw).unwrap();
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentAskTicket {
+                key: kw.clone(),
+                text: text.into(),
+                seen: v.seen,
+                plan: false,
+                deliver,
+            },
+        )
+    };
+    let receipt = |r: Response| match r {
+        Response::AgentAsked { asked, .. } => asked.expect("the record rides the receipt"),
+        other => panic!("ask_agent: {other:?}"),
+    };
+    let wake_for = |id: &str, said: &str| {
+        let head = format!("{kw} \"mesimon-probe-938 worker\"");
+        let line = if said == "sent" {
+            format!("{head} ended a turn after ask {id} was sent; receipt unconfirmed")
+        } else {
+            format!("{head} ended its turn after your ask went in (ask {id}: {said}")
+        };
+        wait_until(std::time::Duration::from_secs(20), &format!("the wake for ask {said}"), || {
+            landed(&line)
+        });
+    };
+    let refused = |r: Response, first: &str| match r {
+        Response::Err { message } => {
+            assert!(message.contains(first) && message.contains("is refused"), "{message}")
+        }
+        other => panic!("a second ask while the first is out: {other:?}"),
+    };
+
+    // ---- the T-930 sequence --------------------------------------------------
+    switch("mod-hold-entered", mod_road);
+    start(&mut c, ws);
+    let first = receipt(ask(&mut c, "mesimon-probe-9381 now", Deliver::Now));
+    assert_eq!(first.status, "sent", "{first:?}");
+    assert!(!first.ask.is_empty());
+    wait_until(std::time::Duration::from_secs(5), "the words in W's turn", || {
+        landed("mesimon-probe-9381 now")
+    });
+    refused(ask(&mut c, "mesimon-probe-9382 again", Deliver::Immediately), &first.ask);
+    assert_eq!(word(&mut c).as_deref(), Some("sent"), "the refusal left the first as it was");
+    if mod_road {
+        // Held behind the running turn: its end is not this ask's, and
+        // neither is an unrelated prompt's turn after it (correction 3).
+        stop(&mut c, ws);
+        settle();
+        assert_eq!(word(&mut c).as_deref(), Some("sent"));
+        refused(ask(&mut c, "mesimon-probe-9382 again", Deliver::Now), &first.ask);
+        start(&mut c, ws);
+        stop(&mut c, ws);
+        settle();
+        assert_eq!(word(&mut c).as_deref(), Some("sent"), "an unrelated prompt hands nothing");
+        refused(ask(&mut c, "mesimon-probe-9382 again", Deliver::Now), &first.ask);
+        switch("mod-release", true);
+        wait_until(std::time::Duration::from_secs(10), "the mod's entered", || {
+            word(&mut c).as_deref() == Some("handed")
+        });
+        start(&mut c, ws);
+        stop(&mut c, ws);
+        wake_for(&first.ask, "taken");
+        assert_eq!(word(&mut c).as_deref(), Some("taken"));
+        switch("mod-hold-entered", false);
+        switch("mod-release", false);
+    } else {
+        // A prompt hook names no words (correction 2): the paste stays
+        // `sent`, and the turn's proven end lifts the block.
+        hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"x"}"#);
+        settle();
+        assert_eq!(word(&mut c).as_deref(), Some("sent"), "a prompt hook hands nothing");
+        stop(&mut c, ws);
+        wake_for(&first.ask, "sent");
+        assert_eq!(word(&mut c).as_deref(), Some("sent"), "the last word a receipt proved");
+    }
+    settle();
+    assert!(!landed("mesimon-probe-9382"), "a refused ask sent nothing");
+    assert_eq!(copies("mesimon-probe-9381 now"), 1, "one copy reached the agent");
+    start(&mut c, sa);
+    stop(&mut c, sa);
+
+    // ---- a person's prompt in the paste's ack window ---------------------------
+    if !mod_road {
+        start(&mut c, ws);
+        let raced = receipt(ask(&mut c, "mesimon-probe-9383 raced", Deliver::Now));
+        wait_until(std::time::Duration::from_secs(5), "the crown's words", || {
+            landed("mesimon-probe-9383 raced")
+        });
+        match c.request(Command::PromptSession {
+            ticket: w,
+            text: "mesimon-probe-9384 the person's".into(),
+            queued: false,
+            immediately: false,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+            resend: false,
+            uploads: Vec::new(),
+        }) {
+            Response::Ok | Response::Queued { .. } => {}
+            other => panic!("the person's prompt: {other:?}"),
+        }
+        wait_until(std::time::Duration::from_secs(5), "the person's words", || {
+            landed("mesimon-probe-9384")
+        });
+        hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"x"}"#);
+        settle();
+        assert_eq!(word(&mut c).as_deref(), Some("sent"), "the ack may be the person's");
+        refused(ask(&mut c, "mesimon-probe-9385 meanwhile", Deliver::Now), &raced.ask);
+        stop(&mut c, ws);
+        settle();
+        assert_eq!(word(&mut c).as_deref(), Some("sent"), "the last word the board saw");
+        start(&mut c, sa);
+        stop(&mut c, sa);
+    }
+
+    // ---- a restart: an ask still `sent` leaves nothing ---------------------------
+    switch("mod-hold-entered", mod_road);
+    start(&mut c, ws);
+    let out = receipt(ask(&mut c, "mesimon-probe-9386 before a restart", Deliver::Now));
+    assert_eq!(out.status, "sent");
+    wait_until(std::time::Duration::from_secs(5), "the words in W's turn", || {
+        landed("mesimon-probe-9386")
+    });
+    h.restart();
+    let mut c = h.client("crown_ask_words_2");
+    assert_eq!(asked(&mut c), None, "nothing of an ask still sent is kept");
+    settle();
+    assert_eq!(copies("mesimon-probe-9386"), 1, "nothing resent");
+    switch("mod-hold-entered", false);
+
+    // ---- a restart: an ask a turn carried comes back unknown --------------------
+    start(&mut c, ws);
+    let carried = receipt(ask(&mut c, "mesimon-probe-9387 carried", Deliver::Now));
+    wait_until(std::time::Duration::from_secs(5), "the words in W's turn", || {
+        landed("mesimon-probe-9387")
+    });
+    // The prompt hook a paste would fire; on the mod road the bridge may
+    // still be coming back from the restart, and the words took the paste.
+    hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"x"}"#);
+    if mod_road {
+        wait_until(std::time::Duration::from_secs(10), "the ask handed", || {
+            word(&mut c).as_deref() == Some("handed")
+        });
+    } else {
+        // The hook marks the turn after it; the ask stays `sent`.
+        settle();
+    }
+    h.restart();
+    let mut c = h.client("crown_ask_words_3");
+    let back = asked(&mut c).expect("the turn's ask was kept");
+    assert_eq!((back.status.as_str(), back.ask.as_str()), ("unknown", carried.ask.as_str()));
+    assert!(back.why.contains("outcome was not retained"), "{back:?}");
+    settle();
+    assert_eq!(copies("mesimon-probe-9387"), 1, "nothing resent");
+    // An unknown ask is no block: the crown asks again, knowingly.
+    let again = receipt(ask(&mut c, "mesimon-probe-9388 after", Deliver::Idle));
+    assert_ne!(again.ask, carried.ask);
+    stop(&mut c, ws);
+
+    // ---- the mod's refusals drop it, by the agent ------------------------------
+    if mod_road {
+        wait_until(std::time::Duration::from_secs(10), "the idle ask's turn", || {
+            landed("mesimon-probe-9388")
+        });
+        start(&mut c, ws);
+        stop(&mut c, ws);
+        switch("mod-draft", true);
+        start(&mut c, ws);
+        let over = receipt(ask(&mut c, "mesimon-probe-9389 over a draft", Deliver::Immediately));
+        wait_until(std::time::Duration::from_secs(10), "the refused fill", || {
+            word(&mut c).as_deref() == Some("dropped")
+        });
+        let dropped = asked(&mut c).unwrap();
+        assert_eq!((dropped.ask.as_str(), dropped.by.as_str()), (over.ask.as_str(), "agent"));
+        assert!(dropped.why.contains("draft"), "{dropped:?}");
+        settle();
+        let frames = std::fs::read_to_string(h.dir.join(format!("mod-{ws}.ndjson"))).unwrap();
+        assert!(
+            frames
+                .lines()
+                .filter(|l| l.contains("mesimon-probe-9389"))
+                .all(|l| l.contains("\"fill\"")),
+            "no submit after the refused fill: {frames}"
+        );
+        switch("mod-draft", false);
+        stop(&mut c, ws);
+        switch("mod-drop-submit", true);
+        let _ = receipt(ask(&mut c, "mesimon-probe-9390 refused", Deliver::Idle));
+        wait_until(std::time::Duration::from_secs(10), "the refused submit", || {
+            word(&mut c).as_deref() == Some("dropped")
+        });
+        assert_eq!(asked(&mut c).unwrap().by, "agent");
+        switch("mod-drop-submit", false);
+        // A refusal after the owed window still drops that ask (correction
+        // 4): the submit is held past `INFLIGHT_MS`, then refused late. The
+        // wait is for this send's own expiry: a new `submit_unacked` for W
+        // after the feed's count before it (round 2, C).
+        let feed_path = h.paths.state_dir.join("activity.jsonl");
+        let unacked = || {
+            std::fs::read_to_string(&feed_path)
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| l.contains("\"submit_unacked\"") && l.contains(&w.to_string()))
+                .count()
+        };
+        switch("mod-hold-entered", true);
+        let before = unacked();
+        let late = receipt(ask(&mut c, "mesimon-probe-9391 refused late", Deliver::Idle));
+        wait_until(std::time::Duration::from_secs(20), "this send's owed window to close", || {
+            unacked() > before
+        });
+        assert_eq!(word(&mut c).as_deref(), Some("sent"), "the mod took the frame; it waits");
+        std::fs::write(h.dir.join("mod-release"), "dropped").unwrap();
+        wait_until(std::time::Duration::from_secs(10), "the late refusal", || {
+            word(&mut c).as_deref() == Some("dropped")
+        });
+        let dropped = asked(&mut c).unwrap();
+        assert_eq!((dropped.ask.as_str(), dropped.by.as_str()), (late.ask.as_str(), "agent"));
+        switch("mod-hold-entered", false);
+        switch("mod-release", false);
+        start(&mut c, ws);
+        stop(&mut c, ws);
+        start(&mut c, sa);
+        stop(&mut c, sa);
+
+        // ---- a prompt's mark, then a late confirmed refusal (round 2, B) ----
+        // The fill's words went in, an unrelated prompt hook marked the turn
+        // after them, and the mod's refusal came after its owed window: the
+        // ask is dropped, and the turn's end says nothing of it.
+        start(&mut c, ws);
+        let marked = receipt(ask(&mut c, "mesimon-probe-9392 marked", Deliver::Immediately));
+        // A fill types no Enter, so the stub has no line of it: the frame
+        // in the stand-in engine's record is the sign it went.
+        let mod_record = h.dir.join(format!("mod-{ws}.ndjson"));
+        wait_until(std::time::Duration::from_secs(10), "the fill frame", || {
+            std::fs::read_to_string(&mod_record).is_ok_and(|f| f.contains("mesimon-probe-9392"))
+        });
+        settle();
+        hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"x"}"#);
+        settle();
+        let fill = std::fs::read_to_string(h.dir.join(format!("mod-{ws}.ndjson")))
+            .unwrap()
+            .lines()
+            .rfind(|l| l.contains("mesimon-probe-9392"))
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .expect("the fill frame");
+        hook_send_road(
+            &hook_sock,
+            &ws.to_string(),
+            "ModFill",
+            fill["id"].as_str(),
+            None,
+            r#"{"outcome":"refused","reason":"draft"}"#,
+            Some("mod"),
+        );
+        wait_until(std::time::Duration::from_secs(10), "the late refusal of the fill", || {
+            word(&mut c).as_deref() == Some("dropped")
+        });
+        stop(&mut c, ws);
+        settle();
+        assert!(
+            !landed(&format!("ask {}", marked.ask)),
+            "no turn end speaks for a dropped ask: {}",
+            read_got()
+        );
+        start(&mut c, sa);
+        stop(&mut c, sa);
+
+        // ---- handed, then the pane replaced before its turn ends (round 2, B)
+        // A submit the mod entered, at a worker then parked and woken into a
+        // new pane: the successor's turn end is not the ask's, the ask is
+        // unknown, and nothing blocks for good.
+        let handed = receipt(ask(&mut c, "mesimon-probe-9393 before a new pane", Deliver::Idle));
+        // The crown's wake went down its mod a moment ago, and the stub
+        // sends no `UserPromptSubmit` for it: its owed entry holds the shared
+        // checkout's queue for its 10 s window (T-936) before this ask goes.
+        wait_until(std::time::Duration::from_secs(25), "the mod's entered", || {
+            word(&mut c).as_deref() == Some("handed")
+        });
+        assert!(matches!(c.request(Command::SleepSession { id: ws }), Response::Ok));
+        c.await_state(ws, "asleep", |s| *s == SessionState::Sleeping);
+        match c.request(Command::WakeSession { id: ws }) {
+            Response::Spawned { .. } => {}
+            other => panic!("the wake: {other:?}"),
+        }
+        start(&mut c, ws);
+        stop(&mut c, ws);
+        settle();
+        let gone = asked(&mut c).unwrap();
+        assert_eq!((gone.status.as_str(), gone.ask.as_str()), ("unknown", handed.ask.as_str()));
+        assert!(gone.why.contains("replaced"), "{gone:?}");
+        assert!(
+            !landed(&format!("ask {}", handed.ask)),
+            "the successor's turn carries none of it: {}",
+            read_got()
+        );
+        let next = receipt(ask(&mut c, "mesimon-probe-9394 after", Deliver::Idle));
+        assert_ne!(next.ask, handed.ask, "no permanent block");
+        wait_until(std::time::Duration::from_secs(25), "the next ask entered", || {
+            word(&mut c).as_deref() == Some("handed")
+        });
+        start(&mut c, ws);
+        stop(&mut c, ws);
+        wake_for(&next.ask, "taken");
+        start(&mut c, sa);
+        stop(&mut c, sa);
+
+        // ---- a submit refused after a stop goes in by paste (item 10) -----
+        // Claude Code holds a plugin's input after a person's Esc (T-894),
+        // and the words go in by the paste road into the empty box: the
+        // ask's route is the paste's from there, so it reads sent, blocks a
+        // second ask, and the paste's own turn end releases it, with no
+        // `entered` of the refused frame to wait for.
+        switch("mod-stopped-submit", true);
+        let pasted = receipt(ask(&mut c, "mesimon-probe-9395 after a stop", Deliver::Idle));
+        wait_until(std::time::Duration::from_secs(25), "the words by paste", || {
+            std::fs::read_to_string(h.paths.state_dir.join("activity.jsonl"))
+                .unwrap_or_default()
+                .contains("\"prompt_pasted_after_refusal\"")
+                && landed("mesimon-probe-9395 after a stop")
+        });
+        switch("mod-stopped-submit", false);
+        assert_eq!(word(&mut c).as_deref(), Some("sent"));
+        refused(ask(&mut c, "mesimon-probe-9396 again", Deliver::Now), &pasted.ask);
+        start(&mut c, ws);
+        stop(&mut c, ws);
+        wake_for(&pasted.ask, "sent");
+        let after = receipt(ask(&mut c, "mesimon-probe-9397 next", Deliver::Idle));
+        assert_ne!(after.ask, pasted.ask, "the paste's turn end lifted the block");
+        assert!(!landed("mesimon-probe-9396"), "the refused words reach nobody");
+    }
 }
 
 /// A stub that records every byte its pane is sent, raw: no line
@@ -4559,8 +5041,8 @@ fn the_crown_sends_immediately_into_a_working_turn() {
     });
     start(&mut c, sa);
     stop(&mut c, sa);
-    let answered = format!("{kw} \"mesimon-probe-71 worker\" answered your ask");
-    let answers = || read_got().matches(answered.as_str()).count();
+    let answered = ask_ends(&format!("{kw} \"mesimon-probe-71 worker\""));
+    let answers = || answered.iter().map(|l| read_got().matches(l.as_str()).count()).sum::<usize>();
     let ask = |c: &mut TestClient, text: &str, deliver: Deliver| {
         let v = read(c, sa, &kw).unwrap();
         c.send(
@@ -5186,7 +5668,7 @@ fn the_crown_reads_a_worker_s_question_and_cannot_talk_over_it() {
 /// the answer's receipt waits for the stub's `PostToolUse` and says
 /// `answered`, the feed carries the label with actor `agent`, the card says
 /// `♛ answered` and `answered by` until the next edge, and that turn's end
-/// wakes the crown with `answered your ask`.
+/// wakes the crown with `ended its turn after your ask went in`.
 #[test]
 fn the_crown_answers_a_question_where_the_person_lets_it() {
     const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\n\
@@ -5436,7 +5918,7 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
     stop(&mut c, ws);
     assert_eq!(detail(&mut c), None, "gone at the next state edge");
     wait_until(std::time::Duration::from_secs(10), "the answer's turn waking the crown", || {
-        landed(&format!("{kw} \"mesimon-probe-569 worker\" answered your ask"))
+        landed(&format!("{kw} \"mesimon-probe-569 worker\" ended its turn after your ask went in"))
     });
     start(&mut c, sa);
     stop(&mut c, sa);
@@ -5923,7 +6405,7 @@ fn the_crown_accepts_a_plan_by_default() {
     stop(&mut c, ws);
     assert_eq!(detail(&mut c), None, "gone at the next state edge");
     wait_until(std::time::Duration::from_secs(10), "the plan's turn waking the crown", || {
-        landed(&format!("{kw} \"mesimon-probe-582 worker\" answered your ask"))
+        landed(&format!("{kw} \"mesimon-probe-582 worker\" ended its turn after your ask went in"))
     });
     start(&mut c, sa);
 
@@ -6448,6 +6930,78 @@ fn a_new_plan_while_its_wake_is_owed_is_one_wake_then_the_current_request() {
         other => panic!("accept_plan on the new plan: {other:?}"),
     }
     b.c.await_state(ws, "running the plan", |s| *s == SessionState::Running);
+}
+
+/// T-938 on T-943: the one outstanding crown ask is the ask record alone.
+/// An `ask_agent` while the worker stands on a plan is refused before any
+/// record is made, and the plan sent back (`accept_plan`'s change) is a
+/// dialog's answer, not an ask: neither counts as the outstanding ask, so an
+/// ask at the next plan is refused only for the dialog, and once the plan
+/// is accepted an ask goes out.
+#[test]
+fn a_refused_ask_and_a_plan_sent_back_are_not_the_outstanding_ask() {
+    let Some(mut b) = PlanBed::boot("crown_revise_ask") else { return };
+    let (kw, ws) = (b.kw.clone(), b.ws);
+    let ask = |b: &mut PlanBed, text: &str| {
+        let v = read(&mut b.c, b.sa, &kw).unwrap();
+        b.c.send(
+            Principal::Agent { session: b.sa },
+            Command::AgentAskTicket {
+                key: kw.clone(),
+                text: text.into(),
+                seen: v.seen,
+                plan: false,
+                deliver: Deliver::Now,
+            },
+        )
+    };
+    let at_dialog = |r: Response| match r {
+        Response::Err { message } => {
+            assert!(
+                message.contains("stopped on a plan") && !message.contains("is refused while"),
+                "{message}"
+            )
+        }
+        other => panic!("ask_agent at a plan: {other:?}"),
+    };
+    b.show_plan("toolu_w1");
+    wait_until(std::time::Duration::from_secs(10), "the plan on the card", || {
+        read(&mut b.c, b.sa, &kw).unwrap().needs_you.is_some()
+    });
+    at_dialog(ask(&mut b, "mesimon-probe-9431 at the plan"));
+    assert!(read(&mut b.c, b.sa, &kw).unwrap().asked.is_none(), "a refused ask leaves no record");
+    let receipt = b.call("toolu_w1", "Use echo in Bash instead of the Write tool.");
+    let changed = b.changed();
+    wait_until(std::time::Duration::from_secs(10), "the plan sent back", || changed.exists());
+    std::fs::write(
+        b.h.dir.join(format!("dialog-{kw}.json")),
+        json!({ "plan": BED_PLAN }).to_string(),
+    )
+    .unwrap();
+    b.hook("PreToolUse", "ExitPlanMode", "toolu_w2");
+    assert_eq!(revised(receipt), ("input_sent".to_string(), None));
+    wait_until(std::time::Duration::from_secs(10), "the new plan on the card", || {
+        read(&mut b.c, b.sa, &kw).unwrap().needs_you.and_then(|n| n.request).as_deref()
+            == Some("toolu_w2")
+    });
+    at_dialog(ask(&mut b, "mesimon-probe-9432 at the new plan"));
+    assert!(read(&mut b.c, b.sa, &kw).unwrap().asked.is_none(), "the plan sent back is no ask");
+    let v = read(&mut b.c, b.sa, &kw).unwrap();
+    let accepted = b.h.dir.join(format!("accepted-{kw}"));
+    let accept =
+        Command::AgentAcceptPlan { key: kw.clone(), seen: v.seen, request: "toolu_w2".into() };
+    let (sock, sa) = (b.h.paths.orch_sock(), b.sa);
+    let receipt = std::thread::spawn(move || {
+        TestClient::connect(&sock).send(Principal::Agent { session: sa }, accept)
+    });
+    wait_until(std::time::Duration::from_secs(10), "the new plan accepted", || accepted.exists());
+    b.hook("PostToolUse", "ExitPlanMode", "toolu_w2");
+    assert!(matches!(receipt.join().unwrap(), Response::AgentPlanAccepted { .. }));
+    b.c.await_state(ws, "running the plan", |s| *s == SessionState::Running);
+    match ask(&mut b, "mesimon-probe-9433 after the plan") {
+        Response::AgentAsked { asked: Some(a), .. } => assert_eq!(a.status, "sent", "{a:?}"),
+        other => panic!("an ask after the plan: {other:?}"),
+    }
 }
 
 /// A new plan while the crown's wake for the old one is still entering
@@ -7316,7 +7870,7 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
     leave_tasks(&mut c, ws);
     let worker = format!("{kw} \"mesimon-probe-94 waits in the background\"");
     wait_until(std::time::Duration::from_secs(10), "the answer's wake", || {
-        !lines_with(&format!("{worker} answered your ask")).is_empty()
+        ask_ends(&worker).iter().any(|l| !lines_with(l).is_empty())
     });
     send(sa, "UserPromptSubmit", r#"{"prompt":"wake"}"#);
     c.await_state(sa, "running", |s| *s == SessionState::Running);
@@ -8357,7 +8911,7 @@ fn the_crown_watches_a_ticket_a_person_started() {
     hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"x"}"#);
     stop(&mut c, ws);
     wait_until(std::time::Duration::from_secs(20), "the answer's wake on the crown", || {
-        landed(&format!("{worker} answered your ask"))
+        ask_ends(&worker).iter().any(|l| landed(l))
     });
 
     // Nothing of the crown's reached W's pane but its asks: its other words
@@ -9391,7 +9945,7 @@ fn the_crown_answers_a_codex_worker_s_question() {
         *s == SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn }
     });
     wait_until(std::time::Duration::from_secs(10), "the answer's turn waking the crown", || {
-        landed(&format!("{kw} \"mesimon-probe-846 worker\" answered your ask"))
+        ask_ends(&format!("{kw} \"mesimon-probe-846 worker\"")).iter().any(|l| landed(l))
     });
 }
 

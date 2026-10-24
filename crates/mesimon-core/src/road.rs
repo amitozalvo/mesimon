@@ -164,8 +164,11 @@ pub const MOD_PONG: &str = "ModPong";
 
 /// The event the mod reports a [`ModCommand::Submit`]'s end with (T-575),
 /// relayed with the frame's id as its reason: `{ "outcome": "entered" }`
-/// when the prompt entered the session (its turn started, or it was queued
-/// behind the running one), `"dropped"` with the engine's `reason` when a
+/// when the prompt entered the session. A submit made mid-turn is held to
+/// the running turn's end and runs as a turn of its own, and its promise
+/// resolves only then, as that turn starts (2.1.309, T-934: +9,555 ms after
+/// the first turn's `Stop`), so `entered` is that start, never the queueing
+/// (T-938). `"dropped"` with the engine's `reason` when a
 /// hook beneath refused it, `"rejected"` with the `error` when the call
 /// threw. The ack is still `UserPromptSubmit`, which a mod's submit fires as
 /// a typed prompt does (T-573 row 2).
