@@ -561,8 +561,8 @@ pub fn tools() -> Vec<Value> {
                             ticket's key, title and column, the agent tiers a ticket may \
                             start on, each with when to use it in the user's words (tiers: \
                             description, is_default), and the other tickets whose agent holds \
-                            the shared checkout (checkout_held_by). Session and process \
-                            information is excluded. Title comparison here is the pre-check for \
+                            the shared checkout (checkout_held_by). Session information is \
+                            excluded. Title comparison here is the pre-check for \
                             create_ticket: work extending a ticket in todo, in progress \
                             or review belongs on that ticket as scope, not as a sibling. \
                             A near-duplicate title means the older ticket wins.",
