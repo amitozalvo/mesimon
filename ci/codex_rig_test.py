@@ -266,6 +266,7 @@ class CrownTests(unittest.TestCase):
                         "git add README.md && git commit -m 'Append forge fixture to README'",
                         "/bin/zsh -lc \"git add README.md && git commit -m 'Append forge fixture'\"",
                         "/bin/zsh -lc \"git add README.md && git commit -m 'Append' && git status --short\"",
+                        "/bin/zsh -lc \"git add greet.py && git diff --cached --check && git commit -m 'Add greet'\"",
                         "git status", "git status --short"):
             with self.subTest(command=command):
                 git = {"what": "command", "command": command, "cwd": own}

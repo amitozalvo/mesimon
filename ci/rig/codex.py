@@ -440,6 +440,9 @@ def plain_git(tokens):
     verb, rest = tokens[1], tokens[2:]
     if verb == "status":
         return rest in ([], ["--short"], ["-s"])
+    # A whitespace check writes nothing (T-930: Sol stages, checks, commits).
+    if verb == "diff":
+        return rest in (["--check"], ["--cached", "--check"], ["--staged", "--check"])
     if verb == "add":
         return bool(rest) and all(not t.startswith("-") and ".." not in Path(t).parts
                                   and not Path(t).is_absolute() and PLAIN_PATH.fullmatch(t)
