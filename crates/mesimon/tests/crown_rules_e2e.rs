@@ -149,9 +149,7 @@ fn crown_and_worker(c: &mut TestClient, h: &Harness) -> (uuid::Uuid, uuid::Uuid,
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
     hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-    c.await_state(sa, "the crown idle", |s| {
-        matches!(s, mesimon_core::board::SessionState::Idle { .. })
-    });
+    c.await_state(sa, "the crown idle", |s| matches!(s, mesimon_core::board::SessionState::Idle { .. }));
     let seen = read_seen(c, sa, &kw);
     assert!(matches!(
         c.send(
@@ -239,10 +237,7 @@ fn a_deferred_answer_as_the_first_call_carries_the_rules() {
     match c.send_raw(Principal::Agent { session: sa }, answer) {
         Response::CrownRules { rules, inner } => {
             assert_eq!(rules, crown_view());
-            assert!(
-                matches!(*inner, Response::AgentAnswered { .. }),
-                "the deferred receipt: {inner:?}"
-            );
+            assert!(matches!(*inner, Response::AgentAnswered { .. }), "the deferred receipt: {inner:?}");
         }
         other => panic!("the first call, deferred: {other:?}"),
     }
@@ -264,16 +259,11 @@ fn a_deferred_plan_accept_as_the_first_call_carries_the_rules() {
     };
     let mut c = h.client("crown-rules-plan");
     let (sa, ws, kw) = crown_and_worker(&mut c, &h);
-    std::fs::write(
-        h.dir.join(format!("dialog-{kw}.json")),
-        serde_json::json!({ "plan": PLAN }).to_string(),
-    )
-    .unwrap();
+    std::fs::write(h.dir.join(format!("dialog-{kw}.json")), serde_json::json!({ "plan": PLAN }).to_string())
+        .unwrap();
     wait_until(std::time::Duration::from_secs(10), "the plan drawn", || {
         match c.request(Command::PaneTail { session: ws, lines: 60 }) {
-            Response::PaneTail { lines, .. } => {
-                lines.join("\n").contains("Would you like to proceed?")
-            }
+            Response::PaneTail { lines, .. } => lines.join("\n").contains("Would you like to proceed?"),
             _ => false,
         }
     });
@@ -281,20 +271,14 @@ fn a_deferred_plan_accept_as_the_first_call_carries_the_rules() {
         "tool_name": "ExitPlanMode", "tool_use_id": "toolu_p1", "tool_input": { "plan": PLAN }
     });
     hook_send(&h.paths.hook_sock(), &ws.to_string(), "PreToolUse", &frame.to_string());
-    c.await_state(ws, "on its plan", |s| {
-        *s == SessionState::RequiresAction { reason: Reason::Plan }
-    });
+    c.await_state(ws, "on its plan", |s| *s == SessionState::RequiresAction { reason: Reason::Plan });
     let seen = read_seen(&mut c, sa, &kw);
     crown_again(&mut c, sa);
-    let accept =
-        Command::AgentAcceptPlan { key: kw.clone(), seen: Some(seen), request: "toolu_p1".into() };
+    let accept = Command::AgentAcceptPlan { key: kw.clone(), seen: Some(seen), request: "toolu_p1".into() };
     match c.send_raw(Principal::Agent { session: sa }, accept) {
         Response::CrownRules { rules, inner } => {
             assert_eq!(rules, crown_view());
-            assert!(
-                matches!(*inner, Response::AgentPlanAccepted { .. }),
-                "the deferred receipt: {inner:?}"
-            );
+            assert!(matches!(*inner, Response::AgentPlanAccepted { .. }), "the deferred receipt: {inner:?}");
         }
         other => panic!("the first call, deferred: {other:?}"),
     }

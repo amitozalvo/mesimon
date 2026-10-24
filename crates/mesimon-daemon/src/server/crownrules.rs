@@ -48,12 +48,7 @@ impl CrownRules {
 
     /// A Codex seat's snapshot: a new thread or a moved compaction count
     /// (a `contextCompaction` started or completed) forgets its rules.
-    pub(super) fn codex_context(
-        &mut self,
-        session: uuid::Uuid,
-        thread: Option<String>,
-        compactions: u64,
-    ) {
+    pub(super) fn codex_context(&mut self, session: uuid::Uuid, thread: Option<String>, compactions: u64) {
         let now = (thread, compactions);
         if self.codex.insert(session, now.clone()).is_some_and(|was| was != now) {
             self.forget(Some(session));
