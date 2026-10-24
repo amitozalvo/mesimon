@@ -6357,11 +6357,13 @@ fn the_crown_sends_a_plan_back_with_words() {
 /// A new plan while the wake for the one before it is still owed (T-943's
 /// composition, as the rig's worker did it): the crown sends a plan back
 /// from inside its own turn, the worker replans at once, and the new plan's
-/// wake waits for the crown's idle with the earlier one's. The two fold into
-/// one wake for the worker, which names its plan, and what the crown then
-/// reads is the new request, which its accept takes.
+/// obligation waits for the crown's idle with the earlier one's. The two
+/// fold into one notification, which names the worker and that it stops on
+/// a plan, not a request; the crown then reads the current request with
+/// `get_ticket`, an accept of the old one is refused, and its accept of the
+/// current one goes through.
 #[test]
-fn a_new_plan_while_its_wake_is_owed_is_one_wake_for_the_new_request() {
+fn a_new_plan_while_its_wake_is_owed_is_one_wake_then_the_current_request() {
     let Some(mut b) = PlanBed::boot("crown_revise_owed") else { return };
     let (kw, ws, w) = (b.kw.clone(), b.ws, b.w);
     let wake = format!("{kw} \"mesimon-probe-943 worker\" stops on a plan");
@@ -6393,36 +6395,27 @@ fn a_new_plan_while_its_wake_is_owed_is_one_wake_for_the_new_request() {
     assert_eq!(revised(receipt), ("input_sent".to_string(), None));
     wait_until(std::time::Duration::from_secs(10), "the new plan's wake owed", || owed(&b) == 2);
     assert_eq!(b.typed().matches(&wake).count(), 0, "still owed: the crown's turn runs");
-    // The crown's turn ends: one wake for the worker, not two. The feed is
-    // flushed on the tick, so the count is read once it shows the send; then
-    // the crown idles once more, and the hook line of that `Stop` is pushed
-    // in the same writer message as the drain it starts, so once that line
-    // is on disk, any second wake that drain sent is on disk with it.
-    let mod_road = test_road() == "mod";
-    let stops = |b: &PlanBed| {
-        b.feed()
-            .lines()
-            .filter(|l| {
-                l.contains("\"kind\":\"hook\"")
-                    && l.contains(&format!("\"session\":\"{}\"", b.sa))
-                    && l.contains("\"event\":\"Stop\"")
-                    && l.contains("\"road\":\"mod\"") == mod_road
-            })
-            .count()
+    // The crown's turn ends: one notification for the worker. The feed is
+    // flushed on the tick, so the send is read once it shows. Then, with the
+    // wake acknowledged by the crown's next prompt, the writer's own list of
+    // what is pending holds no wake for the crown: owed or still entering, a
+    // second obligation would be there even while the crown is busy.
+    let crown_wakes = |b: &mut PlanBed| -> Vec<mesimon_core::command::Pending> {
+        pending_of(&mut b.c, None)
+            .into_iter()
+            .filter(|p| p.action == mesimon_core::command::PendingAction::CrownWake)
+            .collect()
     };
+    assert!(!crown_wakes(&mut b).is_empty(), "the busy crown's wake is listed as pending");
     let before = sent(&b);
     b.stop(b.sa);
     wait_until(std::time::Duration::from_secs(10), "the wake on the crown", || {
         b.typed().matches(&wake).count() == 1 && sent(&b) > before
     });
     b.start(b.sa);
-    let idled = stops(&b);
-    b.stop(b.sa);
-    wait_until(std::time::Duration::from_secs(10), "the next idle's drain on disk", || {
-        stops(&b) > idled
-    });
-    assert_eq!(sent(&b), before + 1, "the two plans' wakes fold into one");
-    b.start(b.sa);
+    let wakes = crown_wakes(&mut b);
+    assert!(wakes.is_empty(), "the two plans' obligations fold into one: {wakes:?}");
+    assert_eq!(sent(&b), before + 1);
     assert_eq!(b.typed().matches(&wake).count(), 1);
     let needs = read(&mut b.c, b.sa, &kw).unwrap().needs_you.expect("the new plan");
     assert_eq!(needs.request.as_deref(), Some("toolu_w2"));

@@ -33240,12 +33240,15 @@ into that row.
     `needs_you.request == toolu_p2`.
 - Both pass on the hook road and on the mod pass, with `the_crown_accepts_a_plan_by_default`
   beside them.
-- `crown_e2e::a_new_plan_while_its_wake_is_owed_is_one_wake_for_the_new_request`, the composition
-  the rig's worker made. The crown sends a plan back from inside its turn, and the worker replans
-  at once. The new plan's wake is owed beside the first while the crown is busy. When the crown
-  idles, the two fold into one wake (one `crown_wake_sent`, checked after a further idle's drain
-  is on disk). The crown then reads the new request, the one sent back is refused as a changed
-  plan, and the accept takes the new one. This is on main's tip; T-936's delivery of a wake
+- `crown_e2e::a_new_plan_while_its_wake_is_owed_is_one_wake_then_the_current_request`, the
+  composition the rig's worker made. The crown sends a plan back from inside its turn, and the
+  worker replans at once. The new plan's obligation is owed beside the first while the crown is
+  busy. When the crown idles, it gets one notification, which names the worker and that it stops
+  on a plan, not a request. Once the crown's next prompt acknowledges it, the writer's pending
+  list holds no `PendingAction::CrownWake` for the crown, owed or entering (the fourth read; a
+  feed line's flush proves no later, sample-driven drain ran). The crown then reads the current
+  request with `get_ticket`, an accept of the request it sent back is refused as a changed plan,
+  and the accept takes the current one. This is on main's tip; T-936's delivery of a wake
   is run again with it once T-936 lands.
 - `crown_rules_e2e::a_deferred_plan_sent_back_as_the_first_call_carries_the_rules` (with T-930):
   the deferred `input_sent` receipt goes through the rule-delivery wrapper, and the next call
