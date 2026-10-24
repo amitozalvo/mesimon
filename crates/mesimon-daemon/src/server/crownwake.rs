@@ -437,6 +437,20 @@ pub(super) struct Entering {
     pub(super) parked: bool,
 }
 
+/// Whether a mod report about `frame` from `session` is the crown's
+/// submitted wake (T-936): the attempt's own frame, from its seat, while
+/// that seat has a live pane and it is the pane the frame went to. A killed
+/// record keeps its pane key, and a relaunched one has another.
+pub(super) fn submitted_fence(
+    e: &Entering,
+    rec: Option<&SessionRecord>,
+    session: uuid::Uuid,
+    frame: &str,
+) -> bool {
+    let Some(rec) = rec.filter(|r| r.id == session && r.state.has_pane()) else { return false };
+    e.session == session && e.frame.as_deref() == Some(frame) && rec.pane_key == e.pane
+}
+
 /// A worker idle with background tasks (T-599): how many, and for how long
 /// in minutes, when the board noticed. Never the tasks' words.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -3102,6 +3116,45 @@ mod tests {
         assert_eq!(codex_failure(&server, "", None, Some(&into)), new, "no turn id: its change");
         assert_eq!(codex_failure(&server, "", None, None), None);
         assert_eq!(codex_failure(&SessionState::Running, "turn-d", None, None), None);
+    }
+
+    /// T-936, the fourth read: the fence refuses a report about the
+    /// attempt's own frame and pane key from a seat with no pane (killed:
+    /// the record keeps its key), and one from a replacement pane, and
+    /// takes it only from the live pane the frame went to.
+    #[test]
+    fn a_wake_report_from_a_dead_or_replaced_pane_settles_nothing() {
+        let session = uuid::Uuid::from_u128(7);
+        let e = Entering {
+            crown: ulid::Ulid::from_parts(1, 1),
+            session,
+            text: "T-2 raised its hand".into(),
+            wakes: Vec::new(),
+            telling: Telling::default(),
+            person_came: false,
+            frame: Some("01FRAME".into()),
+            pane: Some("100:%3".into()),
+            expires_ms: Some(1),
+            parked: false,
+        };
+        let mut rec = SessionRecord::new(
+            session,
+            SessionKind::Claude,
+            ulid::Ulid::from_parts(1, 2),
+            Vec::new(),
+            "/".into(),
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+        );
+        rec.pane_key = Some("100:%3".into());
+        assert!(submitted_fence(&e, Some(&rec), session, "01FRAME"), "its live pane");
+        assert!(!submitted_fence(&e, Some(&rec), session, "01OTHER"), "another frame");
+        assert!(!submitted_fence(&e, Some(&rec), uuid::Uuid::from_u128(8), "01FRAME"));
+        rec.state = SessionState::Exited { reason: mesimon_core::board::ExitReason::Killed };
+        assert!(!submitted_fence(&e, Some(&rec), session, "01FRAME"), "a dead seat, same key");
+        rec.state = SessionState::Idle { stop_reason: StopReason::EndTurn };
+        rec.pane_key = Some("200:%0".into());
+        assert!(!submitted_fence(&e, Some(&rec), session, "01FRAME"), "a replacement pane");
+        assert!(!submitted_fence(&e, None, session, "01FRAME"), "no seat");
     }
 
     #[test]

@@ -4985,7 +4985,11 @@ impl Daemon {
         // (T-930): a startup, a `/clear` or a compaction's new start. A
         // resume keeps the history it read them in.
         if frame.event == "SessionStart"
-            && frame.payload.get("source").and_then(serde_json::Value::as_str).or(frame.reason.as_deref())
+            && frame
+                .payload
+                .get("source")
+                .and_then(serde_json::Value::as_str)
+                .or(frame.reason.as_deref())
                 != Some("resume")
         {
             self.forget_crown_rules(Some(id));
@@ -8851,16 +8855,10 @@ impl Daemon {
     /// seat, frame and pane, as a crown ask's is (T-938). A report delayed
     /// from a pane since replaced is no one's.
     fn submitted_wake(&self, id: uuid::Uuid, frame: &str) -> bool {
-        // A live paned seat alone (T-936): a killed record keeps its key.
-        let pane = self
-            .board
-            .sessions
-            .iter()
-            .find(|s| s.id == id && s.state.has_pane())
-            .map(|s| s.pane_key.clone());
-        self.crown_wake_entering.as_ref().is_some_and(|e| {
-            e.session == id && e.frame.as_deref() == Some(frame) && pane.as_ref() == Some(&e.pane)
-        })
+        let rec = self.board.sessions.iter().find(|s| s.id == id);
+        self.crown_wake_entering
+            .as_ref()
+            .is_some_and(|e| crownwake::submitted_fence(e, rec, id, frame))
     }
 
     /// `create_ticket`, for an agent: the same mint a human's composer gets
@@ -9755,8 +9753,9 @@ impl Daemon {
             // own and wakes the crown, so no session watches a pipeline.
             // On any board where the ticket has one (T-930): `CROWN_WAKES`
             // points here for the cadence.
-            prs_about: (self.through_prs() || self.forge.sets.get(&id).is_some_and(|s| !s.is_empty()))
-                .then(|| mesimon_core::mcp::PRS_ABOUT.to_string()),
+            prs_about: (self.through_prs()
+                || self.forge.sets.get(&id).is_some_and(|s| !s.is_empty()))
+            .then(|| mesimon_core::mcp::PRS_ABOUT.to_string()),
             // The ticket's pull requests as the forge last said (T-739),
             // newest first: a worker sees its own red pipeline on the next
             // read, and the crown reads a worker's.

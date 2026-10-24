@@ -32911,3 +32911,10 @@ Tests:
   with two restarts before the words are taken. The hand stays up and the wake owed throughout,
   no unsent copy is kept, and one delivery confirmed by its prompt settles it. It fails with the
   final arm telling a launch.
+
+**Fourth read (item 6).**
+- **A1, its negative test.** The fence is a pure function (`crownwake::submitted_fence`).
+  `a_wake_report_from_a_dead_or_replaced_pane_settles_nothing` offers a report for the attempt's
+  own frame and pane key from a seat that is `Exited` (a killed record keeps its key), and one
+  from a replacement pane. It refuses both and takes the report only from the live pane the frame
+  went to.
