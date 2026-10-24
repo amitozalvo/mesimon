@@ -10339,3 +10339,105 @@ fn a_detached_draft_holds_a_crown_wake_the_launch_handed_back() {
         read_got()
     );
 }
+
+/// A Claude stub whose screen the test sets: `BOX_STUB`'s empty composer,
+/// or, while a `blank` file stands beside it, a screen with no composer on
+/// it at all. Every line it is given goes to `got.txt`.
+const BLANKABLE_STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ndir=$(dirname \"$0\")\nshown=\n\
+    paint() { if [ -f \"$dir/blank\" ]; then s=blank; else s=box; fi; \
+    [ \"$s\" = \"$shown\" ] && return; shown=$s; \
+    if [ $s = blank ]; then printf '\\033[2J\\033[H  loading the session\\n'; \
+    else printf '\\033[2J\\033[999;1H\\033[3A────────────────────\\n❯ \\n────────────────────\\n  ? for shortcuts\
+\\033[999;1H\\033[2A\\033[3G'; fi; }\n\
+    while true; do paint; if IFS= read -r -t 1 line; then \
+    printf '%s\\n' \"$line\" >> \"$dir/got.txt\"; shown=; fi; done\n";
+
+/// T-936, the seventh read: the paste road's own rule, which survives a
+/// restart. A launch hands the crown's wake back while a person is in its
+/// pane; the box then shows no composer and the daemon restarts. The idle
+/// live crown, the person gone, reads as no composer at all: no keys. Once
+/// the box draws empty, one delivery.
+#[test]
+fn a_crown_wake_after_a_restart_waits_for_an_empty_box() {
+    let Some(h) = Harness::boot_bare(
+        "crown_restart_box",
+        Some(BLANKABLE_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_CLAUDE_ROAD", "hooks"),
+            ("MESIMON_SLEEP_MIN_AGE_MS", "0"),
+        ],
+    ) else {
+        return;
+    };
+    let hook_sock = h.paths.hook_sock();
+    let tmux_sock = h.paths.tmux_sock();
+    let mut c = h.client("crown_restart_box");
+    let (a, sa, w, line) = crown_woken_with_its_wake_parked(&h, &mut c, "restart box");
+    let got = h.dir.join("got.txt");
+    let typed = || {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(&line))
+            .count()
+    };
+    let hand_up = |c: &mut TestClient| c.board().ticket(w).unwrap().raised.is_some();
+    let held = |c: &mut TestClient| {
+        pending_of(c, Some(a))
+            .into_iter()
+            .find(|p| p.action == mesimon_core::command::PendingAction::CrownWake)
+            .and_then(|p| p.held)
+    };
+    let crown = c.board().sessions.iter().find(|s| s.id == sa).unwrap().sid16();
+    let mut client = tmux(&tmux_sock)
+        .args(["-C", "attach", "-t", &crown])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("a control-mode tmux client");
+    wait_until(std::time::Duration::from_secs(10), "the client on the crown's session", || {
+        tmux(&tmux_sock)
+            .args(["list-clients", "-t", &crown, "-F", "#{client_name}"])
+            .output()
+            .is_ok_and(|o| !o.stdout.is_empty())
+    });
+    // The launch hands the wake back; the person in the pane holds it.
+    hook_send(&hook_sock, &sa.to_string(), "SessionStart", r#"{"source":"resume"}"#);
+    wait_until(std::time::Duration::from_secs(10), "the wake held for the person", || {
+        held(&mut c).as_deref() == Some("when you leave")
+    });
+    // The box shows no composer, and the daemon restarts.
+    std::fs::write(h.dir.join("blank"), "").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    drop(c);
+    h.restart();
+    let mut c = h.client("crown_restart_box_2");
+    let state = c.board().sessions.iter().find(|s| s.id == sa).map(|s| s.state.clone());
+    assert!(matches!(state, Some(SessionState::Idle { .. })), "the crown idle: {state:?}");
+    // The person leaves: nobody there, and no composer to read.
+    client.kill().unwrap();
+    let _ = client.wait();
+    std::thread::sleep(std::time::Duration::from_millis(3000));
+    assert_eq!(typed(), 0, "no keys into a box read as no composer");
+    assert!(hand_up(&mut c), "the hand still up");
+    assert!(
+        held(&mut c).is_some()
+            || pending_of(&mut c, Some(a))
+                .iter()
+                .any(|p| { p.action == mesimon_core::command::PendingAction::CrownWake }),
+        "the wake still owed"
+    );
+    // The box draws empty: one delivery.
+    std::fs::remove_file(h.dir.join("blank")).unwrap();
+    wait_until(std::time::Duration::from_secs(15), "the wake typed into the empty box", || {
+        typed() == 1
+    });
+    wait_until(std::time::Duration::from_secs(5), "the hand down once it went", || {
+        !hand_up(&mut c)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    assert_eq!(typed(), 1, "once");
+}

@@ -929,9 +929,6 @@ pub struct Daemon {
     /// Crown seats whose mod refused the wake's `submit` (T-936): their next
     /// wake is typed, until a prompt goes in.
     crown_submit_refused: std::collections::HashSet<uuid::Uuid>,
-    /// Crown seats whose launch handed a wake back (T-936): its next delivery
-    /// goes only into a box the delivering sample shows empty.
-    crown_wake_empty_box: std::collections::HashSet<uuid::Uuid>,
     /// A crown wake whose delivery failed (T-936): the seat it failed on and
     /// that seat's state's moment. The wake stays owed and is tried again
     /// once that seat moves, never every tick.
@@ -1526,7 +1523,6 @@ pub fn run(paths: Paths) -> Result<()> {
         failing: HashMap::new(),
         crown_submit_refused: Default::default(),
         crown_wake_failed_on: None,
-        crown_wake_empty_box: Default::default(),
         lingered: Default::default(),
         tasks_since: HashMap::new(),
         held: crate::movegate::HeldMoves::default(),
@@ -6306,13 +6302,12 @@ impl Daemon {
                 // Once the pane draws a box, the wake goes back to owed, and
                 // the live pane's road delivers it on a sample that read the
                 // pane's clients and box together, on its landing (T-918),
-                // into a box that sample shows empty (`crown_wake_empty_box`).
-                // No key from the launch, no clear, no Enter.
+                // into a box that sample shows empty. No key from the launch,
+                // no clear, no Enter.
                 let wake = self.owed.get(&id).is_some_and(|o| o.ack.word == Ack::CROWN_WAKE.word);
                 if wake && matches!(composer, Composer::Holding | Composer::Empty) {
                     self.drop_owed(id);
                     self.wake_not_entered(id);
-                    self.crown_wake_empty_box.insert(id);
                     self.feed.board("automation", "crown_wake_held", Some(ticket));
                     changed = true;
                     continue;
@@ -8681,9 +8676,11 @@ impl Daemon {
                 self.want_person(&sid);
                 return false;
             }
-            // A wake a launch handed back (T-936) goes only into a box this
-            // sample shows empty; anything else waits for the next one.
-            if self.crown_wake_empty_box.contains(&id) {
+            // A Claude crown's wake is pasted only into a box this sample
+            // shows empty (T-936), however it reached this road: a box that
+            // holds words or reads as no composer at all waits for the next
+            // sample. Codex keeps its own box checks.
+            if self.session_kind(id) == SessionKind::Claude {
                 use crate::agents::claude::composer::{self, Composer};
                 let empty = self
                     .screens
@@ -8732,11 +8729,7 @@ impl Daemon {
             }
             return true;
         }
-        let resp = self.deliver(crown, seat, text.clone(), Ack::CROWN_WAKE, false, false);
-        if !matches!(resp, Response::Err { .. }) {
-            self.crown_wake_empty_box.remove(&id);
-        }
-        match resp {
+        match self.deliver(crown, seat, text.clone(), Ack::CROWN_WAKE, false, false) {
             // Kept owed (T-936): a failed delivery tells nothing, and goes
             // again once the seat moves.
             Response::Err { message } => {

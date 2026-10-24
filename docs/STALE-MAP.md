@@ -33043,3 +33043,19 @@ Tests:
     meanwhile stays owed, held `after your draft`.
   - **Not covered by a test.** There is no deterministic failed-paste fixture: tmux's paste does
     not fail on demand.
+
+**Seventh read (item 6). The empty box is the paste road's rule, not a seat's flag.**
+- **The losing path.** Round six's `crown_wake_empty_box` lived in memory alone. A launch that
+  handed its wake back, then a restart, left the restored owed wake with no flag. An idle live
+  crown with nobody attached and a composer read as `Absent` was then pasted into, since the
+  person hold refuses `Holding` but not `Absent`.
+- **The rule now.** The set is gone. In the drain's fresh-sample branch, a Claude crown wake about
+  to be pasted needs `Composer::Empty` on that sample. `Holding` or `Absent` waits and asks for
+  another sample, however the wake reached this road.
+- **What it touches.** No schema, no persisted bit, no cleanup. The mod's `submit` stays exempt,
+  Codex keeps its own box checks, and a wordless launch is not gated.
+- **Test.** `crown_e2e::a_crown_wake_after_a_restart_waits_for_an_empty_box` (`BLANKABLE_STUB`).
+  The launch hands the wake back while a person is in the pane, the box then shows no composer,
+  and the daemon restarts. The person leaves: no keys for three seconds, the hand up, the wake
+  owed. The box draws empty, and the wake is typed once. It fails on round six's code.
+  `a_detached_draft_holds_a_crown_wake_the_launch_handed_back` stays green.
