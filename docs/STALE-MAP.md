@@ -31856,8 +31856,8 @@ restart is a person's `U`; the crown had no board fact saying the fixes were not
 - `started_at` is the daemon's start, spelt `@<secs>` as notes' `edited_at`.
 - `path` is the file compared: `MESIMON_DAEMON_EXE` (the seam), else `exe::current_exe`.
 - `binary` is `same | differs | unknown` (`BinaryStamp::compare`). It compares `(mtime, len)`
-  taken at start, still the first statement of `run`, with one stat of that path at the read: no
-  fork, no tick, nothing stored.
+  captured at startup, before the board is read, with one stat of that path at the read: no fork,
+  no tick, nothing stored.
 - `about` is `mcp::DAEMON_ABOUT`, two sentences. The first says what `binary` compares, and that
   `differs` means the file changed, not which code is newer. The second says a rebuild or install
   replaces the file while the daemon keeps the code it started with until it restarts.
@@ -31882,6 +31882,18 @@ restart is a person's `U`; the crown had no board fact saying the fixes were not
 - `mcp_e2e::list_board_states_the_running_daemon`: a foreground daemon on a stand-in file with
   `MESIMON_FAKE_BUILD`. It reads `same`, then `differs` after `set_modified`, then `unknown` once
   the file is removed. The build matches `Hello`'s, and `board_version` does not move.
-- The rig's DB1: `binary_moved` moves the rig binary's mtime a second on, bytes untouched. The crown,
-  asked in plain words, answers `differs` and starts nothing. `binary_back` restores the stamp,
-  and `until = { crown_only = true }` is the worker-free wait it needed.
+- The rig's DB1: `binary_moved` moves the real `target/debug/mesimon`'s mtime a second on, bytes
+  untouched. The crown, asked in plain words, answers `differs` and starts nothing. The worker-free
+  wait it needed is `until = { crown_only = true }`.
+- The restore (`Rig::restore_binary`) runs at `binary_back`, which `run_test` runs after a failed
+  step too (as it runs `restart_plain`), and again in `run_test`'s `finally`, so an exception
+  cannot skip it.
+- It puts the saved stamp back only while the file is still the one `binary_moved` stamped:
+  device, inode, size and the moved mtime match, atime aside, since every exec moves it. A file a
+  build replaced or rewrote since keeps its own stamp, and the test fails with a `cleanup:` line;
+  it never re-stamps a new build.
+- First form: `binary_back` was an ordinary later step, so a failing crown step skipped it. The
+  independent review drove the step loop with a failing crown stand-in and saw `binary_moved`,
+  `crown`, then no `binary_back`.
+- `ci/codex_rig_test.py`'s `ClaudeRigBinaryStampTests` drive the real `run_test` with a failing
+  crown, a raising one and one that rebuilds the file.

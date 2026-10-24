@@ -2,6 +2,7 @@
 import argparse
 import importlib.util
 import json
+import os
 import subprocess
 from pathlib import Path
 import tempfile
@@ -515,6 +516,80 @@ class CrownTests(unittest.TestCase):
             self.assertEqual(pr["statusCheckRollup"][0]["conclusion"], "FAILURE")
             self.assertEqual(json.loads(rig.pull_requests("b", "t", "running"))[0]["statusCheckRollup"][0]["status"],
                              "IN_PROGRESS")
+
+
+class ClaudeRigBinaryStampTests(unittest.TestCase):
+    """DB1 (T-941): the stamp `binary_moved` puts on the rig daemon's binary
+    goes back however the test ends, and only onto the file it changed."""
+
+    STAMP = (1_000_000_000_000, 2_000_000_000_000)
+
+    def setUp(self):
+        self.claude_rig = rig.module("rig_claude_stamp_test", "rig.py")
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.bin = Path(directory.name) / "mesimon"
+        self.bin.write_bytes(b"the build")
+        os.utime(self.bin, ns=self.STAMP)
+        tests = tomllib.loads((Path(__file__).parent / "rig/tests.toml").read_text())["test"]
+        self.test = next(t for t in tests if t["id"] == "DB1") | {"key": "T-1", "ticket": "t1"}
+
+    def run_db1(self, crown):
+        """The committed `run_test` over DB1's steps, the crown step stood in."""
+        cls = self.claude_rig.Rig
+        r = cls.__new__(cls)
+        r.bin, r.words, r.history, r.feed_lines, r.looks = str(self.bin), {}, {}, [], None
+        r.checkout, r.watch, r.board = (lambda: "clean"), (lambda: None), (lambda: {})
+        r.agent_of = lambda board, tid: None
+        r.judge = lambda test, mark, record, seconds: {"pass": not record["failures"],
+                                                       "failures": record["failures"]}
+        r.record = lambda test, verdict: None
+        calls = []
+
+        def step(test, s, record):
+            calls.append(s.get("rig", "crown"))
+            return crown() if "crown" in s else r.rig_step(test, s["rig"], record, s)
+
+        r.run_step = step
+        with patch.object(self.claude_rig.time, "sleep"):
+            try:
+                return r.run_test(self.test), calls
+            except RuntimeError:
+                return None, calls
+
+    def stamp(self):
+        st = os.stat(self.bin)
+        return st.st_mtime_ns
+
+    def test_a_failed_crown_step_still_puts_the_stamp_back(self):
+        moved = []
+        verdict, calls = self.run_db1(lambda: moved.append(self.stamp()) or False)
+        self.assertEqual(calls, ["binary_moved", "crown", "binary_back"])
+        self.assertEqual(moved, [self.STAMP[1] + 1_000_000_000], "the crown saw the moved stamp")
+        self.assertEqual(self.stamp(), self.STAMP[1])
+        self.assertFalse(verdict["pass"])
+
+    def test_an_exception_still_puts_the_stamp_back(self):
+        def crown():
+            raise RuntimeError("the crown's step blew up")
+
+        verdict, calls = self.run_db1(crown)
+        self.assertIsNone(verdict, "the exception goes on up")
+        self.assertEqual(calls, ["binary_moved", "crown"])
+        self.assertEqual(self.stamp(), self.STAMP[1])
+
+    def test_a_rebuilt_binary_keeps_its_own_stamp_and_the_cleanup_fails(self):
+        def crown():
+            self.bin.unlink()
+            self.bin.write_bytes(b"a new build")
+            return True
+
+        verdict, calls = self.run_db1(crown)
+        self.assertEqual(calls, ["binary_moved", "crown", "binary_back"])
+        self.assertNotEqual(self.stamp(), self.STAMP[1], "a new build is never re-stamped")
+        self.assertEqual(self.bin.read_bytes(), b"a new build")
+        self.assertFalse(verdict["pass"])
+        self.assertTrue(any(f.startswith("cleanup:") for f in verdict["failures"]), verdict)
 
 
 class TrustTests(unittest.TestCase):

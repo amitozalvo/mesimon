@@ -1427,6 +1427,28 @@ Reply with the single word ready and end your turn."""
         self.closed()
         return True
 
+    def restore_binary(self, record):
+        """Put back the stamp `binary_moved` changed (DB1, T-941), on the
+        file it changed alone: one a build replaced or rewrote since keeps its
+        own stamp, and the cleanup is a failure of the test. Its atime is not
+        compared: every exec of the binary moves it."""
+        moved = getattr(self, "bin_moved", None)
+        if moved is None:
+            return True
+        self.bin_moved = None
+        before, after = moved
+        ident = lambda st: (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)  # noqa: E731
+        try:
+            if ident(os.stat(self.bin)) == ident(after):
+                os.utime(self.bin, ns=(before.st_atime_ns, before.st_mtime_ns))
+                return True
+            why = f"{self.bin} changed after binary_moved, so its stamp was left as it is"
+        except OSError as e:
+            why = f"putting {self.bin}'s stamp back failed: {e}"
+        record["failures"].append(f"cleanup: {why}")
+        say(f"  cleanup: {why}")
+        return False
+
     def rig_step(self, test, what, record, step=None):
         step = step or {}
         say(f"  → rig: {what}")
@@ -1834,17 +1856,15 @@ Reply with the single word ready and end your turn."""
             return True
         if what == "binary_moved":
             # DB1 (T-941): the rig daemon's binary, same bytes, its mtime a
-            # second on, as a same-version rebuild leaves it; `binary_back`
-            # puts the original stamp back.
-            st = os.stat(self.bin)
-            self.bin_times = (st.st_atime_ns, st.st_mtime_ns)
-            os.utime(self.bin, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+            # second on, as a same-version rebuild leaves it. The stamp goes
+            # back at `binary_back`, which runs after a failed step too, and
+            # at the test's end whatever ended it (`run_test`'s finally).
+            before = os.stat(self.bin)
+            os.utime(self.bin, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+            self.bin_moved = (before, os.stat(self.bin))
             return True
         if what == "binary_back":
-            if getattr(self, "bin_times", None):
-                os.utime(self.bin, ns=self.bin_times)
-                self.bin_times = None
-            return True
+            return self.restore_binary(record)
         if what == "restart":
             self.restart()
             self.restarted = True
@@ -2370,12 +2390,17 @@ Reply with the single word ready and end your turn."""
         self.looks = ([{"state": record["checkout0"], "crown": True, "worker": False}]
                       if any(c.startswith("crown_wrote_nothing") for c in test.get("checks", [])) else None)
         ok = True
-        for step in test["steps"]:
-            if ok:
-                ok = self.run_step(test, step, record)
-            elif step.get("rig") == "restart_plain":
-                # A failed R7 still gives the board back its own Claude Code.
-                self.run_step(test, step, record)
+        try:
+            for step in test["steps"]:
+                if ok:
+                    ok = self.run_step(test, step, record)
+                elif step.get("rig") in ("restart_plain", "binary_back"):
+                    # A failed R7 still gives the board back its own Claude
+                    # Code, and a failed DB1 the binary its own stamp.
+                    self.run_step(test, step, record)
+        finally:
+            # An exception skips the steps above: DB1's stamp goes back here.
+            ok = self.restore_binary(record) and ok
         time.sleep(SWEEP_WAIT)
         self.watch()
         # Evidence, not a gate: is this worker's mod alive end to end now?
