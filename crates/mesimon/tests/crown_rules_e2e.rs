@@ -136,3 +136,151 @@ fn the_crown_is_told_its_rules_once_per_crowning() {
     assert_eq!(listed(&mut c, sa), Some(crown_view()), "a new daemon tells the crown again");
     assert_eq!(listed(&mut c, sa), None);
 }
+
+/// The worker the crown started on `w`, idle on a worktree of its own, and
+/// the crown `sa` crowned on `a` (T-930's review: the deferred receipts).
+fn crown_and_worker(c: &mut TestClient, h: &Harness) -> (uuid::Uuid, uuid::Uuid, String) {
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("the crown's worker");
+    let kw = c.board().ticket(w).unwrap().short_key.clone();
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sa, "the crown idle", |s| matches!(s, mesimon_core::board::SessionState::Idle { .. }));
+    let seen = read_seen(c, sa, &kw);
+    assert!(matches!(
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket {
+                key: kw.clone(),
+                seen: Some(seen),
+                plan: false,
+                tier: None,
+                workspace: Some("worktree".into()),
+            },
+        ),
+        Response::AgentStarted { .. }
+    ));
+    wait_until(std::time::Duration::from_secs(15), "the worker's seat", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(ws, "the worker running", |s| *s == mesimon_core::board::SessionState::Running);
+    (sa, ws, kw)
+}
+
+fn read_seen(c: &mut TestClient, session: uuid::Uuid, key: &str) -> String {
+    match c.send(Principal::Agent { session }, Command::AgentReadTicket { key: key.into() }) {
+        Response::AgentTicket { ticket } => ticket.seen.expect("a stamp"),
+        other => panic!("read {key}: {other:?}"),
+    }
+}
+
+/// Uncrown and crown `a` again: every crown's record is forgotten, so the
+/// call after this is the first since a crowning (the stamp is the
+/// ticket's own and does not move).
+fn crown_again(c: &mut TestClient, sa: uuid::Uuid) {
+    let a = c.board().sessions.iter().find(|s| s.id == sa).unwrap().ticket;
+    assert!(matches!(c.request(Command::Uncrown), Response::Ok));
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+}
+
+/// T-930's review: an `answer_agent` call is answered when its delivery
+/// settles, by a reply the writer parks; when that is the crown's first
+/// call since a crowning, the reply it reads carries the rules, and the
+/// next call does not.
+#[test]
+fn a_deferred_answer_as_the_first_call_carries_the_rules() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\n\
+                        printf 'Which auth provider?\\n\\342\\235\\257 1. Okta\\n  2. Auth0\\n  \
+                        3. Type something.\\nEnter to select \\302\\267 Esc to cancel\\n'\n\
+                        while IFS= read -r line; do :; done\n";
+    let Some(h) = Harness::boot_with_env(
+        "crown-rules-answer",
+        Some(STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    let mut c = h.client("crown-rules-answer");
+    let (sa, ws, kw) = crown_and_worker(&mut c, &h);
+    let question = serde_json::json!({
+        "tool_name": "AskUserQuestion",
+        "tool_use_id": "toolu_q1",
+        "tool_input": { "questions": [{
+            "question": "Which auth provider?", "header": "Auth",
+            "options": [{ "label": "Okta", "description": "" }, { "label": "Auth0", "description": "" }],
+            "multiSelect": false
+        }]}
+    });
+    hook_send(&h.paths.hook_sock(), &ws.to_string(), "PreToolUse", &question.to_string());
+    c.await_state(ws, "asking", |s| {
+        *s == mesimon_core::board::SessionState::RequiresAction {
+            reason: mesimon_core::board::Reason::Question,
+        }
+    });
+    let seen = read_seen(&mut c, sa, &kw);
+    crown_again(&mut c, sa);
+    let answer = Command::AgentAnswerTicket {
+        key: kw.clone(),
+        seen: Some(seen),
+        request: "toolu_q1".into(),
+        index: Some(0),
+        text: None,
+        answers: None,
+    };
+    match c.send_raw(Principal::Agent { session: sa }, answer) {
+        Response::CrownRules { rules, inner } => {
+            assert_eq!(rules, crown_view());
+            assert!(matches!(*inner, Response::AgentAnswered { .. }), "the deferred receipt: {inner:?}");
+        }
+        other => panic!("the first call, deferred: {other:?}"),
+    }
+    assert_eq!(listed(&mut c, sa), None, "told by the deferred reply");
+}
+
+/// The same for `accept_plan`'s deferred receipt (T-930's review).
+#[test]
+fn a_deferred_plan_accept_as_the_first_call_carries_the_rules() {
+    use mesimon_core::board::{Reason, SessionState};
+    const STUB: &str = include_str!("common/fake_claude_dialog.py");
+    const PLAN: &str = "1. Read the code\n2. Write the code";
+    let Some(h) = Harness::boot_bare(
+        "crown-rules-plan",
+        Some(STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    let mut c = h.client("crown-rules-plan");
+    let (sa, ws, kw) = crown_and_worker(&mut c, &h);
+    std::fs::write(h.dir.join(format!("dialog-{kw}.json")), serde_json::json!({ "plan": PLAN }).to_string())
+        .unwrap();
+    wait_until(std::time::Duration::from_secs(10), "the plan drawn", || {
+        match c.request(Command::PaneTail { session: ws, lines: 60 }) {
+            Response::PaneTail { lines, .. } => lines.join("\n").contains("Would you like to proceed?"),
+            _ => false,
+        }
+    });
+    let frame = serde_json::json!({
+        "tool_name": "ExitPlanMode", "tool_use_id": "toolu_p1", "tool_input": { "plan": PLAN }
+    });
+    hook_send(&h.paths.hook_sock(), &ws.to_string(), "PreToolUse", &frame.to_string());
+    c.await_state(ws, "on its plan", |s| *s == SessionState::RequiresAction { reason: Reason::Plan });
+    let seen = read_seen(&mut c, sa, &kw);
+    crown_again(&mut c, sa);
+    let accept = Command::AgentAcceptPlan { key: kw.clone(), seen: Some(seen), request: "toolu_p1".into() };
+    match c.send_raw(Principal::Agent { session: sa }, accept) {
+        Response::CrownRules { rules, inner } => {
+            assert_eq!(rules, crown_view());
+            assert!(matches!(*inner, Response::AgentPlanAccepted { .. }), "the deferred receipt: {inner:?}");
+        }
+        other => panic!("the first call, deferred: {other:?}"),
+    }
+    assert_eq!(listed(&mut c, sa), None, "told by the deferred reply");
+}

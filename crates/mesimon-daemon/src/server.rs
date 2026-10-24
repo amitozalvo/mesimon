@@ -102,6 +102,7 @@ mod bridge;
 mod crownhold;
 mod crownledger;
 mod crownplan;
+mod crownrules;
 mod crownwake;
 mod mesophon;
 mod peer;
@@ -724,18 +725,8 @@ pub struct Daemon {
     /// (T-894), by record: the close waits for a second, `COMPACT_CLEAR_MS`
     /// later, so one capture between repaints closes nothing.
     compaction_clear: HashMap<uuid::Uuid, u64>,
-    /// The sessions that have the crown's rules (T-930): told on their first
-    /// call since they were crowned, compacted or cleared, and forgotten at
-    /// each of those. In memory on purpose: a restart tells every crown
-    /// again, and the rules are the binary's own text, so a new build is a
-    /// restart and needs no version beside them.
-    crown_told: std::collections::HashSet<uuid::Uuid>,
-    /// How many times any crown's rules were forgotten (T-930): a write
-    /// confirmed under an older count tells nobody.
-    crown_rules_gen: u64,
-    /// Each Codex seat's thread and compaction count as its snapshot last
-    /// said them (T-930): a change is a context the rules may not be in.
-    codex_contexts: HashMap<uuid::Uuid, (Option<String>, u64)>,
+    /// Which crowned sessions have the crown's rules (T-930, `crownrules`).
+    crown_rules: crownrules::CrownRules,
     /// Per-ticket worktree bindings (M4), persisted as worktrees.json.
     worktrees: worktree::Bindings,
     /// Spawn requests parked behind provisioning: replayed on Provisioned(Ok).
@@ -1457,9 +1448,7 @@ pub fn run(paths: Paths) -> Result<()> {
         unreaped_said: std::collections::HashSet::new(),
         screens: HashMap::new(),
         compaction_clear: HashMap::new(),
-        crown_told: std::collections::HashSet::new(),
-        crown_rules_gen: 0,
-        codex_contexts: HashMap::new(),
+        crown_rules: crownrules::CrownRules::default(),
         worktrees,
         pending_spawns: Vec::new(),
         pending_resumes: Vec::new(),
@@ -1729,7 +1718,7 @@ pub fn run(paths: Paths) -> Result<()> {
                 d.control_transcript_read(&peer, grant, command, reply)
             }
             Msg::ShelfRead(build, pages) => d.shelf_read(*build, pages),
-            Msg::CrownTold(session, gen) => d.crown_told_at(session, gen),
+            Msg::CrownTold(session, gen) => d.crown_rules.acked(session, gen),
             Msg::Request(env, reply, stream) => {
                 // The mod's bridge poll is no tool call, so it tells no crown.
                 let caller = match (&env.principal, &env.command) {
@@ -2679,23 +2668,35 @@ fn client_loop(stream: UnixStream, tx: Sender<Msg>, diff_ctx: Arc<DiffCtx>) {
         // `Daemon::subscribers`, and the writer thread's broadcast() blocks
         // on it — a large response must hold it only for the write itself.
         let Ok(json) = serde_json::to_string(&resp) else { break };
-        let mut w = match writer.lock() {
-            Ok(w) => w,
-            Err(_) => break,
-        };
-        if writeln!(w, "{json}").and_then(|()| w.flush()).is_err() {
+        if !write_reply(&writer, &json, told, &tx) {
             break;
         }
         if let Some(delivered) = delivered {
             let _ = delivered.send(());
         }
-        if let Some((session, gen)) = told {
-            let _ = tx.send(Msg::CrownTold(session, gen));
-        }
     }
     // Same `tx` as the requests above, so it orders after them: whatever
     // this connection armed is disarmed once its last word is in.
     let _ = tx.send(Msg::ClientGone(writer));
+}
+
+/// One reply line on a connection, and only once it is written the crown's
+/// rules it carried count as told (T-930, `Msg::CrownTold`): a write that
+/// fails tells nobody, so the next eligible reply carries them again.
+fn write_reply(
+    writer: &Mutex<UnixStream>,
+    json: &str,
+    told: Option<(uuid::Uuid, u64)>,
+    tx: &Sender<Msg>,
+) -> bool {
+    let Ok(mut w) = writer.lock() else { return false };
+    if writeln!(w, "{json}").and_then(|()| w.flush()).is_err() {
+        return false;
+    }
+    if let Some((session, generation)) = told {
+        let _ = tx.send(Msg::CrownTold(session, generation));
+    }
+    true
 }
 
 /// What an agent's `create_ticket` asks to file, as the wire carried it.
@@ -4183,10 +4184,7 @@ impl Daemon {
             }
             // A new thread or a compaction is a context the crown's rules
             // may not be in (T-930).
-            let context = (snapshot.thread_id.clone(), snapshot.compactions);
-            if self.codex_contexts.insert(id, context.clone()).is_some_and(|was| was != context) {
-                self.forget_crown_rules(Some(id));
-            }
+            self.crown_rules.codex_context(id, snapshot.thread_id.clone(), snapshot.compactions);
             let rec = &mut self.board.sessions[at];
             // T-845: a steer the running turn took is acked by its count,
             // which moves without a new sequence.
@@ -5090,10 +5088,8 @@ impl Daemon {
                 // A compaction keeps no tool result whole (T-930): at either
                 // edge, finished or abandoned, the crown is told its rules on
                 // its next call, so a reply sent inside the window counts for
-                // nothing. (`forget_crown_rules`, spelt by field: `machine`
-                // still borrows the machines.)
-                self.crown_rules_gen = self.crown_rules_gen.wrapping_add(1);
-                self.crown_told.remove(&id);
+                // nothing.
+                self.crown_rules.forget(Some(id));
                 if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                     rec.compacting = decision.after.compacting;
                     dirty = true;
@@ -6608,34 +6604,19 @@ impl Daemon {
             .iter()
             .find(|s| s.id == session)
             .is_some_and(|rec| self.board.is_crowned(rec.ticket));
-        if !crowned || self.crown_told.contains(&session) {
+        let Some(generation) = self.crown_rules.owed(session).filter(|_| crowned) else {
             return (resp, None);
-        }
-        let told = Some((session, self.crown_rules_gen));
+        };
+        let told = Some((session, generation));
         if matches!(&resp, Response::AgentTicket { ticket } if ticket.crown.is_some()) {
             return (resp, told);
         }
         (Response::CrownRules { rules: mcp::crown_view(), inner: Box::new(resp) }, told)
     }
 
-    /// A reply carrying the crown's rules was written to its connection
-    /// (T-930); one sent before a reset since tells nobody.
-    fn crown_told_at(&mut self, session: uuid::Uuid, gen: u64) {
-        if gen == self.crown_rules_gen {
-            self.crown_told.insert(session);
-        }
-    }
-
-    /// A context the crown's rules may not be in (T-930): every crown's, at
-    /// a crowning, or one session's, at its compaction or a new conversation.
+    /// A context the crown's rules may not be in (T-930, `crownrules`).
     fn forget_crown_rules(&mut self, session: Option<uuid::Uuid>) {
-        self.crown_rules_gen = self.crown_rules_gen.wrapping_add(1);
-        match session {
-            Some(id) => {
-                self.crown_told.remove(&id);
-            }
-            None => self.crown_told.clear(),
-        }
+        self.crown_rules.forget(session);
     }
 
     fn handle_agent(&mut self, session: uuid::Uuid, cmd: Command) -> Response {
@@ -19346,6 +19327,26 @@ fn mod_dir() -> Option<std::path::PathBuf> {
 /// while the remote flag has mods off.
 fn rig_no_flags() -> bool {
     std::env::var("MESIMON_RIG_NO_FLAGS").as_deref() == Ok("1")
+}
+
+#[cfg(test)]
+mod crown_rules_write_tests {
+    use super::*;
+
+    /// T-930's review (b): a reply whose write fails acknowledges nothing,
+    /// and one that is written acknowledges its session under its count.
+    #[test]
+    fn only_a_written_reply_tells_the_crown() {
+        let (tx, rx) = channel();
+        let s = uuid::Uuid::new_v4();
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        drop(theirs);
+        assert!(!write_reply(&Mutex::new(ours), "{}", Some((s, 7)), &tx), "a closed peer");
+        assert!(rx.try_recv().is_err(), "nothing acknowledged");
+        let (ours, _theirs) = UnixStream::pair().unwrap();
+        assert!(write_reply(&Mutex::new(ours), "{}", Some((s, 7)), &tx));
+        assert!(matches!(rx.try_recv(), Ok(Msg::CrownTold(got, 7)) if got == s));
+    }
 }
 
 #[cfg(test)]
