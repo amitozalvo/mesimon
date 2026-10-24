@@ -32977,3 +32977,14 @@ Tests:
   `crown_e2e::a_wake_offered_before_a_restart_retires_unconfirmed` (the mod takes the frame and
   holds it; the bridge is stopped; a restart keeps the attempt; its window passes and it retires
   `unconfirmed`, never `unreceived`).
+- **A5 (2a). A crown wake's launch paste meets the live pane's guard.** The delayed launch loop
+  pasted a parked wake into whatever composer it read, `Holding` included, with no check for a
+  person: a person who attached during startup and typed got the wake pasted into their draft,
+  Enter pressed, and the wake told. Before a crown-tagged launch's paste, the board now reads
+  fresh evidence: the pane's clients from tmux at this edge (fail closed), and the composer from
+  a screen newer than the entry. Anything but an empty box with nobody there gets no key, no
+  clear and no Enter. The wake goes back to owed (`crown_wake_held`), and the live pane's road
+  holds it as it holds any wake: `when you leave`, `after your draft`. A person's own launch is
+  untouched. Test: `crown_e2e::a_person_at_the_crown_before_its_launch_paste_gets_no_keys` (a
+  client on the crown's pane before its `SessionStart`: nothing typed, the hand up, the row
+  `when you leave`; they leave and one paste delivers it; fails with the guard off).

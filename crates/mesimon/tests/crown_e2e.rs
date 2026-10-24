@@ -9921,3 +9921,139 @@ fn a_wake_offered_before_a_restart_retires_unconfirmed() {
     std::fs::remove_file(h.dir.join("mod-hold-submit")).unwrap();
     signal("-CONT");
 }
+
+/// Set up the fifth read's launch-road specimens: a hook-road crown with a
+/// worker, the crown parked, then the worker's hand, which wakes the crown
+/// with its wake parked on the launch. The pane is up and its
+/// `SessionStart` not yet sent. Returns the crown's session, the worker's,
+/// and the wake's line as the stub records it.
+fn crown_woken_with_its_wake_parked(
+    h: &Harness,
+    c: &mut TestClient,
+    name: &str,
+) -> (ulid::Ulid, uuid::Uuid, ulid::Ulid, String) {
+    let hook_sock = h.paths.hook_sock();
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket(&format!("mesimon-probe-936 {name}"));
+    let kw = key_of(c, w);
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(c, sa);
+    stop(c, sa);
+    let v = read(c, sa, &kw).unwrap();
+    assert!(matches!(
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket {
+                key: kw.clone(),
+                seen: v.seen,
+                plan: false,
+                tier: None,
+                workspace: Some("worktree".into()),
+            },
+        ),
+        Response::AgentStarted { .. }
+    ));
+    wait_until(std::time::Duration::from_secs(15), "W's seat", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(matches!(c.request(Command::SleepSession { id: sa }), Response::Ok));
+    c.await_state(sa, "the crown parked", |s| *s == SessionState::Sleeping);
+    match c.send(
+        Principal::Agent { session: ws },
+        Command::AgentRaiseHand { reason: "which key?".into() },
+    ) {
+        Response::AgentRaised { .. } => {}
+        other => panic!("raise_hand: {other:?}"),
+    }
+    wait_until(std::time::Duration::from_secs(15), "the crown woken for it", || {
+        c.board().sessions.iter().any(|s| s.id == sa && s.state != SessionState::Sleeping)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let line = format!("{kw} \"mesimon-probe-936 {name}\" raised its hand");
+    (a, sa, w, line)
+}
+
+/// T-936, the fifth read (2a): a person who attaches to the crown's pane
+/// while its wake is bringing it up, before the launch pastes, has nothing
+/// typed under them. The launch's paste meets the live pane's guard, the
+/// wake goes back to owed with its hand up and its row saying it waits for
+/// them, and once they leave the live pane's road delivers it, once.
+#[test]
+fn a_person_at_the_crown_before_its_launch_paste_gets_no_keys() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_launch_person",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_CLAUDE_ROAD", "hooks"),
+            ("MESIMON_SLEEP_MIN_AGE_MS", "0"),
+        ],
+    ) else {
+        return;
+    };
+    let hook_sock = h.paths.hook_sock();
+    let tmux_sock = h.paths.tmux_sock();
+    let mut c = h.client("crown_launch_person");
+    let (a, sa, w, line) = crown_woken_with_its_wake_parked(&h, &mut c, "launch person");
+    let got = h.dir.join("got.txt");
+    let typed = || {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(&line))
+            .count()
+    };
+    let hand_up = |c: &mut TestClient| c.board().ticket(w).unwrap().raised.is_some();
+    let held = |c: &mut TestClient| {
+        pending_of(c, Some(a))
+            .into_iter()
+            .find(|p| p.action == mesimon_core::command::PendingAction::CrownWake)
+            .and_then(|p| p.held)
+    };
+    let crown = c.board().sessions.iter().find(|s| s.id == sa).unwrap().sid16();
+    let mut client = tmux(&tmux_sock)
+        .args(["-C", "attach", "-t", &crown])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("a control-mode tmux client");
+    wait_until(std::time::Duration::from_secs(10), "the client on the crown's session", || {
+        tmux(&tmux_sock)
+            .args(["list-clients", "-t", &crown, "-F", "#{client_name}"])
+            .output()
+            .is_ok_and(|o| !o.stdout.is_empty())
+    });
+    // The pane comes up: its words would go now.
+    hook_send(&hook_sock, &sa.to_string(), "SessionStart", r#"{"source":"resume"}"#);
+    wait_until(std::time::Duration::from_secs(10), "the wake held for the person", || {
+        held(&mut c).as_deref() == Some("when you leave")
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(typed(), 0, "nothing typed under them");
+    assert!(hand_up(&mut c), "the hand still up");
+    client.kill().unwrap();
+    let _ = client.wait();
+    wait_until(std::time::Duration::from_secs(15), "the wake typed once they left", || {
+        typed() == 1
+    });
+    wait_until(std::time::Duration::from_secs(5), "the hand down once it went", || {
+        !hand_up(&mut c)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    assert_eq!(typed(), 1, "once");
+}

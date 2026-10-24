@@ -6294,6 +6294,23 @@ impl Daemon {
                 let Some(after) = self.owed.get(&id).map(|o| o.screen_after) else { continue };
                 let composer =
                     self.screen_since(&sid16, after).map_or(Composer::Absent, composer::read);
+                // A crown wake parked on this launch (T-936) goes in only as a
+                // live pane's paste would: nobody in the pane and the box
+                // empty, read now. A box that holds words, or a pane with a
+                // client (or one tmux cannot list), gets no key, no clear and
+                // no Enter; the wake goes back to owed, and the live pane's
+                // guarded road holds it for the person.
+                let wake = self.owed.get(&id).is_some_and(|o| o.ack.word == Ack::CROWN_WAKE.word);
+                if wake && matches!(composer, Composer::Holding | Composer::Empty) {
+                    let present = self.backend.has_clients(&format!("={sid16}")).unwrap_or(true);
+                    if present || composer != Composer::Empty {
+                        self.drop_owed(id);
+                        self.wake_not_entered(id);
+                        self.feed.board("automation", "crown_wake_held", Some(ticket));
+                        changed = true;
+                        continue;
+                    }
+                }
                 let Some(owed) = self.owed.get_mut(&id) else { continue };
                 let ready_by = *owed.ready_by.get_or_insert(now + composer_wait_ms());
                 match composer {
