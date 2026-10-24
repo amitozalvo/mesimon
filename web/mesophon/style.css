@@ -3713,8 +3713,20 @@ button.sent-bubble:hover {
     color: var(--ink3);
     font-size: 0.6875rem;
   }
+  /* Every icon keeps its pill's room, filled only on the open view (T-950):
+     the column tabs' pressed colour, so choosing moves nothing in the bar. */
+  #modes .mode .icon {
+    box-sizing: content-box;
+    padding: 4px 18px;
+    border-radius: 999px;
+  }
   #modes .mode[aria-pressed="true"] {
     color: var(--ink);
+    font-weight: 600;
+  }
+  #modes .mode[aria-pressed="true"] .icon {
+    background: var(--pri);
+    color: var(--pri-ink);
   }
   #modes .badge {
     position: absolute;
@@ -3725,6 +3737,8 @@ button.sent-bubble:hover {
     padding: 0 5px;
     font-size: 0.6875rem;
     line-height: 18px;
+    /* The bar's own colour between the badge and the pill under it. */
+    box-shadow: 0 0 0 2px var(--bar);
   }
   #modes .count {
     display: none;

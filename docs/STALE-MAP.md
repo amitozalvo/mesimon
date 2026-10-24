@@ -32052,3 +32052,30 @@ with neither. Their tags' lines sit at the same x and the same offset in the car
 are the same height, on every size. On desktop, side by side in two columns, the tags' lines are
 at the same y. This fails on the old layout. The crown case pins the order: the glyph first,
 then the crown.
+
+## Remote Control's tab bar marks the open view (T-950, 2026-10-24, "Remote Control: the bottom navigation does not show clearly which tab is open")
+
+**Measured before the change** (WebKit and Chromium, phone 390×844 and tablet 900×900, both
+schemes). The bar under a phone's or tablet's page (`#modes`: Now, Board, Sent) told the open
+view by colour alone: its label and icon were `--ink`, the other two `--ink3`, every label at
+weight 500, no background, no line, no fill. The two inks are 2.53:1 apart on graphite
+(`#e9e7e1` and `#96918a` on `#131417`) and 2.49:1 on chalk (`#22252b` and `#5f6169` on
+`#faf8f4`): three grey icons, one a little lighter, which a phone outdoors does not separate.
+
+**The change, `style.css` alone.** The open tab's icon sits on a filled pill in `--pri` with the
+icon in `--pri-ink`, the pressed colour the phone's column tabs already use, and its label is
+`--ink` at weight 600; the others stay `--ink3` at 500 on nothing. `--attn` stays the needs-you
+colour and `--calm` stays "live"; neither marks a selection. Every icon carries the pill's
+padding whether filled or not, so choosing a view moves and resizes nothing in the bar (only a
+label's own width follows its weight, centred in a fixed grid cell). The needs-you badge, which
+overlaps the pill's corner, gets a 2px ring in `--bar` so its edge stays readable on either
+pill. Markup, words and behaviour are unchanged; the desktop side nav is untouched.
+
+**The test.** `ux.test.js`'s `tabsFlow`, on both engines at tablet and phone size, in graphite
+and chalk, opens each view in turn and asserts: only that tab is pressed; its label is at least
+100 heavier and stronger against the bar than each other tab's; only its icon has a fill, which
+stands 3:1 or more off the bar with the icon 3:1 or more off it; and the bar, the tabs, the
+icons, the badges and the labels' lines keep the same boxes across every choice. It saves
+`test-results/<engine>-phone-tabs-<graphite|chalk>.png`.
+
+Phones get it with the next release: the relay serves `web/mesophon` as it ships.

@@ -3252,6 +3252,122 @@ async function keyboardFlow(browser, engineName) {
   }
 }
 
+// The tab bar under a phone's page (T-950): the open view is plain at a
+// glance in both schemes. Its label is the ink at a heavier weight and its
+// icon sits on a filled pill, the pressed colour the column tabs use; the
+// other two are the quieter ink on nothing. Choosing a view moves and
+// resizes nothing in the bar.
+async function tabsFlow(browser, engineName) {
+  for (const [size, viewport] of [
+    ["tablet", { width: 900, height: 900 }],
+    ["phone", { width: 390, height: 844 }],
+  ]) {
+    if (process.env.MESOPHON_UX_SIZES && !process.env.MESOPHON_UX_SIZES.split(",").includes(size)) continue;
+    const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
+    await context.addInitScript(fixture);
+    const page = await context.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(String(error)));
+    const theme = (name) =>
+      page.evaluate((name) => {
+        const control = document.querySelector("#theme");
+        control.value = name;
+        control.dispatchEvent(new Event("change"));
+      }, name);
+    // Each tab's label, icon and pill as drawn, and every box in the bar.
+    const bar = () =>
+      page.evaluate(() => {
+        const rgb = (text) => {
+          const m = /rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)(?:,\s*([\d.]+))?\)/.exec(text);
+          return m ? { c: [+m[1], +m[2], +m[3]], a: m[4] === undefined ? 1 : +m[4] } : null;
+        };
+        const box = (n) => {
+          const r = n.getBoundingClientRect();
+          return [r.x, r.y, r.width, r.height].map((v) => Math.round(v * 10) / 10);
+        };
+        const modes = document.querySelector("#modes");
+        return {
+          ground: rgb(getComputedStyle(modes).backgroundColor),
+          // A label's own width follows its weight, centred in its tab; its
+          // height and line do not.
+          boxes: [
+            ...[modes, ...modes.querySelectorAll(".mode, .mode > .icon, .mode > .badge")].map(box),
+            ...[...modes.querySelectorAll(".mode > span:not(.badge)")].map((n) => box(n).filter((_, i) => i % 2)),
+          ],
+          tabs: [...modes.querySelectorAll(".mode")].map((n) => {
+            const label = n.querySelector("span:not(.badge):not(.count)");
+            const icon = n.querySelector(".icon");
+            return {
+              mode: n.dataset.mode,
+              pressed: n.getAttribute("aria-pressed") === "true",
+              ink: rgb(getComputedStyle(label).color),
+              weight: Number(getComputedStyle(label).fontWeight),
+              stroke: rgb(getComputedStyle(icon).color),
+              pill: rgb(getComputedStyle(icon).backgroundColor),
+            };
+          }),
+        };
+      });
+    const luminance = ({ c }) => {
+      const [r, g, b] = c.map((v) => {
+        v /= 255;
+        return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const contrast = (a, b) => {
+      const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+      return (hi + 0.05) / (lo + 0.05);
+    };
+    const measured = [];
+    try {
+      await page.goto(origin);
+      await until(page, () => !document.querySelector("#pair").disabled);
+      await page.getByLabel("Pairing code", { exact: true }).fill("fixture-pair-code");
+      await page.getByRole("button", { name: "Connect", exact: true }).click();
+      await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+      await page.locator("#modes").waitFor();
+      for (const name of ["graphite", "chalk"]) {
+        await theme(name);
+        let boxes;
+        for (const mode of ["board", "sent", "agents"]) {
+          await page.locator(`#${mode}-mode`).click();
+          await until(page, (mode) => document.querySelector(`#${mode}-mode`).getAttribute("aria-pressed") === "true", mode);
+          const drawn = await bar();
+          const open = drawn.tabs.filter((t) => t.pressed);
+          assert.deepEqual(open.map((t) => t.mode), [mode]);
+          const [on] = open;
+          for (const off of drawn.tabs.filter((t) => !t.pressed)) {
+            measured.push(`${name} ${mode}: label ${contrast(on.ink, off.ink).toFixed(2)}:1 apart, weight ${on.weight} to ${off.weight}`);
+            assert(on.weight - off.weight >= 100, `${name}, ${mode} open: its label is heavier than ${off.mode}'s (${on.weight} to ${off.weight})`);
+            assert(contrast(on.ink, drawn.ground) > contrast(off.ink, drawn.ground), `${name}, ${mode} open: its label reads stronger than ${off.mode}'s`);
+            assert(!off.pill || off.pill.a === 0, `${name}, ${mode} open: ${off.mode}'s icon has no pill (${JSON.stringify(off.pill)})`);
+          }
+          // The pill stands off the bar as a control's edge must (3:1), and
+          // the icon off the pill.
+          assert(on.pill && on.pill.a === 1, `${name}, ${mode} open: its icon has a filled pill (${JSON.stringify(on.pill)})`);
+          const pill = contrast(on.pill, drawn.ground);
+          const stroke = contrast(on.stroke, on.pill);
+          measured.push(`${name} ${mode}: pill ${pill.toFixed(2)}:1 on the bar, icon ${stroke.toFixed(2)}:1 on the pill`);
+          assert(pill >= 3, `${name}, ${mode} open: the pill against the bar is ${pill.toFixed(2)}:1`);
+          assert(stroke >= 3, `${name}, ${mode} open: the icon against its pill is ${stroke.toFixed(2)}:1`);
+          if (boxes) assert.deepEqual(drawn.boxes, boxes, `${name}: choosing ${mode} moved or resized nothing in the bar`);
+          boxes = drawn.boxes;
+        }
+        if (size === "phone") await page.locator("#modes").screenshot({ path: path.join(root, "test-results", `${engineName}-phone-tabs-${name}.png`) });
+      }
+      assert.deepEqual(errors, []);
+      console.log(`${engineName} ${size}: the open tab is marked in both schemes and the bar holds still passed`);
+    } catch (error) {
+      console.log(measured.join("\n"));
+      await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-tabs-failure.png`) });
+      throw error;
+    } finally {
+      await context.close();
+    }
+  }
+}
+
 // Home screen and no signal (T-497): the service worker keeps the page, so a
 // load with no network opens the kept copy. It shows the remembered board,
 // takes a ticket with a clock, opens no socket, and becomes the relay's own
@@ -4342,6 +4458,7 @@ try {
       await pairLinkFlow(browser, engineName);
       await backFlow(browser, engineName);
       await keyboardFlow(browser, engineName);
+      await tabsFlow(browser, engineName);
       await keptFlow(browser, engineName);
       await refusedFlow(browser, engineName);
       await forgetFlow(browser, engineName);
