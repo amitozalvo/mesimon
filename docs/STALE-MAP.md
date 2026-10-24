@@ -32799,13 +32799,20 @@ seat whose pane died keeps `codex_stopping`, which reads as working, so its `Exi
 other branch: it opened a turn, or kept one open.
 - Now no turn is opened for a state with no pane, and any edge into one drops the ticket from
   `turns_open`, whatever holds the seat working.
-- `KillSession`, which sets `Exited` without `apply_change`, drops it too.
-- Measured while testing it: an `Exited` seat holds no agent seat, so the crown does not hear it,
-  and the old rule said no line at a restart on this road either. What it left was the open turn
-  in `crown.json` for a seat with no pane, there for the next idle to read as a finished turn.
-  The test pins that ledger.
+- `KillSession`, which sets `Exited` without `apply_change`, drops it too, but only for the
+  ticket's agent seat, read before the kill changes it (second read). Killing the ticket's shell,
+  or dismissing an old agent's corpse while its replacement works, would otherwise erase the
+  running agent's open turn, and its next `Stop` would read as no fresh turn.
+- Measured while testing it: on the old rule this road also said no line at the restart. What it
+  left was the open turn in `crown.json` for a seat with no pane, there for the next idle to read
+  as a finished turn, and the test pins that ledger. Having no pane and holding no seat are
+  different facts: `holds_agent_seat` keeps a Codex seat while `codex_stopping`, so it is the pane,
+  never seat ownership, that the rule reads.
 
-Test: `crown_e2e::a_codex_seat_whose_pane_died_has_no_turn_open_after_a_restart`. On the synthetic
+Tests: `crown_e2e::killing_a_shell_keeps_the_running_agent_s_turn` and
+`dismissing_an_old_corpse_keeps_the_replacement_s_turn`, where the agent's `Stop` still reads as a
+finished turn; both fail with the drop on every kill.
+`crown_e2e::a_codex_seat_whose_pane_died_has_no_turn_open_after_a_restart`. On the synthetic
 runtime, a finished turn is told; the lost observation opens a turn in `crown.json` (the
 precondition); the runtime is killed, so the pane-died hook lands `Exited` with `codex_stopping`
 set; the ledger keeps no turn open; and after a restart there is no line. It fails on the old

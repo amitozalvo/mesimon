@@ -8793,3 +8793,101 @@ fn a_codex_seat_whose_pane_died_has_no_turn_open_after_a_restart() {
     std::thread::sleep(std::time::Duration::from_millis(4000));
     assert_eq!(wakes_since(restarted), Vec::<String>::new(), "no line after the restart");
 }
+
+/// T-936, the second read: an explicit kill drops the open turn only for
+/// the ticket's agent seat. Killing the ticket's shell under its running
+/// agent leaves that agent's turn open, so its `Stop` is a finished turn.
+#[test]
+fn killing_a_shell_keeps_the_running_agent_s_turn() {
+    kill_beside_a_running_agent("crown_kill_shell", false);
+}
+
+/// The same for an old agent's corpse dismissed while its replacement
+/// works: the corpse holds no seat, so the replacement's turn stays open.
+#[test]
+fn dismissing_an_old_corpse_keeps_the_replacement_s_turn() {
+    kill_beside_a_running_agent("crown_kill_corpse", true);
+}
+
+fn kill_beside_a_running_agent(name: &str, corpse: bool) {
+    let Some(h) = Harness::boot_with_env(
+        name,
+        Some(RECORDING_STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client(name);
+    let got = h.dir.join("got.txt");
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-936 worker");
+    let kw = key_of(&mut c, w);
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let start_agent = |c: &mut TestClient| -> uuid::Uuid {
+        let v = read(c, sa, &kw).unwrap();
+        match c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket {
+                key: kw.clone(),
+                seen: v.seen,
+                plan: false,
+                tier: None,
+                workspace: Some("worktree".into()),
+            },
+        ) {
+            Response::AgentStarted { .. } => {}
+            other => panic!("start_agent: {other:?}"),
+        }
+        wait_until(std::time::Duration::from_secs(15), "W's seat", || {
+            c.board().live_agent(w).is_some()
+        });
+        c.board().live_agent(w).unwrap().id
+    };
+    let mut ws = start_agent(&mut c);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let other = if corpse {
+        // The first agent dies, and a replacement takes the seat.
+        let old = ws;
+        assert!(matches!(c.request(Command::KillSession { id: old }), Response::Ok));
+        c.await_state(old, "the old agent dead", |s| matches!(s, SessionState::Exited { .. }));
+        wait_until(std::time::Duration::from_secs(10), "the seat free", || {
+            c.board().live_agent(w).is_none()
+        });
+        ws = start_agent(&mut c);
+        assert_ne!(ws, old);
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        old
+    } else {
+        match c.request(Command::SpawnSession {
+            ticket: w,
+            kind: SessionKind::Bash,
+            submit_prompt: false,
+            plan: false,
+        }) {
+            Response::Spawned { id, .. } => id,
+            other => panic!("the ticket's shell: {other:?}"),
+        }
+    };
+    // The agent is mid-turn when the other record is killed or dismissed.
+    start(&mut c, ws);
+    assert!(matches!(c.request(Command::KillSession { id: other }), Response::Ok));
+    stop(&mut c, ws);
+    let finished = format!("{kw} \"mesimon-probe-936 worker\" finished its turn");
+    wait_until(std::time::Duration::from_secs(10), "the agent's finished turn", || {
+        std::fs::read_to_string(&got).unwrap_or_default().contains(&finished)
+    });
+}

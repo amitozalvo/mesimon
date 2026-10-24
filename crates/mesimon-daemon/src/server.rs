@@ -17550,6 +17550,12 @@ impl Daemon {
     }
 
     fn kill_session(&mut self, id: uuid::Uuid) -> Response {
+        // Whether this is the ticket's agent seat, read before the kill
+        // changes it (T-936): a shell, or an old corpse dismissed beside its
+        // replacement, holds no turn of the agent's.
+        let seat = self.board.sessions.iter().find(|s| s.id == id).is_some_and(|rec| {
+            self.board.live_agent(rec.ticket).is_some_and(|agent| agent.id == id)
+        });
         let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else {
             return Response::Err { message: "no such session".into() };
         };
@@ -17574,8 +17580,8 @@ impl Daemon {
         rec.detail = None;
         let (id, state, ticket) = (rec.id, rec.state.clone(), rec.ticket);
         self.machines.insert(id, Machine::new(state, now_ms()));
-        // A seat with no pane has no turn open (T-936).
-        if self.turns_open.contains(&ticket) {
+        // The ticket's agent seat killed has no turn open (T-936).
+        if seat && self.turns_open.contains(&ticket) {
             self.turns_open.remove(&ticket);
         }
         if let Some(sid) = reap {
