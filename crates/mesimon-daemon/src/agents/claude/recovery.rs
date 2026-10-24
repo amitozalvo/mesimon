@@ -433,10 +433,12 @@ impl ClaudeRecovery {
         // that the machine's refusal road waits for, so the card wore
         // needs-you until the turn's end. A newer call after the result is a
         // dialog that stands again; an interrupt right after it is the Esc
-        // that stopped the turn.
+        // that stopped the turn, and is that end's alone (round 5): no Low
+        // hint is read beside it, so whatever drops the end drops all of it.
         let mut answered = None;
         for line in &lines {
             let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+            let mut attributed = false;
             if let Some((tool, id)) = tail::dialog_call(&value) {
                 self.dialog = Some((tool, id.to_string()));
                 self.ended = None;
@@ -449,6 +451,7 @@ impl ClaudeRecovery {
             } else if tail::speaks(&value) {
                 let ended = self.ended.take();
                 if classify_tail_record(&value) == TailEvent::Aborted {
+                    attributed = ended.is_some();
                     answered = ended.map(|call| (call, true));
                 }
             }
@@ -460,6 +463,7 @@ impl ClaudeRecovery {
                 hints.retain(|(kind, _)| *kind != TailHint::AbortedMidStream);
             }
             match classify_tail_record(&value) {
+                TailEvent::Aborted if attributed => {}
                 TailEvent::Aborted => hints.push((TailHint::AbortedMidStream, None)),
                 _ if abort_only => {}
                 TailEvent::AssistantText { text } => {
@@ -501,6 +505,11 @@ impl ClaudeRecovery {
                     if let Some(c) = closed {
                         if c.last {
                             self.ended = Some((tool, c.id.clone()));
+                        }
+                        // The abort the seed read is this end's, as a live
+                        // read's is (round 5).
+                        if c.interrupted {
+                            hints.retain(|(kind, _)| *kind != TailHint::AbortedMidStream);
                         }
                         answered = Some(((tool, c.id), c.interrupted));
                     }
@@ -1048,18 +1057,22 @@ mod recovery_tests {
         history.append(result("plan3", true, refused, 4));
         assert!(left(&recovery.poll(&record, RecoverySample::Transcript, 8000), "plan3"));
 
-        // A question's Esc: one end, interrupted, then the Low interrupt hint.
+        // A question's Esc: one end, interrupted, and no Low hint beside it
+        // (round 5): the interrupt is that end's alone.
         history.append(call("q1", "AskUserQuestion"));
         record.state = question.clone();
         assert!(stays(&recovery.poll(&record, RecoverySample::Transcript, 9000)));
         history.append(result("q1", true, stop, 5));
         history.append(abort());
         let seen = recovery.poll(&record, RecoverySample::Transcript, 10_000);
-        assert!(ended(&seen, "q1", true), "{seen:?}");
+        assert!(ended(&seen, "q1", true) && seen.len() == 1, "{seen:?}");
+        // An interrupt with no dialog's result before it stays the hint it was.
+        history.append(abort());
         assert!(matches!(
-            seen[1..],
+            recovery.poll(&record, RecoverySample::Transcript, 10_100)[..],
             [RecoveryObservation {
                 signal: Signal::TranscriptHint { kind: TailHint::AbortedMidStream },
+                dialog: None,
                 ..
             }]
         ));
@@ -1111,9 +1124,9 @@ mod recovery_tests {
             )),
             "{seen:?}"
         );
-        // Without a prompt after it, the Esc's end names its call, and the
-        // Low hint read beside it comes after it: the daemon fences both on
-        // the prompts heard since that call's dialog was projected.
+        // Without a prompt after it, the Esc's end names its call, the one
+        // observation of it: the daemon fences it on the prompts heard since
+        // that call's dialog was projected, and no Low hint is left to pass.
         history.append(call("plan12", "ExitPlanMode"));
         record.state = plan.clone();
         assert!(stays(&recovery.poll(&record, RecoverySample::Transcript, 11_950)));
@@ -1121,14 +1134,7 @@ mod recovery_tests {
         stamped["timestamp"] = serde_json::json!(at(13));
         history.append(stamped);
         let seen = recovery.poll(&record, RecoverySample::Transcript, 11_960);
-        assert!(ended(&seen, "plan12", true), "{seen:?}");
-        assert!(matches!(
-            seen[1..],
-            [RecoveryObservation {
-                signal: Signal::TranscriptHint { kind: TailHint::AbortedMidStream },
-                ..
-            }]
-        ));
+        assert!(ended(&seen, "plan12", true) && seen.len() == 1, "{seen:?}");
 
         // Another dialog's result says nothing about the one held.
         history.append(call("q2", "AskUserQuestion"));
@@ -1167,14 +1173,13 @@ mod recovery_tests {
             let mut recovery = fresh(&mut record, &history, 10);
             let seen = recovery.poll(&record, RecoverySample::Transcript, 20_000);
             assert!(ended(&seen, "plan7", esc), "{seen:?}");
-            // The first read's Esc: its end first, the abort hint it seeds
-            // beside it after, for the daemon's fence to take together.
-            assert_eq!(
-                seen[1..].iter().any(|o| matches!(
+            // The first read's Esc: its end alone, the abort the seed read
+            // being that end's (round 5).
+            assert!(
+                !seen.iter().any(|o| matches!(
                     o.signal,
                     Signal::TranscriptHint { kind: TailHint::AbortedMidStream }
                 )),
-                esc,
                 "{seen:?}"
             );
             assert!(stays(&recovery.poll(&record, RecoverySample::Transcript, 22_000)), "once");

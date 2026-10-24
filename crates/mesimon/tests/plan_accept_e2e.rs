@@ -1104,7 +1104,7 @@ fn a_repeated_prompt_heard_before_its_line_leaves_the_new_turn_running() {
             }
         }
         // A tail read while running mints the cursor, so the Esc is read
-        // live: its end and the Low hint beside it, both for the fence.
+        // live, and the fence meets its end.
         std::thread::sleep(Duration::from_millis(2500));
         b.call("ExitPlanMode", "toolu_r");
         b.stop_on("ExitPlanMode", "toolu_r");
@@ -1135,5 +1135,65 @@ fn a_repeated_prompt_heard_before_its_line_leaves_the_new_turn_running() {
             "the new turn (pinned: {pinned}, a prompt between: {between}): {:?}",
             b.decisions().iter().rev().take(4).collect::<Vec<_>>()
         );
+    }
+}
+
+/// T-957 round 5: an Esc on plan A whose seat is already on a newer dialog
+/// B. The person Escs A and submits; the agent stops on B (a plan, or a
+/// question) and its hook is heard before the tail reads A's result and
+/// interrupt, B's line not written yet. Nothing of A's may reach the
+/// machine: its High end is dropped (B is projected; or, for a question, the
+/// held tool is no longer A's), and no Low hint is left beside it to settle
+/// B. Past the settle and two reads, the seat is still on B, and its ticket
+/// still needs the person with B's request. The pin is off.
+#[test]
+fn an_old_plan_s_esc_leaves_a_newer_dialog_standing() {
+    const STOP: &str =
+        "The user doesn't want to proceed with this tool use. STOP what you are doing.";
+    for (n, (tool, reason, word)) in
+        [("ExitPlanMode", Reason::Plan, "plan"), ("AskUserQuestion", Reason::Question, "question")]
+            .into_iter()
+            .enumerate()
+    {
+        let Some(mut b) = Bed::boot(&format!("plannewer{n}")) else { return };
+        b.start();
+        // A tail read while running mints the cursor, so A's Esc is read live.
+        std::thread::sleep(Duration::from_millis(2500));
+        b.call("ExitPlanMode", "toolu_a");
+        b.stop_on("ExitPlanMode", "toolu_a");
+        b.result("toolu_a", true, STOP);
+        b.append(serde_json::json!({"uuid": "abort-a", "type": "user", "timestamp": now_iso(),
+            "message": {"content": [{"type": "text",
+                "text": "[Request interrupted by user for tool use]"}]}}));
+        // The new prompt and B, heard before the tail reads A's end.
+        b.hook("UserPromptSubmit", r#"{"prompt":"Plan it again."}"#);
+        b.stop_on(tool, "toolu_b");
+        std::thread::sleep(Duration::from_millis(2500));
+        b.append(serde_json::json!({"uuid": "next-b", "type": "user", "timestamp": now_iso(),
+            "message": {"content": "Plan it again."}}));
+        b.call(tool, "toolu_b");
+        std::thread::sleep(Duration::from_millis(2500));
+        let pinned = b.decisions().iter().any(|d| {
+            d["decision"]["after"]["pinned_until"]
+                .as_u64()
+                .is_some_and(|until| until > d["at_ms"].as_u64().unwrap())
+        });
+        assert!(!pinned, "the pin is off ({word})");
+        assert_eq!(
+            b.state(),
+            Some(SessionState::RequiresAction { reason }),
+            "still on B ({word}): {:?}",
+            b.decisions().iter().rev().take(4).collect::<Vec<_>>()
+        );
+        let needs = match b
+            .c
+            .send(mesimon_core::Principal::Agent { session: b.sid }, Command::AgentGetTicket)
+        {
+            Response::AgentTicket { ticket } => ticket.needs_you,
+            other => panic!("get_ticket: {other:?}"),
+        };
+        let needs = needs.expect("B still needs the person");
+        assert_eq!(needs.reason, word);
+        assert_eq!(needs.request.as_deref(), Some("toolu_b"), "B's request ({word})");
     }
 }

@@ -34074,8 +34074,15 @@ belongs to a later turn.
   been heard for the seat since A's dialog was projected. The daemon counts prompts per seat
   (`Daemon::prompts_heard`), notes the count when it projects a dialog (`dialog_heard`, in
   `control_observe_dialog`), and `feed_recovery` drops the end when the count has grown
-  (`spoken_since`). The Low `AbortedMidStream` read beside a dropped end goes with it. Each drop
-  is a feed line, `tail_interrupt_before_prompt`.
+  (`spoken_since`). Each drop is a feed line, `tail_interrupt_before_prompt`.
+- **The interrupt is the end's alone (round 5).** Round 4 let the Low `AbortedMidStream` beside
+  an end through on a batch flag that only the `spoken_since` arm set. The projection guard
+  (plan A, then plan B) and the adapter's held-tool filter (plan A, then question B) drop or omit
+  A's end without setting it, and A's unscoped hint settled the live B to `Interrupted`. The
+  adapter now emits no Low hint for an interrupt it attributed to the dialog's own result: right
+  after it in a live read, or the seed's abort when the look back finds that dialog ended
+  interrupted. Whatever drops the end then drops all of it, and the flag is gone. An abort with
+  no dialog's result before it stays the Low hint it was.
 - **After a restart** a dialog this daemon never projected counts from the daemon's start.
 - **In the read:** a person's prompt (`adopt::user_prompt`) after an interrupt in the same read
   drops the interrupted end and every `AbortedMidStream` read before it.
@@ -34102,7 +34109,8 @@ belongs to a later turn.
 - Unit, `recovery::a_held_dialog_leaves_on_its_own_call_s_result`:
   - the plan's result ends it, once, and a sibling's result does not;
   - a replan in the same read stands;
-  - a question's Esc is one interrupted end, then the Low hint;
+  - a question's Esc is one interrupted end and no Low hint; an abort with no result before it
+    is the hint;
   - a plan's Esc split across reads ends interrupted from `Running`, and an interrupt after a
     reply is not the dialog's;
   - another dialog's result says nothing;
@@ -34112,8 +34120,8 @@ belongs to a later turn.
   - an older result before the spell, the other tool's call last, and an undated result clear
     nothing;
   - an Esc and a prompt in one read give no end and no hint;
-  - an Esc alone gives its call's end, then the hint beside it, in the order the daemon's fence
-    takes them.
+  - an Esc alone gives its call's end and nothing beside it, on a live read and on the first
+    read's look back.
 - Unit, `tail::a_dialog_s_call_and_its_own_result_are_read_by_id`, on the 2.1.310 record
   trimmed. T-363's restatement test now expects the end on its accepted plan.
 - Unit, `composer::startup_and_dialogs_are_not_a_composer` gained the question screen (2.1.287's
@@ -34152,7 +34160,8 @@ belongs to a later turn.
     3): a seat at rest stops on a plan, the person Escs and speaks, and the prompt is heard while
     the file ends at the old interrupt. The first read's seed and look back reach the machine
     neither High nor Low, and the turn stays `Running`, unpinned (a fresh seat each try), until
-    the feed shows the fence took it. Without the hint's fence it ends `Interrupted`.
+    the feed shows the fence took it. With the seed's hint left beside the end it ends
+    `Interrupted`.
   - `a_prompt_heard_late_keeps_its_own_turn_s_esc`: the prompt's and the plan's hooks are consumed
     in the engine's order, and the lines the engine wrote meanwhile (stamped seconds back) are
     read after. The seat rests `Interrupted`, with the hook's words repeated by its line and with
@@ -34160,8 +34169,13 @@ belongs to a later turn.
   - `a_repeated_prompt_heard_before_its_line_leaves_the_new_turn_running` (round 4): the prompt
     repeats an earlier one's words, back to back or with another prompt between, and is heard
     before its line after an Esc read live. Unpinned and pinned (asserted), the fence takes the
-    end (asserted from the feed) and the hint, and the turn stays `Running`. Without the hint's
-    fence it ends `Interrupted`.
+    end (asserted from the feed), and the turn stays `Running`. With the Low hint left beside the
+    end it ends `Interrupted`.
+  - `an_old_plan_s_esc_leaves_a_newer_dialog_standing` (round 5): plan A, the person Escs and
+    submits, and B (a plan, or a question) is heard before the tail reads A's end, B's line
+    later. Unpinned (asserted), past the settle and two reads, the seat is still on B and
+    `get_ticket` reads B's `needs_you` and request. With the Low hint left beside A's end both
+    cases end `Interrupted`.
   - `an_esc_then_a_prompt_at_once_leaves_the_new_turn_running`: an Esc then a prompt, unpinned
     and pinned (asserted), with the prompt's line in the interrupt's read and with its hook first
     and its line 2.5 s later. Each new turn reads `Running` past the settle and two tail reads,

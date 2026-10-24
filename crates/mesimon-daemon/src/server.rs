@@ -3675,9 +3675,6 @@ impl Daemon {
         let Some(recovery) = self.recovery.get_mut(&id) else { return false };
         let observations = recovery.poll(record, sample, now);
         let mut changed = false;
-        // An interrupted end fenced off, and the Low abort hint read beside
-        // it with it.
-        let mut fenced = false;
         for observation in observations {
             let principal = Principal::Automation { rule: "agent_recovery".into() };
             if matches!(
@@ -3703,13 +3700,9 @@ impl Daemon {
                 (Signal::DialogEnded { interrupted: true }, Some(call)) => {
                     self.spoken_since(id, call)
                 }
-                (Signal::TranscriptHint { kind: attention::TailHint::AbortedMidStream }, _) => {
-                    fenced
-                }
                 _ => false,
             };
             if stale {
-                fenced = true;
                 let ticket = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket);
                 self.feed.board("automation", "tail_interrupt_before_prompt", ticket);
                 continue;
