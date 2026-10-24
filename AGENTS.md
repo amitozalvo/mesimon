@@ -190,6 +190,12 @@ Additional targeted gates:
   the relay repository's `deploy/ship.sh all` (`--dry-run` runs every check): the relay, then
   the tag, push and `ci/release.sh`, which refuses while the live relay lacks a change to what
   it serves (`ci/check-relay.sh`).
+- Release channels (T-946): an unstable version (`<last stable>.unstable.N`) is released the
+  same way under an `unstable-<version>` tag in the same repository and syncs nothing a stable
+  install reads; the first stable release carrying T-946 ships before the first unstable tag; a
+  stable version that may overtake the train keeps the train's schema readers or does not ship;
+  the relay serves both channels, and its repository keeps a stable-client and a candidate-client
+  fixture passing before a shared deployment that changes their contract.
 - Homebrew formula: `ci/homebrew/mesimon.rb` is the template `release.sh` fills and pushes to
   `amitozalvo/homebrew-tap`; its header gives the local-tap check for a change.
 - mesimon.dev: `site/` is the page, `ci/site.sh` builds it into `dist/site` and checks that every

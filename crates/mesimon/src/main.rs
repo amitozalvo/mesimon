@@ -81,6 +81,25 @@ fn main() -> Result<()> {
             };
             std::process::exit(mesimon_tui::update_command(check_only))
         }
+        // The release channel (T-946): said, or chosen and saved through the
+        // board's own preference writer — `install.sh --channel` calls this.
+        Some("channel") => {
+            let pick = match &args[1..] {
+                [] => None,
+                [word] => match mesimon_core::channel::Channel::from_word(word) {
+                    Some(c) => Some(c),
+                    None => {
+                        eprintln!("usage: mesimon channel [stable|unstable]");
+                        std::process::exit(2);
+                    }
+                },
+                _ => {
+                    eprintln!("usage: mesimon channel [stable|unstable]");
+                    std::process::exit(2);
+                }
+            };
+            std::process::exit(mesimon_tui::channel_command(pick))
+        }
         Some("mesophon") => mesophon::run(&args[1..]),
         // Redeem an invite code from the shell (T-335): the current
         // directory's daemon joins, and the joined board's root is printed.
@@ -145,6 +164,7 @@ fn help_text() -> &'static str {
          mesimon daemon --repo <path>   run the daemon in the foreground\n  \
          mesimon open <dir>             open the board at a directory (a joined team board)\n  \
          mesimon update [--check]       install the newest release; --check only asks\n  \
+         mesimon channel [stable|unstable]  the release channel updates follow; a word sets it\n  \
          mesimon ticket create ...      file a ticket on a board from a script; prints its key\n  \
          mesimon join <code>            redeem a team invite code; prints the board's directory\n  \
          mesimon mesophon setup         check the relay and open its browser app\n  \

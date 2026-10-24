@@ -29,6 +29,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+use mesimon_core::channel::Channel;
 use mesimon_core::notify::Sound;
 use mesimon_core::prefs::PrefKey;
 use mesimon_core::snooze::Weekday;
@@ -466,6 +467,11 @@ pub(crate) struct Prefs {
     pub usage_codex: bool,
     /// What the cards' corner says: age by default, cost on `$` (T-327).
     pub card_corner: CardCorner,
+    /// The release channel the update check follows (T-946), `None` while
+    /// the file names none: then the running build's own channel, read by
+    /// `release_channel()`. Kept absent rather than defaulted so an unstable
+    /// build can tell a machine that never chose from one that chose stable.
+    pub release_channel: Option<Channel>,
     /// How a ticket's summary shows on its card (T-696).
     pub summary: SummaryShow,
     /// A resting card shows what its agent said since the person last
@@ -527,6 +533,7 @@ impl Default for Prefs {
             usage_claude: true,
             usage_codex: true,
             card_corner: CardCorner::Age,
+            release_channel: None,
             summary: SummaryShow::Full,
             new_replies: true,
             fetch_every: FetchEvery::Off,
@@ -584,11 +591,59 @@ const NEW_REPLIES_KEY: &str = PrefKey::NewReplies.name();
 const FETCH_EVERY_KEY: &str = PrefKey::FetchEvery.name();
 const CARD_PRS_KEY: &str = PrefKey::CardPrs.name();
 const EDITOR_KEY: &str = PrefKey::Editor.name();
+const RELEASE_CHANNEL_KEY: &str = PrefKey::ReleaseChannel.name();
 
 impl Prefs {
+    /// The channel the update check follows: the one chosen, or where none
+    /// is, the running build's (an `install.sh --channel unstable` install
+    /// follows unstable with nothing written).
+    pub fn release_channel(&self) -> Channel {
+        self.release_channel.unwrap_or_else(Channel::running)
+    }
+
     // The three bools are plain fields: `body()` writes every one on each
     // save. The week's day has a setter because its write is conditional —
     // a foreign day in the file survives until a pick replaces it.
+    /// An explicit channel choice (T-946): the field and the document's word
+    /// both, so a word this build does not know is replaced by the choice —
+    /// unlike an ordinary save, which keeps such a word as a newer build's.
+    pub(crate) fn set_release_channel(&mut self, c: Channel) {
+        self.release_channel = Some(c);
+        self.doc.insert(RELEASE_CHANNEL_KEY.into(), Value::from(c.word()));
+    }
+
+    /// The release channel's entry as a save of these prefs writes it: a
+    /// word this build does not know outlives the field (`body`'s rule), a
+    /// chosen channel is its word, and nothing chosen is no entry.
+    pub(crate) fn release_word(&self) -> Option<Value> {
+        let held = self.doc.get(RELEASE_CHANNEL_KEY);
+        match (self.release_channel, held) {
+            (_, Some(v)) if v.as_str().and_then(Channel::from_word).is_none() => Some(v.clone()),
+            (Some(c), _) => Some(Value::from(c.word())),
+            (None, held) => held.cloned(),
+        }
+    }
+
+    /// Take the release channel's entry as another writer left it (T-946):
+    /// a known word is the choice, an unfamiliar one is kept as a newer
+    /// build's with nothing chosen here, and none is none — never the word
+    /// these prefs held before.
+    pub(crate) fn take_saved_release_word(&mut self, word: Option<&Value>) {
+        match word {
+            None => {
+                self.release_channel = None;
+                self.doc.remove(RELEASE_CHANNEL_KEY);
+            }
+            Some(v) => match v.as_str().and_then(Channel::from_word) {
+                Some(c) => self.set_release_channel(c),
+                None => {
+                    self.release_channel = None;
+                    self.doc.insert(RELEASE_CHANNEL_KEY.into(), v.clone());
+                }
+            },
+        }
+    }
+
     pub(crate) fn set_week_start(&mut self, day: Weekday) {
         self.week_start = day;
         self.doc.insert(WEEK_START_KEY.into(), Value::from(day.key()));
@@ -776,6 +831,7 @@ impl Prefs {
             PrefKey::FetchEvery => self.fetch_every.key(),
             PrefKey::CardPrs => self.card_prs.key(),
             PrefKey::Editor => self.editor.unwrap_or(AUTO),
+            PrefKey::ReleaseChannel => self.release_channel().word(),
         }
     }
 
@@ -876,6 +932,16 @@ impl Prefs {
             .is_some_and(|v| CardCorner::from_key(v).is_none())
         {
             doc.insert(CARD_CORNER_KEY.into(), Value::from(self.card_corner.key()));
+        }
+        // Written only once chosen: absent is "the build's own" (above).
+        if let Some(c) = self.release_channel {
+            if !doc
+                .get(RELEASE_CHANNEL_KEY)
+                .and_then(Value::as_str)
+                .is_some_and(|v| Channel::from_word(v).is_none())
+            {
+                doc.insert(RELEASE_CHANNEL_KEY.into(), Value::from(c.word()));
+            }
         }
         if !doc
             .get(SUMMARY_KEY)
@@ -1042,7 +1108,8 @@ impl BoardPrefs {
             | PrefKey::UsageCodex
             | PrefKey::CardCorner
             | PrefKey::Summary
-            | PrefKey::CardPrs => false,
+            | PrefKey::CardPrs
+            | PrefKey::ReleaseChannel => false,
             PrefKey::FetchEvery => self.word(key).and_then(FetchEvery::from_key).is_some(),
             _ => self.bool(key).is_some(),
         }
@@ -1188,6 +1255,101 @@ pub(crate) fn prefs_path() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".local/state/mesimon/prefs.json"))
 }
 
+/// An unstable build on a machine that never chose a channel chose
+/// unstable by installing it: record that (T-946), so the promotion to a
+/// stable build, which would otherwise follow its own channel, keeps the
+/// machine on unstable. True when it wrote the choice into `prefs`.
+pub(crate) fn adopt_release_channel(prefs: &mut Prefs, running: Channel) -> bool {
+    if prefs.release_channel.is_some() || running != Channel::Unstable {
+        return false;
+    }
+    prefs.release_channel = Some(Channel::Unstable);
+    true
+}
+
+/// The update road's channel when no board is open (`mesimon update`):
+/// the machine file's, after `adopt_release_channel` has had its say and
+/// been saved. A record that could not be saved is the error, never
+/// dropped: the caller installs nothing on it, or a promotion would land on
+/// a machine that then follows stable.
+pub(crate) fn follow_release_channel_home() -> Result<Channel, String> {
+    follow_release_channel_at(prefs_path().as_deref(), Channel::running())
+}
+
+pub(crate) fn follow_release_channel_at(
+    path: Option<&Path>,
+    running: Channel,
+) -> Result<Channel, String> {
+    // No HOME: no file to keep a choice in, and no update road either
+    // (`release::why_unfit` refuses first).
+    let Some(path) = path else { return Ok(running) };
+    let mut l = load(path);
+    // A word this build does not know is a choice a newer build made: never
+    // replaced automatically, and never read as no choice (T-946 round 3).
+    if l.prefs.release_channel.is_none() && running == Channel::Unstable {
+        if let Some(word) = l.prefs.doc.get(RELEASE_CHANNEL_KEY) {
+            return Err(format!(
+                "prefs.json names the release channel {word}, which this build does not know ∙ \
+                 the channel was not recorded; mesimon channel unstable chooses one"
+            ));
+        }
+    }
+    if adopt_release_channel(&mut l.prefs, running) {
+        if l.write_barred {
+            return Err(
+                "prefs.json was written by a newer mesimon ∙ the channel was not recorded".into()
+            );
+        }
+        save(path, &l.prefs).map_err(|e| {
+            format!("the channel was not recorded ∙ could not write {}: {e}", path.display())
+        })?;
+        // Success is unstable on disk, read back, and nothing else.
+        if load(path).prefs.release_channel != Some(Channel::Unstable) {
+            return Err(format!(
+                "the channel was not recorded ∙ {} does not hold unstable after the save",
+                path.display()
+            ));
+        }
+    }
+    Ok(l.prefs.release_channel.unwrap_or(running))
+}
+
+/// The release channel's raw entry in the file at `path` (T-946): `Some(None)`
+/// for none (or no file), `None` when the file cannot be read, which is no
+/// news about the channel.
+pub(crate) fn saved_release_word(path: &Path) -> Option<Option<Value>> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(None),
+        Err(_) => return None,
+    };
+    let Ok(Value::Object(doc)) = serde_json::from_str::<Value>(&text) else { return None };
+    Some(doc.get(RELEASE_CHANNEL_KEY).cloned())
+}
+
+/// `mesimon channel <word>` (T-946): the choice saved through this file's
+/// own writer, which is what `install.sh --channel` calls, so the shell never
+/// writes JSON. That one field is replaced, a word this build does not know
+/// included; every other key is kept as it was. Then the file is read back:
+/// `Ok` means `channel` is what it holds now, and nothing else does.
+pub(crate) fn save_release_channel(path: &Path, channel: Channel) -> Result<(), String> {
+    let mut l = load(path);
+    if l.write_barred {
+        return Err("prefs.json was written by a newer mesimon ∙ not changed".into());
+    }
+    l.prefs.set_release_channel(channel);
+    save(path, &l.prefs).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    match load(path).prefs.release_channel {
+        Some(c) if c == channel => Ok(()),
+        other => Err(format!(
+            "{} holds {} after the save, not {}",
+            path.display(),
+            other.map_or("no channel", Channel::word),
+            channel.word()
+        )),
+    }
+}
+
 /// The file where it lives, or the defaults where there is none — what
 /// every `doctor` line starts from.
 pub(crate) fn load_home() -> Loaded {
@@ -1280,6 +1442,8 @@ pub(crate) fn load(path: &Path) -> Loaded {
         .and_then(Value::as_str)
         .and_then(CardCorner::from_key)
         .unwrap_or_default();
+    let release_channel =
+        doc.get(RELEASE_CHANNEL_KEY).and_then(Value::as_str).and_then(Channel::from_word);
     let summary = doc
         .get(SUMMARY_KEY)
         .and_then(Value::as_str)
@@ -1338,6 +1502,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         usage_claude,
         usage_codex,
         card_corner,
+        release_channel,
         summary,
         fetch_every,
         card_prs,
@@ -1721,6 +1886,97 @@ mod tests {
         let mut board = BoardPrefs::default();
         board.doc.insert("notify_via".into(), Value::from("terminal"));
         assert_eq!(l.prefs.overlay(&board).notify_via, NotifyVia::Mesimon, "the machine's alone");
+    }
+
+    /// The release channel (T-946): absent reads as the running build's own
+    /// and is not written by a save of something else, a pick round-trips,
+    /// a foreign word survives, and a board cannot set it.
+    #[test]
+    fn the_release_channel_follows_the_build_until_chosen() {
+        let p = scratch("release-channel");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"schema_version":1,"notify":true}"#).unwrap();
+        let mut l = load(&p);
+        assert_eq!(l.prefs.release_channel, None);
+        assert_eq!(l.prefs.release_channel(), Channel::running(), "absent is the build's own");
+        save(&p, &l.prefs).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert!(v.get("release_channel").is_none(), "absent stays absent");
+        l.prefs.release_channel = Some(Channel::Unstable);
+        save(&p, &l.prefs).unwrap();
+        let l = load(&p);
+        assert_eq!(l.prefs.release_channel(), Channel::Unstable);
+        assert_eq!(l.prefs.word(PrefKey::ReleaseChannel), "unstable");
+        std::fs::write(&p, r#"{"schema_version":1,"release_channel":"nightly"}"#).unwrap();
+        let l = load(&p);
+        assert_eq!(l.prefs.release_channel, None, "a foreign word reads as unchosen");
+        save(&p, &l.prefs).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["release_channel"], "nightly", "and is not written over");
+        let mut board = BoardPrefs::default();
+        board.doc.insert("release_channel".into(), Value::from("unstable"));
+        assert_eq!(l.prefs.overlay(&board).release_channel, None, "the machine's alone");
+    }
+
+    /// The once-only record (T-946): only an unstable build writes it, only
+    /// over an absent key, and never over a choice.
+    #[test]
+    fn only_an_unstable_build_adopts_an_unchosen_channel() {
+        let mut p = Prefs::default();
+        assert!(!adopt_release_channel(&mut p, Channel::Stable), "a stable build records nothing");
+        assert_eq!(p.release_channel, None);
+        assert!(adopt_release_channel(&mut p, Channel::Unstable));
+        assert_eq!(p.release_channel, Some(Channel::Unstable));
+        assert!(!adopt_release_channel(&mut p, Channel::Unstable), "once");
+        let mut chosen = Prefs { release_channel: Some(Channel::Stable), ..Prefs::default() };
+        assert!(!adopt_release_channel(&mut chosen, Channel::Unstable), "never over a choice");
+        assert_eq!(chosen.release_channel, Some(Channel::Stable));
+    }
+
+    /// The update road's record (T-946): an unstable build with no choice
+    /// records unstable; a choice is kept; a record that cannot be saved is
+    /// the error, so `mesimon update` installs nothing on it.
+    #[test]
+    fn the_update_road_records_the_channel_or_says_why_not() {
+        let p = scratch("follow-channel");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        assert_eq!(follow_release_channel_at(Some(&p), Channel::Stable), Ok(Channel::Stable));
+        assert!(!p.exists(), "a stable build with no choice writes nothing");
+        assert_eq!(follow_release_channel_at(Some(&p), Channel::Unstable), Ok(Channel::Unstable));
+        assert_eq!(load(&p).prefs.release_channel, Some(Channel::Unstable), "recorded");
+        save_release_channel(&p, Channel::Stable).unwrap();
+        assert_eq!(
+            follow_release_channel_at(Some(&p), Channel::Unstable),
+            Ok(Channel::Stable),
+            "a choice outranks the build"
+        );
+        // Automatic adoption never replaces an unfamiliar word (round 3).
+        std::fs::write(&p, r#"{"schema_version":1,"release_channel":"nightly"}"#).unwrap();
+        let refused = follow_release_channel_at(Some(&p), Channel::Unstable);
+        assert!(refused.as_ref().is_err_and(|e| e.contains("does not know")), "{refused:?}");
+        assert_eq!(saved_release_word(&p), Some(Some(Value::from("nightly"))), "replaced");
+        // An unfamiliar word on disk is replaced by an explicit choice, and
+        // another unfamiliar key beside it is kept (T-946 round 2).
+        std::fs::write(
+            &p,
+            r#"{"schema_version":1,"release_channel":"nightly","from_a_newer_build":7}"#,
+        )
+        .unwrap();
+        save_release_channel(&p, Channel::Unstable).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["release_channel"], "unstable", "the unfamiliar word outlived the choice");
+        assert_eq!(v["from_a_newer_build"], 7);
+        // A file a newer build wrote: read, never written, and said.
+        std::fs::write(&p, r#"{"schema_version":99,"notify":true}"#).unwrap();
+        let barred = follow_release_channel_at(Some(&p), Channel::Unstable);
+        assert!(barred.as_ref().is_err_and(|e| e.contains("newer mesimon")), "{barred:?}");
+        assert!(save_release_channel(&p, Channel::Unstable).is_err());
+        // A file that cannot be written: its parent is a file.
+        let blocked = p.with_file_name("not-a-dir").join("prefs.json");
+        std::fs::write(blocked.parent().unwrap(), "x").unwrap();
+        let failed = follow_release_channel_at(Some(&blocked), Channel::Unstable);
+        assert!(failed.as_ref().is_err_and(|e| e.contains("not recorded")), "{failed:?}");
+        assert!(save_release_channel(&blocked, Channel::Unstable).is_err());
     }
 
     /// A sound name this build does not know is a newer build's pick: it

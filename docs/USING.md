@@ -104,6 +104,37 @@ where the check is off.
   `brief not sent` instead, and its Shift+Enter sends it. A Codex agent's words still waiting
   for it are sent when it is next idle at its prompt.
 
+## Release channels
+
+mesimon has two release channels. **Stable** is what the install line and Homebrew give you.
+**Unstable** gets each build before it reaches stable. Pick one in Settings › About ›
+`Release channel`; the update check follows it from then on. `mesimon doctor`'s `update checks`
+line names the channel that built your binary and the one it follows.
+
+To install from the unstable channel:
+
+```sh
+curl -fsSL https://mesimon.dev/install.sh | sh -s -- --channel unstable
+```
+
+- **Unstable** takes the newer of both channels, so the stable release that ends a run of unstable
+  builds reaches you too, and you stay on unstable after it.
+- **Switching back to stable never installs an older build.** Your build stays until a stable
+  release newer than it is published, and that release reads everything it wrote.
+  `install.sh --channel stable` waits in the same way.
+- **To go back at once,** pin a version: `sh install.sh --version v0.1.0-beta.13`. That bypasses
+  the rule that never installs an older build, and nothing promises that a board the newer
+  build used still works in the older one.
+- **Homebrew installs follow stable.** To follow unstable, run `brew uninstall mesimon` and then
+  the unstable line above.
+- A machine on beta.12 or beta.13, from before release channels, never sees an unstable release.
+  Between two stable releases its board may offer nothing until the next stable one is out.
+- A board looks at the newest 30 releases and `install.sh` at the newest 100. If more unstable
+  releases than that follow the last stable one, stable is found through the one-line stable
+  marker the releases repository keeps.
+- A copy of `install.sh` saved before 2026-10-22 picks the newest release by listing order and
+  would install an unstable build. The script served at mesimon.dev does not.
+
 ## On the board
 
 ```sh

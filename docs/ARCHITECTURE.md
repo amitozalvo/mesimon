@@ -144,8 +144,8 @@ swap moves the mtime `update.rs` is already watching, so the existing chip and `
 job, and `Ctx::release_available` is ANDed with `!update_ready` so a binary already on disk is
 reloaded rather than fetched twice. **The dev gate is a stamp, never a heuristic** — a wrong
 answer would point a download at somebody's build tree: `mesimon-tui/build.rs` writes
-`MESIMON_CHANNEL`, `release` only when `ci/release.sh` set `MESIMON_RELEASE`, and under it sits a
-guard nothing lifts (an exe with a `target` component is refused whatever the channel says). The
+`MESIMON_BUILD_KIND`, `release` only when `ci/release.sh` set `MESIMON_RELEASE`, and under it sits a
+guard nothing lifts (an exe with a `target` component is refused whatever the build kind says). The
 release script greps `doctor install` on the UNPACKED artifact and dies if the line reads `off`,
 because an unstamped release fails silently and forever. `~/.local/state/mesimon/update-check.json`
 is a CACHE at the state ROOT (one binary per machine, not per repo) and is treated as one —
@@ -1936,7 +1936,7 @@ test binary has no `daemon` subcommand), `MESIMON_CLAUDE_HOME` (census root over
 trees),
 `MESIMON_SLEEP_MIN_AGE_MS` (e2e cannot wait out the 60 s sleep floor), `MESIMON_PANE_QUIET_MS`
 (shrink the 60 s interrupt-probe quiet threshold — 8 s until 2026-09-02, when a working pane was measured silent for up to ~50 s while a large tool input streamed), `MESIMON_NO_UPDATE_CHECK` (the user-facing opt-out for the release
-check), `MESIMON_UPDATE_CHECK` (force a dev build past the CHANNEL gate — the build-tree guard
+check), `MESIMON_UPDATE_CHECK` (force a dev build past the build-kind gate — the build-tree guard
 still refuses, so copy the binary out of `target/` first),
 `MESIMON_SERVER_GUARD_TICKS` (shrink the 15 s
 server-alive guard cadence), `MESIMON_WT_REFRESH_TICKS` (the slow bucket — the worktree

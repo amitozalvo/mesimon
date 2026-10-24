@@ -22,6 +22,7 @@ use mesimon_core::board::{
     Board, Column, ColumnSettings, ExitReason, NoteMeta, SessionKind, SessionState, SortBy, TagRef,
     Ticket, WorkspaceStrategy,
 };
+use mesimon_core::channel::Channel;
 use mesimon_core::command::{
     Command, DiffTarget, ExternalItem, GraceItem, MergeOutcome, NoteRef, Resources, Response,
     WorktreeItem,
@@ -2211,6 +2212,12 @@ pub struct App {
     /// A newer build wrote the file: picks last the session, nothing is
     /// written back.
     pub prefs_write_barred: bool,
+    /// The release channel `prefs.json` held when this board last looked
+    /// (T-946): a change on disk (`mesimon channel`, `install.sh --channel`,
+    /// another board) is taken up on the tick; an unchanged file never
+    /// undoes a choice made here that could not be saved.
+    release_word_seen: Option<Option<serde_json::Value>>,
+    release_pref_checked: Option<Instant>,
     pub board_prefs: crate::prefs::BoardPrefs,
     pub board_prefs_path: Option<PathBuf>,
     pub board_prefs_write_barred: bool,
@@ -2445,6 +2452,8 @@ impl App {
             machine_prefs: Default::default(),
             prefs_path: None,
             prefs_write_barred: false,
+            release_word_seen: None,
+            release_pref_checked: None,
             board_prefs: Default::default(),
             board_prefs_path: None,
             board_prefs_write_barred: false,
@@ -4219,6 +4228,14 @@ impl App {
         // every half hour, and none at all from a build that was not cut by
         // `ci/release.sh`. What it has to say is a chip, plus one status line
         // for the moments a download starts, lands or falls over.
+        // The machine's channel, on the update check's own clock (T-946):
+        // a choice saved by `mesimon channel` reaches an open board.
+        if self.release.eligible()
+            && self.release_pref_checked.is_none_or(|t| t.elapsed() >= Duration::from_secs(2))
+            && self.reconcile_release_channel()
+        {
+            dirty = true;
+        }
         if self.release.tick() {
             if let Some(note) = self.release.take_note() {
                 self.status = note;
@@ -5715,6 +5732,7 @@ impl App {
                 }
             }
         } else {
+            self.reconcile_release_channel();
             let flavor = pick.unwrap_or(self.machine_prefs.for_ground(self.ground));
             match slot {
                 Slot::One(g) => self.machine_prefs.set(g, flavor),
@@ -5965,6 +5983,9 @@ impl App {
     /// One preference changed: apply it, save the file, and say so — the
     /// Settings rows' shared tail.
     fn set_pref(&mut self, word: &str, set: impl FnOnce(&mut crate::prefs::Prefs)) {
+        // A channel saved elsewhere is taken up before this write carries the
+        // whole document back (T-946).
+        self.reconcile_release_channel();
         set(&mut self.machine_prefs);
         self.resolve_prefs();
         self.after_pref_change();
@@ -5972,6 +5993,115 @@ impl App {
             Ok(()) => format!("{word} ∙ saved"),
             Err(why) => why,
         };
+    }
+
+    /// Settings › About › Release channel (T-946): the other channel, saved,
+    /// and the update check told at once — which takes down an offer heard
+    /// for the old one and asks the new one's lists at the next poll. A
+    /// Homebrew install keeps stable: the formula is the one road it has.
+    fn cycle_release_channel(&mut self) {
+        if self.release.by_brew() {
+            self.status = "Homebrew installs follow stable".into();
+            return;
+        }
+        let next = self.prefs.release_channel().next();
+        let word = match next {
+            Channel::Unstable => "the update check follows unstable",
+            Channel::Stable if Channel::running() == Channel::Unstable => {
+                "the update check follows stable ∙ this build stays until a newer stable ships"
+            }
+            Channel::Stable => "the update check follows stable",
+        };
+        self.set_pref(word, |p| p.set_release_channel(next));
+        self.release.set_channel(next);
+    }
+
+    /// At start (`lib.rs::run`, never `App::new`): an unstable build that
+    /// finds no channel chosen records unstable once (T-946), through the
+    /// writer `mesimon update` uses, and the check follows the machine's
+    /// channel. Only a build that checks writes: a dev build's choice is the
+    /// person's to make. A record that could not be saved holds for this
+    /// session, the status line says why, and an install waits on it
+    /// (`ready_to_install`).
+    pub(crate) fn follow_release_channel(&mut self) {
+        let running = Channel::running();
+        if self.release.eligible() && self.machine_prefs.release_channel.is_none() {
+            match crate::prefs::follow_release_channel_at(self.prefs_path.as_deref(), running) {
+                // What the file holds now: a stable build with nothing chosen
+                // keeps nothing chosen.
+                Ok(_) => {
+                    if let Some(word) = self.saved_release_word() {
+                        self.machine_prefs.take_saved_release_word(word.as_ref());
+                    }
+                }
+                Err(why) => {
+                    crate::prefs::adopt_release_channel(&mut self.machine_prefs, running);
+                    self.status = if self.status.is_empty() {
+                        why
+                    } else {
+                        format!("{} ∙ {why}", self.status)
+                    };
+                }
+            }
+            self.resolve_prefs();
+        }
+        if let Some(word) = self.saved_release_word() {
+            self.release_word_seen = Some(word);
+        }
+        self.release.set_channel(self.prefs.release_channel());
+    }
+
+    /// The release channel's entry in `prefs.json` now, `Some(None)` for
+    /// none; `None` with no file to read (a test app) or one that cannot be
+    /// read, which is no news about the channel.
+    fn saved_release_word(&self) -> Option<Option<serde_json::Value>> {
+        crate::prefs::saved_release_word(self.prefs_path.as_ref()?)
+    }
+
+    /// Take up a channel saved elsewhere since this board last looked
+    /// (T-946): the machine's copy follows the file's entry — a known word,
+    /// an unfamiliar one, or none, never the word held before — so no later
+    /// save here writes the old one back, and the check moves, which drops an
+    /// offer and an answer of the old channel. An unchanged entry changes
+    /// nothing, a choice made here that could not be saved included; this
+    /// board's own saves move what it last saw (`save_prefs`). True when the
+    /// channel or the offer changed, so the frame is redrawn.
+    pub(crate) fn reconcile_release_channel(&mut self) -> bool {
+        self.release_pref_checked = Some(Instant::now());
+        let Some(disk) = self.saved_release_word() else { return false };
+        if self.release_word_seen.as_ref() == Some(&disk) {
+            return false;
+        }
+        self.release_word_seen = Some(disk.clone());
+        let before = (self.machine_prefs.release_word(), self.release.tag());
+        if self.machine_prefs.release_word() != disk {
+            self.machine_prefs.take_saved_release_word(disk.as_ref());
+            self.resolve_prefs();
+        }
+        self.release.set_channel(self.prefs.release_channel());
+        before != (self.machine_prefs.release_word(), self.release.tag())
+    }
+
+    /// Before a download replaces this binary (T-946): the record a
+    /// promotion needs is saved, by `mesimon update`'s writer, and the
+    /// channel this board follows is the one on disk. Otherwise the offer
+    /// stays and nothing is installed: a stable promotion installed on an
+    /// unsaved `unstable` would follow stable from the next start.
+    fn ready_to_install(&mut self) -> Result<(), String> {
+        self.ready_to_install_as(Channel::running())
+    }
+
+    fn ready_to_install_as(&mut self, running: Channel) -> Result<(), String> {
+        if !self.release.eligible() || self.release.by_brew() || self.prefs_path.is_none() {
+            return Ok(());
+        }
+        let disk = crate::prefs::follow_release_channel_at(self.prefs_path.as_deref(), running)?;
+        self.reconcile_release_channel();
+        let mine = self.machine_prefs.release_channel.unwrap_or(running);
+        if mine != disk {
+            return Err(format!("the {} channel is not saved", mine.word()));
+        }
+        Ok(())
     }
 
     /// The editor `^g` and a file link open (T-864): the row's pick, else
@@ -6028,8 +6158,8 @@ impl App {
         }
     }
 
-    fn save_prefs(&self, what: &str) -> Result<(), String> {
-        match self.prefs_path.as_ref() {
+    fn save_prefs(&mut self, what: &str) -> Result<(), String> {
+        let saved = match self.prefs_path.as_ref() {
             _ if self.prefs_write_barred => Err(format!(
                 "{what} for this session ∙ prefs.json was written by a newer mesimon, not touched"
             )),
@@ -6037,7 +6167,13 @@ impl App {
             Some(path) => crate::prefs::save(path, &self.machine_prefs).map_err(|e| {
                 format!("{what} for this session ∙ could not write {}: {e}", path.display())
             }),
+        };
+        // What this board wrote is what it has seen (T-946): its own save is
+        // not a change made elsewhere.
+        if saved.is_ok() && self.release_word_seen.is_some() {
+            self.release_word_seen = Some(self.machine_prefs.release_word());
         }
+        saved
     }
 
     fn save_board_prefs(&self, what: &str) -> Result<(), String> {
@@ -7341,6 +7477,11 @@ impl App {
             release_available: self.release.available() && !self.update_ready(),
             release_tag: self.release.tag(),
             release_by_brew: self.release.by_brew(),
+            release_unstable: crate::release::effective_channel(
+                self.prefs.release_channel(),
+                self.release.by_brew(),
+            ) == Channel::Unstable,
+            running_unstable: Channel::running() == Channel::Unstable,
             // `reloading` takes the offer down the instant the press lands, so
             // a slow rc file does not leave the chip standing as if it missed.
             shell_env_stale: self.shell_env.stale && !self.shell_env.reloading,
@@ -7995,7 +8136,19 @@ impl App {
                     crate::clipboard::copy_status("brew upgrade mesimon", "brew upgrade mesimon");
             }
             Verb::InstallUpdate => {
-                if let Some(tag) = self.release.begin_install() {
+                // The fresh read may move the channel, and with it the offer:
+                // then this press is over, and the offer on screen is the
+                // new one, never one that was not pressed (T-946).
+                let pressed = self.release.tag();
+                if let Err(why) = self.ready_to_install() {
+                    self.status = format!("{why} ∙ nothing installed");
+                } else if self.release.tag() != pressed || !self.release.available() {
+                    self.status = if self.release.available() {
+                        format!("the offer is now {} ∙ nothing installed", self.release.tag())
+                    } else {
+                        "the offer changed ∙ nothing installed".into()
+                    };
+                } else if let Some(tag) = self.release.begin_install() {
                     // The offer comes down with the press (the shell-env
                     // reload's discipline), so while the fetch runs this line
                     // is the only place it is said — and it says where this
@@ -9634,6 +9787,7 @@ impl App {
             Verb::ColumnTrain => self.set_column(|s| s.train = s.train.next())?,
             Verb::ReleaseNotes => self.open_releases(),
             Verb::ProjectPage => self.open_outside(keymap::PROJECT_PAGE.into()),
+            Verb::ReleaseChannel => self.cycle_release_channel(),
             Verb::Tour => self.open_tour(),
             Verb::SetupSkip => {
                 if let Some(s) = self.setup.as_mut() {
@@ -11852,7 +12006,8 @@ impl App {
     /// rather than on the half-hour clock (T-445); the answer is the header's
     /// chip, and the page itself stays the binary's own.
     fn open_releases(&mut self) {
-        let releases = mesimon_core::relnotes::parse(mesimon_core::relnotes::SOURCE);
+        use mesimon_core::relnotes;
+        let releases = relnotes::for_channel(relnotes::parse(relnotes::SOURCE), Channel::running());
         self.releases = Some(ReleasesState::new(releases, BUILD_TAG));
         self.screen = Screen::Releases;
         self.release.check_now();
@@ -27354,6 +27509,260 @@ mod tests {
         let ctx = app.ctx();
         app.dispatch(Verb::NotifyVia, Key::Enter, Scope::Settings, &ctx).expect("the row");
         assert_eq!(app.prefs.notify_via, crate::prefs::NotifyVia::Mesimon);
+    }
+
+    fn unstable_offer(c: Channel) -> Option<String> {
+        (c == Channel::Unstable).then(|| "unstable-99.0.0-unstable.1".to_string())
+    }
+
+    /// An app whose update check runs, on a scratch `prefs.json` that holds
+    /// `saved`, following it, with that file's channel as last seen.
+    fn app_following(name: &str, saved: Channel) -> (App, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("msmn-follow-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let mut app = app_three_columns();
+        app.prefs_path = Some(dir.join("prefs.json"));
+        crate::prefs::save_release_channel(&dir.join("prefs.json"), saved).expect("seed");
+        app.release = crate::release::ReleaseWatch::checking(&dir, unstable_offer);
+        app.seed_pref(|p| p.set_release_channel(saved));
+        app.follow_release_channel();
+        (app, dir)
+    }
+
+    /// A choice saved from the CLI reaches an open board (T-946 round 2):
+    /// beside a visible unstable offer, the offer comes down and the row reads
+    /// stable; a check out when it moved lands as no answer.
+    #[test]
+    fn a_channel_saved_elsewhere_reaches_an_open_board() {
+        let (mut app, dir) = app_following("cli-offer", Channel::Unstable);
+        app.release.force_available("unstable-99.0.0-unstable.1");
+        crate::prefs::save_release_channel(&dir.join("prefs.json"), Channel::Stable)
+            .expect("the CLI's save");
+        app.reconcile_release_channel();
+        assert!(!app.release.available(), "the unstable offer outlived the CLI's choice");
+        assert_eq!(app.machine_prefs.release_channel, Some(Channel::Stable));
+        assert!(!app.ctx().release_unstable, "the row still reads unstable");
+        let _ = std::fs::remove_dir_all(dir);
+
+        let (mut app, dir) = app_following("cli-fetch", Channel::Unstable);
+        app.release.check_now();
+        assert!(app.release.asking(), "the unstable fetch is out");
+        crate::prefs::save_release_channel(&dir.join("prefs.json"), Channel::Stable)
+            .expect("the CLI's save");
+        app.reconcile_release_channel();
+        app.release.settle();
+        assert!(!app.release.available(), "the stale unstable answer raised an offer");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn disk_word(dir: &std::path::Path) -> Option<serde_json::Value> {
+        crate::prefs::saved_release_word(&dir.join("prefs.json")).expect("readable")
+    }
+
+    /// Round 3, the save boundary: this board's own save is not a change made
+    /// elsewhere, so a failed save after it stays this session's choice.
+    #[test]
+    fn a_local_save_then_a_failed_one_is_not_overwritten() {
+        let (mut app, dir) = app_following("local-save", Channel::Stable);
+        app.settings_section = keymap::SettingsSection::About;
+        let ctx = app.ctx();
+        app.dispatch(Verb::ReleaseChannel, Key::Enter, Scope::Settings, &ctx).expect("unstable");
+        assert_eq!(disk_word(&dir), Some(serde_json::Value::from("unstable")), "saved");
+        app.prefs_write_barred = true;
+        let ctx = app.ctx();
+        app.dispatch(Verb::ReleaseChannel, Key::Enter, Scope::Settings, &ctx).expect("stable");
+        assert_eq!(app.machine_prefs.release_channel, Some(Channel::Stable), "session-only");
+        app.reconcile_release_channel();
+        assert_eq!(
+            app.machine_prefs.release_channel,
+            Some(Channel::Stable),
+            "the board's own earlier save was taken for a change made elsewhere"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A choice the CLI saved survives an unrelated save on this board: the
+    /// write takes it up first instead of carrying the old word back.
+    #[test]
+    fn a_cli_choice_survives_an_unrelated_save() {
+        let (mut app, dir) = app_following("unrelated-save", Channel::Stable);
+        crate::prefs::save_release_channel(&dir.join("prefs.json"), Channel::Unstable)
+            .expect("the CLI's save");
+        let ctx = app.ctx();
+        app.dispatch(Verb::CardCorner, Key::Enter, Scope::Settings, &ctx).expect("card corner");
+        assert_eq!(disk_word(&dir), Some(serde_json::Value::from("unstable")), "restored stable");
+        assert_eq!(app.machine_prefs.release_channel, Some(Channel::Unstable));
+        assert_eq!(app.release.channel(), Channel::Unstable, "the check stayed on stable");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A removed entry and an unfamiliar word are what the file says: the
+    /// old word is never written back.
+    #[test]
+    fn a_removed_or_unfamiliar_word_is_not_undone() {
+        let (mut app, dir) = app_following("removed", Channel::Unstable);
+        let prefs = dir.join("prefs.json");
+        std::fs::write(&prefs, r#"{"schema_version":1}"#).expect("removed");
+        assert!(app.reconcile_release_channel(), "a removal is a change");
+        assert_eq!(app.machine_prefs.release_channel, None);
+        let ctx = app.ctx();
+        app.dispatch(Verb::CardCorner, Key::Enter, Scope::Settings, &ctx).expect("card corner");
+        assert_eq!(disk_word(&dir), None, "the old word came back");
+
+        std::fs::write(&prefs, r#"{"schema_version":1,"release_channel":"nightly"}"#)
+            .expect("unfamiliar");
+        assert!(app.reconcile_release_channel());
+        let ctx = app.ctx();
+        app.dispatch(Verb::CardCorner, Key::Enter, Scope::Settings, &ctx).expect("card corner");
+        assert_eq!(disk_word(&dir), Some(serde_json::Value::from("nightly")), "replaced");
+        // And a file that cannot be read is no news.
+        std::fs::write(&prefs, "{not json").expect("broken");
+        assert!(!app.reconcile_release_channel());
+        assert_eq!(app.release_word_seen, Some(Some(serde_json::Value::from("nightly"))));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A channel taken up on the tick redraws the frame.
+    #[test]
+    fn a_channel_taken_up_on_the_tick_marks_the_frame_dirty() {
+        let (mut app, dir) = app_following("dirty", Channel::Unstable);
+        app.release.force_available("unstable-99.0.0-unstable.1");
+        let _ = app.pump().expect("settle");
+        crate::prefs::save_release_channel(&dir.join("prefs.json"), Channel::Stable)
+            .expect("the CLI's save");
+        app.release_pref_checked = None;
+        assert!(app.pump().expect("pump"), "the offer came down with no redraw");
+        assert!(!app.release.available());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The press whose fresh read moves the offer installs nothing and
+    /// leaves the new offer on screen.
+    #[test]
+    fn a_press_whose_read_moves_the_offer_installs_nothing() {
+        let (mut app, dir) = app_following("press-moves", Channel::Unstable);
+        app.release.force_available("unstable-99.0.0-unstable.1");
+        std::fs::write(
+            dir.join("update-check.json"),
+            format!(
+                r#"{{"schema_version":2,"checked_at_ms":{},"channel":"stable","latest":"v99.0.0"}}"#,
+                mesimon_core::clock::now_ms()
+            ),
+        )
+        .expect("stable stamp");
+        crate::prefs::save_release_channel(&dir.join("prefs.json"), Channel::Stable)
+            .expect("the CLI's save");
+        let ctx = app.ctx();
+        app.dispatch(Verb::InstallUpdate, Key::Enter, Scope::Menu, &ctx).expect("the row");
+        assert_eq!(app.status, "the offer is now v99.0.0 ∙ nothing installed");
+        assert_eq!(app.release.tag(), "v99.0.0");
+        assert!(app.release.available() && !app.release.asking(), "a download started");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A choice made here that could not be saved holds while nothing on
+    /// disk changes, and an install waits until it is saved.
+    #[test]
+    fn a_session_only_choice_holds_and_holds_the_install() {
+        let (mut app, dir) = app_following("session", Channel::Stable);
+        app.seed_pref(|p| p.set_release_channel(Channel::Unstable));
+        app.release.set_channel(Channel::Unstable);
+        app.reconcile_release_channel();
+        assert_eq!(app.machine_prefs.release_channel, Some(Channel::Unstable), "undone");
+        app.release.force_available("v99.0.0");
+        let ctx = app.ctx();
+        app.dispatch(Verb::InstallUpdate, Key::Enter, Scope::Menu, &ctx).expect("the row");
+        assert_eq!(app.status, "the unstable channel is not saved ∙ nothing installed");
+        assert!(
+            app.release.available() && !app.release.asking(),
+            "the offer went or a download ran"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An unstable build's automatic record that cannot be saved (T-946 round
+    /// 2): the promotion is not installed on it, through the CLI's writer and
+    /// its words; once the file can be written, the record lands first.
+    #[test]
+    fn a_promotion_waits_on_the_record_it_needs() {
+        let dir = std::env::temp_dir().join(format!("msmn-follow-record-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        std::fs::write(dir.join("blocker"), "a file, not a directory").expect("blocker");
+        let mut app = app_three_columns();
+        app.prefs_path = Some(dir.join("blocker").join("prefs.json"));
+        app.release = crate::release::ReleaseWatch::checking(&dir, unstable_offer);
+        let failed = app.ready_to_install_as(Channel::Unstable);
+        assert!(failed.as_ref().is_err_and(|e| e.contains("not recorded")), "{failed:?}");
+        // An unfamiliar word on disk (round 3): refused, and left as it was.
+        app.prefs_path = Some(dir.join("prefs.json"));
+        std::fs::write(
+            dir.join("prefs.json"),
+            r#"{"schema_version":1,"release_channel":"nightly"}"#,
+        )
+        .expect("nightly");
+        let refused = app.ready_to_install_as(Channel::Unstable);
+        assert!(refused.as_ref().is_err_and(|e| e.contains("does not know")), "{refused:?}");
+        assert_eq!(disk_word(&dir), Some(serde_json::Value::from("nightly")));
+        std::fs::remove_file(dir.join("prefs.json")).expect("clear");
+        assert_eq!(app.ready_to_install_as(Channel::Unstable), Ok(()));
+        assert_eq!(
+            crate::prefs::load(&dir.join("prefs.json")).prefs.release_channel,
+            Some(Channel::Unstable),
+            "the record did not land before the install"
+        );
+        assert_eq!(app.machine_prefs.release_channel, Some(Channel::Unstable));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Settings › About › Release channel (T-946): it cycles the machine's
+    /// channel and tells the update check; the detail says what the pick
+    /// means on this build; a Homebrew install keeps stable.
+    #[test]
+    fn the_release_channel_row_cycles_and_tells_the_check() {
+        let mut app = app_three_columns();
+        app.settings_section = keymap::SettingsSection::About;
+        let row = |ctx: &Ctx| {
+            let item = keymap::settings_items(ctx)
+                .into_iter()
+                .find(|m| m.verb == Verb::ReleaseChannel)
+                .expect("the row, under About");
+            let Some(keymap::Value::Choice { options, at }) = keymap::value(item.verb, ctx) else {
+                panic!("a choice")
+            };
+            (options[at], (item.detail)(ctx))
+        };
+        assert_eq!(row(&app.ctx()), ("stable", String::new()), "a stable build follows stable");
+        let ctx = app.ctx();
+        app.dispatch(Verb::ReleaseChannel, Key::Enter, Scope::Settings, &ctx).expect("the row");
+        assert_eq!(app.machine_prefs.release_channel, Some(Channel::Unstable));
+        assert_eq!(app.release.channel(), Channel::Unstable, "the check was told");
+        assert_eq!(row(&app.ctx()), ("unstable", "builds before they reach stable".into()));
+        assert!(app.status.contains("follows unstable"), "{}", app.status);
+        let ctx = app.ctx();
+        app.dispatch(Verb::ReleaseChannel, Key::Enter, Scope::Settings, &ctx).expect("the row");
+        assert_eq!(app.release.channel(), Channel::Stable);
+        // On an unstable build, stable is a wait, not a step back.
+        let on_unstable = Ctx { running_unstable: true, ..app.ctx() };
+        assert!(
+            row(&on_unstable).1.ends_with("until a newer stable ships"),
+            "{:?}",
+            row(&on_unstable)
+        );
+        // Homebrew's formula is stable alone: the row says so and moves nothing.
+        app.release.force_brew();
+        assert_eq!(row(&app.ctx()).1, "Homebrew installs follow stable");
+        // An unstable preference already saved reads as stable on brew, and
+        // stays saved.
+        app.seed_pref(|p| p.release_channel = Some(Channel::Unstable));
+        assert_eq!(row(&app.ctx()).0, "stable", "the brew row showed unstable");
+        assert_eq!(app.machine_prefs.release_channel, Some(Channel::Unstable));
+        app.seed_pref(|p| p.release_channel = Some(Channel::Stable));
+        let ctx = app.ctx();
+        app.dispatch(Verb::ReleaseChannel, Key::Enter, Scope::Settings, &ctx).expect("the row");
+        assert_eq!(app.machine_prefs.release_channel, Some(Channel::Stable));
+        assert_eq!(app.status, "Homebrew installs follow stable");
     }
 
     /// Notifications is a section (T-717): off, its page is its switch;

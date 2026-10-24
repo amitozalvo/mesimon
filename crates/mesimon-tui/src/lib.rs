@@ -132,6 +132,8 @@ pub use prefs::train_doctor_line as train_status;
 /// What `mesimon doctor` says about the subscription quota (T-327): what the
 /// line shows, and each provider's last reading from the machine's file.
 pub use prefs::usage_doctor_line as usage_status;
+/// `mesimon channel` — the release channel, said or chosen (T-946).
+pub use release::channel_command;
 /// What `mesimon doctor` says about release checks — whether they are on, and
 /// when they last answered. Exported because the checker lives here, beside
 /// the offer it raises, and the doctor must not carry a second copy of the
@@ -221,6 +223,9 @@ pub fn run(repo_root: &Path) -> Result<()> {
     if !notices.is_empty() {
         app.status = notices.join(" ∙ ");
     }
+    // After the notices, so a channel that could not be recorded is said
+    // beside them rather than under them (T-946).
+    app.follow_release_channel();
 
     let mut terminal = init_terminal()?;
     // Set AFTER init_terminal, which is what runs (and caches) the probe —

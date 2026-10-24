@@ -122,10 +122,13 @@ pub enum PrefKey {
     /// terminal is in, `vi`) or one by name. About the person, so per
     /// machine.
     Editor,
+    /// Which release channel the update check follows (T-946): `stable` or
+    /// `unstable`. About the machine's install, so per machine.
+    ReleaseChannel,
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 45] = [
+    pub const ALL: [PrefKey; 46] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::Theme,
@@ -171,6 +174,7 @@ impl PrefKey {
         PrefKey::FetchEvery,
         PrefKey::CardPrs,
         PrefKey::Editor,
+        PrefKey::ReleaseChannel,
     ];
 
     /// The JSON key in both files.
@@ -221,6 +225,7 @@ impl PrefKey {
             PrefKey::FetchEvery => "fetch_every",
             PrefKey::CardPrs => "card_prs",
             PrefKey::Editor => "editor",
+            PrefKey::ReleaseChannel => "release_channel",
         }
     }
 
@@ -237,7 +242,8 @@ impl PrefKey {
     /// (T-327) are about the person's subscription,
     /// which is one sign-in whichever board shows it. Who posts the banner
     /// (T-676) is a question about the terminal, so it is the machine's,
-    /// and the editor (T-864) is the person's.
+    /// and the editor (T-864) is the person's. The release channel (T-946)
+    /// is about the binary installed, which every board on the machine runs.
     pub fn board_overridable(self) -> bool {
         !matches!(
             self,
@@ -269,6 +275,7 @@ impl PrefKey {
                 | PrefKey::CardPrs
                 | PrefKey::Editor
                 | PrefKey::IdleSnake
+                | PrefKey::ReleaseChannel
         )
     }
 
@@ -320,6 +327,7 @@ impl PrefKey {
             PrefKey::FetchEvery => "fetch from the remote",
             PrefKey::CardPrs => "pull requests on cards",
             PrefKey::Editor => "editor",
+            PrefKey::ReleaseChannel => "Release channel",
         }
     }
 
@@ -344,6 +352,7 @@ impl PrefKey {
                 | PrefKey::FetchEvery
                 | PrefKey::CardPrs
                 | PrefKey::Editor
+                | PrefKey::ReleaseChannel
         )
     }
 }
@@ -397,6 +406,7 @@ mod tests {
                 PrefKey::Mouse,
                 PrefKey::CardPrs,
                 PrefKey::Editor,
+                PrefKey::ReleaseChannel,
             ]
         );
     }

@@ -114,6 +114,19 @@ pub fn parse(src: &str) -> Vec<Release> {
     out
 }
 
+/// The releases a build on `channel` lists (T-946). An unstable build lists
+/// every heading; a stable build hides the unstable ones, since the
+/// promotion's entry is their rollup and a stable reader reads that once.
+pub fn for_channel(releases: Vec<Release>, channel: crate::channel::Channel) -> Vec<Release> {
+    use crate::channel::Channel;
+    match channel {
+        Channel::Unstable => releases,
+        Channel::Stable => {
+            releases.into_iter().filter(|r| Channel::of(&r.tag) == Channel::Stable).collect()
+        }
+    }
+}
+
 /// The index of `tag` in `releases`, if it has notes.
 pub fn position(releases: &[Release], tag: &str) -> Option<usize> {
     releases.iter().position(|r| r.tag == tag)
@@ -123,11 +136,17 @@ pub fn position(releases: &[Release], tag: &str) -> Option<usize> {
 mod tests {
     use super::*;
 
+    /// `x.y.z`, then the pre-release's (kind, number, tail kind, tail number).
+    type OrderKey = (u64, u64, u64, (u64, u64, u64, u64));
+
     /// `v0.1.0-alpha.11` → a key that orders the way `semver` would for the
-    /// shapes this project mints: `x.y.z`, optionally `-alpha.N` or
-    /// `-beta.N`, where every beta outranks every alpha of its number and a
-    /// final release outranks both.
-    fn order_key(tag: &str) -> Option<(u64, u64, u64, (u64, u64))> {
+    /// shapes this project mints: `x.y.z`, optionally `-alpha.N`, `-beta.N`,
+    /// `-beta.N.K` (a stable hotfix of `beta.N`), `-beta.N.unstable.M` (the
+    /// unstable train after `beta.N`, T-946) or `-unstable.M` (the train
+    /// after a final release), where every beta outranks every alpha of its
+    /// number, `beta.N < beta.N.K < beta.N.unstable.M < beta.N+1` (a numeric
+    /// field ranks under `unstable`), and a final release outranks them all.
+    fn order_key(tag: &str) -> Option<OrderKey> {
         let v = tag.strip_prefix('v')?;
         let (core, pre) = match v.split_once('-') {
             Some((c, p)) => (c, Some(p)),
@@ -138,11 +157,35 @@ mod tests {
         if it.next().is_some() {
             return None;
         }
+        // The tail after a stable's number: none (0, 0), a hotfix `.K`
+        // (1, K), or the train's `.unstable.M` (2, M).
+        let tail = |rest: Option<&str>| -> Option<(u64, u64)> {
+            match rest {
+                None => Some((0, 0)),
+                Some(r) => match r.strip_prefix("unstable.") {
+                    Some(m) => Some((2, m.parse().ok()?)),
+                    None => Some((1, r.parse().ok()?)),
+                },
+            }
+        };
         let n = match pre {
-            None => (u64::MAX, 0),
+            None => (u64::MAX, 0, 0, 0),
             Some(p) => match p.strip_prefix("alpha.") {
-                Some(n) => (0, n.parse().ok()?),
-                None => (1, p.strip_prefix("beta.")?.parse().ok()?),
+                Some(n) => (0, n.parse().ok()?, 0, 0),
+                None => match p.strip_prefix("beta.") {
+                    Some(b) => {
+                        let (n, rest) = match b.split_once('.') {
+                            Some((n, r)) => (n, Some(r)),
+                            None => (b, None),
+                        };
+                        let (tk, tn) = tail(rest)?;
+                        (1, n.parse().ok()?, tk, tn)
+                    }
+                    None => {
+                        let (tk, tn) = tail(Some(p)).filter(|(k, _)| *k == 2)?;
+                        (2, 0, tk, tn)
+                    }
+                },
             },
         };
         Some((x, y, z, n))
@@ -157,6 +200,36 @@ mod tests {
         assert!(k("v0.1.0") > k("v0.1.0-beta.9"), "a release outranks its prereleases");
         assert!(k("v0.2.0-alpha.1") > k("v0.1.0"));
         assert_eq!(order_key("v0.1.0-rc.1"), None, "a shape this project does not mint");
+    }
+
+    /// The unstable train's tags (T-946) order as semver orders them:
+    /// above the stable they grew from, below the stable that promotes them.
+    #[test]
+    fn order_key_places_the_unstable_train_between_stables() {
+        let k = |t| order_key(t).unwrap_or_else(|| panic!("{t} has no key"));
+        assert!(k("v0.1.0-beta.13.unstable.1") > k("v0.1.0-beta.13"));
+        // A stable hotfix of beta.13 sits between it and the train.
+        assert!(k("v0.1.0-beta.13.1") > k("v0.1.0-beta.13"));
+        assert!(k("v0.1.0-beta.13.unstable.1") > k("v0.1.0-beta.13.1"));
+        assert!(k("v0.1.0-beta.14") > k("v0.1.0-beta.13.unstable.1"));
+        assert!(k("v0.1.0-beta.13.unstable.10") > k("v0.1.0-beta.13.unstable.9"));
+        assert!(k("v0.1.0-beta.14") > k("v0.1.0-beta.13.unstable.40"));
+        assert!(k("v0.2.0-unstable.1") > k("v0.1.0"));
+        assert!(k("v0.2.0") > k("v0.2.0-unstable.7"));
+        assert_eq!(order_key("v0.1.0-beta.13.nightly.1"), None);
+    }
+
+    #[test]
+    fn a_stable_build_lists_no_unstable_notes() {
+        use crate::channel::Channel;
+        let r = |t: &str| Release { tag: t.into(), date: "2026-10-24".into(), body: "x".into() };
+        let all = vec![r("v0.1.0-beta.14"), r("v0.1.0-beta.13.unstable.2"), r("v0.1.0-beta.13")];
+        let tags = |rs: Vec<Release>| rs.into_iter().map(|r| r.tag).collect::<Vec<_>>();
+        assert_eq!(
+            tags(for_channel(all.clone(), Channel::Stable)),
+            ["v0.1.0-beta.14", "v0.1.0-beta.13"]
+        );
+        assert_eq!(tags(for_channel(all, Channel::Unstable)).len(), 3);
     }
 
     #[test]

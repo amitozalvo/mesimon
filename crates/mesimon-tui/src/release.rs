@@ -9,15 +9,22 @@
 //! `U` is still the only thing that restarts a board. Two halves that already
 //! existed, joined by a file move.
 //!
-//! **A development build never gets here.** The channel is stamped at build
-//! time by `build.rs` and reads `release` only when `ci/release.sh` set
+//! **A development build never gets here.** The build kind is stamped at
+//! build time by `build.rs` and reads `release` only when `ci/release.sh` set
 //! `MESIMON_RELEASE`, so a `cargo run` board makes no request, writes no
 //! stamp, and cannot have its `target/` binary replaced by a download. On top
 //! of that the exe path is checked for a `target` component, which is the
 //! belt to that brace and is lifted by nothing — `MESIMON_UPDATE_CHECK=1`
-//! forces a dev build past the CHANNEL gate only, so exercising the real path
-//! means copying the binary out of the build tree first, which is what an
-//! install is anyway.
+//! forces a dev build past the build-kind gate only, so exercising the real
+//! path means copying the binary out of the build tree first, which is what
+//! an install is anyway.
+//!
+//! **Which tags are taken is the release channel** (T-946), the machine's
+//! `release_channel` preference or, unchosen, the running build's own:
+//! stable takes `v…` tags alone, unstable takes its `unstable-…` tags and
+//! those both and the higher wins (`mesimon_core::channel`). Nothing here
+//! goes backwards — an unstable build switched to stable stays put until a
+//! stable passes it.
 //!
 //! `MESIMON_NO_UPDATE_CHECK=1` is the opt-out for a shipped build, and it is
 //! read before anything else: no stamp, no thread, no request.
@@ -34,12 +41,13 @@ use std::process::Command;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
+use mesimon_core::channel::{self, Channel};
 use semver::Version;
 use sha2::{Digest, Sha256};
 
-/// Where the binaries are published. The source repo is private; this one
-/// carries releases and nothing else, which is why the check needs no token
-/// and no GitHub account (README, "Install").
+/// Where the binaries are published, both channels'. The source repo is
+/// private; this one carries releases and nothing else, which is why the
+/// check needs no token and no GitHub account (README, "Install").
 const DIST_REPO: &str = "amitozalvo/mesimon-releases";
 
 /// Half an hour between questions. The stamp is shared by every board on
@@ -65,7 +73,9 @@ const ASK_AGAIN_AFTER: Duration = Duration::from_secs(60);
 const API_TIMEOUT_SECS: &str = "10";
 const DOWNLOAD_TIMEOUT_SECS: &str = "180";
 
-const STAMP_SCHEMA: u64 = 1;
+/// 2 since T-946: the stamp says which channel asked. An older build reads a
+/// 2 as a newer cache and asks for itself.
+const STAMP_SCHEMA: u64 = 2;
 
 /// Every target the release channel publishes — `ci/release.sh`'s list, and
 /// the names `install.sh` derives from `uname`. A unit test reads both files,
@@ -112,8 +122,10 @@ enum Stage {
 /// One worker's whole result. Every worker sends exactly one of these, which
 /// is what lets `working` be a plain bool.
 enum Outcome {
-    /// The newest published tag, or `None` when the request did not answer.
-    Latest(Option<String>),
+    /// The newest published tag the channel takes, or `None` when the
+    /// request did not answer, for the channel generation that asked: an
+    /// answer for a channel the machine has since left is dropped.
+    Latest(u64, Option<String>),
     Installed(String),
     Failed(String),
 }
@@ -142,8 +154,12 @@ pub struct ReleaseWatch {
     last_poll: Instant,
     /// A worker thread is out. Cleared by its one `Outcome`.
     working: bool,
-    /// The question itself — `fetch_latest_tag`, and a stand-in under test.
-    fetch: fn() -> Option<String>,
+    /// The channel the check follows, set by the app from the preference.
+    channel: Channel,
+    /// Bumped by every channel change, and carried by each check's answer.
+    generation: u64,
+    /// The question itself — `fetch_latest`, and a stand-in under test.
+    fetch: fn(Channel) -> Option<String>,
     tx: Sender<Outcome>,
     rx: Receiver<Outcome>,
 }
@@ -160,7 +176,9 @@ impl ReleaseWatch {
             next_check: None,
             last_poll: Instant::now(),
             working: false,
-            fetch: fetch_latest_tag,
+            channel: Channel::running(),
+            generation: 0,
+            fetch: fetch_latest,
             tx,
             rx,
         }
@@ -171,13 +189,13 @@ impl ReleaseWatch {
         let Some(eligible) = eligibility(repo_root) else {
             return w;
         };
+        w.channel = effective_channel(w.channel, eligible.brew);
         // The cached answer is why a second board opened this afternoon shows
         // the offer without a second request.
-        let stamp = read_stamp(&eligible.stamp);
+        let stamp = read_stamp(&eligible.stamp, w.channel);
+        w.eligible = Some(eligible);
         if let Some(tag) = stamp.as_ref().and_then(|s| s.latest.clone()) {
-            if is_newer(&tag) {
-                w.stage = Stage::Available(tag);
-            }
+            w.adopt(tag);
         }
         let due_in = stamp
             .as_ref()
@@ -185,8 +203,36 @@ impl ReleaseWatch {
             .unwrap_or(Duration::ZERO)
             .max(FIRST_CHECK_AFTER);
         w.next_check = Some(Instant::now() + due_in);
-        w.eligible = Some(eligible);
         w
+    }
+
+    /// Follow `channel` from now on (T-946). A change takes down an offer
+    /// heard for the other channel, drops the answer of a check still out
+    /// (its generation is gone), takes this channel's stamp if one is cached
+    /// and asks at the next poll. A download already running is the person's
+    /// own pick and lands. A binary Homebrew installed follows stable
+    /// whatever the preference says, and the preference is kept.
+    pub fn set_channel(&mut self, channel: Channel) {
+        let channel = effective_channel(channel, self.by_brew());
+        if channel == self.channel {
+            return;
+        }
+        self.channel = channel;
+        self.generation += 1;
+        if matches!(self.stage, Stage::Available(_)) {
+            self.stage = Stage::Quiet;
+        }
+        let Some(e) = &self.eligible else { return };
+        if let Some(tag) = read_stamp(&e.stamp, channel).and_then(|s| s.latest) {
+            self.adopt(tag);
+        }
+        self.next_check = Some(Instant::now());
+    }
+
+    /// This build checks at all: the opt-out, the build kind and the build
+    /// tree let it. What decides whether it may write the channel it is.
+    pub fn eligible(&self) -> bool {
+        self.eligible.is_some()
     }
 
     /// Rate-limited poll. True when something on screen would change.
@@ -229,7 +275,9 @@ impl ReleaseWatch {
         if self.working || matches!(self.stage, Stage::Installing(_) | Stage::Installed(_)) {
             return;
         }
-        if let Some(stamp) = read_stamp(&e.stamp).filter(|s| s.age() < ASK_AGAIN_AFTER) {
+        if let Some(stamp) =
+            read_stamp(&e.stamp, self.channel).filter(|s| s.age() < ASK_AGAIN_AFTER)
+        {
             if let Some(tag) = stamp.latest {
                 self.adopt(tag);
             }
@@ -242,8 +290,8 @@ impl ReleaseWatch {
     /// whole interval out — an answer asked for is as good as a scheduled one.
     fn ask(&mut self) {
         self.next_check = Some(Instant::now() + CHECK_EVERY);
-        let fetch = self.fetch;
-        self.spawn(move || Outcome::Latest(fetch()));
+        let (fetch, channel, generation) = (self.fetch, self.channel, self.generation);
+        self.spawn(move || Outcome::Latest(generation, fetch(channel)));
     }
 
     /// Take the offer: fetch, verify, and put the new binary at our own path.
@@ -254,6 +302,12 @@ impl ReleaseWatch {
             return None;
         };
         let tag = tag.clone();
+        // Asked once more here: nothing is downloaded that this channel
+        // would not offer now.
+        if !admits(&tag, self.channel) {
+            self.stage = Stage::Quiet;
+            return None;
+        }
         let e = self.eligible.as_ref().filter(|e| !e.brew)?;
         let (exe, stage_dir) = (e.exe.clone(), e.stage_dir.clone());
         self.stage = Stage::Installing(tag.clone());
@@ -301,9 +355,12 @@ impl ReleaseWatch {
     fn absorb(&mut self, o: Outcome) {
         self.working = false;
         match o {
-            Outcome::Latest(Some(tag)) => {
+            // Asked for a channel the machine has left since: not this one's
+            // answer, so neither stamped nor offered.
+            Outcome::Latest(generation, _) if generation != self.generation => {}
+            Outcome::Latest(_, Some(tag)) => {
                 if let Some(e) = &self.eligible {
-                    write_stamp(&e.stamp, &tag);
+                    write_stamp(&e.stamp, &tag, self.channel);
                 }
                 self.adopt(tag);
             }
@@ -311,29 +368,33 @@ impl ReleaseWatch {
             // written: it records when we last HEARD, so a week offline must
             // not read back as a week of successful checks. The next attempt
             // is already on the clock (`tick` set it before spawning).
-            Outcome::Latest(None) => {}
+            Outcome::Latest(_, None) => {}
             Outcome::Installed(tag) => {
                 self.note = Some(format!("{tag} is installed ∙ U restarts on it"));
                 self.stage = Stage::Installed(tag);
             }
             Outcome::Failed(msg) => {
                 self.note = Some(format!("update failed: {msg}"));
-                // The offer comes back. A download that fell over is a reason
-                // to try again, not a reason to stop saying a newer build is
-                // out there — and `install.sh` is still the other way in.
+                // The offer comes back, through the door every offer takes:
+                // a download that fell over is a reason to try again, not a
+                // reason to stop saying a newer build is out there — unless
+                // the channel moved meanwhile and no longer takes it. And
+                // `install.sh` is still the other way in.
                 if let Stage::Installing(tag) = std::mem::replace(&mut self.stage, Stage::Quiet) {
-                    self.stage = Stage::Available(tag);
+                    self.adopt(tag);
                 }
             }
         }
     }
 
-    /// Take a heard tag as the offer, or as its absence. A check never
-    /// overrules a download in flight or one that landed: those are further
-    /// along the same story.
+    /// Take a heard tag as the offer, or as its absence: the one way into
+    /// `Available` (a fetch's answer, a cached stamp, a failed download's
+    /// return), through [`admits`]. A check never overrules a download in
+    /// flight or one that landed: those are further along the same story.
     fn adopt(&mut self, tag: String) {
         if matches!(self.stage, Stage::Quiet | Stage::Available(_)) {
-            self.stage = if is_newer(&tag) { Stage::Available(tag) } else { Stage::Quiet };
+            self.stage =
+                if admits(&tag, self.channel) { Stage::Available(tag) } else { Stage::Quiet };
         }
     }
 
@@ -342,6 +403,53 @@ impl ReleaseWatch {
     #[cfg(test)]
     pub(crate) fn force_available(&mut self, tag: &str) {
         self.stage = Stage::Available(tag.to_string());
+    }
+
+    /// A watch that checks, on a scratch stamp and a stand-in request, for
+    /// the app's tests.
+    #[cfg(test)]
+    pub(crate) fn checking(dir: &Path, fetch: fn(Channel) -> Option<String>) -> Self {
+        let mut w = Self::inert();
+        w.fetch = fetch;
+        w.eligible = Some(Eligible {
+            exe: dir.join("mesimon"),
+            stamp: dir.join("update-check.json"),
+            stage_dir: dir.join("update"),
+            brew: false,
+        });
+        w
+    }
+
+    /// Wait for the one worker out, and take its answer as `tick` would.
+    #[cfg(test)]
+    pub(crate) fn settle(&mut self) {
+        if let Ok(o) = self.rx.recv_timeout(Duration::from_secs(5)) {
+            self.absorb(o);
+        }
+    }
+
+    /// A worker is out.
+    #[cfg(test)]
+    pub(crate) fn asking(&self) -> bool {
+        self.working
+    }
+
+    /// A watch on a binary Homebrew installed, for the rows that read it.
+    #[cfg(test)]
+    pub(crate) fn force_brew(&mut self) {
+        let dir = std::env::temp_dir().join(format!("msmn-brew-{}", std::process::id()));
+        self.eligible = Some(Eligible {
+            exe: dir.join("mesimon"),
+            stamp: dir.join("update-check.json"),
+            stage_dir: dir.join("update"),
+            brew: true,
+        });
+    }
+
+    /// The channel the check follows, for the tests that switch it.
+    #[cfg(test)]
+    pub(crate) fn channel(&self) -> Channel {
+        self.channel
     }
 }
 
@@ -386,7 +494,7 @@ fn why_off() -> Option<&'static str> {
 /// on its own, and a person who types the command is asking it themselves.
 /// Every guard here still holds for them — above all the build-tree one.
 fn why_unfit() -> Option<&'static str> {
-    if !checking_channel() {
+    if !checking_build() {
         return Some("this build was not cut by ci/release.sh");
     }
     if TARGET.is_none() {
@@ -395,7 +503,7 @@ fn why_unfit() -> Option<&'static str> {
     // The one guard nothing lifts. A binary still inside a build tree is a
     // development build wearing whatever stamp it was given, and replacing it
     // with a download would destroy work — so the answer here is no, even
-    // when the channel gate was forced open on purpose.
+    // when the build-kind gate was forced open on purpose.
     if mesimon_core::exe::current_exe().is_ok_and(|e| in_build_tree(&e)) {
         return Some("this binary is inside a build tree");
     }
@@ -418,17 +526,20 @@ fn stamp_path() -> Option<PathBuf> {
 /// indistinguishable from one that is broken, so this is where the reason is
 /// spelled — including the reasons that are the point (a dev build).
 pub fn doctor_line() -> String {
+    let follows =
+        effective_channel(crate::prefs::load_home().prefs.release_channel(), by_homebrew());
+    let channels = channels_words(Channel::running(), follows);
     if let Some(why) = why_off() {
-        return format!("off ∙ {why}");
+        return format!("off ∙ {channels} ∙ {why}");
     }
-    let line = match stamp_path().and_then(|p| read_stamp(&p)) {
-        None => format!("on ∙ never asked ∙ {DIST_REPO}"),
+    let line = match stamp_path().and_then(|p| read_stamp(&p, follows)) {
+        None => format!("on ∙ {channels} ∙ never asked ∙ {DIST_REPO}"),
         Some(stamp) => {
             let ago = ago(stamp.age());
             match stamp.latest {
-                Some(t) if is_newer(&t) => format!("on ∙ {t} is out ∙ asked {ago}"),
-                Some(t) => format!("on ∙ {t} is the newest ∙ asked {ago}"),
-                None => format!("on ∙ asked {ago}"),
+                Some(t) if is_newer(&t) => format!("on ∙ {channels} ∙ {t} is out ∙ asked {ago}"),
+                Some(t) => format!("on ∙ {channels} ∙ {t} is the newest ∙ asked {ago}"),
+                None => format!("on ∙ {channels} ∙ asked {ago}"),
             }
         }
     };
@@ -437,6 +548,12 @@ pub fn doctor_line() -> String {
     } else {
         line
     }
+}
+
+/// `unstable build, follows stable` — what this binary is and which list
+/// the check asks (T-946); the doctor's way to say both.
+fn channels_words(running: Channel, follows: Channel) -> String {
+    format!("{} build, follows {}", running.word(), follows.word())
 }
 
 /// `4m ago` / `2h ago` / `3d ago` — the menu's word for a moment behind us.
@@ -452,8 +569,8 @@ pub(crate) fn ago(d: Duration) -> String {
 
 /// Does this build ask at all? The stamp is `build.rs`'s, and it says
 /// `release` only for the build `ci/release.sh` publishes.
-fn checking_channel() -> bool {
-    env!("MESIMON_CHANNEL") == "release" || std::env::var_os("MESIMON_UPDATE_CHECK").is_some()
+fn checking_build() -> bool {
+    env!("MESIMON_BUILD_KIND") == "release" || std::env::var_os("MESIMON_UPDATE_CHECK").is_some()
 }
 
 fn in_build_tree(exe: &Path) -> bool {
@@ -464,16 +581,41 @@ fn is_newer(tag: &str) -> bool {
     newer_than(tag, env!("CARGO_PKG_VERSION"))
 }
 
+/// May `tag` be offered to a machine following `follows` (T-946)? A tag this
+/// project mints, of a channel `follows` takes, strictly newer than what
+/// runs. Every road to an offer or a download asks this, and nothing else:
+/// the channel is never `newer_than`'s business.
+fn admits(tag: &str, follows: Channel) -> bool {
+    channel::parse_tag(tag).is_some_and(|(released, _)| follows.takes(released)) && is_newer(tag)
+}
+
+/// The channel the check follows: the preference, except that a binary
+/// Homebrew installed follows stable — the formula is the one road it has
+/// (T-946). The preference itself is kept as it was.
+pub(crate) fn effective_channel(preferred: Channel, brew: bool) -> Channel {
+    if brew {
+        Channel::Stable
+    } else {
+        preferred
+    }
+}
+
 /// Strictly newer than what is running, and nothing else.
 ///
 /// Unparseable on either side orders nothing, so it offers nothing (D26 fails
 /// closed), and equal is not an offer — which is also what keeps a deliberate
-/// `install.sh --version` pin from being nagged back up, or down.
+/// `install.sh --version` pin from being nagged back up, or down. A tag of
+/// either channel orders by the version inside it (`channel::parse_tag`).
 fn newer_than(tag: &str, ours: &str) -> bool {
-    match (Version::parse(tag.trim_start_matches('v')), Version::parse(ours)) {
-        (Ok(theirs), Ok(mine)) => theirs > mine,
+    match (tag_version(tag), Version::parse(ours)) {
+        (Some(theirs), Ok(mine)) => theirs > mine,
         _ => false,
     }
+}
+
+/// The version a tag this project mints names, `None` for any other tag.
+fn tag_version(tag: &str) -> Option<Version> {
+    Version::parse(channel::parse_tag(tag)?.1).ok()
 }
 
 // ---- the two requests ------------------------------------------------------
@@ -493,15 +635,43 @@ fn curl(args: &[&str]) -> Option<std::process::Output> {
         .filter(|o| o.status.success())
 }
 
-fn fetch_latest_tag() -> Option<String> {
-    // NOT `/releases/latest` — that endpoint skips prereleases and every alpha
-    // is one, so it answers 404 until the first stable build. The list
-    // endpoint includes them, in an order `latest_tag` does not trust. Same
-    // trap, same note, as `install.sh`.
-    let url = format!("https://api.github.com/repos/{DIST_REPO}/releases?per_page=5");
+/// The newest published tag `channel` takes.
+fn fetch_latest(channel: Channel) -> Option<String> {
+    // NOT `/releases/latest` — that endpoint skips prereleases and every
+    // release so far is one, so it answers 404. The list endpoint includes
+    // them, in an order `latest_tag` does not trust. Same trap, same note,
+    // as `install.sh`. Thirty, not five (T-946): both channels share the
+    // list, and a run of unstable tags must not push the last stable out of
+    // a stable machine's window.
+    let url = format!("https://api.github.com/repos/{DIST_REPO}/releases?per_page=30");
     let out =
         curl(&["--max-time", API_TIMEOUT_SECS, "-H", "Accept: application/vnd.github+json", &url])?;
-    latest_tag(&String::from_utf8_lossy(&out.stdout))
+    pick_latest(&String::from_utf8_lossy(&out.stdout), channel, || {
+        let url = format!("https://raw.githubusercontent.com/{DIST_REPO}/main/LATEST");
+        let out = curl(&["--max-time", API_TIMEOUT_SECS, &url])?;
+        Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    })
+}
+
+/// The listing's pick, and where a stable machine finds no stable release in
+/// the page (thirty unstable ones newer than the last stable), the stable
+/// marker `ci/release.sh` keeps: `LATEST`, one line naming the latest stable
+/// tag. It is taken only if it is a stable tag; the offer is still
+/// [`admits`]'s to make.
+fn pick_latest(
+    body: &str,
+    follows: Channel,
+    marker: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    let picked = latest_tag(body, follows);
+    if picked.is_some()
+        || follows == Channel::Unstable
+        || serde_json::from_str::<Vec<serde_json::Value>>(body).is_err()
+    {
+        return picked;
+    }
+    let tag = marker()?.trim().to_string();
+    channel::parse_tag(&tag).is_some_and(|(c, _)| c == Channel::Stable).then_some(tag)
 }
 
 /// The highest version among the published tags of a GitHub releases
@@ -511,14 +681,18 @@ fn fetch_latest_tag() -> Option<String> {
 /// Drafts are skipped belt-and-braces: an unauthenticated request is never
 /// shown one, but the asset a draft names does not exist, so an offer built
 /// on it could only fail. A tag that is no version orders nothing, so it is
-/// never the pick.
-fn latest_tag(body: &str) -> Option<String> {
+/// never the pick, and neither is one of a channel this machine does not
+/// follow (T-946): stable never takes an `unstable-` tag.
+fn latest_tag(body: &str, follows: Channel) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(body).ok()?;
     v.as_array()?
         .iter()
         .filter(|r| !r.get("draft").and_then(|d| d.as_bool()).unwrap_or(false))
         .filter_map(|r| r.get("tag_name")?.as_str())
-        .filter_map(|t| Some((Version::parse(t.trim_start_matches('v')).ok()?, t)))
+        .filter_map(|t| {
+            let (released, version) = channel::parse_tag(t)?;
+            follows.takes(released).then_some((Version::parse(version).ok()?, t))
+        })
         .max_by(|a, b| a.0.cmp(&b.0))
         .map(|(_, t)| t.to_string())
 }
@@ -657,19 +831,36 @@ pub fn update_command(check_only: bool) -> i32 {
         eprintln!("mesimon update: {why} ∙ re-run the install line instead");
         return 1;
     }
-    let Some(tag) = fetch_latest_tag() else {
+    // The channel is the board's road's (T-946): the preference, and an
+    // unstable build that finds none records it before it updates, so a
+    // machine updated from a shell alone keeps unstable past a promotion. A
+    // record that could not be saved stops here: installing a promotion on
+    // it would leave the machine following stable. Homebrew follows stable
+    // and records nothing.
+    let brew = by_homebrew();
+    let channel = if brew {
+        Channel::Stable
+    } else {
+        match crate::prefs::follow_release_channel_home() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("mesimon update: {e} ∙ nothing installed; run it again once it can be");
+                return 1;
+            }
+        }
+    };
+    let Some(tag) = fetch_latest(channel) else {
         eprintln!("mesimon update: the releases repo did not answer (github.com, over curl)");
         return 1;
     };
     // Every board's next check, and the doctor, hear what this one did.
     if let Some(stamp) = stamp_path() {
-        write_stamp(&stamp, &tag);
+        write_stamp(&stamp, &tag, channel);
     }
-    if !is_newer(&tag) {
+    if !admits(&tag, channel) {
         println!("{ours} is the newest");
         return 0;
     }
-    let brew = by_homebrew();
     if check_only {
         let how = if brew { "brew upgrade mesimon" } else { "mesimon update" };
         println!("{tag} is out ∙ this is {ours} ∙ {how} installs it");
@@ -715,6 +906,33 @@ pub fn update_command(check_only: bool) -> i32 {
     }
 }
 
+/// `mesimon channel [stable|unstable]` (T-946): with a word, the choice is
+/// saved through the preference file's own writer (`install.sh --channel`
+/// calls this); with none, nothing changes. Either way it says what the
+/// update check follows. Exit 1 when the choice could not be saved.
+pub fn channel_command(pick: Option<Channel>) -> i32 {
+    let Some(path) = crate::prefs::prefs_path() else {
+        eprintln!("mesimon channel: HOME is unset");
+        return 1;
+    };
+    // `save_release_channel` reads the file back: success is the word asked
+    // for, on disk, and nothing else (T-946).
+    if let Some(c) = pick {
+        if let Err(e) = crate::prefs::save_release_channel(&path, c) {
+            eprintln!("mesimon channel: {e}");
+            return 1;
+        }
+    }
+    let chosen = crate::prefs::load(&path).prefs.release_channel();
+    let follows = effective_channel(chosen, by_homebrew());
+    if follows == chosen {
+        println!("follows {}", follows.word());
+    } else {
+        println!("follows stable ∙ Homebrew install ∙ {} preference kept", chosen.word());
+    }
+    0
+}
+
 // ---- the stamp -------------------------------------------------------------
 
 /// When we last heard, and what we heard.
@@ -723,7 +941,8 @@ pub fn update_command(check_only: bool) -> i32 {
 /// by a newer build, is ignored and overwritten rather than quarantined. That
 /// is the opposite of the four state files' rule and deliberately so — the
 /// worst an ignored stamp costs is one extra HTTP request, where an ignored
-/// `sessions.json` would cost the board.
+/// `sessions.json` would cost the board. So is one asked for another
+/// channel: a switch never shows the other channel's answer.
 struct Stamp {
     checked_at_ms: u64,
     latest: Option<String>,
@@ -735,24 +954,36 @@ impl Stamp {
     }
 }
 
-fn read_stamp(p: &Path) -> Option<Stamp> {
+/// The stamp `channel` may take. A schema-1 stamp is a stable check, which
+/// is all a schema-1 build asked.
+fn read_stamp(p: &Path, channel: Channel) -> Option<Stamp> {
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()?;
-    if v.get("schema_version").and_then(|s| s.as_u64()).unwrap_or(0) > STAMP_SCHEMA {
+    let schema = v.get("schema_version").and_then(|s| s.as_u64()).unwrap_or(0);
+    if schema > STAMP_SCHEMA {
+        return None;
+    }
+    let word = |k: &str| v.get(k).and_then(|t| t.as_str());
+    let asked = match schema {
+        0 | 1 => Channel::Stable,
+        _ => word("channel").and_then(Channel::from_word)?,
+    };
+    if asked != channel {
         return None;
     }
     Some(Stamp {
         checked_at_ms: v.get("checked_at_ms").and_then(|t| t.as_u64()).unwrap_or(0),
-        latest: v.get("latest").and_then(|t| t.as_str()).map(str::to_string),
+        latest: word("latest").map(str::to_string),
     })
 }
 
-fn write_stamp(p: &Path, latest: &str) {
+fn write_stamp(p: &Path, latest: &str, channel: Channel) {
     if let Some(dir) = p.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
     let body = serde_json::json!({
         "schema_version": STAMP_SCHEMA,
         "checked_at_ms": now_ms(),
+        "channel": channel.word(),
         "latest": latest,
     });
     // Best effort throughout: a stamp that cannot be written costs one extra
@@ -798,13 +1029,13 @@ mod tests {
             {"tag_name": "v0.1.0-beta.7", "draft": false, "prerelease": true},
             {"tag_name": "v0.1.0-beta.6", "draft": false, "prerelease": true}
         ]"#;
-        assert_eq!(latest_tag(body).as_deref(), Some("v0.1.0-beta.10"));
+        assert_eq!(latest_tag(body, Channel::Stable).as_deref(), Some("v0.1.0-beta.10"));
         // A release outranks its prereleases wherever it is listed, and a
         // tag that is no version is passed over rather than picked.
         let body = r#"[
             {"tag_name": "v0.1.0-rc.2"}, {"tag_name": "nightly"}, {"tag_name": "v0.1.0"}
         ]"#;
-        assert_eq!(latest_tag(body).as_deref(), Some("v0.1.0"));
+        assert_eq!(latest_tag(body, Channel::Stable).as_deref(), Some("v0.1.0"));
     }
 
     #[test]
@@ -814,22 +1045,27 @@ mod tests {
             {"tag_name": "v0.1.0-alpha.5", "draft": false, "prerelease": true},
             {"tag_name": "v0.1.0-alpha.4", "draft": false}
         ]"#;
-        assert_eq!(latest_tag(body).as_deref(), Some("v0.1.0-alpha.5"));
+        assert_eq!(latest_tag(body, Channel::Stable).as_deref(), Some("v0.1.0-alpha.5"));
         // A prerelease is the ONLY kind this project publishes, so the list
         // endpoint (not /releases/latest) is the one that can answer at all.
-        assert_eq!(latest_tag(r#"[{"tag_name": "v9.9.9"}]"#).as_deref(), Some("v9.9.9"));
+        assert_eq!(
+            latest_tag(r#"[{"tag_name": "v9.9.9"}]"#, Channel::Stable).as_deref(),
+            Some("v9.9.9")
+        );
     }
 
     /// Nothing about a malformed answer is an offer. Rate-limit JSON, an HTML
     /// error page, an empty list and a nameless release all read the same.
     #[test]
     fn a_body_that_says_nothing_offers_nothing() {
-        assert_eq!(latest_tag("[]"), None);
-        assert_eq!(latest_tag(r#"{"message": "API rate limit exceeded"}"#), None);
-        assert_eq!(latest_tag("<html>502</html>"), None);
-        assert_eq!(latest_tag(r#"[{"draft": false}]"#), None);
-        assert_eq!(latest_tag(r#"[{"tag_name": ""}]"#), None);
-        assert_eq!(latest_tag(""), None);
+        for c in [Channel::Stable, Channel::Unstable] {
+            assert_eq!(latest_tag("[]", c), None);
+            assert_eq!(latest_tag(r#"{"message": "API rate limit exceeded"}"#, c), None);
+            assert_eq!(latest_tag("<html>502</html>", c), None);
+            assert_eq!(latest_tag(r#"[{"draft": false}]"#, c), None);
+            assert_eq!(latest_tag(r#"[{"tag_name": ""}]"#, c), None);
+            assert_eq!(latest_tag("", c), None);
+        }
     }
 
     #[test]
@@ -855,8 +1091,8 @@ mod tests {
     /// network, the stamp, or a path.
     #[test]
     fn a_dev_build_is_never_eligible() {
-        assert_eq!(env!("MESIMON_CHANNEL"), "dev", "a test binary is never a release build");
-        assert!(!checking_channel());
+        assert_eq!(env!("MESIMON_BUILD_KIND"), "dev", "a test binary is never a release build");
+        assert!(!checking_build());
         let mut w = ReleaseWatch::new(Path::new("."));
         assert!(w.eligible.is_none());
         assert!(!w.available());
@@ -883,7 +1119,7 @@ mod tests {
 
     /// What `new` builds on a release build, pointed at a scratch stamp and a
     /// stand-in for the request.
-    fn eligible_watch(dir: &Path, fetch: fn() -> Option<String>) -> ReleaseWatch {
+    fn eligible_watch(dir: &Path, fetch: fn(Channel) -> Option<String>) -> ReleaseWatch {
         let mut w = ReleaseWatch::inert();
         w.fetch = fetch;
         w.eligible = Some(Eligible {
@@ -901,13 +1137,13 @@ mod tests {
         w.absorb(o);
     }
 
-    fn a_newer_one() -> Option<String> {
+    fn a_newer_one(_: Channel) -> Option<String> {
         Some("v99.0.0".into())
     }
-    fn this_one() -> Option<String> {
+    fn this_one(_: Channel) -> Option<String> {
         Some(format!("v{}", env!("CARGO_PKG_VERSION")))
     }
-    fn another_newer_one() -> Option<String> {
+    fn another_newer_one(_: Channel) -> Option<String> {
         Some("v98.0.0".into())
     }
 
@@ -928,7 +1164,8 @@ mod tests {
         );
         assert!(w.available());
         assert_eq!(w.tag(), "v99.0.0");
-        let stamp = read_stamp(&dir.join("update-check.json")).expect("the answer is stamped");
+        let stamp =
+            read_stamp(&dir.join("update-check.json"), w.channel).expect("the answer is stamped");
         assert_eq!(stamp.latest.as_deref(), Some("v99.0.0"));
         assert!(w.next_check.is_some_and(|t| t >= before + CHECK_EVERY), "the clock moved out");
 
@@ -950,8 +1187,8 @@ mod tests {
     fn a_fresh_stamp_is_the_answer_and_asks_nothing() {
         let dir = scratch("floor");
         let stamp = dir.join("update-check.json");
-        write_stamp(&stamp, "v99.0.0");
         let mut w = eligible_watch(&dir, another_newer_one);
+        write_stamp(&stamp, "v99.0.0", w.channel);
         w.check_now();
         assert!(!w.working, "asked inside the floor");
         assert_eq!(w.tag(), "v99.0.0", "the stamp's answer was not taken");
@@ -959,7 +1196,11 @@ mod tests {
         let old = now_ms() - (ASK_AGAIN_AFTER.as_millis() as u64) - 1_000;
         std::fs::write(
             &stamp,
-            format!(r#"{{"schema_version": 1, "checked_at_ms": {old}, "latest": "v99.0.0"}}"#),
+            format!(
+                r#"{{"schema_version": 2, "checked_at_ms": {old}, "latest": "v99.0.0",
+                    "channel": "{}"}}"#,
+                w.channel.word()
+            ),
         )
         .expect("write");
         w.check_now();
@@ -1063,25 +1304,320 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("tmp");
         let p = dir.join("update-check.json");
 
-        write_stamp(&p, "v0.1.0-alpha.5");
-        let s = read_stamp(&p).expect("just written");
+        let (st, un) = (Channel::Stable, Channel::Unstable);
+        write_stamp(&p, "v0.1.0-alpha.5", st);
+        let s = read_stamp(&p, st).expect("just written");
         assert_eq!(s.latest.as_deref(), Some("v0.1.0-alpha.5"));
         assert!(s.age() < Duration::from_secs(5), "a fresh stamp is not due");
+        assert!(read_stamp(&p, un).is_none(), "another channel's answer is no answer");
+
+        write_stamp(&p, "unstable-0.1.0-beta.13.unstable.2", un);
+        assert_eq!(
+            read_stamp(&p, un).and_then(|s| s.latest).as_deref(),
+            Some("unstable-0.1.0-beta.13.unstable.2")
+        );
+        assert!(read_stamp(&p, st).is_none());
+        // A stamp that names no channel it knows is no one's answer.
+        std::fs::write(&p, r#"{"schema_version": 2, "channel": "nightly", "latest": "v1.0.0"}"#)
+            .expect("write");
+        assert!(read_stamp(&p, st).is_none() && read_stamp(&p, un).is_none());
+
+        // A schema-1 stamp is a stable check, all a schema-1 build asked.
+        std::fs::write(&p, r#"{"schema_version": 1, "checked_at_ms": 5, "latest": "v1.0.0"}"#)
+            .expect("write");
+        assert_eq!(read_stamp(&p, st).and_then(|s| s.latest).as_deref(), Some("v1.0.0"));
+        assert!(read_stamp(&p, un).is_none());
 
         // A file from a build that knows more than we do is not guessed at.
         std::fs::write(&p, r#"{"schema_version": 99, "latest": "v9.9.9"}"#).expect("write");
-        assert!(read_stamp(&p).is_none());
+        assert!(read_stamp(&p, st).is_none());
         // Neither is a corrupt one — and neither costs more than one request.
         std::fs::write(&p, "{not json").expect("write");
-        assert!(read_stamp(&p).is_none());
-        assert!(read_stamp(&dir.join("nothing-here.json")).is_none());
+        assert!(read_stamp(&p, st).is_none());
+        assert!(read_stamp(&dir.join("nothing-here.json"), st).is_none());
 
         // An age with no timestamp reads as ancient, which is due — never as
         // fresh, which would be a check that silently stopped happening.
         std::fs::write(&p, r#"{"schema_version": 1, "latest": "v1.0.0"}"#).expect("write");
-        assert!(read_stamp(&p).expect("read").age() > CHECK_EVERY);
+        assert!(read_stamp(&p, st).expect("read").age() > CHECK_EVERY);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The unstable train's versions (T-946) against what is running: up
+    /// the train, out of it at the promotion, and never down — so a switch
+    /// to stable waits for a stable that passes the build.
+    #[test]
+    fn the_unstable_train_orders_between_stables() {
+        for (tag, ours, offer) in [
+            ("unstable-0.1.0-beta.13.unstable.1", "0.1.0-beta.13", true),
+            ("unstable-0.1.0-beta.13.unstable.1", "0.1.0-beta.12", true),
+            ("unstable-0.1.0-beta.13.unstable.10", "0.1.0-beta.13.unstable.9", true),
+            ("v0.1.0-beta.14", "0.1.0-beta.13.unstable.40", true),
+            ("v0.1.0-beta.13", "0.1.0-beta.13.unstable.3", false),
+            ("v0.1.0-beta.13.1", "0.1.0-beta.13.unstable.1", false),
+            ("v0.1.0-beta.13.1", "0.1.0-beta.13", true),
+            ("unstable-0.1.0-beta.14.unstable.1", "0.1.0-beta.14", true),
+            // From 0.1.0 final the train is the next minor's, and a stable
+            // hotfix of 0.1 sits under all of it.
+            ("unstable-0.2.0-unstable.1", "0.1.0", true),
+            ("v0.1.1", "0.2.0-unstable.1", false),
+            ("v0.2.0", "0.2.0-unstable.9", true),
+            // A tag this project never mints offers nothing, unstable or not.
+            ("v0.1.0-beta.13.unstable.1", "0.1.0-beta.13", false),
+            ("unstable-0.1.0-beta.14", "0.1.0-beta.13", false),
+        ] {
+            assert_eq!(newer_than(tag, ours), offer, "{tag} over {ours}");
+        }
+    }
+
+    /// One list holding both channels, every release flagged pre-release as
+    /// today's are: stable never takes an `unstable-` tag, unstable takes the
+    /// higher of both, and a promotion outranks the train it ends.
+    #[test]
+    fn each_channel_picks_its_own_from_one_list() {
+        let list = |stable: &str| {
+            format!(
+                r#"[
+                {{"tag_name": "unstable-0.1.0-beta.13.unstable.2", "prerelease": true}},
+                {{"tag_name": "unstable-0.1.0-beta.13.unstable.1", "prerelease": true}},
+                {{"tag_name": "{stable}", "prerelease": true}},
+                {{"tag_name": "v0.1.0-beta.12", "prerelease": true}}
+            ]"#
+            )
+        };
+        let train = list("v0.1.0-beta.13");
+        assert_eq!(latest_tag(&train, Channel::Stable).as_deref(), Some("v0.1.0-beta.13"));
+        assert_eq!(
+            latest_tag(&train, Channel::Unstable).as_deref(),
+            Some("unstable-0.1.0-beta.13.unstable.2")
+        );
+        let promoted = list("v0.1.0-beta.14");
+        assert_eq!(latest_tag(&promoted, Channel::Unstable).as_deref(), Some("v0.1.0-beta.14"));
+    }
+
+    /// beta.13's `latest_tag`, copied as it shipped (T-877) and never to be
+    /// edited: the picker every machine on beta.12 or beta.13 runs.
+    fn shipped_picker_beta13(body: &str) -> Option<String> {
+        let v: serde_json::Value = serde_json::from_str(body).ok()?;
+        v.as_array()?
+            .iter()
+            .filter(|r| !r.get("draft").and_then(|d| d.as_bool()).unwrap_or(false))
+            .filter_map(|r| r.get("tag_name")?.as_str())
+            .filter_map(|t| Some((Version::parse(t.trim_start_matches('v')).ok()?, t)))
+            .max_by(|a, b| a.0.cmp(&b.0))
+            .map(|(_, t)| t.to_string())
+    }
+
+    /// beta.13's `install.sh` takes a tag only on
+    /// `^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`; this is that pattern,
+    /// spelled out by hand, and never to be edited either.
+    fn shipped_installer_takes_beta13(tag: &str) -> bool {
+        let t = tag.strip_prefix('v').unwrap_or(tag);
+        let (core, pre) = match t.split_once('-') {
+            Some((c, p)) => (c, Some(p)),
+            None => (t, None),
+        };
+        let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+        let parts: Vec<&str> = core.split('.').collect();
+        parts.len() == 3
+            && parts.iter().all(|p| digits(p))
+            && pre.is_none_or(|p| {
+                !p.is_empty()
+                    && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+            })
+    }
+
+    /// The fence for every machine that does not have this build (T-946):
+    /// the pickers it ships with take the stable tag out of a list that holds
+    /// the unstable train, and no unstable tag this project mints passes
+    /// either. If this fails, an unstable release would be offered to stable
+    /// users who cannot opt out.
+    #[test]
+    fn the_shipped_pickers_never_take_an_unstable_tag() {
+        let body = r#"[
+            {"tag_name": "unstable-0.1.0-beta.13.unstable.3", "prerelease": true},
+            {"tag_name": "unstable-0.1.0-beta.13.unstable.2", "prerelease": true},
+            {"tag_name": "v0.1.0-beta.13", "prerelease": true},
+            {"tag_name": "unstable-0.1.0-beta.13.unstable.1", "prerelease": true},
+            {"tag_name": "v0.1.0-beta.12", "prerelease": true},
+            {"tag_name": "unstable-0.2.0-unstable.1", "prerelease": true}
+        ]"#;
+        assert_eq!(shipped_picker_beta13(body).as_deref(), Some("v0.1.0-beta.13"));
+        for version in ["0.1.0-beta.13.unstable.1", "0.1.0-beta.13.unstable.40", "0.2.0-unstable.1"]
+        {
+            let t = channel::tag(version);
+            assert!(Version::parse(t.trim_start_matches('v')).is_err(), "{t} parses as semver");
+            assert!(!shipped_installer_takes_beta13(&t), "{t} matches the old installer");
+        }
+        // The fence's own check: the old pattern does take what it took.
+        assert!(shipped_installer_takes_beta13("v0.1.0-beta.13"));
+        assert!(shipped_installer_takes_beta13("0.1.0"));
+        assert!(!shipped_installer_takes_beta13("nightly"));
+    }
+
+    /// `ci/release.sh` reads the channel and the tag through
+    /// `ci/release-channel.sh`; it and `channel::tag` are one rule.
+    #[test]
+    fn the_release_script_tags_as_the_updater_reads() {
+        let script = concat!(env!("CARGO_MANIFEST_DIR"), "/../../ci/release-channel.sh");
+        for version in [
+            "0.1.0-beta.13",
+            "0.1.0-beta.13.1",
+            "0.1.0-beta.13.unstable.1",
+            "0.1.0-beta.13.unstable.40",
+            "0.1.0",
+            "0.2.0-unstable.3",
+            "0.1.0-unstable-ish.1",
+        ] {
+            let out = Command::new("bash").arg(script).arg(version).output().expect("bash runs");
+            assert!(out.status.success(), "{version}: {}", String::from_utf8_lossy(&out.stderr));
+            let said = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            let want = format!("{} {}", Channel::of(version).word(), channel::tag(version));
+            assert_eq!(said, want, "{version}");
+        }
+    }
+
+    /// The two leaks the delivery read reproduced (T-946), each closed by the
+    /// one door into `Available`.
+    #[test]
+    fn every_road_into_an_offer_asks_the_channel() {
+        // (a) An unstable download that falls over after the machine moved
+        // to stable does not come back as an offer.
+        let dir = scratch("failed-after-switch");
+        let mut w = eligible_watch(&dir, unstable_newer);
+        w.channel = Channel::Unstable;
+        w.stage = Stage::Installing("unstable-99.0.0-unstable.1".into());
+        w.set_channel(Channel::Stable);
+        w.absorb(Outcome::Failed("could not download".into()));
+        assert!(!w.available(), "the failed unstable download came back on stable");
+        // …and on the channel that still takes it, it does.
+        w.set_channel(Channel::Unstable);
+        w.stage = Stage::Installing("unstable-99.0.0-unstable.1".into());
+        w.absorb(Outcome::Failed("could not download".into()));
+        assert_eq!(w.tag(), "unstable-99.0.0-unstable.1");
+        let _ = std::fs::remove_dir_all(dir);
+
+        // (b) A schema-1 stamp an older build wrote with an `unstable-` tag in
+        // it reads as a stable check, and a stable watch offers nothing.
+        let dir = scratch("old-writer-stamp");
+        let stamp = dir.join("update-check.json");
+        std::fs::write(
+            &stamp,
+            format!(
+                r#"{{"schema_version": 1, "checked_at_ms": {}, "latest": "unstable-99.0.0-unstable.1"}}"#,
+                now_ms()
+            ),
+        )
+        .expect("write");
+        let mut w = eligible_watch(&dir, a_newer_one);
+        w.channel = Channel::Stable;
+        w.check_now();
+        assert!(!w.working, "a fresh stamp is the answer");
+        assert!(!w.available(), "a stable watch offered the cached unstable tag");
+        // And an offer standing before the channel moved is asked again at
+        // the press: nothing is downloaded that the channel would not offer.
+        w.stage = Stage::Available("unstable-99.0.0-unstable.1".into());
+        assert_eq!(w.begin_install(), None);
+        assert!(!w.working && !w.available());
+        let _ = std::fs::remove_dir_all(dir);
+
+        assert!(!admits("v0.1.0-beta.13.unstable.1", Channel::Unstable), "never minted");
+        assert!(admits("unstable-99.0.0-unstable.1", Channel::Unstable));
+        assert!(!admits("unstable-99.0.0-unstable.1", Channel::Stable));
+        assert!(admits("v99.0.0", Channel::Stable));
+    }
+
+    /// Homebrew follows stable whatever the preference says (T-946): the
+    /// watch, the doctor's words and the row all read it, and the preference
+    /// stays.
+    #[test]
+    fn a_brew_install_follows_stable_with_an_unstable_preference() {
+        assert_eq!(effective_channel(Channel::Unstable, true), Channel::Stable);
+        assert_eq!(effective_channel(Channel::Unstable, false), Channel::Unstable);
+        let dir = scratch("brew-unstable");
+        let mut w = eligible_watch(&dir, unstable_newer);
+        if let Some(e) = w.eligible.as_mut() {
+            e.brew = true;
+        }
+        w.channel = Channel::Stable;
+        w.set_channel(Channel::Unstable);
+        assert_eq!(w.channel, Channel::Stable, "a brew watch moved to unstable");
+        w.check_now();
+        settle(&mut w);
+        assert!(!w.available(), "a brew watch asked the unstable channel");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Thirty unstable releases newer than the last stable fill the page: a
+    /// stable machine then reads the LATEST marker, and takes it only if it
+    /// names a stable tag (T-946).
+    #[test]
+    fn a_page_of_unstable_releases_falls_back_to_the_stable_marker() {
+        let page = serde_json::to_string(
+            &(1..=30)
+                .map(|n| serde_json::json!({"tag_name": format!("unstable-0.1.0-beta.14.unstable.{n}")}))
+                .collect::<Vec<_>>(),
+        )
+        .expect("json");
+        let marker = || Some("v0.1.0-beta.14\n".to_string());
+        assert_eq!(pick_latest(&page, Channel::Stable, marker).as_deref(), Some("v0.1.0-beta.14"));
+        assert_eq!(
+            pick_latest(&page, Channel::Unstable, || panic!("unstable never asks the marker"))
+                .as_deref(),
+            Some("unstable-0.1.0-beta.14.unstable.30")
+        );
+        let bad = || Some("unstable-0.1.0-beta.14.unstable.31".to_string());
+        assert_eq!(pick_latest(&page, Channel::Stable, bad), None, "the marker names stable");
+        assert_eq!(pick_latest(&page, Channel::Stable, || None), None);
+        // A stable release in the page is the answer, and a body that is no
+        // listing (a rate limit) asks nothing more.
+        let mixed = r#"[{"tag_name": "unstable-0.1.0-beta.13.unstable.2"}, {"tag_name": "v0.1.0-beta.13"}]"#;
+        assert_eq!(
+            pick_latest(mixed, Channel::Stable, || panic!("asked the marker")).as_deref(),
+            Some("v0.1.0-beta.13")
+        );
+        assert_eq!(
+            pick_latest(r#"{"message": "API rate limit exceeded"}"#, Channel::Stable, || {
+                panic!("asked the marker")
+            }),
+            None
+        );
+    }
+
+    fn unstable_newer(c: Channel) -> Option<String> {
+        match c {
+            Channel::Unstable => Some("unstable-99.0.0-unstable.1".into()),
+            Channel::Stable => None,
+        }
+    }
+
+    /// A channel change takes down the old channel's offer and drops the
+    /// answer of a check still out, then asks again for the new channel.
+    #[test]
+    fn a_channel_change_cancels_the_old_channels_offer_and_check() {
+        let dir = scratch("switch");
+        let mut w = eligible_watch(&dir, unstable_newer);
+        w.channel = Channel::Unstable;
+        w.check_now();
+        settle(&mut w);
+        assert_eq!(w.tag(), "unstable-99.0.0-unstable.1");
+        w.set_channel(Channel::Stable);
+        assert!(!w.available(), "the unstable offer outlived the switch");
+        assert!(w.next_check.is_some_and(|t| t <= Instant::now()), "the new channel is asked");
+
+        // A check out when the channel moves lands as no answer.
+        w.set_channel(Channel::Unstable);
+        assert!(w.available(), "the unstable stamp is this channel's answer again");
+        let stale = w.generation;
+        w.set_channel(Channel::Stable);
+        w.absorb(Outcome::Latest(stale, unstable_newer(Channel::Unstable)));
+        assert!(!w.available(), "a stale answer raised an offer");
+        assert!(
+            read_stamp(&dir.join("update-check.json"), Channel::Stable).is_none(),
+            "a stale answer was stamped for the new channel"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// The target names live in three places — this list, the scripts that

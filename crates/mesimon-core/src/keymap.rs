@@ -602,6 +602,9 @@ pub enum Verb {
     Tour,
     /// Settings › About (T-850): open mesimon's repository in the browser.
     ProjectPage,
+    /// Settings › About (T-946): which release channel the update check
+    /// follows, `stable` or `unstable`.
+    ReleaseChannel,
     /// Setup's `s` (T-816): leave this question on its default and go on.
     SetupSkip,
     /// Settings › Behaviour › Workspace (T-816): where a new ticket works
@@ -1201,7 +1204,7 @@ impl SettingsSection {
             | Verb::CrownArchives
             | Verb::CrownWatches
             | Verb::CrownLinks => Self::Crown,
-            Verb::ProjectPage => Self::About,
+            Verb::ProjectPage | Verb::ReleaseChannel => Self::About,
             _ => Self::Theme,
         }
     }
@@ -1347,6 +1350,11 @@ pub struct Ctx {
     /// Homebrew installed this binary, so the offer is `brew upgrade mesimon`
     /// and the row copies it rather than downloading (T-463).
     pub release_by_brew: bool,
+    /// The update check follows the unstable channel (T-946): the machine's
+    /// `release_channel`, or the running build's own where none is chosen.
+    pub release_unstable: bool,
+    /// The running build is an unstable one (its version says `unstable`).
+    pub running_unstable: bool,
     /// A shell startup file has changed since the environment mesimon is
     /// handing to new panes was captured.
     pub shell_env_stale: bool,
@@ -5419,6 +5427,26 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // The release channel (T-946): what the update check offers. Stable
+    // waits for an unstable build to be overtaken rather than going back
+    // to an older version, and Homebrew's formula is stable alone.
+    MenuItem {
+        verb: Verb::ReleaseChannel,
+        label: |_| "Release channel".into(),
+        detail: |c| {
+            if c.release_by_brew {
+                "Homebrew installs follow stable".into()
+            } else if c.running_unstable && !c.release_unstable {
+                format!("stays on {} until a newer stable ships", env!("CARGO_PKG_VERSION"))
+            } else if c.release_unstable {
+                "builds before they reach stable".into()
+            } else {
+                String::new()
+            }
+        },
+        avail: always,
+        key: "",
+    },
     // A ticket's summary on its card (T-696): what the `Summary` section
     // shows there — everything, the rows alone, or nothing.
     MenuItem {
@@ -6191,7 +6219,7 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::UsageClaude,
             Verb::UsageCodex,
         ],
-        SettingsSection::About => &[Verb::ProjectPage],
+        SettingsSection::About => &[Verb::ProjectPage, Verb::ReleaseChannel],
     };
     verbs
         .iter()
@@ -6270,6 +6298,7 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
         Verb::NewReplies => Value::Switch(c.new_replies),
         Verb::CardPrs => choice(&["always", "news", "off"], or(c.card_prs_word, "always")),
         Verb::CardCorner => pick(&["age", "cost"], c.card_cost),
+        Verb::ReleaseChannel => pick(&["stable", "unstable"], c.release_unstable),
         Verb::NotifyToggle => Value::Switch(c.notify),
         Verb::NotifyVia => pick(&["mesimon", "your terminal"], c.notify_via_terminal),
         Verb::NotifyDone => Value::Switch(c.notify_done),
@@ -6405,6 +6434,7 @@ pub fn pref_key(verb: Verb) -> Option<PrefKey> {
         Verb::NewReplies => PrefKey::NewReplies,
         Verb::CardPrs => PrefKey::CardPrs,
         Verb::FetchEvery => PrefKey::FetchEvery,
+        Verb::ReleaseChannel => PrefKey::ReleaseChannel,
         _ => return None,
     })
 }
@@ -11563,6 +11593,7 @@ mod tests {
             Verb::CardCorner,
             Verb::Mouse,
             Verb::EditorChoice,
+            Verb::ReleaseChannel,
         ];
         for item in SETTINGS_ITEMS {
             let expect = prefs.contains(&item.verb);

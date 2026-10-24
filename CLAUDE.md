@@ -116,6 +116,14 @@ the stamp matches; `MESIMON_RELEASE_RETEST=1` overrides. Releases are cut locall
 runner. **Both Docker steps are paused by the author** until they say Windows/WSL2 is
 operational — the script prints `SKIPPED`, `MESIMON_RELEASE_DOCKER=1` runs them, and you should
 not open Docker Desktop for a release.
+**Release channels (T-946)**: a version `<last stable>.unstable.N` (from 0.1.0 final,
+`0.2.0-unstable.N`) is an unstable release, tagged `unstable-<version>` in the same repository,
+which no picker since T-877 takes (beta.12's updater on, and the served `install.sh`). The order is the same, the channel is the version's, and
+a promotion is one bump on the soaked commit. The first stable release carrying T-946 ships before
+the first unstable tag. A stable version that may overtake the train keeps the train's schema
+readers, or does not ship. The relay and Remote Control are single-channel: the live relay serves
+both channels' cores, and the relay repository keeps a stable-client and a candidate-client
+fixture passing before a shared deployment that changes their contract.
 
 **mesimon.dev is GitHub Pages on `amitozalvo/mesimon-releases`' main branch** — the page is
 `site/`, and the `install.sh` it serves is the one `release.sh` syncs there after each release,
@@ -214,9 +222,12 @@ goldens are colourless.
 
 **A machine pref** (a `prefs.json` key; T-361 lets a board override most of them):
 1. `core/src/prefs.rs::PrefKey`: the variant, its `name()` (the JSON key), `label()`, and
-   whether `board_overridable` — machine-only is for a key about the terminal or the person.
+   whether `board_overridable` — machine-only is for a key about the terminal or the person (and
+   the machine-only list in `key_names_are_unique_and_the_terminal_keys_are_machine_only`); a
+   named value joins `is_bool`'s exclusions.
 2. `tui/src/prefs.rs`: the `Prefs` field, `load`, `body` (a named value gets the foreign-value
-   clause), `word`, and `overlay` if a board may set it; a round-trip test.
+   clause), `word`, and `overlay` if a board may set it, else `BoardPrefs::is_set`'s `false`
+   arm; a round-trip test.
 3. The `Ctx` field and `App::ctx()`; the `MenuItem` in `SETTINGS_ITEMS`/`NOTIFY_ITEMS` (its
    `label` is the name alone), its place in `settings_items` and `SettingsSection::for_verb`,
    and its `keymap::value` arm — what the Settings page draws beside the name; the `Verb` and

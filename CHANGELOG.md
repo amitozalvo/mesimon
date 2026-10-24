@@ -6,6 +6,10 @@ notes, and the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+A heading whose version ends `unstable.N` is an unstable build's. A stable
+release's notes cover every unstable build before it, and a stable build's
+`Release notes` list stable releases alone.
+
 ## v0.1.0-beta.13 — 2026-10-23
 
 ### Added

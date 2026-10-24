@@ -38,6 +38,10 @@ own. [Requirements in detail](https://github.com/amitozalvo/mesimon/blob/main/do
 
 Re-running the install line is how you update. With Homebrew, `brew upgrade mesimon`.
 
+Releases tagged `unstable-…` are the unstable channel's builds, before they reach stable:
+`curl -fsSL https://mesimon.dev/install.sh | sh -s -- --channel unstable`, or Settings › About in
+the board. [Release channels](https://github.com/amitozalvo/mesimon/blob/main/docs/USING.md#release-channels).
+
 **Answer your agents from your phone.** Remote Control pairs a phone or another browser to your
 board, so a permission, a question or a plan can be answered from wherever you are.
 [More on mesimon.dev](https://mesimon.dev/#remote).

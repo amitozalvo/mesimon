@@ -8,8 +8,14 @@
 # If no board is open, the next one restarts the stale daemon by itself.
 #
 #   sh install.sh                          install or update
+#   sh install.sh --channel unstable       follow the unstable channel (and keep following it)
 #   sh install.sh --version v0.1.0-alpha.1 pin a version
 #   PREFIX=~/bin sh install.sh             install somewhere else
+#
+# It never replaces a newer mesimon with an older one: on an unstable build,
+# --channel stable records the choice and waits for a stable release that
+# passes it. Only --version installs an older one, and then nothing promises
+# that a board the newer build used still works (docs/USING.md).
 #
 # Binaries are published from a separate public repo, so there is no GitHub
 # account, login, or invite involved. mesimon.dev serves this file from that
@@ -21,17 +27,25 @@ set -eu
 REPO="amitozalvo/mesimon-releases"
 PREFIX="${PREFIX:-$HOME/.local/bin}"
 VERSION=""
+CHANNEL="stable"
+CHANNEL_SET=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) VERSION="${2:-}"; shift 2 ;;
+    --channel) CHANNEL="${2:-}"; CHANNEL_SET=1; shift 2 ;;
     --prefix)  PREFIX="${2:-}"; shift 2 ;;
-    -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
 die() { echo "error: $1" >&2; [ $# -gt 1 ] && echo "  fix: $2" >&2; exit 1; }
+
+case "$CHANNEL" in
+  stable|unstable) ;;
+  *) die "unknown channel: $CHANNEL" "use --channel stable or --channel unstable" ;;
+esac
 
 # --- preconditions, each with the exact line that fixes it -------------------
 
@@ -72,13 +86,11 @@ command -v claude >/dev/null 2>&1 || {
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
-# The highest of the tags on stdin, one per line, by semver precedence: the
-# numbers, then a prerelease below its release, its dot-separated fields
-# compared as numbers when both are digits and as text otherwise. A tag that
-# is no version is skipped. Plain awk, because `sort -V` is missing from
-# busybox and ranks v0.1.0 below v0.1.0-beta.1 in GNU's.
-highest_tag() {
-  awk '
+# Semver precedence of two versions: the numbers, then a prerelease below its
+# release, its dot-separated fields compared as numbers when both are digits
+# and as text otherwise. Plain awk, because `sort -V` is missing from busybox
+# and ranks v0.1.0 below v0.1.0-beta.1 in GNU's.
+CMP='
     function cmp(a, b,   x, y, xs, ys, n, m, i, p, q) {
       sub(/^v/, "", a); sub(/^v/, "", b)
       p = index(a, "-"); q = index(b, "-")
@@ -96,11 +108,46 @@ highest_tag() {
       }
       return n < m ? -1 : n > m
     }
-    /^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/ {
-      if (best == "" || cmp($0, best) > 0) best = $0
+'
+
+# The highest of the tags on stdin, one per line, that $CHANNEL takes. A
+# stable release is tagged v<version>; an unstable one unstable-<version>, a
+# version with an `unstable` pre-release field (T-946), which every installer
+# served since T-877 (2026-10-22) skips. Stable takes stable alone; unstable takes
+# both, and the higher wins. A tag that is no version, or whose prefix and
+# version disagree, is skipped.
+highest_tag() {
+  awk -v channel="$CHANNEL" "$CMP"'
+    {
+      ver = $0; un = sub(/^unstable-/, "", ver)
+      if (!un) sub(/^v/, "", ver)
+      if (ver !~ /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/) next
+      p = index(ver, "-")
+      says = p && index("." substr(ver, p + 1) ".", ".unstable.") > 0
+      if (says != un || (un && channel != "unstable")) next
+      if (best == "" || cmp(ver, bestver) > 0) { best = $0; bestver = ver }
     }
     END { if (best != "") print best }
   '
+}
+
+# The version a tag names: v<version> or unstable-<version>.
+tag_version() { printf '%s\n' "$1" | sed -E 's/^(unstable-|v)//'; }
+
+# An explicit --channel is a choice the machine keeps (T-946), saved by the
+# mesimon binary's own preference writer — never JSON written from here.
+# Asked of the binary about to be installed before it replaces anything, or
+# of the installed one when it stays. A default channel records nothing.
+record_channel() {
+  [ "$CHANNEL_SET" = 1 ] || return 0
+  # The binary reads the file back and exits 0 only with the word saved; its
+  # answer must also name the channel asked for, so a different saved
+  # choice is never taken for this one.
+  if said="$("$1" channel "$CHANNEL" 2>&1)"; then
+    case "$said" in "follows $CHANNEL"*) return 0 ;; esac
+  fi
+  die "the $CHANNEL channel could not be recorded: ${said:-no answer}" \
+    "nothing was replaced; fix that and run this again"
 }
 
 if [ -z "$VERSION" ]; then
@@ -109,12 +156,40 @@ if [ -z "$VERSION" ]; then
   # includes them, ordered by the date of the commit each tag names, which two
   # releases can share: beta.10 came back third on 2026-10-19. So every tag is
   # read, and the highest is the one installed, never the first.
-  VERSION="$(curl -fsSL "https://api.github.com/repos/$REPO/releases" 2>/dev/null \
+  listing="$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=100" 2>/dev/null || true)"
+  VERSION="$(printf '%s\n' "$listing" \
     | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' \
     | sed -E 's/.*"([^"]*)"$/\1/' \
     | highest_tag)"
-  [ -n "$VERSION" ] || die "could not find a published release on $REPO" \
+  # A hundred unstable releases newer than the last stable fill the page; the
+  # stable marker release.sh keeps (LATEST, one line naming it) answers then.
+  # Only on an answer shaped like a listing, its first non-blank character
+  # `[`: an error object (a rate limit's) is not a page without stable
+  # releases. Not a JSON check beyond that.
+  first="$(printf '%s' "$listing" | tr -d '[:space:]' | cut -c1)"
+  if [ -z "$VERSION" ] && [ "$CHANNEL" = stable ] && [ "$first" = "[" ]; then
+    VERSION="$(curl -fsSL "https://raw.githubusercontent.com/$REPO/main/LATEST" 2>/dev/null \
+      | head -n 1 | tr -d '[:space:]' | highest_tag)"
+  fi
+  [ -n "$VERSION" ] || die "could not find a published $CHANNEL release on $REPO" \
     "check https://github.com/$REPO/releases"
+  # Never a step back (T-946): a mesimon already here that is newer than the
+  # newest release of this channel stays, as the board's own updater keeps
+  # it. One whose version cannot be read is not replaced on a guess. Only
+  # --version installs over either.
+  if [ -e "$PREFIX/mesimon" ]; then
+    have="$("$PREFIX/mesimon" --version 2>/dev/null | awk '{print $2}' || true)"
+    printf '%s\n' "$have" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' \
+      || die "could not read the version of the mesimon at $PREFIX/mesimon" \
+           "to replace it anyway: sh install.sh --version <tag> (see github.com/$REPO/releases)"
+    want="$(tag_version "$VERSION")"
+    if awk -v a="$want" -v b="$have" "$CMP"'BEGIN { exit !(cmp(a, b) < 0) }'; then
+      record_channel "$PREFIX/mesimon"
+      echo "mesimon $have is newer than the newest $CHANNEL release ($VERSION); keeping it"
+      echo "  it updates once a newer $CHANNEL release is published"
+      exit 0
+    fi
+  fi
 fi
 
 asset="mesimon-$VERSION-$target.tar.gz"
@@ -155,6 +230,7 @@ bin="$unpacked/mesimon"
 # board. On Linux this is the static binary proving it is one.
 "$bin" --version >/dev/null || die "the downloaded binary would not run" \
   "report this with the output of: $bin --version"
+record_channel "$bin"
 
 # --- install ------------------------------------------------------------------
 

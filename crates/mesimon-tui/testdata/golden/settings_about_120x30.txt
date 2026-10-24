@@ -2,10 +2,10 @@
 
    TOD╭─ SETTINGS ───────────────────────────────────────────────────────────────────────────────────────────────╮   0
       │                                                                                                          │
-   Dec│  Theme              mesimon vX.Y.Z                                                                       │
+   Dec│  Theme              mesimon vX.Y.Z         ∙ stable build                                                │
       │                                                                                                          │
-   Key│  Appearance          Project page   github.com/amitozalvo/mesimon ›                                      │
-      │                                                                                                          │
+   Key│  Appearance          Project page      github.com/amitozalvo/mesimon ›                                   │
+      │                      Release channel   ● stable   ○ unstable                                             │
       │  Notifications                                                                                           │
       │                                                                                                          │
       │  Behaviour                                                                                               │

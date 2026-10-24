@@ -27,6 +27,9 @@
 #     ones inside a Debian container of their own architecture
 #   * the Homebrew formula is filled from the checksums just written, and is
 #     pushed to the tap only after the release it names is published
+#   * an unstable version (`…unstable.N`, T-946) is released the same way
+#     under an `unstable-` tag and the UNSTABLE marker, and syncs no install.sh,
+#     README, site or formula: what a stable install reads does not move
 #
 # Usage:  ci/release.sh              build, verify, package, publish
 #         ci/release.sh --dry-run    everything except the upload
@@ -80,9 +83,16 @@ command -v cargo >/dev/null 2>&1 || \
 command -v git >/dev/null 2>&1 || die "git is not on PATH"
 
 version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
-tag="v$version"
+# The channel is the version's (T-946), never a flag that could disagree
+# with it: `0.1.0-beta.13.unstable.N` is unstable and is tagged
+# `unstable-<version>`, which no updater from beta.12 on and no install.sh
+# served since T-877 picks; anything else is stable and tagged `v<version>`
+# as ever. Both go to
+# the same $DIST_REPO. The changelog heading is `v<version>` on both.
+read -r channel tag < <(ci/release-channel.sh "$version")
+heading="v$version"
 
-step "releasing $tag"
+step "releasing $tag ($channel)"
 
 [ -z "$(git status --porcelain)" ] || \
   die "the working tree is dirty — the artifact would not match the tag" \
@@ -104,13 +114,13 @@ git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 || \
 # with no dated heading would release a board that cannot name its own
 # version's changes. The unit test holds the same line; this is the copy
 # that runs before anything slow.
-notes_head=$(grep -m1 -E "^## $tag( — | - )[0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md || true)
+notes_head=$(grep -m1 -E "^## $heading( — | - )[0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md || true)
 [ -n "$notes_head" ] || \
-  die "CHANGELOG.md has no dated heading for $tag" \
-      "add '## $tag — $(date +%F)' above its notes, at the top of the file"
+  die "CHANGELOG.md has no dated heading for $heading" \
+      "add '## $heading — $(date +%F)' above its notes, at the top of the file"
 notes_date=${notes_head##* }
 [ "$notes_date" = "$(date +%F)" ] || \
-  echo "note: CHANGELOG.md dates $tag $notes_date; today is $(date +%F)"
+  echo "note: CHANGELOG.md dates $heading $notes_date; today is $(date +%F)"
 
 # The relay ships before the release that needs it (T-526): an older relay
 # answers a new wire request InvalidRequest, and the phone's page rides its
@@ -343,15 +353,17 @@ done
 
 # Filled from the .sha256 files above, so it names exactly these tarballs. It
 # is written here, before the dry-run exit, so a dry run shows the formula the
-# tap would get.
-step "Homebrew formula"
-./ci/homebrew-formula.sh "$tag" dist > dist/mesimon.rb
-grep -E '^ *(url|sha256) ' dist/mesimon.rb
+# tap would get. Stable alone: Homebrew follows stable (T-946).
+if [ "$channel" = stable ]; then
+  step "Homebrew formula"
+  ./ci/homebrew-formula.sh "$tag" dist > dist/mesimon.rb
+  grep -E '^ *(url|sha256) ' dist/mesimon.rb
+fi
 
 # --- notes ------------------------------------------------------------------
 
-# The tag's section: from its `## <tag> — <date>` heading to the next one.
-awk -v want="## $tag" '
+# The version's section: from its `## <heading> — <date>` to the next one.
+awk -v want="## $heading" '
   !found && (index($0, want " ") == 1 || $0 == want) {found=1; next}
   found && /^## / {exit}
   found {print}
@@ -367,20 +379,27 @@ ci/site.sh
 # by when they were published, and two releases on one commit come back in
 # either order (T-877: beta.10 was tagged on beta.9's commit, came back third,
 # and every reader that took the first entry stayed on beta.9). So each tag
-# names a commit of its own: LATEST, one line naming the tag, is committed to
-# $DIST_REPO's main first, and the release is created on that commit.
-printf '%s\n' "$tag" > dist/LATEST
+# names a commit of its own: a marker, one line naming the tag, is committed to
+# $DIST_REPO's main first, and the release is created on that commit. A stable
+# release's marker is LATEST; an unstable one's is UNSTABLE (T-946), so LATEST
+# keeps naming the latest stable and nothing that reads it sees the train.
+if [ "$channel" = stable ]; then marker=LATEST; else marker=UNSTABLE; fi
+printf '%s\n' "$tag" > "dist/$marker"
 publish_order() {
-  echo "  1. commit LATEST ($tag) to $DIST_REPO's main; the tag is created on that commit"
+  echo "  1. commit $marker ($tag) to $DIST_REPO's main; the tag is created on that commit"
   echo "  2. refuse if that commit is the one the release listed first already names"
   echo "  3. gh release create $tag --target <that commit>, with the assets"
   echo "  4. $tag must come back first in releases?per_page=3"
-  echo "  5. sync install.sh, the README and mesimon.dev; bump the Homebrew tap"
+  if [ "$channel" = stable ]; then
+    echo "  5. sync install.sh, the README and mesimon.dev; bump the Homebrew tap"
+  else
+    echo "  5. nothing else: install.sh, the README, mesimon.dev and the tap stay on stable"
+  fi
 }
 
 if [ "$DRY_RUN" = "1" ]; then
-  step "dry run — nothing published"
-  echo "artifacts in dist/, notes in dist/notes.md, the tap's formula in dist/mesimon.rb, the site in dist/site"
+  step "dry run — nothing published ($channel)"
+  echo "artifacts in dist/, notes in dist/notes.md, the tap's formula in dist/mesimon.rb (stable only), the site in dist/site"
   echo "publishing would:"
   publish_order
   echo "publish with: ci/release.sh"
@@ -397,7 +416,7 @@ gh repo view "$DIST_REPO" >/dev/null 2>&1 || \
       "gh repo create $DIST_REPO --public --add-readme"
 # Checked BEFORE the release exists: a tap that cannot be written would
 # otherwise leave `brew install` on the previous version.
-gh repo view "$TAP_REPO" >/dev/null 2>&1 || \
+[ "$channel" != stable ] || gh repo view "$TAP_REPO" >/dev/null 2>&1 || \
   die "the Homebrew tap does not exist yet" \
       "gh repo create $TAP_REPO --public --add-readme"
 
@@ -412,14 +431,14 @@ sha=$(git rev-parse HEAD)
 
 publish_order
 step "mark $tag on $DIST_REPO's main"
-ci/publish-file.sh "$DIST_REPO" dist/LATEST LATEST "release $tag"
+ci/publish-file.sh "$DIST_REPO" "dist/$marker" "$marker" "release $tag"
 branch=$(gh api "repos/$DIST_REPO" --jq .default_branch)
 target=$(gh api "repos/$DIST_REPO/commits/$branch" --jq .sha)
 listed=$(gh api "repos/$DIST_REPO/releases?per_page=1" --jq '.[0].tag_name // empty')
 if [ -n "$listed" ]; then
   [ "$(gh api "repos/$DIST_REPO/commits/$listed" --jq .sha)" != "$target" ] || \
     die "$tag would share a commit with $listed, and GitHub could list $listed first" \
-        "check LATEST on $DIST_REPO's main: it should name $tag"
+        "check $marker on $DIST_REPO's main: it should name $tag"
 fi
 
 gh release create "$tag" \
@@ -442,19 +461,22 @@ done
 
 # Keep the public repo's install.sh and README in step with what was just
 # released — the curl one-liner reads them straight off its main branch, which
-# GitHub Pages serves as mesimon.dev.
+# GitHub Pages serves as mesimon.dev. A stable release's alone: an unstable
+# one moves nothing a stable install reads (T-946).
 publish_file() { ci/publish-file.sh "$1" "$2" "$3" "sync $3 ($tag)"; }
-step "sync install.sh + README to $DIST_REPO"
-publish_file "$DIST_REPO" install.sh install.sh
-publish_file "$DIST_REPO" ci/releases-readme.md README.md
+if [ "$channel" = stable ]; then
+  step "sync install.sh + README to $DIST_REPO"
+  publish_file "$DIST_REPO" install.sh install.sh
+  publish_file "$DIST_REPO" ci/releases-readme.md README.md
 
-step "publish mesimon.dev"
-ci/site.sh --publish "$tag"
+  step "publish mesimon.dev"
+  ci/site.sh --publish "$tag"
 
-# After the release, never before: the formula's urls are its assets, and a
-# `brew install` against a formula pushed first would 404.
-step "bump the Homebrew tap ($TAP_REPO)"
-publish_file "$TAP_REPO" dist/mesimon.rb Formula/mesimon.rb
+  # After the release, never before: the formula's urls are its assets, and a
+  # `brew install` against a formula pushed first would 404.
+  step "bump the Homebrew tap ($TAP_REPO)"
+  publish_file "$TAP_REPO" dist/mesimon.rb Formula/mesimon.rb
+fi
 
 echo
 echo "published $tag"
@@ -466,6 +488,11 @@ if [ "$first" != "$tag" ]; then
   exit 1
 fi
 echo
+if [ "$channel" = unstable ]; then
+  echo "on the unstable channel: Settings › About › Release channel, or"
+  echo "  curl -fsSL https://mesimon.dev/install.sh | sh -s -- --channel unstable"
+  exit 0
+fi
 echo "share this line:"
 echo "  curl -fsSL https://mesimon.dev/install.sh | sh"
 echo "or, with Homebrew:"

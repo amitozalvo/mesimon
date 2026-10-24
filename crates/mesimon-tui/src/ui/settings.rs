@@ -379,11 +379,12 @@ fn preview(app: &App, width: usize) -> Option<Preview<'_>> {
     }
 }
 
-/// About's head: which mesimon this is.
+/// About's head: which mesimon this is, and which channel built it (T-946).
 fn about(app: &App) -> Vec<Line<'static>> {
+    let channel = mesimon_core::channel::Channel::running().word();
     vec![Line::from(vec![
         Span::styled("mesimon ", app.theme.base().add_modifier(Modifier::BOLD)),
-        Span::styled(format!("v{}", env!("CARGO_PKG_VERSION")), app.theme.dim1()),
+        Span::styled(format!("v{} ∙ {channel} build", env!("CARGO_PKG_VERSION")), app.theme.dim1()),
     ])]
 }
 

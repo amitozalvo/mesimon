@@ -32306,3 +32306,197 @@ The suite's own reds across these rounds were other names each time (`snooze_e2e
 Codex wake, `provider_e2e`'s column autosleep), each green alone. Also `cargo ut`, clippy
 `-D warnings` on `mesimon-daemon` and `mesimon`, and `git diff --check`. No rig run: the crown's
 words are T-785's (rig F8, Sonnet, 2026-10-15). Only when they appear changed.
+
+## Release channels: unstable beside stable, one repository (T-946, 2026-10-24, "Release channels: an unstable pre-release channel beside stable, chosen in Settings → About, with the relay and Remote Control staying single-channel")
+
+Two channels, `stable` and `unstable`. The machine pref `release_channel` (machine-only) picks
+which one the update check follows. It is set in Settings › About › `Release channel`, and when
+unchosen it is the running build's own channel. The decisions (D1–D5) were the crown's on the
+person's word. D2 was changed by the person: one repository.
+
+**Prior art.** Rust's trains (RFC 507): fixes land on main first, and stable is a promoted build.
+electron-updater: the channel is read from the version, and beta also gets latest. Sparkle 2:
+stable is visible to everyone. ChromeOS: a switch to a more stable channel waits until stable
+catches up, and keeps the data. Homebrew `@` formulae are keg-only, which is why there is no
+second formula. VS Code Insiders installs side by side, which mesimon cannot do: its state is
+per repo and every build shares it.
+
+**D1, the version.** An unstable build is `<last stable>.unstable.N`, for example
+`0.1.0-beta.13.unstable.N`. Under SemVer §11:
+- `beta.13` < `beta.13.unstable.1`: equal prefix, and the longer list wins.
+- `beta.13.unstable.9` < `beta.13.unstable.10`: numeric.
+- `beta.13.unstable.N` < `beta.14`: 13 < 14.
+- A hotfix `beta.13.1` < `beta.13.unstable.1`: a numeric identifier ranks under `unstable`.
+
+Rejected: `beta.14.unstable.N` and `beta.14-unstable.N` both sort above `beta.14`, and a date
+stamp collides when two builds ship on one day. **From 0.1.0 final the train takes the next
+minor, `0.2.0-unstable.N`, while stable hotfixes stay `0.1.x`.** Under `0.1.1-unstable.N` a hotfix
+`0.1.1` would outrank the train and could not read the boards the train had upgraded (Astra's
+counterexample). The rule: **a stable version that may overtake the train keeps the train's
+schema readers, or does not ship.** `Channel::of` (core/src/channel.rs) reads a version's channel;
+nothing else says it.
+
+**D2, the tag (the person's change: no second repository).** Both channels publish to
+`amitozalvo/mesimon-releases`, and every release keeps `--prerelease`, the flag every release has
+carried since 0.1.0 entered beta. **Since T-877 (`ac0a5692`) the updater and the installer take
+the highest version among the listed releases and ignore the flag; before it they took the first
+release listed.** The flag protects no existing client. So the tag carries the channel:
+- A stable release is `v<version>`.
+- An unstable release is `unstable-<version>`, for example `unstable-0.1.0-beta.13.unstable.3`.
+
+That tag fails `semver` after a `v` is trimmed (beta.12/13's `latest_tag`), and fails the old
+`install.sh` pattern `^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`, so no picker shipped since
+T-877 can offer it. **A copy of install.sh saved before 2026-10-22 picks the newest release by
+listing order and would install an unstable build; the served script does not.** That corner
+was left as a limit: the person assumes every machine is on beta.12 or later, and a second asset
+naming scheme (`mesimon-preview-…`), proposed by the delivery read, was declined as more surface
+than the corner is worth.
+
+`channel::tag` and `channel::parse_tag` are the one map. `parse_tag` refuses an unstable version
+under `v` and a stable one under `unstable-`. `ci/release-channel.sh` is the shell copy, pinned to
+the Rust one by `release::the_release_script_tags_as_the_updater_reads`. The CHANGELOG heading is
+`v<version>` on both channels.
+
+`release::tests::the_shipped_pickers_never_take_an_unstable_tag` freezes beta.13's `latest_tag`
+and the old installer pattern. It is never to be edited.
+
+**The window, and an order constraint.** The shipped updater asks `per_page=5`. Once five unstable
+tags are newer than the last stable, a beta.12/13 board sees no release it can parse and offers
+nothing until the next stable comes out. The new updater asks `per_page=30` and filters by
+channel, and `install.sh` asks `per_page=100`; past that many unstable releases after the last
+stable, a stable lookup that finds no stable tag in its page reads the `LATEST` marker and takes
+it only if it names a stable tag (`release::pick_latest`, and the same in `install.sh`). Rust
+reads the marker only when the answer parses as a JSON array; `install.sh` only when the
+answer's first non-blank character is `[`. Both turn away error bodies such as a rate limit's
+object; the shell does not otherwise validate the array.
+**The first stable release carrying this ticket
+ships before the first unstable tag**, so that users take a picker that knows the channel, and so
+that mesimon.dev serves an `install.sh` that knows `--channel` before anything advertises it.
+
+**Markers.** `dist/LATEST` still names the latest stable release alone. An unstable release
+commits `dist/UNSTABLE`, so each unstable tag names a commit of its own (T-877's ordering rule).
+The site and `install.sh` never read `UNSTABLE`.
+
+**D3, branching.** Trunk: every unstable release is cut from main. A promotion is one bump commit
+on the soaked unstable commit. A hotfix branch is cut from the stable tag only when needed (main
+first, then a cherry-pick) and is deleted after.
+
+**D4, the install roads.**
+- `install.sh --channel stable|unstable`, default stable, from the same script. Stable takes `v…`
+  tags alone; unstable takes both, and the higher wins.
+- `install.sh` refuses a candidate older than the installed binary on any channel (it used to
+  replace without comparing), and refuses to replace an installed binary whose version it cannot
+  read. An explicit `--channel` is a choice: the binary saves it through its own preference
+  writer (`mesimon channel <word>`, never JSON written by the shell). The new binary saves it
+  before it replaces anything; on the waiting path the binary that stays saves it. A save that
+  fails replaces nothing. `--version` alone records no channel. On an unstable install, `--channel stable` therefore waits as the
+  updater does. An explicit older `--version` is the manual way out: it bypasses the
+  forward-only rule, and nothing promises that a board the newer build used still works
+  (USING.md).
+- Homebrew is stable-only, everywhere: `release::effective_channel` is stable for a brew binary in
+  the watch, `mesimon update`, `doctor` and the row, and a saved `unstable` is kept. The About row
+  is inert on a brew install (`Homebrew installs follow
+  stable`), and USING.md holds the migration command.
+- The install line in its five files (README.md, docs/USING.md, ci/releases-readme.md, install.sh,
+  site/index.html) is unchanged.
+
+**D5, switching down.** Nothing is ever downgraded. `newer_than` is strict, so an unstable build
+that switches to stable stays until a stable release passes it (the row says `stays on <version>
+until a newer stable ships`), and the promotion carries every schema bump the train made.
+Rejected: listing which boards a stable build could not write. `doctor` knows no list of boards
+and no schemas.
+
+**What the code does.**
+- **A choice saved is the choice asked** (round 2). An explicit save (`mesimon channel`, the row)
+  replaces that one field, a word this build does not know included; an ordinary save still keeps
+  such a word. `save_release_channel` reads the file back and fails unless it holds the word
+  asked, so `mesimon channel` never exits 0 for another saved value, and `install.sh` also
+  requires the answer `follows <channel>`.
+- **An open board takes up a choice saved elsewhere** (round 2). On the update check's tick, every
+  2 s, `App::reconcile_release_channel` reads the saved channel. A change since it last looked
+  moves the machine's copy (so no later save writes the old word back) and the watch, whose
+  generation drops an offer and an answer of the old channel. An unchanged file undoes nothing,
+  a choice made here that could not be saved included. The press runs the same read first.
+- **The baseline is the file's entry, raw** (round 3). The board keeps the entry it last saw, a
+  known word, an unfamiliar one, or none, and a file it cannot read is no news. Its own
+  successful saves move that baseline, so a failed save after one stays this session's choice.
+  `set_pref` and the theme pick take up a changed entry before they write the whole document, so
+  an unrelated save never carries the old channel back over one saved elsewhere. A removed or
+  unfamiliar entry is taken as it is (`Prefs::take_saved_release_word`), never by restoring the
+  word held before. A change taken up on the tick redraws the frame.
+- **A press whose read moves the offer installs nothing** (round 3). The press reads first; when
+  that moves the channel and with it the offer (a cached stamp of the new channel), it stops
+  with `the offer is now <tag> ∙ nothing installed`, and the offer on screen is the new one.
+- **The automatic record refuses an unfamiliar word and reads back** (round 3).
+  `follow_release_channel_at` never adopts over a word this build does not know (`nightly`),
+  says so and leaves it; after an adoption it requires `unstable` read back from disk. One writer
+  serves start-up, `mesimon update` and the press.
+- **A promotion waits on its record** (round 2). Before a download, `App::ready_to_install`
+  runs `mesimon update`'s writer (`prefs::follow_release_channel_at`), and the start-up record
+  uses it too. A record that fails, or a choice here that is not what the file holds, keeps the
+  offer and says why: `… ∙ nothing installed`.
+- **One door into an offer.** `release::admits` asks three things: the tag is one this project
+  mints, its channel is one the machine follows takes, and it is strictly newer. Every path into
+  `Available` goes through it: a fetch's answer, a cached stamp at start or on a switch, and the
+  return after a failed download. A press asks it once more before a download starts. The
+  delivery read reproduced two leaks this closes:
+  - a failed unstable download after a switch to stable came back as an offer;
+  - a schema-1 stamp an older build wrote with an `unstable-` tag was offered to a stable watch.
+  `newer_than` holds no channel policy.
+- The channel pref persists independently of the build, on both update roads:
+  - an unstable build that finds the key absent writes `unstable` once, at TUI start
+    (`App::follow_release_channel`, a checking build only);
+  - `mesimon update` does the same (`prefs::follow_release_channel_home`), and a record it
+    cannot save stops the update with the reason (nothing is installed on it); the board says
+    a failed save in its status line;
+  - so a promotion to a stable build does not drop the machine back to stable.
+- `ReleaseWatch::set_channel` takes down an offer for the old channel. A check still out carries
+  its generation and is dropped. The new channel is asked at the next poll.
+- `update-check.json` is schema 2 and names the channel that asked. A stamp from another channel
+  is no answer, a schema-1 stamp is a stable check, and an older build ignores a 2.
+- The build stamp `MESIMON_CHANNEL` (dev/release) was renamed `MESIMON_BUILD_KIND`, so "channel"
+  means one thing.
+- A stable build's Release notes hide `unstable` headings (`relnotes::for_channel`); the
+  promotion's entry is their rollup.
+- The About preview reads `mesimon v… ∙ <channel> build`. `doctor`'s `update checks` line says
+  `<channel> build, follows <channel>`.
+- `--version` is unchanged: the version already names the channel, and three gates run it.
+
+**Release scripts.**
+- `ci/release.sh` reads the channel off the version; there is no flag, since a flag could only
+  disagree with the version. An unstable release takes its `unstable-` tag and the UNSTABLE
+  marker, and syncs no install.sh, README, site or tap.
+- The relay repository's `deploy/ship.sh` hard-coded `release=v$version`, which would have tagged
+  an unstable build where every shipped picker could see it. Its relay-side branch asks
+  `ci/release-channel.sh` for the tag. Without the helper it falls back to `v$version` for a
+  stable version only; it refuses an unstable version, and a helper that is present but not
+  executable or fails. Until that branch is merged, an unstable cut fails closed: `release.sh`
+  finds no `unstable-` tag and publishes nothing.
+
+**The relay and Remote Control stay single-channel.** `check-relay.sh` gates both channels the
+same way. The live relay serves both channels' cores, so a relay change made for the train must
+still serve the newest stable core. The relay repository keeps a stable-client fixture and a
+candidate-client fixture before any shared deployment that changes their contract. There is no
+wire-version system.
+
+**Tests.**
+- `channel::tests` (the version and tag tables).
+- `relnotes` (`order_key_places_the_unstable_train_between_stables`,
+  `a_stable_build_lists_no_unstable_notes`).
+- `release::tests`:
+  - `the_unstable_train_orders_between_stables`;
+  - `each_channel_picks_its_own_from_one_list`;
+  - the frozen pickers;
+  - `every_road_into_an_offer_asks_the_channel` (both leaks as fixtures);
+  - `a_brew_install_follows_stable_with_an_unstable_preference`;
+  - `a_page_of_unstable_releases_falls_back_to_the_stable_marker`;
+  - `a_channel_change_cancels_the_old_channels_offer_and_check`;
+  - the stamp at v2.
+- `prefs` (the round-trip, the once-only record,
+  `the_update_road_records_the_channel_or_says_why_not`).
+- `relnotes::order_key` orders `beta.13 < beta.13.1 < beta.13.unstable.1 < beta.14`.
+- `app::the_release_channel_row_cycles_and_tells_the_check`.
+- The About goldens.
+- `ci/test_installer.py`'s `InstallerChannel`: an absent choice and an opposite one replaced, a
+  promotion picked on unstable, the wait that keeps the binary, a save that fails, an unreadable
+  installed version, `--version` alone, and the marker fallback.

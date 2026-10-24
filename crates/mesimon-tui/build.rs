@@ -10,6 +10,6 @@
 
 fn main() {
     println!("cargo:rerun-if-env-changed=MESIMON_RELEASE");
-    let channel = if std::env::var_os("MESIMON_RELEASE").is_some() { "release" } else { "dev" };
-    println!("cargo:rustc-env=MESIMON_CHANNEL={channel}");
+    let kind = if std::env::var_os("MESIMON_RELEASE").is_some() { "release" } else { "dev" };
+    println!("cargo:rustc-env=MESIMON_BUILD_KIND={kind}");
 }

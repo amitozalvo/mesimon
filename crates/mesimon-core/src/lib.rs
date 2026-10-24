@@ -15,6 +15,7 @@ pub mod board;
 pub mod board_source;
 pub mod boardlink;
 pub mod brief;
+pub mod channel;
 pub mod claudemd;
 pub mod clock;
 pub mod command;

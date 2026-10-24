@@ -21,7 +21,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class InstallerWelcome(unittest.TestCase):
     def install(self, *, tty=True, locale="en_US.UTF-8", term="xterm-256color", broken=False,
-                listing=None, version="v0.0.0-test"):
+                listing=None, version="v0.0.0-test", channel=None, installed=None,
+                marker=None, fail_channel=False, wrong_channel=False, expect_ok=None):
         with tempfile.TemporaryDirectory(prefix="msmn-installer-") as tmp:
             root = Path(tmp)
             commands = root / "commands"
@@ -40,13 +41,19 @@ class InstallerWelcome(unittest.TestCase):
   case "$1" in -o) out="$2"; shift 2 ;; *) url="$1"; shift ;; esac
 done
 case "$url" in *api.github.com*) cat "$FIXTURE_LISTING"; exit 0 ;; esac
+case "$url" in */LATEST) [ -f "$FIXTURE_MARKER" ] || exit 22; cat "$FIXTURE_MARKER"; exit 0 ;; esac
 case "$url" in *.sha256) cp "$FIXTURE_ASSET.sha256" "$out" ;; *) cp "$FIXTURE_ASSET" "$out" ;; esac''')
             name = f"mesimon-{version}-x86_64-unknown-linux-musl"
             archive = root / (name + ".tar.gz")
             # An older mesimon listed `welcome` in --help; it is recorded if run.
+            # `channel <word>` is the binary's own preference writer (T-946):
+            # recorded, as the downloaded build, unless the test makes it fail.
+            channel_arm = (b"  channel) [ -z \"$FAIL_CHANNEL\" ] || { echo 'prefs.json is not writable'; exit 1; }\n"
+                           b"    [ -z \"$WRONG_CHANNEL\" ] || { echo 'follows stable'; exit 0; }\n"
+                           b"    echo \"new $2\" >> \"$CHANNEL_LOG\"; echo \"follows $2\"; exit 0 ;;\n")
             binary = (b"#!/bin/sh\n"
                       b"case \"$1\" in --help) echo '  mesimon welcome   the intro' ;;\n"
-                      b"  welcome) echo ran >> \"$WELCOME_LOG\" ;; esac\n"
+                      b"  welcome) echo ran >> \"$WELCOME_LOG\" ;;\n" + channel_arm + b"esac\n"
                       b"echo mesimon-test\n" + (b"exit 1\n" if broken else b""))
             with tarfile.open(archive, "w:gz") as tar:
                 entry = tarfile.TarInfo(name + "/mesimon")
@@ -55,14 +62,37 @@ case "$url" in *.sha256) cp "$FIXTURE_ASSET.sha256" "$out" ;; *) cp "$FIXTURE_AS
             Path(str(archive) + ".sha256").write_text(
                 hashlib.sha256(archive.read_bytes()).hexdigest() + "  " + archive.name + "\n"
             )
+            prefix = root / "install with spaces"
+            channel_log = root / "channel.log"
             env = dict(os.environ, PATH=str(commands) + ":/usr/bin:/bin", LC_ALL=locale,
-                       TERM=term, PREFIX=str(root / "install with spaces"), FIXTURE_ASSET=str(archive),
-                       WELCOME_LOG=str(root / "welcome.log"))
+                       TERM=term, PREFIX=str(prefix), FIXTURE_ASSET=str(archive),
+                       WELCOME_LOG=str(root / "welcome.log"), CHANNEL_LOG=str(channel_log),
+                       FIXTURE_MARKER=str(root / "LATEST"))
+            env.pop("FAIL_CHANNEL", None)
+            env.pop("WRONG_CHANNEL", None)
+            if fail_channel:
+                env["FAIL_CHANNEL"] = "1"
+            if wrong_channel:
+                env["WRONG_CHANNEL"] = "1"
+            if marker is not None:
+                (root / "LATEST").write_text(marker + "\n")
+            if installed is not None:
+                # What `--version` prints: `mesimon <version> (<sha>, <date>)`;
+                # `installed=""` is a binary whose version cannot be read.
+                prefix.mkdir()
+                said = f"mesimon {installed} (abc1234, 2026-10-24)" if installed else "garbage"
+                (prefix / "mesimon").write_text(
+                    "#!/bin/sh\n"
+                    'if [ "$1" = channel ]; then echo "kept $2" >> "$CHANNEL_LOG"; echo "follows $2"; exit 0; fi\n'
+                    f"echo '{said}'\n")
+                (prefix / "mesimon").chmod(0o755)
             args = ["sh", str(ROOT / "install.sh"), "--version", version]
             if listing is not None:
                 (root / "listing.json").write_text(listing)
                 env["FIXTURE_LISTING"] = str(root / "listing.json")
                 args = args[:2]
+            if channel is not None:
+                args += ["--channel", channel]
             if tty:
                 master, slave = pty.openpty()
                 try:
@@ -105,9 +135,13 @@ case "$url" in *.sha256) cp "$FIXTURE_ASSET.sha256" "$out" ;; *) cp "$FIXTURE_AS
             else:
                 result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=15)
                 output = result.stdout + result.stderr
-            self.assertEqual(result.returncode == 0, not broken, output)
+            self.assertEqual(result.returncode == 0,
+                             (not broken) if expect_ok is None else expect_ok, output)
             # The intro is the first board's (T-903): the installer never runs it.
             self.assertFalse((root / "welcome.log").exists(), "the installer ran mesimon welcome")
+            self.recorded = channel_log.read_text().split("\n")[:-1] if channel_log.exists() else []
+            self.replaced = (prefix / "mesimon").exists() and \
+                b"mesimon-test" in (prefix / "mesimon").read_bytes()
             return output
 
     def test_utf8_terminal_gets_the_resting_mascot_after_success(self):
@@ -165,7 +199,107 @@ class InstallerVersion(unittest.TestCase):
     def test_an_empty_listing_installs_nothing(self):
         with self.assertRaises(AssertionError) as failed:
             self.install(tty=False, listing="[]")
-        self.assertIn("could not find a published release", str(failed.exception))
+        self.assertIn("could not find a published stable release", str(failed.exception))
+
+
+class InstallerChannel(unittest.TestCase):
+    """T-946: both channels share one list; the tag says which is which."""
+
+    install = InstallerWelcome.install
+
+    def listing(self, *tags):
+        return json.dumps([{"tag_name": t, "draft": False, "prerelease": True} for t in tags])
+
+    TRAIN = ("unstable-0.1.0-beta.13.unstable.2", "v0.1.0-beta.13",
+             "unstable-0.1.0-beta.13.unstable.1", "v0.1.0-beta.12",
+             # Never minted: an unstable version under `v`, a stable one
+             # under `unstable-`. Neither channel takes either.
+             "v0.1.0-beta.13.unstable.9", "unstable-0.1.0-beta.99")
+
+    def test_stable_takes_no_unstable_tag(self):
+        output = self.install(tty=False, listing=self.listing(*self.TRAIN),
+                              version="v0.1.0-beta.13")
+        self.assertIn("downloading mesimon-v0.1.0-beta.13-x86_64", output)
+        self.assertEqual(self.recorded, [], "a default channel records nothing")
+
+    def test_unstable_takes_the_higher_of_both_and_records_the_choice(self):
+        tag = "unstable-0.1.0-beta.13.unstable.2"
+        output = self.install(tty=False, listing=self.listing(*self.TRAIN), version=tag,
+                              channel="unstable")
+        self.assertIn(f"downloading mesimon-{tag}-x86_64", output)
+        self.assertEqual(self.recorded, ["new unstable"], "the choice, by the new binary")
+
+    def test_a_promotion_picked_on_unstable_keeps_unstable(self):
+        # The highest release is stable; the explicit choice still persists,
+        # over an opposite one already saved (the binary's writer replaces it).
+        output = self.install(tty=False, listing=self.listing("v0.1.0-beta.14", *self.TRAIN),
+                              version="v0.1.0-beta.14", channel="unstable",
+                              installed="0.1.0-beta.13")
+        self.assertIn("downloading mesimon-v0.1.0-beta.14-x86_64", output)
+        self.assertEqual(self.recorded, ["new unstable"])
+
+    def test_a_newer_install_is_kept_and_the_choice_recorded(self):
+        output = self.install(tty=False, listing=self.listing(*self.TRAIN),
+                              version="v0.1.0-beta.13", channel="stable",
+                              installed="0.1.0-beta.13.unstable.2")
+        self.assertIn("mesimon 0.1.0-beta.13.unstable.2 is newer than the newest stable", output)
+        self.assertNotIn("downloading", output)
+        self.assertEqual(self.recorded, ["kept stable"], "the waiting binary records it")
+        # An older one is replaced, as ever, and with no --channel nothing
+        # is recorded.
+        output = self.install(tty=False, listing=self.listing(*self.TRAIN),
+                              version="v0.1.0-beta.13", installed="0.1.0-beta.12")
+        self.assertIn("downloading mesimon-v0.1.0-beta.13-x86_64", output)
+        self.assertEqual(self.recorded, [])
+
+    def test_a_choice_that_cannot_be_saved_replaces_nothing(self):
+        output = self.install(tty=False, listing=self.listing(*self.TRAIN),
+                              version="unstable-0.1.0-beta.13.unstable.2", channel="unstable",
+                              installed="0.1.0-beta.12", fail_channel=True, expect_ok=False)
+        self.assertIn("the unstable channel could not be recorded: prefs.json is not writable",
+                      output)
+        self.assertFalse(self.replaced, "the binary was replaced after the save failed")
+
+    def test_a_choice_answered_with_another_channel_cannot_proceed(self):
+        # A binary that exits 0 but says it follows something else did not
+        # save this choice (T-946 round 2): nothing proceeds.
+        output = self.install(tty=False, listing=self.listing(*self.TRAIN),
+                              version="unstable-0.1.0-beta.13.unstable.2", channel="unstable",
+                              installed="0.1.0-beta.12", wrong_channel=True, expect_ok=False)
+        self.assertIn("the unstable channel could not be recorded: follows stable", output)
+        self.assertFalse(self.replaced, "the binary was replaced on another channel's answer")
+
+    def test_an_unreadable_installed_version_is_not_replaced(self):
+        output = self.install(tty=False, listing=self.listing(*self.TRAIN),
+                              version="v0.1.0-beta.13", installed="", expect_ok=False)
+        self.assertIn("could not read the version of the mesimon at", output)
+        self.assertNotIn("downloading", output)
+
+    def test_an_explicit_version_alone_records_no_channel(self):
+        self.install(tty=False, version="v0.0.0-test")
+        self.assertEqual(self.recorded, [])
+
+    def test_a_page_of_unstable_releases_falls_back_to_the_stable_marker(self):
+        page = [f"unstable-0.1.0-beta.14.unstable.{n}" for n in range(1, 101)]
+        output = self.install(tty=False, listing=self.listing(*page), version="v0.1.0-beta.14",
+                              marker="v0.1.0-beta.14")
+        self.assertIn("downloading mesimon-v0.1.0-beta.14-x86_64", output)
+        # A marker that names no stable tag is no answer.
+        output = self.install(tty=False, listing=self.listing(*page), version="v0.1.0-beta.14",
+                              marker="unstable-0.1.0-beta.14.unstable.101", expect_ok=False)
+        self.assertIn("could not find a published stable release", output)
+
+    def test_a_body_that_is_no_listing_never_reads_the_marker(self):
+        # A rate limit's answer is not a page without stable releases.
+        output = self.install(tty=False, listing='{"message": "API rate limit exceeded"}',
+                              version="v0.1.0-beta.14", marker="v0.1.0-beta.14", expect_ok=False)
+        self.assertIn("could not find a published stable release", output)
+        self.assertNotIn("downloading", output)
+
+    def test_an_unknown_channel_is_refused(self):
+        output = self.install(tty=False, listing=self.listing(*self.TRAIN), channel="nightly",
+                              expect_ok=False)
+        self.assertIn("unknown channel: nightly", output)
 
 
 if __name__ == "__main__":
