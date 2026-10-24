@@ -1451,7 +1451,10 @@ fn an_id_less_permission_request_keeps_a_call_only_as_a_repeat() {
     // only the call the record names can tie A's result to A.
     b.stop_on("ExitPlanMode", "toolu_a");
     id_less(&b, "ExitPlanMode");
-    std::thread::sleep(Duration::from_millis(500));
+    // The repeat decided before the restart: its decision in the feed.
+    wait_until(Duration::from_secs(10), "the PermissionRequest decided", || {
+        b.decisions().iter().any(|d| d["source"] == "PermissionRequest")
+    });
     b.h.restart_after(|| {});
     b.c = b.h.client("planrepeatcall_2");
     std::thread::sleep(Duration::from_millis(2500));
@@ -1475,4 +1478,88 @@ fn an_id_less_permission_request_keeps_a_call_only_as_a_repeat() {
     });
     std::thread::sleep(Duration::from_millis(2000));
     assert_eq!(b.state(), Some(SessionState::Running), "the new turn runs");
+}
+
+/// T-957 round 12: a repeat is told by the interaction's print, not by its
+/// drawing. A question past the projection's 16 KiB bound is never drawn,
+/// so an identical id-less `PermissionRequest` after its named `PreToolUse`
+/// had no projection to be compared with, and let the call go. Here the
+/// writer is busy: the question's call, its refusal and its Esc are on disk
+/// before a reader with no cursor consumes the named `PreToolUse` and the
+/// identical id-less `PermissionRequest`. The print says repeat, the call is
+/// kept, and the first read ends the question by it: `Interrupted`, no
+/// `needs_you`. Control: an id-less `PermissionRequest` with another input,
+/// both past the bound, is a replacement and names no call.
+#[test]
+fn a_question_too_big_to_draw_keeps_its_call_through_an_id_less_repeat() {
+    const STOP: &str =
+        "The user doesn't want to proceed with this tool use. STOP what you are doing.";
+    let big = |n: &str| {
+        serde_json::json!({"questions": [{"question": format!("Which {n}?"), "header": "Which",
+            "options": [{"label": "A", "description": "x".repeat(17 * 1024)},
+                {"label": "B", "description": ""}], "multiSelect": false}]})
+    };
+    let frame = |id: Option<&str>, input: &serde_json::Value| {
+        let mut f = serde_json::json!({"tool_name": "AskUserQuestion", "tool_input": input});
+        if let Some(id) = id {
+            f["tool_use_id"] = serde_json::json!(id);
+        }
+        f.to_string()
+    };
+    let held_call = |b: &Bed| -> Option<String> {
+        let text = std::fs::read_to_string(b.h.paths.sessions_file()).unwrap_or_default();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+        v["sessions"].as_array()?.iter().find(|s| s["id"] == b.sid.to_string())?["dialog_call"]
+            .as_str()
+            .map(String::from)
+    };
+    let decided = |b: &Bed, event: &str, n: usize| {
+        wait_until(Duration::from_secs(10), &format!("{event} decided"), || {
+            b.decisions().iter().filter(|d| d["source"] == event).count() >= n
+        });
+    };
+
+    // ---- the repeat, read by a fresh reader after its end is on disk -------
+    let Some(mut b) = Bed::boot("planbigrepeat") else { return };
+    b.start();
+    b.hook("Stop", r#"{"stop_hook_active":false}"#);
+    b.c.await_state(b.sid, "at rest", |s| matches!(s, SessionState::Idle { .. }));
+    // A tail read at rest forgets the cursor.
+    std::thread::sleep(Duration::from_millis(2500));
+    let input = big("one");
+    b.append_all(&[
+        serde_json::json!({"uuid": "c-b", "type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_b", "name": "AskUserQuestion", "input": input}]}}),
+        Bed::result_of("toolu_b", true, STOP),
+        serde_json::json!({"uuid": "esc-b", "type": "user", "timestamp": now_iso(),
+            "message": {"content": [{"type": "text",
+                "text": "[Request interrupted by user for tool use]"}]}}),
+    ]);
+    b.hook("PreToolUse", &frame(Some("toolu_b"), &input));
+    b.hook("PermissionRequest", &frame(None, &input));
+    let interrupted =
+        SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Interrupted };
+    b.c.await_state(b.sid, "off the question by its kept call", |s| *s == interrupted);
+    let needs = match b
+        .c
+        .send(mesimon_core::Principal::Agent { session: b.sid }, Command::AgentGetTicket)
+    {
+        Response::AgentTicket { ticket } => ticket.needs_you,
+        other => panic!("get_ticket: {other:?}"),
+    };
+    assert!(needs.is_none(), "no dialog stands: {needs:?}");
+
+    // ---- the control: another input, past the bound too, replaces ----------
+    let Some(mut b) = Bed::boot("planbigreplace") else { return };
+    b.start();
+    b.hook("PreToolUse", &frame(Some("toolu_c"), &big("one")));
+    decided(&b, "PreToolUse", 1);
+    assert_eq!(held_call(&b).as_deref(), Some("toolu_c"), "the named call is held");
+    b.hook("PermissionRequest", &frame(None, &big("two")));
+    decided(&b, "PermissionRequest", 1);
+    assert_eq!(held_call(&b), None, "a replacement names no call");
+    // An id-less repeat of what replaced it keeps none either.
+    b.hook("PermissionRequest", &frame(None, &big("two")));
+    decided(&b, "PermissionRequest", 2);
+    assert_eq!(held_call(&b), None);
 }

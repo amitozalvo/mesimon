@@ -1174,19 +1174,22 @@ impl Daemon {
         }
         let Some(tool) = frame.payload["tool_name"].as_str() else { return };
         let content = dialog_content(tool, &frame.payload["tool_input"]);
-        // An id-less `PermissionRequest` repeating the dialog projected for
-        // the seat, the same tool's same content: it keeps that dialog's
-        // identity, its request below and its named call here (round 11).
+        let interaction = matches!(tool, "ExitPlanMode" | "AskUserQuestion");
+        // The interaction's print (round 12), drawn or not: the evidence an
+        // id-less `PermissionRequest` repeats the dialog the seat's last
+        // plan or question hook carried, the same tool's same input. A
+        // repeat keeps that dialog's identity: its request below, its named
+        // call and its prompt count here (round 11).
+        let print = interaction.then(|| interaction_print(tool, &frame.payload["tool_input"]));
         let repeat = frame.event == "PermissionRequest"
             && frame.payload["tool_use_id"].is_null()
-            && content
-                .as_ref()
-                .is_some_and(|c| self.control.dialogs.get(&id).is_some_and(|d| d.content == *c));
+            && print.is_some()
+            && self.board.sessions.iter().any(|s| s.id == id && s.dialog_print == print);
         // The call the record is held on (T-957 rounds 9, 10), observed from
         // the hook whether or not its content projects: a dialog too big to
         // draw still names its call, and a replacement that gives no id
         // names none, never the call before it; only a repeat keeps it.
-        if matches!(tool, "ExitPlanMode" | "AskUserQuestion") {
+        if interaction {
             let call =
                 frame.payload["tool_use_id"].as_str().filter(|s| s.len() <= 256).map(String::from);
             // The prompts heard when it was named (round 4): an Esc read for
@@ -1198,8 +1201,9 @@ impl Daemon {
                 }
             }
             if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
-                if !repeat && rec.dialog_call != call {
+                if !repeat && (rec.dialog_call != call || rec.dialog_print != print) {
                     rec.dialog_call = call;
+                    rec.dialog_print = print;
                     self.persist_sessions();
                 }
             }
@@ -6124,6 +6128,15 @@ fn dialog_edge(frame: &HookFrame, dialog: &api::Dialog) -> Option<DialogEdge> {
     }
 }
 
+/// A plan's or a question's print (T-957 round 12): the tool and the first
+/// 128 bits of a SHA-256 of its whole input, as `serde_json` writes it (keys
+/// sorted), whatever its size. Bounded, so it rides the session record.
+fn interaction_print(tool: &str, input: &serde_json::Value) -> String {
+    use sha2::{Digest, Sha256};
+    let bytes = serde_json::to_vec(input).unwrap_or_default();
+    format!("{tool}:{}", hex::encode(&Sha256::digest(&bytes)[..16]))
+}
+
 /// Whether this frame ends `dialog` with no answer to confirm: the turn or
 /// the session ending, or its own call failing or denied. Another tool's
 /// end never does (T-595): a model sends a question beside other tools in
@@ -8342,6 +8355,21 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
     /// dialog left. At the window's end with the projection standing, a
     /// failed capture is `unknown { pane_unreachable }`, never the dialog
     /// gone, and a screen still drawing it is `dialog_stands`.
+    /// T-957 round 12: an interaction's print is its tool and its whole
+    /// input, key order aside, bounded whatever the input's size.
+    #[test]
+    fn an_interaction_s_print_is_its_tool_and_its_whole_input() {
+        let a = serde_json::json!({"plan": "x", "extra": {"b": 1, "a": 2}});
+        let b: serde_json::Value =
+            serde_json::from_str(r#"{"extra": {"a": 2, "b": 1}, "plan": "x"}"#).unwrap();
+        assert_eq!(interaction_print("ExitPlanMode", &a), interaction_print("ExitPlanMode", &b));
+        assert_ne!(interaction_print("ExitPlanMode", &a), interaction_print("AskUserQuestion", &a));
+        let c = serde_json::json!({"plan": "y", "extra": {"b": 1, "a": 2}});
+        assert_ne!(interaction_print("ExitPlanMode", &a), interaction_print("ExitPlanMode", &c));
+        let huge = serde_json::json!({"plan": "z".repeat(1 << 20)});
+        assert_eq!(interaction_print("ExitPlanMode", &huge).len(), "ExitPlanMode:".len() + 32);
+    }
+
     #[test]
     fn a_plan_sent_back_claims_the_dialog_gone_only_on_a_screen_read() {
         let never = || -> Option<String> { panic!("no capture before the window's end") };

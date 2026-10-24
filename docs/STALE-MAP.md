@@ -34192,6 +34192,25 @@ belongs to a later turn.
     with A's call line off the transcript; with every id-less request taken as a replacement it
     stays on the plan.
   - The control, live: a repeat keeps A's prompt-count fence.
+- **Round 12: a repeat is told by the interaction's print, not its drawing.** Round 11's
+  repeat test compared the projection, and a question past the 16 KiB bound is never projected.
+  So its genuine id-less repeat let go the call its named `PreToolUse` had just set. With the
+  call and the refusal on disk before a busy writer's hooks, the first read then fell to the
+  spell's clock and the dismissed question kept needs-you. Beside the call, the record now keeps
+  `SessionRecord::dialog_print`: the tool and 128 bits of a SHA-256 of the whole input,
+  `serde_json`'s sorted keys, bounded, `#[serde(default)]`, no schema bump. It is set on every
+  plan or question hook, cleared with the call by `set_state`, and is the one repeat predicate:
+  it replaced the projection-equality check. An id-less `PermissionRequest` with the same print
+  keeps the call and the projection's request; another tool or input is a replacement.
+  - Test `plan_accept_e2e::a_question_too_big_to_draw_keeps_its_call_through_an_id_less_repeat`:
+    the over-bound question's call, refusal and Esc on disk, then its named `PreToolUse` and the
+    identical id-less `PermissionRequest` to a reader with no cursor. It ends `Interrupted`, no
+    `needs_you`; with round 11's predicate it stays on the question. The control, another input
+    past the bound, leaves no call in `sessions.json`; with the unconditional id-less rule it
+    keeps the first.
+  - Unit `mesophon::an_interaction_s_print_is_its_tool_and_its_whole_input`.
+  - Round 11's words control now waits for the `PermissionRequest` decision in the feed before
+    its restart, instead of a 500 ms sleep.
 - **After a restart** a dialog this daemon never projected counts from the daemon's start.
 - **In the read:** a person's prompt (`adopt::user_prompt`) after an interrupt in the same read
   drops the interrupted end and every `AbortedMidStream` read before it.

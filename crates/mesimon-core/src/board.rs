@@ -487,6 +487,14 @@ pub struct SessionRecord {
     /// an older build, or for a dialog no hook projected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dialog_call: Option<String>,
+    /// The interaction the last plan or question hook carried, beside its
+    /// call (T-957 round 12): the tool and a hash of its whole input,
+    /// bounded, whether or not the dialog could be drawn. An id-less
+    /// `PermissionRequest` with the same print repeats that dialog and
+    /// keeps its call; any other is a replacement. Set and let go with
+    /// `dialog_call`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dialog_print: Option<String>,
     /// This session has read its ticket (T-224, 2026-09-05): `get_ticket`
     /// answered it, or the composed spawn pasted the description under the
     /// title as its first prompt. The ticket page reads it the other way
@@ -685,6 +693,7 @@ impl SessionRecord {
             background_tasks: Default::default(),
             plan_note: None,
             dialog_call: None,
+            dialog_print: None,
             ticket_read: false,
             tier: String::new(),
             tier_owed: false,
@@ -707,6 +716,7 @@ impl SessionRecord {
             SessionState::RequiresAction { reason: Reason::Plan | Reason::Question }
         ) {
             self.dialog_call = None;
+            self.dialog_print = None;
         }
         self.state = state;
     }
@@ -4360,8 +4370,10 @@ mod tests {
             SessionState::RequiresAction { reason: Reason::Permission },
         ] {
             rec.dialog_call = Some("toolu_b".into());
+            rec.dialog_print = Some("AskUserQuestion:00".into());
             rec.set_state(gone.clone());
             assert_eq!((rec.dialog_call.as_deref(), &rec.state), (None, &gone));
+            assert!(rec.dialog_print.is_none());
         }
     }
 
@@ -4393,6 +4405,7 @@ mod tests {
         assert!(!rec.pending_prefill);
         assert!(!rec.codex_submit_sent);
         assert!(rec.dialog_call.is_none(), "T-957: no call held from an older line");
+        assert!(rec.dialog_print.is_none());
     }
 
     fn ticket(id: u128, column: &str, order: &str) -> Ticket {
