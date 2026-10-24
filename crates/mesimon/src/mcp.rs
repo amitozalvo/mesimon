@@ -342,6 +342,7 @@ fn render(resp: Response) -> Value {
             woken,
             workspace,
             prompt,
+            seen,
         } => {
             let mut body = json!({
                 "key": key,
@@ -362,6 +363,9 @@ fn render(resp: Response) -> Value {
             if let Some(prompt) = prompt {
                 body["prompt"] = json!(prompt.word());
                 body["prompt_about"] = json!(start_prompt_about(&key, prompt, session_started));
+            }
+            if let Some(seen) = seen {
+                body["seen"] = json!(seen);
             }
             text(&body)
         }
@@ -829,6 +833,7 @@ mod tests {
                 woken,
                 workspace: "worktree".into(),
                 prompt: None,
+                seen: (!woken).then(|| "0123abcd".to_string()),
             });
             assert_eq!(v["isError"], false);
             serde_json::from_str::<Value>(v["content"][0]["text"].as_str().unwrap()).unwrap()
@@ -851,6 +856,10 @@ mod tests {
         assert_eq!(body(false, true)["status"], "waiting_for_worktree", "a rebuild first");
         assert_eq!(now["workspace"], "worktree");
         assert!(now.get("prompt").is_none(), "a daemon from before T-920 says nothing of it");
+        // T-936: the start's fresh stamp rides the receipt, as an accepted
+        // plan's does; a daemon from before it sends none.
+        assert_eq!(now["seen"], "0123abcd");
+        assert!(body(true, true).get("seen").is_none());
     }
 
     /// T-920: a wake is not the work going on. The receipt says, in the
@@ -870,6 +879,7 @@ mod tests {
                 woken,
                 workspace: "worktree".into(),
                 prompt: Some(prompt),
+                seen: None,
             });
             serde_json::from_str::<Value>(v["content"][0]["text"].as_str().unwrap()).unwrap()
         };

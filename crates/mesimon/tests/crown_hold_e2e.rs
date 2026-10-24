@@ -877,3 +877,72 @@ fn a_merge_the_crown_did_not_hear_is_not_news_later() {
     assert!(all[1].starts_with(&format!("{worker}finished its turn")), "{all:?}");
     assert!(!all.iter().any(|l| l.starts_with(&format!("{worker}merged"))), "{all:?}");
 }
+
+/// T-936: the crown holds each ticket it starts, in either order, without a
+/// second read. `start_agent`'s receipt carries the target's fresh stamp, as
+/// `hold_ticket`'s does, so a hold right after a start takes the start's
+/// stamp, and a start right after a hold takes the hold's. A stamp moves as
+/// the agent's state does: the worktree's init script holds the launch here
+/// so the hold lands before it.
+#[test]
+fn a_hold_and_a_start_take_each_other_s_stamp() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_start_hold",
+        Some(RECORDING_STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    std::fs::write(h.repo.join(mesimon_core::workspace::INIT_SCRIPT), "#!/bin/sh\nsleep 3\n")
+        .unwrap();
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_start_hold");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-936 started, then held");
+    let v = c.create_ticket("mesimon-probe-936 held, then started");
+    let (kw, kv) = (key_of(&mut c, w), key_of(&mut c, v));
+    // Filed with its workspace, as the crown files.
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id: v, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    let start = |c: &mut TestClient, key: &str, seen: Option<String>| match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: key.into(),
+            seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+        },
+    ) {
+        Response::AgentStarted { seen, .. } => seen,
+        other => panic!("start_agent {key}: {other:?}"),
+    };
+
+    // Started, then held with the start's stamp.
+    let seen = read(&mut c, sa, &kw).unwrap().seen;
+    let seen = start(&mut c, &kw, seen);
+    assert!(seen.is_some(), "the receipt carries the stamp");
+    let (held, by, changed, _) = hold(&mut c, sa, &kw, true, seen).unwrap();
+    assert!(held && changed && by == "crown");
+
+    // Held, then started with the hold's stamp.
+    let seen = read(&mut c, sa, &kv).unwrap().seen;
+    let seen = match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentHoldTicket { key: kv.clone(), hold: true, seen },
+    ) {
+        Response::AgentHeld { held: true, seen, .. } => seen,
+        other => panic!("hold_ticket {kv}: {other:?}"),
+    };
+    assert!(start(&mut c, &kv, seen).is_some());
+    assert!(flag(&mut c, v), "the hold stands through the start");
+}

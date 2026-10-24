@@ -7420,7 +7420,8 @@ impl Daemon {
                     }
                 };
                 self.feed.board(by.actor(), "start_agent", Some(target));
-                self.crown_touched(ticket, target, if woken { "woken" } else { "started" });
+                let seen =
+                    self.crown_touched(ticket, target, if woken { "woken" } else { "started" });
                 // A checkout worker's first delivery is a HEAD past this one;
                 // a woken one's next is a HEAD past the wake.
                 self.probe_turn(target, ProbeWhy::Baseline);
@@ -7433,6 +7434,7 @@ impl Daemon {
                     woken,
                     workspace: crown::workspace_word(wanted).to_string(),
                     prompt: Some(prompt),
+                    seen,
                 }
             }
             // The crown's sleep (T-539): `x` on a card the crown started. The

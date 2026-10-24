@@ -32704,3 +32704,17 @@ handover still wakes the crown worn now; without the park's close it fails at th
 hand merge and a watch; without the baseline move it reads `merged (…, after a restart)`). A turn
 that ended in the gap is still heard (`a_worker_mid_turn_across_a_restart_delivers_at_its_real_end`,
 `a_merge_while_the_daemon_is_down_wakes_the_crown_after_the_restart`).
+
+**A start's receipt carries the stamp (item 1).** The crown measured that a hold before
+`start_agent` is accepted on the first try, and `start_agent` takes the stamp the hold returns.
+The refusals it logged ("changed since it was read (now in TODO, agent starting)") were holds
+sent after a start with the stamp read before it. `AgentStarted` now carries the target's fresh
+stamp (`seen`, from `crown_touched`), as `AgentPlanAccepted` and `AgentHeld` do, and the shim
+renders it. **Its limit:** `seen_token` hashes the agent's state word and when it changed, so the
+start's stamp holds only until the agent's first state change. On a worktree start that is the
+cut and the launch, usually within a second, and a crown's next call often comes later than
+that. A hold made first never meets it. `start_agent`'s description gets no line here, because
+T-930 is rewriting the crown text; a line of at most one sentence is settled at rebase.
+
+Test: `crown_hold_e2e::a_hold_and_a_start_take_each_other_s_stamp` (the worktree's init script holds
+the launch, so the hold lands on the start's stamp; and a start takes the hold's).

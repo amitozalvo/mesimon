@@ -2258,6 +2258,12 @@ pub enum Response {
         /// idle at its prompt box. `None` from a daemon before the field.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         prompt: Option<StartPrompt>,
+        /// The target's fresh stamp (T-936), as `AgentPlanAccepted` hands
+        /// back: the start moved it, and a `hold_ticket` right after the
+        /// start need not read the ticket again for it. It moves again as
+        /// the agent's state does.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seen: Option<String>,
     },
     /// AgentHoldTicket's receipt (T-919): the state the ticket is in now.
     /// `held` is the train hold as it stands and `by` whose it is (`crown`
