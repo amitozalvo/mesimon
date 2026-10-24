@@ -32718,3 +32718,29 @@ T-930 is rewriting the crown text; a line of at most one sentence is settled at 
 
 Test: `crown_hold_e2e::a_hold_and_a_start_take_each_other_s_stamp` (the worktree's init script holds
 the launch, so the hold lands on the start's stamp; and a start takes the hold's).
+
+**A long plan is a dialog (item 5).** After the 12:55:57 restart, T-938's `get_ticket` read
+`needs_you: {reason: plan}` with no `request` and no `plan`, so the crown could neither read nor
+accept it. Both independent reads blamed the 64 KiB transcript window `open_dialog` reads. **It was
+not that window.** At the restart the plan's `ExitPlanMode` record was the transcript's last
+record (28,390 bytes), whole inside the window. The cause was `dialog_content`'s 16 KiB bound on
+the tool input (T-938's was 26,768 bytes). It refused the dialog on the hook stream's road too:
+T-938 entered its plan stop at 09:43:39Z by `PreToolUse`, so the board never held that plan,
+before the restart or after it.
+- A plan is kept whole in the dialog, and each reader cuts it to what it carries, its head marked
+  (`plan_head`: `… the plan is cut here: its first N KiB of M KiB`). The crown's `get_ticket`
+  carries 64 KiB (`AGENT_PLAN_MAX_BYTES`, from 16): a plan the crown accepts is one it read whole.
+  Questions keep their 16 KiB bound.
+- **The phone's board keeps 16 KiB** (`PHONE_PLAN_MAX_BYTES`, `phone_dialog`). The phone road
+  was checked before building: a board answer must fit 48 KiB (`Control::answer`), and its trim
+  drops agents' words and archived tickets but never a dialog, so one 64 KiB plan would have had
+  the phone's whole board refused ("response exceeds the browser preview limit"). Before this, a
+  phone got no dialog at all for such a plan; now it gets the head, and its answer binds to the
+  same request.
+- `open_dialog` now reads as far back as `prompted_since` (1 MiB, once per spell), so a plan
+  record past 64 KiB is rebuilt after a restart too.
+
+Tests: `mesophon::a_long_plan_is_kept_whole_and_cut_where_it_is_shown`;
+`crown_e2e::a_worker_s_dialog_outlives_a_daemon_restart` section 4 (a 26 KiB plan whole and an 80
+KiB plan's head marked cut, both with their request, from the hook stream and again after a
+restart; with the old bound it fails at the hook stream's dialog).

@@ -5887,6 +5887,45 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
         Response::Err { message } => assert!(message.contains("plan changed"), "{message}"),
         other => panic!("accept_plan on an answered plan: {other:?}"),
     }
+
+    // ---- 4. T-936: a long plan, whole to 64 KiB, its head marked cut past it -
+    // A 26 KiB design plan was refused a dialog by a 16 KiB bound, on the
+    // hook stream's road and the transcript's alike.
+    let plan_of = |bytes: usize| -> String {
+        let mut plan = String::new();
+        for n in 0.. {
+            if plan.len() >= bytes {
+                break;
+            }
+            plan.push_str(&format!("{n}. a step of the design | a table row | its cost |\n"));
+        }
+        plan
+    };
+    let long = plan_of(26 * 1024);
+    let huge = plan_of(80 * 1024);
+    for (id, plan, name) in
+        [("toolu_r4", &long, "crown_redialog_5"), ("toolu_r5", &huge, "crown_redialog_6")]
+    {
+        start(&mut c, ws);
+        let input = json!({ "plan": plan });
+        stop_on(&mut c, "ExitPlanMode", id, &input);
+        let first = read(&mut c, sa, &kw).unwrap().needs_you.expect("the plan");
+        drop(c);
+        h.restart();
+        let (again, needs) = read_after_restart(name);
+        c = again;
+        for needs in [first, needs] {
+            assert_eq!(needs.request.as_deref(), Some(id), "accept_plan has its request");
+            let shown = needs.plan.expect("the plan's words");
+            if plan.len() <= 64 * 1024 {
+                assert_eq!(&shown, plan, "whole");
+            } else {
+                let kib = plan.len().div_ceil(1024);
+                assert!(shown.starts_with(&plan[..60 * 1024]), "its head");
+                assert!(shown.ends_with(&format!("its first 64 KiB of {kib} KiB")), "marked cut");
+            }
+        }
+    }
 }
 
 /// T-584: the crown picks a tier by the person's words. `list_board` lists

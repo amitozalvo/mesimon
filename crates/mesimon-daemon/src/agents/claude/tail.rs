@@ -157,7 +157,12 @@ pub struct OpenDialog {
 pub fn open_dialog(path: &Path) -> Option<OpenDialog> {
     use serde_json::Value;
     let mut answered = Vec::new();
-    for v in tail_records(path)? {
+    // Once per spell, so as far back as `prompted_since`: a long plan's call
+    // is one record past the per-second readers' 64 KiB (T-936).
+    let len = std::fs::metadata(path).ok()?.len();
+    let text = window_text(path, len, PROMPT_WINDOW)?;
+    let end = text.len();
+    for v in (TailRecords { text, end }) {
         match classify_tail_record(&v) {
             TailEvent::Latch | TailEvent::ToolInFlight => continue,
             TailEvent::NeedsHuman { tool } => {

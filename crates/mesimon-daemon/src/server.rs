@@ -9603,13 +9603,10 @@ impl Daemon {
                 .map(|(request, _)| request.to_string())
                 .or_else(|| plan.map(|(request, _)| request.to_string())),
             plan: plan.map(|(_, markdown)| {
-                let text = mesimon_core::text::scrub_lines(markdown);
-                let cut = mesimon_core::text::cap_bytes(&text, AGENT_PLAN_MAX_BYTES);
-                if cut.len() < text.len() {
-                    format!("{cut}…")
-                } else {
-                    text
-                }
+                mesophon::plan_head(
+                    &mesimon_core::text::scrub_lines(markdown),
+                    AGENT_PLAN_MAX_BYTES,
+                )
             }),
             questions: dialog
                 .map(|(_, qs)| qs)
@@ -19337,9 +19334,10 @@ fn created_at_ms(created_at: &str) -> Option<u64> {
     created_at.strip_prefix('@').and_then(|s| s.parse::<u64>().ok()).map(|s| s * 1000)
 }
 
-/// The longest plan `get_ticket.needs_you.plan` carries (T-582): the
-/// projection's own bound on the tool input it was read from.
-const AGENT_PLAN_MAX_BYTES: usize = 16 * 1024;
+/// The longest plan `get_ticket.needs_you.plan` carries (T-582), past it
+/// the head marked cut (`plan_head`). 64 KiB since T-936: a plan the crown
+/// accepts is one it read whole, and a design plan measured 26 KiB.
+const AGENT_PLAN_MAX_BYTES: usize = 64 * 1024;
 
 fn now_iso() -> String {
     // Seconds precision is enough for created_at; avoid a chrono dependency.

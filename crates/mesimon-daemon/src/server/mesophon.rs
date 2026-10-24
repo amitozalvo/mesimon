@@ -3477,7 +3477,7 @@ impl Daemon {
             since: s.state_changed_at,
             doing,
             said,
-            dialog: self.control_dialog_of(s).cloned(),
+            dialog: self.control_dialog_of(s).map(phone_dialog),
             trust: self.control_trust_of(s),
             permission: self.control_permission_of(s.id).cloned(),
             session: s.id.to_string(),
@@ -5366,18 +5366,18 @@ fn batch_step(
 }
 
 /// The dialog a plan or question call's input draws, within the bounds
-/// measured for it: only the two dialogs (a Write's input is the file), at
-/// most 16 KiB, one to four questions of one to eight options each, a plan
-/// with words. The hook stream's road and the transcript's (T-933) both.
+/// measured for it: only the two dialogs (a Write's input is the file),
+/// questions at most 16 KiB, one to four of one to eight options each, a
+/// plan with words. The hook stream's road and the transcript's (T-933)
+/// both. A plan is kept whole, however long (T-936: a 26 KiB design plan
+/// was refused here, so the crown could neither read nor accept it): each
+/// reader cuts it to what it carries, marked (`plan_head`).
 fn dialog_content(tool: &str, input: &serde_json::Value) -> Option<api::DialogContent> {
-    if !matches!(tool, "AskUserQuestion" | "ExitPlanMode") {
-        return None;
-    }
-    if serde_json::to_vec(input).map_or(true, |b| b.len() > 16 * 1024) {
-        return None;
-    }
     match tool {
         "AskUserQuestion" => {
+            if serde_json::to_vec(input).map_or(true, |b| b.len() > 16 * 1024) {
+                return None;
+            }
             let questions =
                 serde_json::from_value::<Vec<api::Question>>(input["questions"].clone()).ok()?;
             if questions.is_empty()
@@ -5388,11 +5388,40 @@ fn dialog_content(tool: &str, input: &serde_json::Value) -> Option<api::DialogCo
             }
             Some(api::DialogContent::Questions { questions })
         }
-        _ => {
+        "ExitPlanMode" => {
             let markdown = input["plan"].as_str().filter(|p| !p.trim().is_empty())?;
             Some(api::DialogContent::Plan { markdown: markdown.into() })
         }
+        _ => None,
     }
+}
+
+/// The most of a plan a phone's board carries (T-936): one board answer
+/// fits 48 KiB (`Control::answer`), and its trim drops no dialog.
+const PHONE_PLAN_MAX_BYTES: usize = 16 * 1024;
+
+/// A plan's markdown as a reader that carries at most `max` bytes of it
+/// shows it (T-936): whole, or its head and a line that says it was cut.
+pub(super) fn plan_head(markdown: &str, max: usize) -> String {
+    let head = mesimon_core::text::cap_bytes(markdown, max);
+    if head.len() == markdown.len() {
+        return markdown.to_string();
+    }
+    format!(
+        "{head}\n\n… the plan is cut here: its first {} KiB of {} KiB",
+        max / 1024,
+        markdown.len().div_ceil(1024)
+    )
+}
+
+/// A dialog as a phone's board carries it: a plan cut to
+/// `PHONE_PLAN_MAX_BYTES`, its request the one an answer binds to.
+fn phone_dialog(dialog: &api::Dialog) -> api::Dialog {
+    let mut dialog = dialog.clone();
+    if let api::DialogContent::Plan { markdown } = &mut dialog.content {
+        *markdown = plan_head(markdown, PHONE_PLAN_MAX_BYTES);
+    }
+    dialog
 }
 
 /// Whether this hook frame ends `dialog` (T-567), and how: its own tool's
@@ -5477,6 +5506,36 @@ mod tests {
                 }],
             },
         }
+    }
+
+    /// T-936: a plan is kept whole, however long, and each reader cuts it
+    /// to what it carries, marked; questions keep their 16 KiB bound.
+    #[test]
+    fn a_long_plan_is_kept_whole_and_cut_where_it_is_shown() {
+        let long: String = (0..2000).map(|n| format!("{n}. a step of the design\n")).collect();
+        assert!(long.len() > 40 * 1024);
+        let Some(api::DialogContent::Plan { markdown }) =
+            dialog_content("ExitPlanMode", &serde_json::json!({ "plan": long }))
+        else {
+            panic!("a long plan is a dialog");
+        };
+        assert_eq!(markdown, long, "kept whole");
+        let dialog = api::Dialog {
+            request: "toolu_1".into(),
+            content: api::DialogContent::Plan { markdown },
+        };
+        let phone = phone_dialog(&dialog);
+        assert_eq!(phone.request, "toolu_1", "an answer binds to the same request");
+        let api::DialogContent::Plan { markdown: head } = &phone.content else { panic!() };
+        assert!(head.starts_with("0. a step") && head.len() < PHONE_PLAN_MAX_BYTES + 100);
+        let kib = long.len().div_ceil(1024);
+        assert!(head.ends_with(&format!("its first 16 KiB of {kib} KiB")), "{}", &head[16000..]);
+        assert_eq!(plan_head("1. short", 16 * 1024), "1. short", "a short plan is not marked");
+        let many = serde_json::json!({ "questions": [{
+            "question": "x".repeat(17 * 1024), "header": "h",
+            "options": [{ "label": "a", "description": "" }], "multiSelect": false }] });
+        assert!(dialog_content("AskUserQuestion", &many).is_none(), "questions keep 16 KiB");
+        assert!(dialog_content("Write", &serde_json::json!({ "plan": "1." })).is_none());
     }
 
     /// The folder trust dialog's accept (T-844): its own arrows toward the
