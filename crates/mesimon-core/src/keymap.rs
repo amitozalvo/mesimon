@@ -5139,7 +5139,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
             if c.keep_awake_barred {
                 "nothing on this machine can hold it awake ∙ mesimon doctor says what would".into()
             } else if c.keep_awake {
-                "no idle sleep while an agent is mid-turn ∙ only while this board is open".into()
+                "no idle sleep while an agent works or its tasks run ∙ only while this board is open".into()
             } else {
                 "the machine sleeps on its own clock, agents or not".into()
             }

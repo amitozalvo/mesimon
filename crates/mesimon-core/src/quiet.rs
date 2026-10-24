@@ -29,7 +29,9 @@
 //! and a record with no pane — for the question "is the machine doing
 //! anything" as against "is this turn over" (T-288's keep-awake hold). It is
 //! written in terms of `is_working`, so a fifth working state — or another
-//! agent kind — joins both answers at once.
+//! agent kind — joins both answers at once. It adds one state back: an agent
+//! idle at `Idle{Monitoring}`, quiet for the checkout, whose watch or
+//! background command is still the machine's work (T-939).
 
 use std::collections::HashSet;
 
@@ -131,8 +133,19 @@ pub fn holds_against_accept(s: &SessionRecord) -> bool {
 /// It inherits the Codex observation hold above, and should: a session with
 /// a pane that cannot be proved quiet errs AWAKE here, which is the direction
 /// a keep-awake hold exists to protect.
+///
+/// And it adds an agent at `Idle{Monitoring}` (T-939): the turn is over, so
+/// the checkout is quiet, but a shell or watch the agent started still runs.
+/// A background command lands there too once its park goes ten minutes with
+/// no frame (`attention::PARK_STALE_MS`, T-483) — a rig run let the machine
+/// sleep for ten hours that way. Ambient `monitor` rows never make the state
+/// (T-408), and the pane bound still holds: a record with no process holds
+/// nothing awake.
 pub fn is_mid_turn(s: &SessionRecord) -> bool {
-    is_working(s) && !matches!(s.state, SessionState::RequiresAction { .. }) && s.state.has_pane()
+    ((is_working(s) && !matches!(s.state, SessionState::RequiresAction { .. }))
+        || (s.kind.is_agent()
+            && s.state == (SessionState::Idle { stop_reason: StopReason::Monitoring })))
+        && s.state.has_pane()
 }
 
 /// The pure half of the daemon's sleep gate — kind × state, nothing the
@@ -397,19 +410,53 @@ mod tests {
         Board { sessions: sessions.into(), ..Board::default() }
     }
 
+    /// A watch or a stale command park is quiet for the checkout and still
+    /// the machine's work (T-939); a record with no pane, or a shell, holds
+    /// nothing awake.
     #[test]
-    fn monitoring_releases_working_and_keep_awake_holds() {
-        let mut s = session(
-            ulid::Ulid::new(),
-            SessionKind::Claude,
-            "/tmp",
-            SessionState::Idle { stop_reason: StopReason::Monitoring },
-        );
+    fn monitoring_is_quiet_but_holds_the_machine() {
+        let monitoring = SessionState::Idle { stop_reason: StopReason::Monitoring };
+        let mut s = session(ulid::Ulid::new(), SessionKind::Claude, "/tmp", monitoring.clone());
         assert!(!is_working(&s));
-        assert!(!is_mid_turn(&s));
+        assert!(takes_words(&s) && at_rest(&s), "the turn is over");
+        assert!(is_mid_turn(&s), "its tasks still run");
         s.state = SessionState::Idle { stop_reason: StopReason::Background };
         assert!(is_working(&s));
         assert!(is_mid_turn(&s));
+        for st in [
+            SessionState::Sleeping,
+            SessionState::Exited { reason: crate::board::ExitReason::Crashed },
+        ] {
+            s.state = st.clone();
+            assert!(!is_mid_turn(&s), "{st:?} has no process to keep awake for");
+        }
+        let shell = session(ulid::Ulid::new(), SessionKind::Bash, "/tmp", monitoring);
+        assert!(!is_mid_turn(&shell), "a shell is liveness, not activity");
+    }
+
+    /// Every way an agent's turn can end, against the keep-awake: a park on
+    /// tasks of either class holds, the rest release. Exhaustive, so a new
+    /// `StopReason` does not compile until it is decided here.
+    #[test]
+    fn mid_turn_over_every_stop_reason() {
+        use StopReason as R;
+        for reason in [R::EndTurn, R::Interrupted, R::Background, R::Monitoring, R::Unknown] {
+            let holds = match reason {
+                R::Background | R::Monitoring => true,
+                R::EndTurn | R::Interrupted | R::Unknown => false,
+            };
+            for kind in [SessionKind::Claude, SessionKind::Codex] {
+                let mut s = session(
+                    ulid::Ulid::new(),
+                    kind,
+                    "/r",
+                    SessionState::Idle { stop_reason: reason },
+                );
+                // Codex holds on missing observation; this asks the state alone.
+                s.observation_hold = false;
+                assert_eq!(is_mid_turn(&s), holds, "{kind:?} {reason:?}");
+            }
+        }
     }
 
     /// An agent idle at its composer with background tasks takes words

@@ -209,7 +209,7 @@ pub fn doctor_line() -> String {
             "nothing holds it ∙ MESIMON_CAFFEINATE=off".to_string()
         }
         (_, Hold::Native) => "an IOKit PreventUserIdleSystemSleep assertion, held by this board \
-                              while an agent is mid-turn ∙ the display still sleeps, and a closed \
+                              while an agent works or its tasks run ∙ the display still sleeps, and a closed \
                               lid still sleeps ∙ pmset -g assertions names it"
             .to_string(),
         (Some(v), Hold::Spawn(r)) if v.eq_ignore_ascii_case("windows") => format!(
@@ -224,7 +224,7 @@ pub fn doctor_line() -> String {
             r.prog
         ),
         (_, Hold::Spawn(r)) => format!(
-            "{} --what=idle:sleep while an agent is mid-turn ∙ may also block explicit suspend \
+            "{} --what=idle:sleep while an agent works or its tasks run ∙ may also block explicit suspend \
              ∙ systemd-inhibit --list names it",
             r.prog
         ),

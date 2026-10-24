@@ -850,7 +850,8 @@ impl Machine {
         // that Stop was ever inference, so only the confidence drops; any
         // later frame promotes straight back to Running. `Idle{Monitoring}`
         // is left alone: a watch is MEANT to be silent, and it already spells
-        // itself "monitoring" and counts as quiet.
+        // itself "monitoring" and counts as quiet for the checkout — the
+        // keep-awake still holds for it (`quiet::is_mid_turn`, T-939).
         if self.state == (SessionState::Idle { stop_reason: StopReason::Background })
             && now.saturating_sub(self.background_at) >= PARK_STALE_MS
         {

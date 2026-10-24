@@ -9097,7 +9097,7 @@ impl App {
                     "keep awake on ∙ nothing here can hold it ∙ mesimon doctor says what would"
                         .to_string()
                 } else {
-                    "the machine stays awake while an agent is mid-turn".to_string()
+                    "the machine stays awake while an agent works or its tasks run".to_string()
                 };
                 self.set_pref(&word, |p| p.keep_awake = on);
             }

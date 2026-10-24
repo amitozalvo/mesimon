@@ -422,6 +422,23 @@ mod tests {
         thread.join().unwrap();
     }
 
+    /// T-939: an agent idle while its watch or background command runs
+    /// still holds the machine — a rig run slept ten hours when its park
+    /// went stale to `Idle{Monitoring}` — and the turn's plain end releases.
+    #[test]
+    fn a_monitoring_idle_holds_and_a_finished_turn_releases() {
+        let (monitor, _wake) = Monitor::channel(Hold::program("cat"), true, false);
+        let monitoring = SessionState::Idle { stop_reason: StopReason::Monitoring };
+        let snap = snapshot(SessionKind::Claude, monitoring, false);
+        let (board, pending) = slices(&snap);
+        monitor.observe(board, pending);
+        assert!(monitor.status().0, "its tasks are the machine's work");
+        let snap = snapshot(SessionKind::Claude, idle(), false);
+        let (board, pending) = slices(&snap);
+        monitor.observe(board, pending);
+        assert!(!monitor.status().0, "a finished turn holds nothing");
+    }
+
     #[test]
     fn disabling_releases_and_reenabling_requires_a_fresh_snapshot() {
         let (monitor, _wake) = Monitor::channel(Hold::program("cat"), true, true);

@@ -31758,3 +31758,48 @@ while no daemon listens is written there, and only there).
 **Limits.** The read is the transcript's last 64 KiB, as every tail reader's. A dialog whose call
 sits further back (a batch whose siblings wrote more than that after it) stays reason-only, as
 before.
+
+## T-939 — keep-awake holds while an agent's background tasks run (2026-10-24)
+
+**What happened.** The board was open with keep awake on. A worker ran a rig run as background
+commands and sat at its composer between task notifications, `Idle{Background}`, its last park
+entered at 01:53:10. At **02:03:10** the feed shows `idle → idle`, reason `monitoring`,
+confidence medium, `hook: null`, and no frame in between; the board released its
+`PreventUserIdleSystemSleep` at the same second, and macOS slept on idle five seconds later. It
+stayed asleep for ten hours, and the worker's next turn died with "Your computer went to sleep
+mid-response".
+
+**Why.** Not a hook and not `BackgroundChanged`: 02:03:10 − 01:53:10 is exactly
+`PARK_STALE_MS`. A background command sends no frame while it runs (T-483), so the park clock ran
+out and the park fell to `park_fallback`. That reads `Monitoring` whenever the last Stop listed a
+`shell` row, and the armed command is always listed that way. The task registry never changed and
+still held the command as `Working`. T-483 had accepted this: "a build past ten minutes loses the
+keep-awake hold at the ten-minute mark". T-389 made `Idle{Monitoring}` release the hold on purpose.
+
+**The rule.** `quiet::is_mid_turn` adds an agent at `Idle{Monitoring}` with a pane. It is the
+keep-awake's predicate alone (`caffeine_watch::mid_turn`). `is_working` is unchanged, and with it
+the merge train's seat, the checkout's quiet, the queued asks, words (`takes_words`, `at_rest`) and
+the attention set: the turn is over and the agent takes words, and only the machine still has work.
+This supersedes the keep-awake clause of T-389 and of T-483. Ambient `monitor` rows never make the
+state (T-408), so a session that published an artifact holds nothing. A teammate park that times
+out still falls to `EndTurn` (T-403), and a record with no pane holds nothing (T-357). The Settings
+row, the toggle's status and doctor's line now say "while an agent works or its tasks run".
+
+**Why no time bound.** A clock would bring new TUI state and new words, and a rig run or a release
+outlasts any bound we pick, which is the case that broke. What bounds the hold instead: the pane,
+a display that still sleeps, a closed lid that still sleeps, the opt-in switch, and the end of the
+tasks themselves (a task's end wakes the lead, and that turn's Stop lists what is left). One gap is
+accepted: a task a person kills from Claude's tasks panel may send no turn, and the hold stays
+until the next prompt.
+
+**Not changed, found on the way.** `crownwake::hear_lingering` (T-599, 30 min) and the card's
+`idle ∙ N tasks` (`decorate`'s `tasks_running`) read `Idle{Background}` alone. The 10-minute park
+clock takes a background-command park off that state long before 30 minutes, so the crown is never
+told about a worker whose only work is background commands, and the card's count goes away at ten
+minutes. Left for its own ticket.
+
+Tests: `quiet::monitoring_is_quiet_but_holds_the_machine` (it was
+`monitoring_releases_working_and_keep_awake_holds`, inverted), `quiet::mid_turn_over_every_stop_reason`
+(an exhaustive match over `StopReason`, for Claude and Codex), and
+`caffeine_watch::a_monitoring_idle_holds_and_a_finished_turn_releases`; the observer's existing
+tests and `state_lab_e2e` are unchanged and green.
