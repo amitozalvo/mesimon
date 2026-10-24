@@ -403,6 +403,7 @@ mod tests {
             tier_wake: false,
             unsent: None,
             tasks_running: None,
+            tasks_since: None,
             unprompted: false,
             compacting: false,
         }

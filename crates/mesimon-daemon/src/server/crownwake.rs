@@ -409,6 +409,50 @@ pub(super) struct Linger {
     pub(super) minutes: u64,
 }
 
+/// When a record's stretch idle on tasks began, after the edge `from` →
+/// `to` at `now` (T-944): stamped on entering a park on tasks, kept while
+/// the park moves between `Background` and `Monitoring` (the demote, or a
+/// task's class changing), gone on leaving it — a foreground turn ends the
+/// stretch. `kept` is the stamp so far; `None` from a park is a stretch
+/// the daemon did not see begin, dated from this edge.
+pub(super) fn tasks_stretch(
+    from: &SessionState,
+    to: &SessionState,
+    now: u64,
+    kept: Option<u64>,
+) -> Option<u64> {
+    if !to.on_tasks() {
+        None
+    } else if from.on_tasks() {
+        kept.or(Some(now))
+    } else {
+        Some(now)
+    }
+}
+
+/// A worker due the lingering wake (T-599, T-944): a Claude seat the crown
+/// started, on another ticket, idle on tasks (`SessionState::on_tasks`)
+/// for `after` since its stretch began (`since`, else the state's own
+/// stamp). How many tasks is the registry's; it is empty after a restart,
+/// and the clause then says no number.
+pub(super) fn linger_due(
+    s: &SessionRecord,
+    crown: ulid::Ulid,
+    since: Option<u64>,
+    now: u64,
+    after: u64,
+) -> Option<Linger> {
+    if s.kind != SessionKind::Claude
+        || s.ticket == crown
+        || s.started_by.is_none()
+        || !s.state.on_tasks()
+    {
+        return None;
+    }
+    let age = now.saturating_sub(since.or(s.state_changed_at)?);
+    (age >= after).then(|| Linger { tasks: s.background_tasks.count(), minutes: age / 60_000 })
+}
+
 /// How long a worker sits idle with background tasks before the crown is
 /// told (T-599). Not a verdict: the crown is told, and nothing else moves.
 pub(super) const LINGER_MS: u64 = 30 * 60 * 1000;
@@ -1898,6 +1942,9 @@ impl Daemon {
     /// no park, no kill. A stretch ends only with a foreground turn
     /// (`apply_change` forgets the record on `Running`), so a task the
     /// agent arms or ends without a turn does not make a second wake.
+    /// Either park on tasks is one (T-944): a background command's park
+    /// reads `Monitoring` after `attention::PARK_STALE_MS`, and the stretch
+    /// is timed from the turn's end (`tasks_since`), not from that demote.
     pub(super) fn hear_lingering(&mut self) -> bool {
         let sessions = &self.board.sessions;
         let known = |id: &uuid::Uuid| sessions.iter().any(|s| s.id == *id);
@@ -1905,6 +1952,10 @@ impl Daemon {
         if !self.lingered.iter().all(known) {
             self.lingered.retain(|id| known(id));
         }
+        // A record that left its park by a road other than `apply_change`
+        // (a sleep, a death) leaves no stretch behind.
+        let parked = |id: &uuid::Uuid| sessions.iter().any(|s| s.id == *id && s.state.on_tasks());
+        self.tasks_since.retain(|id, _| parked(id));
         let Some(crown) = self.board.crown_holder().map(|t| t.id) else { return false };
         let now = now_ms();
         let after = super::linger_ms();
@@ -1912,20 +1963,10 @@ impl Daemon {
             .board
             .sessions
             .iter()
-            .filter(|s| {
-                s.kind == SessionKind::Claude
-                    && s.ticket != crown
-                    && s.started_by.is_some()
-                    && s.state == (SessionState::Idle { stop_reason: StopReason::Background })
-                    && !self.lingered.contains(&s.id)
-            })
+            .filter(|s| !self.lingered.contains(&s.id))
             .filter_map(|s| {
-                let age = now.saturating_sub(s.state_changed_at?);
-                (age >= after).then_some((
-                    s.id,
-                    s.ticket,
-                    Linger { tasks: s.background_tasks.count(), minutes: age / 60_000 },
-                ))
+                let since = self.tasks_since.get(&s.id).copied();
+                linger_due(s, crown, since, now, after).map(|l| (s.id, s.ticket, l))
             })
             .collect();
         for (id, worker, linger) in &due {
@@ -2355,6 +2396,125 @@ mod tests {
             due(Some(WakeCause::Lingering), None, &pending),
             Due::Wake(WakeCause::Lingering)
         );
+    }
+
+    /// A background command's park through the real machine (T-944): the
+    /// Stop parks it at `Background`, the park clock demotes it to
+    /// `Monitoring` with no frame, and the stretch's stamp is the same
+    /// before and after; the notification's foreground turn ends it, and
+    /// the next park is a new stretch.
+    #[test]
+    fn a_park_on_tasks_keeps_its_stretch_across_the_demote() {
+        use mesimon_core::attention::{Machine, Signal, PARK_STALE_MS, SETTLE_MS};
+        let parked_on_command = Signal::Stop {
+            stop_hook_active: false,
+            has_agent_id: false,
+            blocking_tasks: true,
+            monitoring_tasks: true,
+            teammates: 0,
+        };
+        let mut since = None;
+        let mut m = Machine::new(SessionState::Running, 0);
+        let mut step = |c: mesimon_core::attention::Change, at: u64| {
+            since = tasks_stretch(&c.from, &c.to, at, since);
+            (c.to, since)
+        };
+        assert!(m.apply(&parked_on_command, 1_000).is_none(), "a leave settles");
+        let parked = 1_000 + SETTLE_MS;
+        let (to, at_park) = step(m.tick(parked).expect("parks"), parked);
+        assert_eq!(to, SessionState::Idle { stop_reason: StopReason::Background });
+        assert_eq!(at_park, Some(parked));
+        let stale = parked + PARK_STALE_MS;
+        let (to, at_demote) = step(m.tick(stale).expect("the park goes stale"), stale);
+        assert_eq!(to, SessionState::Idle { stop_reason: StopReason::Monitoring });
+        assert_eq!(at_demote, at_park, "the demote keeps the stretch's stamp");
+        let turn = stale + 60_000;
+        let (to, after_turn) =
+            step(m.apply(&Signal::UserPromptSubmit, turn).expect("a turn"), turn);
+        assert_eq!(to, SessionState::Running);
+        assert_eq!(after_turn, None, "a foreground turn ends the stretch");
+        assert!(m.apply(&parked_on_command, turn + 1_000).is_none());
+        let again = turn + 1_000 + SETTLE_MS;
+        let (_, next) = step(m.tick(again).expect("parks again"), again);
+        assert_eq!(next, Some(again), "a new stretch");
+        // Between the two parks either way, and none outside them.
+        let bg = SessionState::Idle { stop_reason: StopReason::Background };
+        let mon = SessionState::Idle { stop_reason: StopReason::Monitoring };
+        let end = SessionState::Idle { stop_reason: StopReason::EndTurn };
+        assert_eq!(tasks_stretch(&mon, &bg, 9, Some(5)), Some(5));
+        assert_eq!(tasks_stretch(&bg, &mon, 9, None), Some(9), "unseen: dated here");
+        assert_eq!(tasks_stretch(&end, &mon, 9, Some(5)), Some(9), "entered afresh");
+        assert_eq!(tasks_stretch(&mon, &end, 9, Some(5)), None);
+        assert_eq!(tasks_stretch(&mon, &SessionState::Sleeping, 9, Some(5)), None);
+    }
+
+    /// Who is due the lingering wake (T-599, T-944): a crown-started Claude
+    /// seat idle on tasks under either park, aged from its stretch, not
+    /// from the demote's restamp. Nobody else, and nobody early.
+    #[test]
+    fn a_worker_lingers_on_either_park_from_its_stretch() {
+        use mesimon_core::board::{SessionKind, SessionRecord};
+        let crown = ulid::Ulid::from_parts(1, 1);
+        let worker = ulid::Ulid::from_parts(2, 2);
+        const MIN: u64 = 60_000;
+        let after = 30 * MIN;
+        let now = 100 * MIN;
+        let rec = |kind, ticket, state: SessionState| {
+            let mut r = SessionRecord::new(
+                uuid::Uuid::from_u128(7),
+                kind,
+                ticket,
+                vec![],
+                "/tmp".into(),
+                state,
+            );
+            r.started_by = Some(crown);
+            r.state_changed_at = Some(now - after);
+            r.background_tasks.record(
+                "cmd1",
+                Some(mesimon_core::background::BACKGROUND_COMMAND),
+                None,
+                mesimon_core::background::Transition::Started,
+                None,
+            );
+            r
+        };
+        let bg = SessionState::Idle { stop_reason: StopReason::Background };
+        let mon = SessionState::Idle { stop_reason: StopReason::Monitoring };
+        let due = |r: &SessionRecord, since| linger_due(r, crown, since, now, after);
+        for park in [bg.clone(), mon.clone()] {
+            let r = rec(SessionKind::Claude, worker, park.clone());
+            assert_eq!(due(&r, None), Some(Linger { tasks: 1, minutes: 30 }), "{park:?}");
+            let mut early = r.clone();
+            early.state_changed_at = Some(now - after + 1);
+            assert_eq!(due(&early, None), None, "{park:?}: inside the grace");
+            let mut unasked = r.clone();
+            unasked.started_by = None;
+            assert_eq!(due(&unasked, None), None, "{park:?}: not the crown's start");
+            let own = rec(SessionKind::Claude, crown, park.clone());
+            assert_eq!(due(&own, None), None, "{park:?}: the crown's own seat");
+            let codex = rec(SessionKind::Codex, worker, park.clone());
+            assert_eq!(due(&codex, None), None, "{park:?}: a Claude seat alone");
+        }
+        for not_parked in [
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+            SessionState::Running,
+            SessionState::Sleeping,
+        ] {
+            let r = rec(SessionKind::Claude, worker, not_parked.clone());
+            assert_eq!(due(&r, Some(0)), None, "{not_parked:?}");
+        }
+        // Demoted three minutes ago, parked thirty-three: due, and said in
+        // the stretch's minutes. Dated from the demote it would be early.
+        let mut demoted = rec(SessionKind::Claude, worker, mon);
+        demoted.state_changed_at = Some(now - 3 * MIN);
+        assert_eq!(due(&demoted, None), None, "the restamp alone is early");
+        assert_eq!(due(&demoted, Some(now - 33 * MIN)), Some(Linger { tasks: 1, minutes: 33 }));
+        // The registry lost its tasks (a restart): no number is invented.
+        let mut lost = demoted.clone();
+        lost.background_tasks.clear();
+        let l = due(&lost, Some(now - 33 * MIN)).expect("due");
+        assert_eq!(lingering_clause(l), "has been idle with background tasks for 33 min");
     }
 
     #[test]

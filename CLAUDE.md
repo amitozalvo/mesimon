@@ -789,7 +789,8 @@ respawns; required by `restart_skew_e2e`, the only test driving the real `Client
 `MESIMON_CLAUDE_HOME` (census root for fabricated `~/.claude` trees), `MESIMON_COMPOSER_WAIT_MS`
 (how long launch words wait for Claude's composer), `MESIMON_SLEEP_MIN_AGE_MS`,
 `MESIMON_LINGER_MS` (how long a crown-started worker sits idle with background tasks before the
-crown is told, T-599),
+crown is told, T-599), `MESIMON_PARK_STALE_MS` (the park clock that demotes a silent
+`Idle{Background}`, ten minutes, T-944),
 `MESIMON_CODEX_CLEANUP_STALE_MS` (how long an unconfirmed Codex cleanup may own a live ticket's
 checkout before the sweep goes looking for its runtime), `MESIMON_WORKTREE_INIT_MS` (how long
 the repo's `.mesimon-worktree-init.sh` may run in a fresh worktree before it is killed, T-614),

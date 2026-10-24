@@ -756,6 +756,27 @@ fn golden_tasks_running_board_120() {
     golden("board_tasks_running_120x30", &lines);
 }
 
+/// A background command's park, demoted to `Idle{Monitoring}` at ten
+/// minutes (T-944): the card still counts the task, and its age runs from
+/// the stretch's start (`tasks_since`), not from the demote's restamp.
+#[test]
+fn a_demoted_park_keeps_its_task_count_and_its_age() {
+    let mut b = fixture(false);
+    let mut s = session(
+        21,
+        ulid_n(2),
+        SessionKind::Claude,
+        SessionState::Idle { stop_reason: StopReason::Monitoring },
+    );
+    s.tasks_running = Some(1);
+    s.state_changed_at = Some(1_000_000 - 3 * 60_000);
+    s.tasks_since = Some(1_000_000 - 13 * 60_000);
+    b.sessions.push(s);
+    let mut app = app_graphite(b);
+    app.now = || 1_000_000;
+    assert_eq!(app.tasks_row(ulid_n(2)).as_deref(), Some("idle ∙ 1 task ∙ 13m"));
+}
+
 /// A seat compacting its conversation (T-894): the card wears the slow
 /// press in place of the done mark, and its activity row says what the
 /// seat is doing. The state under it is the finished turn, which stayed.

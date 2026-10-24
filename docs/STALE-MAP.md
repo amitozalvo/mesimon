@@ -31946,3 +31946,59 @@ frame without starting a session, hashes it and prints its diff against a separa
 local `claude-decls.json`. Only `--mark-read` saves that baseline. Ordinary release
 runs are unchanged; the optional extraction requires Python 3.14 and refuses an
 unsupported or oversized frame. Its fixture and tests contain synthetic text only.
+
+## T-944 — the crown's lingering wake and the card's task count read either park on tasks (2026-10-24)
+
+**The gap.** T-939 recorded this as "Not changed, found on the way", and this block supersedes
+that paragraph. `crownwake::hear_lingering` (T-599, 30 min), the card's `idle ∙ N tasks`
+(`decorate`'s `tasks_running`) and `get_ticket`'s `background` read `Idle{Background}` alone. A
+background command sends no frame while it runs (T-483), so after `attention::PARK_STALE_MS`
+(10 min) its park reads `Idle{Monitoring}`. The crown was never told about a worker whose only
+work was background commands, and the card's count went away at ten minutes. T-930 was that
+case: a rig run in background tasks, and the crown never heard.
+
+**The rule.** `SessionState::on_tasks()` (`Idle{Background | Monitoring}`) is what those three
+readers ask. `is_working`, `is_mid_turn`, the train, the queue, words and the attention set are
+unchanged (T-939 and T-940 argued why). The wake's words are unchanged. N is the registry's count,
+and an empty registry (after a restart) says "with background tasks" with no number.
+
+**The stretch has its own start.** `apply_change` restamps `state_changed_at` at the demote, and
+`state_changed_at` stays what it is: the transition's date. Widening the filter alone would have
+fired the wake 40 minutes after the turn's end and said "for 30 min". The daemon therefore keeps
+`tasks_since` per record (`crownwake::tasks_stretch`):
+- entering a park on tasks stamps it;
+- a move between `Background` and `Monitoring` (the demote, or a task's class changing) keeps it;
+- leaving the park drops it, so a foreground turn ends the stretch and the next park is a new one.
+
+The wake (`crownwake::linger_due`), the card's age (the snapshot-only `SessionRecord::tasks_since`,
+filled in `decorate` as `tasks_running` is) and `get_ticket`'s `since_secs` all date from it, so
+the card and the crown read the same age. A record that leaves its park by another road (a sleep,
+a death) is pruned on the tick.
+
+**Not persisted, on purpose.** A daemon restart loses the interval observed so far. After a
+restart the record lands at `Unknown{DaemonRestarted}` and the transcript tail re-derives it
+without the task list (the registry is empty), so no stretch may exist at all until the worker's
+next Stop lists its tasks again: the limit is no count and no wake until the next turn, and from
+that park a new stretch begins. `crown.json`'s `lingered` still keeps a stretch already told from
+being told twice.
+
+**A test seam.** `MESIMON_PARK_STALE_MS` shortens the park clock
+(`attention::Machine::tick_parked`; `tick` is the ten-minute default), so an e2e reaches the
+demote in seconds.
+
+Tests:
+- `crownwake::a_park_on_tasks_keeps_its_stretch_across_the_demote` drives the real machine
+  through park → stale demote → foreground turn → new park. The stamp is identical across the
+  demote, gone at the turn and new at the next park.
+- `crownwake::a_worker_lingers_on_either_park_from_its_stretch` covers both parks as due, and
+  refuses every other case: other states, the crown's own seat, a seat it did not start, a Codex
+  seat, and one inside the grace. A record demoted 3 min ago but parked 33 min ago is due, and
+  says 33 min. The restamp alone is early.
+- `ui::tests::a_demoted_park_keeps_its_task_count_and_its_age` checks the card's row,
+  `idle ∙ 1 task ∙ 13m`, aged from `tasks_since`.
+- `crown_e2e::a_demoted_park_on_a_background_command_lingers_from_its_turn_end` runs with
+  `PARK_STALE` 3 s and `LINGER` 8 s. Across the real demote it checks that the stamp is
+  unchanged, the count is shown and `get_ticket` says `background`. The feed's `lingering` wake
+  must land within [8 s, 10.5 s) of the original park, not at 11 s; with the stamp removed it came
+  at 11.28 s and failed. Exactly one wake comes per stretch, and a foreground turn's new park
+  brings the next.

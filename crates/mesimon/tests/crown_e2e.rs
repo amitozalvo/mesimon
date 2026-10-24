@@ -6120,6 +6120,176 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
     assert!(view.since_secs.is_some_and(|s| s >= 6), "{view:?}");
 }
 
+/// A worker whose only work is a background command (T-944): the command
+/// sends nothing while it runs, so the park clock (`MESIMON_PARK_STALE_MS`,
+/// ten minutes in life) demotes `Idle{Background}` to `Idle{Monitoring}`.
+/// The stretch's stamp (`tasks_since`) is the same before and after the
+/// demote, the card still counts the task and `get_ticket` still says
+/// `background`; the crown's lingering wake is due `MESIMON_LINGER_MS` from
+/// the original park, not from the demote; it comes once per stretch, and
+/// a foreground turn begins a new one.
+#[test]
+fn a_demoted_park_on_a_background_command_lingers_from_its_turn_end() {
+    use mesimon_core::board::StopReason;
+    const PARK_STALE: u64 = 3_000;
+    const LINGER: u64 = 8_000;
+    let Some(h) = Harness::boot_with_env(
+        "crown_linger_demoted",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_PARK_STALE_MS", "3000"),
+            ("MESIMON_LINGER_MS", "8000"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_linger_demoted");
+    let got = h.dir.join("got.txt");
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    let lines_with = |needle: &str| -> usize {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .count()
+    };
+    let send = |sid: uuid::Uuid, event: &str, body: &str| {
+        hook_send(&hook_sock, &sid.to_string(), event, body);
+    };
+    let backgrounded = SessionState::Idle { stop_reason: StopReason::Background };
+    let monitoring = SessionState::Idle { stop_reason: StopReason::Monitoring };
+
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-944 runs one command");
+    let kw = key_of(&mut c, w);
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    send(sa, "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sa, "running", |s| *s == SessionState::Running);
+    send(sa, "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    wait_attached(&mut c, w);
+    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // The lingering wakes the feed holds for this worker, by their stamp.
+    let linger_wakes = || -> Vec<u64> {
+        std::fs::read_to_string(&feed_path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| {
+                l.contains("\"kind\":\"crown_wake\"")
+                    && l.contains(&format!("\"worker\":\"{w}\""))
+                    && l.contains("\"cause\":\"lingering\"")
+            })
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()?["at_ms"].as_u64())
+            .collect()
+    };
+    // One turn that leaves one background command running, and its park's
+    // stamp: the stretch's start.
+    let park_on_command = |c: &mut TestClient, n: u32| -> u64 {
+        send(ws, "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(ws, "running", |s| *s == SessionState::Running);
+        send(
+            ws,
+            "PostToolUse",
+            &format!(
+                r#"{{"tool_name":"Bash","tool_response":{{"stdout":"","stderr":"","backgroundTaskId":"cmd{n}"}}}}"#
+            ),
+        );
+        send(
+            ws,
+            "Stop",
+            &format!(
+                r#"{{"stop_hook_active":false,"background_tasks":[{{"id":"cmd{n}","type":"shell","status":"running"}}]}}"#
+            ),
+        );
+        c.await_state(ws, "parked on its command", |s| {
+            *s == SessionState::Idle { stop_reason: StopReason::Background }
+        });
+        let rec = c.board().live_agent(w).cloned().unwrap();
+        assert_eq!(rec.tasks_running, Some(1), "the card's count");
+        let since = rec.tasks_since.expect("the stretch's stamp");
+        assert_eq!(Some(since), rec.state_changed_at, "the stretch begins at the park");
+        since
+    };
+
+    // ---- 1. the park demotes, and keeps its stretch -------------------------
+    let parked = park_on_command(&mut c, 1);
+    c.await_state(ws, "the park clock's demote", |s| {
+        *s == SessionState::Idle { stop_reason: StopReason::Monitoring }
+    });
+    let rec = c.board().live_agent(w).cloned().unwrap();
+    assert!(rec.state_changed_at.is_some_and(|at| at >= parked + PARK_STALE), "{rec:?}");
+    assert_eq!(rec.tasks_since, Some(parked), "the demote keeps the stretch's stamp");
+    assert_eq!(rec.tasks_running, Some(1), "the card still counts the command");
+    let view = read(&mut c, sa, &kw).unwrap().background.expect("background on get_ticket");
+    assert_eq!(view.tasks, 1);
+    assert!(view.since_secs.is_some_and(|s| s >= PARK_STALE / 1000), "{view:?}");
+
+    // ---- 2. due LINGER from the park, not from the demote --------------------
+    wait_until(std::time::Duration::from_secs(20), "the lingering wake", || {
+        !linger_wakes().is_empty()
+    });
+    let at = linger_wakes()[0];
+    let late = at.saturating_sub(parked);
+    assert!(
+        (LINGER..PARK_STALE + LINGER - 500).contains(&late),
+        "due {LINGER} ms from the park, not {} ms: came at {late} ms",
+        PARK_STALE + LINGER
+    );
+    let worker = format!("{kw} \"mesimon-probe-944 runs one command\"");
+    let lingering = format!("{worker} has been idle with 1 background task for ");
+    wait_until(std::time::Duration::from_secs(10), "the wake in the crown's pane", || {
+        lines_with(&lingering) == 1
+    });
+    send(sa, "UserPromptSubmit", r#"{"prompt":"wake"}"#);
+    c.await_state(sa, "running", |s| *s == SessionState::Running);
+    send(sa, "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
+
+    // ---- 3. once per stretch ---------------------------------------------------
+    std::thread::sleep(std::time::Duration::from_millis(LINGER + 1_000));
+    assert_eq!(linger_wakes().len(), 1, "no second wake without a foreground turn");
+    assert_eq!(lines_with(&lingering), 1);
+    assert_eq!(c.board().live_agent(w).unwrap().state, monitoring, "nothing decided by time");
+
+    // ---- 4. a foreground turn ends the stretch; the next park is new ----------
+    let again = park_on_command(&mut c, 2);
+    assert!(again > parked + LINGER, "a new stretch, not the old stamp");
+    assert_eq!(c.board().live_agent(w).unwrap().state, backgrounded);
+    wait_until(std::time::Duration::from_secs(20), "the new stretch's wake", || {
+        linger_wakes().len() == 2
+    });
+    assert!(linger_wakes()[1] >= again + LINGER, "{:?} vs {again}", linger_wakes());
+}
+
 /// T-613: the crown merges where the train will not. `get_ticket` on a
 /// worktree ticket says who merges its branch (`merge: by, why`) — the crown
 /// with the train off, the train once armed, the crown again once the

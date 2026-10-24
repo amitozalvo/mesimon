@@ -6637,7 +6637,7 @@ impl App {
 
     /// The ticket's agent idle at its composer with background tasks running
     /// (T-599, the snapshot's `tasks_running`): `idle ∙ 3 tasks ∙ 2h`, timed
-    /// from the turn's end in the age slot's words, so a person sees a seat
+    /// from the turn's end (`tasks_since`) in the age slot's words, so a person sees a seat
     /// that has been waiting a long time without opening its pane. Whether
     /// the wait is the work is not the board's to say. What mesimon owes the
     /// card is said first.
@@ -6648,7 +6648,9 @@ impl App {
             1 => "1 task".to_string(),
             n => format!("{n} tasks"),
         };
-        Some(match s.state_changed_at {
+        // Dated from the stretch's start, which a park's demote keeps
+        // (T-944), else the state's own stamp.
+        Some(match s.tasks_since.or(s.state_changed_at) {
             Some(at) => {
                 format!("idle ∙ {tasks} ∙ {}", crate::text::age_slot((self.now)(), at, false))
             }

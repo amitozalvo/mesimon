@@ -829,6 +829,13 @@ impl Machine {
     }
 
     pub fn tick(&mut self, now: u64) -> Option<Change> {
+        self.tick_parked(now, PARK_STALE_MS)
+    }
+
+    /// `tick` with the park clock given (T-944): the daemon passes its
+    /// `MESIMON_PARK_STALE_MS` seam, so an e2e reaches a demoted park in
+    /// seconds. Everything else in the tick is the same.
+    pub fn tick_parked(&mut self, now: u64, park_stale_ms: u64) -> Option<Change> {
         if self.pending.as_ref().is_some_and(|p| now >= p.deadline) {
             return self.flush(now);
         }
@@ -853,7 +860,7 @@ impl Machine {
         // itself "monitoring" and counts as quiet for the checkout — the
         // keep-awake still holds for it (`quiet::is_mid_turn`, T-939).
         if self.state == (SessionState::Idle { stop_reason: StopReason::Background })
-            && now.saturating_sub(self.background_at) >= PARK_STALE_MS
+            && now.saturating_sub(self.background_at) >= park_stale_ms
         {
             let to = SessionState::Idle { stop_reason: self.park_fallback };
             return Some(self.commit(to, Confidence::Medium, now));

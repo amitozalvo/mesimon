@@ -122,6 +122,20 @@ impl SessionState {
         SessionState::Unknown { reason: UnknownReason::NoSignal }
     }
 
+    /// Idle at its composer on tasks it left running, whichever park reads
+    /// it (T-944): `Background`, or `Monitoring` — where a background
+    /// command's park lands once `attention::PARK_STALE_MS` passes with no
+    /// frame, since the command sends none while it runs (T-483). What the
+    /// card's task count, `get_ticket`'s `background` and the crown's
+    /// lingering wake read; never the train's, the queue's or the
+    /// attention set's (`quiet::is_working` keeps `Background` alone).
+    pub fn on_tasks(&self) -> bool {
+        matches!(
+            self,
+            SessionState::Idle { stop_reason: StopReason::Background | StopReason::Monitoring }
+        )
+    }
+
     /// The turn ended on a limit (T-808): a usage limit's QUOTA (T-802), or
     /// `Throttled` — an overload, and every limit a build before T-802 kept.
     /// The agent is back at its composer and nothing runs, so it is no turn
@@ -500,11 +514,17 @@ pub struct SessionRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unsent: Option<Unsent>,
     /// How many background tasks an agent idle at its composer has running
-    /// (`Idle{Background}`, T-599): the card says `idle ∙ 3 tasks ∙ 2h`.
-    /// The daemon fills it into the SNAPSHOT only, as it does `foreground`:
-    /// the task registry is never persisted.
+    /// (`SessionState::on_tasks`, T-599, T-944): the card says `idle ∙ 3
+    /// tasks ∙ 2h`. The daemon fills it into the SNAPSHOT only, as it does
+    /// `foreground`: the task registry is never persisted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tasks_running: Option<u32>,
+    /// When that stretch idle on tasks began (T-944): the turn's end, kept
+    /// when the park moves between `Background` and `Monitoring`, which
+    /// restamps `state_changed_at`. The card's age reads it. SNAPSHOT only,
+    /// as `tasks_running` is; the daemon keeps it in memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks_since: Option<u64>,
     /// A Claude seat whose conversation has never taken a prompt (T-603):
     /// a plain start (`c`, whose title is typed and never submitted), or a
     /// wake of one, which comes up on an empty composer. Claude Code writes
@@ -655,6 +675,7 @@ impl SessionRecord {
             tier_wake: false,
             unsent: None,
             tasks_running: None,
+            tasks_since: None,
             unprompted: false,
             compacting: false,
         }

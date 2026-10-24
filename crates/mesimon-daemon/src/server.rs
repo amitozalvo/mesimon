@@ -917,6 +917,14 @@ pub struct Daemon {
     /// told of (T-599, `hear_lingering`), forgotten on the record's next
     /// foreground turn. Kept in `crown.json` (T-602).
     lingered: Tracked<std::collections::HashSet<uuid::Uuid>>,
+    /// When each record's stretch idle on tasks began (T-944,
+    /// `crownwake::tasks_stretch`): the turn's end, kept across the park's
+    /// move between `Background` and `Monitoring`, which restamps
+    /// `state_changed_at`. The lingering wake, the card's age and
+    /// `get_ticket`'s `background` read it. Memory only: after a restart the
+    /// registry is empty and the park is re-entered, so the stretch is
+    /// dated from there.
+    tasks_since: HashMap<uuid::Uuid, u64>,
     /// The last automatic move each ticket was refused (T-749), for its
     /// page and `get_ticket`: the gate's words, kept until the ticket moves
     /// or, for a column rule, until the rule passes. Memory only, as the
@@ -1489,6 +1497,7 @@ pub fn run(paths: Paths) -> Result<()> {
         late_asks: HashMap::new(),
         turns_open: Default::default(),
         lingered: Default::default(),
+        tasks_since: HashMap::new(),
         held: crate::movegate::HeldMoves::default(),
         crown_watched: Default::default(),
         crown_held: Default::default(),
@@ -3257,8 +3266,12 @@ impl Daemon {
         }
         self.poll_codex();
         let now = now_ms();
-        let fired: Vec<(uuid::Uuid, Change)> =
-            self.machines.iter_mut().filter_map(|(id, m)| m.tick(now).map(|c| (*id, c))).collect();
+        let park_stale = park_stale_ms();
+        let fired: Vec<(uuid::Uuid, Change)> = self
+            .machines
+            .iter_mut()
+            .filter_map(|(id, m)| m.tick_parked(now, park_stale).map(|c| (*id, c)))
+            .collect();
         // The startup probes' screens (T-857): asked of the sampler here,
         // read where the sample lands (`on_pane_sampled`).
         self.want_codex_startup();
@@ -6356,6 +6369,12 @@ impl Daemon {
         if change.to == SessionState::Running {
             self.lingered.remove(&id);
         }
+        // And the stretch's start (T-944): kept across the park's demote.
+        let kept = self.tasks_since.get(&id).copied();
+        match crownwake::tasks_stretch(&change.from, &change.to, now, kept) {
+            Some(at) => _ = self.tasks_since.insert(id, at),
+            None => _ = self.tasks_since.remove(&id),
+        }
         if snapshot.kind.is_agent() && change.from != change.to {
             // A turn that took the crown's ask and ended with background
             // tasks still running answered it (T-599): the crown asked
@@ -9425,13 +9444,19 @@ impl Daemon {
     /// (T-599): how many, and since its turn ended. Said, never judged.
     fn agent_background(&self, id: ulid::Ulid) -> Option<AgentBackgroundView> {
         let rec = self.board.live_agent(id)?;
-        if rec.state != (SessionState::Idle { stop_reason: StopReason::Background }) {
+        if !rec.state.on_tasks() {
             return None;
         }
         Some(AgentBackgroundView {
             tasks: u32::try_from(rec.background_tasks.count()).unwrap_or(u32::MAX),
-            since_secs: rec.state_changed_at.map(|at| now_ms().saturating_sub(at) / 1000),
+            since_secs: self.stretch_since(rec).map(|at| now_ms().saturating_sub(at) / 1000),
         })
+    }
+
+    /// When a record idle on tasks began its stretch (T-944): the turn's
+    /// end the daemon saw, else the state's own stamp.
+    fn stretch_since(&self, rec: &mesimon_core::board::SessionRecord) -> Option<u64> {
+        self.tasks_since.get(&rec.id).copied().or(rec.state_changed_at)
     }
 
     /// What a `needs-you` agent's stop is (T-566): its reason, and on a
@@ -12575,9 +12600,10 @@ impl Daemon {
             rec.shell_close_request = None;
         }
         rec.foreground = self.foregrounds.get(&rec.id).cloned();
-        rec.tasks_running = (rec.kind.is_agent()
-            && rec.state == (SessionState::Idle { stop_reason: StopReason::Background }))
-        .then(|| u32::try_from(rec.background_tasks.count()).unwrap_or(u32::MAX));
+        let on_tasks = rec.kind.is_agent() && rec.state.on_tasks();
+        rec.tasks_running =
+            on_tasks.then(|| u32::try_from(rec.background_tasks.count()).unwrap_or(u32::MAX));
+        rec.tasks_since = on_tasks.then(|| self.stretch_since(rec)).flatten();
         // And whether the seat never took a prompt (T-603): one `stat`
         // per idle or parked claude.
         rec.unprompted = self.unprompted_hint(rec);
@@ -18918,6 +18944,15 @@ fn sleep_min_age_ms() -> u64 {
 
 /// Test seam only — e2e cannot wait out the real 30 minutes a worker sits
 /// idle with background tasks before the crown is told (T-599).
+/// The park clock (`attention::PARK_STALE_MS`, ten minutes), shortened by
+/// an e2e (T-944).
+fn park_stale_ms() -> u64 {
+    std::env::var("MESIMON_PARK_STALE_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(mesimon_core::attention::PARK_STALE_MS)
+}
+
 fn linger_ms() -> u64 {
     std::env::var("MESIMON_LINGER_MS")
         .ok()
