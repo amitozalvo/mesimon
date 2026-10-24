@@ -471,10 +471,16 @@ impl Bed {
     }
 
     fn append(&self, record: serde_json::Value) {
+        self.append_all(&[record]);
+    }
+
+    /// `records` in one write, so no tail read falls between them.
+    fn append_all(&self, records: &[serde_json::Value]) {
         use std::io::Write;
+        let text: String = records.iter().map(|r| format!("{r}\n")).collect();
         let mut f =
             std::fs::OpenOptions::new().create(true).append(true).open(&self.transcript).unwrap();
-        writeln!(f, "{record}").unwrap();
+        f.write_all(text.as_bytes()).unwrap();
     }
 
     fn input(tool: &str) -> serde_json::Value {
@@ -503,9 +509,13 @@ impl Bed {
     }
 
     fn result(&self, id: &str, error: bool, text: &str) {
-        self.append(serde_json::json!({"uuid": format!("r-{id}"), "type": "user",
+        self.append(Self::result_of(id, error, text));
+    }
+
+    fn result_of(id: &str, error: bool, text: &str) -> serde_json::Value {
+        serde_json::json!({"uuid": format!("r-{id}"), "type": "user",
             "timestamp": now_iso(), "message": {"content": [{"type": "tool_result",
-                "tool_use_id": id, "is_error": error, "content": text}]}}));
+                "tool_use_id": id, "is_error": error, "content": text}]}})
     }
 
     fn state(&mut self) -> Option<SessionState> {
@@ -1208,13 +1218,16 @@ fn an_old_plan_s_esc_leaves_a_newer_dialog_standing() {
     }
 }
 
-/// T-957 round 9: an old interrupt presented again in a later read. Plan A,
-/// the person Escs and submits, and B is heard (projected) before the tail
-/// reads A's end. The reads then come apart: `result A + X | X`, and
-/// `result A | X | X`. A's end is dropped in its read (B is projected), and
-/// the X that a later read presents again has no end to ride and no call:
-/// on a seat whose dialog a hook named, it moves nothing. Past every read,
-/// the seat is still on B with B's request. The pin is off.
+/// T-957 rounds 9 and 10: an old interrupt presented again in a later read.
+/// Plan A, the person Escs and submits, and B is heard (projected) before
+/// the tail reads A's end. The reads then come apart, each part appended
+/// only once the feed shows the read before it decided: `result A + X | X`,
+/// and `result A | X | X`. A's end is dropped in its read
+/// (`tail_end_of_another_dialog`, B is projected), and the X that a later
+/// read presents again has no end to ride and no call: on a seat whose
+/// dialog a hook named, it moves nothing (`tail_abort_beside_a_dialog`).
+/// Past that decision's settle, the seat is still on B with B's request.
+/// The pin is off.
 #[test]
 fn an_old_interrupt_replayed_in_a_later_read_leaves_a_newer_dialog_standing() {
     const STOP: &str =
@@ -1228,20 +1241,36 @@ fn an_old_interrupt_replayed_in_a_later_read_leaves_a_newer_dialog_standing() {
         b.stop_on("ExitPlanMode", "toolu_a");
         b.hook("UserPromptSubmit", r#"{"prompt":"Plan it again."}"#);
         b.stop_on("ExitPlanMode", "toolu_b");
+        let lines = |b: &Bed, cmd: &str| {
+            std::fs::read_to_string(b.h.paths.state_dir.join("activity.jsonl"))
+                .unwrap_or_default()
+                .matches(&format!("\"cmd\":\"{cmd}\""))
+                .count()
+        };
+        let read_and = |b: &Bed, cmd: &str, count: usize| {
+            wait_until(Duration::from_secs(10), &format!("the read deciding {cmd}"), || {
+                lines(b, cmd) >= count
+            });
+        };
         let interrupt = serde_json::json!({"uuid": "abort-a", "type": "user",
             "timestamp": now_iso(), "message": {"content": [{"type": "text",
                 "text": "[Request interrupted by user for tool use]"}]}});
-        b.result("toolu_a", true, STOP);
-        if !split {
+        let result = Bed::result_of("toolu_a", true, STOP);
+        if split {
+            // `result A | X | X`: A's end, then its Esc, each dropped in its read.
+            b.append(result);
+            read_and(&b, "tail_end_of_another_dialog", 1);
             b.append(interrupt.clone());
+            read_and(&b, "tail_end_of_another_dialog", 2);
+        } else {
+            // `result A + X | X`: A's interrupted end, dropped in one read.
+            b.append_all(&[result, interrupt.clone()]);
+            read_and(&b, "tail_end_of_another_dialog", 1);
         }
-        // One tail read per part.
-        let parts = if split { 2 } else { 1 };
-        for _ in 0..parts {
-            std::thread::sleep(Duration::from_millis(2500));
-            b.append(interrupt.clone());
-        }
-        std::thread::sleep(Duration::from_millis(3000));
+        b.append(interrupt);
+        read_and(&b, "tail_abort_beside_a_dialog", 1);
+        // Past the settle of anything that read could have started.
+        std::thread::sleep(Duration::from_millis(2000));
         let pinned = b.decisions().iter().any(|d| {
             d["decision"]["after"]["pinned_until"]
                 .as_u64()
@@ -1306,4 +1335,54 @@ fn a_restart_before_a_newer_dialog_s_line_keeps_it() {
         needs(&mut b).and_then(|n| n.request).as_deref() == Some("toolu_b")
     });
     assert_eq!(b.state(), Some(SessionState::RequiresAction { reason: Reason::Plan }));
+}
+
+/// T-957 round 10: a dialog too big to draw still names its call. Plan A is
+/// projected, then the agent asks a question B whose input passes the
+/// projection's 16 KiB bound: nothing projects it, but B's hook names its
+/// call on the record, so A's identity does not linger. B's own result and
+/// Esc end B, interrupted, live and after a restart that came between B's
+/// hook and its end.
+#[test]
+fn a_question_too_big_to_draw_still_ends_on_its_own_result() {
+    const STOP: &str =
+        "The user doesn't want to proceed with this tool use. STOP what you are doing.";
+    let interrupted =
+        SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Interrupted };
+    for (n, restart) in [false, true].into_iter().enumerate() {
+        let Some(mut b) = Bed::boot(&format!("planbig{n}")) else { return };
+        b.start();
+        std::thread::sleep(Duration::from_millis(2500));
+        b.call("ExitPlanMode", "toolu_a");
+        b.stop_on("ExitPlanMode", "toolu_a");
+        let big = serde_json::json!({"questions": [{"question": "Which?", "header": "Which",
+            "options": [{"label": "A", "description": "x".repeat(17 * 1024)},
+                {"label": "B", "description": ""}], "multiSelect": false}]});
+        b.append(serde_json::json!({"uuid": "c-big", "type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_b", "name": "AskUserQuestion", "input": big}]}}));
+        let frame = serde_json::json!({"tool_name": "AskUserQuestion", "tool_use_id": "toolu_b",
+            "tool_input": big});
+        b.hook("PreToolUse", &frame.to_string());
+        b.c.await_state(b.sid, "on the question", |s| {
+            *s == SessionState::RequiresAction { reason: Reason::Question }
+        });
+        if restart {
+            b.h.restart_after(|| {});
+            b.c = b.h.client(&format!("planbig{n}_2"));
+            std::thread::sleep(Duration::from_millis(2500));
+        }
+        b.result("toolu_b", true, STOP);
+        b.append(serde_json::json!({"uuid": "esc-b", "type": "user", "timestamp": now_iso(),
+            "message": {"content": [{"type": "text",
+                "text": "[Request interrupted by user for tool use]"}]}}));
+        b.c.await_state(b.sid, "off the question its own Esc ended", |s| *s == interrupted);
+        let needs = match b
+            .c
+            .send(mesimon_core::Principal::Agent { session: b.sid }, Command::AgentGetTicket)
+        {
+            Response::AgentTicket { ticket } => ticket.needs_you,
+            other => panic!("get_ticket: {other:?}"),
+        };
+        assert!(needs.is_none(), "no dialog stands (restart: {restart}): {needs:?}");
+    }
 }

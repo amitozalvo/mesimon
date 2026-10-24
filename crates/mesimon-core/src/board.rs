@@ -697,6 +697,20 @@ impl SessionRecord {
         }
     }
 
+    /// The state written, and the held call (`dialog_call`, T-957 round 10)
+    /// let go whenever the record is not on a plan or a question: every
+    /// departure, a park, a death or a supervisor's loss as much as the
+    /// machine's, goes through here.
+    pub fn set_state(&mut self, state: SessionState) {
+        if !matches!(
+            state,
+            SessionState::RequiresAction { reason: Reason::Plan | Reason::Question }
+        ) {
+            self.dialog_call = None;
+        }
+        self.state = state;
+    }
+
     /// A column's opt-in (T-543): a confirmed agent idle at its prompt past
     /// the timeout, whether or not a turn finished there — just woken,
     /// interrupted, or done waiting on background work — because a column
@@ -4316,6 +4330,39 @@ mod tests {
         }"#;
         let rec: SessionRecord = serde_json::from_str(m1_exited).unwrap();
         assert_eq!(rec.state, SessionState::Exited { reason: ExitReason::Killed });
+    }
+
+    /// T-957 round 10: the held call is let go on every departure written
+    /// through `set_state` (a park, a supervisor's loss, a death, a wake,
+    /// the machine's own), and kept while the record is on a plan or a
+    /// question.
+    #[test]
+    fn set_state_lets_the_held_call_go_off_a_dialog() {
+        let mut rec = SessionRecord::new(
+            uuid::Uuid::nil(),
+            SessionKind::Claude,
+            ulid::Ulid(1),
+            vec!["claude".into()],
+            "/tmp".into(),
+            SessionState::RequiresAction { reason: Reason::Plan },
+        );
+        for kept in [Reason::Plan, Reason::Question] {
+            rec.dialog_call = Some("toolu_b".into());
+            rec.set_state(SessionState::RequiresAction { reason: kept });
+            assert_eq!(rec.dialog_call.as_deref(), Some("toolu_b"), "{kept:?}");
+        }
+        for gone in [
+            SessionState::Sleeping,
+            SessionState::Unknown { reason: UnknownReason::SupervisorDead },
+            SessionState::Exited { reason: ExitReason::Killed },
+            SessionState::Spawning,
+            SessionState::Running,
+            SessionState::RequiresAction { reason: Reason::Permission },
+        ] {
+            rec.dialog_call = Some("toolu_b".into());
+            rec.set_state(gone.clone());
+            assert_eq!((rec.dialog_call.as_deref(), &rec.state), (None, &gone));
+        }
     }
 
     /// An M2 sessions.json line (pre-provenance) must keep parsing after the

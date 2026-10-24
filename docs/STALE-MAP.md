@@ -34014,8 +34014,9 @@ Not held:
 - any sample of the engine presenting one record twice. Rounds 7 to 9 build for that from the
   cursor's contract (rotation resets to 0), not from an observation.
 
-The 2.1.310 plan dialog's rows, with "No, keep planning" among four, are `plan_dialog.rs`'s
-fixture; the e2e stand-in draws 2.1.287's three.
+`plan_dialog.rs`'s fixture has four rows, "No, keep planning" among them, and records no
+version. T-943's block records 2.1.310's plan dialog with three rows, which the e2e stand-in
+draws.
 
 A sibling's result in a parallel batch carries another id (T-595). The pane sample, the note's
 other candidate, needs a screen shape for every dialog; the result is keyed to the call and
@@ -34155,6 +34156,27 @@ belongs to a later turn.
     is the daemon's receipt time, so a busy writer's late hooks lost a refusal already on disk.
     With the held call known, its result is read by that identity, against no clock; the spell's
     stamp fences only an older record that names no call.
+- **Round 10: round 9's mechanism, completed.**
+  - **The call's line need not be read.** The live reader matched a result only against the
+    call its cursor had seen. With the call past the 1 MiB window, or before a restart, the
+    result went unrecognised and its Esc was an unscoped abort, which round 9's rule then
+    dropped: the dismissed dialog kept needs-you. Now the live reader also matches the result of
+    the call the record names, for the held tool. On the first read, `closed_dialog` returns the
+    named call's own result without its call's line; the newer-prompt and newer-dialog fences
+    still stop the walk.
+  - **The hook names the call, whether or not its content projects.** `control_observe_dialog`
+    returned before writing `dialog_call` when a dialog's content could not be projected (a
+    question past the 16 KiB bound). The record kept A while the machine held B, and B's own end
+    was refused against A. The call id is now observed for the two interaction tools before
+    that return, with the prompt count it was named at (`dialog_heard`, round 4). A replacement
+    that gives no id names none. A `PermissionRequest` repeating its `PreToolUse` without an id
+    keeps the one it had.
+  - **Every departure lets it go.** `SessionRecord::set_state` writes the state and clears
+    `dialog_call` off a plan or a question. Every production write goes through it:
+    `apply_change`, the park, the supervisor guard, reconcile, a death, a wake, the Codex
+    snapshot and the mod bridge's park and restore.
+  - The guard's drop is a feed line too, `tail_end_of_another_dialog`, so a test can tell which
+    read decided.
 - **After a restart** a dialog this daemon never projected counts from the daemon's start.
 - **In the read:** a person's prompt (`adopt::user_prompt`) after an interrupt in the same read
   drops the interrupted end and every `AbortedMidStream` read before it.
@@ -34290,6 +34312,19 @@ belongs to a later turn.
     and the refusal on disk, then the prompt's and the plan's hooks. Words end `Running`, an Esc
     `Interrupted`, needs-you clears and `ask_agent` is admitted, on both roads. With the clock
     fence alone it stays on the plan.
+- Round 10:
+  - Unit `recovery::a_named_call_s_result_ends_it_without_its_line`: question B named on the
+    record, its call's line absent, its result and Esc on disk at the first read, then read
+    live after it. Each gives B's interrupted end, and the machine rests interrupted. It fails
+    with either match removed.
+  - Unit `board::set_state_lets_the_held_call_go_off_a_dialog`.
+  - `plan_accept_e2e::a_question_too_big_to_draw_still_ends_on_its_own_result`: plan A, then a
+    question B past the projection's bound, then B's result and Esc, live and across a restart
+    after B's hook. It ends `Interrupted` with no `needs_you`. With round 9's write after the
+    projection, it stays on the question.
+  - The replay e2e now appends each part only once the feed shows the read before it decided
+    (`tail_end_of_another_dialog`, then `tail_abort_beside_a_dialog`). It writes A's result and
+    X in one write where they share a read, and asserts after that decision's settle.
 
 **Not done (seen, not changed).**
 - **T-943's walk e2e** (`the_crown_sends_a_plan_back_with_words`) and `PlanBed::clear` still end

@@ -453,7 +453,18 @@ impl ClaudeRecovery {
                 self.ended = None;
                 answered = None;
             } else if let Some(call) =
-                self.dialog.take_if(|(_, id)| tail::carries_result_of(&value, id))
+                self.dialog.take_if(|(_, id)| tail::carries_result_of(&value, id)).or_else(|| {
+                    // The call a hook named for the held dialog, whose line
+                    // this cursor never read (past the window, before a
+                    // restart): its own result is its end all the same
+                    // (round 10).
+                    held.zip(record.dialog_call.as_deref())
+                        .filter(|(_, id)| {
+                            tail::carries_result_of(&value, id)
+                                && self.departed.as_deref() != Some(*id)
+                        })
+                        .map(|(tool, id)| (tool, id.to_string()))
+                })
             {
                 self.ended = Some(call.clone());
                 answered = Some((call, false));
@@ -1571,6 +1582,65 @@ mod recovery_tests {
         // busy writer): read by identity, against no clock.
         assert_eq!(ends(&first_read(&history, Some("a"), 14)), ["a"]);
         assert!(ends(&first_read(&history, None, 14)).is_empty(), "the spell's fence alone");
+    }
+
+    /// T-957 round 10: the held call the record names is matched by its id
+    /// even when its line never reached this reader (past the 1 MiB window,
+    /// before a restart): its result and Esc end it, on the first read and
+    /// on a later one, so the unscoped-abort rule leaves it a departure.
+    #[test]
+    fn a_named_call_s_result_ends_it_without_its_line() {
+        let at = |second: u32| format!("2026-10-24T16:10:{second:02}.000Z");
+        let ms = |second: u32| mesimon_core::adopt::iso_ms(&at(second)).unwrap();
+        let sibling = serde_json::json!({"uuid":"sib", "type":"user", "timestamp": at(11),
+            "message":{"content":[{"type":"tool_result","tool_use_id":"s1","content":"out"}]}});
+        let result = serde_json::json!({"uuid":"result-b", "type":"user", "timestamp": at(12),
+            "message":{"content":[{"type":"tool_result","tool_use_id":"b","is_error":true,
+                "content":"STOP what you are doing."}]}});
+        let abort = serde_json::json!({"uuid":"esc-b", "type":"user", "timestamp": at(12),
+            "message":{"content":[{"type":"text",
+                "text":"[Request interrupted by user for tool use]"}]}});
+        let ended = |seen: &[RecoveryObservation]| {
+            matches!(seen, [RecoveryObservation {
+                signal: Signal::DialogEnded { interrupted: true },
+                dialog: Some(call),
+                ..
+            }] if call == "b")
+        };
+        let held = |history: &History| {
+            let mut rec = record(SessionState::RequiresAction { reason: Reason::Question });
+            rec.transcript_path = Some(history.0.display().to_string());
+            rec.state_changed_at = Some(ms(10));
+            rec.dialog_call = Some("b".into());
+            rec
+        };
+        // The result and the Esc already on disk at the first read.
+        let history = History::new();
+        history.append(sibling.clone());
+        history.append(result.clone());
+        history.append(abort.clone());
+        let rec = held(&history);
+        let mut recovery = ClaudeRecovery::default();
+        assert!(recovery.needs_poll(&rec, RecoveryChannel::Transcript, 20_000));
+        let seen = recovery.poll(&rec, RecoverySample::Transcript, 20_000);
+        assert!(ended(&seen), "first read: {seen:?}");
+        // Read after the first read, live.
+        let history = History::new();
+        history.append(sibling);
+        let rec = held(&history);
+        let mut recovery = ClaudeRecovery::default();
+        assert!(recovery.needs_poll(&rec, RecoveryChannel::Transcript, 20_000));
+        assert!(recovery.poll(&rec, RecoverySample::Transcript, 20_000).is_empty());
+        history.append(result);
+        history.append(abort);
+        let seen = recovery.poll(&rec, RecoverySample::Transcript, 21_000);
+        assert!(ended(&seen), "live: {seen:?}");
+        let mut m = attention::Machine::new(rec.state.clone(), 0);
+        m.apply(&seen[0].signal, 21_000);
+        assert_eq!(
+            m.tick(21_000 + attention::SETTLE_MS).map(|c| c.to),
+            Some(SessionState::Idle { stop_reason: StopReason::Interrupted })
+        );
     }
 
     /// T-802: a usage limit is restated off the tail once a minute while

@@ -1173,6 +1173,30 @@ impl Daemon {
             return;
         }
         let Some(tool) = frame.payload["tool_name"].as_str() else { return };
+        // The call the record is held on (T-957 rounds 9, 10), observed from
+        // the hook whether or not its content projects: a dialog too big to
+        // draw still names its call, and a replacement that gives no id
+        // names none, never the call before it. A `PermissionRequest` that
+        // repeats its `PreToolUse` without an id keeps the one it had.
+        if matches!(tool, "ExitPlanMode" | "AskUserQuestion") {
+            let call =
+                frame.payload["tool_use_id"].as_str().filter(|s| s.len() <= 256).map(String::from);
+            let repeat = frame.event == "PermissionRequest" && call.is_none();
+            // The prompts heard when it was named (round 4): an Esc read for
+            // it after another is heard ended an earlier turn.
+            if let Some(call) = &call {
+                if self.dialog_heard.get(&id).is_none_or(|(named, _)| named != call) {
+                    let heard = self.prompts_heard.get(&id).copied().unwrap_or(0);
+                    self.dialog_heard.insert(id, (call.clone(), heard));
+                }
+            }
+            if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                if !repeat && rec.dialog_call != call {
+                    rec.dialog_call = call;
+                    self.persist_sessions();
+                }
+            }
+        }
         let Some(content) = dialog_content(tool, &frame.payload["tool_input"]) else { return };
         // PermissionRequest may repeat the same PreToolUse payload. Keep its
         // identity stable while a browser is selecting that exact dialog.
@@ -1215,19 +1239,11 @@ impl Daemon {
                 super::crownwake::stop_cause(self.board.crown_mode, s.kind, &s.state)
                     .map(|cause| (s.ticket, cause))
             });
-        // The prompts heard when it was projected (T-957 round 4): an Esc
-        // read for it after another is heard ended an earlier turn.
-        let heard = self.prompts_heard.get(&id).copied().unwrap_or(0);
-        self.dialog_heard.insert(id, (request.clone(), heard));
-        // The call the record is held on, kept on the record (round 9): a
-        // restart loses the projection, and the tail's reader matches by it.
-        // Only a plan's or a question's, and only a call id the frame gave.
-        let named = frame.payload["tool_use_id"].as_str() == Some(request.as_str());
-        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
-            if reason.is_some() && named && rec.dialog_call.as_deref() != Some(request.as_str()) {
-                rec.dialog_call = Some(request.clone());
-                self.persist_sessions();
-            }
+        // A dialog projected with no call id of its own is noted under the
+        // request it was given (round 4).
+        if self.dialog_heard.get(&id).is_none_or(|(named, _)| *named != request) {
+            let heard = self.prompts_heard.get(&id).copied().unwrap_or(0);
+            self.dialog_heard.insert(id, (request.clone(), heard));
         }
         self.control.dialogs.insert(id, api::Dialog { request, content });
         self.control_changed();

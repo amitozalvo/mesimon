@@ -1180,7 +1180,7 @@ pub fn run(paths: Paths) -> Result<()> {
             }
             let was_live = r.state.is_live();
             let had_pane = r.state.has_pane();
-            r.state = state_for(link, &r.state, r.kind.is_agent());
+            r.set_state(state_for(link, &r.state, r.kind.is_agent()));
             if r.kind == SessionKind::Codex && (had_pane || r.state.has_pane()) {
                 // The owed ledger is memory (the same policy as Claude's). A
                 // new daemon must not reconstruct and submit a partial prompt
@@ -3707,6 +3707,8 @@ impl Daemon {
                 .as_ref()
                 .is_some_and(|call| held_call.as_ref().is_some_and(|r| r != call))
             {
+                let ticket = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket);
+                self.feed.board("automation", "tail_end_of_another_dialog", ticket);
                 continue;
             }
             // While an owned seat holds a dialog a hook named, only that
@@ -4039,7 +4041,7 @@ impl Daemon {
         let mut changed = false;
         for rec in &mut self.board.sessions {
             if ours_paned(rec) && rec.state_changed_at.is_none_or(|t| t <= at) {
-                rec.state = SessionState::Unknown { reason: UnknownReason::SupervisorDead };
+                rec.set_state(SessionState::Unknown { reason: UnknownReason::SupervisorDead });
                 rec.confidence = Confidence::Stale;
                 rec.waiting_since = None;
                 rec.state_changed_at = Some(now);
@@ -4448,7 +4450,7 @@ impl Daemon {
                 if matches!(rec.state, SessionState::Unknown { .. })
                     && (!snapshot.observation_hold || in_turn)
                 {
-                    rec.state = snapshot.state.clone();
+                    rec.set_state(snapshot.state.clone());
                     rec.confidence = Confidence::High;
                     self.machines
                         .insert(id, Machine::restore(snapshot.state, Confidence::High, now));
@@ -6816,15 +6818,9 @@ impl Daemon {
                 rec.codex_observed_seq = sequence;
             }
         }
-        rec.state = change.to.clone();
+        // A record off its dialog holds no call (T-957 rounds 9, 10).
+        rec.set_state(change.to.clone());
         rec.confidence = change.confidence;
-        // A record off its dialog holds no call (T-957 round 9).
-        if !matches!(
-            change.to,
-            SessionState::RequiresAction { reason: Reason::Plan | Reason::Question }
-        ) {
-            rec.dialog_call = None;
-        }
         let stop_words = detail.is_some();
         if change.from != change.to {
             rec.state_changed_at = Some(now);
@@ -18438,7 +18434,7 @@ impl Daemon {
         // and its corpse stays on the ticket rail. Kill on an already-dead
         // record is the rail's dismissal gesture — the one exit the rail hides.
         let reason = if rec.state.is_live() { ExitReason::Killed } else { ExitReason::Dismissed };
-        rec.state = SessionState::Exited { reason };
+        rec.set_state(SessionState::Exited { reason });
         if rec.kind == SessionKind::Codex && reap.is_some() {
             rec.codex_stopping = true;
             rec.observation_hold = true;
@@ -19020,7 +19016,7 @@ impl Daemon {
                     Some(crate::agents::codex::preview_path(&self.paths, id).display().to_string());
             }
             rec.cwd = cwd.display().to_string();
-            rec.state = SessionState::Spawning;
+            rec.set_state(SessionState::Spawning);
             rec.state_changed_at = Some(now);
             rec.waiting_since = None;
             rec.confidence = Confidence::High;
@@ -19262,7 +19258,7 @@ impl Daemon {
             }
         }
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
-            rec.state = SessionState::Sleeping;
+            rec.set_state(SessionState::Sleeping);
             if rec.kind == SessionKind::Codex {
                 rec.codex_stopping = true;
                 rec.observation_hold = true;
@@ -19404,7 +19400,7 @@ impl Daemon {
                 self.await_bridge(id, now);
                 if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                     rec.pane_key = Some(pane);
-                    rec.state = SessionState::Running;
+                    rec.set_state(SessionState::Running);
                     rec.state_changed_at = Some(now);
                 }
                 self.machines.insert(id, Machine::new(SessionState::Running, now));

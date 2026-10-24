@@ -522,7 +522,7 @@ impl Daemon {
         let owed = self.owed.remove(&id);
         self.mod_forget(id);
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
-            rec.state = SessionState::Sleeping;
+            rec.set_state(SessionState::Sleeping);
         }
         match self.resume_session_in(id, true, plan) {
             Response::Spawned { fresh, .. } => {
@@ -582,7 +582,7 @@ impl Daemon {
                 };
                 self.pending_resumes.retain(|p| p.session != id);
                 if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
-                    rec.state = prior;
+                    rec.set_state(prior);
                 }
                 if let Some(owed) = owed {
                     self.owed.insert(id, owed);

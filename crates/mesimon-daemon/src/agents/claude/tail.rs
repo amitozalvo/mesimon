@@ -286,6 +286,15 @@ pub fn closed_dialog(
         }
         if carries_tool_result(&v) {
             let blocks = v["message"]["content"].as_array()?;
+            // The held call's own result, read by its identity: its call's
+            // line may lie past the window (round 10).
+            if let Some(held) = call.filter(|held| carries_result_of(&v, held)) {
+                return Some(ClosedDialog {
+                    id: held.to_string(),
+                    last: newer.is_none(),
+                    interrupt: newer.flatten(),
+                });
+            }
             for id in blocks.iter().filter_map(|b| b["tool_use_id"].as_str()) {
                 results.push((id.to_string(), record_ms(&v), newer.clone()));
             }
