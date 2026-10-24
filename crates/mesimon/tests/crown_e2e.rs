@@ -6278,8 +6278,51 @@ fn the_crown_sends_a_plan_back_with_words() {
     let at_plan = SessionState::RequiresAction { reason: mesimon_core::board::Reason::Plan };
     assert_eq!(
         b.c.board().sessions.iter().find(|s| s.id == ws).map(|s| s.state.clone()),
-        Some(at_plan)
+        Some(at_plan.clone())
     );
+
+    // ---- the same dialog said again wakes nobody again ----------------------
+    // The crown is idle, so a second wake would land at once.
+    let hook_sock = b.h.paths.hook_sock();
+    b.hook("PreToolUse", "ExitPlanMode", "toolu_w3");
+    b.hook("PermissionRequest", "ExitPlanMode", "toolu_w3");
+    let unkeyed = json!({ "tool_name": "ExitPlanMode", "tool_input": { "plan": BED_PLAN } });
+    hook_send(&hook_sock, &ws.to_string(), "PermissionRequest", &unkeyed.to_string());
+
+    // ---- a person's agent replanning in place wakes nobody through it -------
+    let p = b.c.create_ticket("the person's own");
+    let kp = key_of(&mut b.c, p);
+    let sp = b.c.spawn_claude(p);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let send = |event: &str, request: &str| {
+        let frame = PlanBed::frame(request);
+        hook_send(&hook_sock, &sp.to_string(), event, &frame);
+    };
+    hook_send(&hook_sock, &sp.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    b.c.await_state(sp, "running", |s| *s == SessionState::Running);
+    send("PreToolUse", "toolu_p1");
+    b.c.await_state(sp, "on its plan", |s| *s == at_plan);
+    send("PreToolUse", "toolu_p2");
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    assert_eq!(b.typed().matches(&wake).count(), 3, "a repeat of the same plan wakes once");
+    let owed = |b: &PlanBed, worker: ulid::Ulid| {
+        b.feed()
+            .lines()
+            .filter(|l| {
+                l.contains("\"kind\":\"crown_wake\"")
+                    && l.contains(&format!("\"worker\":\"{worker}\""))
+                    && l.contains("\"cause\":\"planned\"")
+            })
+            .count()
+    };
+    assert_eq!(owed(&b, w), 3, "three plans owed three wakes: {}", b.feed());
+    assert!(
+        !b.typed().contains(&format!("{kp} \"the person's own\" stops on a plan")),
+        "a person's agent's plans wake nobody: {}",
+        b.typed()
+    );
+    assert_eq!(owed(&b, p), 0, "no wake owed for the person's ticket");
+
     b.start(b.sa);
     let needs = read(&mut b.c, b.sa, &kw).unwrap().needs_you.expect("the replanned plan");
     assert_eq!(needs.request.as_deref(), Some("toolu_w3"));

@@ -33193,6 +33193,10 @@ into that row.
   - an Enter the dialog did not take: `dialog_stands` after the window, never retried.
   - The send-back test's last step: a replan at once, with no tool call between, wakes the crown
     a third time, the record still at `Plan`. Without the fix it times out.
+  - Then two negative checks (the delivery read). The same dialog said again (its `PreToolUse`,
+    its `PermissionRequest`, and one with no `tool_use_id`) owes no fourth wake, in the pane or
+    in the feed's `crown_wake` lines. A person-started agent stopped on a plan and replanning in
+    place owes the crown none (`crown_claims`).
 - Both pass on the hook road and on the mod pass, with `the_crown_accepts_a_plan_by_default`
   beside them.
 - `crown_rules_e2e::a_deferred_plan_sent_back_as_the_first_call_carries_the_rules` (with T-930):
