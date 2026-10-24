@@ -165,14 +165,8 @@ pub fn open_dialog(path: &Path) -> Option<OpenDialog> {
     for v in (TailRecords { text, end }) {
         match classify_tail_record(&v) {
             TailEvent::Latch | TailEvent::ToolInFlight => continue,
-            TailEvent::NeedsHuman { tool } => {
-                let name = match tool {
-                    TailTool::AskUserQuestion => "AskUserQuestion",
-                    TailTool::ExitPlanMode => "ExitPlanMode",
-                };
-                let call = v["message"]["content"].as_array()?.iter().find(|b| {
-                    b["type"].as_str() == Some("tool_use") && b["name"].as_str() == Some(name)
-                })?;
+            TailEvent::NeedsHuman { .. } => {
+                let (tool, call) = dialog_block(&v)?;
                 let id = call["id"].as_str()?;
                 if answered.iter().any(|a| a == id) {
                     return None;
@@ -194,6 +188,43 @@ pub fn open_dialog(path: &Path) -> Option<OpenDialog> {
         }
     }
     None
+}
+
+/// The plan or question call `v` makes, if it makes one: the tool and the
+/// call's `tool_use` id, the hook frames' `tool_use_id` (T-957).
+pub fn dialog_call(v: &serde_json::Value) -> Option<(TailTool, &str)> {
+    let (tool, call) = dialog_block(v)?;
+    Some((tool, call["id"].as_str()?))
+}
+
+/// Whether `v` carries the result of the tool call `id`: the dialog's own
+/// end, whatever closed it (T-957). Claude Code writes it at the keypress,
+/// on 2.1.310 as on 2.1.287: `is_error` with "the user said: …" for a plan
+/// sent back with words, `is_error` with "STOP what you are doing" and an
+/// interrupt record after it for an Esc, the approval or the answers for an
+/// accept. A sibling's result is another id and is not it (T-595).
+pub fn carries_result_of(v: &serde_json::Value, id: &str) -> bool {
+    v.get("type").and_then(serde_json::Value::as_str) == Some("user")
+        && v["message"]["content"].as_array().is_some_and(|blocks| {
+            blocks.iter().any(|b| {
+                b["type"].as_str() == Some("tool_result") && b["tool_use_id"].as_str() == Some(id)
+            })
+        })
+}
+
+/// The interaction tool's `tool_use` block of an assistant record that
+/// calls one (`classify_tail_record`'s `NeedsHuman`).
+fn dialog_block(v: &serde_json::Value) -> Option<(TailTool, &serde_json::Value)> {
+    let TailEvent::NeedsHuman { tool } = classify_tail_record(v) else { return None };
+    let name = match tool {
+        TailTool::AskUserQuestion => "AskUserQuestion",
+        TailTool::ExitPlanMode => "ExitPlanMode",
+    };
+    let call = v["message"]["content"]
+        .as_array()?
+        .iter()
+        .find(|b| b["type"].as_str() == Some("tool_use") && b["name"].as_str() == Some(name))?;
+    Some((tool, call))
 }
 
 /// How far back `prompted_since` reads: once per told hand at a start, so
@@ -734,5 +765,39 @@ mod tests {
         .unwrap();
         assert!(api_error(&path).is_none());
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    /// T-957: the plan's own result, as Claude Code 2.1.310 wrote it when a
+    /// plan was sent back with words (the board's transcript, 19:10:31,
+    /// trimmed), is that call's end and no other's; the call's record names
+    /// its tool and id, and a record calling only an ordinary tool is none.
+    #[test]
+    fn a_dialog_s_call_and_its_own_result_are_read_by_id() {
+        let rejected = serde_json::json!({"parentUuid":"e313", "isSidechain":false,
+            "type":"user", "message":{"role":"user", "content":[{"type":"tool_result",
+                "content":"The user doesn't want to proceed with this tool use. The tool use was \
+                    rejected (eg. if it was a file edit, the new_string was NOT written to the \
+                    file). To tell you how to proceed, the user said: Name the file b.txt.",
+                "is_error":true, "tool_use_id":"toolu_01R3iFiXyHgSp58LBwYrzMwP"}]},
+            "uuid":"7196", "timestamp":"2026-10-24T16:10:31.528Z",
+            "toolDenialKind":"user-rejected", "userFeedback":"Name the file b.txt.",
+            "permissionDecision":{"decision":"reject", "source":"user_reject"}});
+        assert!(carries_result_of(&rejected, "toolu_01R3iFiXyHgSp58LBwYrzMwP"));
+        assert!(!carries_result_of(&rejected, "toolu_sibling"));
+        let call = |name: &str| {
+            serde_json::json!({"uuid":"c", "type":"assistant", "message":{"content":[
+                {"type":"tool_use","id":"toolu_1","name":name,"input":{"plan":"# Plan"}}]}})
+        };
+        assert!(matches!(
+            dialog_call(&call("ExitPlanMode")),
+            Some((TailTool::ExitPlanMode, "toolu_1"))
+        ));
+        assert!(matches!(
+            dialog_call(&call("AskUserQuestion")),
+            Some((TailTool::AskUserQuestion, "toolu_1"))
+        ));
+        assert!(dialog_call(&call("Write")).is_none());
+        // A tool's call is not its result.
+        assert!(!carries_result_of(&call("ExitPlanMode"), "toolu_1"));
     }
 }

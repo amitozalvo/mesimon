@@ -237,6 +237,10 @@ pub struct RecoveryObservation {
     pub signal: mesimon_core::attention::Signal,
     pub preview: Option<String>,
     pub source: &'static str,
+    /// The dialog call a departure ends (T-957): the `tool_use` id whose
+    /// result the transcript wrote. The daemon applies the departure only
+    /// while no other dialog stands projected for the seat.
+    pub dialog: Option<String>,
 }
 
 /// Provider-private transient state. No method may mutate board state; the

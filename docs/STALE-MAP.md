@@ -33967,3 +33967,92 @@ read as a list.
 **Taken back whole.** The scroll is a design question first, and T-975 owns it. This branch
 restores `crates/mesimon-tui` to e5a7cf76's tree. `rail_scroll`, `rail_offset` and its unit, and
 both goldens are gone.
+
+**Not done.** A dim `…` row at a cut edge is the person's call. The footer's `jk select
+session` on a note row predates this ticket.
+
+## A dialog leaves on its own call's result in the transcript (T-957, 2026-10-24, "A plan a person rejects in the pane keeps the card at needs-you")
+
+**Seen.** A person who sends a plan back in the pane, with words on `Tell Claude what to change`,
+"No, keep planning" or an Esc, fires no hook (T-447). T-447's refusal road is the session's next
+`PreToolUse`, and neither the hook set nor the classic mod sends one for an ordinary tool (T-955).
+So the card wore `plan`, the attention count counted it, and `ask_agent` was refused until the
+next dialog, the turn's end or the 15-minute stale demote.
+
+**Measured (Claude Code 2.1.310 and older, the board's own transcripts).** Every way a plan or a
+question dialog ends writes a `user` record with the `tool_result` of the dialog's own call, keyed
+by its `tool_use_id`, at the keypress:
+- **Words on the feedback row:** `is_error: true`, content "The user doesn't want to proceed
+  with this tool use. … To tell you how to proceed, the user said: <words>", plus
+  `toolDenialKind: "user-rejected"` and `permissionDecision.source: "user_reject"`. The turn goes
+  on; the first API request follows within 0.4 s (T-945's plan, 19:10:31.528).
+- **An Esc** (a plan's or a question's): `is_error: true`, "… STOP what you are doing and wait for
+  the user to tell you how to proceed.", then `[Request interrupted by user for tool use]` and
+  the turn's `turn_duration`, all within 3 ms. The interrupt record was already read
+  (`TailHint::AbortedMidStream`, Low).
+- **An accept or an answer:** the approval or the answers, beside the engine's `PostToolUse`.
+
+A sibling's result in a parallel batch carries another id (T-595). The pane sample, the note's
+other candidate, needs a screen shape for every dialog; the result is keyed to the call and
+arrives first, so it is the one road.
+
+**What shipped.**
+- **The reader** (`tail::dialog_call`, `tail::carries_result_of`). The Claude recovery adapter
+  already reads the tail every 2 s for a record at a dialog (`abort_only`). It now keeps the last
+  plan or question call it saw with no result after it. A cursor minted after the call (a
+  restart, a turn resumed straight onto a plan) reads it once per held spell through T-933's
+  `open_dialog`.
+- **The departure.** When the held call's own result is read, and no newer dialog call follows
+  it in the same read, the adapter gives the machine `ToolStarted { nested: false }` with source
+  `dialog_result`. That is the refusal road's signal, as T-955's `plan_sent_back`: High, so it
+  passes the flap pin, and it goes through the 1500 ms leave settle, so a replan inside it keeps
+  the dialog. `requires_action` follows the record and `needs_you` follows the state.
+- **The guard.** A replan's `PreToolUse` can beat its call's line to the file, so the hook stream
+  already projects the new dialog when the old result is read. The observation carries the
+  answered id (`RecoveryObservation::dialog`), and `feed_recovery` drops the departure while the
+  seat's projected dialog is another request (`control_dialog_request`).
+- **Unchanged:** the projection itself, T-943's walk and T-955's window and `sent_back_left`. A
+  plan the crown sends back now usually leaves by this road within one tail read of its Enter,
+  and `sent_back_left` finds the record already off the plan. It stays as the backstop for a
+  record with no transcript path; the cut is not trivial, so the code stays.
+
+**Tests.**
+- Unit, `recovery::a_held_dialog_leaves_on_its_own_call_s_result`:
+  - the plan's result is the departure, once;
+  - a sibling's result is not;
+  - a replan in the same read stands;
+  - a question's Esc gives the departure and then `AbortedMidStream`;
+  - another dialog's result says nothing;
+  - a cursor minted after the call learns it.
+- Unit, `tail::a_dialog_s_call_and_its_own_result_are_read_by_id`, on the 2.1.310 record trimmed.
+  T-363's restatement test now expects the departure on its accepted plan.
+- Unit, `composer::startup_and_dialogs_are_not_a_composer` gained the question screen (2.1.287's
+  capture, the cursor on each row, `Chat about this` under a rule) and a permission dialog. The
+  permission screen is written from its rows, not a capture.
+- `fake_claude_dialog.py` writes the transcript as 2.1.310 does when the dialog file names
+  `transcript` and `tool_use_id`: the call when drawn, then the result at the ending key.
+- `crown_e2e::a_plan_a_person_sends_back_in_the_pane_leaves_needs_you`, with no crown walk and no
+  `PreToolUse`: the person's words on the feedback row put the record at `Running`, then an Esc
+  on the next plan takes it off the plan. One `dialog_result` decision each, no `needs_you`, and
+  `ask_agent` answers `AgentAsked`. It passes on the hook road and on the mod pass, and fails
+  without the departure.
+- T-447's e2e, renamed `plan_accept_e2e::a_refused_dialog_clears_on_its_own_result_in_the_transcript`.
+  It now sends only what the engine sends: the calls in the transcript, the dialog's
+  `PreToolUse`, a subagent's `PostToolUse`, a sibling's result (all leave the dialog held), then
+  the dialog's own `is_error` result (`Running`). Both roads pass.
+
+**Not done (seen, not changed).**
+- **An Esc under the flap pin.** The Esc's turn end is the interrupt record's Low hint, which the
+  pin drops (more than four committed changes in 20 s), so the record reads `Running` after the
+  departure until the status-file probe says idle. Before this change it read `plan` until the
+  stale demote. The e2e meets the pin and asserts only that the record left the plan.
+- **T-943's walk e2e** (`the_crown_sends_a_plan_back_with_words`) and `PlanBed::clear` still end
+  a dialog with an ordinary tool's `PreToolUse`. That is the native road's frame, and on the
+  other roads the receipt waits for T-955's window instead.
+- **Owed to T-955's block:**
+  - The departure assumes the engine replans. An engine that sits idle after the rejection
+    reads `Running` until the quiet probe or the next frame. This road has the same assumption
+    for a plan sent back with words.
+  - The composer reader's `Absent` for the question and permission dialogs rested on their shape
+    and had no test. The question screen is now tested on a capture; the permission screen is
+    still not from one.

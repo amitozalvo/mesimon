@@ -3659,6 +3659,16 @@ impl Daemon {
             ) {
                 continue;
             }
+            // A dialog's end off the transcript, while the hook stream
+            // already projects another for the seat (a replan whose frame
+            // beat its call's line to the file): that dialog stands (T-957).
+            if observation
+                .dialog
+                .as_ref()
+                .is_some_and(|call| self.control_dialog_request(id).is_some_and(|r| r != call))
+            {
+                continue;
+            }
             if let Some(change) =
                 self.observe_signal(id, &observation.signal, now, observation.source)
             {

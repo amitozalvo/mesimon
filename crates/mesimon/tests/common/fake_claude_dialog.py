@@ -38,7 +38,12 @@ from (the daemon's unit tests hold the captured screens themselves):
 
 Escape anywhere declines. The dialog is `dialog-<MESIMON_TICKET>.json` next to
 this file, the tool input (`{"questions": [...]}` or `{"plan": "..."}`),
-written by the test. While
+written by the test. With `"transcript"` and `"tool_use_id"` beside the input,
+the transcript is written as Claude Code 2.1.310 writes it (T-957, measured):
+the call when the dialog is drawn, and at the key that ends it the call's
+result — `is_error` with the words for a plan sent back, `is_error` with
+"STOP …" and then an interrupt record and the turn's close for an Escape, the
+approval or the answers for an accept. While
 it is absent the pane paints Claude's composer and appends each line typed or
 pasted into it to `got.txt`, as the shell stubs do. An answer is written to
 `answered-<ticket>.json` as Claude's `tool_response.answers` reads (question
@@ -72,6 +77,34 @@ def banner():
             return f.read().splitlines()
     except OSError:
         return []
+
+
+def transcribed():
+    """The dialog file's transcript path and call id, if it carries them."""
+    try:
+        with open(DIALOG) as f:
+            raw = json.load(f)
+        return raw["transcript"], raw["tool_use_id"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+REFUSED = ("The user doesn't want to proceed with this tool use. The tool use was rejected "
+           "(eg. if it was a file edit, the new_string was NOT written to the file). ")
+
+
+def write(transcript, *records):
+    with open(transcript, "a") as f:
+        for record in records:
+            f.write(json.dumps(record) + "\n")
+
+
+def result(call, content, error):
+    block = {"type": "tool_result", "content": content, "tool_use_id": call}
+    if error:
+        block["is_error"] = True
+    return {"uuid": f"result-{call}", "type": "user",
+            "message": {"role": "user", "content": [block]}}
 
 
 def load():
@@ -312,7 +345,7 @@ def main():
     termios.tcsetattr(fd, termios.TCSANOW, attrs)
     # Claude asks for bracketed paste, so tmux brackets what it pastes.
     sys.stdout.write("\x1b[?2004h")
-    dialog, source, typed, drawn = None, None, "", None
+    dialog, source, typed, drawn, record = None, None, "", None, None
     while True:
         questions = load()
         if questions is None:
@@ -320,6 +353,14 @@ def main():
         elif json.dumps(questions) != source:
             shape = Plan if isinstance(questions, dict) else Dialog
             dialog, source = shape(questions), json.dumps(questions)
+            record = transcribed()
+            if record:
+                name = "ExitPlanMode" if shape is Plan else "AskUserQuestion"
+                tool_input = questions if shape is Plan else {"questions": questions}
+                write(record[0], {"uuid": f"call-{record[1]}", "type": "assistant",
+                                  "message": {"role": "assistant", "content": [
+                                      {"type": "tool_use", "id": record[1], "name": name,
+                                       "input": tool_input}]}})
         if isinstance(dialog, Plan):
             dialog.tick()
         top = "\x1b[2J\x1b[H" + "".join(line + "\r\n" for line in banner())
@@ -352,17 +393,33 @@ def main():
             if ended == "accept":
                 with open(os.path.join(HERE, f"accepted-{TICKET}"), "w") as f:
                     f.write(dialog.accepted)
+                if record:
+                    write(record[0], result(record[1], "User has approved your plan.", False))
             elif ended == "change":
                 with open(os.path.join(HERE, f"changed-{TICKET}.json"), "w") as f:
                     json.dump({"row": dialog.ROWS[2], "text": dialog.field}, f)
                 if os.path.exists(os.path.join(HERE, f"keep-{TICKET}")):
                     continue
+                if record:
+                    said = REFUSED + "To tell you how to proceed, the user said: " + dialog.field
+                    write(record[0], result(record[1], said, True))
             elif ended == "submit":
                 answers = {q["question"]: dialog.answer(i) for i, q in enumerate(dialog.qs)}
                 with open(os.path.join(HERE, f"answered-{TICKET}.json"), "w") as f:
                     json.dump(answers, f)
+                if record:
+                    write(record[0], result(record[1], "Your questions have been answered.", False))
             elif ended == "decline":
                 append(f"declined-{TICKET}", "declined\n")
+                if record:
+                    stop = REFUSED + ("STOP what you are doing and wait for the user to tell "
+                                      "you how to proceed.")
+                    write(record[0], result(record[1], stop, True),
+                          {"uuid": f"abort-{record[1]}", "type": "user", "message": {
+                              "role": "user", "content": [{"type": "text", "text":
+                                  "[Request interrupted by user for tool use]"}]}},
+                          {"uuid": f"close-{record[1]}", "type": "system",
+                           "subtype": "turn_duration", "durationMs": 1})
             if ended:
                 os.remove(DIALOG)
                 dialog, source = None, None

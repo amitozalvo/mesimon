@@ -41,6 +41,12 @@ pub(super) struct ClaudeRecovery {
     failure_read_at: Option<u64>,
     /// Last time a background park was proved by a `busy` session file.
     park_affirmed_at: Option<u64>,
+    /// The plan or question call the tail last showed with no result after
+    /// it, and its tool: what a departure is keyed on (T-957).
+    dialog: Option<(TailTool, String)>,
+    /// The held spell (`state_changed_at`) whose call was last looked for
+    /// off the tail, for a cursor that came after the call.
+    dialog_read: Option<Option<u64>>,
 }
 
 /// The transcript's word for a held dialog: the tail event that says THIS
@@ -85,7 +91,7 @@ pub(crate) fn failure_being_read(record: &SessionRecord, now: u64) -> bool {
 }
 
 fn observation(signal: Signal, source: &'static str) -> RecoveryObservation {
-    RecoveryObservation { signal, source, preview: None }
+    RecoveryObservation { signal, source, preview: None, dialog: None }
 }
 
 impl AgentRecovery for ClaudeRecovery {
@@ -136,6 +142,8 @@ impl AgentRecovery for ClaudeRecovery {
                 if !eligible {
                     self.cursor = None;
                     self.rested = false;
+                    self.dialog = None;
+                    self.dialog_read = None;
                 }
                 eligible
             }
@@ -288,6 +296,7 @@ impl ClaudeRecovery {
                     signal: Signal::StopFailure { class },
                     preview: text.as_deref().and_then(super::hooks::failure_detail),
                     source: "tail",
+                    dialog: None,
                 })
                 .into_iter()
                 .collect();
@@ -332,7 +341,16 @@ impl ClaudeRecovery {
         if fresh {
             self.cursor = Some(TailCursor::at_end(path.clone(), now));
             self.affirmed_at = None;
+            self.dialog = None;
+            self.dialog_read = None;
         }
+        // The dialog the record holds, on a seat this adapter owns.
+        let held = match &record.state {
+            SessionState::RequiresAction { reason } if abort_only => {
+                pending_dialog(*reason).map(|(tool, _)| tool)
+            }
+            _ => None,
+        };
         let Some(cursor) = self.cursor.as_mut() else { return Vec::new() };
         let lines = cursor.poll(now);
         let quiet = now.saturating_sub(cursor.grew_at);
@@ -396,8 +414,24 @@ impl ClaudeRecovery {
                 }
             }
         }
+        // A dialog ends on the transcript when its own call's result is
+        // written (T-957): a plan sent back with words, an Esc, an accept.
+        // A person's refusal fires no hook (T-447), and neither the hook set
+        // nor the classic mod sends the next ordinary tool's `PreToolUse`
+        // that the machine's refusal road waits for, so the card wore
+        // needs-you until the turn's end. A newer call after the result is a
+        // dialog that stands again.
+        let mut answered = None;
         for line in &lines {
             let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+            if let Some((tool, id)) = tail::dialog_call(&value) {
+                self.dialog = Some((tool, id.to_string()));
+                answered = None;
+            } else if let Some(call) =
+                self.dialog.take_if(|(_, id)| tail::carries_result_of(&value, id))
+            {
+                answered = Some(call);
+            }
             match classify_tail_record(&value) {
                 TailEvent::Aborted => hints.push((TailHint::AbortedMidStream, None)),
                 _ if abort_only => {}
@@ -421,6 +455,26 @@ impl ClaudeRecovery {
                 TailEvent::Latch | TailEvent::Other => {}
             }
         }
+        // A cursor minted after the held dialog's call (a restart, a turn
+        // resumed straight onto a plan) learns it off the tail, once a spell.
+        if held.is_some()
+            && self.dialog.is_none()
+            && self.dialog_read != Some(record.state_changed_at)
+        {
+            self.dialog_read = Some(record.state_changed_at);
+            self.dialog = tail::open_dialog(&path).map(|open| (open.tool, open.id));
+        }
+        // The departure is the refusal road's signal, given where no road
+        // sends that road's frame, as T-955's `plan_sent_back` is: the
+        // machine's leave settle stands, so a replan inside it keeps the
+        // dialog. Stated, so High: the engine's own record of the call's end.
+        let left =
+            answered.filter(|(tool, _)| held == Some(*tool)).map(|(_, id)| RecoveryObservation {
+                signal: Signal::ToolStarted { nested: false },
+                preview: None,
+                source: "dialog_result",
+                dialog: Some(id),
+            });
         if !abort_only
             && hints.is_empty()
             && !cursor.tools.is_busy()
@@ -433,10 +487,12 @@ impl ClaudeRecovery {
         closed
             .into_iter()
             .chain(limited)
+            .chain(left)
             .chain(hints.into_iter().map(|(kind, preview)| RecoveryObservation {
                 signal: Signal::TranscriptHint { kind },
                 preview,
                 source: "tail",
+                dialog: None,
             }))
             .collect()
     }
@@ -843,15 +899,127 @@ mod recovery_tests {
         // A question's record does not affirm a plan.
         record.state = SessionState::RequiresAction { reason: Reason::Question };
         assert!(recovery.poll(&record, RecoverySample::Transcript, 130_000).is_empty());
-        // Answered: the tool result is the last word, and the wait is over.
+        // Answered: the tool result is the last word, and the wait is over:
+        // nothing restates it, and the call's own result is its departure
+        // (T-957).
         record.state = SessionState::RequiresAction { reason: Reason::Plan };
         history.append(serde_json::json!({"uuid":"answer", "type":"user", "message":{
             "content":[{"type":"tool_result","tool_use_id":"call1","content":"User has approved your plan."}]}}));
-        assert!(recovery.poll(&record, RecoverySample::Transcript, 200_000).is_empty());
+        assert!(matches!(
+            &recovery.poll(&record, RecoverySample::Transcript, 200_000)[..],
+            [RecoveryObservation {
+                signal: Signal::ToolStarted { nested: false },
+                source: "dialog_result",
+                dialog: Some(call),
+                ..
+            }] if call == "call1"
+        ));
         // Nothing for a permission: the transcript cannot tell that dialog
         // from a running tool.
         record.state = SessionState::RequiresAction { reason: Reason::Permission };
         assert!(recovery.poll(&record, RecoverySample::Transcript, 300_000).is_empty());
+    }
+
+    /// T-957: a person's refusal of a plan or a question in the pane fires
+    /// no hook, and neither the hook set nor the classic mod sends the next
+    /// ordinary tool's `PreToolUse`. What Claude Code writes is the call's
+    /// own result at the keypress (2.1.310, measured on the board's own
+    /// transcripts): `is_error` with the person's words for a plan sent
+    /// back, `is_error` and then an interrupt record for an Esc. That result
+    /// is the dialog's departure, given as the refusal road's signal; a
+    /// sibling's result is not (T-595), a newer call after it stands, and a
+    /// cursor that came after the call learns it off the tail.
+    #[test]
+    fn a_held_dialog_leaves_on_its_own_call_s_result() {
+        let call = |id: &str, name: &str| {
+            serde_json::json!({"uuid": format!("call-{id}"), "type":"assistant", "message":{
+                "content":[{"type":"tool_use","id":id,"name":name,"input":{}}]}})
+        };
+        let result = |id: &str, error: bool, text: &str| {
+            serde_json::json!({"uuid": format!("result-{id}"), "type":"user", "message":{
+                "content":[{"type":"tool_result","tool_use_id":id,"is_error":error,"content":text}]}})
+        };
+        let refused = "The user doesn't want to proceed with this tool use. The tool use was \
+                       rejected (eg. if it was a file edit, the new_string was NOT written to the \
+                       file). To tell you how to proceed, the user said: Use echo instead.";
+        let stop = "The user doesn't want to proceed with this tool use. The tool use was \
+                    rejected (eg. if it was a file edit, the new_string was NOT written to the \
+                    file). STOP what you are doing and wait for the user to tell you how to \
+                    proceed.";
+        let left = |seen: &[RecoveryObservation], id: &str| {
+            matches!(seen.first(), Some(RecoveryObservation {
+                signal: Signal::ToolStarted { nested: false },
+                source: "dialog_result",
+                dialog: Some(call),
+                ..
+            }) if call == id)
+        };
+        let stays = |seen: &[RecoveryObservation]| seen.iter().all(|o| o.dialog.is_none());
+        let history = History::new();
+        let mut record = record(SessionState::Running);
+        record.transcript_path = Some(history.0.display().to_string());
+        let mut recovery = ClaudeRecovery::default();
+        assert!(recovery.needs_poll(&record, RecoveryChannel::Transcript, 1000));
+        assert!(stays(&recovery.poll(&record, RecoverySample::Transcript, 1000)));
+
+        // A plan beside a sibling, sent back with words.
+        history.append(call("s1", "Write"));
+        history.append(call("plan1", "ExitPlanMode"));
+        record.state = SessionState::RequiresAction { reason: Reason::Plan };
+        assert!(stays(&recovery.poll(&record, RecoverySample::Transcript, 2000)));
+        history.append(result("s1", false, "File created successfully"));
+        assert!(
+            stays(&recovery.poll(&record, RecoverySample::Transcript, 3000)),
+            "a sibling's result is not the plan's"
+        );
+        history.append(result("plan1", true, refused));
+        let seen = recovery.poll(&record, RecoverySample::Transcript, 4000);
+        assert!(left(&seen, "plan1") && seen.len() == 1, "{seen:?}");
+        assert!(stays(&recovery.poll(&record, RecoverySample::Transcript, 5000)), "once");
+
+        // Replanned in the same batch: the new plan stands, then leaves.
+        history.append(call("plan2", "ExitPlanMode"));
+        assert!(stays(&recovery.poll(&record, RecoverySample::Transcript, 6000)));
+        history.append(result("plan2", true, refused));
+        history.append(call("plan3", "ExitPlanMode"));
+        assert!(stays(&recovery.poll(&record, RecoverySample::Transcript, 7000)));
+        history.append(result("plan3", true, refused));
+        assert!(left(&recovery.poll(&record, RecoverySample::Transcript, 8000), "plan3"));
+
+        // A question's Esc: the departure, then the interrupt that ends
+        // the turn, in that order.
+        history.append(call("q1", "AskUserQuestion"));
+        record.state = SessionState::RequiresAction { reason: Reason::Question };
+        assert!(stays(&recovery.poll(&record, RecoverySample::Transcript, 9000)));
+        history.append(result("q1", true, stop));
+        history.append(serde_json::json!({"uuid":"abort", "type":"user", "message":{
+            "content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}}));
+        let seen = recovery.poll(&record, RecoverySample::Transcript, 10_000);
+        assert!(left(&seen, "q1"), "{seen:?}");
+        assert!(matches!(
+            seen[1..],
+            [RecoveryObservation {
+                signal: Signal::TranscriptHint { kind: TailHint::AbortedMidStream },
+                ..
+            }]
+        ));
+
+        // Another dialog's result says nothing about the one held.
+        history.append(call("q2", "AskUserQuestion"));
+        record.state = SessionState::RequiresAction { reason: Reason::Plan };
+        history.append(result("q2", true, stop));
+        assert!(stays(&recovery.poll(&record, RecoverySample::Transcript, 11_000)));
+
+        // A cursor minted after the call (a restart): learnt off the tail.
+        let history = History::new();
+        history.append(call("plan4", "ExitPlanMode"));
+        record.transcript_path = Some(history.0.display().to_string());
+        record.state_changed_at = Some(12_000);
+        let mut recovery = ClaudeRecovery::default();
+        assert!(recovery.needs_poll(&record, RecoveryChannel::Transcript, 12_000));
+        assert!(stays(&recovery.poll(&record, RecoverySample::Transcript, 12_000)));
+        history.append(result("plan4", true, refused));
+        assert!(left(&recovery.poll(&record, RecoverySample::Transcript, 13_000), "plan4"));
     }
 
     /// T-802: a usage limit is restated off the tail once a minute while
@@ -989,7 +1157,8 @@ mod recovery_tests {
                 [RecoveryObservation {
                     signal: Signal::TranscriptTurnEnded,
                     source: "tail",
-                    preview: None
+                    preview: None,
+                    dialog: None
                 }]
             ),
             "{seeded:?}"

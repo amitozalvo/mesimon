@@ -398,14 +398,18 @@ fn accepts_go_one_per_quiet_checkout_and_a_column_accepts_every_plan() {
     let _ = c.request(Command::Shutdown);
 }
 
-/// T-447 (2026-09-23): "No, keep planning" fires no hook of its own — no
-/// `PostToolUse`, no `PostToolUseFailure`, no `PermissionDenied` — so the
-/// agent's next tool call is the first frame that says the dialog is gone.
-/// The card wore "plan" through four tool completions and cleared only
-/// when the agent asked its next question. A subagent's call (`agent_id`)
-/// is not the lead's answer and leaves the dialog held.
+/// T-447 (2026-09-23): a person's refusal of a plan or a question in the
+/// pane ("No, keep planning", the words on `Tell Claude what to change`, an
+/// Esc) fires no hook of its own — no `PostToolUse`, no `PostToolUseFailure`,
+/// no `PermissionDenied`. The card wore "plan" through four tool completions.
+/// T-447 cleared it on the agent's next `PreToolUse`, a frame neither the
+/// hook set nor the classic mod sends for an ordinary tool (T-957); what
+/// the engine writes is the dialog's own result in the transcript, at the
+/// keypress (2.1.310), and that is the departure. A subagent's completion
+/// and a sibling's result in the transcript are not the lead's answer and
+/// leave the dialog held (T-595).
 #[test]
-fn a_refused_plan_clears_on_the_agents_next_tool_call() {
+fn a_refused_dialog_clears_on_its_own_result_in_the_transcript() {
     let Some(h) = Harness::boot_with_env(
         "planno",
         Some("#!/bin/sh\nexec sleep 120\n"),
@@ -434,40 +438,59 @@ fn a_refused_plan_clears_on_the_agents_next_tool_call() {
         other => panic!("spawn failed: {other:?}"),
     };
     let session = sid.to_string();
+    let transcript = h.dir.join("refused.jsonl");
+    let append = |record: serde_json::Value| {
+        use std::io::Write;
+        let mut f =
+            std::fs::OpenOptions::new().create(true).append(true).open(&transcript).unwrap();
+        writeln!(f, "{record}").unwrap();
+    };
+    append(serde_json::json!({"uuid": "p", "type": "user", "message": {"content": "go"}}));
+    let start =
+        serde_json::json!({"session_id": "x", "transcript_path": transcript, "cwd": "/tmp"});
+    hook_send_with(&hooks, &session, "SessionStart", Some("startup"), &start.to_string());
+    c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
     hook_send(&hooks, &session, "UserPromptSubmit", r#"{"prompt":"go"}"#);
     c.await_state(sid, "running", |s| *s == SessionState::Running);
-    for (dialog, reason) in [
-        (r##"{"tool_name":"ExitPlanMode","tool_input":{"plan":"# Plan"}}"##, Reason::Plan),
-        (r#"{"tool_name":"AskUserQuestion"}"#, Reason::Question),
+    let refused = "The user doesn't want to proceed with this tool use. The tool use was \
+                   rejected (eg. if it was a file edit, the new_string was NOT written to the \
+                   file). To tell you how to proceed, the user said: keep planning.";
+    for (tool, id, reason) in [
+        ("ExitPlanMode", "toolu_plan", Reason::Plan),
+        ("AskUserQuestion", "toolu_ask", Reason::Question),
     ] {
-        hook_send(&hooks, &session, "PreToolUse", dialog);
+        // The call beside a sibling, as the engine writes them, then the
+        // dialog's hook.
+        let sibling = format!("{id}_sibling");
+        append(serde_json::json!({"uuid": format!("c-{sibling}"), "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "id": sibling, "name": "Read",
+                "input": {"file_path": "/x"}}]}}));
+        append(serde_json::json!({"uuid": format!("c-{id}"), "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "id": id, "name": tool,
+                "input": {}}]}}));
+        let frame = serde_json::json!({"tool_name": tool, "tool_use_id": id, "tool_input": {}});
+        hook_send(&hooks, &session, "PreToolUse", &frame.to_string());
         c.await_state(sid, "dialog up", |s| *s == SessionState::RequiresAction { reason });
-        // A subagent reading while the dialog is open is not the answer.
-        hook_send(
-            &hooks,
-            &session,
-            "PreToolUse",
-            r#"{"tool_name":"Read","tool_input":{"file_path":"/x"},"agent_id":"sub-1"}"#,
-        );
+        // A subagent's tool ending, and the sibling's result: not the answer.
         hook_send(
             &hooks,
             &session,
             "PostToolUse",
             r#"{"tool_name":"Read","tool_input":{"file_path":"/x"},"agent_id":"sub-1"}"#,
         );
-        std::thread::sleep(Duration::from_millis(2000));
+        append(serde_json::json!({"uuid": format!("r-{sibling}"), "type": "user",
+            "message": {"content": [{"type": "tool_result", "tool_use_id": sibling,
+                "content": "x"}]}}));
+        std::thread::sleep(Duration::from_millis(4000));
         let held = board_of(c.request(Command::Snapshot))
             .sessions
             .iter()
             .any(|s| s.id == sid && s.state == SessionState::RequiresAction { reason });
-        assert!(held, "a subagent's call left {reason:?} held");
-        // The refusal: no frame for it — the lead's own next call clears.
-        hook_send(
-            &hooks,
-            &session,
-            "PreToolUse",
-            r#"{"tool_name":"Bash","tool_input":{"command":"grep -n x"}}"#,
-        );
+        assert!(held, "a subagent's call or a sibling's result left {reason:?} held");
+        // The refusal: no frame, the dialog's own result on the transcript.
+        append(serde_json::json!({"uuid": format!("r-{id}"), "type": "user",
+            "message": {"content": [{"type": "tool_result", "tool_use_id": id,
+                "is_error": true, "content": refused}]}}));
         c.await_state(sid, "working after the refusal", |s| *s == SessionState::Running);
     }
 }

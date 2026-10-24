@@ -7876,8 +7876,19 @@ impl PlanBed {
 
     /// W's plan drawn in its pane, then the hook that stops it on it.
     fn show_plan(&mut self, request: &str) {
+        self.show_plan_in(None, request);
+    }
+
+    /// `show_plan`, with the call and its end written to `transcript` by
+    /// the stand-in as Claude Code writes them (T-957).
+    fn show_plan_in(&mut self, transcript: Option<&std::path::Path>, request: &str) {
         let dialog = self.h.dir.join(format!("dialog-{}.json", self.kw));
-        std::fs::write(dialog, json!({ "plan": BED_PLAN }).to_string()).unwrap();
+        let mut input = json!({ "plan": BED_PLAN });
+        if let Some(transcript) = transcript {
+            input["transcript"] = json!(transcript);
+            input["tool_use_id"] = json!(request);
+        }
+        std::fs::write(dialog, input.to_string()).unwrap();
         wait_until(std::time::Duration::from_secs(10), "the plan drawn", || {
             self.pane().contains("Would you like to proceed?")
         });
@@ -7886,6 +7897,26 @@ impl PlanBed {
             *s == SessionState::RequiresAction { reason: mesimon_core::board::Reason::Plan }
         };
         self.c.await_state(self.ws, "on its plan", at_plan);
+    }
+
+    /// W's transcript (T-957), named by the engine's `SessionStart` and
+    /// written by the stand-in; W is running again after it.
+    fn transcribe(&mut self) -> std::path::PathBuf {
+        let transcript = self.h.dir.join(format!("transcript-{}.jsonl", self.kw));
+        let prompt = json!({ "uuid": "p", "type": "user", "message": { "content": "brief" } });
+        std::fs::write(&transcript, format!("{prompt}\n")).unwrap();
+        let body = json!({ "session_id": "x", "transcript_path": transcript, "cwd": "/tmp" });
+        let sock = self.h.paths.hook_sock();
+        hook_send_with(
+            &sock,
+            &self.ws.to_string(),
+            "SessionStart",
+            Some("startup"),
+            &body.to_string(),
+        );
+        self.c.await_state(self.ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+        self.start(self.ws);
+        transcript
     }
 
     /// The dialog gone from W's pane, the way a refusal leaves it, and the
@@ -8664,6 +8695,76 @@ fn a_plan_sent_back_leaves_needs_you_only_on_a_screen_without_it() {
         Response::AgentAsked { .. } => {}
         other => panic!("ask_agent after a plan sent back: {other:?}"),
     }
+}
+
+/// A plan a person sends back in the pane leaves needs-you (T-957), with no
+/// crown walk and only what Claude Code sends: the person's words on the
+/// feedback row, or an Esc, fire no hook (T-447), and neither the hook set
+/// nor the classic mod relays the next ordinary tool's `PreToolUse`. The
+/// stand-in writes the transcript as 2.1.310 does, the plan's own call and
+/// then its result; that result is the departure, with words or with an Esc:
+/// the record leaves its plan, `get_ticket` reads no `needs_you` and
+/// `ask_agent` is admitted (taken into the queue).
+#[test]
+fn a_plan_a_person_sends_back_in_the_pane_leaves_needs_you() {
+    let Some(mut b) = PlanBed::boot("crown_person_refuses") else { return };
+    let (kw, ws) = (b.kw.clone(), b.ws);
+    let transcript = b.transcribe();
+    let ask = |b: &mut PlanBed, text: &str| {
+        let v = read(&mut b.c, b.sa, &kw).unwrap();
+        assert!(v.needs_you.is_none(), "no plan stands: {:?}", v.needs_you);
+        match b.c.send(
+            Principal::Agent { session: b.sa },
+            Command::AgentAskTicket {
+                key: kw.clone(),
+                text: text.into(),
+                seen: v.seen,
+                plan: false,
+                deliver: Deliver::Idle,
+            },
+        ) {
+            Response::AgentAsked { .. } => {}
+            other => panic!("ask_agent after a plan the person sent back: {other:?}"),
+        }
+    };
+    let departures = |b: &PlanBed| {
+        b.feed()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|v| {
+                v["kind"] == "state_decision"
+                    && v["session"] == ws.to_string()
+                    && v["source"] == "dialog_result"
+            })
+            .count()
+    };
+
+    // ---- the person's words on `Tell Claude what to change` ----------------
+    b.show_plan_in(Some(&transcript), "toolu_p1");
+    b.person_keys(&["Down", "Down"]);
+    b.person_keys(&["Name the file b.txt instead."]);
+    b.person_keys(&["Enter"]);
+    let changed = b.changed();
+    wait_until(std::time::Duration::from_secs(10), "the plan sent back in W's pane", || {
+        changed.exists()
+    });
+    b.c.await_state(ws, "running once the plan's result is written", |s| {
+        *s == SessionState::Running
+    });
+    assert_eq!(departures(&b), 1, "the transcript's result was the departure: {}", b.feed());
+    ask(&mut b, "mesimon-probe-957 after words");
+
+    // ---- the person's Esc on the next plan ---------------------------------
+    // The interrupt record after the result is the turn's end, a Low hint
+    // the flap pin drops this soon after four changes: the record has left
+    // the plan, running until a probe says the turn is over.
+    b.show_plan_in(Some(&transcript), "toolu_p2");
+    b.person_keys(&["Escape"]);
+    b.c.await_state(ws, "off the plan once its result is written", |s| {
+        !matches!(s, SessionState::RequiresAction { .. })
+    });
+    assert_eq!(departures(&b), 2, "{}", b.feed());
+    ask(&mut b, "mesimon-probe-957 after an Esc");
 }
 
 /// A replan inside the leave a plan sent back started (T-955 with T-943's

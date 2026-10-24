@@ -1318,6 +1318,11 @@ impl Daemon {
         }
     }
 
+    /// The request of the dialog projected for `session`, any kind.
+    pub(super) fn control_dialog_request(&self, session: uuid::Uuid) -> Option<&str> {
+        self.control.dialogs.get(&session).map(|d| d.request.as_str())
+    }
+
     /// The plan a stopped agent's dialog shows (T-582), as the hook stream
     /// carried it: its request and markdown.
     pub(super) fn control_plan(&self, session: uuid::Uuid) -> Option<(&str, &str)> {

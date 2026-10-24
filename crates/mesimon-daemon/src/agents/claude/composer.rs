@@ -345,6 +345,24 @@ mod tests {
         assert_eq!(read(&screen(&trust, None)), Composer::Absent);
         let plan = " Would you like to proceed?\n\n ❯ 1. Yes, and use auto mode\n   2. Yes, manually approve edits\n   3. No, keep planning\n   4. Tell Claude what to change";
         assert_eq!(read(&screen(plan, None)), Composer::Absent);
+        // A question (2.1.287's capture), the cursor on each row: on `Chat
+        // about this` its `❯` sits under a rule, with none below it (T-957).
+        for at in ["  1. Okta", "  3. Type something.", "  4. Chat about this"] {
+            let question = format!(
+                " ☐ Auth\nWhich auth provider?\n  1. Okta\n  2. Auth0\n  3. Type something.\n\
+                 {RULE_ROW}\n  4. Chat about this\nEnter to select · ↑/↓ to navigate · Esc to cancel"
+            )
+            .replacen(at, &at.replacen("  ", "❯ ", 1), 1);
+            assert_eq!(read(&screen(&question, None)), Composer::Absent, "{question}");
+        }
+        // A permission dialog, from its rows as Claude Code draws them (not
+        // a capture): its frame's rule, then text above the `❯` row.
+        let permission = format!(
+            "{RULE_ROW}\n Bash command\n\n   rm -rf build\n\n Do you want to proceed?\n ❯ 1. Yes\n   \
+             2. Yes, and don't ask again for rm commands\n   3. No, and tell Claude what to do \
+             differently (esc)"
+        );
+        assert_eq!(read(&screen(&permission, None)), Composer::Absent);
         // Half painted: the top rule and the prompt, no bottom rule yet.
         let half = format!("{RULE_ROW}\n❯ ");
         assert_eq!(read(&screen(&half, None)), Composer::Absent);
