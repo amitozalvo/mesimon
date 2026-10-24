@@ -56,11 +56,13 @@ a ticket the crown started can never itself be crowned, and an agent you started
 alone to sleep. *Settings › Crown › Mode* is autonomous by default: words the crown
 leaves for an agent it started reach that agent once it is idle, and the crown may answer a
 question that agent stops on, typed into that agent's dialog, or accept a plan that
-agent stops on, with one Enter on the plan dialog's first row (`♛ accepted plan`), each shown
-on its card and in the activity feed. Supervised keeps them for you: the crown's words wait on
-the card until you send them, and every question and plan waits for you. Words for an agent
-you started wait for you under either mode, unless the crown watches its ticket. A plan it would change, a question about secrets, spend,
-anything destructive or beyond the brief is raised to you, and every other stop, and every
+agent stops on, with one Enter on the plan dialog's first row (`♛ accepted plan`), or, for
+a Claude agent, send the plan back with words typed into the dialog's `Tell Claude what to
+change` row (`♛ sent plan back`), each shown on its card and in the activity feed.
+Supervised keeps them for you: the crown's words wait on the card until you send them, and
+every question and plan waits for you. Words for an agent you started wait for you under
+either mode, unless the crown watches its ticket. A plan beyond the brief, a question about
+secrets, spend, anything destructive or beyond the brief is raised to you, and every other stop, and every
 question or plan from an agent you started, still waits for you. Only you can
 crown a ticket; an agent that asks for it is told to ask you.
 `mesimon doctor --mcp` prints the current tool registry verbatim.
