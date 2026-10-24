@@ -33117,9 +33117,15 @@ into that row.
   - The cursor where the last arrow put it (`Walk::at`).
   - A paste only with the cursor on that empty field.
   - After the paste, the cursor still there and the field reading the words whole: the squeezed
-    row equals the squeezed words, and only the two hint lines follow (`feedback_field`). Words
-    that spell a hint are cut at it and never read whole. A field still empty is the paste not yet
-    drawn (`DialogStep::Wait`).
+    row equals the squeezed words, and only the two hint lines follow (`feedback_fields`). A field
+    still empty is the paste not yet drawn (`DialogStep::Wait`).
+  - **The field keeps its line boundaries** (the delivery read, T-940). The hints come off only as
+    whole lines at the end of the last row, each once: the editor line, then the approve hint. A
+    hint's words inside a line, or above other lines, are the field's. The first parser cut at a
+    hint's first occurrence anywhere in the squeezed row. Under it, a person's `Tell Claude what
+    to change ctrl+g to edit MY DRAFT` read as the empty field, and `Use echo ctrl+g to edit AND MY
+    DRAFT` read as the crown's `Use echo`. Both counterexamples are now tests, and both are
+    `field_touched`.
   - Anything else stops the walk with nothing more typed, and the receipt is `unknown` with its
     word: `field_touched`, `cursor_moved`, `a_person_attached`, `state_changed`,
     `shape_unrecognised`. Nothing falls back to the composer or an accept row.
@@ -33156,7 +33162,8 @@ into that row.
   frozen-reader test.
 - Daemon: `a_plan_sent_back_walks_to_the_empty_feedback_field_and_pastes_there`,
   `a_plan_sent_back_presses_enter_only_on_its_own_words`,
-  `a_plan_sent_back_sends_nothing_into_another_screen` and
+  `a_plan_sent_back_sends_nothing_into_another_screen`,
+  `a_draft_that_spells_a_hint_is_never_the_field_the_crown_wants` and
   `a_plan_change_is_refused_never_rewritten`, all on the screen captured above.
 - **The stand-in.** `fake_claude_dialog.py` draws 2.1.310's rows and hint lines and keeps row 3
   as a field. It records a plan sent back to `changed-<ticket>.json` with its row, and has two

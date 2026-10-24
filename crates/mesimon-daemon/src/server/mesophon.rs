@@ -5477,19 +5477,46 @@ fn dialog_step(
 /// the hint `shift+tab to approve with this feedback` and the `ctrl+g to
 /// edit in <editor> · <plan file>` line, which `dialog_rows` joins onto it.
 const FEEDBACK_ROW: &str = "Tell Claude what to change";
-const FEEDBACK_HINTS: [&str; 2] = ["shift+tab to approve with this feedback", "ctrl+g to edit"];
+const APPROVE_HINT: &str = "shift+tab to approve with this feedback";
+const EDITOR_LINE: &str = "ctrl+g to edit in ";
 
-/// A plan dialog row's field, squeezed: its text up to the hints drawn
-/// under the feedback row, or `None` when what follows is not those hints
-/// alone (the approve hint, then the editor line, each optional). Words
-/// that spell a hint are cut there and never read as the field.
-fn feedback_field(row: &str) -> Option<String> {
-    let row = squeeze(row);
-    let [approve, edit] = FEEDBACK_HINTS.map(squeeze);
-    let cut = [&approve, &edit].iter().filter_map(|h| row.find(h.as_str())).min();
-    let (field, tail) = row.split_at(cut.unwrap_or(row.len()));
-    let tail = tail.strip_prefix(approve.as_str()).unwrap_or(tail);
-    (tail.is_empty() || tail.starts_with(edit.as_str())).then(|| field.to_string())
+/// Each plan dialog row's field, squeezed (T-943): the row's own lines, its
+/// numbered line and those drawn under it as `dialog_rows` gathers them,
+/// with the line boundaries kept until the hints are taken off. Only the
+/// last row carries the hints, and only as whole lines at its end: the
+/// editor line last, the approve hint above it, each at most once, never
+/// the row's own first line. A hint's words anywhere else, inside a line or
+/// above other words, are the field's, so a person's draft that spells one
+/// never reads as the empty field or as the crown's words. `None` when the
+/// rows are not `dialog_rows`' `count` rows.
+fn feedback_fields(screen: &str, count: usize) -> Option<Vec<String>> {
+    let lines: Vec<&str> = screen.lines().collect();
+    let footer = lines.iter().rposition(|l| l.contains("Enter to select")).unwrap_or(lines.len());
+    let mut blocks: Vec<(usize, Vec<&str>)> = Vec::new();
+    let mut open = false;
+    for line in &lines[..footer] {
+        let line = line.trim();
+        if let Some((_, number, label)) = numbered(line) {
+            blocks.push((number, vec![label]));
+            open = true;
+        } else if line.chars().all(|c| ('\u{2500}'..='\u{257f}').contains(&c)) {
+            open = false;
+        } else if let (true, Some((_, block))) = (open, blocks.last_mut()) {
+            block.push(line);
+        }
+    }
+    let first = blocks.iter().rposition(|(number, _)| *number == 1)?;
+    let mut blocks = blocks.split_off(first);
+    if let Some((_, last)) = blocks.last_mut() {
+        if last.len() > 1 && last.last().is_some_and(|l| l.starts_with(EDITOR_LINE)) {
+            last.pop();
+        }
+        if last.len() > 1 && last.last() == Some(&APPROVE_HINT) {
+            last.pop();
+        }
+    }
+    (blocks.len() == count)
+        .then(|| blocks.iter().map(|(_, block)| squeeze(&block.concat())).collect())
 }
 
 /// Whether `screen` draws Claude Code's plan dialog, its feedback field
@@ -5525,13 +5552,13 @@ fn revise_step(
     }
     let rows = dialog_rows(screen).ok_or(Miss::ShapeUnrecognised)?;
     let current = cursor(&rows)?;
-    let fields: Vec<Option<String>> = rows.iter().map(|r| feedback_field(&r.text)).collect();
+    let fields = feedback_fields(screen, rows.len()).ok_or(Miss::ShapeUnrecognised)?;
     let label = squeeze(FEEDBACK_ROW);
     let Some(&row) = walk.pasted.first() else {
         if walk.at.is_some_and(|at| at != current) {
             return Err(Miss::CursorMoved);
         }
-        let mut empty = fields.iter().enumerate().filter(|(_, f)| f.as_deref() == Some(&label));
+        let mut empty = fields.iter().enumerate().filter(|(_, f)| **f == label);
         return match (empty.next(), empty.next()) {
             (Some((target, _)), None) if target == current => {
                 Ok(DialogStep::Paste { question: target, text: text.to_string() })
@@ -5545,9 +5572,9 @@ fn revise_step(
     if current != row {
         return Err(Miss::CursorMoved);
     }
-    match fields.get(row).and_then(Option::as_deref) {
-        Some(field) if field == squeeze(text) => Ok(DialogStep::Submit),
-        Some(field) if field == label => Ok(DialogStep::Wait),
+    match fields.get(row) {
+        Some(field) if *field == squeeze(text) => Ok(DialogStep::Submit),
+        Some(field) if *field == label => Ok(DialogStep::Wait),
         _ => Err(Miss::FieldTouched),
     }
 }
@@ -8011,11 +8038,40 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         // Words already in the field before any paste are a person's.
         let theirs = plan_screen("my own note", 0);
         assert_eq!(revise_step(&d, words, &theirs, &Walk::default()), Err(Miss::FieldTouched));
-        // Words that spell a hint are cut at it, so they never read whole.
-        let hinted = "see ctrl+g to edit";
+        // The crown's own words may spell a hint: inside the field's own
+        // line they are the field's, read whole.
+        let hinted = "see ctrl+g to edit in Nvim";
         assert_eq!(
             revise_step(&d, hinted, &plan_screen(hinted, 2), &pasted),
-            Err(Miss::FieldTouched)
+            Ok(DialogStep::Submit)
+        );
+    }
+
+    /// T-943, the delivery read's two counterexamples: a person's draft that
+    /// spells a hint, the real hint lines still drawn under it, never reads
+    /// as the empty field (so no paste goes into it) nor as the crown's
+    /// words (so no Enter sends theirs with them). Only whole lines at the
+    /// row's end are hints.
+    #[test]
+    fn a_draft_that_spells_a_hint_is_never_the_field_the_crown_wants() {
+        let d = plan_dialog();
+        let draft = plan_screen("Tell Claude what to change ctrl+g to edit MY DRAFT", 2);
+        let walk = Walk { at: Some(2), ..Walk::default() };
+        assert_eq!(revise_step(&d, "Use echo", &draft, &walk), Err(Miss::FieldTouched));
+        let pasted = Walk { pasted: vec![2], at: Some(2), ..Walk::default() };
+        let more = plan_screen("Use echo ctrl+g to edit AND MY DRAFT", 2);
+        assert_eq!(revise_step(&d, "Use echo", &more, &pasted), Err(Miss::FieldTouched));
+        // The same draft on a line of its own under the field, a wrap.
+        let wrapped = plan_screen("Use echo\n        ctrl+g to edit AND MY DRAFT", 2);
+        assert_eq!(revise_step(&d, "Use echo", &wrapped, &pasted), Err(Miss::FieldTouched));
+        // A draft line that is the approve hint itself is one line too many:
+        // each hint comes off once, so the field keeps it.
+        let twice = plan_screen("Use echo\n        shift+tab to approve with this feedback", 2);
+        assert_eq!(revise_step(&d, "Use echo", &twice, &pasted), Err(Miss::FieldTouched));
+        // The measured screen, hints and all, still reads the words alone.
+        assert_eq!(
+            revise_step(&d, "Use echo", &plan_screen("Use echo", 2), &pasted),
+            Ok(DialogStep::Submit)
         );
     }
 
