@@ -9107,8 +9107,9 @@ fn refused_crown_wake(name: &str, restart: bool) {
 /// waited for no longer than its window (ten seconds). Retired, its wakes
 /// are owed again with the hands as they were, and a second worker's wake
 /// that waited behind it goes with them in the next attempt; a late report
-/// of the retired frame settles nothing. Once with the frame never taken
-/// (the crown's bridge stopped), once taken and never answered.
+/// of the retired frame settles nothing. Once with the frame never
+/// acknowledged (the crown's bridge stopped), once taken and never
+/// answered: both `unconfirmed`.
 #[test]
 fn a_crown_wake_nobody_answers_is_retired_and_goes_again() {
     let Some(h) = Harness::boot_bare(
@@ -9200,10 +9201,15 @@ fn a_crown_wake_nobody_answers_is_retired_and_goes_again() {
             .map(|v| (v["id"].as_str().unwrap_or("").to_string(), v.to_string()))
             .collect()
     };
-    let retired = |word: &str| -> Option<String> {
-        read_file(&journal).lines().find(|l| l.ends_with(word)).and_then(|l| {
-            l.split("crown wake ").nth(1).and_then(|r| r.split(' ').next()).map(str::to_string)
-        })
+    // The frames retired with `word`, in order.
+    let retired = |word: &str| -> Vec<String> {
+        read_file(&journal)
+            .lines()
+            .filter(|l| l.ends_with(word))
+            .filter_map(|l| {
+                l.split("crown wake ").nth(1).and_then(|r| r.split(' ').next()).map(str::to_string)
+            })
+            .collect()
     };
     let bridge_pid = std::fs::read_to_string(h.dir.join(format!("mod-bridge-{sa}.pid")))
         .unwrap()
@@ -9222,10 +9228,12 @@ fn a_crown_wake_nobody_answers_is_retired_and_goes_again() {
     raise(&mut c, seats[0], "which key?");
     std::thread::sleep(std::time::Duration::from_millis(500));
     raise(&mut c, seats[1], "which branch?");
-    wait_until(std::time::Duration::from_secs(20), "the unreceived attempt retired", || {
-        retired("crown_wake_unreceived").is_some()
+    // Handed to the stopped bridge's poll, its acknowledgement never came:
+    // unconfirmed, never said to be unreceived.
+    wait_until(std::time::Duration::from_secs(20), "the unacknowledged attempt retired", || {
+        retired("crown_wake_unconfirmed").len() == 1
     });
-    let old = retired("crown_wake_unreceived").unwrap();
+    let old = retired("crown_wake_unconfirmed")[0].clone();
     assert_eq!(hands(&mut c), [true, true], "hands as they were");
     assert_eq!(count("crown_wake_sent"), 0, "nothing told");
     assert!(c.board().sessions.iter().all(|s| s.id != sa || s.unsent.is_none()), "no copy kept");
@@ -9254,9 +9262,9 @@ fn a_crown_wake_nobody_answers_is_retired_and_goes_again() {
     });
     raise(&mut c, seats[1], "which branch, again?");
     wait_until(std::time::Duration::from_secs(20), "the unconfirmed attempt retired", || {
-        retired("crown_wake_unconfirmed").is_some()
+        retired("crown_wake_unconfirmed").len() == 2
     });
-    let held = retired("crown_wake_unconfirmed").unwrap();
+    let held = retired("crown_wake_unconfirmed")[1].clone();
     assert_eq!(hands(&mut c), [true, true], "hands as they were");
     assert_eq!(count("crown_wake_sent"), 1, "nothing more told");
     std::fs::write(h.dir.join("mod-release-submit"), "").unwrap();
@@ -9528,4 +9536,126 @@ fn a_duplicate_wake_receipt_leaves_unrelated_unsent_words() {
         unsent(&mut c)
     );
     assert_eq!(read_file(&feed).matches("\"crown_wake_sent\"").count(), 1, "told once");
+}
+
+/// T-936, the fourth read: a retired attempt's frame leaves the crown's
+/// mod outbox even when an unrelated prompt took its owed entry first. The
+/// crown's bridge is stopped, so the frame is never acknowledged; a prompt
+/// into the crown takes the owed entry; the window passes and the attempt
+/// retires, `unconfirmed`; and what a bridge polling now is handed is the
+/// next attempt alone, never the retired frame beside it.
+#[test]
+fn a_retired_wake_frame_leaves_the_outbox() {
+    let Some(h) = Harness::boot_bare(
+        "crown_retired_outbox",
+        Some(BOX_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_CLAUDE_ROAD", "mod"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_retired_outbox");
+    let journal = h.paths.state_dir.join("daemon.log");
+    let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let up = |sid: uuid::Uuid| {
+        let pid = h.dir.join(format!("mod-bridge-{sid}.pid"));
+        wait_until(std::time::Duration::from_secs(10), "the mod's bridge", || pid.exists());
+        hook_send_with(
+            &hook_sock,
+            &sid.to_string(),
+            "SessionStart",
+            Some("startup"),
+            r#"{"session_id":"x","transcript_path":"/tmp/t-mod.jsonl","cwd":"/tmp"}"#,
+        );
+    };
+    let a = c.create_ticket("coordinate");
+    let w1 = c.create_ticket("mesimon-probe-936 worker");
+    let kw1 = key_of(&mut c, w1);
+    let sa = c.spawn_claude(a);
+    up(sa);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw1).unwrap();
+    assert!(matches!(
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket {
+                key: kw1.clone(),
+                seen: v.seen,
+                plan: false,
+                tier: None,
+                workspace: Some("worktree".into()),
+            },
+        ),
+        Response::AgentStarted { .. }
+    ));
+    wait_until(std::time::Duration::from_secs(15), "W1's seat", || {
+        c.board().live_agent(w1).is_some()
+    });
+    let ws1 = c.board().live_agent(w1).unwrap().id;
+    up(ws1);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let bridge = std::fs::read_to_string(h.dir.join(format!("mod-bridge-{sa}.pid")))
+        .unwrap()
+        .trim()
+        .to_string();
+    let signal = |sig: &str| {
+        assert!(std::process::Command::new("kill")
+            .args([sig, &bridge])
+            .status()
+            .unwrap()
+            .success());
+    };
+
+    signal("-STOP");
+    match c.send(
+        Principal::Agent { session: ws1 },
+        Command::AgentRaiseHand { reason: "which key?".into() },
+    ) {
+        Response::AgentRaised { .. } => {}
+        other => panic!("raise_hand: {other:?}"),
+    }
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    // An unrelated prompt takes the attempt's owed entry; its window holds.
+    start(&mut c, sa);
+    let retired = || -> Option<String> {
+        read_file(&journal).lines().find(|l| l.ends_with("crown_wake_unconfirmed")).and_then(|l| {
+            l.split("crown wake ").nth(1).and_then(|r| r.split(' ').next()).map(str::to_string)
+        })
+    };
+    wait_until(std::time::Duration::from_secs(20), "the attempt retired", || retired().is_some());
+    let old = retired().unwrap();
+    // The next attempt goes once the crown's turn ends; a bridge polling now
+    // is handed it alone.
+    stop(&mut c, sa);
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    let frames = match c.send(
+        Principal::Agent { session: sa },
+        Command::ModNext { ack: None, pane: None, speaks: vec!["submit".into()] },
+    ) {
+        Response::ModFrames { frames } => frames,
+        other => panic!("the outbox: {other:?}"),
+    };
+    let ids: Vec<&str> = frames.iter().filter_map(|f| f["id"].as_str()).collect();
+    assert!(!ids.contains(&old.as_str()), "the retired frame is gone: {ids:?}");
+    assert!(
+        frames.iter().any(|f| f.to_string().contains("raised its hand")),
+        "the next attempt: {frames:?}"
+    );
+    signal("-CONT");
 }

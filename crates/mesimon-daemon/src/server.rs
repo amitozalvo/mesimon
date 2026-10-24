@@ -8841,9 +8841,12 @@ impl Daemon {
 
     /// A submitted wake whose frame nobody answered inside its window
     /// (T-936): the attempt is retired and its wakes owed again, hands as
-    /// they were. An untaken frame leaves the mod's outbox, with no copy
-    /// kept as unsent words; a taken one is unconfirmed, never a made-up
-    /// `entered` or refusal. A report for it from here is no one's.
+    /// they were. The frame leaves the mod's outbox whatever became of its
+    /// owed entry, with no copy kept as unsent words. It is `unconfirmed`,
+    /// never a made-up `entered` or refusal: an untaken entry says only that
+    /// no acknowledgement was recorded, and the frame may have been handed
+    /// over. `unreceived` only where no bridge ever polled for the seat, so
+    /// nothing was offered. A report for it from here is no one's.
     fn retire_submitted_wake(&mut self, id: uuid::Uuid) -> bool {
         let Some(frame) = self
             .crown_wake_entering
@@ -8853,16 +8856,12 @@ impl Daemon {
         else {
             return false;
         };
-        let taken =
-            self.owed.get(&id).filter(|o| o.frame.as_deref() == Some(&frame)).map(|o| o.taken);
-        if taken.is_some() {
+        if self.owed.get(&id).is_some_and(|o| o.frame.as_deref() == Some(&frame)) {
             self.drop_owed(id);
         }
-        if taken == Some(false) {
-            self.mod_unqueue(id, &frame);
-        }
-        let word =
-            if taken == Some(false) { "crown_wake_unreceived" } else { "crown_wake_unconfirmed" };
+        self.mod_unqueue(id, &frame);
+        let offered = self.mod_polled(id);
+        let word = if offered { "crown_wake_unconfirmed" } else { "crown_wake_unreceived" };
         self.journal.line(&format!("crown wake {frame} in session {id}: {word}"));
         let crown = self.board.crown;
         self.feed.board("automation", word, crown);

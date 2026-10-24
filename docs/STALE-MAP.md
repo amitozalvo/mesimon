@@ -32927,3 +32927,17 @@ Tests:
   `crown_e2e::a_duplicate_wake_receipt_leaves_unrelated_unsent_words` (a person's refused words
   are kept unsent on the crown; a worker's hand is told once; the same frame's `entered` again
   leaves those words and tells nothing; it fails without the exclusion).
+- **A4. Retirement cleans up whatever took the owed entry, and says only what it knows.**
+  - **The outbox.** An unrelated prompt can take a submitted wake's owed entry before its window
+    ends, and retirement then had no `taken` bit and left the frame in the mod's outbox beside the
+    next attempt. The frame now leaves the outbox on every retirement; doing so is harmless when
+    it is already gone.
+  - **The word.** An owed entry not marked `taken` says only that no acknowledgement was recorded:
+    the frame may have been handed to a poll whose ack was delayed or lost. Retirement is
+    `crown_wake_unconfirmed` in that case too. `crown_wake_unreceived` is kept for the one case
+    with evidence nothing was offered: no bridge polled for the seat in this daemon's life
+    (`mod_polled`).
+  - **Tests.** `crown_e2e::a_retired_wake_frame_leaves_the_outbox`: the crown's bridge is
+    stopped, a prompt takes the owed entry, and the window passes. A poll then is handed the next
+    attempt alone. The old code handed both frames. In `a_crown_wake_nobody_answers_is_retired_and_goes_again`,
+    the stopped-bridge phase now reads `unconfirmed`.
