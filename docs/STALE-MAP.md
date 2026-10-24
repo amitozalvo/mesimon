@@ -32212,56 +32212,88 @@ cluster bisect ran, since none was owed):
   tables: Opus crowns $28.88 over both arms; Codex Sol about 9.5M observed tokens, about 90%
   cached, roughly $4–5 at third-party list prices.
 
-## T-937 — two e2es that flaked under load: one counted the crown's pane, one rode a daemon race (2026-10-24)
+## T-937 — four e2es that flaked under load: one counted the crown's pane, three rode races (2026-10-24)
 
-Row 14 of T-925's gap log: `crown_e2e::a_wake_s_receipt_names_what_waits_and_it_goes_once`
-(`nothing was sent`) and `forge_e2e::a_conflict_said_before_a_restart_says_its_clear_after_it`
-(failed once in a 51 s nextest run) each failed under parallel load and passed alone. Neither
-reproduced in 80 runs beside two full-suite rounds; both reproduced at once when the step that
-load stretches was stretched on purpose, which is how each race was named.
+Row 14 of T-925's gap log named two tests; the crown's 15:2x note added two `forge_e2e` reds from
+T-936's full runs. Each red under parallel load and passed alone. Plain load reproduced none of
+them in the first 80 runs. What named each race was stretching, on purpose, the step that load
+stretches, or catching the race in the act with the daemon's own records, and only a full
+workspace suite running beside four looping slots reproduced the last two.
 
-**The crown test counted every pane.** `RECORDING_STUB` appends every pane's lines to one
-`got.txt`, and the "nothing goes once it is up" step compared that file's line count across W2's
-wake. The crown's own wake for W2's finished turn writes there too, and when it lands depends on
-two daemon facts the test never waited on. Whether that wake is queued at all races the test's
-park of W2 (~50 ms apart; parked first, a finished turn is no news). When it is queued, it waits
-behind the crown's earlier wake about W, which the stub never acknowledges, so it goes out when
-that paste's ack window (`INFLIGHT_MS`, 10 s) expires. A 4.5 s sleep before the count's
-baseline puts that expiry inside the window: 3 of 3 failed with the reported `left: 3, right: 2`.
-**Fix:** the stub also appends each line to `got-<MESIMON_TICKET>.txt`, and the step counts W2's
-own file. It asserts the same thing, now about W2's pane alone. The last step also asserts that
-the riding words reached that file, so the per-pane count cannot pass by reading nothing. Under
-the same 4.5 s stretch: 3 of 3 green.
+**1. `crown_e2e::a_wake_s_receipt_names_what_waits_and_it_goes_once`: it counted every pane.**
+`RECORDING_STUB` appends every pane's lines to one `got.txt`, and the step "nothing goes once it is
+up" counted that file across W2's wake. The crown's own wake for W2's finished turn writes there
+too. Whether that wake is queued at all races the test's park of W2 (about 50 ms apart). When it
+is queued, it waits behind the crown's unacknowledged wake about W and goes when that paste's ack
+window (`INFLIGHT_MS`, 10 s) expires. A 4.5 s sleep before the baseline put the expiry in the
+window: 3 of 3 failed with the reported `left: 3, right: 2`. **Fix (test):** the stub also writes
+`got-<MESIMON_TICKET>.txt`, the step counts W2's own pane, and the last step asserts the riding
+words reached that file, so the count cannot pass on an empty file.
 
-**The forge test pinned a daemon race.** A wake says `after a restart` when it is `late`.
-`enter_wake` sets `late` when the wake was owed across the restart or the worker's
-`crown_heard.restored` is still set. That flag clears when the restart's turn probe on the worker
-lands (`on_turn_probed`). The test clears the PR while the daemon is down and expects the first
-read after the restart to say `conflict cleared #42, after a restart` (T-785's record says so in
-those words). The suffix therefore depended on the forge pass (a `gh` call) landing before the git
-probe. With `gh pr list` held 2 s or 4 s (`MSMN_GH_SLOW`), every run said `conflict cleared #42`
-and timed out after 20 s, in 54 s and 65 s; the reported failure took 51 s.
-**Fix (daemon):** `forge::State::restored` holds the tickets whose set came back from
-`forge.json` and that no whole read of this daemon has answered. `since_restart` answers the read
-and clears the ticket on a whole one. `absorb_forge` passes that fact with each ticket's news, and
-`hear_forge` owes the wake with `Owed { late }`. Forge news found against the restored set says
-`after a restart` because of what the read compared, not because of which thread won. The
-look-based `restored` is still OR'd in by `enter_wake`, so T-602's rule for a wake about a worker
-no look has reached is unchanged. The test is unchanged. With `gh` slowed: 4 of 4 green (2 s and
-4 s).
+**2. `forge_e2e::a_conflict_said_before_a_restart_says_its_clear_after_it`: two orders after
+two restarts.** A wake says `after a restart` when it is `late`. Until this ticket, a forge wake
+was late only through T-602's `crown_heard.restored`, which the restart's turn probe on the worker
+clears (`on_turn_probed`).
+- *Second restart (PR cleared while down).* The test expects the suffix, so the forge read had to
+  land before the git probe. With `gh pr list` held 2 s or 4 s (`MSMN_GH_SLOW`) every run timed out
+  (54 s, 65 s; the reported red took 51 s). **Fix (daemon):** `forge::State::restored` is a
+  recovery-window marker per ticket. Its set came back from `forge.json` and the ticket has not
+  completed its first whole refresh since restoration. `since_restart` answers each read and closes
+  the window on a whole one. `absorb_forge` passes that answer with the ticket's news, and
+  `hear_forge` owes the wake with `Owed { late }`. A landing held for a merge step carries it too:
+  `Heard::hold_for_step` takes `late` and ORs it into a newly held wake and into a fold, and the
+  step's release says the suffix. The mark is not proof that the edge happened while no daemon read.
+  One repository can answer twice while another fails, and the first one's second change is live
+  yet marked. T-602's look-based flag is still OR'd in by `enter_wake`, so the suffix does not depend
+  on the forge comparison alone.
+- *First restart (conflict standing, cleared on a later read).* The test expects no suffix, so the
+  look had to land first, and it got that order from `sampled_at_ms > 0` plus a 1.5 s window: proof
+  of a forge pass, not of the probe. With the restart look held 6 s (a temporary
+  `DBG_LOOK_HOLD_MS` in the probe thread), 2 of 2 failed on the clear's line. **Fix:** when
+  `on_turn_probed` clears `restored`, the feed says `crown_restart_looked` for that worker, once per
+  start. The test captures the feed's length while no daemon runs and waits for that line past it,
+  from this start, before it clears the PR. With the look held 6 s, `gh` at 2 s and 4 s, and both
+  together: green.
 
-**What is left.** The same OR keeps the mirror case racy. After the first restart, the test
-clears the PR on a later read and expects no suffix, so the worker's look must land first. The
-test gets that order from `sampled_at_ms > 0` plus a 1.5 s window. The look writes nothing a test
-can wait on, and a git probe slower than about 2 s would still add the suffix there. That was
-not the observed failure, and the suffix it would add is T-602's rule working as written.
+**3. `forge_e2e::the_crown_hears_the_forges_edges`: a transient branch tip.** It failed `the first
+PR's merge is the flags' to say` (`left: 4, right: 3`), 3 of 17 and 2 of 25 under a full suite. An
+instrumented daemon printed the forge's decision at the failing read: `carried false`, the leg's
+tip not #42's head. To give #43 a commit in HEAD's reflog, the test committed `greeting` on the
+branch and reset it away. A flag sample that read the branch at that moment left the leg's tip
+there, and the forge, reading #42 merged at a head that was no longer the leg's tip, said the
+merge the flags were to say. **Fix (test):** the commit is made on a detached HEAD and the branch
+checked out again. It is in HEAD's reflog as before (`commit: greeting`, the binding's `wrote`),
+and the branch never stands at it. My forced-window attempt (flags every 5 s, the transient held
+6 s) never landed the race; the instrumented reds are the evidence.
 
-**Tests.** The unit `forge::tests::a_conflict_cleared_follows_a_conflict_said` covers
-`since_restart`. A cleared-while-down restore reads as owed on a partial read, then on the first
-whole read, and not after it.
+**4. `forge_e2e::an_open_pr_holds_done_and_a_ticket_there_reads_unmerged`: a sample that was not
+one snapshot.** It timed out `waiting for both branches to read merged`, 3 of 89 under a full
+suite. The harness's new failure echo showed beta `merged: false, ahead: 0, needs_rebase: false`,
+which is a leg whose `base_oid` equals its tip. `compute_flags` read every tip (`for-each-ref`)
+and then counted `base...branch` by name. A sample whose tips were read between beta's commit and
+its `--ff-only` merge, with the counts after the merge, paired main's old tip with merged counts.
+T-740's `came_to_base` read that as a branch that came to a base that stood still, and re-cut beta
+on its own tip, on disk too. With a 1.5 s gap between the reads (a temporary `DBG_FLAGS_GAP_MS`) and
+the test pausing around the commit, `came_to_base fired` and the wait timed out. **Fix (daemon):**
+the counts take the oids the sample read (`base_tip`, the branch's tip, and the upstream's for
+T-786's count), so one sample is one snapshot. Under the same hooks, 4 of 5 runs read the window's
+sample as `merged false ahead 1` and none re-cut.
 
-**Verified.** One full `cargo nextest run --workspace` (2859 passed) ran as load while each test
-looped in two parallel slots beside it: crown 24/24, forge 20/20. Also `cargo ut`, clippy
+**Diagnostics kept.** A failing e2e's echo (`ci/test_support.rs`) now tails every `daemon.log` and
+`activity.jsonl` under the fixture as well as `child-N.log`. That is what named test 3's and test
+4's races. `common::wait_until_says` times out with the last value it read, and test 4's merged
+wait uses it.
+
+**Tests.** Units: `forge::tests::a_conflict_cleared_follows_a_conflict_said` and
+`the_recovery_window_survives_a_partial_read_and_a_second_restart` (restore, partial read that
+updates the set, a second save and restore rebuilding the window from the surviving set, the
+whole read closing it, a later read outside it, and a ticket the board drops leaving it).
+`crownwake::tests::a_forge_read_s_late_rides_a_landing_held_for_its_step` covers newly held, folded
+and neither, each released.
+
+**Verified.** One full `cargo nextest run --workspace` ran as load with each test looping in two
+slots beside it, on the final code. Test 1: 24/24. Test 2: 20/20. Test 3: 16/16. Test 4: 97/97.
+The suite's own reds across these rounds were other names each time (`snooze_e2e`, `crown_e2e`'s
+Codex wake, `provider_e2e`'s column autosleep), each green alone. Also `cargo ut`, clippy
 `-D warnings` on `mesimon-daemon` and `mesimon`, and `git diff --check`. No rig run: the crown's
-words are T-785's (rig F8, Sonnet, 2026-10-15). Only the condition under which they appear
-changed, from a race to the read's own fact.
+words are T-785's (rig F8, Sonnet, 2026-10-15). Only when they appear changed.
