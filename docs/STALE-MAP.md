@@ -31790,7 +31790,12 @@ outlasts any bound we pick, which is the case that broke. What bounds the hold i
 a display that still sleeps, a closed lid that still sleeps, the opt-in switch, and the end of the
 tasks themselves (a task's end wakes the lead, and that turn's Stop lists what is left). One gap is
 accepted: a task a person kills from Claude's tasks panel may send no turn, and the hold stays
-until the next prompt.
+until the next prompt. An agent whose last Stop listed a watch now holds the machine awake and is
+never auto-parked (`Idle{Monitoring}` stays out of inactivity parking, T-389 with T-391), so a
+watch's hold has no board clock at all: only the person's `z`, the lid, the display or the opt-in
+switch ends it. After a daemon restart an empty registry reads every listed shell as a watch
+(T-483), so the hold survives a restart too, which is right here and which T-483 had recorded as a
+hole.
 
 **Not changed, found on the way.** `crownwake::hear_lingering` (T-599, 30 min) and the card's
 `idle ∙ N tasks` (`decorate`'s `tasks_running`) read `Idle{Background}` alone. The 10-minute park
