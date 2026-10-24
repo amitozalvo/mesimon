@@ -5593,6 +5593,7 @@ mod tests {
                 workspace: None,
                 tier: None,
                 created: None,
+                shell: None,
             };
             let reply = Reply::Board {
                 title: "b".into(),
