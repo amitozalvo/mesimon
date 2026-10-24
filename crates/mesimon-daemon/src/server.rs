@@ -6241,11 +6241,14 @@ impl Daemon {
                 let owed = self.drop_owed(id);
                 let pasted_command =
                     owed.as_ref().is_some_and(|o| o.screen_acked && o.parked.is_none());
+                // A crown wake is owed again instead (T-936, `lose_entering`),
+                // never kept as a second copy.
+                let wake = owed.as_ref().is_some_and(|o| o.ack.word == Ack::CROWN_WAKE.word);
                 let words = owed.and_then(|o| o.sent.or(o.parked));
                 // A Claude seat stopped by a startup modal still has a pane
                 // to resend into once the dialog is answered (T-570). A
                 // shell line or command already in the box is not resent.
-                if claude && !pasted_command {
+                if claude && !pasted_command && !wake {
                     self.mark_unsent(id, words);
                 }
                 self.feed.board("daemon", "prompt_submit_abandoned", Some(ticket));

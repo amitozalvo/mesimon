@@ -32995,3 +32995,10 @@ Tests:
   as `paste_unacked`, with no key. A person's own launch keeps its presses. Test:
   `crown_e2e::no_retry_enter_follows_a_wake_s_own_paste` (the paste goes in, no hook follows, a
   person types; four seconds on, their words were not sent; fails with the presses kept).
+- **A5 (2c). A launch abandoned on a dialog keeps no copy of the wake.** The `!pressable`
+  branch, where a startup modal or another dialog abandons a launch's words (the held Trust case
+  aside), kept a crown wake's words as unsent, while `lose_entering` owed the same wake again. It
+  now excludes the crown wake, as the composer-wait and presses-ran-out branches do. Test:
+  `crown_e2e::a_crown_launch_abandoned_on_a_dialog_keeps_no_unsent_copy` (the composer never
+  draws, a permission request comes, the words are abandoned; no unsent copy on the crown's seat,
+  the hand up, the wake owed; fails without the exclusion).

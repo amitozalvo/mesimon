@@ -10099,3 +10099,52 @@ fn no_retry_enter_follows_a_wake_s_own_paste() {
     std::thread::sleep(std::time::Duration::from_millis(4000));
     assert!(!read_got().contains("half a thought"), "no Enter sent their draft: {}", read_got());
 }
+
+/// T-936, the fifth read (2c): a crown launch abandoned on a dialog (here a
+/// permission request, while its composer has not yet drawn) leaves no
+/// unsent copy of the wake on the crown's seat. The wake is owed again, its
+/// hand still up.
+#[test]
+fn a_crown_launch_abandoned_on_a_dialog_keeps_no_unsent_copy() {
+    let Some(h) = Harness::boot_bare(
+        "crown_launch_modal",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_CLAUDE_ROAD", "hooks"),
+            ("MESIMON_SLEEP_MIN_AGE_MS", "0"),
+            ("MESIMON_COMPOSER_WAIT_MS", "60000"),
+        ],
+    ) else {
+        return;
+    };
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_launch_modal");
+    let (a, sa, w, _line) = crown_woken_with_its_wake_parked(&h, &mut c, "launch modal");
+    let feed = h.paths.state_dir.join("activity.jsonl");
+    // The pane is up and its words wait for a composer that never draws;
+    // then a dialog comes.
+    hook_send(&hook_sock, &sa.to_string(), "SessionStart", r#"{"source":"resume"}"#);
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    hook_send(
+        &hook_sock,
+        &sa.to_string(),
+        "PermissionRequest",
+        r#"{"tool_name":"Bash","tool_input":{"command":"ls"}}"#,
+    );
+    c.await_state(sa, "on the dialog", |s| matches!(s, SessionState::RequiresAction { .. }));
+    wait_until(std::time::Duration::from_secs(10), "the launch's words abandoned", || {
+        std::fs::read_to_string(&feed).unwrap_or_default().contains("\"prompt_submit_abandoned\"")
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    let rec = c.board().sessions.iter().find(|s| s.id == sa).cloned().unwrap();
+    assert!(rec.unsent.is_none(), "no unsent copy of the wake: {:?}", rec.unsent);
+    assert!(c.board().ticket(w).unwrap().raised.is_some(), "the hand still up");
+    assert!(
+        pending_of(&mut c, Some(a))
+            .iter()
+            .any(|p| p.action == mesimon_core::command::PendingAction::CrownWake),
+        "the wake owed again"
+    );
+}
