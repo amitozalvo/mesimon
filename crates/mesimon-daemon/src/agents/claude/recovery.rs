@@ -44,9 +44,9 @@ pub(super) struct ClaudeRecovery {
     /// The plan or question call the tail last showed with no result after
     /// it, and its tool: what a departure is keyed on (T-957).
     dialog: Option<(TailTool, String)>,
-    /// The held spell (`state_changed_at`) whose call was last looked for
-    /// off the tail, for a cursor that came after the call.
-    dialog_read: Option<Option<u64>>,
+    /// The held spell (`state_changed_at`) and call (`dialog_call`) last
+    /// looked for off the tail, for a cursor that came after the call.
+    dialog_read: Option<(Option<u64>, Option<String>)>,
     /// The dialog whose result is the last word the cursor read: an
     /// interrupt read next is that dialog's Esc, in this read or the next.
     ended: Option<(TailTool, String)>,
@@ -515,16 +515,18 @@ impl ClaudeRecovery {
         // the call still open, or already ended (round 1: a refusal in the
         // restart's window, before this read), fenced by the spell, since
         // the tail holds every earlier dialog of the same kind too.
-        if let Some(tool) = held
-            .filter(|_| self.dialog.is_none() && self.dialog_read != Some(record.state_changed_at))
+        let look = (record.state_changed_at, record.dialog_call.clone());
+        if let Some(tool) =
+            held.filter(|_| self.dialog.is_none() && self.dialog_read.as_ref() != Some(&look))
         {
-            self.dialog_read = Some(record.state_changed_at);
+            self.dialog_read = Some(look);
             match tail::open_dialog(&path) {
                 Some(open) => self.dialog = Some((open.tool, open.id)),
                 None if answered.is_none() => {
-                    let closed = record
-                        .state_changed_at
-                        .and_then(|since| tail::closed_dialog(&path, tool, since))
+                    // Unknown spell and call: nothing is old enough to trust.
+                    let since = record.state_changed_at.unwrap_or(u64::MAX);
+                    let held_call = record.dialog_call.as_deref();
+                    let closed = tail::closed_dialog(&path, tool, since, held_call)
                         .filter(|c| self.departed.as_deref() != Some(c.id.as_str()));
                     if let Some(c) = closed {
                         if c.last {
@@ -1523,6 +1525,52 @@ mod recovery_tests {
                 (TailHint::AbortedMidStream, None, Some("y".to_string()))
             ]
         );
+    }
+
+    /// T-957 round 9: with the call the record is held on known (its
+    /// `dialog_call`, kept across a restart), the look back reads by that
+    /// identity: another call's result ends nothing, however new, and this
+    /// call's result counts however old against the daemon's clock.
+    #[test]
+    fn the_look_back_reads_the_held_call_by_its_identity() {
+        let at = |second: u32| format!("2026-10-24T16:10:{second:02}.000Z");
+        let ms = |second: u32| mesimon_core::adopt::iso_ms(&at(second)).unwrap();
+        let call = |id: &str| {
+            serde_json::json!({"uuid": format!("call-{id}"), "type":"assistant", "message":{
+                "content":[{"type":"tool_use","id":id,"name":"ExitPlanMode","input":{}}]}})
+        };
+        let result = |id: &str, second: u32| {
+            serde_json::json!({"uuid": format!("result-{id}"), "type":"user",
+                "timestamp": at(second), "message":{"content":[{"type":"tool_result",
+                    "tool_use_id":id,"is_error":true,"content":"the user said: no."}]}})
+        };
+        let ends = |seen: &[RecoveryObservation]| -> Vec<String> {
+            seen.iter()
+                .filter(|o| matches!(o.signal, Signal::DialogEnded { .. }))
+                .filter_map(|o| o.dialog.clone())
+                .collect()
+        };
+        let first_read = |history: &History, held: Option<&str>, spell: u32| {
+            let mut rec = record(SessionState::RequiresAction { reason: Reason::Plan });
+            rec.transcript_path = Some(history.0.display().to_string());
+            rec.state_changed_at = Some(ms(spell));
+            rec.dialog_call = held.map(String::from);
+            let mut recovery = ClaudeRecovery::default();
+            assert!(recovery.needs_poll(&rec, RecoveryChannel::Transcript, 20_000));
+            recovery.poll(&rec, RecoverySample::Transcript, 20_000)
+        };
+        // A refused, B held and not on the tail yet (a restart before B's
+        // line): A's result, newer than the spell, ends nothing.
+        let history = History::new();
+        history.append(call("a"));
+        history.append(result("a", 12));
+        assert!(ends(&first_read(&history, Some("b"), 10)).is_empty());
+        // Without the identity (an older record) the spell still decides.
+        assert_eq!(ends(&first_read(&history, None, 10)), ["a"]);
+        // A held, its refusal written before the daemon heard the hook (a
+        // busy writer): read by identity, against no clock.
+        assert_eq!(ends(&first_read(&history, Some("a"), 14)), ["a"]);
+        assert!(ends(&first_read(&history, None, 14)).is_empty(), "the spell's fence alone");
     }
 
     /// T-802: a usage limit is restated off the tail once a minute while

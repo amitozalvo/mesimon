@@ -316,8 +316,10 @@ pub(super) struct Control {
     /// The last dialog a hook edge ended on each session, and how (T-567).
     dialog_edges: HashMap<uuid::Uuid, (String, DialogEdge)>,
     /// The `RequiresAction` spell each seat's dialog was last looked for in
-    /// (T-933), by its `state_changed_at`: once per spell.
-    dialogs_read: HashMap<uuid::Uuid, u64>,
+    /// (T-933), by its `state_changed_at`: once per spell, or for a record
+    /// that names its call, again as its transcript grows (T-957 round 9).
+    /// `GIVEN` for the length: the hook stream gave the spell its dialog.
+    dialogs_read: HashMap<uuid::Uuid, (u64, u64)>,
     incarnation: ObjectId,
     origin: String,
     pub(super) online: bool,
@@ -1217,6 +1219,16 @@ impl Daemon {
         // read for it after another is heard ended an earlier turn.
         let heard = self.prompts_heard.get(&id).copied().unwrap_or(0);
         self.dialog_heard.insert(id, (request.clone(), heard));
+        // The call the record is held on, kept on the record (round 9): a
+        // restart loses the projection, and the tail's reader matches by it.
+        // Only a plan's or a question's, and only a call id the frame gave.
+        let named = frame.payload["tool_use_id"].as_str() == Some(request.as_str());
+        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+            if reason.is_some() && named && rec.dialog_call.as_deref() != Some(request.as_str()) {
+                rec.dialog_call = Some(request.clone());
+                self.persist_sessions();
+            }
+        }
         self.control.dialogs.insert(id, api::Dialog { request, content });
         self.control_changed();
         if let Some((ticket, cause)) = restop {
@@ -1261,6 +1273,7 @@ impl Daemon {
     /// that took one is never resurrected; a call the transcript shows
     /// answered or gone rebuilds nothing.
     fn control_recover_dialogs(&mut self) {
+        const GIVEN: u64 = u64::MAX;
         use mesimon_core::board::Reason;
         let board = &self.board;
         self.control.dialogs_read.retain(|id, _| board.sessions.iter().any(|s| s.id == *id));
@@ -1277,20 +1290,39 @@ impl Daemon {
                     return None;
                 };
                 let spell = s.state_changed_at.unwrap_or_default();
-                (self.control.dialogs_read.get(&s.id) != Some(&spell))
-                    .then(|| (s.id, reason, spell, s.transcript_path.clone()))
+                let read = self.control.dialogs_read.get(&s.id);
+                if read == Some(&(spell, GIVEN)) {
+                    return None;
+                }
+                // A record that names its call (T-957 round 9) is read again
+                // as its transcript grows, until that call's line is there:
+                // a restart can come before the line does.
+                let grown = s
+                    .dialog_call
+                    .as_ref()
+                    .and(s.transcript_path.as_deref())
+                    .and_then(|p| std::fs::metadata(p).ok())
+                    .map_or(0, |m| m.len());
+                let key = (spell, grown);
+                (read != Some(&key))
+                    .then(|| (s.id, reason, key, s.transcript_path.clone(), s.dialog_call.clone()))
             })
             .collect();
-        for (id, reason, spell, path) in due {
-            self.control.dialogs_read.insert(id, spell);
+        for (id, reason, key, path, named) in due {
             if self.control.dialogs.contains_key(&id) {
+                self.control.dialogs_read.insert(id, (key.0, GIVEN));
                 continue;
             }
+            self.control.dialogs_read.insert(id, key);
             let Some(open) = path
                 .and_then(|p| crate::agents::claude::tail::open_dialog(std::path::Path::new(&p)))
             else {
                 continue;
             };
+            // Never another call than the one the record names.
+            if named.as_ref().is_some_and(|named| *named != open.id) {
+                continue;
+            }
             use mesimon_core::adopt::TailTool;
             let tool = match (open.tool, reason) {
                 (TailTool::ExitPlanMode, Reason::Plan) => "ExitPlanMode",

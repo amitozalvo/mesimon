@@ -33979,18 +33979,43 @@ session` on a note row predates this ticket.
 So the card wore `plan`, the attention count counted it, and `ask_agent` was refused until the
 next dialog, the turn's end or the 15-minute stale demote.
 
-**Measured (Claude Code 2.1.310 and older, the board's own transcripts).** Every way a plan or a
-question dialog ends writes a `user` record with the `tool_result` of the dialog's own call, keyed
-by its `tool_use_id`, at the keypress:
-- **Words on the feedback row:** `is_error: true`, content "The user doesn't want to proceed
-  with this tool use. … To tell you how to proceed, the user said: <words>", plus
-  `toolDenialKind: "user-rejected"` and `permissionDecision.source: "user_reject"`. The turn goes
-  on; the first API request follows within 0.4 s (T-945's plan, 19:10:31.528).
-- **An Esc** (a plan's or a question's): `is_error: true`, "… STOP what you are doing and wait for
-  the user to tell you how to proceed.", then `[Request interrupted by user for tool use]` and
-  the turn's `turn_duration`, all within 3 ms. The interrupt record was already read
-  (`TailHint::AbortedMidStream`, Low).
-- **An accept or an answer:** the approval or the answers, beside the engine's `PostToolUse`.
+**The evidence held (narrowed in round 9).** Nothing new was captured in this ticket: these are
+the transcripts already on disk under `~/.claude/projects`, read on 2026-10-24. In each one the
+dialog's end is a `user` record carrying the `tool_result` of the dialog's own call, keyed by its
+`tool_use_id`, written when the dialog closed:
+- **A plan sent back with words, 2.1.310, the classic mod road.** This is T-945's worker, the
+  event T-955 records (the crown's send-back, 16:10:31.528Z).
+  - The record: `is_error: true`, "The user doesn't want to proceed with this tool use. … To
+    tell you how to proceed, the user said: <words>", with `toolDenialKind: "user-rejected"`
+    and `permissionDecision.source: "user_reject"`.
+  - After it come uuid-less API request rows, and the turn goes on.
+  - Hook frames: none for the rejection itself, per T-955's feed; the next frames were later
+    tools' `PostToolUse`.
+  - Seven more 2.1.310 samples of the same record come from T-943's five rig runs and its probe
+    (the crown's walk, road not recorded).
+- **A plan ended with "STOP …", 2.1.310** (T-938's worker, 10:20:12.924Z, road not recorded):
+  `is_error: true` "… STOP what you are doing and wait for the user to tell you how to proceed.",
+  then `[Request interrupted by user for tool use]` 12 ms later, then `turn_duration`. Whether an
+  Esc or "No, keep planning" made it is not recorded.
+- **A question Esc'd: 2.1.287 and 2.1.289 only.** These are T-571's lab (2026-10-01) and the
+  mod spikes of 2026-10-05, T-657's among them: the same STOP result, the interrupt within 1 ms
+  and `turn_duration`. There is no 2.1.310 capture of a question's Esc.
+- **A question's "Chat about this", 2.1.286** (T-532): an `is_error` result "The user wants to
+  clarify these questions…", then `[Request interrupted by user]` about 2 s later.
+- **An accept or an answer** (2.1.282 to 2.1.310, many): the approval or the answers, beside the
+  engine's `PostToolUse`.
+
+Not held:
+- any capture on the hook-set road for these cases;
+- a 2.1.310 question Esc;
+- the key behind T-938's STOP;
+- the frames beside any of them, past T-447's 2026-09-23 measurement that a refusal fires no hook
+  and T-955's feed above;
+- any sample of the engine presenting one record twice. Rounds 7 to 9 build for that from the
+  cursor's contract (rotation resets to 0), not from an observation.
+
+The 2.1.310 plan dialog's rows, with "No, keep planning" among four, are `plan_dialog.rs`'s
+fixture; the e2e stand-in draws 2.1.287's three.
 
 A sibling's result in a parallel batch carries another id (T-595). The pane sample, the note's
 other candidate, needs a screen shape for every dialog; the result is keyed to the call and
@@ -34108,6 +34133,28 @@ belongs to a later turn.
   reached the machine: the seat stayed `Running` after the Esc. The interrupted answer is now
   assigned only when an interrupt takes a dialog's result (`ended` is `Some`). A newer prompt or
   dialog call still clears it.
+- **The cold read's three (round 9).**
+  - **A replay in a later read.** `owned` is per read, so an interrupt presented again in a later
+    poll was an unscoped Low hint, and it ended the newer dialog B. The general rule closes it,
+    with no identity carried across reads: on an owned seat held on a plan or a question whose
+    call a hook named (the projection, or the record's `dialog_call`), an unscoped
+    `AbortedMidStream` does not move the record (`feed_recovery`, feed line
+    `tail_abort_beside_a_dialog`). While such a dialog stands, only its own end or a hook moves
+    it. Observed and `Unknown` records name no call and keep the hint.
+  - **A restart loses the projection.** A refused, B's `PreToolUse` heard on a record still at
+    `Plan` (so the spell is still A's), restart before B's line: the look back found A's result
+    newer than the spell, and with nothing projected, A's end cleared B. The held call now rides
+    the record, `SessionRecord::dialog_call` (`#[serde(default)]`, no schema bump: an older
+    build drops it and reads as before). It is written at each named projection, a replan on a
+    held record included, and cleared when the record leaves the dialog. The daemon's guard
+    falls back to it when nothing is projected. The look back (`closed_dialog(…, call)`) refuses
+    any last dialog call but it, and runs again when the held call changes in one spell. T-933's
+    rebuild reads a record that names its call again as its transcript grows, and never projects
+    another call. A spell the hook stream gave its dialog is still never rebuilt.
+  - **The first read's clock.** `closed_dialog` rejected a result stamped before the spell, which
+    is the daemon's receipt time, so a busy writer's late hooks lost a refusal already on disk.
+    With the held call known, its result is read by that identity, against no clock; the spell's
+    stamp fences only an older record that names no call.
 - **After a restart** a dialog this daemon never projected counts from the daemon's start.
 - **In the read:** a person's prompt (`adopt::user_prompt`) after an interrupt in the same read
   drops the interrupted end and every `AbortedMidStream` read before it.
@@ -34229,6 +34276,20 @@ belongs to a later turn.
     end `Interrupted`, pinned and unpinned; the fresh-cursor and repeated-prompt cases fail with
     them.
 - `fake_claude_dialog.py` stamps the transcript rows it writes, as Claude Code does.
+- Round 9:
+  - Unit `recovery::the_look_back_reads_the_held_call_by_its_identity`: with B held, A's newer
+    result ends nothing; with A held, its result stamped before the spell ends it; an unnamed
+    record keeps the spell's fence both ways.
+  - `plan_accept_e2e::an_old_interrupt_replayed_in_a_later_read_leaves_a_newer_dialog_standing`:
+    the reads `result A + X | X` and `result A | X | X`, B projected, unpinned. B's state and
+    request survive. Without the rule it ends `Interrupted`.
+  - `plan_accept_e2e::a_restart_before_a_newer_dialog_s_line_keeps_it`: A refused, B's hook,
+    restart, B's line held past the first reads. B still needs the person, and once its line
+    lands `get_ticket` reads its request again. Without the record's call it goes `Running`.
+  - `crown_e2e::a_refusal_written_before_its_hooks_still_clears_the_plan`: W at rest, the call
+    and the refusal on disk, then the prompt's and the plan's hooks. Words end `Running`, an Esc
+    `Interrupted`, needs-you clears and `ask_agent` is admitted, on both roads. With the clock
+    fence alone it stays on the plan.
 
 **Not done (seen, not changed).**
 - **T-943's walk e2e** (`the_crown_sends_a_plan_back_with_words`) and `PlanBed::clear` still end

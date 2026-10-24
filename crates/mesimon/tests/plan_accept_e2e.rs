@@ -1207,3 +1207,103 @@ fn an_old_plan_s_esc_leaves_a_newer_dialog_standing() {
         assert_eq!(needs.request.as_deref(), Some("toolu_b"), "B's request ({word})");
     }
 }
+
+/// T-957 round 9: an old interrupt presented again in a later read. Plan A,
+/// the person Escs and submits, and B is heard (projected) before the tail
+/// reads A's end. The reads then come apart: `result A + X | X`, and
+/// `result A | X | X`. A's end is dropped in its read (B is projected), and
+/// the X that a later read presents again has no end to ride and no call:
+/// on a seat whose dialog a hook named, it moves nothing. Past every read,
+/// the seat is still on B with B's request. The pin is off.
+#[test]
+fn an_old_interrupt_replayed_in_a_later_read_leaves_a_newer_dialog_standing() {
+    const STOP: &str =
+        "The user doesn't want to proceed with this tool use. STOP what you are doing.";
+    for (n, split) in [false, true].into_iter().enumerate() {
+        let Some(mut b) = Bed::boot(&format!("planreplay{n}")) else { return };
+        b.start();
+        // A tail read while running mints the cursor, so the reads are live.
+        std::thread::sleep(Duration::from_millis(2500));
+        b.call("ExitPlanMode", "toolu_a");
+        b.stop_on("ExitPlanMode", "toolu_a");
+        b.hook("UserPromptSubmit", r#"{"prompt":"Plan it again."}"#);
+        b.stop_on("ExitPlanMode", "toolu_b");
+        let interrupt = serde_json::json!({"uuid": "abort-a", "type": "user",
+            "timestamp": now_iso(), "message": {"content": [{"type": "text",
+                "text": "[Request interrupted by user for tool use]"}]}});
+        b.result("toolu_a", true, STOP);
+        if !split {
+            b.append(interrupt.clone());
+        }
+        // One tail read per part.
+        let parts = if split { 2 } else { 1 };
+        for _ in 0..parts {
+            std::thread::sleep(Duration::from_millis(2500));
+            b.append(interrupt.clone());
+        }
+        std::thread::sleep(Duration::from_millis(3000));
+        let pinned = b.decisions().iter().any(|d| {
+            d["decision"]["after"]["pinned_until"]
+                .as_u64()
+                .is_some_and(|until| until > d["at_ms"].as_u64().unwrap())
+        });
+        assert!(!pinned, "the pin is off (split: {split})");
+        assert_eq!(
+            b.state(),
+            Some(SessionState::RequiresAction { reason: Reason::Plan }),
+            "still on B (split: {split}): {:?}",
+            b.decisions().iter().rev().take(4).collect::<Vec<_>>()
+        );
+        let needs = match b
+            .c
+            .send(mesimon_core::Principal::Agent { session: b.sid }, Command::AgentGetTicket)
+        {
+            Response::AgentTicket { ticket } => ticket.needs_you,
+            other => panic!("get_ticket: {other:?}"),
+        };
+        let needs = needs.expect("B still needs the person");
+        assert_eq!(needs.request.as_deref(), Some("toolu_b"), "B's request (split: {split})");
+    }
+}
+
+/// T-957 round 9: a restart between a newer dialog's hook and its line. A
+/// is refused with words, B's `PreToolUse` is heard while the record is
+/// still on its plan, and the daemon restarts before B's line is written:
+/// the projection is gone, but the record names B. The new daemon's first
+/// read finds A's result newer than the spell, and that ends nothing: the
+/// seat is still on B, needing the person. Once B's line lands, the board
+/// rebuilds B's dialog from it, and `get_ticket` reads B's request again.
+#[test]
+fn a_restart_before_a_newer_dialog_s_line_keeps_it() {
+    let Some(mut b) = Bed::boot("planrestartb") else { return };
+    b.start();
+    std::thread::sleep(Duration::from_millis(2500));
+    b.call("ExitPlanMode", "toolu_a");
+    b.stop_on("ExitPlanMode", "toolu_a");
+    b.result("toolu_a", true, REFUSED);
+    b.hook("UserPromptSubmit", r#"{"prompt":"Plan it again."}"#);
+    b.stop_on("ExitPlanMode", "toolu_b");
+    b.h.restart_after(|| {});
+    b.c = b.h.client("planrestartb_2");
+    let needs = |b: &mut Bed| match b
+        .c
+        .send(mesimon_core::Principal::Agent { session: b.sid }, Command::AgentGetTicket)
+    {
+        Response::AgentTicket { ticket } => ticket.needs_you,
+        other => panic!("get_ticket: {other:?}"),
+    };
+    // The first reads and the settle, B's line held back.
+    std::thread::sleep(Duration::from_millis(4500));
+    assert_eq!(
+        b.state(),
+        Some(SessionState::RequiresAction { reason: Reason::Plan }),
+        "still on B after the restart: {:?}",
+        b.decisions().iter().rev().take(4).collect::<Vec<_>>()
+    );
+    assert_eq!(needs(&mut b).map(|n| n.reason).as_deref(), Some("plan"));
+    b.call("ExitPlanMode", "toolu_b");
+    wait_until(Duration::from_secs(10), "B's dialog rebuilt from its line", || {
+        needs(&mut b).and_then(|n| n.request).as_deref() == Some("toolu_b")
+    });
+    assert_eq!(b.state(), Some(SessionState::RequiresAction { reason: Reason::Plan }));
+}

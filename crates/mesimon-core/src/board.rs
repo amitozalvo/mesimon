@@ -477,6 +477,16 @@ pub struct SessionRecord {
     /// mints a fresh one.
     #[serde(default)]
     pub plan_note: Option<ulid::Ulid>,
+    /// The `tool_use` id of the plan or question dialog the hook stream
+    /// projected for this seat (T-957 round 9): written at each projection,
+    /// a replan on a record already held included, and cleared when the
+    /// record leaves the dialog. Persisted, so a restart, which loses the
+    /// projection, still knows which call the record is held on: a result
+    /// the tail reads for another call never ends it, and a result for this
+    /// one is read by identity, not against the daemon's clock. `None` from
+    /// an older build, or for a dialog no hook projected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dialog_call: Option<String>,
     /// This session has read its ticket (T-224, 2026-09-05): `get_ticket`
     /// answered it, or the composed spawn pasted the description under the
     /// title as its first prompt. The ticket page reads it the other way
@@ -674,6 +684,7 @@ impl SessionRecord {
             idle_teammates: Vec::new(),
             background_tasks: Default::default(),
             plan_note: None,
+            dialog_call: None,
             ticket_read: false,
             tier: String::new(),
             tier_owed: false,
@@ -4334,6 +4345,7 @@ mod tests {
         assert!(rec.agent_preview_path.is_none());
         assert!(!rec.pending_prefill);
         assert!(!rec.codex_submit_sent);
+        assert!(rec.dialog_call.is_none(), "T-957: no call held from an older line");
     }
 
     fn ticket(id: u128, column: &str, order: &str) -> Ticket {

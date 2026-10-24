@@ -240,13 +240,23 @@ pub struct ClosedDialog {
 }
 
 /// The last plan or question call on the tail, when it is `tool`'s and its
-/// own result is there, stamped at or after `since` (the held spell's
-/// start): the dialog the record holds, ended. Walks back from the end as
+/// own result is there: the dialog the record holds, ended. With the held
+/// call known (`call`, the record's `dialog_call`, T-957 round 9) the last
+/// dialog call must be that one, and its result is read by that identity
+/// whatever its stamp: a busy writer's hook comes after the engine wrote
+/// the call and the refusal. Unknown, the result must be stamped at or
+/// after `since` (the held spell's start), since the tail holds every
+/// earlier dialog of the same kind too. Walks back from the end as
 /// far as `prompted_since` does. Any other answer is `None`: a newer call
 /// of the other tool, the call still open, an undated or older result
 /// (history of an earlier dialog of the same kind), or a person's prompt
 /// after it, a turn the hook stream says.
-pub fn closed_dialog(path: &Path, tool: TailTool, since: u64) -> Option<ClosedDialog> {
+pub fn closed_dialog(
+    path: &Path,
+    tool: TailTool,
+    since: u64,
+    call: Option<&str>,
+) -> Option<ClosedDialog> {
     let len = std::fs::metadata(path).ok()?.len();
     let text = window_text(path, len, PROMPT_WINDOW)?;
     let end = text.len();
@@ -260,11 +270,12 @@ pub fn closed_dialog(path: &Path, tool: TailTool, since: u64) -> Option<ClosedDi
             continue;
         }
         if let Some((called, id)) = dialog_call(&v) {
-            if called != tool {
+            if called != tool || call.is_some_and(|held| held != id) {
                 return None;
             }
             let (_, at, after) = results.into_iter().find(|(r, _, _)| r == id)?;
-            return at.filter(|at| *at >= since).map(|_| ClosedDialog {
+            let dated = call.is_some() || at.is_some_and(|at| at >= since);
+            return dated.then(|| ClosedDialog {
                 id: id.to_string(),
                 last: after.is_none(),
                 interrupt: after.flatten(),

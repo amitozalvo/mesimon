@@ -3683,14 +3683,42 @@ impl Daemon {
             ) {
                 continue;
             }
+            // The call the seat is held on: the hook stream's projection, or
+            // after a restart, which loses it, the record's (round 9).
+            let (recorded, owned_dialog) = self
+                .board
+                .sessions
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| {
+                    let held = matches!(
+                        s.state,
+                        SessionState::RequiresAction { reason: Reason::Plan | Reason::Question }
+                    );
+                    (s.dialog_call.clone(), held && !s.observe_only())
+                })
+                .unwrap_or_default();
+            let held_call = self.control_dialog_request(id).map(String::from).or(recorded);
             // A dialog's end off the transcript, while the hook stream
             // already projects another for the seat (a replan whose frame
             // beat its call's line to the file): that dialog stands (T-957).
             if observation
                 .dialog
                 .as_ref()
-                .is_some_and(|call| self.control_dialog_request(id).is_some_and(|r| r != call))
+                .is_some_and(|call| held_call.as_ref().is_some_and(|r| r != call))
             {
+                continue;
+            }
+            // While an owned seat holds a dialog a hook named, only that
+            // dialog's own end or a hook moves it (round 9): an unscoped Low
+            // abort has no call, and a replay of an older interrupt in a later
+            // read would end the dialog standing in the pane.
+            let unscoped = observation.dialog.is_none()
+                && observation.signal
+                    == (Signal::TranscriptHint { kind: attention::TailHint::AbortedMidStream });
+            if unscoped && owned_dialog && held_call.is_some() {
+                let ticket = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket);
+                self.feed.board("automation", "tail_abort_beside_a_dialog", ticket);
                 continue;
             }
             // An Esc read for a dialog the seat has spoken since ended the
@@ -6790,6 +6818,13 @@ impl Daemon {
         }
         rec.state = change.to.clone();
         rec.confidence = change.confidence;
+        // A record off its dialog holds no call (T-957 round 9).
+        if !matches!(
+            change.to,
+            SessionState::RequiresAction { reason: Reason::Plan | Reason::Question }
+        ) {
+            rec.dialog_call = None;
+        }
         let stop_words = detail.is_some();
         if change.from != change.to {
             rec.state_changed_at = Some(now);

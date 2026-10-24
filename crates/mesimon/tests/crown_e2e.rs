@@ -8782,6 +8782,81 @@ fn a_plan_a_person_sends_back_in_the_pane_leaves_needs_you() {
     });
 }
 
+/// T-957 round 9: a refusal on disk before its hooks are heard. The writer
+/// was busy: W, at rest with no cursor on its transcript, stops on a plan,
+/// and the person sends it back (words, then on the next plan an Esc), all
+/// written before the prompt's and the plan's hooks are consumed. So the
+/// plan's result is stamped before the daemon's spell. The record names the
+/// plan's call from its hook, and the first read finds the call and its
+/// result by that identity, against no clock: the plan leaves needs-you
+/// (running after words, interrupted after the Esc), and `ask_agent` is
+/// admitted.
+#[test]
+fn a_refusal_written_before_its_hooks_still_clears_the_plan() {
+    let Some(mut b) = PlanBed::boot("crown_refusal_early") else { return };
+    let (kw, ws) = (b.kw.clone(), b.ws);
+    let transcript = b.transcribe();
+    let interrupted =
+        SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Interrupted };
+    for (request, esc) in [("toolu_e1", false), ("toolu_e2", true)] {
+        // At rest: a tail read forgets the cursor.
+        b.stop(ws);
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+        // The plan drawn and its call written, no hook yet.
+        let dialog = b.h.dir.join(format!("dialog-{kw}.json"));
+        let input = json!({ "plan": BED_PLAN, "transcript": transcript, "tool_use_id": request });
+        std::fs::write(&dialog, input.to_string()).unwrap();
+        wait_until(std::time::Duration::from_secs(10), "the plan drawn", || {
+            b.pane().contains("Would you like to proceed?")
+        });
+        if esc {
+            b.person_keys(&["Escape"]);
+        } else {
+            b.person_keys(&["Down", "Down"]);
+            b.person_keys(&["Name the file b.txt instead."]);
+            b.person_keys(&["Enter"]);
+        }
+        wait_until(std::time::Duration::from_secs(10), "the refusal written", || {
+            std::fs::read_to_string(&transcript)
+                .unwrap_or_default()
+                .contains(&format!("\"tool_use_id\": \"{request}\""))
+        });
+        // Now the busy writer consumes the turn's hooks.
+        hook_send(
+            &b.h.paths.hook_sock(),
+            &ws.to_string(),
+            "UserPromptSubmit",
+            r#"{"prompt":"go"}"#,
+        );
+        b.hook("PreToolUse", "ExitPlanMode", request);
+        let off = if esc { interrupted.clone() } else { SessionState::Running };
+        b.c.await_state(ws, "off the plan its result on disk ended", |s| *s == off);
+        let v = read(&mut b.c, b.sa, &kw).unwrap();
+        assert!(v.needs_you.is_none(), "no plan stands (esc: {esc}): {:?}", v.needs_you);
+        match b.c.send(
+            Principal::Agent { session: b.sa },
+            Command::AgentAskTicket {
+                key: kw.clone(),
+                text: format!("mesimon-probe-957 after {request}"),
+                seen: v.seen,
+                plan: false,
+                deliver: Deliver::Idle,
+            },
+        ) {
+            Response::AgentAsked { .. } => {}
+            other => panic!("ask_agent after a refusal read by identity: {other:?}"),
+        }
+        // The words go in once the seat rests; the next case starts on it.
+        if !esc {
+            b.stop(ws);
+            wait_until(std::time::Duration::from_secs(10), "the ask typed into W", || {
+                b.typed().contains(&format!("mesimon-probe-957 after {request}"))
+            });
+            b.start(ws);
+        }
+    }
+}
+
 /// A replan inside the leave a plan sent back started (T-955 with T-943's
 /// re-stop). The window's screen read shows the composer, so the record's
 /// machine is given the departure with its 1500 ms settle; the worker's next

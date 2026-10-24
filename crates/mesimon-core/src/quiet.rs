@@ -398,6 +398,7 @@ mod tests {
             idle_teammates: vec![],
             background_tasks: Default::default(),
             plan_note: None,
+            dialog_call: None,
             ticket_read: false,
             tier: String::new(),
             tier_owed: false,
