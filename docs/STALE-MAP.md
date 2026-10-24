@@ -34051,39 +34051,41 @@ hint. Three holes followed from that:
   `confirms_idle` needs an idle stamp after the new spell. The first block's "until the
   status-file probe" was not a true bound.
 
-**Round 2 (the independent read of `b4c5fe4b`).** An interrupted end selected from a read could
-end a newer turn. The person Escs and at once submits a new prompt: the `UserPromptSubmit`
-removes the projection and settles `Running` before the next tail read. That read then finds the
-result, its interrupt and the turn's close, and the guard (which checks only for another
-projected dialog) let the High `Interrupted` through against the new turn. Under the pin it now
-committed where the old Low hint had been dropped. The interrupt is now bound to the turn it
-ended:
-- **In the read:** a person's prompt (`adopt::user_prompt`) after an interrupt in the same read
-  drops the interrupted end and every `AbortedMidStream` hint read before it.
-- **Across reads, and against a prompt's hook that beats its line to the file:** the interrupted
-  end and the Low hint carry the interrupt record's stamp (`RecoveryObservation::at`; the
-  result's for the look back). The daemon keeps when each seat's last `UserPromptSubmit` was heard
-  (`Daemon::prompted_at`, in memory), and `feed_recovery` drops a stamped observation older than
-  it.
-- An Esc with no prompt after it still ends `Interrupted`. A non-interrupted end is not fenced
-  this way: it moves to `Running`, which a new turn is.
-**Round 3 (the third read of `3fb3ec53`).** Round 2's stamp check had two gaps:
-- **The first read's seed lost its stamp.** `aborted_since` reduced a fresh cursor's dated abort
-  to a bare `AbortedMidStream`, so a seat whose next prompt was heard before the first read
-  (after a restart, or a rest) had its pending `Running` replaced by the unstamped Low
-  `Interrupted`, with no pin after a restart to refuse it. `aborted_since` now returns the
-  abort's stamp, and the seed's hint carries it, the resting history's abort included.
-- **The check compared the writer's receipt time with the engine's stamps.** `mesimon hook`
-  writes once and does not wait for the writer, so a busy writer hears a prompt after the dialog
-  and the Esc that followed it, and dropped that turn's own Esc. The hook frame carries no stamp
-  of its own, so the prompt's time is now its own transcript line (`tail::prompt_written_at`,
-  matched by `adopt::prompt_words` of the hook's `prompt`). The hearing (`Daemon::prompted`)
-  dates it only while that line is not written yet, which keeps the hook-before-its-line case
-  fenced.
+**Rounds 2 to 4: an Esc's end never ends a later turn.** The person Escs a plan and at once
+submits a new prompt. The `UserPromptSubmit` removes the projection and settles `Running` before
+the next tail read; that read finds the old result and its interrupt, and the guard (which checks
+only for another projected dialog) let the High `Interrupted` through against the new turn.
+Under the pin it committed where the old Low hint had been dropped.
 
-A drop is now a feed line, `tail_interrupt_before_prompt`. The limit: two identical prompts in a
-row, the second's line not yet written at the read, date the second by the first's line, and its
-turn's stale interrupt can pass.
+What was tried, and why each failed:
+- **Round 2 dated the prompt by the writer's receipt** and dropped an interrupt stamped before
+  it. `mesimon hook` writes once and does not wait for the writer, so a busy writer hears a
+  prompt after its own turn's dialog and Esc, and that Esc was dropped.
+- **Round 3 dated the prompt by its own transcript line, matched by its words.** Words identify a
+  text, not its occurrence: "go" twice, "continue" and a re-sent brief match an older line. A
+  representation the transcript writes differently (a slash command's markup) fell back to the
+  receipt for good.
+
+The rule now uses no clock and no text, only two facts the daemon holds: which dialog is
+projected, and the order in which the seat's hooks arrive. The engine fires a turn's
+`UserPromptSubmit` before that turn's tool calls, so a prompt heard after a dialog's projection
+belongs to a later turn.
+- **The rule.** An interrupted end read for call A applies only while no `UserPromptSubmit` has
+  been heard for the seat since A's dialog was projected. The daemon counts prompts per seat
+  (`Daemon::prompts_heard`), notes the count when it projects a dialog (`dialog_heard`, in
+  `control_observe_dialog`), and `feed_recovery` drops the end when the count has grown
+  (`spoken_since`). The Low `AbortedMidStream` read beside a dropped end goes with it. Each drop
+  is a feed line, `tail_interrupt_before_prompt`.
+- **After a restart** a dialog this daemon never projected counts from the daemon's start.
+- **In the read:** a person's prompt (`adopt::user_prompt`) after an interrupt in the same read
+  drops the interrupted end and every `AbortedMidStream` read before it.
+- **Unchanged:** an Esc with no prompt after it still ends `Interrupted`, live and after a
+  restart. A rejection with words fires no hook and is no prompt; its end moves to `Running`, and
+  no fence is involved.
+- **Removed:** the stamp plumbing (`RecoveryObservation::at`, the stamps on `aborted_since` and
+  `ClosedDialog`), `tail::prompt_written_at` and `adopt::prompt_words`. Transcript stamps are
+  still read where the look back needs them: `closed_dialog`'s spell fence and the seed's
+  `aborted_since(since)`.
 
 - `a_stop_heard_before_the_dialog_s_result_is_read_keeps_its_turn_end` failed eight tries in a
   row on round 2's runs with no fault in the code. A try lasts about 6.2 s, nearly three tail
@@ -34110,7 +34112,8 @@ turn's stale interrupt can pass.
   - an older result before the spell, the other tool's call last, and an undated result clear
     nothing;
   - an Esc and a prompt in one read give no end and no hint;
-  - an Esc alone gives an end and a hint that carry the interrupt's stamp.
+  - an Esc alone gives its call's end, then the hint beside it, in the order the daemon's fence
+    takes them.
 - Unit, `tail::a_dialog_s_call_and_its_own_result_are_read_by_id`, on the 2.1.310 record
   trimmed. T-363's restatement test now expects the end on its accepted plan.
 - Unit, `composer::startup_and_dialogs_are_not_a_composer` gained the question screen (2.1.287's
@@ -34149,15 +34152,22 @@ turn's stale interrupt can pass.
     3): a seat at rest stops on a plan, the person Escs and speaks, and the prompt is heard while
     the file ends at the old interrupt. The first read's seed and look back reach the machine
     neither High nor Low, and the turn stays `Running`, unpinned (a fresh seat each try), until
-    the feed shows the fence took it. It fails without the seed's stamp (`Interrupted`).
-  - `a_prompt_heard_late_keeps_its_own_turn_s_esc` (round 3): the prompt, the call, its result and
-    the interrupt are on the file before the prompt's and the plan's hooks are consumed; the
-    seat rests `Interrupted`. With the receipt time as the prompt's it stays on the plan.
+    the feed shows the fence took it. Without the hint's fence it ends `Interrupted`.
+  - `a_prompt_heard_late_keeps_its_own_turn_s_esc`: the prompt's and the plan's hooks are consumed
+    in the engine's order, and the lines the engine wrote meanwhile (stamped seconds back) are
+    read after. The seat rests `Interrupted`, with the hook's words repeated by its line and with
+    a slash command whose line is its markup.
+  - `a_repeated_prompt_heard_before_its_line_leaves_the_new_turn_running` (round 4): the prompt
+    repeats an earlier one's words, back to back or with another prompt between, and is heard
+    before its line after an Esc read live. Unpinned and pinned (asserted), the fence takes the
+    end (asserted from the feed) and the hint, and the turn stays `Running`. Without the hint's
+    fence it ends `Interrupted`.
   - `an_esc_then_a_prompt_at_once_leaves_the_new_turn_running`: an Esc then a prompt, unpinned
     and pinned (asserted), with the prompt's line in the interrupt's read and with its hook first
     and its line 2.5 s later. Each new turn reads `Running` past the settle and two tail reads,
     then an Esc alone rests `Idle{Interrupted}`. Without the daemon's fence the hook-first cases
-    end `Interrupted`, pinned and unpinned.
+    end `Interrupted`, pinned and unpinned; the fresh-cursor and repeated-prompt cases fail with
+    them.
 - `fake_claude_dialog.py` stamps the transcript rows it writes, as Claude Code does.
 
 **Not done (seen, not changed).**

@@ -47,10 +47,9 @@ pub(super) struct ClaudeRecovery {
     /// The held spell (`state_changed_at`) whose call was last looked for
     /// off the tail, for a cursor that came after the call.
     dialog_read: Option<Option<u64>>,
-    /// The dialog whose result is the last word the cursor read, and the
-    /// result's stamp: an interrupt read next is that dialog's Esc, in this
-    /// read or the next.
-    ended: Option<((TailTool, String), Option<u64>)>,
+    /// The dialog whose result is the last word the cursor read: an
+    /// interrupt read next is that dialog's Esc, in this read or the next.
+    ended: Option<(TailTool, String)>,
     /// The call the last departure was for, so a spell's first look back
     /// does not give it twice.
     departed: Option<String>,
@@ -98,7 +97,7 @@ pub(crate) fn failure_being_read(record: &SessionRecord, now: u64) -> bool {
 }
 
 fn observation(signal: Signal, source: &'static str) -> RecoveryObservation {
-    RecoveryObservation { signal, source, preview: None, dialog: None, at: None }
+    RecoveryObservation { signal, source, preview: None, dialog: None }
 }
 
 impl AgentRecovery for ClaudeRecovery {
@@ -311,7 +310,6 @@ impl ClaudeRecovery {
                     preview: text.as_deref().and_then(super::hooks::failure_detail),
                     source: "tail",
                     dialog: None,
-                    at: None,
                 })
                 .into_iter()
                 .collect();
@@ -331,9 +329,6 @@ impl ClaudeRecovery {
         // The restart's seed has one proof before the hint (T-663): the
         // turn the last daemon left open closed on the tail after it did.
         let mut closed = None;
-        // The stamp of the abort a seed reads, for the same fence a live
-        // read's abort meets (round 3).
-        let mut backfill_at = None;
         let backfill = if unknown && !self.rested {
             self.rested = true;
             if turn_closed_in_the_gap(record, &path) {
@@ -345,17 +340,14 @@ impl ClaudeRecovery {
                 // a restart seeded `Idle` here, and the crown was told the
                 // turn had finished. The record stays `Unknown` until a
                 // hook or the next line says.
-                let hint = resting_hint(&path, now)
-                    .filter(|h| *h != TailHint::StaleQuiet || !self.claude_busy(record, now));
-                if hint == Some(TailHint::AbortedMidStream) {
-                    backfill_at = tail::aborted_since(&path, 0);
-                }
-                hint
+                resting_hint(&path, now)
+                    .filter(|h| *h != TailHint::StaleQuiet || !self.claude_busy(record, now))
             }
         } else if fresh && abort_only {
-            backfill_at =
-                record.state_changed_at.and_then(|since| tail::aborted_since(&path, since));
-            backfill_at.map(|_| TailHint::AbortedMidStream)
+            record
+                .state_changed_at
+                .filter(|since| tail::aborted_since(&path, *since))
+                .map(|_| TailHint::AbortedMidStream)
         } else {
             None
         };
@@ -443,10 +435,8 @@ impl ClaudeRecovery {
         // dialog that stands again; an interrupt right after it is the Esc
         // that stopped the turn.
         let mut answered = None;
-        let mut aborted_at = backfill_at;
         for line in &lines {
             let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-            let stamp = mesimon_core::adopt::record_ms(&value);
             if let Some((tool, id)) = tail::dialog_call(&value) {
                 self.dialog = Some((tool, id.to_string()));
                 self.ended = None;
@@ -454,27 +444,23 @@ impl ClaudeRecovery {
             } else if let Some(call) =
                 self.dialog.take_if(|(_, id)| tail::carries_result_of(&value, id))
             {
-                self.ended = Some((call.clone(), stamp));
-                answered = Some((call, false, stamp));
+                self.ended = Some(call.clone());
+                answered = Some((call, false));
             } else if tail::speaks(&value) {
                 let ended = self.ended.take();
                 if classify_tail_record(&value) == TailEvent::Aborted {
-                    answered = ended.map(|(call, at)| (call, true, stamp.or(at)));
+                    answered = ended.map(|call| (call, true));
                 }
             }
             // A person's prompt after an interrupt in the same read is a newer
             // turn (round 2): the interrupt ended the one before it, and says
             // nothing of this one, at High or Low.
             if mesimon_core::adopt::user_prompt(&value).is_some() {
-                answered = answered.filter(|(_, interrupted, _)| !interrupted);
+                answered = answered.filter(|(_, interrupted)| !interrupted);
                 hints.retain(|(kind, _)| *kind != TailHint::AbortedMidStream);
-                aborted_at = None;
             }
             match classify_tail_record(&value) {
-                TailEvent::Aborted => {
-                    hints.push((TailHint::AbortedMidStream, None));
-                    aborted_at = stamp;
-                }
+                TailEvent::Aborted => hints.push((TailHint::AbortedMidStream, None)),
                 _ if abort_only => {}
                 TailEvent::AssistantText { text } => {
                     hints.push((TailHint::AssistantText, Some(crate::census::sanitize(&text))));
@@ -514,9 +500,9 @@ impl ClaudeRecovery {
                         .filter(|c| self.departed.as_deref() != Some(c.id.as_str()));
                     if let Some(c) = closed {
                         if c.last {
-                            self.ended = Some(((tool, c.id.clone()), c.at));
+                            self.ended = Some((tool, c.id.clone()));
                         }
-                        answered = Some(((tool, c.id), c.interrupted, c.at));
+                        answered = Some(((tool, c.id), c.interrupted));
                     }
                 }
                 None => {}
@@ -525,20 +511,19 @@ impl ClaudeRecovery {
         // The departure, given where no road sends the refusal road's frame.
         // An interrupt read a poll after the result finds the record on the
         // `Running` the departure left it for. The daemon drops it while
-        // another dialog is projected for the seat, and an interrupt older
-        // than the seat's last prompt (`at`).
+        // another dialog is projected for the seat, and an interrupted one
+        // once the seat has spoken again since the dialog was projected.
         let left = answered
-            .filter(|((tool, _), interrupted, _)| {
+            .filter(|((tool, _), interrupted)| {
                 held == Some(*tool) || (*interrupted && record.state == SessionState::Running)
             })
-            .map(|((_, id), interrupted, at)| {
+            .map(|((_, id), interrupted)| {
                 self.departed = Some(id.clone());
                 RecoveryObservation {
                     signal: Signal::DialogEnded { interrupted },
                     preview: None,
                     source: "dialog_result",
                     dialog: Some(id),
-                    at: at.filter(|_| interrupted),
                 }
             });
         if !abort_only
@@ -559,7 +544,6 @@ impl ClaudeRecovery {
                 preview,
                 source: "tail",
                 dialog: None,
-                at: aborted_at.filter(|_| kind == TailHint::AbortedMidStream),
             }))
             .collect()
     }
@@ -1127,8 +1111,9 @@ mod recovery_tests {
             )),
             "{seen:?}"
         );
-        // Without a prompt after it, the Esc's end and its hint carry the
-        // interrupt's stamp, for the daemon to hold against a later prompt.
+        // Without a prompt after it, the Esc's end names its call, and the
+        // Low hint read beside it comes after it: the daemon fences both on
+        // the prompts heard since that call's dialog was projected.
         history.append(call("plan12", "ExitPlanMode"));
         record.state = plan.clone();
         assert!(stays(&recovery.poll(&record, RecoverySample::Transcript, 11_950)));
@@ -1137,7 +1122,13 @@ mod recovery_tests {
         history.append(stamped);
         let seen = recovery.poll(&record, RecoverySample::Transcript, 11_960);
         assert!(ended(&seen, "plan12", true), "{seen:?}");
-        assert!(seen.iter().all(|o| o.at == Some(ms(13))), "{seen:?}");
+        assert!(matches!(
+            seen[1..],
+            [RecoveryObservation {
+                signal: Signal::TranscriptHint { kind: TailHint::AbortedMidStream },
+                ..
+            }]
+        ));
 
         // Another dialog's result says nothing about the one held.
         history.append(call("q2", "AskUserQuestion"));
@@ -1176,9 +1167,16 @@ mod recovery_tests {
             let mut recovery = fresh(&mut record, &history, 10);
             let seen = recovery.poll(&record, RecoverySample::Transcript, 20_000);
             assert!(ended(&seen, "plan7", esc), "{seen:?}");
-            // Round 3: the first read's Esc, its end and the abort hint it
-            // seeds, carry their stamps for the daemon's prompt fence.
-            assert!(!esc || seen.iter().all(|o| o.at.is_some()), "{seen:?}");
+            // The first read's Esc: its end first, the abort hint it seeds
+            // beside it after, for the daemon's fence to take together.
+            assert_eq!(
+                seen[1..].iter().any(|o| matches!(
+                    o.signal,
+                    Signal::TranscriptHint { kind: TailHint::AbortedMidStream }
+                )),
+                esc,
+                "{seen:?}"
+            );
             assert!(stays(&recovery.poll(&record, RecoverySample::Transcript, 22_000)), "once");
             if !esc {
                 // The interrupt after it, a read later, is still its Esc.
@@ -1348,8 +1346,7 @@ mod recovery_tests {
                     signal: Signal::TranscriptTurnEnded,
                     source: "tail",
                     preview: None,
-                    dialog: None,
-                    at: None
+                    dialog: None
                 }]
             ),
             "{seeded:?}"

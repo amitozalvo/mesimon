@@ -1213,6 +1213,10 @@ impl Daemon {
                 super::crownwake::stop_cause(self.board.crown_mode, s.kind, &s.state)
                     .map(|cause| (s.ticket, cause))
             });
+        // The prompts heard when it was projected (T-957 round 4): an Esc
+        // read for it after another is heard ended an earlier turn.
+        let heard = self.prompts_heard.get(&id).copied().unwrap_or(0);
+        self.dialog_heard.insert(id, (request.clone(), heard));
         self.control.dialogs.insert(id, api::Dialog { request, content });
         self.control_changed();
         if let Some((ticket, cause)) = restop {

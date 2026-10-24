@@ -1002,13 +1002,14 @@ pub struct Daemon {
     /// and gone at the next state edge (`apply_change`). In memory: a
     /// restart's first edge would clear it anyway.
     crown_answer_lines: HashMap<uuid::Uuid, String>,
-    /// Each seat's last `UserPromptSubmit` (T-957 round 2): its words and
-    /// when the writer heard it. An interrupt the tail reads that is older
-    /// than the prompt ended an earlier turn and is dropped; the prompt's
-    /// time is its own transcript line's (round 3), the hearing only while
-    /// that line is not written yet. In memory: a prompt already written is
-    /// a fence without it.
-    prompted: HashMap<uuid::Uuid, (Option<String>, u64)>,
+    /// How many `UserPromptSubmit`s each seat's hooks have brought this
+    /// daemon life (T-957 round 4), and the count its last projected dialog
+    /// was made at, by the dialog's request (`dialog_heard`). The engine
+    /// fires a turn's prompt before that turn's tool calls, so a prompt
+    /// heard after a dialog's projection is a later turn's, and an Esc the
+    /// tail reads for that dialog ended an earlier one.
+    prompts_heard: HashMap<uuid::Uuid, u64>,
+    dialog_heard: HashMap<uuid::Uuid, (String, u64)>,
     /// The machine's agent tiers (T-443), `tiers.toml` as last read — the
     /// layer under `board.tiers`, re-read when another board changes it.
     machine_tiers: tiers::MachineTierCache,
@@ -1553,7 +1554,8 @@ pub fn run(paths: Paths) -> Result<()> {
         crown_plans: HashMap::new(),
         plan_waits: None,
         crown_answer_lines: HashMap::new(),
-        prompted: HashMap::new(),
+        prompts_heard: HashMap::new(),
+        dialog_heard: HashMap::new(),
         machine_tiers: tiers::MachineTierCache::new(crate::paths::machine_tiers_file().ok()),
         usage: crate::usage::UsageState::new(crate::usage::shared_file()),
         tier_set_at: HashMap::new(),
@@ -3650,24 +3652,18 @@ impl Daemon {
         changed
     }
 
-    /// Whether the seat's last prompt came after `at`, a transcript stamp
-    /// (T-957 rounds 2 and 3). The prompt's time is its own line's, never
-    /// when the writer heard its hook: `mesimon hook` does not wait for the
-    /// writer, so a busy writer hears a prompt late, after the dialog and
-    /// the Esc that followed it. Only a prompt whose line is not written yet
-    /// is dated by its hearing, which is then after every line on the file.
-    fn prompted_after(&self, id: uuid::Uuid, at: u64) -> bool {
-        let Some((words, heard)) = self.prompted.get(&id) else { return false };
-        let path = self
-            .board
-            .sessions
-            .iter()
-            .find(|s| s.id == id)
-            .and_then(|s| s.transcript_path.as_deref());
-        let written = words.as_deref().zip(path).and_then(|(words, path)| {
-            crate::agents::claude::tail::prompt_written_at(std::path::Path::new(path), words)
-        });
-        written.unwrap_or(*heard) > at
+    /// Whether the seat has spoken since `call`'s dialog was projected: a
+    /// `UserPromptSubmit` heard after it (T-957 round 4). Hook order alone
+    /// decides it, never a clock or a prompt's words. A dialog this daemon
+    /// never projected (a record a restart found held on it) counts from
+    /// the daemon's start.
+    fn spoken_since(&self, id: uuid::Uuid, call: &str) -> bool {
+        let heard = self.prompts_heard.get(&id).copied().unwrap_or(0);
+        let projected = match self.dialog_heard.get(&id) {
+            Some((request, at)) if request == call => *at,
+            _ => 0,
+        };
+        heard > projected
     }
 
     /// One sample into a record's recovery adapter, and each observation it
@@ -3679,6 +3675,9 @@ impl Daemon {
         let Some(recovery) = self.recovery.get_mut(&id) else { return false };
         let observations = recovery.poll(record, sample, now);
         let mut changed = false;
+        // An interrupted end fenced off, and the Low abort hint read beside
+        // it with it.
+        let mut fenced = false;
         for observation in observations {
             let principal = Principal::Automation { rule: "agent_recovery".into() };
             if matches!(
@@ -3697,10 +3696,20 @@ impl Daemon {
             {
                 continue;
             }
-            // An interrupt older than the seat's last prompt ended the turn
-            // before it (round 2): the person Esc'd and spoke again at once,
-            // and the prompt's hook beat the tail's read.
-            if observation.at.is_some_and(|at| self.prompted_after(id, at)) {
+            // An Esc read for a dialog the seat has spoken since ended the
+            // turn before that prompt (rounds 2 to 4): the person Esc'd and
+            // spoke again at once, and the prompt's hook beat the tail's read.
+            let stale = match (&observation.signal, observation.dialog.as_deref()) {
+                (Signal::DialogEnded { interrupted: true }, Some(call)) => {
+                    self.spoken_since(id, call)
+                }
+                (Signal::TranscriptHint { kind: attention::TailHint::AbortedMidStream }, _) => {
+                    fenced
+                }
+                _ => false,
+            };
+            if stale {
+                fenced = true;
                 let ticket = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket);
                 self.feed.board("automation", "tail_interrupt_before_prompt", ticket);
                 continue;
@@ -5194,9 +5203,9 @@ impl Daemon {
             }
             if matches!(sig, Signal::UserPromptSubmit) {
                 let board = &self.board;
-                self.prompted.retain(|s, _| board.sessions.iter().any(|r| r.id == *s));
-                let words = frame.payload["prompt"].as_str().map(mesimon_core::adopt::prompt_words);
-                self.prompted.insert(id, (words, now));
+                self.prompts_heard.retain(|s, _| board.sessions.iter().any(|r| r.id == *s));
+                self.dialog_heard.retain(|s, _| board.sessions.iter().any(|r| r.id == *s));
+                *self.prompts_heard.entry(id).or_default() += 1;
                 if let Some(t) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket) {
                     self.moves.asked_by_hand(t);
                     // Our own paste's ack — the owed Enter paid, by us or by

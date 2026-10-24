@@ -239,12 +239,10 @@ pub struct RecoveryObservation {
     pub source: &'static str,
     /// The dialog call a departure ends (T-957): the `tool_use` id whose
     /// result the transcript wrote. The daemon applies the departure only
-    /// while no other dialog stands projected for the seat.
+    /// while no other dialog stands projected for the seat, and an
+    /// interrupted one only while the seat has not spoken since that
+    /// dialog was projected.
     pub dialog: Option<String>,
-    /// The transcript stamp of the interrupt an observation reads (T-957
-    /// round 2): the daemon drops it when a prompt reached the seat after
-    /// it, since that interrupt ended an earlier turn.
-    pub at: Option<u64>,
 }
 
 /// Provider-private transient state. No method may mutate board state; the

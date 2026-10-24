@@ -100,33 +100,18 @@ pub fn turn_done_since(path: &Path, since: u64) -> bool {
 
 /// Recover only a recent explicit cancellation when a cursor is first minted.
 /// A newer user/assistant turn record stops the search; old aborts cannot cancel
-/// a new turn just because they remain in the bounded history window. The
-/// abort's stamp, at or after `since`, travels with the hint it seeds, so a
-/// prompt heard after it fences it as a live read's is (T-957 round 3).
-pub fn aborted_since(path: &Path, since: u64) -> Option<u64> {
-    for record in tail_records(path)? {
+/// a new turn just because they remain in the bounded history window.
+pub fn aborted_since(path: &Path, since: u64) -> bool {
+    let Some(records) = tail_records(path) else { return false };
+    for record in records {
         if classify_tail_record(&record) == TailEvent::Aborted {
-            return mesimon_core::adopt::record_ms(&record).filter(|at| *at >= since);
+            return mesimon_core::adopt::record_ms(&record).is_some_and(|at| at >= since);
         }
         if !matches!(turn_edge(&record), TurnEdge::Unsaid) {
-            return None;
+            return false;
         }
     }
-    None
-}
-
-/// When the person's prompt `words` (`adopt::prompt_words` of the hook's
-/// `prompt`) was written to the transcript: the newest record whose
-/// `adopt::user_prompt` reads the same, as far back as `prompted_since`
-/// reads (T-957 round 3). `None` when no such line is there yet, the
-/// prompt's hook having beaten its line to the file.
-pub fn prompt_written_at(path: &Path, words: &str) -> Option<u64> {
-    let len = std::fs::metadata(path).ok()?.len();
-    let text = window_text(path, len, PROMPT_WINDOW)?;
-    let end = text.len();
-    (TailRecords { text, end })
-        .find(|v| mesimon_core::adopt::user_prompt(v).as_deref() == Some(words))
-        .and_then(|v| record_ms(&v))
+    false
 }
 
 /// Did a person's prompt (`adopt::user_prompt`: a typed or pasted prompt, a
@@ -249,8 +234,6 @@ pub struct ClosedDialog {
     pub interrupted: bool,
     /// The result is the last word on the tail.
     pub last: bool,
-    /// The result's stamp.
-    pub at: Option<u64>,
 }
 
 /// The last plan or question call on the tail, when it is `tool`'s and its
@@ -277,11 +260,10 @@ pub fn closed_dialog(path: &Path, tool: TailTool, since: u64) -> Option<ClosedDi
                 return None;
             }
             let (_, at, after) = results.into_iter().find(|(r, _, _)| r == id)?;
-            return at.filter(|at| *at >= since).map(|at| ClosedDialog {
+            return at.filter(|at| *at >= since).map(|_| ClosedDialog {
                 id: id.to_string(),
                 interrupted: after == Some(true),
                 last: after.is_none(),
-                at: Some(at),
             });
         }
         if mesimon_core::adopt::user_prompt(&v).is_some() {
@@ -526,17 +508,17 @@ mod tests {
             "message":{"content":"[Request interrupted by user]"}});
         let stamp = mesimon_core::adopt::record_ms(&record).unwrap();
         std::fs::write(&path, format!("{record}\n")).unwrap();
-        assert_eq!(aborted_since(&path, stamp - 1), Some(stamp));
-        assert_eq!(aborted_since(&path, stamp + 1), None);
+        assert!(aborted_since(&path, stamp - 1));
+        assert!(!aborted_since(&path, stamp + 1));
         let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
         writeln!(
             file,
             "{{\"uuid\":\"new\",\"type\":\"user\",\"message\":{{\"content\":\"next prompt\"}}}}"
         )
         .unwrap();
-        assert_eq!(aborted_since(&path, stamp - 1), None);
+        assert!(!aborted_since(&path, stamp - 1));
         std::fs::write(&path, "{\"uuid\":\"abort\",\"type\":\"user\",\"message\":{\"content\":\"[Request interrupted by user]\"}}\n").unwrap();
-        assert_eq!(aborted_since(&path, 0), None, "undated history is not fresh evidence");
+        assert!(!aborted_since(&path, 0), "undated history is not fresh evidence");
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
@@ -885,31 +867,5 @@ mod tests {
         assert!(dialog_call(&call("Write")).is_none());
         // A tool's call is not its result.
         assert!(!carries_result_of(&call("ExitPlanMode"), "toolu_1"));
-    }
-
-    /// T-957 round 3: a prompt's own line dates it, newest first, read as
-    /// `user_prompt` reads it; none while its line is not written yet.
-    #[test]
-    fn a_prompt_is_dated_by_its_own_line() {
-        let path = tmp("prompt-written");
-        let prompt = |uuid: &str, at: &str, text: &str| {
-            serde_json::json!({"uuid": uuid, "type": "user", "timestamp": at,
-                "message": {"content": text}})
-        };
-        let lines = [
-            prompt("a", "2026-10-24T16:10:01.000Z", "go"),
-            prompt("b", "2026-10-24T16:10:05.000Z", "Do it another way."),
-            prompt("c", "2026-10-24T16:10:09.000Z", "go"),
-        ];
-        let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
-        std::fs::write(&path, text).unwrap();
-        let ms = |at: &str| mesimon_core::adopt::iso_ms(at);
-        assert_eq!(prompt_written_at(&path, "go"), ms("2026-10-24T16:10:09.000Z"));
-        assert_eq!(
-            prompt_written_at(&path, &mesimon_core::adopt::prompt_words("  Do it another way.\n")),
-            ms("2026-10-24T16:10:05.000Z")
-        );
-        assert_eq!(prompt_written_at(&path, "not yet written"), None);
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

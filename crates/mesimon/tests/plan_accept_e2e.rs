@@ -1019,46 +1019,121 @@ fn an_esc_and_a_prompt_before_a_fresh_cursor_s_first_read_leave_the_new_turn_run
     assert!(met, "no first read met the heard prompt in eight tries");
 }
 
-/// T-957 round 3: a prompt heard late is still dated by its own line. The
-/// writer was busy: the prompt, the plan's call, its result and the Esc's
-/// interrupt are on the file (stamped seconds ago) before the prompt's and
-/// the plan's hooks are consumed, and no prompt comes after. The Esc is
-/// this turn's: the seat rests interrupted, never held on the plan.
+/// T-957 rounds 3 and 4: a prompt heard late keeps its own turn's Esc. The
+/// writer was busy: the prompt's and the plan's hooks are consumed in the
+/// engine's order, and the lines the engine wrote meanwhile (the prompt,
+/// the plan's call, its result and the Esc's interrupt) are read after. No
+/// prompt comes after them, so the Esc is this turn's and the seat rests
+/// interrupted. No clock and no words decide it: the case holds with the
+/// prompt's line stamped seconds back, and with a hook whose words the
+/// transcript line does not repeat (a slash command's markup).
 #[test]
 fn a_prompt_heard_late_keeps_its_own_turn_s_esc() {
-    let Some(mut b) = Bed::boot("planlate") else { return };
-    b.start();
-    // A tail read while running mints the cursor these lines are read by.
-    std::thread::sleep(Duration::from_millis(2500));
-    b.hook("UserPromptSubmit", r#"{"prompt":"Plan it."}"#);
-    b.stop_on("ExitPlanMode", "toolu_late");
-    let line = |v: serde_json::Value, ago: u64| {
-        let mut v = v;
-        v["timestamp"] = serde_json::json!(iso_ago(ago));
-        b.append(v);
-    };
-    line(
-        serde_json::json!({"uuid": "late-p", "type": "user", "message": {"content": "Plan it."}}),
-        3000,
-    );
-    line(
-        serde_json::json!({"uuid": "late-c", "type": "assistant", "message": {"content": [
-        {"type": "tool_use", "id": "toolu_late", "name": "ExitPlanMode",
-            "input": {"plan": "# Plan"}}]}}),
-        2900,
-    );
-    line(
-        serde_json::json!({"uuid": "late-r", "type": "user", "message": {"content": [
-        {"type": "tool_result", "tool_use_id": "toolu_late", "is_error": true,
-            "content": "The user doesn't want to proceed with this tool use. STOP what you are doing."}]}}),
-        2800,
-    );
-    line(
-        serde_json::json!({"uuid": "late-a", "type": "user", "message": {"content": [
-        {"type": "text", "text": "[Request interrupted by user for tool use]"}]}}),
-        2790,
-    );
-    b.c.await_state(b.sid, "interrupted by its own turn's Esc", |s| {
-        *s == SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Interrupted }
-    });
+    for (n, (heard, written)) in [
+        ("Plan it.", "Plan it."),
+        ("/plan it", "<command-name>/plan</command-name>\n<command-args>it</command-args>"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let Some(mut b) = Bed::boot(&format!("planlate{n}")) else { return };
+        b.start();
+        // A tail read while running mints the cursor these lines are read by.
+        std::thread::sleep(Duration::from_millis(2500));
+        b.hook("UserPromptSubmit", &serde_json::json!({ "prompt": heard }).to_string());
+        b.stop_on("ExitPlanMode", "toolu_late");
+        let line = |v: serde_json::Value, ago: u64| {
+            let mut v = v;
+            v["timestamp"] = serde_json::json!(iso_ago(ago));
+            b.append(v);
+        };
+        line(
+            serde_json::json!({"uuid": "late-p", "type": "user", "message": {"content": written}}),
+            3000,
+        );
+        line(
+            serde_json::json!({"uuid": "late-c", "type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_late", "name": "ExitPlanMode",
+                "input": {"plan": "# Plan"}}]}}),
+            2900,
+        );
+        line(
+            serde_json::json!({"uuid": "late-r", "type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "toolu_late", "is_error": true,
+                "content": "The user doesn't want to proceed with this tool use. STOP what you are doing."}]}}),
+            2800,
+        );
+        line(
+            serde_json::json!({"uuid": "late-a", "type": "user", "message": {"content": [
+            {"type": "text", "text": "[Request interrupted by user for tool use]"}]}}),
+            2790,
+        );
+        b.c.await_state(b.sid, "interrupted by its own turn's Esc", |s| {
+            *s == SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Interrupted }
+        });
+    }
+}
+
+/// T-957 round 4: repeated words. The person's prompt repeats an earlier
+/// one's words, back to back or with another prompt between, and after an
+/// Esc on a plan its hook is heard before its line lands. Words identify a
+/// text, not its occurrence: the hearing's order alone says the prompt came
+/// after the plan, so neither the plan's interrupted end nor the Low hint
+/// beside it reaches the machine, and the new turn stays `Running`, unpinned
+/// and pinned.
+#[test]
+fn a_repeated_prompt_heard_before_its_line_leaves_the_new_turn_running() {
+    const STOP: &str =
+        "The user doesn't want to proceed with this tool use. STOP what you are doing.";
+    for (pinned, between) in [(false, false), (false, true), (true, false), (true, true)] {
+        let name = format!("planrepeat_{}_{}", u8::from(pinned), u8::from(between));
+        let Some(mut b) = Bed::boot(&name) else { return };
+        // The first "go": its line (the bed's first) and its hook.
+        b.start();
+        if between {
+            b.append(serde_json::json!({"uuid": "other", "type": "user", "timestamp": now_iso(),
+                "message": {"content": "something else"}}));
+            b.hook("UserPromptSubmit", r#"{"prompt":"something else"}"#);
+        }
+        if pinned {
+            // More than four committed changes in 20 s arm the pin.
+            for _ in 0..3 {
+                b.hook("Stop", r#"{"stop_hook_active":false}"#);
+                b.c.await_state(b.sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+                b.prompt();
+            }
+        }
+        // A tail read while running mints the cursor, so the Esc is read
+        // live: its end and the Low hint beside it, both for the fence.
+        std::thread::sleep(Duration::from_millis(2500));
+        b.call("ExitPlanMode", "toolu_r");
+        b.stop_on("ExitPlanMode", "toolu_r");
+        b.result("toolu_r", true, STOP);
+        b.append(serde_json::json!({"uuid": "abort-r", "type": "user", "timestamp": now_iso(),
+            "message": {"content": [{"type": "text",
+                "text": "[Request interrupted by user for tool use]"}]}}));
+        // "go" again: its hook first, its line 2.5 s later.
+        b.hook("UserPromptSubmit", r#"{"prompt":"go"}"#);
+        std::thread::sleep(Duration::from_millis(2500));
+        b.append(serde_json::json!({"uuid": "go-again", "type": "user", "timestamp": now_iso(),
+            "message": {"content": "go"}}));
+        std::thread::sleep(Duration::from_millis(2500));
+        let armed = b.decisions().into_iter().rev().find(|d| d["source"] == "PreToolUse");
+        let armed = armed.is_some_and(|d| {
+            d["decision"]["after"]["pinned_until"]
+                .as_u64()
+                .is_some_and(|until| until > d["at_ms"].as_u64().unwrap())
+        });
+        assert_eq!(armed, pinned, "the pin as this case wants it");
+        let fenced = std::fs::read_to_string(b.h.paths.state_dir.join("activity.jsonl"))
+            .unwrap_or_default()
+            .contains("\"cmd\":\"tail_interrupt_before_prompt\"");
+        assert!(fenced, "the fence took the old Esc");
+        assert_eq!(
+            b.state(),
+            Some(SessionState::Running),
+            "the new turn (pinned: {pinned}, a prompt between: {between}): {:?}",
+            b.decisions().iter().rev().take(4).collect::<Vec<_>>()
+        );
+    }
 }

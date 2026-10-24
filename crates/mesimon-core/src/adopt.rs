@@ -452,12 +452,6 @@ pub fn user_prompt(v: &Value) -> Option<String> {
     Some(unwrap_pasted(text))
 }
 
-/// A hook's `prompt` as `user_prompt` reads the same words off the
-/// transcript: trimmed, the paste wrapper's tag lines gone (T-957 round 3).
-pub fn prompt_words(raw: &str) -> String {
-    unwrap_pasted(raw.trim())
-}
-
 /// `text` without the `<pasted_content id=…>` and `</pasted_content>` lines
 /// Claude Code wraps a pasted block in (2.1.287, T-588), and without the
 /// blank lines it leaves under the opening one. The tags are the harness's,
