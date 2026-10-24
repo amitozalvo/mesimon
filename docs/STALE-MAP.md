@@ -34094,6 +34094,14 @@ belongs to a later turn.
     names the interrupt right after A's result the same way (`ClosedDialog::interrupt`), and the
     line hints keep their record. Only the hint of that interrupt goes, the seed's or a line's.
     A second abort, back to back or past a reply, stays its own hint. No clock or text is read.
+- **Every copy of the interrupt (round 7).** The cursor does not deduplicate records: a replay,
+  a rotation, or a seed beside a line can present the same interrupt record twice. Round 6
+  removed the first match only, so `result A → X → X` left one Low X, which with plan B
+  projected settled B to `Interrupted`. The live read had the same hole, since a replayed X
+  after the attributed one is a new, unattributed abort. Each hint now carries its abort's
+  record `uuid`. The interrupts tied to a dialog's end, by the live read on an owned seat or by
+  the look back, are collected, and `without_interrupts` `retain`s away every hint of theirs.
+  The seed and index bookkeeping is gone; a different abort keeps its hint.
 - **After a restart** a dialog this daemon never projected counts from the daemon's start.
 - **In the read:** a person's prompt (`adopt::user_prompt`) after an interrupt in the same read
   drops the interrupted end and every `AbortedMidStream` read before it.
@@ -34145,6 +34153,11 @@ belongs to a later turn.
 
   It fails with the skip ungated (the adopted case) and with the old removal of every abort
   hint (the first-read case).
+- Unit, `recovery::an_interrupt_s_every_copy_goes_with_its_end` (round 7): X presented twice
+  after A's result, on the look back (a cursor minted after A's call) and on the live read,
+  with and without an unrelated Y. It gives A's end, no Low X, and Y's hint when Y is there.
+  The removal itself is also tested with a seed X, two lines' X, a Y and a non-abort hint. It
+  fails with the removal skipped.
 - Unit, `tail::a_dialog_s_call_and_its_own_result_are_read_by_id`, on the 2.1.310 record
   trimmed. T-363's restatement test now expects the end on its accepted plan.
 - Unit, `composer::startup_and_dialogs_are_not_a_composer` gained the question screen (2.1.287's
@@ -34198,7 +34211,8 @@ belongs to a later turn.
     submits, and B (a plan, or a question) is heard before the tail reads A's end, B's line
     later. Unpinned (asserted), past the settle and two reads, the seat is still on B and
     `get_ticket` reads B's `needs_you` and request. With the Low hint left beside A's end both
-    cases end `Interrupted`.
+    cases end `Interrupted`. Round 7 runs both again with A's interrupt record appended twice;
+    with the removal skipped, the replayed plan case ends `Interrupted`.
   - `an_esc_then_a_prompt_at_once_leaves_the_new_turn_running`: an Esc then a prompt, unpinned
     and pinned (asserted), with the prompt's line in the interrupt's read and with its hook first
     and its line 2.5 s later. Each new turn reads `Running` past the settle and two tail reads,

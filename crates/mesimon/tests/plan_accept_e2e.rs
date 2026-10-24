@@ -1145,15 +1145,21 @@ fn a_repeated_prompt_heard_before_its_line_leaves_the_new_turn_running() {
 /// machine: its High end is dropped (B is projected; or, for a question, the
 /// held tool is no longer A's), and no Low hint is left beside it to settle
 /// B. Past the settle and two reads, the seat is still on B, and its ticket
-/// still needs the person with B's request. The pin is off.
+/// still needs the person with B's request. The pin is off. Round 7: the
+/// same with A's interrupt record presented twice, no copy of it left.
 #[test]
 fn an_old_plan_s_esc_leaves_a_newer_dialog_standing() {
     const STOP: &str =
         "The user doesn't want to proceed with this tool use. STOP what you are doing.";
-    for (n, (tool, reason, word)) in
-        [("ExitPlanMode", Reason::Plan, "plan"), ("AskUserQuestion", Reason::Question, "question")]
-            .into_iter()
-            .enumerate()
+    // Round 7: and with A's interrupt record presented twice (a replay).
+    for (n, (tool, reason, word, replayed)) in [
+        ("ExitPlanMode", Reason::Plan, "plan", false),
+        ("AskUserQuestion", Reason::Question, "question", false),
+        ("ExitPlanMode", Reason::Plan, "plan", true),
+        ("AskUserQuestion", Reason::Question, "question", true),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let Some(mut b) = Bed::boot(&format!("plannewer{n}")) else { return };
         b.start();
@@ -1162,9 +1168,13 @@ fn an_old_plan_s_esc_leaves_a_newer_dialog_standing() {
         b.call("ExitPlanMode", "toolu_a");
         b.stop_on("ExitPlanMode", "toolu_a");
         b.result("toolu_a", true, STOP);
-        b.append(serde_json::json!({"uuid": "abort-a", "type": "user", "timestamp": now_iso(),
-            "message": {"content": [{"type": "text",
-                "text": "[Request interrupted by user for tool use]"}]}}));
+        let interrupt = serde_json::json!({"uuid": "abort-a", "type": "user",
+            "timestamp": now_iso(), "message": {"content": [{"type": "text",
+                "text": "[Request interrupted by user for tool use]"}]}});
+        b.append(interrupt.clone());
+        if replayed {
+            b.append(interrupt);
+        }
         // The new prompt and B, heard before the tail reads A's end.
         b.hook("UserPromptSubmit", r#"{"prompt":"Plan it again."}"#);
         b.stop_on(tool, "toolu_b");
@@ -1178,11 +1188,11 @@ fn an_old_plan_s_esc_leaves_a_newer_dialog_standing() {
                 .as_u64()
                 .is_some_and(|until| until > d["at_ms"].as_u64().unwrap())
         });
-        assert!(!pinned, "the pin is off ({word})");
+        assert!(!pinned, "the pin is off ({word}, replayed: {replayed})");
         assert_eq!(
             b.state(),
             Some(SessionState::RequiresAction { reason }),
-            "still on B ({word}): {:?}",
+            "still on B ({word}, replayed: {replayed}): {:?}",
             b.decisions().iter().rev().take(4).collect::<Vec<_>>()
         );
         let needs = match b
