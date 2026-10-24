@@ -33829,22 +33829,23 @@ keys go into, never the board's or the crown's.
   in the box the mod filled, and a crown ask reads `unknown` with that reason. The board cannot
   read what becomes of words a person may send.
 - **The paste road** (`paste_at`). The guard goes after the mod's fill and submit branches, which
-  type nothing, and before `paste_input`/`paste_text`. A person there gets an `Err` saying the
+  type nothing, and before `paste_input`/`paste_text`. It skips the crown's wake
+  (`Ack::CROWN_WAKE`), which goes on its own coherent sample of the pane's clients and box (T-918,
+  T-936, T-945's bound). A person there gets an `Err` saying the
   words were not sent, and the feed gets `prompt_not_sent`/`a_person_attached`. Every direct
   caller hands that error back as it handles any paste error: a person's send, a phone's steer,
   a note's nudge, a merge ask.
-- **Queued words stay queued.** `drain_queue` and `send_queued_ask` remove an ask before they
-  paste it, so a refusal inside `paste_at` would lose a person's queued words. The queue
-  therefore asks first (`typed_under_a_person`: a Claude pane whose words take keys, not the
-  mod's `submit` and not a relaunch):
-  - `queued_target_ready` reads it off the pane sample (`attached`), so the tick forks nothing
-    (T-857).
-  - `drain_queue` reads it fresh before an entry leaves the queue, which catches a person who
-    attached since the sample.
-  - `send_queued_ask` reads it fresh beside its dialog arm (`ANSWER_IN_PANE_FIRST`, the same
-    shape). It refuses with "the words stay queued" and writes `queued_ask_kept`. The crown's
-    `deliver: now|immediately` ask then reads `queued`, and goes once the pane is free and its
-    agent takes words.
+- **Queued words stay queued.** The drain, the explicit send (`send_queued_ask`) and the send
+  after a plan (`send_after_accept`) take an entry off the queue and dispatch it. `paste_at`'s
+  refusal sets `refused_for_person` to the session, before any key. The dequeue road reads it
+  (`took_person_refusal`) and puts the entry back as it was (`queue_kept`), which writes
+  `queued_ask_kept`/`a_person_attached`. The crown's record still reads `queued`, the explicit
+  send answers "the words stay queued", and the send after a plan spends its one-shot so the
+  drain sends the words at the agent's idle. `deliver_queued_ask` skips `control_cancel` on that
+  refusal, so a phone's receipt waits with the entry. A real or partial dispatch failure is
+  unchanged (`queued_ask_failed`, the crown's `unknown`), never restored or retried. The one
+  fresh read is `paste_at`'s. `queued_target_ready` holds such words off the pane sample alone
+  (`typed_under_a_person`), so the tick forks nothing (T-857).
 - Nothing changes where no client is attached. No timer, no retry, and no card word was added.
 
 **Tests.**
@@ -33860,13 +33861,39 @@ keys go into, never the board's or the crown's.
     crown's `immediately` ask is refused and kept (`queued_ask_kept`, `queued`). At W's idle with
     the person still there nothing lands. With the person gone the words land and the ask reads
     `sent`.
-- With `person_at_pane` stubbed to `false`, all three cases fail.
+  - Hook road, round 1: a person opening the pane just before the idle that drains an ask
+    (whichever of the sample or the paste's guard reads it first) leaves it queued, and it goes
+    once after the person leaves.
+- Round 1, `crown_e2e::a_submit_only_mod_s_immediately_ask_is_kept_under_a_person` (mod road): a
+  mod that speaks `submit` and not `fill` takes `immediately` by paste. Under a person the ask is
+  refused and kept, nothing is typed or framed, and after the person leaves the drain sends it
+  once by `submit`.
+- Round 1, `plan_accept_e2e::words_riding_an_approval_wait_for_a_person_to_leave` (hook road): the
+  approval is confirmed with a person in the pane, the words are kept as an ordinary ask with no
+  `queued_ask_failed`, nothing goes at the idle while the person stays, and the words go once
+  after they leave.
+- T-945's four crown-wake e2es pass on the combined code. Before round 1,
+  `an_attached_client_holds_the_crown_wake_only_while_active` failed: its released wake was
+  refused by the paste's guard.
+- With `person_at_pane` stubbed to `false`, round 0's three cases fail. With
+  `took_person_refusal` stubbed to `false`, round 1's two queue tests fail.
+
+**Round 1 (the independent delivery read).**
+1. The paste's guard also ran for the crown's wake. A refusal there reads as a failed delivery
+   (`crown_wake_failed_on`) and holds the wake until the crown's seat changes state, which
+   detaching does not do. It also refused T-945's release past an idle client. Crown wakes now
+   keep their own policy. No test stages a client arriving between the wake's sample and its
+   paste, because both happen in one writer turn; with the exemption no presence refusal can
+   reach `crown_wake_failed_on`.
+2. Three dequeue roads removed the entry before the guard could refuse it: a submit-only mod's
+   `immediately`, the send after a plan, and the drain's fresh precheck racing `paste_at`'s own
+   read. Removal now follows the dispatch's answer, and the prechecks are gone, which leaves one
+   `has_clients` per paste.
 
 **Not done (seen, not changed).**
 - A Codex pane's parked words (`drive_codex_inputs`) and steer (`codex_steer`) have no such guard.
 - A plan or tier relaunch of an attached pane is not held either.
-- Words that take `paste_at`'s `immediately` paste because the mod speaks `submit` and not `fill`
-  are still removed from the queue before the refusal.
 - The merge train's rebase ask, refused while a person is attached, is asked again on the
-  train's own 10 s bucket, with `merge_train_refused:deliver_failed` each time, as any delivery
-  failure is.
+  train's own 10 s bucket. Each attempt writes `prompt_not_sent`/`a_person_attached` and
+  `merge_train_refused:deliver_failed`, as any delivery failure does. The smallest cleanup is one
+  line per ticket and reason until the hold ends.

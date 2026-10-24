@@ -471,3 +471,109 @@ fn a_refused_plan_clears_on_the_agents_next_tool_call() {
         c.await_state(sid, "working after the refusal", |s| *s == SessionState::Running);
     }
 }
+
+/// Words riding an approval wait while a person has the pane open (T-958,
+/// round 1): the harness confirms the accept, the paste's guard refuses the
+/// words before any key, and the entry goes back on the queue as an
+/// ordinary ask, its one-shot spent. At the agent's idle the person is
+/// still there and nothing goes; once they leave, the words go once. The
+/// hook road alone: on the mod road the words are a `submit`, no key.
+#[test]
+fn words_riding_an_approval_wait_for_a_person_to_leave() {
+    if test_road() == "mod" {
+        return;
+    }
+    let Some(h) = Harness::boot_with_env(
+        "planheld",
+        Some(STUB),
+        &[("MESIMON_PANE_QUIET_MS", "600000"), ("MESIMON_SLEEP_MIN_AGE_MS", "0")],
+    ) else {
+        return;
+    };
+    let hooks = h.paths.hook_sock();
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    let mut c = h.client("planheld");
+    let text = || std::fs::read_to_string(h.dir.join("got.txt")).unwrap_or_default();
+    let feed = || std::fs::read_to_string(&feed_path).unwrap_or_default();
+    let presses =
+        || text().lines().filter(|l| matches!(*l, "got:" | "got:planned " | "got:planned")).count();
+    let ticket = match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "planned".into(),
+        workspace: None,
+        tier: None,
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("{other:?}"),
+    };
+    let sid = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn failed: {other:?}"),
+    };
+    let session = sid.to_string();
+    let pane = sid.simple().to_string()[..16].to_string();
+    let tmux_sock = h.paths.tmux_sock();
+    let plan = r##"{"tool_name":"ExitPlanMode","tool_input":{"plan":"# Plan"}}"##;
+    let start = |c: &mut TestClient| {
+        hook_send(&hooks, &session, "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient| {
+        hook_send(&hooks, &session, "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    std::thread::sleep(Duration::from_millis(800));
+    start(&mut c);
+    stop(&mut c);
+
+    start(&mut c);
+    assert!(matches!(
+        c.request(Command::PromptSession {
+            ticket,
+            text: "mesimon-probe-958 then this".into(),
+            queued: true,
+            immediately: false,
+            accept_plan: true,
+            plan: false,
+            tier: None,
+            resend: false,
+            uploads: Vec::new(),
+        }),
+        Response::Queued { .. }
+    ));
+    hook_send(&hooks, &session, "PreToolUse", plan);
+    c.await_state(sid, "plan ready", |s| {
+        *s == SessionState::RequiresAction { reason: Reason::Plan }
+    });
+    wait_until(Duration::from_secs(10), "the accept's Enter", || presses() == 1);
+    // A person opens the pane, and the harness confirms the accept.
+    let client = person_attaches(&tmux_sock, &pane);
+    hook_send(&hooks, &session, "PostToolUse", plan);
+    c.await_state(sid, "running on the plan", |s| *s == SessionState::Running);
+    wait_until(Duration::from_secs(5), "the words kept", || {
+        feed().lines().any(|l| {
+            l.contains(r#""cmd":"queued_ask_kept""#)
+                && l.contains(r#""outcome":"a_person_attached""#)
+        })
+    });
+    assert!(!feed().contains(r#""cmd":"queued_ask_failed""#), "nothing failed");
+    assert!(!text().contains("mesimon-probe-958"), "no key under their hands: {:?}", text());
+    let p = pending_of(&mut c, Some(ticket));
+    assert!(p.iter().any(|p| !p.accept_plan && !p.in_flight), "kept as an ordinary ask: {p:?}");
+    // The agent's idle, the person still there: nothing goes.
+    stop(&mut c);
+    std::thread::sleep(Duration::from_millis(2000));
+    assert!(!text().contains("mesimon-probe-958"), "still theirs: {:?}", text());
+    // Gone: the words go once.
+    person_leaves(&tmux_sock, &pane, client);
+    wait_until(Duration::from_secs(10), "the kept words", || {
+        text().contains("got:mesimon-probe-958 then this")
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(text().matches("mesimon-probe-958").count(), 1, "once: {:?}", text());
+}

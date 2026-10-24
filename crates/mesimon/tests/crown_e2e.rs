@@ -6104,12 +6104,147 @@ fn the_crown_sends_immediately_into_a_working_turn() {
             landed("mesimon-probe-76 under hands")
         });
         assert_eq!(asked(&mut c).status, "sent");
+        // The turn those words started ends, and the next one runs.
+        start(&mut c, ws);
+        stop(&mut c, ws);
+        start(&mut c, ws);
+        // A person who opens the pane just before the idle that drains an
+        // ask: whichever reads it first, the pane sample or the paste's own
+        // guard (whose refusal puts the entry back), the words stay queued,
+        // and go once after the person leaves.
+        assert_eq!(
+            road_of(ask(&mut c, "mesimon-probe-78 at the idle", Deliver::Idle)),
+            (false, AskRoad::Queued)
+        );
+        let client = person_attaches(&tmux_sock, &sid);
+        stop(&mut c, ws);
+        std::thread::sleep(std::time::Duration::from_millis(2000));
+        assert!(!landed("mesimon-probe-78"), "nothing typed under their hands");
+        assert_eq!(asked(&mut c).status, "queued");
+        person_leaves(&tmux_sock, &sid, client);
+        wait_until(std::time::Duration::from_secs(10), "the idle ask", || {
+            landed("mesimon-probe-78 at the idle")
+        });
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        assert_eq!(read_got().matches("mesimon-probe-78").count(), 1, "once");
         start(&mut c, ws);
     }
     stop(&mut c, ws);
 
     let feed = std::fs::read_to_string(&feed_path).unwrap();
     assert!(!feed.contains("mesimon-probe-7"), "the feed never carries the words");
+}
+
+/// A queued ask whose road would type is kept, not lost, when the last
+/// key's guard refuses it (T-958, round 1). A mod that speaks `submit` and
+/// not `fill` takes `immediately` by the paste road, so a person in W's
+/// pane refuses the crown's ask at its dispatch: the entry goes back, the
+/// record reads `queued`, the feed says `queued_ask_kept`, and nothing is
+/// typed. With the person gone the drain sends it once, by the `submit`, at
+/// W's idle. The mod road alone: the hook road has no `submit` to tell.
+#[test]
+fn a_submit_only_mod_s_immediately_ask_is_kept_under_a_person() {
+    if test_road() != "mod" {
+        return;
+    }
+    let Some(h) = Harness::boot_with_env(
+        "crown_submit_only",
+        Some(RAW_STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    // Every mod on this board speaks `submit` and not `fill`.
+    std::fs::write(h.dir.join("mod-speaks"), "ping,submit,answer").unwrap();
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let tmux_sock = h.paths.tmux_sock();
+    let mut c = h.client("crown_submit_only");
+    let got = h.dir.join("got.txt");
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    let copies =
+        |probe: &str| std::fs::read_to_string(&got).unwrap_or_default().matches(probe).count();
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-958 worker");
+    let kw = key_of(&mut c, w);
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
+        Response::Ok
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("shared_checkout".into()),
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    let ws = c.board().live_agent(w).expect("W holds a seat").id;
+    let sid = ws.simple().to_string()[..16].to_string();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, ws);
+    let asked = |c: &mut TestClient| read(c, sa, &kw).unwrap().asked.expect("the crown's ask");
+
+    let client = person_attaches(&tmux_sock, &sid);
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentAskTicket {
+            key: kw.clone(),
+            text: "mesimon-probe-9581 kept".into(),
+            seen: v.seen,
+            plan: false,
+            deliver: Deliver::Immediately,
+        },
+    ) {
+        Response::Err { message } => {
+            assert!(message.contains("a person has its pane open"), "{message}");
+            assert!(message.contains("stay queued"), "{message}");
+        }
+        other => panic!("ask_agent under a person's hands: {other:?}"),
+    }
+    assert_eq!(asked(&mut c).status, "queued");
+    wait_until(std::time::Duration::from_secs(5), "the kept line in the feed", || {
+        std::fs::read_to_string(&feed_path).unwrap_or_default().lines().any(|l| {
+            l.contains("\"cmd\":\"queued_ask_kept\"")
+                && l.contains("\"outcome\":\"a_person_attached\"")
+        })
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    assert_eq!(copies("mesimon-probe-9581"), 0, "nothing typed under their hands");
+    let frames =
+        std::fs::read_to_string(h.dir.join(format!("mod-{ws}.ndjson"))).unwrap_or_default();
+    assert!(!frames.contains("mesimon-probe-9581"), "nor framed: {frames}");
+
+    // The person gone, W's idle: the drain sends it once, by the submit.
+    person_leaves(&tmux_sock, &sid, client);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the kept words", || {
+        copies("mesimon-probe-9581 kept") == 1
+    });
+    let status = asked(&mut c).status;
+    assert!(matches!(status.as_str(), "sent" | "handed"), "out with the agent: {status}");
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(copies("mesimon-probe-9581 kept"), 1, "one delivery");
 }
 
 /// A delivery the armed merge train will take does not wake the crown
@@ -7118,39 +7253,6 @@ fn the_crown_answers_a_batch_one_answer_per_question() {
         detail.as_deref(),
         Some(format!("answered by {ka}: Green; Cheese, Basil; Large please").as_str())
     );
-}
-
-/// A tmux client on `sid`'s pane, as a person who opened it from another
-/// terminal (T-958): a control-mode client, listed once the server has it.
-/// Kill it and wait on it to leave.
-fn person_attaches(sock: &std::path::Path, sid: &str) -> std::process::Child {
-    let client = tmux(sock)
-        .args(["-C", "attach", "-t", sid])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("a control-mode tmux client");
-    let listed = || {
-        tmux(sock)
-            .args(["list-clients", "-t", sid, "-F", "#{client_name}"])
-            .output()
-            .is_ok_and(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
-    };
-    wait_until(std::time::Duration::from_secs(10), "the person's client listed", listed);
-    client
-}
-
-/// The person's client gone, and the server says so.
-fn person_leaves(sock: &std::path::Path, sid: &str, mut client: std::process::Child) {
-    client.kill().unwrap();
-    let _ = client.wait();
-    wait_until(std::time::Duration::from_secs(10), "the person's client gone", || {
-        tmux(sock)
-            .args(["list-clients", "-t", sid, "-F", "#{client_name}"])
-            .output()
-            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim().is_empty())
-    });
 }
 
 /// The crown's answer types nothing under a person's hands (T-958). A

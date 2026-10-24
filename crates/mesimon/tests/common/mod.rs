@@ -1028,3 +1028,36 @@ impl Drop for Shim {
         let _ = self.child.wait();
     }
 }
+
+/// A tmux client on `sid`'s pane, as a person who opened it from another
+/// terminal (T-958): a control-mode client, listed once the server has it.
+/// Kill it and wait on it to leave.
+pub fn person_attaches(sock: &std::path::Path, sid: &str) -> std::process::Child {
+    let client = tmux(sock)
+        .args(["-C", "attach", "-t", sid])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("a control-mode tmux client");
+    let listed = || {
+        tmux(sock)
+            .args(["list-clients", "-t", sid, "-F", "#{client_name}"])
+            .output()
+            .is_ok_and(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+    };
+    wait_until(std::time::Duration::from_secs(10), "the person's client listed", listed);
+    client
+}
+
+/// The person's client gone, and the server says so.
+pub fn person_leaves(sock: &std::path::Path, sid: &str, mut client: std::process::Child) {
+    client.kill().unwrap();
+    let _ = client.wait();
+    wait_until(std::time::Duration::from_secs(10), "the person's client gone", || {
+        tmux(sock)
+            .args(["list-clients", "-t", sid, "-F", "#{client_name}"])
+            .output()
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim().is_empty())
+    });
+}

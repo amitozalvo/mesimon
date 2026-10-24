@@ -939,6 +939,11 @@ pub struct Daemon {
     /// that seat's state's moment. The wake stays owed and is tried again
     /// once that seat moves, never every tick.
     crown_wake_failed_on: Option<(uuid::Uuid, Option<u64>)>,
+    /// The session `paste_at` last refused for a person at its pane, before
+    /// any key (T-958): the dispatch's own answer that the words are still
+    /// the sender's, which a queue road reads (`took_person_refusal`) to
+    /// keep its entry. Set and read in one writer turn.
+    refused_for_person: Option<uuid::Uuid>,
     /// A Claude seat's failed turn, by when the board saw it fail (T-936):
     /// what a refined reason names, while the seat stays failed.
     failing: HashMap<uuid::Uuid, String>,
@@ -1529,6 +1534,7 @@ pub fn run(paths: Paths) -> Result<()> {
         failing: HashMap::new(),
         crown_submit_refused: Default::default(),
         crown_wake_failed_on: None,
+        refused_for_person: None,
         lingered: Default::default(),
         tasks_since: HashMap::new(),
         held: crate::movegate::HeldMoves::default(),
@@ -2295,6 +2301,7 @@ impl Owed {
 /// list holds the entries and the BOARD holds their order (`queue_order`):
 /// a card moved up its column goes first, the way the merge train reads
 /// the board (T-263).
+#[derive(Clone)]
 struct QueuedAsk {
     ticket: ulid::Ulid,
     /// The seat it was queued at; a seat that changed at delivery time drops
@@ -2368,6 +2375,7 @@ impl QueuedAsk {
 /// Where a prompt's claude is (`Daemon::seat_of`), and therefore how it is
 /// delivered. A queued ask remembers the seat it was aimed at: the words go
 /// to that claude or nowhere, never to whoever is sitting there later.
+#[derive(Clone)]
 enum QueuedSeat {
     /// A pane to paste into — today's ask.
     Pane(uuid::Uuid),
@@ -8673,10 +8681,11 @@ impl Daemon {
     /// it. `list-clients` on the pane's own session, the agent's and never
     /// the board's, one fork read at the edge just before the first key; a
     /// client the server cannot list counts as there. Every road that sends
-    /// keys into an agent's pane asks this: a paste of words (`paste_at`), a
-    /// fill's send-now (`on_mod_fill`), the crown's dialog walk and plan
-    /// sent back (`control_deliver_dialogs`), and a refused submit's paste
-    /// after a stop (`on_mod_submit`).
+    /// keys into an agent's pane asks this: a paste of words (`paste_at`,
+    /// the crown's wake excepted, which goes on its own sample), a fill's
+    /// send-now (`on_mod_fill`), the crown's dialog walk and plan sent back
+    /// (`control_deliver_dialogs`), and a refused submit's paste after a
+    /// stop (`on_mod_submit`).
     pub(super) fn person_at_pane(&self, sid: &str) -> bool {
         self.backend.has_clients(&format!("={sid}")).unwrap_or(true)
     }
@@ -12975,8 +12984,13 @@ impl Daemon {
         // The keys go into the pane from here, and never under a person's
         // hands (T-958): a paste and its Enter in a field someone is typing
         // in would send their keys with ours. Refused like a command into a
-        // draft, before any key: the words stay with whoever sent them.
-        if self.person_at_pane(&sid) {
+        // draft, before any key: the words stay with whoever sent them, and
+        // a queue road keeps its entry (`took_person_refusal`). The crown's
+        // wake is not this road's: it goes on its own sample of the pane's
+        // clients and box (T-918, T-936, T-945's bound), and a refusal here
+        // would read as a failed delivery and hold it until its seat moves.
+        if ack.word != Ack::CROWN_WAKE.word && self.person_at_pane(&sid) {
+            self.refused_for_person = Some(id);
             self.feed.board_outcome("daemon", "prompt_not_sent", Some(ticket), A_PERSON_ATTACHED);
             return Err(format!("{PERSON_AT_PANE} ∙ the words were not sent"));
         }
@@ -14445,7 +14459,7 @@ impl Daemon {
             // Words that would be typed wait while a person has the pane
             // open (T-958), read off the pane sample: the tick forks nothing.
             QueuedSeat::Pane(id) => {
-                self.session_takes_words(id) && !self.typed_under_a_person(id, q, false)
+                self.session_takes_words(id) && !self.typed_under_a_person(id, q)
             }
             // A Codex record wakes only once its runtime confirmed the stop
             // (a tier switch parks one and queues its words here, T-443);
@@ -14477,13 +14491,13 @@ impl Daemon {
         self.board.sessions.iter().any(|s| s.id == id && mesimon_core::quiet::at_rest(s))
     }
 
-    /// Words for this pane would be typed into it under a person's hands
-    /// (T-958): a Claude pane whose words take `paste_at`'s keys rather than
-    /// the mod's `submit` or a relaunch (`relaunches`), and a tmux client on
-    /// it. `fresh` asks the server now (`person_at_pane`, the edge's one
-    /// fork); otherwise the newest pane sample answers, for the queue's
-    /// every-pass test, which forks nothing.
-    fn typed_under_a_person(&self, id: uuid::Uuid, q: &QueuedAsk, fresh: bool) -> bool {
+    /// The drain's words for this pane would be typed under a person's hands
+    /// (T-958), by the newest pane sample, so the queue's every-pass test
+    /// forks nothing: a Claude pane whose words take `paste_at`'s keys as the
+    /// drain sends them (never `immediately`), not the mod's `submit` nor a
+    /// relaunch, with a tmux client on it. Readiness only: the one fresh read
+    /// is `paste_at`'s, and its refusal keeps the entry.
+    fn typed_under_a_person(&self, id: uuid::Uuid, q: &QueuedAsk) -> bool {
         let Some(rec) = self.board.sessions.iter().find(|s| s.id == id && s.state.has_pane())
         else {
             return false;
@@ -14494,12 +14508,14 @@ impl Daemon {
         {
             return false;
         }
-        let sid = rec.sid16();
-        if fresh {
-            self.person_at_pane(&sid)
-        } else {
-            self.attached.contains(&sid)
-        }
+        self.attached.contains(&rec.sid16())
+    }
+
+    /// `paste_at` refused `id`'s words for a person at its pane, sending no
+    /// key (T-958): the queue entry they came from is still theirs.
+    fn took_person_refusal(&mut self, id: Option<uuid::Uuid>) -> bool {
+        let refused = self.refused_for_person.take();
+        id.is_some() && refused == id
     }
 
     /// Will this pane's session take words now — `session_idle`, idle at
@@ -14558,14 +14574,11 @@ impl Daemon {
         take.sort_unstable_by(|a, b| b.cmp(a));
         let mut changed = false;
         for i in take {
-            // The edge's own read (T-958): a person who opened the pane
-            // since the sample keeps the words on the queue, where they were.
-            if let QueuedSeat::Pane(id) = self.queued[i].seat {
-                if self.typed_under_a_person(id, &self.queued[i], true) {
-                    continue;
-                }
-            }
-            let QueuedAsk { ticket, seat, text, plan, by, from_board, .. } = self.queued.remove(i);
+            let entry = self.queued.remove(i);
+            // Kept for `paste_at`'s refusal (T-958): a person who opened the
+            // pane since the sample gets no key, and the entry goes back.
+            let kept = entry.clone();
+            let QueuedAsk { ticket, seat, text, plan, by, from_board, .. } = entry;
             changed = true;
             let word = seat.word();
             let words = by.map(|_| text.clone());
@@ -14597,6 +14610,10 @@ impl Daemon {
                 {
                     match self.deliver_queued_ask(ticket, seat, text, Ack::QUEUED, plan, false) {
                         Response::Ok => true,
+                        _ if self.took_person_refusal(seat_id) => {
+                            self.queue_kept(i, kept);
+                            false
+                        }
                         resp => {
                             self.feed.board("automation", "queued_ask_failed", Some(ticket));
                             self.crown_ask_failed(ticket, by, &resp);
@@ -14771,6 +14788,8 @@ impl Daemon {
         plan: bool,
         immediately: bool,
     ) -> Response {
+        // Only this dispatch's refusal answers its caller (T-958).
+        self.refused_for_person = None;
         let id = match seat {
             QueuedSeat::Pane(id) => Some(id),
             _ => None,
@@ -14794,8 +14813,12 @@ impl Daemon {
                     rec.pending_prefill = false;
                 }
             }
+            // A person at the pane (T-958) cancels nothing: the caller puts
+            // the entry back, and the phone's receipt waits with it.
             if matches!(response, Response::Err { .. }) {
-                self.control_cancel(id);
+                if self.refused_for_person != Some(id) {
+                    self.control_cancel(id);
+                }
             } else if !self.parked(id) {
                 self.control_submitted(id);
             }
@@ -14998,7 +15021,9 @@ impl Daemon {
             self.queued[i].send_on_accept = false;
             return true;
         }
-        let QueuedAsk { ticket, seat, text, .. } = self.queued.remove(i);
+        let entry = self.queued.remove(i);
+        let mut kept = entry.clone();
+        let QueuedAsk { ticket, seat, text, .. } = entry;
         if !self.seat_stands(ticket, &seat) {
             self.feed.board("automation", "queued_ask_dropped_target_gone", Some(ticket));
             return true;
@@ -15007,9 +15032,26 @@ impl Daemon {
             Response::Ok => {
                 self.feed.board("automation", "queued_ask_sent_after_plan", Some(ticket));
             }
+            // A person at the pane (T-958): the words wait on as an
+            // ordinary ask, its one-shot spent, and the drain sends them at
+            // the agent's idle once the pane is free.
+            _ if self.took_person_refusal(Some(session)) => {
+                kept.send_on_accept = false;
+                self.queue_kept(i, kept);
+            }
             _ => self.feed.board("automation", "queued_ask_failed", Some(ticket)),
         }
         true
+    }
+
+    /// An entry `paste_at` refused for a person at its pane goes back on
+    /// the queue as it was (T-958): no key went in, so the words are still
+    /// the sender's, and the crown's record still reads `queued`.
+    fn queue_kept(&mut self, i: usize, entry: QueuedAsk) {
+        let ticket = entry.ticket;
+        self.queued.insert(i.min(self.queued.len()), entry);
+        self.persist_queue();
+        self.feed.board_outcome("daemon", "queued_ask_kept", Some(ticket), A_PERSON_ATTACHED);
     }
 
     fn send_queued_ask(&mut self, ticket: ulid::Ulid) -> Response {
@@ -15026,22 +15068,9 @@ impl Daemon {
                     message: mesimon_core::command::ANSWER_IN_PANE_FIRST.into(),
                 };
             }
-            // And a person with the pane open (T-958): the paste and its
-            // Enter would land in what they type. The words keep waiting,
-            // and go from the queue once the pane is theirs no longer.
-            if self.typed_under_a_person(id, &self.queued[i], true) {
-                self.feed.board_outcome(
-                    "daemon",
-                    "queued_ask_kept",
-                    Some(ticket),
-                    A_PERSON_ATTACHED,
-                );
-                return Response::Err {
-                    message: format!("{PERSON_AT_PANE} ∙ the words stay queued"),
-                };
-            }
         }
         let q = self.queued.remove(i);
+        let kept = q.clone();
         self.persist_queue();
         if !self.seat_stands(ticket, &q.seat) {
             if q.by.is_some() {
@@ -15060,6 +15089,16 @@ impl Daemon {
         let (seat_id, working) = self.ask_seat(&q.seat);
         let response =
             self.deliver_queued_ask(ticket, q.seat, q.text, Ack::QUEUED, q.plan, immediately);
+        // A person at the pane (T-958): no key went in, so the entry goes
+        // back as it was, and the crown's record still reads `queued`. The
+        // drain sends it once the pane is free and its agent takes words.
+        if matches!(response, Response::Err { .. }) && self.took_person_refusal(seat_id) {
+            self.queue_kept(i, kept);
+            self.broadcast();
+            return Response::Err {
+                message: format!("{PERSON_AT_PANE} ∙ the words stay queued")
+            };
+        }
         // The crown's words, sent by a person or on its say-so: the record
         // reads `sent` once the dispatch went through (T-938), and the
         // turn they start is the crown's answer (T-469).
