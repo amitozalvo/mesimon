@@ -419,6 +419,13 @@ pub(super) struct Entering {
     /// but mesimon wrote it.
     #[serde(default)]
     pub(super) person_came: bool,
+    /// The mod's `submit` frame a Claude crown's wake went down as (T-936),
+    /// and the pane it went to: told on that frame's `entered` from that
+    /// seat and pane alone, owed again on its refusal. None for a Codex box.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) frame: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) pane: Option<String>,
 }
 
 /// A worker idle with background tasks (T-599): how many, and for how long

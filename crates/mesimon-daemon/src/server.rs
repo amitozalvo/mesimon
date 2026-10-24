@@ -923,6 +923,9 @@ pub struct Daemon {
     /// a second one. On the writer, so the probe that runs off it cannot
     /// race the next turn's start.
     turns_open: Tracked<std::collections::HashSet<ulid::Ulid>>,
+    /// Crown seats whose mod refused the wake's `submit` (T-936): their next
+    /// wake is typed, until a prompt goes in.
+    crown_submit_refused: std::collections::HashSet<uuid::Uuid>,
     /// A Claude seat's failed turn, by when the board saw it fail (T-936):
     /// what a refined reason names, while the seat stays failed.
     failing: HashMap<uuid::Uuid, String>,
@@ -1511,6 +1514,7 @@ pub fn run(paths: Paths) -> Result<()> {
         late_asks: HashMap::new(),
         turns_open: Default::default(),
         failing: HashMap::new(),
+        crown_submit_refused: Default::default(),
         lingered: Default::default(),
         tasks_since: HashMap::new(),
         held: crate::movegate::HeldMoves::default(),
@@ -5680,6 +5684,10 @@ impl Daemon {
         let Some(fid) = frame.reason.as_deref() else { return };
         let outcome = frame.payload["outcome"].as_str().unwrap_or("");
         if outcome == "entered" {
+            // The crown's wake it carried is the crown's now (T-936).
+            if self.submitted_wake(id, fid) {
+                self.wake_entered(id);
+            }
             self.mod_taken(id, fid);
             let delivered = self
                 .board
@@ -5690,6 +5698,21 @@ impl Daemon {
             if delivered {
                 self.persist_and_notify();
             }
+            return;
+        }
+        // The crown's wake refused (T-936): owed again, nothing told and no
+        // hand down, and the seat's next wake goes by the guarded paste road
+        // (a person in the pane or a draft waits) until its next prompt.
+        // Never pasted from here.
+        if matches!(outcome, "dropped" | "rejected") && self.submitted_wake(id, fid) {
+            if self.owed.get(&id).is_some_and(|o| o.frame.as_deref() == Some(fid)) {
+                self.drop_owed(id);
+            }
+            self.wake_not_entered(id);
+            self.crown_submit_refused.insert(id);
+            let ticket = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket);
+            self.feed.board_outcome("daemon", "crown_wake_refused", ticket, outcome);
+            self.persist_and_notify();
             return;
         }
         let ours = self.owed.get(&id).is_some_and(|o| o.frame.as_deref() == Some(fid));
@@ -5806,7 +5829,11 @@ impl Daemon {
             // held the wake is not known, and `person_came` is sampled once
             // a second, too slow to say: it is owed again. Heard twice beats
             // never heard.
-            let owed_again = owed.ack.word == Ack::CROWN_WAKE.word && self.wake_not_entered(id);
+            // A wake down the mod's `submit` (T-936) is its frame's to settle:
+            // no prompt says it went, or that it did not.
+            let boxed = self.crown_wake_entering.as_ref().is_some_and(|e| e.frame.is_none());
+            let owed_again =
+                owed.ack.word == Ack::CROWN_WAKE.word && boxed && self.wake_not_entered(id);
             if !owed_again {
                 self.feed.board(owed.ack.by, owed.ack.word, Some(ticket));
             }
@@ -6465,6 +6492,8 @@ impl Daemon {
         // (T-599): the next one is new, and may wake the crown again.
         if change.to == SessionState::Running {
             self.lingered.remove(&id);
+            // A prompt went in: the mod's next submit may be taken (T-936).
+            self.crown_submit_refused.remove(&id);
         }
         // And the stretch's start (T-944): kept across the park's demote.
         let kept = self.tasks_since.get(&id).copied();
@@ -8331,25 +8360,27 @@ impl Daemon {
     /// the road `deliver` takes for it, asked as `deliver` and `paste_at`
     /// ask it. Claude Code 2.1.309 keeps a draft in the box through a
     /// submit, and keys typed while its turn starts stay in the box unsent,
-    /// so neither a person in the pane nor their draft holds it. Not while
-    /// a person's Esc stopped the crown (T-936): Claude Code refuses a
-    /// plugin's input then, until the person types (T-894), and by that
-    /// refusal the wake would be told and its hands down. Then the wake is
+    /// so neither a person in the pane nor their draft holds it. Not where
+    /// the submit would be refused (T-936, `crown_wake_typed`): that wake is
     /// the paste road's, held for a person in the pane or their draft, as
-    /// before T-931, and nothing is told until it goes.
+    /// before T-931.
     fn crown_wake_by_submit(&self, id: uuid::Uuid) -> bool {
-        !self.stopped_by_person(id)
+        !self.crown_wake_typed(id)
             && !self.relaunches(id, false)
             && self.takes_by_submit(id, &self.crown_wake_text())
     }
 
-    /// The seat's last turn ended on a person's Esc (`Idle{Interrupted}`),
-    /// and nothing has been sent since: the one state Claude Code's refusal
-    /// of a plugin's input follows (T-894, T-936).
-    fn stopped_by_person(&self, id: uuid::Uuid) -> bool {
-        self.board.sessions.iter().any(|s| {
-            s.id == id && s.state == SessionState::Idle { stop_reason: StopReason::Interrupted }
-        })
+    /// The crown's wake is typed into this seat rather than submitted
+    /// (T-936): its mod refused the last one (until the seat's next prompt),
+    /// or the seat reads `Idle{Interrupted}`, an inferred state, where a
+    /// person's Esc makes Claude Code refuse a plugin's input (T-894). The
+    /// second is only a shortcut: a refusal itself is the frame's answer,
+    /// whatever the state read.
+    fn crown_wake_typed(&self, id: uuid::Uuid) -> bool {
+        self.crown_submit_refused.contains(&id)
+            || self.board.sessions.iter().any(|s| {
+                s.id == id && s.state == SessionState::Idle { stop_reason: StopReason::Interrupted }
+            })
     }
 
     /// The sample time at which this pane's clients and box were both read
@@ -8441,7 +8472,11 @@ impl Daemon {
     /// in `owed` until its `UserPromptSubmit`, exactly as a queued ask is.
     fn drain_crown_wakes(&mut self, landed: Option<u64>) -> bool {
         let lost = self.lose_entering();
-        if self.crown_wakes.is_empty() {
+        // A wake down the mod's `submit` is out until its frame is answered
+        // (T-936): what is owed meanwhile waits, and folds.
+        if self.crown_wakes.is_empty()
+            || self.crown_wake_entering.as_ref().is_some_and(|e| e.frame.is_some())
+        {
             return lost;
         }
         let Some(crown) = self.board.crown_holder().map(|t| t.id) else {
@@ -8513,6 +8548,26 @@ impl Daemon {
                     wakes,
                     telling,
                     person_came: false,
+                    frame: None,
+                    pane: None,
+                };
+                *self.crown_wake_entering = Some(entering);
+            }
+            // Down a Claude crown's mod as a `submit` (T-936): the crown has
+            // heard nothing until that frame's `entered` (`on_mod_submit`).
+            _ if pane && self.owed.get(&id).is_some_and(|o| o.frame.is_some()) => {
+                let frame = self.owed.get(&id).and_then(|o| o.frame.clone());
+                let at = self.board.sessions.iter().find(|s| s.id == id);
+                let wakes = std::mem::take(&mut *self.crown_wakes);
+                let entering = crownwake::Entering {
+                    crown,
+                    session: id,
+                    text,
+                    wakes,
+                    telling,
+                    person_came: false,
+                    frame,
+                    pane: at.and_then(|s| s.pane_key.clone()),
                 };
                 *self.crown_wake_entering = Some(entering);
             }
@@ -8601,11 +8656,35 @@ impl Daemon {
 
     /// The entering wake lost the owed entry that would enter it.
     fn lose_entering(&mut self) -> bool {
-        let Some(id) = self.crown_wake_entering.as_ref().map(|e| e.session) else { return false };
+        let Some(e) = self.crown_wake_entering.as_ref() else { return false };
+        let id = e.session;
+        // A submitted wake (T-936) waits for its frame's answer, whatever
+        // became of the owed entry: only a seat gone, or a pane replaced,
+        // owes it again unanswered. Delivery is never read off a prompt.
+        if e.frame.is_some() {
+            let pane = e.pane.clone();
+            let same = self
+                .board
+                .sessions
+                .iter()
+                .find(|s| s.id == id)
+                .is_some_and(|s| s.state.has_pane() && s.pane_key == pane);
+            return !same && self.wake_not_entered(id);
+        }
         if self.crown_wake_owed(id) {
             return false;
         }
         self.wake_not_entered(id)
+    }
+
+    /// The crown's submitted wake this mod report is for (T-936): found by
+    /// seat, frame and pane, as a crown ask's is (T-938). A report delayed
+    /// from a pane since replaced is no one's.
+    fn submitted_wake(&self, id: uuid::Uuid, frame: &str) -> bool {
+        let pane = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.pane_key.clone());
+        self.crown_wake_entering.as_ref().is_some_and(|e| {
+            e.session == id && e.frame.as_deref() == Some(frame) && pane.as_ref() == Some(&e.pane)
+        })
     }
 
     /// `create_ticket`, for an agent: the same mint a human's composer gets
@@ -12371,9 +12450,9 @@ impl Daemon {
         // A Claude session whose mod is up takes the words by its `submit`
         // (T-575): a turn of its own, held behind a running one, never typed.
         // A slash command is for the box, and is typed into it.
-        // The crown's wake after a person's Esc is typed (T-936,
+        // The crown's wake where a submit would be refused is typed (T-936,
         // `crown_wake_by_submit`).
-        let stopped = ack.word == Ack::CROWN_WAKE.word && self.stopped_by_person(id);
+        let stopped = ack.word == Ack::CROWN_WAKE.word && self.crown_wake_typed(id);
         if !immediately && !stopped && self.takes_by_submit(id, text) {
             let words = Parked { text: text.to_string(), brief: false, title: false };
             if !self.mod_submit(id, ticket, words, ack) {

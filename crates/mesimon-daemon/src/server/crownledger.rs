@@ -273,6 +273,8 @@ mod tests {
             wakes: Vec::new(),
             telling: Default::default(),
             person_came: true,
+            frame: Some("01SUBMIT".into()),
+            pane: Some("123:%4".into()),
         });
         let text = serde_json::to_string_pretty(&ledger).unwrap();
         let back = parse(&text).unwrap();

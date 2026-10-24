@@ -32834,3 +32834,33 @@ escape-heavy one and a long Unicode one, each within the bound with its request 
 board answer with two of them under 48 KiB);
 `crown_e2e::a_worker_s_dialog_outlives_a_daemon_restart` section 4 (the 26 KiB plan is now also
 accepted after the restart, on the road section 1 takes).
+
+**Second read: a submitted wake is told on its frame's `entered`, never at its dispatch (item 6).**
+Round one's hold rested on `Idle{Interrupted}` being read before the dispatch. That state is
+inferred (pane quiet, status hints, transcript hints), and an Esc can land before it, or during an
+observation loss. Outside that case `drain_crown_wakes` still told the wake when the dispatch
+returned, before the mod's answer, so a submit refused after the Esc lost the wake and lowered the
+hand.
+- **Held until its answer.** A wake down a Claude crown's mod as a `submit` now waits in the
+  pending-wake record the Codex box already used (`Entering`), which gains the submit's `frame`
+  and the `pane` it went to. Only that frame's `entered`, from that seat and that pane
+  (`submitted_wake`, the fence T-938's crown asks use), calls `told`.
+- **A confirmed refusal** (`dropped` or `rejected`, that frame) owes the wake again: nothing told,
+  no hand down, nothing kept unsent, no paste from the refusal. The seat's next wake is typed by
+  the guarded paste road until its next prompt (`crown_submit_refused`): it waits for a person in
+  the pane or a draft, and goes into an empty box nobody is at.
+- **Nothing else settles it.** A prompt hook says nothing of it either way, and losing the owed
+  entry does not settle it. Only a seat gone or a pane replaced owes it again unanswered, and so
+  does a restart (`resume_crown_entering`), which reads `after a restart`. While it is out, newer
+  wakes wait and fold.
+- `Idle{Interrupted}` stays as a shortcut (`crown_wake_typed`), its comment narrowed to what the
+  state says.
+
+Tests: `crown_e2e::a_crown_a_person_stopped_holds_its_wake_and_its_hand`, whose phase B (a submit
+pending as the person comes in, refused) now keeps the hand up and the wake owed, and whose phase D
+delivers it once, settling both; `a_mod_road_crown_s_refused_wake_is_never_pasted_under_a_person`
+(owed again and held, nothing told, nothing unsent); `a_crown_wake_refused_at_end_turn_is_owed_until_it_goes`
+(refused while the crown reads `EndTurn`: told only after the refusal, by one paste);
+`a_crown_wake_refused_while_unknown_is_owed_until_it_goes` (a prompt into the crown while the submit
+is out tells nothing, then a restart mid-turn, `Unknown`, and the refusal lands; the hand stays up
+until the next delivery, `after a restart`). All four fail with the submit told at its dispatch.

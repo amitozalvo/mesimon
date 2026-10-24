@@ -1796,7 +1796,9 @@ fn a_mod_road_crown_takes_its_wake_with_a_person_at_its_box() {
         read_file(&submitted).contains(&delivered)
     });
     assert!(t0.elapsed() < std::time::Duration::from_secs(4), "at once: {:?}", t0.elapsed());
-    assert!(held.is_empty(), "nothing held it for the person: {held:?}");
+    // `sending` is the submit out and not yet answered (T-936), the
+    // board's own word: no person holds it.
+    assert!(held.iter().all(|w| w == "sending"), "nothing held it for the person: {held:?}");
     let frames = read_file(&h.dir.join(format!("mod-{sa}.ndjson")));
     assert!(
         frames
@@ -1822,12 +1824,10 @@ fn a_mod_road_crown_takes_its_wake_with_a_person_at_its_box() {
 
 /// T-936: a crown's wake goes by its mod's `submit` past a person in its
 /// pane (T-931), and Claude Code refuses it after their Esc ("the session
-/// was stopped and nobody has sent input since", T-894). The refusal's
-/// paste road is keys, so it is never taken into a pane a tmux client has
-/// open, empty box or not: the wake stays unsent on the crown's seat for
-/// the resend, nothing is typed under the person, and what they type next
-/// is theirs alone. That the wake was already told (`drain_crown_wakes`)
-/// is T-938's to undo.
+/// was stopped and nobody has sent input since", T-894). Nothing is typed
+/// under the person, empty box or not, and what they type next is theirs
+/// alone. The wake was not told at the submit: refused, it is owed again,
+/// held for the person on the paste road, and nothing is kept unsent.
 #[test]
 fn a_mod_road_crown_s_refused_wake_is_never_pasted_under_a_person() {
     let Some(h) = Harness::boot_bare(
@@ -1917,19 +1917,19 @@ fn a_mod_road_crown_s_refused_wake_is_never_pasted_under_a_person() {
     start(&mut c, ws1);
     stop(&mut c, ws1);
     let delivered = format!("{kw1} \"mesimon-probe-936 worker\" delivered (commit {h1}");
-    wait_until(std::time::Duration::from_secs(10), "the refused wake kept unsent", || {
-        c.board()
-            .sessions
-            .iter()
-            .find(|s| s.id == sa)
-            .and_then(|s| s.unsent.clone())
-            .is_some_and(|u| u.text.contains(&delivered))
-    });
     let feed = h.paths.state_dir.join("activity.jsonl");
-    wait_until(std::time::Duration::from_secs(5), "the refusal in the feed", || {
-        read_file(&feed).contains("\"prompt_submit_refused\"")
+    wait_until(std::time::Duration::from_secs(10), "the refused wake owed again", || {
+        read_file(&feed).contains("\"crown_wake_refused\"")
+    });
+    wait_until(std::time::Duration::from_secs(10), "held for the person in the pane", || {
+        pending_of(&mut c, Some(a)).iter().any(|p| {
+            p.action == mesimon_core::command::PendingAction::CrownWake
+                && p.held.as_deref() == Some("when you leave")
+        })
     });
     assert!(!read_file(&feed).contains("prompt_pasted_after_refusal"));
+    assert!(!read_file(&feed).contains("\"crown_wake_sent\""), "nothing told");
+    assert!(c.board().sessions.iter().all(|s| s.id != sa || s.unsent.is_none()), "not unsent");
     // What the person types next is theirs alone.
     assert!(tmux(&tmux_sock)
         .args(["send-keys", "-t", &crown, "-l", "half a thought"])
@@ -1952,7 +1952,9 @@ fn a_mod_road_crown_s_refused_wake_is_never_pasted_under_a_person() {
 /// paste, the worker's hand still up and the wake still owed. Once they
 /// leave, one paste into the empty box delivers it, and only then does the
 /// hand come down. And a submit still pending as a person comes in and
-/// types, refused after their Esc, types nothing under them.
+/// types, refused after their Esc, types nothing under them, tells nothing
+/// and lowers no hand: the wake is owed again, held for them, and one safe
+/// delivery after they send their words and leave settles both.
 #[test]
 fn a_crown_a_person_stopped_holds_its_wake_and_its_hand() {
     let Some(h) = Harness::boot_bare(
@@ -2101,21 +2103,40 @@ fn a_crown_a_person_stopped_holds_its_wake_and_its_hand() {
         .unwrap()
         .success());
     std::fs::write(h.dir.join("mod-release-submit"), "").unwrap();
-    wait_until(std::time::Duration::from_secs(10), "the refused wake kept unsent", || {
-        c.board()
-            .sessions
-            .iter()
-            .find(|s| s.id == sa)
-            .and_then(|s| s.unsent.clone())
-            .is_some_and(|u| u.text.contains(&raised))
+    wait_until(std::time::Duration::from_secs(10), "the refused wake owed again", || {
+        wake_rows(&mut c, a).first().is_some_and(|p| p.held.is_some())
     });
     std::thread::sleep(std::time::Duration::from_millis(1500));
     let screen = tmux(&tmux_sock).args(["capture-pane", "-p", "-t", &crown]).output().unwrap();
     let screen = String::from_utf8_lossy(&screen.stdout).to_string();
     assert!(screen.contains("half a thought") && !screen.contains("raised its hand"), "{screen}");
     assert_eq!(pasted(), 1, "nothing typed under them");
+    assert!(hand_up(&mut c), "no hand down on a refusal");
+    assert_eq!(wake_rows(&mut c, a).len(), 1, "the wake is still owed");
+    assert!(c.board().sessions.iter().all(|s| s.id != sa || s.unsent.is_none()));
+
+    // ---- D. they send their words and leave: one delivery settles both ------
+    for name in ["mod-hold-submit", "mod-release-submit", "mod-stopped-submit"] {
+        std::fs::remove_file(h.dir.join(name)).unwrap();
+    }
+    assert!(tmux(&tmux_sock)
+        .args(["send-keys", "-t", &crown, "Enter"])
+        .status()
+        .unwrap()
+        .success());
+    wait_until(std::time::Duration::from_secs(5), "their words sent", || {
+        read_file(&got).lines().any(|l| l.contains("half a thought"))
+    });
+    start(&mut c, sa);
+    stop(&mut c, sa);
     client.kill().unwrap();
     let _ = client.wait();
+    wait_until(std::time::Duration::from_secs(10), "one delivery of the wake", || {
+        submitted() + pasted() >= 3
+    });
+    wait_until(std::time::Duration::from_secs(5), "the hand down once it went", || {
+        !hand_up(&mut c) && wake_rows(&mut c, a).is_empty()
+    });
 }
 
 /// A Codex crown's wake and a person at its box (T-918), on the synthetic
@@ -8890,4 +8911,167 @@ fn kill_beside_a_running_agent(name: &str, corpse: bool) {
     wait_until(std::time::Duration::from_secs(10), "the agent's finished turn", || {
         std::fs::read_to_string(&got).unwrap_or_default().contains(&finished)
     });
+}
+
+/// T-936, the second read: a crown's wake down its mod's `submit` is told
+/// only on that frame's `entered`, whatever state the crown reads when the
+/// refusal comes. Refused while it reads `EndTurn` (no Esc inferred
+/// first), the wake is owed again with the hand up, and goes by the
+/// guarded paste road into the empty box, nobody there: told only then.
+#[test]
+fn a_crown_wake_refused_at_end_turn_is_owed_until_it_goes() {
+    refused_crown_wake("crown_refused_idle", false);
+}
+
+/// The same refusal landing while the crown reads `Unknown`: the submit is
+/// out, a prompt goes into the crown (which says nothing of the wake), and
+/// the daemon restarts mid-turn. The wake is owed again `after a restart`,
+/// the hand still up through the refusal, and the next delivery settles
+/// both.
+#[test]
+fn a_crown_wake_refused_while_unknown_is_owed_until_it_goes() {
+    refused_crown_wake("crown_refused_unknown", true);
+}
+
+fn refused_crown_wake(name: &str, restart: bool) {
+    let Some(h) = Harness::boot_bare(
+        name,
+        Some(BOX_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_CLAUDE_ROAD", "mod"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client(name);
+    let got = h.dir.join("got.txt");
+    let feed = h.paths.state_dir.join("activity.jsonl");
+    let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
+    let end_turn = SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| *s == end_turn);
+    };
+    let up = |sid: uuid::Uuid| {
+        let pid = h.dir.join(format!("mod-bridge-{sid}.pid"));
+        wait_until(std::time::Duration::from_secs(10), "the mod's bridge", || pid.exists());
+        hook_send_with(
+            &hook_sock,
+            &sid.to_string(),
+            "SessionStart",
+            Some("startup"),
+            r#"{"session_id":"x","transcript_path":"/tmp/t-mod.jsonl","cwd":"/tmp"}"#,
+        );
+    };
+    let a = c.create_ticket("coordinate");
+    let w1 = c.create_ticket("mesimon-probe-936 worker");
+    let kw1 = key_of(&mut c, w1);
+    let sa = c.spawn_claude(a);
+    up(sa);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw1).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw1.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("shared_checkout".into()),
+        },
+    ) {
+        Response::AgentStarted { session_started: true, .. } => {}
+        other => panic!("start_agent {kw1}: {other:?}"),
+    }
+    let ws1 = c.board().live_agent(w1).expect("W1 holds a seat").id;
+    up(ws1);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let frames = || read_file(&h.dir.join(format!("mod-{sa}.ndjson")));
+    let submitted = || {
+        frames()
+            .lines()
+            .filter(|l| l.contains("\"submit\"") && l.contains("raised its hand"))
+            .count()
+    };
+    let raised = format!("{kw1} \"mesimon-probe-936 worker\" raised its hand");
+    let pasted = || read_file(&got).lines().filter(|l| l.contains(&raised)).count();
+    let hand_up = |c: &mut TestClient| c.board().ticket(w1).unwrap().raised.is_some();
+    let at = |cmd: &str| -> Option<u64> {
+        read_file(&feed)
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .find(|l| l["cmd"] == cmd)
+            .and_then(|l| l["at_ms"].as_u64())
+    };
+    std::fs::write(h.dir.join("mod-stopped-submit"), "").unwrap();
+    if restart {
+        std::fs::write(h.dir.join("mod-hold-submit"), "").unwrap();
+    }
+    match c.send(
+        Principal::Agent { session: ws1 },
+        Command::AgentRaiseHand { reason: "which key?".into() },
+    ) {
+        Response::AgentRaised { .. } => {}
+        other => panic!("raise_hand: {other:?}"),
+    }
+    wait_until(std::time::Duration::from_secs(10), "the wake down the crown's mod", || {
+        submitted() == 1
+    });
+    if !restart {
+        // Refused at `EndTurn`: owed again, then typed into the empty box.
+        wait_until(std::time::Duration::from_secs(10), "the refusal", || {
+            at("crown_wake_refused").is_some()
+        });
+        wait_until(std::time::Duration::from_secs(10), "the wake typed", || pasted() == 1);
+        wait_until(std::time::Duration::from_secs(5), "the telling in the feed", || {
+            at("crown_wake_sent").is_some()
+        });
+        let (refused, sent) = (at("crown_wake_refused").unwrap(), at("crown_wake_sent").unwrap());
+        assert!(sent >= refused, "told only after the refusal: {refused} {sent}");
+        assert_eq!(submitted(), 1, "one submit; the second road is the guarded paste");
+        wait_until(std::time::Duration::from_secs(5), "the hand down once it went", || {
+            !hand_up(&mut c)
+        });
+        return;
+    }
+    // A prompt goes into the crown while the submit is out: no word that
+    // the wake went. Then a restart mid-turn: the crown reads `Unknown`,
+    // and the refusal lands then.
+    assert!(hand_up(&mut c));
+    start(&mut c, sa);
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    assert!(hand_up(&mut c) && at("crown_wake_sent").is_none(), "no prompt tells it");
+    drop(c);
+    h.restart();
+    let mut c = h.client(&format!("{name}_2"));
+    let state = c.board().sessions.iter().find(|s| s.id == sa).map(|s| s.state.clone());
+    assert!(matches!(state, Some(SessionState::Unknown { .. })), "{state:?}");
+    std::fs::remove_file(h.dir.join("mod-stopped-submit")).unwrap();
+    std::fs::write(h.dir.join("mod-release-submit"), "").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert!(hand_up(&mut c), "nothing told while the refusal landed");
+    assert!(at("crown_wake_sent").is_none(), "nothing told");
+    // The crown's turn ends: one delivery settles both.
+    std::fs::remove_file(h.dir.join("mod-hold-submit")).unwrap();
+    stop(&mut c, sa);
+    wait_until(std::time::Duration::from_secs(15), "the wake delivered after the restart", || {
+        at("crown_wake_sent").is_some()
+    });
+    wait_until(std::time::Duration::from_secs(5), "the hand down once it went", || {
+        !hand_up(&mut c)
+    });
+    let all = frames();
+    let last = all.lines().rfind(|l| l.contains("raised its hand")).unwrap_or_default();
+    assert!(last.contains("after a restart"), "{last}");
 }
