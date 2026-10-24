@@ -503,25 +503,6 @@ def approval_decision(request, role, worktree):
     return False, f"{what}: {words[:200]}"
 
 
-def worker_push(request):
-    """A worker's `git push` approval, inside a login shell's `-lc` or not
-    (T-930): the fixture's remote is never reached, so the person at the
-    desk declines it, which ends the worker's turn as a refusal does."""
-    command = str(request.get("command") or "").strip()
-    try:
-        words = shlex.split(command)
-    except ValueError:
-        return False
-    if len(words) == 3 and words[0] in ("/bin/zsh", "/bin/bash", "/bin/sh") and words[1] == "-lc":
-        command = words[2]
-    # Any step of an `&&` chain (Sol: `git add … && git commit … && git push`).
-    try:
-        steps = [shlex.split(part) for part in command.split("&&")]
-    except ValueError:
-        return False
-    return request.get("what") == "command" and any(step[:2] == ["git", "push"] for step in steps)
-
-
 def dialog_allows(screen):
     """The native approval dialog is drawn with its allow-once row under the
     cursor (`› 1. Allow`, `› 1. Yes, …`). Anything else, a remembering row
@@ -831,11 +812,15 @@ def adapter(base):
                                  or Path(worktree).resolve() == self.repo.resolve()):
                 worktree = None
             allow, what = approval_decision(request, role, worktree)
-            if not allow and role == "worker" and worker_push(request) and dialog_allows(screen):
+            # A worker's request the rig does not allow (a push, the forge's
+            # CLI, the network) is declined with the dialog's own Esc, as the
+            # person at the desk would, which ends its turn (T-930); left
+            # standing, it held the case to its deadline. A crown's stays.
+            if not allow and role == "worker" and dialog_allows(screen):
                 self.tm("send-keys", "-t", sid.replace("-", "")[:16], "Escape")
                 self.answered[key] = what
                 self.manifest.setdefault("declined", []).append(dict(session=sid, role=role, request=what))
-                self.mark(action="person_declines_worker_push", session=sid, request=what)
+                self.mark(action="person_declines_worker_request", session=sid, request=what)
                 return
             if not allow:
                 if key not in self.left:
