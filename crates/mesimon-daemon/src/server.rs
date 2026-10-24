@@ -1002,6 +1002,10 @@ pub struct Daemon {
     /// and gone at the next state edge (`apply_change`). In memory: a
     /// restart's first edge would clear it anyway.
     crown_answer_lines: HashMap<uuid::Uuid, String>,
+    /// When each seat's last `UserPromptSubmit` was heard (T-957 round 2):
+    /// an interrupt the tail reads, stamped before it, ended an earlier
+    /// turn and is dropped. In memory: a restart's records hear their next.
+    prompted_at: HashMap<uuid::Uuid, u64>,
     /// The machine's agent tiers (T-443), `tiers.toml` as last read — the
     /// layer under `board.tiers`, re-read when another board changes it.
     machine_tiers: tiers::MachineTierCache,
@@ -1546,6 +1550,7 @@ pub fn run(paths: Paths) -> Result<()> {
         crown_plans: HashMap::new(),
         plan_waits: None,
         crown_answer_lines: HashMap::new(),
+        prompted_at: HashMap::new(),
         machine_tiers: tiers::MachineTierCache::new(crate::paths::machine_tiers_file().ok()),
         usage: crate::usage::UsageState::new(crate::usage::shared_file()),
         tier_set_at: HashMap::new(),
@@ -3669,6 +3674,12 @@ impl Daemon {
             {
                 continue;
             }
+            // An interrupt older than the seat's last prompt ended the turn
+            // before it (round 2): the person Esc'd and spoke again at once,
+            // and the prompt's hook beat the tail's read.
+            if observation.at.is_some_and(|at| self.prompted_at.get(&id).is_some_and(|p| *p > at)) {
+                continue;
+            }
             if let Some(change) =
                 self.observe_signal(id, &observation.signal, now, observation.source)
             {
@@ -5157,6 +5168,9 @@ impl Daemon {
                 _ => {}
             }
             if matches!(sig, Signal::UserPromptSubmit) {
+                let board = &self.board;
+                self.prompted_at.retain(|s, _| board.sessions.iter().any(|r| r.id == *s));
+                self.prompted_at.insert(id, now);
                 if let Some(t) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket) {
                     self.moves.asked_by_hand(t);
                     // Our own paste's ack — the owed Enter paid, by us or by

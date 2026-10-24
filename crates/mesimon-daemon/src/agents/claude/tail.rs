@@ -234,6 +234,8 @@ pub struct ClosedDialog {
     pub interrupted: bool,
     /// The result is the last word on the tail.
     pub last: bool,
+    /// The result's stamp.
+    pub at: Option<u64>,
 }
 
 /// The last plan or question call on the tail, when it is `tool`'s and its
@@ -260,10 +262,11 @@ pub fn closed_dialog(path: &Path, tool: TailTool, since: u64) -> Option<ClosedDi
                 return None;
             }
             let (_, at, after) = results.into_iter().find(|(r, _, _)| r == id)?;
-            return at.filter(|at| *at >= since).map(|_| ClosedDialog {
+            return at.filter(|at| *at >= since).map(|at| ClosedDialog {
                 id: id.to_string(),
                 interrupted: after == Some(true),
                 last: after.is_none(),
+                at: Some(at),
             });
         }
         if mesimon_core::adopt::user_prompt(&v).is_some() {

@@ -632,8 +632,8 @@ fn a_refused_dialog_clears_on_the_native_road_s_next_tool_call() {
 /// The result read inside that settle must not turn it back to `Running`:
 /// the stated end stands, and the ticket moves on it (REVIEW). For a
 /// refusal and for an accept. The poll's phase is not the test's to set,
-/// so a case repeats until the feed shows the result read inside the
-/// `Stop`'s settle (three in four do).
+/// so a case repeats, each try staggered against the poll's 2 s, until the
+/// feed shows the result read inside the `Stop`'s settle (three in four do).
 #[test]
 fn a_stop_heard_before_the_dialog_s_result_is_read_keeps_its_turn_end() {
     let Some(mut b) = Bed::boot("planstop") else { return };
@@ -648,6 +648,9 @@ fn a_stop_heard_before_the_dialog_s_result_is_read_keeps_its_turn_end() {
             b.call("ExitPlanMode", &id);
             b.stop_on("ExitPlanMode", &id);
             let seen = b.departures().len();
+            // A try lasts about three tail polls, so each starts at nearly
+            // the same phase of the poll: stagger them to sweep it.
+            std::thread::sleep(Duration::from_millis((n * 700 % 2000) as u64));
             b.result(&id, error, text);
             b.hook("Stop", stop);
             b.c.await_state(b.sid, "the turn's end", |s| {
@@ -866,4 +869,82 @@ fn words_riding_an_approval_wait_for_a_person_to_leave() {
     });
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(text().matches("mesimon-probe-958").count(), 1, "once: {:?}", text());
+}
+
+/// T-957 round 2: an Esc on a plan and, at once, the person's next prompt.
+/// The interrupt the tail reads ended the turn before the prompt, so it must
+/// not end the new one, at High (the dialog's end) or at Low (the hint):
+/// with the prompt's line in the same read as the interrupt, and with the
+/// prompt's hook beating its line to the file. Unpinned and with the flap
+/// pin armed. An Esc with no prompt after it still rests interrupted.
+#[test]
+fn an_esc_then_a_prompt_at_once_leaves_the_new_turn_running() {
+    const STOP: &str = "The user doesn't want to proceed with this tool use. The tool use was \
+                        rejected (eg. if it was a file edit, the new_string was NOT written to \
+                        the file). STOP what you are doing and wait for the user to tell you \
+                        how to proceed.";
+    let interrupted =
+        SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Interrupted };
+    let esc = |b: &Bed, id: &str| {
+        b.result(id, true, STOP);
+        b.append(serde_json::json!({"uuid": format!("abort-{id}"), "type": "user",
+            "timestamp": now_iso(), "message": {"content": [{"type": "text",
+                "text": "[Request interrupted by user for tool use]"}]}}));
+        b.append(serde_json::json!({"uuid": format!("close-{id}"), "type": "system",
+            "subtype": "turn_duration", "durationMs": 1, "timestamp": now_iso()}));
+    };
+    let prompt_line = |b: &Bed| {
+        b.append(serde_json::json!({"uuid": "next", "type": "user", "timestamp": now_iso(),
+            "message": {"content": "Do it another way."}}));
+    };
+    // Whether the dialog's own decision (the last `PreToolUse`'s) left the
+    // pin armed.
+    let pin_of = |b: &Bed| {
+        let dialogs = || -> Vec<serde_json::Value> {
+            b.decisions().into_iter().filter(|d| d["source"] == "PreToolUse").collect()
+        };
+        wait_until(Duration::from_secs(5), "the dialog's decision", || !dialogs().is_empty());
+        let d = dialogs().pop().unwrap();
+        d["decision"]["after"]["pinned_until"]
+            .as_u64()
+            .is_some_and(|until| until > d["at_ms"].as_u64().unwrap())
+    };
+    for (pinned, same_read) in [(false, true), (false, false), (true, true), (true, false)] {
+        let name = format!("planesc_{}_{}", u8::from(pinned), u8::from(same_read));
+        let Some(mut b) = Bed::boot(&name) else { return };
+        b.start();
+        if pinned {
+            // More than four committed changes in 20 s arm the pin.
+            for _ in 0..3 {
+                b.hook("Stop", r#"{"stop_hook_active":false}"#);
+                b.c.await_state(b.sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+                b.prompt();
+            }
+        }
+        b.call("ExitPlanMode", "toolu_e");
+        b.stop_on("ExitPlanMode", "toolu_e");
+        assert_eq!(pin_of(&b), pinned, "the pin as this case wants it");
+        esc(&b, "toolu_e");
+        if same_read {
+            prompt_line(&b);
+        }
+        b.hook("UserPromptSubmit", r#"{"prompt":"Do it another way."}"#);
+        if !same_read {
+            std::thread::sleep(Duration::from_millis(2500));
+            prompt_line(&b);
+        }
+        // Past the settle and two reads of the tail.
+        std::thread::sleep(Duration::from_millis(4500));
+        assert_eq!(
+            b.state(),
+            Some(SessionState::Running),
+            "the new turn (pinned: {pinned}, same read: {same_read}): {:?}",
+            b.decisions().iter().rev().take(4).collect::<Vec<_>>()
+        );
+        // The Esc alone: interrupted.
+        b.call("ExitPlanMode", "toolu_alone");
+        b.stop_on("ExitPlanMode", "toolu_alone");
+        esc(&b, "toolu_alone");
+        b.c.await_state(b.sid, "interrupted by the Esc alone", |s| *s == interrupted);
+    }
 }

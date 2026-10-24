@@ -94,9 +94,12 @@ REFUSED = ("The user doesn't want to proceed with this tool use. The tool use wa
 
 
 def write(transcript, *records):
+    """Records stamped as Claude Code stamps them, UTC to the millisecond."""
+    now = time.time()
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now)) + f".{int(now * 1000) % 1000:03d}Z"
     with open(transcript, "a") as f:
         for record in records:
-            f.write(json.dumps(record) + "\n")
+            f.write(json.dumps({"timestamp": stamp, **record}) + "\n")
 
 
 def result(call, content, error):

@@ -34026,6 +34026,8 @@ arrives first, so it is the one road.
   - the held call's id, with a sibling's result never counted (T-595);
   - the projected request (the guard above);
   - the EOF cursor, which reads only lines written since it started;
+  - for an interrupted end, the turn: no prompt after the interrupt, in the read or heard by the
+    daemon (round 2);
   - for the look back, the spell. The result must be stamped at or after the held spell's start,
     the last dialog call on the tail must be the held tool's, and an undated result counts for
     nothing.
@@ -34049,6 +34051,27 @@ hint. Three holes followed from that:
   `confirms_idle` needs an idle stamp after the new spell. The first block's "until the
   status-file probe" was not a true bound.
 
+**Round 2 (the independent read of `b4c5fe4b`).** An interrupted end selected from a read could
+end a newer turn. The person Escs and at once submits a new prompt: the `UserPromptSubmit`
+removes the projection and settles `Running` before the next tail read. That read then finds the
+result, its interrupt and the turn's close, and the guard (which checks only for another
+projected dialog) let the High `Interrupted` through against the new turn. Under the pin it now
+committed where the old Low hint had been dropped. The interrupt is now bound to the turn it
+ended:
+- **In the read:** a person's prompt (`adopt::user_prompt`) after an interrupt in the same read
+  drops the interrupted end and every `AbortedMidStream` hint read before it.
+- **Across reads, and against a prompt's hook that beats its line to the file:** the interrupted
+  end and the Low hint carry the interrupt record's stamp (`RecoveryObservation::at`; the
+  result's for the look back). The daemon keeps when each seat's last `UserPromptSubmit` was heard
+  (`Daemon::prompted_at`, in memory), and `feed_recovery` drops a stamped observation older than
+  it.
+- An Esc with no prompt after it still ends `Interrupted`. A non-interrupted end is not fenced
+  this way: it moves to `Running`, which a new turn is.
+- `a_stop_heard_before_the_dialog_s_result_is_read_keeps_its_turn_end` failed eight tries in a
+  row on round 2's runs with no fault in the code. A try lasts about 6.2 s, nearly three tail
+  polls, so every try met the poll at the same phase, and round 1's passes were luck. The tries
+  are now staggered by 0.7 s against the poll's 2 s.
+
 **Tests.**
 - Unit, `attention::a_dialog_s_end_off_the_tail_leaves_it_and_keeps_a_stated_leave`:
   - a plan and a question end through the settle;
@@ -34067,7 +34090,9 @@ hint. Three holes followed from that:
   - a refusal or an Esc already on the tail inside the spell is read on the first look, once,
     with the interrupt a read later still its Esc;
   - an older result before the spell, the other tool's call last, and an undated result clear
-    nothing.
+    nothing;
+  - an Esc and a prompt in one read give no end and no hint;
+  - an Esc alone gives an end and a hint that carry the interrupt's stamp.
 - Unit, `tail::a_dialog_s_call_and_its_own_result_are_read_by_id`, on the 2.1.310 record
   trimmed. T-363's restatement test now expects the end on its accepted plan.
 - Unit, `composer::startup_and_dialogs_are_not_a_composer` gained the question screen (2.1.287's
@@ -34102,14 +34127,23 @@ hint. Three holes followed from that:
   - `a_refusal_in_a_restart_s_window_is_read_when_the_cursor_starts`: a plan refused with words
     and a question Esc'd while no daemon ran are read on the new daemon's first look (`Running`,
     `Idle{Interrupted}`). It fails without the look back.
+  - `an_esc_then_a_prompt_at_once_leaves_the_new_turn_running`: an Esc then a prompt, unpinned
+    and pinned (asserted), with the prompt's line in the interrupt's read and with its hook first
+    and its line 2.5 s later. Each new turn reads `Running` past the settle and two tail reads,
+    then an Esc alone rests `Idle{Interrupted}`. Without the daemon's fence the hook-first cases
+    end `Interrupted`, pinned and unpinned.
+- `fake_claude_dialog.py` stamps the transcript rows it writes, as Claude Code does.
 
 **Not done (seen, not changed).**
 - **T-943's walk e2e** (`the_crown_sends_a_plan_back_with_words`) and `PlanBed::clear` still end
   a dialog with an ordinary tool's `PreToolUse`. That is the native road's frame; on the other
   roads the receipt waits for T-955's window instead.
-- **T-955's `sent_back_left`** still hands the machine `ToolStarted`, so a `Stop` settling before
-  its window's end is open to the same replacement round 1 closed here. The brief kept that road
-  as it was.
+- **T-955's `sent_back_left`** still hands the machine `ToolStarted`, but no `Stop` race follows
+  from it (round 2's read of the call path). A `Stop` drops the projected dialog
+  (`dialog_dropped`), so at the window's end `delivery_standing` is false. `revise_settled` then
+  settles `input_sent` with no capture, and `sent_back_left` is never called. In the other order
+  (the screen read's departure first, then the `Stop`), the stated end replaces the pending
+  `Running`, and the writer serialises both. The road stays as it is.
 - **Owed to T-955's block:**
   - The departure assumes the engine replans. An engine that sits idle after a rejection with
     words reads `Running` until the quiet probe or the next frame. This road has the same
