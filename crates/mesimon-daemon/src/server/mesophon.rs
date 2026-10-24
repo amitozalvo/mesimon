@@ -1401,17 +1401,23 @@ impl Daemon {
                 if let DeliveryAnswer::Revise { .. } = pending.answer {
                     let edge = self.control_dialog_edge(id, &pending.request);
                     let standing = self.delivery_standing(id, &pending).is_some();
-                    let mut screen = String::new();
+                    // What the window's end saw, if it looked: `Some(None)`
+                    // is a capture that failed, no observation at all.
+                    let mut seen: Option<Option<String>> = None;
                     let due = Instant::now() >= until;
                     let settled = revise_settled(edge, standing, due, || {
                         let read = self.dialog_capture(id);
-                        screen = read.clone().unwrap_or_default();
+                        seen = Some(read.clone());
                         read
                     });
                     match settled {
                         Some((status, reason)) => {
                             let reason = reason.map(str::to_string);
-                            self.control_settle_dialog(id, pending, status, reason, &screen)
+                            let screen = match &seen {
+                                Some(read) => read.as_deref(),
+                                None => Some(""),
+                            };
+                            self.control_settle_seen(id, pending, status, reason, screen)
                         }
                         None => {
                             pending.next = Instant::now() + Duration::from_millis(250);
@@ -1548,7 +1554,12 @@ impl Daemon {
                 self.control.dialog_deliveries.insert(id, pending);
                 continue;
             }
-            let screen = self.dialog_screen(id);
+            // A plan sent back tells a capture that failed from an empty
+            // screen (T-943): it is no sign of the dialog, gone or there.
+            let capture = self.dialog_capture(id);
+            let unseen =
+                capture.is_none() && matches!(pending.answer, DeliveryAnswer::Revise { .. });
+            let screen = capture.unwrap_or_default();
             let kind = self.session_kind(id);
             let step = match standing {
                 None => Err("state_changed"),
@@ -1558,6 +1569,7 @@ impl Daemon {
                 {
                     Err("deadline")
                 }
+                Some(_) if unseen => Err("pane_unreachable"),
                 Some(s) => dialog_step_for(kind, s, &screen, &pending.walk).map_err(Miss::word),
             };
             let sid = id.simple().to_string()[..16].to_string();
@@ -1628,7 +1640,8 @@ impl Daemon {
                 }
                 Err(reason) => {
                     let reason = walk_reason(reason, pending.steps);
-                    self.control_settle_dialog(id, pending, "unknown", Some(reason), &screen);
+                    let screen = (!unseen).then_some(screen.as_str());
+                    self.control_settle_seen(id, pending, "unknown", Some(reason), screen);
                 }
             }
         }
@@ -1761,6 +1774,22 @@ impl Daemon {
         reason: Option<String>,
         screen: &str,
     ) {
+        self.control_settle_seen(id, pending, status, reason, Some(screen));
+    }
+
+    /// `control_settle_dialog` with what the screen showed, `None` when no
+    /// capture succeeded (T-943): a plan sent back whose last read failed
+    /// keeps the projection it never saw leave, while its record still waits
+    /// on that dialog, so `get_ticket` still carries the request and the plan
+    /// and the next accept or revision is not refused as a changed plan.
+    fn control_settle_seen(
+        &mut self,
+        id: uuid::Uuid,
+        pending: DialogDelivery,
+        status: &str,
+        reason: Option<String>,
+        screen: Option<&str>,
+    ) {
         let waiting = self.dialog_waiting(id);
         let kind = self.session_kind(id);
         let mut standing = false;
@@ -1770,9 +1799,10 @@ impl Daemon {
             trust = matches!(dialog.content, api::DialogContent::Trust { .. });
             // A plan sent back may leave its words in the field (T-943),
             // where the empty row's label no longer shows.
-            let drawn = match pending.answer {
-                DeliveryAnswer::Revise { .. } => plan_dialog_drawn(screen),
-                _ => dialog_shape_for(kind, dialog, screen),
+            let drawn = match (&pending.answer, screen) {
+                (DeliveryAnswer::Revise { .. }, None) => true,
+                (DeliveryAnswer::Revise { .. }, Some(screen)) => plan_dialog_drawn(screen),
+                (_, screen) => dialog_shape_for(kind, dialog, screen.unwrap_or_default()),
             };
             if waiting && drawn {
                 standing = true;

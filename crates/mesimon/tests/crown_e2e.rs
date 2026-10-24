@@ -6431,6 +6431,36 @@ fn a_plan_sent_back_stops_at_any_hand_but_the_crown_s() {
     assert_eq!(revised(receipt), ("unknown".to_string(), Some("dialog_stands".to_string())));
     assert_eq!((pastes(&b), enters(&b)), (p0 + 1, e0 + 1), "never retried");
     assert!(!b.feed().contains("\"outcome\":\"changed\""));
+    b.clear("toolu_r7");
+
+    // ---- a screen read that fails at the window's end: no observation ------
+    // The worker's tmux session is renamed after the Enter, so every capture
+    // of it fails while its pane lives on: the board saw nothing leave, so
+    // the receipt is `unknown` and the request and the plan stay readable,
+    // and the next call on them is not refused as a changed plan.
+    b.show_plan("toolu_w8");
+    let e0 = enters(&b);
+    let receipt = b.call("toolu_w8", words);
+    wait_until(std::time::Duration::from_secs(10), "the Enter", || enters(&b) == e0 + 1);
+    let sid = b.ws.simple().to_string()[..16].to_string();
+    let rename = |from: &str, to: &str| {
+        let ok = tmux(&b.h.paths.tmux_sock())
+            .args(["rename-session", "-t", &format!("={from}"), to])
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(ok, "rename-session {from} {to}");
+    };
+    rename(&sid, "msmn-e2e-hidden");
+    let outcome = revised(receipt);
+    rename("msmn-e2e-hidden", &sid);
+    assert_eq!(outcome, ("unknown".to_string(), Some("pane_unreachable".to_string())));
+    let needs = read(&mut b.c, b.sa, &b.kw.clone()).unwrap().needs_you.expect("still on its plan");
+    assert_eq!(needs.request.as_deref(), Some("toolu_w8"), "the same request");
+    assert_eq!(needs.plan.as_deref(), Some(BED_PLAN), "the same plan");
+    // The field holds the crown's words now: the next walk stops on them,
+    // but it is not refused at the call as a plan that changed.
+    let again = b.call("toolu_w8", words);
+    assert_eq!(revised(again), ("unknown".to_string(), Some("field_touched".to_string())));
 }
 
 /// T-933: a worker stopped on a plan or a question across a daemon restart

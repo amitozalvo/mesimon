@@ -33147,6 +33147,12 @@ into that row.
   - `dialog_stands` when the window ran out with the dialog up;
   - `pane_unreachable` when the capture at the window's end failed. That was `input_sent` until
     the delivery read: a failed capture became an empty screen, which read as the dialog gone.
+    Until the second read, settling it on that empty screen also deleted the projection. That
+    lost the request and the plan from `get_ticket`, and the next call was refused as a changed
+    plan. Now settlement takes the screen as an observation or none (`control_settle_seen`), and
+    for a plan sent back none keeps the projection while the record still waits on it. A failed
+    capture mid-walk is `pane_unreachable` too, with the same keep. Other dialogs' settlement is
+    unchanged.
   - any stop before the Enter.
 
   A worker that thinks past the window before its first tool call after the rejection, with its
@@ -33201,7 +33207,11 @@ into that row.
   - a person's Esc mid-walk;
   - a `PostToolUseFailure` on the call mid-walk;
   - the plan replaced mid-walk;
-  - an Enter the dialog did not take: `dialog_stands` after the window, never retried.
+  - an Enter the dialog did not take: `dialog_stands` after the window, never retried;
+  - a capture that fails after the Enter (the worker's tmux session renamed, the pane alive):
+    `pane_unreachable`, `get_ticket` still reads the same request and plan, and the next call on
+    that request walks rather than being refused. On the old settlement the request reads
+    `None`.
   - The send-back test's last step: a replan at once, with no tool call between, wakes the crown
     a third time, the record still at `Plan`. Without the fix it times out.
   - Then two negative checks (the delivery read). The same dialog said again (its `PreToolUse`,
