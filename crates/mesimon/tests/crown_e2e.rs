@@ -6282,12 +6282,31 @@ fn the_crown_sends_a_plan_back_with_words() {
     );
 
     // ---- the same dialog said again wakes nobody again ----------------------
-    // The crown is idle, so a second wake would land at once.
+    // The crown is idle, so a second wake would land at once. The feed's
+    // hook line is written in the writer turn that judges the frame, so its
+    // count says the repeats were ingested before anything is asserted.
     let hook_sock = b.h.paths.hook_sock();
+    let mod_road = test_road() == "mod";
+    let ingested = |b: &PlanBed, session: uuid::Uuid, event: &str| {
+        b.feed()
+            .lines()
+            .filter(|l| {
+                l.contains("\"kind\":\"hook\"")
+                    && l.contains(&format!("\"session\":\"{session}\""))
+                    && l.contains(&format!("\"event\":\"{event}\""))
+                    && l.contains("\"road\":\"mod\"") == mod_road
+            })
+            .count()
+    };
+    let (pre, perm) = (ingested(&b, ws, "PreToolUse"), ingested(&b, ws, "PermissionRequest"));
     b.hook("PreToolUse", "ExitPlanMode", "toolu_w3");
     b.hook("PermissionRequest", "ExitPlanMode", "toolu_w3");
     let unkeyed = json!({ "tool_name": "ExitPlanMode", "tool_input": { "plan": BED_PLAN } });
     hook_send(&hook_sock, &ws.to_string(), "PermissionRequest", &unkeyed.to_string());
+    wait_until(std::time::Duration::from_secs(10), "the repeated frames ingested", || {
+        ingested(&b, ws, "PreToolUse") == pre + 1
+            && ingested(&b, ws, "PermissionRequest") == perm + 2
+    });
 
     // ---- a person's agent replanning in place wakes nobody through it -------
     let p = b.c.create_ticket("the person's own");
@@ -6303,7 +6322,13 @@ fn the_crown_sends_a_plan_back_with_words() {
     send("PreToolUse", "toolu_p1");
     b.c.await_state(sp, "on its plan", |s| *s == at_plan);
     send("PreToolUse", "toolu_p2");
-    std::thread::sleep(std::time::Duration::from_millis(2500));
+    // The replan judged: the dialog the board holds for P is the new one.
+    wait_until(std::time::Duration::from_secs(10), "P's replan read", || {
+        read(&mut b.c, b.sa, &kp)
+            .ok()
+            .and_then(|v| v.needs_you)
+            .is_some_and(|n| n.request.as_deref() == Some("toolu_p2"))
+    });
     assert_eq!(b.typed().matches(&wake).count(), 3, "a repeat of the same plan wakes once");
     let owed = |b: &PlanBed, worker: ulid::Ulid| {
         b.feed()

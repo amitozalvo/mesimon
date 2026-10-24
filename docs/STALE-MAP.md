@@ -33217,7 +33217,10 @@ into that row.
   - Then two negative checks (the delivery read). The same dialog said again (its `PreToolUse`,
     its `PermissionRequest`, and one with no `tool_use_id`) owes no fourth wake, in the pane or
     in the feed's `crown_wake` lines. A person-started agent stopped on a plan and replanning in
-    place owes the crown none (`crown_claims`).
+    place owes the crown none (`crown_claims`). No timer stands behind either negative (the
+    second read): the repeats count as ingested once the feed's hook lines for them are written,
+    since that happens in the writer turn that judges them; the person's replan is judged once
+    P's `get_ticket` reads `needs_you.request == toolu_p2`.
 - Both pass on the hook road and on the mod pass, with `the_crown_accepts_a_plan_by_default`
   beside them.
 - `crown_rules_e2e::a_deferred_plan_sent_back_as_the_first_call_carries_the_rules` (with T-930):
