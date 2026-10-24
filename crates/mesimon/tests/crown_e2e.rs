@@ -2397,7 +2397,17 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     });
     crown_turn_ends(&mut c);
 
-    // ---- a parked crown: the wake wakes it, its words go as a launch's ----
+    // ---- a parked crown: woken with no words, the wake owed for its box ---
+    // (T-936) Its launch carries nothing, and nothing goes on a person's
+    // ask road: the wake waits, owed and untold, through a restart, for the
+    // live pane's guarded road, the box's paste and its Enter.
+    let sent = || {
+        std::fs::read_to_string(h.paths.state_dir.join("activity.jsonl"))
+            .unwrap_or_default()
+            .matches("\"crown_wake_sent\"")
+            .count()
+    };
+    let told_before = sent();
     assert!(matches!(c.request(Command::SleepSession { id: sa }), Response::Ok));
     wait_until(std::time::Duration::from_secs(10), "the crown parked", || {
         c.board()
@@ -2405,13 +2415,45 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
             .iter()
             .any(|s| s.id == sa && s.state == SessionState::Sleeping && !s.codex_stopping)
     });
+    // The woken runtime draws no box yet: nothing can be pasted.
+    control(
+        sa,
+        json!({"state": idle, "screen": "Synthetic provider fixture\r\n  starting\r\n", "cursor": null}),
+    );
     start(&mut c, ws);
     stop(&mut c, ws);
-    wait_until(std::time::Duration::from_secs(20), "the parked crown woken with the wake", || {
+    wait_until(std::time::Duration::from_secs(20), "the parked crown woken", || {
+        c.board().sessions.iter().any(|s| s.id == sa && s.state != SessionState::Sleeping)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(wakes(&pastes()), 2, "nothing rode the launch");
+    assert_eq!(sent(), told_before, "not told at the launch");
+    assert!(
+        pending_of(&mut c, Some(a))
+            .iter()
+            .all(|p| p.action == mesimon_core::command::PendingAction::CrownWake),
+        "no person's ask filed for the crown"
+    );
+    drop(c);
+    h.restart();
+    let mut c = h.client("crown_codex_box_parked");
+    assert!(
+        pending_of(&mut c, Some(a))
+            .iter()
+            .any(|p| p.action == mesimon_core::command::PendingAction::CrownWake),
+        "the wake owed after the restart"
+    );
+    assert_eq!(sent(), told_before, "nothing told across the restart");
+    // The box comes up: the wake is pasted, shown, and its Enter tells it.
+    draw(sa, "", idle.clone());
+    wait_until(std::time::Duration::from_secs(20), "the wake pasted into the woken box", || {
         wakes(&pastes()) == 3
     });
+    let wake3 = pastes().into_iter().filter(|t| t.contains(&finished)).nth(2).unwrap();
     let before = enters();
+    draw(sa, &wake3, idle.clone());
     wait_until(std::time::Duration::from_secs(10), "the woken crown's Enter", || enters() > before);
+    wait_until(std::time::Duration::from_secs(5), "told at its Enter", || sent() > told_before);
     crown_turn_ends(&mut c);
 
     // ---- a person changes the pasted words: their box, the wake owed again
@@ -9658,4 +9700,106 @@ fn a_retired_wake_frame_leaves_the_outbox() {
         "the next attempt: {frames:?}"
     );
     signal("-CONT");
+}
+
+/// T-936, the fourth read: a person's prompt into a crown its wake is
+/// bringing up, before the wake's own paste and Enter, is the person's: the
+/// wake goes back to owed, untold, and its hand stays up. The delivery that
+/// tells it is its own paste, on the live pane's road, once the crown's
+/// turn on the person's words is over.
+#[test]
+fn a_person_s_prompt_before_a_parked_wake_s_paste_leaves_it_owed() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_parked_prompt",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_CLAUDE_ROAD", "hooks"),
+            ("MESIMON_SLEEP_MIN_AGE_MS", "0"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_parked_prompt");
+    let got = h.dir.join("got.txt");
+    let feed = h.paths.state_dir.join("activity.jsonl");
+    let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-936 worker");
+    let kw = key_of(&mut c, w);
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    assert!(matches!(
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket {
+                key: kw.clone(),
+                seen: v.seen,
+                plan: false,
+                tier: None,
+                workspace: Some("worktree".into()),
+            },
+        ),
+        Response::AgentStarted { .. }
+    ));
+    wait_until(std::time::Duration::from_secs(15), "W's seat", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let raised = format!("{kw} \"mesimon-probe-936 worker\" raised its hand");
+    let typed = || read_file(&got).lines().filter(|l| l.contains(&raised)).count();
+    let hand_up = |c: &mut TestClient| c.board().ticket(w).unwrap().raised.is_some();
+    let owed = |c: &mut TestClient| {
+        pending_of(c, Some(a))
+            .iter()
+            .any(|p| p.action == mesimon_core::command::PendingAction::CrownWake)
+    };
+
+    assert!(matches!(c.request(Command::SleepSession { id: sa }), Response::Ok));
+    c.await_state(sa, "the crown parked", |s| *s == SessionState::Sleeping);
+    match c.send(
+        Principal::Agent { session: ws },
+        Command::AgentRaiseHand { reason: "which key?".into() },
+    ) {
+        Response::AgentRaised { .. } => {}
+        other => panic!("raise_hand: {other:?}"),
+    }
+    wait_until(std::time::Duration::from_secs(15), "the crown woken for it", || {
+        c.board().sessions.iter().any(|s| s.id == sa && s.state != SessionState::Sleeping)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    // A person's prompt reaches the crown before the wake's paste (which
+    // waits for the pane's `SessionStart`).
+    start(&mut c, sa);
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    assert!(hand_up(&mut c), "the person's prompt is no delivery");
+    assert!(owed(&mut c), "the wake owed again");
+    assert!(!read_file(&feed).contains("\"crown_wake_sent\""), "nothing told");
+    assert!(!read_file(&feed).contains("\"crown_wake_delivered\""), "no delivery said");
+    // The crown's turn on their words ends: the wake goes by its own paste.
+    stop(&mut c, sa);
+    wait_until(std::time::Duration::from_secs(15), "the wake typed into the crown", || {
+        typed() == 1
+    });
+    wait_until(std::time::Duration::from_secs(5), "the hand down once it went", || {
+        !hand_up(&mut c) && !owed(&mut c)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    assert_eq!(typed(), 1, "once");
 }

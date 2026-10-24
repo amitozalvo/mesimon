@@ -5915,10 +5915,13 @@ impl Daemon {
             let owed_again = wake && !submitted && !parked && entering.is_some() && {
                 self.wake_not_entered(id)
             };
+            // A prompt before a parked wake's own paste and Enter (T-936) is
+            // a person's, never the wake's: the wake is owed again, and goes
+            // by the live pane's road.
             if wake && parked {
-                self.wake_entered(id);
+                self.wake_not_entered(id);
             }
-            if !owed_again && !(wake && submitted) {
+            if !owed_again && !(wake && (submitted || parked)) {
                 self.feed.board(owed.ack.by, owed.ack.word, Some(ticket));
             }
             // A phone's words that waited for this pane (a relaunch onto
@@ -6296,8 +6299,13 @@ impl Daemon {
                 match composer {
                     Composer::Absent if ready_by <= now => {
                         let words = owed.parked.take();
+                        let wake = owed.ack.word == Ack::CROWN_WAKE.word;
                         self.drop_owed(id);
-                        self.mark_unsent(id, words);
+                        // A crown wake is owed again instead (T-936,
+                        // `lose_entering`), never kept as a second copy.
+                        if !wake {
+                            self.mark_unsent(id, words);
+                        }
                         self.feed.board("daemon", "prompt_submit_not_ready", Some(ticket));
                         changed = true;
                         continue;
@@ -6335,14 +6343,26 @@ impl Daemon {
                 Some(parked) => {
                     let brief = parked.brief;
                     let text = self.launch_words(ticket, &parked);
-                    if text.is_empty() {
-                        let _ = self.backend.send_enter(&sid16);
+                    let pasted = if text.is_empty() {
+                        self.backend.send_enter(&sid16).is_ok()
                     } else {
-                        let _ = self.backend.paste_text(&sid16, &text);
-                    }
+                        self.backend.paste_text(&sid16, &text).is_ok()
+                    };
                     // The words go in now, not when they were parked.
                     if let Some(owed) = self.owed.get_mut(&id) {
                         owed.sent_at = Some(now_ms());
+                    }
+                    // A crown wake parked on this launch (T-936): its own
+                    // paste and Enter are its delivery edge, as a live pane's
+                    // paste is.
+                    let wake =
+                        self.owed.get(&id).is_some_and(|o| o.ack.word == Ack::CROWN_WAKE.word);
+                    let parked_wake = self
+                        .crown_wake_entering
+                        .as_ref()
+                        .is_some_and(|e| e.session == id && e.parked);
+                    if wake && parked_wake && pasted && !text.is_empty() {
+                        self.wake_entered(id);
                     }
                     if !text.is_empty() {
                         // A shell line or a slash command at a wake (T-876,
@@ -6372,7 +6392,9 @@ impl Daemon {
             }
             if left <= 1 {
                 let owed = self.drop_owed(id);
-                let command = owed.as_ref().is_some_and(|o| o.screen_acked);
+                // A crown wake's words are never kept as unsent (T-936).
+                let wake = owed.as_ref().is_some_and(|o| o.ack.word == Ack::CROWN_WAKE.word);
+                let command = owed.as_ref().is_some_and(|o| o.screen_acked) || wake;
                 let words = owed.and_then(|o| o.sent.or(o.parked));
                 // A shell line's or command's presses ran out with the box
                 // never read empty (T-876): the line may well be running,
@@ -8629,12 +8651,32 @@ impl Daemon {
         // A wake that brings the crown's seat up first (T-936): a parked
         // seat's, or a relaunch's onto its tier, parks the words on the
         // launch, and the crown has heard nothing until they are taken.
-        // A Claude seat's alone: a Codex launch's words take its own input
-        // road (`drive_codex_inputs`), told at the drain as before.
-        let launch =
-            (!pane || self.relaunches(id, false)) && self.session_kind(id) == SessionKind::Claude;
-        let ack = if !pane && !launch { Ack::PROMPT } else { Ack::CROWN_WAKE };
-        match self.deliver(crown, seat, text.clone(), ack, false, false) {
+        let launch = !pane || self.relaunches(id, false);
+        // A Codex crown is brought up with no words: its launch has no road
+        // for the wake, and a relaunch would queue them as a person's ask.
+        // The wake stays owed, and the live pane's guarded road (the box's
+        // paste and its Enter) delivers it once the seat takes words. Its
+        // stop and its tier's wake (`drain_tier_switches`) come first.
+        if launch && self.session_kind(id) == SessionKind::Codex {
+            let rec = self.board.sessions.iter().find(|s| s.id == id);
+            if rec.is_some_and(|s| s.codex_stopping || s.tier_wake) {
+                return lost;
+            }
+            let resp = if pane {
+                self.relaunch(crown, id, None, false, "automation", Ack::PROMPT)
+            } else {
+                self.resume_session_in(id, false, false)
+            };
+            if let Response::Err { message } = resp {
+                eprintln!("mesimon: crown wake's seat could not come up: {message}");
+                let at =
+                    self.board.sessions.iter().find(|s| s.id == id).map(|s| s.state_changed_at);
+                self.crown_wake_failed_on = at.map(|at| (id, at));
+                self.feed.board("automation", "crown_wake_failed", Some(crown));
+            }
+            return true;
+        }
+        match self.deliver(crown, seat, text.clone(), Ack::CROWN_WAKE, false, false) {
             // Kept owed (T-936): a failed delivery tells nothing, and goes
             // again once the seat moves.
             Response::Err { message } => {

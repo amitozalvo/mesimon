@@ -32941,3 +32941,24 @@ Tests:
     stopped, a prompt takes the owed entry, and the window passes. A poll then is handed the next
     attempt alone. The old code handed both frames. In `a_crown_wake_nobody_answers_is_retired_and_goes_again`,
     the stopped-bridge phase now reads `unconfirmed`.
+- **A5. A wake that brings the crown up first is told only by its own delivery.**
+  - **The hook launch road.** `ack_owed` told a parked wake at any prompt, so a person's prompt
+    while the words were still parked lowered the hand for words never delivered. Now a prompt
+    before the wake's own paste and Enter returns it to owed, and the feed says no delivery. Its
+    telling is the launch's own paste and Enter, in the launch's press loop, as a live pane's
+    paste is. A launch that gives up on its composer or its presses keeps no unsent copy of the
+    wake's words, which are owed again instead.
+  - **The Codex crown.** Its launch still told the wake at the drain while its words were parked,
+    and its tier relaunch filed them as a person's ask: the heard-never this correction exists to
+    close. A parked Codex crown, or one owed a relaunch onto its tier, is now brought up with no
+    words (`resume_session_in`, `relaunch` with none). The wake stays owed, and the live pane's
+    guarded road delivers it once the seat takes words: the box's paste, then its Enter, which
+    tells it. While its stop is still being confirmed, or its tier's wake (`drain_tier_switches`)
+    is still to come, the drain waits for it.
+  - **Tests.** `crown_e2e::a_person_s_prompt_before_a_parked_wake_s_paste_leaves_it_owed`: the
+    person's prompt leaves the hand up and the wake owed with no `crown_wake_delivered`, then one
+    paste tells it. It fails if that prompt tells the wake. In
+    `a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words`, the parked-crown section
+    has the crown woken with no words, no person's ask filed, and nothing told. The wake stays owed
+    across a restart, then the box's paste and Enter tell it. A Codex tier relaunch has no test of
+    its own.
