@@ -173,6 +173,49 @@ def terminal_env(extra=None):
 # ---------------------------------------------------------------- the board
 
 
+COMPOSER_RULE_MIN = 8
+
+
+def composer_empty(lines, cursor=None):
+    """Claude Code's composer drawn with nothing typed in it (A2, T-945), by
+    the shape `agents::claude::composer::read` measured: the bottom-most `❯`
+    row with a rule of eight or more `─` directly above it and a rule below
+    it, nothing after the glyph and nothing wrapped under it, or a
+    placeholder there with the cursor (`(x, y)`, the pane's own) parked at
+    the input's start. An old prompt in the scrollback, a dialog's selected
+    row and a half-painted box are not one."""
+    def rule(line):
+        line = line.strip()
+        return len(line) >= COMPOSER_RULE_MIN and set(line) == {"─"}
+
+    for row in range(len(lines) - 1, -1, -1):
+        body = lines[row].lstrip()
+        if not body.startswith("❯"):
+            continue
+        if row == 0 or not rule(lines[row - 1]):
+            continue
+        below = next((i for i in range(row + 1, len(lines)) if rule(lines[i])), None)
+        if below is None:
+            continue
+        wrapped = any(l.strip() for l in lines[row + 1:below])
+        if wrapped:
+            return False
+        if not body[1:].strip():
+            return True
+        start = len(lines[row]) - len(body) + 2
+        return cursor == (start, row)
+    return False
+
+
+def file_generation(path):
+    """Which write of `path` is on disk: its inode and mtime, or None."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_ino, st.st_mtime_ns)
+
+
 def word_of(state):
     """A session state as the card says it."""
     if not state:
@@ -949,8 +992,12 @@ class Rig:
         wins the lock: the winner's environment (`ps -wwE`) says whose it
         is, and one that lacks the seam is stopped and the race run again.
         Then `want_probe` names the words `road.json` must come to say."""
+        env_file = os.path.join(self.paths.rt_dir, "shellenv.env")
         for attempt in range(1, 11):
             self.stop_daemon()
+            # The shell environment as it stood before this attempt's daemon
+            # (A2, T-945): only a write after it is the winner's own.
+            self.env_before = file_generation(env_file)
             hello = self.start_daemon(extra_env)
             want = {**self.seams, **(extra_env or {})}
             if all(f"{k}={v}" in self.env_of(hello["daemon_pid"]) for k, v in want.items()):
@@ -1797,7 +1844,6 @@ Reply with the single word ready and end your turn."""
             # The road is judged by the woken crown's record below, never by
             # `road.json`, which a restarted daemon rewrites only when it
             # changes its mind.
-            began = time.time()
             ok = self.restart(env)
             self.restarted = True
             if not ok:
@@ -1806,8 +1852,8 @@ Reply with the single word ready and end your turn."""
             # A launch before the new daemon has the person's shell
             # environment finds no `claude` to probe and takes the hook set.
             env_file = os.path.join(self.paths.rt_dir, "shellenv.env")
-            if not self.wait_for("the daemon's shell environment", lambda: os.path.exists(
-                    env_file) and os.path.getmtime(env_file) >= began, 60, self.watch):
+            if not self.wait_for("the daemon's shell environment", lambda: file_generation(
+                    env_file) not in (None, self.env_before), 60, self.watch):
                 record["failures"].append("the restarted daemon never captured the shell environment")
                 return False
             crown = self.agent_of(self.board(), self.crown)
@@ -1828,14 +1874,17 @@ Reply with the single word ready and end your turn."""
                 return False
             # `SessionStart` fires during Claude Code's startup, before its
             # composer takes a paste: the next step's words wait for the box.
-            drawn = self.wait_for("the crown's composer", lambda: any(
-                l.lstrip().startswith("❯") for l in self.tmux(
-                    "capture-pane", "-p", "-t", sid16(crown["id"])).stdout.splitlines()),
-                60, self.watch)
-            if not drawn:
-                record["failures"].append("the woken crown never drew its composer")
+            def box_empty():
+                pane = sid16(crown["id"])
+                at = self.tmux("display-message", "-p", "-t", pane,
+                               "#{cursor_x} #{cursor_y}").stdout.split()
+                cursor = (int(at[0]), int(at[1])) if len(at) == 2 else None
+                return composer_empty(self.tmux("capture-pane", "-p", "-t", pane)
+                                      .stdout.splitlines(), cursor)
+
+            if not self.wait_for("the crown's empty composer", box_empty, 60, self.watch):
+                record["failures"].append("the woken crown never drew an empty composer")
                 return False
-            time.sleep(2)
             return True
         if what == "person_idles":
             # A2 (T-945): the person stays in the crown's pane and sends it

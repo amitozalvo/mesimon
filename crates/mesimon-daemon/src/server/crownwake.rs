@@ -517,7 +517,7 @@ pub(super) const PERSON_IDLE_MS: u64 = 10 * 60 * 1000;
 
 /// Why a tmux client attached to the crown's pane holds its wake (T-945):
 /// tmux recorded activity from it inside the bound, or its reading cannot
-/// be trusted (missing, past the arithmetic, or a clock stepped back), and
+/// be trusted (missing, past the arithmetic, or after the sample), and
 /// an untrusted reading holds as the attachment alone did before.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ClientHold {
@@ -580,12 +580,14 @@ fn idle_bound(seam: Option<&str>) -> u64 {
 /// `#{session_activity}` (whole epoch seconds) and the sample's own time:
 /// `Recent` until `bound` past the end of the second the stamp names (the
 /// fraction it drops is counted as activity), `Unknown` for a missing
-/// stamp, one more than a second past the sample (a clock stepped back) or
-/// one past the arithmetic, and `None` once the bound has gone by.
+/// stamp, one whose second begins after the sample's time (a clock stepped
+/// back, or input in a later second than the sample began, which the next
+/// sample reads) or one past the arithmetic, and `None` once the bound has
+/// gone by.
 pub(super) fn client_hold(activity: Option<u64>, at_ms: u64, bound_ms: u64) -> Option<ClientHold> {
     let Some(secs) = activity else { return Some(ClientHold::Unknown) };
     let Some(stamp) = secs.checked_mul(1000) else { return Some(ClientHold::Unknown) };
-    if stamp > at_ms.saturating_add(1000) {
+    if stamp > at_ms {
         return Some(ClientHold::Unknown);
     }
     let Some(expiry) = stamp.checked_add(1000).and_then(|s| s.checked_add(bound_ms)) else {
@@ -3449,8 +3451,11 @@ mod tests {
             Some(ClientHold::Recent),
             "renewed before the bound"
         );
-        // A stamp inside the sample's own second is the sample's activity.
-        assert_eq!(client_hold(Some(s + 1), stamp + 500, bound), Some(ClientHold::Recent));
+        // A stamp after the sample is no reading of it, by a millisecond or
+        // by half a second; the stamp's own millisecond is the sample's.
+        assert_eq!(client_hold(Some(s), stamp, bound), Some(ClientHold::Recent), "the stamp's ms");
+        assert_eq!(client_hold(Some(s), stamp - 1, bound), Some(ClientHold::Unknown), "1 ms ahead");
+        assert_eq!(client_hold(Some(s + 1), stamp + 500, bound), Some(ClientHold::Unknown));
         assert_eq!(client_hold(None, expiry, bound), Some(ClientHold::Unknown), "no reading");
         assert_eq!(
             client_hold(Some(s + 5), stamp, bound),

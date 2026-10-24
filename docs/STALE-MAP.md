@@ -33707,8 +33707,10 @@ neither implies the other.
 - **The arithmetic** (`crownwake::client_hold`, pure).
   - A stamp is whole seconds. The bound therefore runs from the end of the second it names:
     expiry = (s + 1) · 1000 + bound, all checked.
-  - A missing or malformed field (the row keeps its `attached`), a stamp more than a second past
-    the sample, or an overflow reads `Unknown`. `Unknown` holds the wake.
+  - A missing or malformed field (the row keeps its `attached`), a stamp whose second begins
+    after the sample's time, or an overflow reads `Unknown`. `Unknown` holds the wake. Input in a
+    later second than the sample began reads `Unknown` for that one sample, and the next sample
+    resolves it.
   - A zero or unreadable seam is refused and the default stands.
   - Time never releases a wake on a stale or failed read. The set changes only on a landed facts
     sample, a paste still needs `person_read_at == landed`, and a failed `list-panes` lands no
@@ -33735,7 +33737,9 @@ neither implies the other.
   - `an_attached_client_holds_the_crown_wake_only_while_active`: two control clients. A no-op
     root-table key from one, sent with `send-keys -K`, renews the hold, read off the stamp tmux
     reports. The wake holds past the first stamp's bound, then goes once with both clients still
-    attached. A second wake meets a draft and is held `after your draft`.
+    attached. A second wake meets a draft and is held `after your draft`. Its `at + 1000 >=
+    renewed_expiry` allows a delivery up to a second early and reads the time at the test's
+    observation, not the delivery's: the strict boundary is the `crownwake` unit test.
   - `a_refused_mod_wake_goes_past_an_idle_client_only_into_an_empty_box`: T-936's refusal.
   - `an_idle_client_and_a_draft_hold_a_wake_the_launch_handed_back`: T-936's hand-back.
   - `a_codex_crown_s_wake_goes_past_an_idle_client_and_enters_only_its_own_box`: the exact box
@@ -33745,7 +33749,17 @@ neither implies the other.
     the active client that holds.
 - Rig A2: the rig's crown is parked and woken onto the hook set at a 120 s bound. A person
   attaches and sends nothing, and the wake goes in once with them still attached. `crown_road`
-  puts the crown back on the mod road.
+  puts the crown back on the mod road. Its readiness waits (the woken crown's empty composer,
+  by `agents::claude::composer`'s measured shape, and a shell environment written by the winning
+  restart attempt's daemon) have offline cases in `ci/rig_test.py`.
+
+**Limits of this specimen.** A2's first two runs failed in the rig's own setup, and what they
+hit is product behaviour, not only harness timing. A person's ordinary words sent after
+`SessionStart` and before Claude Code's composer is ready go in unacked (`paste_unacked`), and a
+launch made while a restarted daemon is still capturing the shell environment probes no
+`claude` and falls to the hook set. The rig's waits avoid both; they neither fix nor disprove
+them. A2's pass is evidence for the hold on the road it reached, not for those readiness
+predicates.
 
 **Not done.**
 - The bound's value, which wants observed wake durations.
