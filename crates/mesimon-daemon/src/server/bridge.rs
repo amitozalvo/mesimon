@@ -785,12 +785,6 @@ impl Daemon {
     /// Take a frame back before its bridge printed it: a road that gave up
     /// on the mod must not have it delivered late as well. `false` when it
     /// was already gone.
-    /// A bridge has polled for this session in this daemon's life (T-936):
-    /// a frame queued for it may have been handed over.
-    pub(super) fn mod_polled(&self, session: uuid::Uuid) -> bool {
-        self.modroad.bridges.contains_key(&session)
-    }
-
     pub(super) fn mod_unqueue(&mut self, session: uuid::Uuid, id: &str) -> bool {
         let Some(queue) = self.modroad.outbox.get_mut(&session) else { return false };
         let before = queue.len();

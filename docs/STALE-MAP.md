@@ -32967,3 +32967,13 @@ Tests:
   saved state did not move. The drain now holds only when the current crown's seat is that seat,
   at that same moment (`crownwake::failed_hold`), and a crown reset (`drop_crown_wakes`) drops the
   hold. Test: `crownwake::a_failed_wake_holds_only_the_seat_it_failed_on`.
+
+**Fifth read (item 6).**
+- **A4. Every unanswered retirement is `unconfirmed`.** Round four's `crown_wake_unreceived`
+  rested on `mod_polled`, but the bridge registry is current, not a history. A bridge that took
+  the frame before a restart and never polls the new daemon read as never offered. The word is
+  `crown_wake_unconfirmed` for every unanswered retirement, and `mod_polled` is gone; no bit is
+  persisted. The unconditional unqueue stays. Test:
+  `crown_e2e::a_wake_offered_before_a_restart_retires_unconfirmed` (the mod takes the frame and
+  holds it; the bridge is stopped; a restart keeps the attempt; its window passes and it retires
+  `unconfirmed`, never `unreceived`).

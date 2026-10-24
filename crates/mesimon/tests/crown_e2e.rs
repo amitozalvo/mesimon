@@ -9271,7 +9271,7 @@ fn a_crown_wake_nobody_answers_is_retired_and_goes_again() {
     std::thread::sleep(std::time::Duration::from_millis(500));
     raise(&mut c, seats[1], "which branch?");
     // Handed to the stopped bridge's poll, its acknowledgement never came:
-    // unconfirmed, never said to be unreceived.
+    // unconfirmed.
     wait_until(std::time::Duration::from_secs(20), "the unacknowledged attempt retired", || {
         retired("crown_wake_unconfirmed").len() == 1
     });
@@ -9802,4 +9802,122 @@ fn a_person_s_prompt_before_a_parked_wake_s_paste_leaves_it_owed() {
     });
     std::thread::sleep(std::time::Duration::from_millis(1000));
     assert_eq!(typed(), 1, "once");
+}
+
+/// T-936, the fifth read: an unanswered submitted wake retires
+/// `unconfirmed`, whatever the daemon knows of its bridge. The crown's
+/// bridge takes the frame; the daemon restarts before its `entered`, keeping
+/// the attempt for a fresh window; the bridge never polls the new daemon;
+/// and the retirement still says `unconfirmed`, never `unreceived`: the
+/// frame was offered before the restart.
+#[test]
+fn a_wake_offered_before_a_restart_retires_unconfirmed() {
+    let Some(h) = Harness::boot_bare(
+        "crown_offered_restart",
+        Some(BOX_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_CLAUDE_ROAD", "mod"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_offered_restart");
+    let journal = h.paths.state_dir.join("daemon.log");
+    let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let up = |sid: uuid::Uuid| {
+        let pid = h.dir.join(format!("mod-bridge-{sid}.pid"));
+        wait_until(std::time::Duration::from_secs(10), "the mod's bridge", || pid.exists());
+        hook_send_with(
+            &hook_sock,
+            &sid.to_string(),
+            "SessionStart",
+            Some("startup"),
+            r#"{"session_id":"x","transcript_path":"/tmp/t-mod.jsonl","cwd":"/tmp"}"#,
+        );
+    };
+    let a = c.create_ticket("coordinate");
+    let w1 = c.create_ticket("mesimon-probe-936 worker");
+    let kw1 = key_of(&mut c, w1);
+    let sa = c.spawn_claude(a);
+    up(sa);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw1).unwrap();
+    assert!(matches!(
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket {
+                key: kw1.clone(),
+                seen: v.seen,
+                plan: false,
+                tier: None,
+                workspace: Some("worktree".into()),
+            },
+        ),
+        Response::AgentStarted { .. }
+    ));
+    wait_until(std::time::Duration::from_secs(15), "W1's seat", || {
+        c.board().live_agent(w1).is_some()
+    });
+    let ws1 = c.board().live_agent(w1).unwrap().id;
+    up(ws1);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // The crown's mod takes the frame and holds it, unanswered.
+    std::fs::write(h.dir.join("mod-hold-submit"), "").unwrap();
+    match c.send(
+        Principal::Agent { session: ws1 },
+        Command::AgentRaiseHand { reason: "which key?".into() },
+    ) {
+        Response::AgentRaised { .. } => {}
+        other => panic!("raise_hand: {other:?}"),
+    }
+    let frame = || {
+        read_file(&h.dir.join(format!("mod-{sa}.ndjson")))
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|v| v["kind"] == "submit" && v.to_string().contains("raised its hand"))
+            .find_map(|v| v["id"].as_str().map(str::to_string))
+    };
+    wait_until(std::time::Duration::from_secs(10), "the frame handed to the mod", || {
+        frame().is_some()
+    });
+    let frame = frame().unwrap();
+    // Its bridge polls no more: the new daemon never hears from it.
+    let bridge = std::fs::read_to_string(h.dir.join(format!("mod-bridge-{sa}.pid")))
+        .unwrap()
+        .trim()
+        .to_string();
+    let signal = |sig: &str| {
+        assert!(std::process::Command::new("kill")
+            .args([sig, &bridge])
+            .status()
+            .unwrap()
+            .success());
+    };
+    signal("-STOP");
+    drop(c);
+    h.restart();
+    let _c = h.client("crown_offered_restart_2");
+    let retired = format!("crown wake {frame} in session {sa}: crown_wake_unconfirmed");
+    wait_until(std::time::Duration::from_secs(25), "the kept attempt retired", || {
+        read_file(&journal).contains(&retired)
+    });
+    assert!(!read_file(&journal).contains("crown_wake_unreceived"), "never said unreceived");
+    std::fs::remove_file(h.dir.join("mod-hold-submit")).unwrap();
+    signal("-CONT");
 }
