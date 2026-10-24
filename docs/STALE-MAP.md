@@ -32918,3 +32918,12 @@ Tests:
   own frame and pane key from a seat that is `Exited` (a killed record keeps its key), and one
   from a replacement pane. It refuses both and takes the report only from the live pane the frame
   went to.
+- **A2. A duplicate wake receipt is never an ordinary delivery.** After the first `entered` tells
+  the wake, its owed entry waits for the prompt. A second `entered` for the same frame used to
+  miss the fence, match that entry as a `Delivery`, and clear the seat's unrelated unsent words.
+  A crown-wake-tagged entry is now never a `Delivery`: a report on it after its wake was told is
+  no one's (journalled `entered, no owner`). An ordinary delivery clears `unsent` only where the
+  words are its own (`Owed::sent`), never because the seat holds some. Test:
+  `crown_e2e::a_duplicate_wake_receipt_leaves_unrelated_unsent_words` (a person's refused words
+  are kept unsent on the crown; a worker's hand is told once; the same frame's `entered` again
+  leaves those words and tells nothing; it fails without the exclusion).

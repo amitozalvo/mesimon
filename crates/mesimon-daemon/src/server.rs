@@ -5720,11 +5720,18 @@ impl Daemon {
             // Whose frame it is, resolved before any effect (T-936), by seat,
             // frame and live pane: the crown's submitted wake, the delivery
             // its owed entry holds, or no one (a retired attempt's, a frame
-            // from a pane since replaced). Each owner's effects, once.
+            // from a pane since replaced). Each owner's effects, once. A
+            // crown wake's entry is never an ordinary delivery: a duplicate
+            // report after the wake was told is still the wake's, and does
+            // nothing.
             let live = self.board.sessions.iter().any(|s| s.id == id && s.state.has_pane());
             let owner = if self.submitted_wake(id, fid) {
                 SubmitOwner::Wake
-            } else if live && self.owed.get(&id).is_some_and(|o| o.frame.as_deref() == Some(fid)) {
+            } else if live
+                && self.owed.get(&id).is_some_and(|o| {
+                    o.frame.as_deref() == Some(fid) && o.ack.word != Ack::CROWN_WAKE.word
+                })
+            {
                 SubmitOwner::Delivery
             } else {
                 SubmitOwner::Nobody
@@ -5738,13 +5745,24 @@ impl Daemon {
                     self.wake_entered(id);
                     self.persist_and_notify();
                 }
-                // The words the card called unsent went in.
+                // The words the card called unsent went in: the seat's unsent
+                // words are cleared only where they are this delivery's own.
                 SubmitOwner::Delivery => {
+                    let carried = self
+                        .owed
+                        .get(&id)
+                        .and_then(|o| o.sent.as_ref())
+                        .map(|p| (p.text.clone(), p.brief));
                     let delivered = self
                         .board
                         .sessions
                         .iter_mut()
                         .find(|s| s.id == id)
+                        .filter(|rec| {
+                            rec.unsent.as_ref().is_some_and(|u| {
+                                carried.as_ref() == Some(&(u.text.clone(), u.brief))
+                            })
+                        })
                         .is_some_and(|rec| rec.unsent.take().is_some());
                     if delivered {
                         self.persist_and_notify();

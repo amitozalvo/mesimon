@@ -9393,3 +9393,139 @@ fn a_wake_parked_on_a_crown_s_launch_outlives_two_restarts() {
     std::thread::sleep(std::time::Duration::from_millis(1000));
     assert_eq!(typed(), 1, "once");
 }
+
+/// T-936, the fourth read: a duplicate report of a crown wake's frame,
+/// after the wake was told and while its owed entry still waits for the
+/// prompt, is still the wake's and does nothing. It never becomes an
+/// ordinary delivery that clears the crown seat's unrelated unsent words.
+#[test]
+fn a_duplicate_wake_receipt_leaves_unrelated_unsent_words() {
+    let Some(h) = Harness::boot_bare(
+        "crown_duplicate_receipt",
+        Some(BOX_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_CLAUDE_ROAD", "mod"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_duplicate_receipt");
+    let feed = h.paths.state_dir.join("activity.jsonl");
+    let journal = h.paths.state_dir.join("daemon.log");
+    let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let up = |sid: uuid::Uuid| {
+        let pid = h.dir.join(format!("mod-bridge-{sid}.pid"));
+        wait_until(std::time::Duration::from_secs(10), "the mod's bridge", || pid.exists());
+        hook_send_with(
+            &hook_sock,
+            &sid.to_string(),
+            "SessionStart",
+            Some("startup"),
+            r#"{"session_id":"x","transcript_path":"/tmp/t-mod.jsonl","cwd":"/tmp"}"#,
+        );
+    };
+    let a = c.create_ticket("coordinate");
+    let w1 = c.create_ticket("mesimon-probe-936 worker");
+    let kw1 = key_of(&mut c, w1);
+    let sa = c.spawn_claude(a);
+    up(sa);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw1).unwrap();
+    assert!(matches!(
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket {
+                key: kw1.clone(),
+                seen: v.seen,
+                plan: false,
+                tier: None,
+                workspace: Some("worktree".into()),
+            },
+        ),
+        Response::AgentStarted { .. }
+    ));
+    wait_until(std::time::Duration::from_secs(15), "W1's seat", || {
+        c.board().live_agent(w1).is_some()
+    });
+    let ws1 = c.board().live_agent(w1).unwrap().id;
+    up(ws1);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let unsent = |c: &mut TestClient| {
+        c.board().sessions.iter().find(|s| s.id == sa).and_then(|s| s.unsent.clone())
+    };
+
+    // ---- a person's words to the crown, refused, kept unsent ---------------
+    std::fs::write(h.dir.join("mod-drop-submit"), "").unwrap();
+    assert!(matches!(
+        c.request(Command::PromptSession {
+            ticket: a,
+            text: "mesimon-probe-936 the person's own words".into(),
+            queued: false,
+            immediately: false,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+            resend: false,
+            uploads: Vec::new(),
+        }),
+        Response::Ok
+    ));
+    wait_until(std::time::Duration::from_secs(10), "the person's words kept unsent", || {
+        unsent(&mut c).is_some_and(|u| u.text.contains("the person's own words"))
+    });
+    std::fs::remove_file(h.dir.join("mod-drop-submit")).unwrap();
+
+    // ---- a worker's hand: its wake entered, told once ----------------------
+    match c.send(
+        Principal::Agent { session: ws1 },
+        Command::AgentRaiseHand { reason: "which key?".into() },
+    ) {
+        Response::AgentRaised { .. } => {}
+        other => panic!("raise_hand: {other:?}"),
+    }
+    wait_until(std::time::Duration::from_secs(10), "the wake told", || {
+        read_file(&feed).contains("\"crown_wake_sent\"")
+    });
+    let frame = read_file(&h.dir.join(format!("mod-{sa}.ndjson")))
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["kind"] == "submit" && v.to_string().contains("raised its hand"))
+        .find_map(|v| v["id"].as_str().map(str::to_string))
+        .expect("the wake's frame");
+
+    // ---- the same frame's report again: nobody's, the words untouched ------
+    hook_send_road(
+        &hook_sock,
+        &sa.to_string(),
+        "ModSubmit",
+        Some(&frame),
+        None,
+        r#"{"outcome":"entered"}"#,
+        Some("mod"),
+    );
+    let none = format!("mod submit {frame} for session {sa}: entered, no owner");
+    wait_until(std::time::Duration::from_secs(10), "the duplicate read as no one's", || {
+        read_file(&journal).contains(&none)
+    });
+    assert!(
+        unsent(&mut c).is_some_and(|u| u.text.contains("the person's own words")),
+        "the unrelated words stay: {:?}",
+        unsent(&mut c)
+    );
+    assert_eq!(read_file(&feed).matches("\"crown_wake_sent\"").count(), 1, "told once");
+}
