@@ -244,6 +244,10 @@ class Wire:
     def sleep(self, session):
         return self.request({"cmd": "sleep_session", "id": session})
 
+    def wake(self, session):
+        """Relaunch a parked session, on the road its daemon reads now."""
+        return self.request({"cmd": "wake_session", "id": session})
+
     def mod_ping(self, session):
         """The whole mod road for one session, timed by the daemon: queued
         for the session's bridge, answered when the mod's pong comes back up

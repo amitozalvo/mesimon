@@ -203,10 +203,6 @@ const LAUNCH_DEATH_MS: u64 = 1_000;
 /// Observe-tier transcript polling cadence (2 s) — stat-then-read, adopted
 /// hook-less sessions only.
 const TAIL_POLL_TICKS: u64 = 8;
-/// The crown's wake row while a person is at the crown's box (T-918,
-/// `Daemon::person_hold`): in its pane, or gone with words left in it.
-const WAKE_WHEN_YOU_LEAVE: &str = "when you leave";
-const WAKE_AFTER_YOUR_DRAFT: &str = "after your draft";
 /// The crown's wake is in a Codex crown's box, its Enter next (T-918).
 const WAKE_SENDING: &str = "sending";
 /// How often a held crown wake asks who is in the crown's pane (T-918).
@@ -657,10 +653,17 @@ pub struct Daemon {
     /// so the ghost row is on the rail the moment the user is back.
     terminals: std::collections::BTreeMap<Option<ulid::Ulid>, Option<String>>,
     /// The panes a tmux client has open (`#{session_attached}`, T-918), by
-    /// session name, from the same fork as the titles: a person is in
-    /// there, and the crown's wake is not pasted under their hands. In
-    /// memory only, like the foregrounds.
+    /// session name, from the same fork as the titles: a person may be in
+    /// there, idle or not (a Codex wake's box is theirs once one came,
+    /// `Entering::person_came`). In memory only, like the foregrounds.
     attached: std::collections::HashSet<String>,
+    /// The panes whose attached client holds the crown's wake (T-945,
+    /// `crownwake::client_hold`): tmux recorded activity from a client
+    /// inside the bound, or its reading cannot be trusted. Read from the
+    /// sample `attached` is, and asked by the wake's two holds alone
+    /// (`person_hold`, `codex_wake_box`); everything else that asks who is
+    /// in a pane reads `attached`.
+    active_clients: HashMap<String, crownwake::ClientHold>,
     /// The sample time `attached` was read at (T-918): a delivery that rests
     /// on who is in a pane and what its box holds takes both from one
     /// sample (`person_read_at`).
@@ -1433,6 +1436,7 @@ pub fn run(paths: Paths) -> Result<()> {
         foregrounds: HashMap::new(),
         terminals: terminals_in(&snap),
         attached: std::collections::HashSet::new(),
+        active_clients: HashMap::new(),
         attached_at: 0,
         person_asked_at: 0,
         reclaim_cache: (0, 0),
@@ -3839,12 +3843,21 @@ impl Daemon {
                 Some((t, foreground_of(&f.current_command, &shell)))
             })
             .collect();
-        // Who has a pane open (T-918): the crown's wake row says so, and
-        // `crown_wake_blocked` holds the paste on it.
+        // Who has a pane open (T-918).
         let attached: std::collections::HashSet<String> = facts
             .iter()
             .filter(|f| f.attached && !f.pane_dead)
             .map(|f| f.session_name.clone())
+            .collect();
+        // Which of them hold the crown's wake (T-945): a client tmux heard
+        // from inside the bound, as of this sample's own time.
+        let bound = crownwake::person_idle_ms();
+        let active_clients: HashMap<String, crownwake::ClientHold> = facts
+            .iter()
+            .filter(|f| f.attached && !f.pane_dead)
+            .filter_map(|f| {
+                Some((f.session_name.clone(), crownwake::client_hold(f.activity, at, bound)?))
+            })
             .collect();
         self.attached_at = at;
         // A person in a Codex crown's pane since its wake went in (T-918):
@@ -3862,11 +3875,13 @@ impl Daemon {
         }
         let repaint = foregrounds != self.foregrounds
             || terminals != self.terminals
-            || attached != self.attached;
+            || attached != self.attached
+            || active_clients != self.active_clients;
         if repaint {
             self.foregrounds = foregrounds;
             self.terminals = terminals;
             self.attached = attached;
+            self.active_clients = active_clients;
         }
         Panes { changed, repaint }
     }
@@ -8615,20 +8630,24 @@ impl Daemon {
     }
 
     /// Why words of the board's would land on a person's (T-918), as the
-    /// crown's wake row says it: a tmux client has the pane open (they may
-    /// be typing), or its box holds words nobody sent (they left a draft,
-    /// which the paste would join and its Enter send). Read off the newest
-    /// pane sample; a delivery takes them from one sample (`person_read_at`).
-    /// A wake that goes by the mod's `submit` lands on nobody's (T-931,
-    /// `crown_wake_by_submit`): nothing is typed into the box.
-    fn person_hold(&self, id: uuid::Uuid) -> Option<&'static str> {
+    /// crown's wake row says it: a tmux client has the pane open and tmux
+    /// recorded activity from it inside the bound (T-945, `active_clients`:
+    /// they may be typing), or its box holds words nobody sent (they left a
+    /// draft, which the paste would join and its Enter send). A client
+    /// attached and quiet past the bound holds nothing, its draft still
+    /// does. Read off the newest pane sample; a delivery takes them from one
+    /// sample (`person_read_at`). A wake that goes by the mod's `submit`
+    /// lands on nobody's (T-931, `crown_wake_by_submit`): nothing is typed
+    /// into the box.
+    fn person_hold(&self, id: uuid::Uuid) -> Option<crownwake::PersonHold> {
+        use crownwake::PersonHold;
         if self.crown_wake_by_submit(id) {
             return None;
         }
         let rec = self.board.sessions.iter().find(|s| s.id == id && s.state.has_pane())?;
         let sid = rec.sid16();
-        if self.attached.contains(&sid) {
-            return Some(WAKE_WHEN_YOU_LEAVE);
+        if let Some(hold) = self.active_clients.get(&sid) {
+            return Some(PersonHold::Client(*hold));
         }
         let draft = self.screens.get(&sid).is_some_and(|(_, screen)| match rec.kind {
             SessionKind::Claude => {
@@ -8648,7 +8667,7 @@ impl Daemon {
             }
             _ => false,
         });
-        draft.then_some(WAKE_AFTER_YOUR_DRAFT)
+        draft.then_some(PersonHold::Draft)
     }
 
     /// The crown's wake into this pane goes by its mod's `submit` (T-931):
@@ -8694,11 +8713,12 @@ impl Daemon {
     /// What a Codex crown's box says about the wake pasted into it, at its
     /// Enter (T-918), off the sampler alone. `Wait` until a sample from
     /// after the paste read the clients and the box together, while a
-    /// person is in the pane, while the box is not the composer, while it
-    /// is empty (Codex has yet to draw the paste) for at most the
-    /// composer's wait, and when the entry says nothing of a paste. `Ours`
-    /// is the box holding the wake as pasted, or holding anything while
-    /// no sample since the paste found a person: nobody else wrote it, and
+    /// client holds the wake (T-945, `active_clients`), while the box is
+    /// not the composer, while it is empty (Codex has yet to draw the
+    /// paste) for at most the composer's wait, and when the entry says
+    /// nothing of a paste. `Ours` is the box holding the wake as pasted, or
+    /// holding anything while no sample since the paste found a client
+    /// attached, idle or not (`person_came`): nobody else wrote it, and
     /// a box that reads otherwise is Codex's drawing of the words (a long
     /// box's top scrolled away). An edit after a person came, or the words
     /// gone, is `Theirs`.
@@ -8711,7 +8731,7 @@ impl Daemon {
         let Some(at) = self.person_read_at(sid).filter(|at| *at >= pasted_at) else {
             return WakeBox::Wait;
         };
-        if self.attached.contains(sid) {
+        if self.active_clients.contains_key(sid) {
             return WakeBox::Wait;
         }
         let Some((_, screen)) = self.screens.get(sid) else { return WakeBox::Wait };
@@ -8751,12 +8771,13 @@ impl Daemon {
     /// otherwise is the Enter's to judge (`codex_wake_box`), so it says
     /// `sending` until then, never `after your draft`.
     fn crown_wake_person(&self, crown: ulid::Ulid) -> Option<&'static str> {
+        use crownwake::PersonHold;
         let QueuedSeat::Pane(id) = self.seat_of(crown) else { return None };
         let entering = self.crown_wake_entering.as_ref().is_some_and(|e| e.session == id);
         match self.person_hold(id) {
-            Some(WAKE_WHEN_YOU_LEAVE) => Some(WAKE_WHEN_YOU_LEAVE),
+            Some(client @ PersonHold::Client(_)) => Some(client.word()),
             _ if entering => Some(WAKE_SENDING),
-            other => other,
+            other => other.map(PersonHold::word),
         }
     }
 

@@ -507,6 +507,93 @@ pub(super) fn failed_hold(
     hold.is_some() && hold == seat
 }
 
+/// How long a tmux client attached to the crown's pane holds its wake after
+/// tmux last recorded activity from it (T-945): ten minutes. It bounds this
+/// hold alone, not the wake's delay: a draft, an unknown reading or another
+/// hold can last longer. A terminal left on the crown's pane held a wake for
+/// eleven hours (2026-10-24); whether ten minutes is the right value needs
+/// observed wake durations.
+pub(super) const PERSON_IDLE_MS: u64 = 10 * 60 * 1000;
+
+/// Why a tmux client attached to the crown's pane holds its wake (T-945):
+/// tmux recorded activity from it inside the bound, or its reading cannot
+/// be trusted (missing, past the arithmetic, or a clock stepped back), and
+/// an untrusted reading holds as the attachment alone did before.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ClientHold {
+    Recent,
+    Unknown,
+}
+
+/// What holds the crown's wake for a person (T-918): a client in its pane,
+/// or words left in its box.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PersonHold {
+    Client(ClientHold),
+    Draft,
+}
+
+impl PersonHold {
+    /// The crown's wake row's word for the hold.
+    pub(super) fn word(self) -> &'static str {
+        match self {
+            PersonHold::Client(ClientHold::Recent) => wake_when_you_leave(),
+            PersonHold::Client(ClientHold::Unknown) => "activity unknown ∙ when you leave",
+            PersonHold::Draft => "after your draft",
+        }
+    }
+}
+
+/// `when you leave or after 10 min without activity`, the bound's own
+/// duration in it: tmux's activity record, never a person's last key.
+fn wake_when_you_leave() -> &'static str {
+    static WORDS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    WORDS.get_or_init(|| {
+        format!("when you leave or after {} without activity", span_words(person_idle_ms()))
+    })
+}
+
+/// `10 min`, `5 s`, `1500 ms`: a bound in the largest unit it fills whole.
+fn span_words(ms: u64) -> String {
+    if ms.is_multiple_of(60_000) {
+        format!("{} min", ms / 60_000)
+    } else if ms.is_multiple_of(1000) {
+        format!("{} s", ms / 1000)
+    } else {
+        format!("{ms} ms")
+    }
+}
+
+/// The bound, shortened by an e2e (`MESIMON_PERSON_IDLE_MS`). Read once, so
+/// the row's words and the hold agree; a zero or unreadable value is
+/// refused and the default stands, never a hold turned off.
+pub(super) fn person_idle_ms() -> u64 {
+    static MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *MS.get_or_init(|| idle_bound(std::env::var("MESIMON_PERSON_IDLE_MS").ok().as_deref()))
+}
+
+fn idle_bound(seam: Option<&str>) -> u64 {
+    seam.and_then(|v| v.trim().parse().ok()).filter(|ms| *ms > 0).unwrap_or(PERSON_IDLE_MS)
+}
+
+/// Does an attached client hold the crown's wake (T-945), from tmux's
+/// `#{session_activity}` (whole epoch seconds) and the sample's own time:
+/// `Recent` until `bound` past the end of the second the stamp names (the
+/// fraction it drops is counted as activity), `Unknown` for a missing
+/// stamp, one more than a second past the sample (a clock stepped back) or
+/// one past the arithmetic, and `None` once the bound has gone by.
+pub(super) fn client_hold(activity: Option<u64>, at_ms: u64, bound_ms: u64) -> Option<ClientHold> {
+    let Some(secs) = activity else { return Some(ClientHold::Unknown) };
+    let Some(stamp) = secs.checked_mul(1000) else { return Some(ClientHold::Unknown) };
+    if stamp > at_ms.saturating_add(1000) {
+        return Some(ClientHold::Unknown);
+    }
+    let Some(expiry) = stamp.checked_add(1000).and_then(|s| s.checked_add(bound_ms)) else {
+        return Some(ClientHold::Unknown);
+    };
+    (at_ms < expiry).then_some(ClientHold::Recent)
+}
+
 /// Whether a mod report about `frame` from `session` is the crown's
 /// submitted wake (T-936): the attempt's own frame, from its seat, while
 /// that seat has a live pane and it is the pane the frame went to. A killed
@@ -3339,6 +3426,70 @@ mod tests {
         assert!(!failed_hold(hold, Some((b, Some(10)))), "another crown's seat");
         assert!(!failed_hold(hold, None), "no seat");
         assert!(!failed_hold(None, Some((a, Some(10)))), "no hold");
+    }
+
+    /// T-945: an attached client holds the crown's wake for the bound past
+    /// the end of the second its activity stamp names, and no longer; a
+    /// reading the arithmetic cannot trust holds as the attachment did.
+    #[test]
+    fn an_attached_client_holds_the_wake_for_the_bound_after_its_activity() {
+        let bound = 600_000;
+        let s = 1_792_850_000_u64;
+        let stamp = s * 1000;
+        assert_eq!(client_hold(Some(s), stamp, bound), Some(ClientHold::Recent), "just now");
+        // The stamp drops the second's fraction: activity at s.999 is still
+        // `s`, so the bound runs from the second's end.
+        let expiry = stamp + 1000 + bound;
+        assert_eq!(client_hold(Some(s), expiry - 1, bound), Some(ClientHold::Recent), "a ms short");
+        assert_eq!(client_hold(Some(s), expiry, bound), None, "the bound gone by");
+        assert_eq!(client_hold(Some(s), expiry + 3_600_000, bound), None, "hours idle");
+        // Renewed a ms before the bound: the new stamp holds again.
+        assert_eq!(
+            client_hold(Some(s + 600), expiry - 1, bound),
+            Some(ClientHold::Recent),
+            "renewed before the bound"
+        );
+        // A stamp inside the sample's own second is the sample's activity.
+        assert_eq!(client_hold(Some(s + 1), stamp + 500, bound), Some(ClientHold::Recent));
+        assert_eq!(client_hold(None, expiry, bound), Some(ClientHold::Unknown), "no reading");
+        assert_eq!(
+            client_hold(Some(s + 5), stamp, bound),
+            Some(ClientHold::Unknown),
+            "a stamp past the sample: a clock stepped back"
+        );
+        assert_eq!(
+            client_hold(Some(u64::MAX), u64::MAX, bound),
+            Some(ClientHold::Unknown),
+            "past the arithmetic"
+        );
+        assert_eq!(
+            client_hold(Some(u64::MAX / 1000), u64::MAX, bound),
+            Some(ClientHold::Unknown),
+            "the expiry past the arithmetic"
+        );
+    }
+
+    /// T-945: the bound's seam is refused at zero or unreadable, never a
+    /// hold turned off, and the row's words carry the bound.
+    #[test]
+    fn the_idle_bound_refuses_a_zero_seam_and_names_itself() {
+        assert_eq!(idle_bound(None), PERSON_IDLE_MS);
+        assert_eq!(idle_bound(Some("0")), PERSON_IDLE_MS);
+        assert_eq!(idle_bound(Some("soon")), PERSON_IDLE_MS);
+        assert_eq!(idle_bound(Some("-5")), PERSON_IDLE_MS);
+        assert_eq!(idle_bound(Some("5000")), 5000);
+        assert_eq!(span_words(PERSON_IDLE_MS), "10 min");
+        assert_eq!(span_words(5000), "5 s");
+        assert_eq!(span_words(90_000), "90 s");
+        assert_eq!(span_words(1500), "1500 ms");
+        assert_eq!(PersonHold::Draft.word(), "after your draft");
+        assert_eq!(
+            PersonHold::Client(ClientHold::Unknown).word(),
+            "activity unknown ∙ when you leave"
+        );
+        assert!(PersonHold::Client(ClientHold::Recent)
+            .word()
+            .starts_with("when you leave or after "));
     }
 
     #[test]

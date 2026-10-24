@@ -139,6 +139,13 @@ pub struct PaneFacts {
     pub current_command: String,
     /// `#{session_attached}` is above zero: a person is in the pane (T-918).
     pub attached: bool,
+    /// `#{session_activity}`, epoch seconds (T-945): the last input tmux
+    /// took from a client of this session, its attach included. `None` is
+    /// a field that did not parse, and the row stands on its other fields.
+    /// Measured on 3.6a: the board's `list-panes`, `capture-pane`,
+    /// `send-keys -t` and `paste-buffer -p` never move it; a client's key,
+    /// paste, mouse, focus or theme report, an attach and a resume do.
+    pub activity: Option<u64>,
     pub title: String,
 }
 
@@ -149,14 +156,15 @@ impl PaneFacts {
     }
 }
 
-/// `session|pid|dead|status|signal|server|command|attached|title` rows.
-/// Eight splits, so the title — the one free-text field, last — keeps any
+/// `session|pid|dead|status|signal|server|command|attached|activity|title`
+/// rows. Nine splits, so the title — the one free-text field, last — keeps any
 /// separator of its own.
 fn parse_facts(out: &str) -> Vec<PaneFacts> {
     out.lines()
         .filter_map(|l| {
-            let f: Vec<&str> = l.splitn(9, SEP).collect();
-            let [name, pid, dead, status, signal, server, cmd, attached, title] = f[..] else {
+            let f: Vec<&str> = l.splitn(10, SEP).collect();
+            let [name, pid, dead, status, signal, server, cmd, attached, activity, title] = f[..]
+            else {
                 return None;
             };
             Some(PaneFacts {
@@ -167,6 +175,7 @@ fn parse_facts(out: &str) -> Vec<PaneFacts> {
                 server_pid: server.parse().unwrap_or(0),
                 current_command: cmd.trim().to_string(),
                 attached: attached.trim().parse::<u32>().is_ok_and(|n| n > 0),
+                activity: activity.trim().parse().ok(),
                 title: title.trim().to_string(),
             })
         })
@@ -647,8 +656,8 @@ impl TmuxBackend {
         Ok(pairs(&out).filter_map(|(name, t)| Some((name.to_string(), t.parse().ok()?))).collect())
     }
 
-    /// Every pane's liveness, foreground command, attached count and OSC-0 title in one fork
-    /// (the title: tmux reports the hostname when the app never set one —
+    /// Every pane's liveness, foreground command, attached count, session
+    /// activity and OSC-0 title in one fork (the title: tmux reports the hostname when the app never set one —
     /// callers filter, same rule as `pane_title`). The title is the last
     /// field because it is the one that may contain the separator.
     pub fn pane_facts(&self) -> Result<Vec<PaneFacts>> {
@@ -661,6 +670,7 @@ impl TmuxBackend {
             "pid",
             "pane_current_command",
             "session_attached",
+            "session_activity",
             "pane_title",
         ]);
         // As `activity`: the liveness fork only on a failure (T-838).
@@ -1196,8 +1206,9 @@ mod tests {
         );
 
         let facts = parse_facts(
-            "abc123|41|0|||900|cargo|0|claude | T-12 fix\nmsmn-term-x|42|1|7||900|zsh|2|host\n\
-             c0dex|43|1|||900|python3|0|host\nkilled|44|1||9|900|sh|0|host\nbare\n",
+            "abc123|41|0|||900|cargo|0|1792850000|claude | T-12 fix\n\
+             msmn-term-x|42|1|7||900|zsh|2|soon|host\n\
+             c0dex|43|1|||900|python3|0|1|host\nkilled|44|1||9|900|sh|0|1|host\nbare\n",
         );
         assert_eq!(
             facts[..2],
@@ -1210,6 +1221,7 @@ mod tests {
                     server_pid: 900,
                     current_command: "cargo".into(),
                     attached: false,
+                    activity: Some(1_792_850_000),
                     title: "claude | T-12 fix".into(),
                 },
                 PaneFacts {
@@ -1220,10 +1232,13 @@ mod tests {
                     server_pid: 900,
                     current_command: "zsh".into(),
                     attached: true,
+                    // A field that does not parse is unknown, and the row
+                    // keeps its attachment (T-945).
+                    activity: None,
                     title: "host".into(),
                 },
             ],
-            "eight splits: the title, last, keeps its own bar"
+            "nine splits: the title, last, keeps its own bar"
         );
         // Dead with no status and no signal: tmux never waited for it
         // (T-917). A signal's death is reaped too.

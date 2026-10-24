@@ -33660,3 +33660,94 @@ the plan's own call fires none, and a sibling's completion says nothing about th
 **Not done (seen, not changed).** A person's own "Tell Claude what to change", or an Esc in the
 pane with no crown walk, has the same hole on the hook set and the classic mod. The crown filed
 it as T-957. T-447's e2e passes on a frame those roads do not send.
+
+## A client idle in the crown's pane stops holding its wake (T-945, 2026-10-24, T-925's gap log row 28, named by the Fable review T-942: "A crown wake waits for an attached client that has been idle for hours")
+
+**The gap.** On the hook road and on Codex, a crown wake waits while a tmux client is attached
+to the crown's pane (T-918), because the paste and its Enter would land in what a person may be
+typing. On 2026-10-24 a terminal left on the crown's pane at 01:18 held T-934's wake, owed at
+01:29:14, until 12:27:05. The mod road has not waited since T-931: its submit never touches the
+box.
+
+**The change.** A client attached to the crown's pane holds the wake only while tmux has
+recorded activity from it inside a bound, ten minutes by default (`crownwake::PERSON_IDLE_MS`,
+seam `MESIMON_PERSON_IDLE_MS`). The draft guard, T-936's `Empty` requirement on the paste road
+and its launch hand-back are unchanged. `Empty` and an expired hold are both still needed, and
+neither implies the other.
+
+- **A policy set beside the physical one.** `PaneFacts.attached` and `Daemon::attached` keep
+  their meaning. `Daemon::active_clients` holds the panes whose attached client holds the wake.
+  It is built in `absorb_panes` from the same sample and the same `at`, and read by the wake's
+  two holds alone: `person_hold`, and `codex_wake_box`'s first wait. `Entering::person_came`
+  keeps reading raw `attached`. A client in the pane at a Codex paste, idle or not, makes a box
+  that no longer reads exactly as the wake the person's (`Theirs`). It never reads `Ours` under
+  the long-box allowance, which would press Enter on someone's edit.
+- **The reading is `#{session_activity}` on the existing `list-panes` fork.** Every crown pane
+  is its own session. `#{client_activity}` is a `list-clients` field, a second fork the tick may
+  not make on the writer (T-857). The two clocks are not required to agree anywhere. Measured on
+  tmux 3.6a (Homebrew and the vendored build, both alike), each action more than a second apart:
+
+  | action | `session_activity` | `client_activity` |
+  |---|---|---|
+  | `list-panes`, `capture-pane`, `send-keys -t <pane>`, `paste-buffer -p` (the board's own), with or without a client | same | same |
+  | a client's key, `send-keys -K -c <client>`, a terminal paste, mouse click and scroll, focus in and out, a theme report (`CSI ? 997 ; 1 n`) | renewed | renewed |
+  | an attach (pty or control mode) | renewed | new client |
+  | `switch-client` back onto the session | renewed | same |
+  | resume after `suspend-client` (a suspended client reads not attached) | renewed | renewed |
+  | the detach key (prefix `d`) | renewed | gone |
+  | prefix `:` opening the prompt | renewed | renewed |
+  | keys inside tmux's command prompt or a `display-panes` overlay, its Enter or C-c | same | same |
+  | a resize, `select-window` and `command-prompt` by command, a control client's command | same | same |
+  | of two clients, the recently active one leaving | stays at the leaver's | — |
+
+  The contract holds: the board's sampling and delivery never renew the hold, and a client's
+  input into the agent does. Renewals that are not a person typing (an attach, a switch back, a
+  resume, a departed client's last key) can only delay a release, and are left that way. Keys
+  typed into tmux's own prompt do not renew it: such a person is not at the agent's box.
+- **The arithmetic** (`crownwake::client_hold`, pure).
+  - A stamp is whole seconds. The bound therefore runs from the end of the second it names:
+    expiry = (s + 1) · 1000 + bound, all checked.
+  - A missing or malformed field (the row keeps its `attached`), a stamp more than a second past
+    the sample, or an overflow reads `Unknown`. `Unknown` holds the wake.
+  - A zero or unreadable seam is refused and the default stands.
+  - Time never releases a wake on a stale or failed read. The set changes only on a landed facts
+    sample, a paste still needs `person_read_at == landed`, and a failed `list-panes` lands no
+    facts at all.
+- **The words** (`PersonHold::word`):
+  - `when you leave or after 10 min without activity`, the bound's own duration in it.
+  - `activity unknown ∙ when you leave` for `Unknown`.
+  - `after your draft` once the client hold clears with words in the box.
+  - There is no countdown. "Activity" is tmux's record of input from a client, not a person's
+    last key or their presence.
+- **What the bound is.** It bounds this one hold after the last recorded activity. It is not the
+  wake's delay: a draft, an unknown reading or another hold can last longer. Whether ten minutes
+  is the right value needs observed wake durations. This ticket adds no telemetry for them.
+- **The residual race** is between the observation and the paste, or the Codex Enter. A person
+  who starts typing after the sample that released the hold, and before the keys land, meets the
+  paste, as an unattached box always could. The timeout gives the board no exclusive hold on the
+  box.
+
+**Tests.**
+- `crownwake`: the bound's `+1 s` edge, renewal just before expiry, `Unknown`, future and
+  overflow, the refused seam values, the words.
+- The backend's parse: a malformed activity field keeps the row.
+- `crown_e2e`, at a 5 s bound:
+  - `an_attached_client_holds_the_crown_wake_only_while_active`: two control clients. A no-op
+    root-table key from one, sent with `send-keys -K`, renews the hold, read off the stamp tmux
+    reports. The wake holds past the first stamp's bound, then goes once with both clients still
+    attached. A second wake meets a draft and is held `after your draft`.
+  - `a_refused_mod_wake_goes_past_an_idle_client_only_into_an_empty_box`: T-936's refusal.
+  - `an_idle_client_and_a_draft_hold_a_wake_the_launch_handed_back`: T-936's hand-back.
+  - `a_codex_crown_s_wake_goes_past_an_idle_client_and_enters_only_its_own_box`: the exact box
+    is entered; a changed box and a clipped box are the person's, and nothing is entered. A
+    mutation pointing `person_came` at the filtered set fails this test.
+  - `the_crown_wake_waits_for_a_person_at_the_crown_s_box`, unchanged on the default bound, is
+    the active client that holds.
+- Rig A2: the rig's crown is parked and woken onto the hook set at a 120 s bound. A person
+  attaches and sends nothing, and the wake goes in once with them still attached. `crown_road`
+  puts the crown back on the mod road.
+
+**Not done.**
+- The bound's value, which wants observed wake durations.
+- A release when the client that kept the stamp fresh has left while another stays: the session
+  stamp keeps the leaver's activity until the bound passes.

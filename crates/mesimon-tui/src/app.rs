@@ -6728,8 +6728,9 @@ impl App {
             });
         }
         // The crown's wake held for a person at the crown's box (T-918):
-        // the daemon's word for why — `when you leave`, `after your draft`,
-        // `sending` (a Codex box holding it for its Enter) —
+        // the daemon's word for why — `when you leave or after 10 min
+        // without activity` (T-945), `after your draft`, `sending` (a Codex
+        // box holding it for its Enter) —
         // outranks its turn, which a person's leaving does not end.
         if let (A::CrownWake, Some(why)) = (p.action, p.held.as_deref()) {
             return Some(format!("crown wakes ∙ {why}"));
@@ -23557,8 +23558,11 @@ mod tests {
         // box (T-918), whose word is the daemon's and outranks the turn.
         assert_eq!(row(&mut app, vec![], false, CrownWake), "crown wakes next");
         assert_eq!(row(&mut app, vec![&own], false, CrownWake), "crown wakes ∙ after its turn");
-        app.pending[0].held = Some("when you leave".into());
-        assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("crown wakes ∙ when you leave"));
+        app.pending[0].held = Some("when you leave or after 10 min without activity".into());
+        assert_eq!(
+            app.pending_row(ulid::Ulid(1)).as_deref(),
+            Some("crown wakes ∙ when you leave or after 10 min without activity")
+        );
         // A Codex box holding the wake for its Enter.
         app.pending[0].held = Some("sending".into());
         assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("crown wakes ∙ sending"));

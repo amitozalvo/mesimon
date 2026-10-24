@@ -116,6 +116,9 @@ case "$1 $2" in
 esac
 """
 WAKE_GRACE = 60
+# The crown's wake row while a client in its pane holds it, at the default
+# bound (T-945).
+WHEN_YOU_LEAVE = "when you leave or after 10 min without activity"
 QUIET = 6.0
 SWEEP_WAIT = 1.0  # the last frames' feed lines, after the worker's end
 # The column the permission tests' workers start in (T-581): Claude Code in
@@ -1782,6 +1785,82 @@ Reply with the single word ready and end your turn."""
                 return False
             record["person_came_ms"] = int(time.time() * 1000)
             return True
+        if what == "crown_road":
+            # A2 (T-945): the rig's crown on `road` (hooks|mod). The road
+            # is read at each launch, so the daemon restarts with the seam
+            # and the crown is parked and woken onto it; `idle_ms` is the
+            # bound a client attached to its pane holds a wake for.
+            road = step.get("road", "hooks")
+            env = {"MESIMON_CLAUDE_ROAD": "hooks"} if road == "hooks" else {}
+            if step.get("idle_ms"):
+                env["MESIMON_PERSON_IDLE_MS"] = str(step["idle_ms"])
+            ok = self.restart(env, want_probe=None if road == "hooks" else "the mod validated")
+            self.restarted = True
+            if not ok:
+                record["failures"].append(f"the daemon would not restart for the {road} road")
+                return False
+            crown = self.agent_of(self.board(), self.crown)
+            self.wire.sleep(crown["id"])
+            if not self.wait_for("the crown parked", lambda: word_of(
+                    (self.agent_of(self.board(), self.crown) or {}).get("state")) == "sleeping",
+                    60, self.watch):
+                record["failures"].append("the crown would not park")
+                return False
+            self.wire.wake(crown["id"])
+            on = self.wait_for(f"the crown on the {road} road", lambda: (lambda r: r and word_of(
+                r["state"]) == "idle" and r.get("road", "hooks") == road)(
+                self.agent_of(self.board(), self.crown)), 120, self.watch)
+            if not on:
+                rec = self.agent_of(self.board(), self.crown) or {}
+                record["failures"].append(f"the crown woke on {rec.get('road', 'hooks')}, "
+                                          f"{word_of(rec.get('state'))}, not idle on {road}")
+                return False
+            return True
+        if what == "person_idles":
+            # A2 (T-945): the person stays in the crown's pane and sends it
+            # no input. The board owes the crown its wake and holds it while
+            # tmux's record of the client's activity is inside the bound;
+            # past it, the wake goes in with the person still attached.
+            tid = test["ticket"]
+            mark = next((i for i, l in enumerate(self.feed_lines)
+                         if l.get("at_ms", 0) >= record["person_came_ms"]), len(self.feed_lines))
+            owed = self.wait_for("the board to owe the crown its wake", lambda: next((
+                l for l in self.feed_lines[mark:] if l.get("kind") == "crown_wake"
+                and l.get("worker") == tid), None), WAKE_GRACE, self.watch)
+            if not owed:
+                record["failures"].append("the board never owed the crown a wake for the worker")
+                return False
+
+            def sent_in():
+                return [l for l in self.feed_lines[mark:] if l.get("kind") == "board"
+                        and l.get("cmd") == "crown_wake_sent" and l.get("ticket") == self.crown]
+
+            rows = []
+            deadline = time.time() + step.get("hold", 180)
+            while time.time() < deadline and not sent_in():
+                rows.append(next((p.get("held") for p in self.wire.snapshot().get("pending", [])
+                                  if p.get("action") == "crown_wake"
+                                  and p.get("ticket") == self.crown), None))
+                self.watch()
+                time.sleep(1)
+            sent = sent_in()
+            crown = self.agent_of(self.board(), self.crown) or {}
+            still_in = bool(self.tmux("list-clients", "-t", sid16(crown.get("id", "")),
+                                      "-F", "#{client_name}").stdout.strip())
+            record["person"] = {"rows": rows, "sent_while_in": len(sent) if still_in else 0,
+                                "sent_after_attach_ms":
+                                sent[0]["at_ms"] - record["person_came_ms"] if sent else None}
+            self.person.kill()
+            self.person.wait()
+            if not sent:
+                record["failures"].append(f"the wake waited for the idle person (rows {rows[-1:]})")
+                return False
+            settled = lambda: self.crown_settled(after_ms=sent[0]["at_ms"], quiet=0)  # noqa: E731
+            if not self.wait_for("crown", settled, STEP_TIMEOUT, self.watch):
+                record["failures"].append("the crown did not settle on the wake")
+                return False
+            self.closed()
+            return True
         if what == "person_leaves":
             # A1 (T-918): with the worker's wake owed, the person stays
             # `hold` seconds, while the board must paste nothing into the
@@ -3091,6 +3170,22 @@ Reply with the single word ready and end your turn."""
                 crown = self.agent_of(board, self.crown)
                 said = last_reply(transcript(crown)) if crown else ""
                 check(c, arg.lower() in said.lower(), f"said {said[:100]!r}")
+            elif name == "went_past_idle_person":
+                # A2 (T-945): the wake row named the bound while the client
+                # was fresh, and the wake went in once, the person still
+                # attached, no sooner than the bound after their attach and
+                # within 10 s past it (`arg`: the bound in seconds).
+                p = record.get("person") or {}
+                rows = [r for r in p.get("rows") or [] if r]
+                secs = int(arg)
+                span = f"{secs // 60} min" if secs % 60 == 0 else f"{secs} s"
+                words = f"when you leave or after {span} without activity"
+                after = p.get("sent_after_attach_ms")
+                bound = int(arg) * 1000
+                ok = (bool(rows) and all(r == words for r in rows) and p.get("sent_while_in") == 1
+                      and after is not None and bound <= after <= bound + 10_000)
+                check(c, ok, f"rows {sorted(set(map(str, rows)))}, {p.get('sent_while_in')} sent "
+                             f"while in, {after} ms after the attach")
             elif name == "held_for_person":
                 # A1 (T-918): the wake waited the whole of the person's stay,
                 # its row said `when you leave` throughout, and it went in
@@ -3101,13 +3196,14 @@ Reply with the single word ready and end your turn."""
                 rows = p.get("rows") or []
                 if p.get("road") == "mod":
                     took = p.get("sent_in_ms")
-                    unheld = not any(r in ("when you leave", "after your draft") for r in rows)
+                    unheld = not any(r and (r.startswith("when you leave") or r.startswith("activity unknown")
+                                            or r == "after your draft") for r in rows)
                     check(c, unheld and p.get("by_mod") and took is not None and took < 10_000,
                           f"mod road: rows {sorted(set(map(str, rows)))}, by the mod {p.get('by_mod')}, "
                           f"in {took} ms of being owed, the person still in")
                 else:
                     after = p.get("sent_after_ms")
-                    held = bool(rows) and all(r == "when you leave" for r in rows)
+                    held = bool(rows) and all(r == WHEN_YOU_LEAVE for r in rows)
                     check(c, held and p.get("sent_while_in") == 0 and after is not None and after < 10_000,
                           f"rows {sorted(set(map(str, rows)))}, {p.get('sent_while_in')} sent while in, "
                           f"in {after} ms after leaving")
