@@ -1399,25 +1399,19 @@ impl Daemon {
                 // Esc or an error leaves it alike, so nothing says the words
                 // were read; an accept that ended it is not this answer.
                 if let DeliveryAnswer::Revise { .. } = pending.answer {
-                    match self.control_dialog_edge(id, &pending.request) {
-                        Some(DialogEdge::Answered | DialogEdge::ModAnswered) => {
-                            let reason = Some("plan_accepted".into());
-                            self.control_settle_dialog(id, pending, "unknown", reason, "")
-                        }
-                        Some(DialogEdge::Dismissed) => {
-                            self.control_settle_dialog(id, pending, "input_sent", None, "")
-                        }
-                        None if self.delivery_standing(id, &pending).is_none() => {
-                            self.control_settle_dialog(id, pending, "input_sent", None, "")
-                        }
-                        None if Instant::now() >= until => {
-                            let screen = self.dialog_screen(id);
-                            let shown = plan_dialog_drawn(&screen);
-                            let (status, reason) = match shown {
-                                true => ("unknown", Some("dialog_stands".to_string())),
-                                false => ("input_sent", None),
-                            };
-                            self.control_settle_dialog(id, pending, status, reason, &screen);
+                    let edge = self.control_dialog_edge(id, &pending.request);
+                    let standing = self.delivery_standing(id, &pending).is_some();
+                    let mut screen = String::new();
+                    let due = Instant::now() >= until;
+                    let settled = revise_settled(edge, standing, due, || {
+                        let read = self.dialog_capture(id);
+                        screen = read.clone().unwrap_or_default();
+                        read
+                    });
+                    match settled {
+                        Some((status, reason)) => {
+                            let reason = reason.map(str::to_string);
+                            self.control_settle_dialog(id, pending, status, reason, &screen)
                         }
                         None => {
                             pending.next = Instant::now() + Duration::from_millis(250);
@@ -1742,9 +1736,15 @@ impl Daemon {
     /// The pane's whole visible screen: a dialog is the question, up to
     /// eight options with their descriptions, and the footer (T-567).
     fn dialog_screen(&self, id: uuid::Uuid) -> String {
+        self.dialog_capture(id).unwrap_or_default()
+    }
+
+    /// `dialog_screen`, with a capture that failed said as `None` (T-943):
+    /// an empty string is no observation that the dialog is gone.
+    fn dialog_capture(&self, id: uuid::Uuid) -> Option<String> {
         match self.pane_tail(id, MAX_PANE_TAIL_LINES) {
-            Response::PaneTail { lines, .. } => lines.join("\n"),
-            _ => String::new(),
+            Response::PaneTail { lines, .. } => Some(lines.join("\n")),
+            _ => None,
         }
     }
 
@@ -5527,6 +5527,34 @@ fn plan_dialog_drawn(screen: &str) -> bool {
     screen.contains("Wouldyouliketoproceed?") && screen.contains("Yes,manuallyapproveedits")
 }
 
+/// What a plan sent back settles as once its Enter went (T-943), or `None`
+/// while it waits: an edge the refusal way, or the projection dropped, is
+/// the dialog gone (`input_sent`); an accept that ended it is not this
+/// answer (`unknown`, `plan_accepted`). At the window's end with the
+/// projection still standing, only a screen read that succeeded can say the
+/// dialog is gone; one that shows it is `dialog_stands`, and a capture that
+/// failed is `pane_unreachable`. `capture` is read at most once, then.
+fn revise_settled(
+    edge: Option<DialogEdge>,
+    standing: bool,
+    due: bool,
+    capture: impl FnOnce() -> Option<String>,
+) -> Option<(&'static str, Option<&'static str>)> {
+    match edge {
+        Some(DialogEdge::Answered | DialogEdge::ModAnswered) => {
+            Some(("unknown", Some("plan_accepted")))
+        }
+        Some(DialogEdge::Dismissed) => Some(("input_sent", None)),
+        None if !standing => Some(("input_sent", None)),
+        None if !due => None,
+        None => match capture() {
+            None => Some(("unknown", Some("pane_unreachable"))),
+            Some(screen) if plan_dialog_drawn(&screen) => Some(("unknown", Some("dialog_stands"))),
+            Some(_) => Some(("input_sent", None)),
+        },
+    }
+}
+
 /// The plan dialog's cursor row on `screen`, if it shows exactly one.
 fn plan_cursor(screen: &str) -> Option<usize> {
     dialog_rows(screen).and_then(|rows| cursor(&rows).ok())
@@ -8045,6 +8073,40 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
             revise_step(&d, hinted, &plan_screen(hinted, 2), &pasted),
             Ok(DialogStep::Submit)
         );
+    }
+
+    /// T-943: a plan sent back claims `input_sent` only on evidence the
+    /// dialog left. At the window's end with the projection standing, a
+    /// failed capture is `unknown { pane_unreachable }`, never the dialog
+    /// gone, and a screen still drawing it is `dialog_stands`.
+    #[test]
+    fn a_plan_sent_back_claims_the_dialog_gone_only_on_a_screen_read() {
+        let never = || -> Option<String> { panic!("no capture before the window's end") };
+        assert_eq!(revise_settled(None, true, false, never), None, "waits");
+        assert_eq!(
+            revise_settled(None, true, true, || None),
+            Some(("unknown", Some("pane_unreachable")))
+        );
+        let up = plan_screen("Use echo", 2);
+        assert_eq!(
+            revise_settled(None, true, true, || Some(up.clone())),
+            Some(("unknown", Some("dialog_stands")))
+        );
+        assert_eq!(
+            revise_settled(None, true, true, || Some("❯ the composer".into())),
+            Some(("input_sent", None))
+        );
+        assert_eq!(revise_settled(None, false, false, never), Some(("input_sent", None)));
+        assert_eq!(
+            revise_settled(Some(DialogEdge::Dismissed), true, false, never),
+            Some(("input_sent", None))
+        );
+        for accepted in [DialogEdge::Answered, DialogEdge::ModAnswered] {
+            assert_eq!(
+                revise_settled(Some(accepted), true, true, never),
+                Some(("unknown", Some("plan_accepted")))
+            );
+        }
     }
 
     /// T-943, the delivery read's two counterexamples: a person's draft that

@@ -33130,10 +33130,18 @@ into that row.
     word: `field_touched`, `cursor_moved`, `a_person_attached`, `state_changed`,
     `shape_unrecognised`. Nothing falls back to the composer or an accept row.
 - **The receipt claims only what is proven.** `input_sent` means the final Enter went and the
-  dialog left: a `Dismissed` edge, the projection dropped, or no plan dialog on the screen when
-  the 30 s window (`PLAN_CHANGE_CONFIRM`) runs out. Everything else is `unknown`:
-  `plan_accepted` when an accept ended the dialog, `dialog_stands` when the window ran out with the
-  dialog up, and any stop before the Enter. There is no `changed`. An Esc, a person's own
+  dialog left: a `Dismissed` edge, the projection dropped, or a screen read that succeeds and shows
+  no plan dialog when the 30 s window (`PLAN_CHANGE_CONFIRM`) runs out. Everything else is
+  `unknown` (`revise_settled`):
+  - `plan_accepted` when an accept ended the dialog;
+  - `dialog_stands` when the window ran out with the dialog up;
+  - `pane_unreachable` when the capture at the window's end failed. That was `input_sent` until
+    the delivery read: a failed capture became an empty screen, which read as the dialog gone.
+  - any stop before the Enter.
+
+  A worker that thinks past the window before its first tool call after the rejection, with its
+  dialog still drawn, settles `unknown`. That is honest, and the crown's wake for its next plan is
+  the signal either way. There is no `changed`. An Esc, a person's own
   rejection and an unrelated error leave the dialog the same way, so nothing proves these words
   were read. A timeout never retries the paste.
 - **Who sees it.** `♛ sent plan back` on the card; `plan sent back by T-…: <words>` on the
@@ -33163,7 +33171,8 @@ into that row.
 - Daemon: `a_plan_sent_back_walks_to_the_empty_feedback_field_and_pastes_there`,
   `a_plan_sent_back_presses_enter_only_on_its_own_words`,
   `a_plan_sent_back_sends_nothing_into_another_screen`,
-  `a_draft_that_spells_a_hint_is_never_the_field_the_crown_wants` and
+  `a_draft_that_spells_a_hint_is_never_the_field_the_crown_wants`,
+  `a_plan_sent_back_claims_the_dialog_gone_only_on_a_screen_read` and
   `a_plan_change_is_refused_never_rewritten`, all on the screen captured above.
 - **The stand-in.** `fake_claude_dialog.py` draws 2.1.310's rows and hint lines and keeps row 3
   as a field. It records a plan sent back to `changed-<ticket>.json` with its row, and has two
