@@ -5480,43 +5480,52 @@ const FEEDBACK_ROW: &str = "Tell Claude what to change";
 const APPROVE_HINT: &str = "shift+tab to approve with this feedback";
 const EDITOR_LINE: &str = "ctrl+g to edit in ";
 
-/// Each plan dialog row's field, squeezed (T-943): the row's own lines, its
-/// numbered line and those drawn under it as `dialog_rows` gathers them,
-/// with the line boundaries kept until the hints are taken off. Only the
-/// last row carries the hints, and only as whole lines at its end: the
-/// editor line last, the approve hint above it, each at most once, never
-/// the row's own first line. A hint's words anywhere else, inside a line or
-/// above other words, are the field's, so a person's draft that spells one
-/// never reads as the empty field or as the crown's words. `None` when the
-/// rows are not `dialog_rows`' `count` rows.
+/// Each plan dialog row's field, squeezed (T-943), parsed for the walk
+/// alone: rows begin at the menu's numbered lines (from its last `1.`), a
+/// row's field is its numbered line and every line under it to the next
+/// numbered line, and the last row's runs to the end of the screen,
+/// through blank and box-drawing lines, since a person's draft in the
+/// native field may hold any of them. No footer is cut: 2.1.310 draws none,
+/// and a line that merely holds `Enter to select` is the field's. From the
+/// end of the last row come off, in turn, trailing blank lines, the editor
+/// line (`ctrl+g to edit in <editor> · <file>`), and the approve hint line
+/// exactly above it, each once and never the row's own first line;
+/// whatever is left is the field, compared whole. `None` when the rows are
+/// not `dialog_rows`' `count` rows.
 fn feedback_fields(screen: &str, count: usize) -> Option<Vec<String>> {
-    let lines: Vec<&str> = screen.lines().collect();
-    let footer = lines.iter().rposition(|l| l.contains("Enter to select")).unwrap_or(lines.len());
     let mut blocks: Vec<(usize, Vec<&str>)> = Vec::new();
-    let mut open = false;
-    for line in &lines[..footer] {
-        let line = line.trim();
+    for line in screen.lines().map(str::trim) {
         if let Some((_, number, label)) = numbered(line) {
             blocks.push((number, vec![label]));
-            open = true;
-        } else if line.chars().all(|c| ('\u{2500}'..='\u{257f}').contains(&c)) {
-            open = false;
-        } else if let (true, Some((_, block))) = (open, blocks.last_mut()) {
+        } else if let Some((_, block)) = blocks.last_mut() {
             block.push(line);
         }
     }
     let first = blocks.iter().rposition(|(number, _)| *number == 1)?;
     let mut blocks = blocks.split_off(first);
-    if let Some((_, last)) = blocks.last_mut() {
-        if last.len() > 1 && last.last().is_some_and(|l| l.starts_with(EDITOR_LINE)) {
-            last.pop();
+    let last = blocks.len().checked_sub(1)?;
+    for (at, (_, block)) in blocks.iter_mut().enumerate() {
+        while block.len() > 1 && block.last().is_some_and(|l| l.is_empty()) {
+            block.pop();
         }
-        if last.len() > 1 && last.last() == Some(&APPROVE_HINT) {
-            last.pop();
+        if at != last {
+            continue;
+        }
+        if block.len() > 1 && block.last().is_some_and(|l| editor_line(l)) {
+            block.pop();
+        }
+        if block.len() > 1 && block.last() == Some(&APPROVE_HINT) {
+            block.pop();
         }
     }
     (blocks.len() == count)
         .then(|| blocks.iter().map(|(_, block)| squeeze(&block.concat())).collect())
+}
+
+/// The editor line under the plan dialog, as measured on 2.1.310:
+/// `ctrl+g to edit in Nvim · ~/.claude/plans/<name>.md`.
+fn editor_line(line: &str) -> bool {
+    line.strip_prefix(EDITOR_LINE).is_some_and(|rest| rest.contains(" · "))
 }
 
 /// Whether `screen` draws Claude Code's plan dialog, its feedback field
@@ -5588,6 +5597,9 @@ fn revise_step(
         }
         let mut empty = fields.iter().enumerate().filter(|(_, f)| **f == label);
         return match (empty.next(), empty.next()) {
+            // The feedback row closes the menu; a numbered line after it is
+            // a draft's, which the walk cannot tell from a row.
+            (Some((target, _)), None) if target + 1 != fields.len() => Err(Miss::FieldTouched),
             (Some((target, _)), None) if target == current => {
                 Ok(DialogStep::Paste { question: target, text: text.to_string() })
             }
@@ -5599,6 +5611,9 @@ fn revise_step(
     };
     if current != row {
         return Err(Miss::CursorMoved);
+    }
+    if row + 1 != fields.len() {
+        return Err(Miss::FieldTouched);
     }
     match fields.get(row) {
         Some(field) if *field == squeeze(text) => Ok(DialogStep::Submit),
@@ -8134,6 +8149,42 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         assert_eq!(
             revise_step(&d, "Use echo", &plan_screen("Use echo", 2), &pasted),
             Ok(DialogStep::Submit)
+        );
+    }
+
+    /// T-943, the second read's counterexamples: a draft line that holds
+    /// `Enter to select`, or that follows a blank line, is the field's and
+    /// never cut off it, so the field is not the crown's words and no Enter
+    /// goes; before the paste, the label with a draft under a blank line is
+    /// not the empty field and no paste goes. A numbered line after the
+    /// feedback row is no row of the dialog's: the walk stops.
+    #[test]
+    fn a_draft_past_a_blank_or_beside_a_footer_s_words_is_still_the_field() {
+        let d = plan_dialog();
+        let pasted = Walk { pasted: vec![2], at: Some(2), ..Walk::default() };
+        let footer = plan_screen("Use echo\n        Enter to select AND MY DRAFT", 2);
+        assert_eq!(revise_step(&d, "Use echo", &footer, &pasted), Err(Miss::FieldTouched));
+        let blank = plan_screen(
+            "Use echo\n        shift+tab to approve with this feedback\n\n        MY DRAFT",
+            2,
+        );
+        assert_eq!(revise_step(&d, "Use echo", &blank, &pasted), Err(Miss::FieldTouched));
+        let rule = plan_screen("Use echo\n        ────────\n        MY DRAFT", 2);
+        assert_eq!(revise_step(&d, "Use echo", &rule, &pasted), Err(Miss::FieldTouched));
+        let walk = Walk { at: Some(2), ..Walk::default() };
+        let label = plan_screen("Tell Claude what to change\n\n        MY DRAFT", 2);
+        assert_eq!(revise_step(&d, "Use echo", &label, &walk), Err(Miss::FieldTouched));
+        let footer = plan_screen("Tell Claude what to change\n        Enter to select MY DRAFT", 2);
+        assert_eq!(revise_step(&d, "Use echo", &footer, &walk), Err(Miss::FieldTouched));
+        let numbered = plan_screen("Use echo\n   4. my own row", 2);
+        assert_eq!(revise_step(&d, "Use echo", &numbered, &pasted), Err(Miss::FieldTouched));
+        // Blank lines after the dialog are the screen's, not the field's.
+        let tail = format!("{}\n\n\n", plan_screen("Use echo", 2));
+        assert_eq!(revise_step(&d, "Use echo", &tail, &pasted), Ok(DialogStep::Submit));
+        let empty = format!("{}\n\n", plan_screen("Tell Claude what to change", 2));
+        assert_eq!(
+            revise_step(&d, "Use echo", &empty, &walk),
+            Ok(DialogStep::Paste { question: 2, text: "Use echo".into() })
         );
     }
 

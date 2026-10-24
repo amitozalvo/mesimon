@@ -33126,6 +33126,16 @@ into that row.
     to change ctrl+g to edit MY DRAFT` read as the empty field, and `Use echo ctrl+g to edit AND MY
     DRAFT` read as the crown's `Use echo`. Both counterexamples are now tests, and both are
     `field_touched`.
+  - **The field runs to the end of the screen** (the second read). The parser is the walk's own
+    (`feedback_fields`), and the other dialogs' parsers are untouched. The last row's field takes
+    every line under its numbered line, through blank and box-drawing lines, and no
+    `Enter to select` footer is cut. 2.1.310 draws no footer, and a person's multi-line draft in
+    the native field may hold any of those lines. Only these come off the end: trailing blank
+    lines, the editor line (`ctrl+g to edit in … · …`), and the approve hint exactly above it.
+    The feedback row must be the menu's last numbered row, so a numbered line drafted after it
+    stops the walk. A draft line holding `Enter to select`, or following a blank line, used to read
+    as nothing, which left the field equal to `Use echo`. Each case is now a test, before the
+    paste and after it, and each is `field_touched`.
   - Anything else stops the walk with nothing more typed, and the receipt is `unknown` with its
     word: `field_touched`, `cursor_moved`, `a_person_attached`, `state_changed`,
     `shape_unrecognised`. Nothing falls back to the composer or an accept row.
@@ -33172,6 +33182,7 @@ into that row.
   `a_plan_sent_back_presses_enter_only_on_its_own_words`,
   `a_plan_sent_back_sends_nothing_into_another_screen`,
   `a_draft_that_spells_a_hint_is_never_the_field_the_crown_wants`,
+  `a_draft_past_a_blank_or_beside_a_footer_s_words_is_still_the_field`,
   `a_plan_sent_back_claims_the_dialog_gone_only_on_a_screen_read` and
   `a_plan_change_is_refused_never_rewritten`, all on the screen captured above.
 - **The stand-in.** `fake_claude_dialog.py` draws 2.1.310's rows and hint lines and keeps row 3
