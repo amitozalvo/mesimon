@@ -1067,13 +1067,16 @@ def adapter(base):
                 sent = [line for line in feed if line.get("cmd") == "crown_wake_sent" and line.get("ticket") == self.crown]
                 rows = self.crown_rows(board)
                 last = user_turns(rows)[-1][0] if user_turns(rows) else None
-                # A worker whose push the person declined ends its turn
-                # interrupted (T-930), which is its turn over all the same.
+                # A worker whose request the person declined ends its turn
+                # interrupted (T-930): its turn is over all the same, and the
+                # board wakes no crown for an interrupted turn, so none is
+                # waited for. The forge's news is still what wakes it next.
                 seat = self.seat(board, worker["id"])
-                over = self.turn_ended(seat) or self.turn_ended(
-                    dict(seat, state={"state": "idle", "stop_reason": "end_turn"})) and seat["state"] == {
-                    "state": "idle", "stop_reason": "interrupted"}
-                return (wakes and len(sent) >= 1 and last is not None and answered_after(rows, last)
+                interrupted = seat["state"] == {"state": "idle", "stop_reason": "interrupted"}
+                over = self.turn_ended(seat) or interrupted and self.turn_ended(
+                    dict(seat, state={"state": "idle", "stop_reason": "end_turn"}))
+                woken = interrupted or (wakes and len(sent) >= 1)
+                return (woken and last is not None and answered_after(rows, last)
                         and over
                         and self.turn_ended(self.seat(board, self.crown_sid)))
             self.until("the worker's first turn and the crown's turn on its wake end", settled, steady=12)
