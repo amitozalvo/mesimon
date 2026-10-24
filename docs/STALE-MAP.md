@@ -32088,7 +32088,8 @@ for the users in most situations". Text an agent or the crown is told states wha
 and what is the person's, never how to work; CLAUDE.md and AGENTS.md carry it as one line. Every
 sentence of `CROWN_WAKES`, `CROWN_ROLE`, `crown_tiers!`, the three `persons_*!` clauses, the
 crown tools' descriptions and `WORKER_UNDER_CROWN` was classed mechanics, boundary or method.
-Method went, in clusters measured apart:
+Method went, grouped into clusters and measured together (every cut changed at once; no
+cluster bisect ran, since none was owed):
 - **C1, tiers:** how to pick one went; the fallbacks and "each tier's description is the
   person's words on when to use it" stay.
 - **C2, a hand's form:** "naming the worker and the X, puts one card", "before the turn ends,
@@ -32148,20 +32149,25 @@ Method went, in clusters measured apart:
 | U1, X3, F2, N1, HT1, W1, TR1 | 3/3 each | 3/3 each |
 | DL1 (valid samples) | 3/3 | 3/3 |
 | F7, F9, F12, M1, X1, RH1, WR1, D5 | 1/1 each | 1/1 each |
-| F3 | 0/1 | 0/1 |
-| L2 | 0/1 | 0/1 |
-| L1 (N=3, the arms differed at N=1) | 1/3 | 3/3 |
+| F3 | inconclusive (0/1 raw) | inconclusive (0/1 raw) |
+| L2 | inconclusive (0/1 raw) | inconclusive (0/1 raw) |
+| L1 (N=3, the arms differed at N=1) | inconclusive (1/3 raw) | inconclusive (3/3 raw) |
 | Codex delegate (valid) | 3/3 | 3/3 |
 | Codex forge (final rule) | 3/3 | 3/3 |
 
-- **No case regresses in B by the plan's rule, so no bisect was owed.**
-- **L1** is the one difference, B's way. Arm A's crown parked its worker with `sleep_agent` and
-  moved it to DONE the moment its first turn ended, so the usage limit came to a parked worker
-  and never woke the crown. Its text said "the park and the move are the crown's to do".
-- **F3 fails in both arms the same way.** The check wants a `merge_ticket` call, and the crown,
-  reading that the forge merges the PR, raised a hand or asked its worker instead.
-- **L2 fails in both arms the same way.** A blind crown carries the worker on at the limit's
-  wake, before the person's step, then sends again on the step.
+- **No regression was detected in B under the plan's rule, so no bisect was owed.** Equal
+  outcomes at N = 3 establish that and no more: not that every cut is harmless.
+- **Three oracles were unsound and are fixed after these runs** (the delivery read); their
+  results stay raw and are inconclusive under the corrected oracles, never rescored:
+  - **F3** required a `merge_ticket` call the crown knew would be refused (the forge owns the
+    merge). It now judges merge ownership and a forge outcome or a named obstacle
+    (`crown_obstacle`), and the refusal is scripted in F3S.
+  - **L1** sent the limit after the worker's turn had ended, so a crown that parked the finished
+    worker never heard it. The raw split (A 1/3, B 3/3) followed arm A's text, "the park and the
+    move are the crown's to do", but it measured parking, not a limit. The limit now lands on a
+    worker proven in a turn (`live`).
+  - **L2** assumed the crown waits for the person's tier choice, which nothing in its first
+    prompt asked; the person now says so up front.
 
 **The rig's own defects, found by these runs and fixed for both arms:**
 - `git merge-base` read as a write.
@@ -32177,18 +32183,28 @@ Method went, in clusters measured apart:
 
 **Measured.**
 - **Receipts:** median 11,434 bytes in A, 458 in B.
-- **Rule-bearing results per case:** about 12.3 KB in A, about 15.6 KB in B, because B's first
-  call and the crown's own `get_ticket` both carry the rules.
-- **All results per case:** median 20.6 KB in A, 18.9 KB in B.
-- **What this means:** the rig's cases make about one start or ask each, so they show little of
-  the saving, which grows with every further receipt in a long crown session.
+- **Rule-bearing results per case:** about 12.3 KB in A, about 15.6 KB in B. That is a real
+  increase in these short cases, because B's first call and the crown's own `get_ticket` both
+  carry the rules. The 458-byte receipts alone do not establish an overall saving.
+- **All results per case:** median 20.6 KB in A, 18.9 KB in B, within the cases' spread.
+- **What the feature is:** automatic delivery of the rules once per reset, with explicit
+  retrieval (the crown's own `get_ticket`) always available. Whether that saves bytes depends on
+  how many receipts a crown session takes after a reset, which these cases do not measure.
 - **Failed tool calls:** 11 in A, 12 in B over the arms.
-- **Crown cost on the board's price table:** A $14.13, B $14.75.
+- **Crown cost on the board's price table:** A $14.13, B $14.75, overlapping.
 
 **Limits.**
 - N = 3 sees only large effects.
-- The Codex compaction counter has a unit test, not an e2e.
-- No e2e drops a connection mid-reply.
+- **The once-per-crowning paths have deterministic checks** (after the delivery read):
+  - `crown_rules_e2e` has a deferred `answer_agent` and a deferred `accept_plan` as the crown's
+    first call: the raw reply carries the rules and the next call does not. Each failed with the
+    deferred wrap undone.
+  - `crownrules` (unit) has an acknowledgement under an old reset count, and a Codex thread
+    change and compaction count resetting the record, a reply between a compaction's start and
+    its completion included.
+  - `crown_rules_write_tests` (unit) has a reply whose write fails acknowledging nothing.
+  - No e2e drives a Codex seat's snapshot through the daemon, and no e2e drops a real
+    connection mid-reply.
 - Quota is account-wide, so it bounds the spend from above.
 - **Spend, as quota, 13:26 to 15:24.** Claude's weekly window went from 4% to 17% (the 5-hour
   window reached 37%). Codex's weekly went from 3% to 10% (read at 15:13). Both cover every
