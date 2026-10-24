@@ -776,7 +776,10 @@ def adapter(base):
             at the desk would (`approval_decision`), once, and recorded."""
             sid = session["id"]
             request = self.carried(sid)
-            if not request or request.get("kind") != "approval" or request.get("id") in self.answered:
+            # Codex numbers requests per session (T-930: the worker's first is
+            # `0`, as the crown's was), so a request is known by both.
+            key = (sid, request.get("id")) if request else None
+            if not request or request.get("kind") != "approval" or key in self.answered:
                 return
             role = "crown" if sid == self.crown_sid else "worker"
             worktree = session.get("cwd") if role == "worker" else None
@@ -785,17 +788,17 @@ def adapter(base):
                 worktree = None
             allow, what = approval_decision(request, role, worktree)
             if not allow:
-                if request["id"] not in self.left:
-                    self.left[request["id"]] = time.monotonic()
+                if key not in self.left:
+                    self.left[key] = time.monotonic()
                     self.manifest.setdefault("approvals_left", []).append(dict(session=sid, role=role, request=what))
                     self.mark(action="native_approval_left_for_the_person", session=sid, role=role, request=what)
-                if role == "crown" and time.monotonic() - self.left[request["id"]] > 8:
+                if role == "crown" and time.monotonic() - self.left[key] > 8:
                     raise AssertionError("the crown waits on the person's approval of " + what)
                 return
             if not dialog_allows(screen):
                 return
             self.tm("send-keys", "-t", sid.replace("-", "")[:16], "Enter")
-            self.answered[request["id"]] = what
+            self.answered[key] = what
             self.manifest.setdefault("approvals", []).append(dict(session=sid, role=role,
                                                                   what=request.get("what"), allowed=what))
             self.mark(action="person_allows_native_approval_once", session=sid, role=role, allowed=what)
