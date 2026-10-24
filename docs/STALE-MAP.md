@@ -32791,3 +32791,21 @@ Test: `crown_e2e::a_crown_a_person_stopped_holds_its_wake_and_its_hand`.
 
 It fails with `stopped_by_person` off. The fake mod gains `mod-hold-submit` and
 `mod-release-submit`.
+
+**Review (Astra), first round: the no-pane rule does not lean on the working hold (item 2b).** The
+first cut dropped an open turn only in the branch taken when `quiet::is_working` is false. A Codex
+seat whose pane died keeps `codex_stopping`, which reads as working, so its `Exited` edge took the
+other branch: it opened a turn, or kept one open.
+- Now no turn is opened for a state with no pane, and any edge into one drops the ticket from
+  `turns_open`, whatever holds the seat working.
+- `KillSession`, which sets `Exited` without `apply_change`, drops it too.
+- Measured while testing it: an `Exited` seat holds no agent seat, so the crown does not hear it,
+  and the old rule said no line at a restart on this road either. What it left was the open turn
+  in `crown.json` for a seat with no pane, there for the next idle to read as a finished turn.
+  The test pins that ledger.
+
+Test: `crown_e2e::a_codex_seat_whose_pane_died_has_no_turn_open_after_a_restart`. On the synthetic
+runtime, a finished turn is told; the lost observation opens a turn in `crown.json` (the
+precondition); the runtime is killed, so the pane-died hook lands `Exited` with `codex_stopping`
+set; the ledger keeps no turn open; and after a restart there is no line. It fails on the old
+rule. The downtime tests stay green.

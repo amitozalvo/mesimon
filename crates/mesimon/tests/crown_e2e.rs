@@ -8635,3 +8635,137 @@ fn a_codex_worker_s_failed_turns_are_told_by_turn() {
     std::thread::sleep(std::time::Duration::from_millis(1000));
     assert_eq!(failed_wakes(), 3);
 }
+
+/// T-936, Astra's read of the park's close: a Codex seat whose pane died
+/// keeps `codex_stopping`, which reads as working, and that edge kept a
+/// turn open where the seat had no pane. On the synthetic runtime: a
+/// worker's finished turn is told; its observation is lost (`Unknown`,
+/// working for a Codex seat); its runtime dies, so the pane-died hook
+/// lands it `Exited` with `codex_stopping` set, and the ledger keeps no
+/// turn open for it (the old rule kept it, read back at a restart and by
+/// the next idle as a finished turn); after a restart the crown hears
+/// nothing more of it. A turn that really ended in the gap is
+/// still heard (`a_worker_mid_turn_across_a_restart_delivers_at_its_real_end`).
+#[test]
+fn a_codex_seat_whose_pane_died_has_no_turn_open_after_a_restart() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\n\
+                        while IFS= read -r line; do \
+                        printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+    const FAKE_RUNTIME: &str = include_str!("common/fake_codex_runtime.py");
+    let Some(h) = Harness::boot_with_env(
+        "crown_codex_died",
+        Some(STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let runtime = h.dir.join("fake-codex-runtime.py");
+    std::fs::write(&runtime, FAKE_RUNTIME).unwrap();
+    std::fs::set_permissions(&runtime, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+        .unwrap();
+    h.set_env("MESIMON_CODEX_RUNTIME_BIN", &runtime);
+    h.set_env("MESIMON_CODEX_BIN", h.dir.join("must-not-launch-real-codex"));
+    h.set_env("MESIMON_CODEX_HOME", h.dir.join("synthetic-codex-home"));
+    h.restart();
+    let hook_sock = h.paths.hook_sock();
+    let tmux_sock = h.paths.tmux_sock();
+    let mut c = h.client("crown_codex_died");
+    let feed = h.paths.state_dir.join("activity.jsonl");
+    let control = |id: uuid::Uuid, value: serde_json::Value| {
+        let path = mesimon_daemon::agents::codex::snapshot_path(&h.paths, id);
+        let control = std::path::PathBuf::from(format!("{}.control", path.display()));
+        mesimon_daemon::agents::codex::write_json(&control, &value).unwrap();
+    };
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-936 codex worker");
+    let kw = key_of(&mut c, w);
+    let wakes_since = |at: u64| -> Vec<String> {
+        std::fs::read_to_string(&feed)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|l| {
+                l["kind"] == "crown_wake"
+                    && l["worker"] == w.to_string()
+                    && l["at_ms"].as_u64().is_some_and(|t| t >= at)
+            })
+            .map(|l| l["cause"].as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    assert!(matches!(
+        c.request(Command::SetAgentProvider {
+            provider: mesimon_core::board::AgentProvider::Codex
+        }),
+        Response::Ok
+    ));
+    let v = read(&mut c, sa, &kw).unwrap();
+    assert!(matches!(
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket {
+                key: kw.clone(),
+                seen: v.seen,
+                plan: false,
+                tier: None,
+                workspace: Some("worktree".into()),
+            },
+        ),
+        Response::AgentStarted { .. }
+    ));
+    wait_until(std::time::Duration::from_secs(20), "W's Codex seat", || {
+        c.board().live_agent(w).is_some_and(|s| s.kind == SessionKind::Codex)
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    c.await_state(ws, "the synthetic Codex at its composer", |s| {
+        matches!(s, SessionState::Idle { .. })
+    });
+
+    // ---- 1. a turn finished, and told ---------------------------------------
+    control(ws, json!({"state":{"state":"running"},"turn_id":"turn-1"}));
+    c.await_state(ws, "working", |s| *s == SessionState::Running);
+    control(ws, json!({"state":{"state":"idle","stop_reason":"end_turn"},"turn_id":"turn-1"}));
+    wait_until(std::time::Duration::from_secs(10), "the finish told", || {
+        wakes_since(0) == ["finished"]
+    });
+    // ---- 2. its observation lost, then its pane dead ------------------------
+    // What the crown's ledger keeps open: `crown.json`'s `turns_open`.
+    let ledger = h.paths.state_dir.join("crown.json");
+    let open = || {
+        std::fs::read_to_string(&ledger)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .and_then(|v| v["turns_open"].as_array().cloned())
+            .unwrap_or_default()
+            .contains(&json!(w.to_string()))
+    };
+    control(ws, json!({"state":{"state":"unknown"},"turn_id":"turn-1"}));
+    c.await_state(ws, "observation lost", |s| matches!(s, SessionState::Unknown { .. }));
+    wait_until(std::time::Duration::from_secs(10), "a lost observation opens a turn", open);
+    let sid = c.board().sessions.iter().find(|s| s.id == ws).unwrap().sid16();
+    let pid = tmux(&tmux_sock)
+        .args(["display-message", "-p", "-t", &sid, "#{pane_pid}"])
+        .output()
+        .unwrap();
+    let pid = String::from_utf8_lossy(&pid.stdout).trim().to_string();
+    assert!(std::process::Command::new("kill").args(["-9", &pid]).status().unwrap().success());
+    c.await_state(ws, "its pane dead", |s| matches!(s, SessionState::Exited { .. }));
+    assert!(c.board().sessions.iter().any(|s| s.id == ws && s.codex_stopping));
+    wait_until(std::time::Duration::from_secs(10), "no turn open without a pane", || !open());
+
+    // ---- 3. a restart: nothing more of it ------------------------------------
+    drop(c);
+    let restarted =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
+            as u64;
+    h.restart();
+    let _c = h.client("crown_codex_died_2");
+    std::thread::sleep(std::time::Duration::from_millis(4000));
+    assert_eq!(wakes_since(restarted), Vec::<String>::new(), "no line after the restart");
+}

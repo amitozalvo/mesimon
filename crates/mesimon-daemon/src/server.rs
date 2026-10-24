@@ -6483,21 +6483,26 @@ impl Daemon {
             if answered_with_tasks {
                 self.turn_ended(snapshot.ticket, true);
             } else if mesimon_core::quiet::is_working(&snapshot) {
-                self.turns_open.insert(snapshot.ticket);
+                // Never for a seat with no pane (T-936): a Codex seat whose
+                // pane died keeps `codex_stopping`, which reads as working.
+                if change.to.has_pane() {
+                    self.turns_open.insert(snapshot.ticket);
+                }
             } else {
                 let end_turn =
                     matches!(change.to, SessionState::Idle { stop_reason: StopReason::EndTurn })
                         && matches!(change.confidence, Confidence::High | Confidence::Medium);
                 self.turn_ended(snapshot.ticket, end_turn);
-                // A seat with no pane has no turn open (T-936), as a park.
-                if !change.to.has_pane() && self.turns_open.contains(&snapshot.ticket) {
-                    self.turns_open.remove(&snapshot.ticket);
-                }
                 // The person's banner waits for a look at what the turn
                 // left, where the train may take it (T-678).
                 if end_turn {
                     self.look_after_turn(snapshot.ticket);
                 }
+            }
+            // A seat with no pane has no turn open (T-936), as a park,
+            // whatever holds it working.
+            if !change.to.has_pane() && self.turns_open.contains(&snapshot.ticket) {
+                self.turns_open.remove(&snapshot.ticket);
             }
         }
         // The agent stopped on a question (T-420): the answer may change
@@ -17569,6 +17574,10 @@ impl Daemon {
         rec.detail = None;
         let (id, state, ticket) = (rec.id, rec.state.clone(), rec.ticket);
         self.machines.insert(id, Machine::new(state, now_ms()));
+        // A seat with no pane has no turn open (T-936).
+        if self.turns_open.contains(&ticket) {
+            self.turns_open.remove(&ticket);
+        }
         if let Some(sid) = reap {
             let _ = self.backend.signal_session(&sid);
             self.reaping.insert(sid, Instant::now() + REAP_GRACE);
