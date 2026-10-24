@@ -5510,31 +5510,57 @@ const FEEDBACK_ROW: &str = "Tell Claude what to change";
 const APPROVE_HINT: &str = "shift+tab to approve with this feedback";
 const EDITOR_LINE: &str = "ctrl+g to edit in ";
 
-/// Each plan dialog row's field, squeezed (T-943), parsed for the walk
-/// alone: rows begin at the menu's numbered lines (from its last `1.`), a
-/// row's field is its numbered line and every line under it to the next
-/// numbered line, and the last row's runs to the end of the screen,
-/// through blank and box-drawing lines, since a person's draft in the
+/// One row of the plan dialog's menu as the walk reads it (T-943): whether
+/// the cursor is on it, and its field, squeezed.
+struct MenuRow {
+    selected: bool,
+    field: String,
+}
+
+/// The plan dialog's menu, parsed for the walk alone (T-943), as one extent:
+/// it begins after the line that completes the dialog's question (`Would you
+/// like to proceed?`, wrapped or not), and its rows are the numbered lines
+/// after it, numbered 1, 2, 3 … with no skip and no restart. A numbered line
+/// out of that order (a later `1.` among them) and a second question after
+/// the first are a person's draft the walk cannot tell from the menu: `None`,
+/// and the walk stops. A row's field is its numbered line and every line
+/// under it to the next row, and the last row's runs to the end of the
+/// screen, through blank and box-drawing lines, since a person's draft in the
 /// native field may hold any of them. No footer is cut: 2.1.310 draws none,
 /// and a line that merely holds `Enter to select` is the field's. From the
 /// end of the last row come off, in turn, trailing blank lines, the editor
 /// line (`ctrl+g to edit in <editor> · <file>`), and the approve hint line
-/// exactly above it, each once and never the row's own first line;
-/// whatever is left is the field, compared whole. `None` when the rows are
-/// not `dialog_rows`' `count` rows.
-fn feedback_fields(screen: &str, count: usize) -> Option<Vec<String>> {
-    let mut blocks: Vec<(usize, Vec<&str>)> = Vec::new();
-    for line in screen.lines().map(str::trim) {
-        if let Some((_, number, label)) = numbered(line) {
-            blocks.push((number, vec![label]));
-        } else if let Some((_, block)) = blocks.last_mut() {
-            block.push(line);
+/// exactly above it, each once and never the row's own first line; whatever
+/// is left is the field, compared whole. The cursor is read from the same
+/// rows.
+fn plan_menu(screen: &str) -> Option<Vec<MenuRow>> {
+    let lines: Vec<&str> = screen.lines().map(str::trim).collect();
+    let question = squeeze("Would you like to proceed?");
+    let mut said = String::new();
+    let asked = lines.iter().position(|line| {
+        said.push_str(&squeeze(line));
+        said.contains(&question)
+    })?;
+    let after: String = lines[asked + 1..].iter().map(|line| squeeze(line)).collect();
+    if after.contains(&question) {
+        return None;
+    }
+    let mut rows: Vec<(bool, Vec<&str>)> = Vec::new();
+    for line in &lines[asked + 1..] {
+        match numbered(line) {
+            Some((selected, number, label)) if number == rows.len() + 1 => {
+                rows.push((selected, vec![label]))
+            }
+            Some(_) => return None,
+            None => {
+                if let Some((_, block)) = rows.last_mut() {
+                    block.push(line);
+                }
+            }
         }
     }
-    let first = blocks.iter().rposition(|(number, _)| *number == 1)?;
-    let mut blocks = blocks.split_off(first);
-    let last = blocks.len().checked_sub(1)?;
-    for (at, (_, block)) in blocks.iter_mut().enumerate() {
+    let last = rows.len().checked_sub(1)?;
+    for (at, (_, block)) in rows.iter_mut().enumerate() {
         while block.len() > 1 && block.last().is_some_and(|l| l.is_empty()) {
             block.pop();
         }
@@ -5548,8 +5574,20 @@ fn feedback_fields(screen: &str, count: usize) -> Option<Vec<String>> {
             block.pop();
         }
     }
-    (blocks.len() == count)
-        .then(|| blocks.iter().map(|(_, block)| squeeze(&block.concat())).collect())
+    Some(
+        rows.into_iter()
+            .map(|(selected, block)| MenuRow { selected, field: squeeze(&block.concat()) })
+            .collect(),
+    )
+}
+
+/// The one row the cursor is on, or none of the measured shape.
+fn menu_cursor(rows: &[MenuRow]) -> Result<usize, Miss> {
+    let mut selected = rows.iter().enumerate().filter(|(_, r)| r.selected);
+    match (selected.next(), selected.next()) {
+        (Some((at, _)), None) => Ok(at),
+        _ => Err(Miss::ShapeUnrecognised),
+    }
 }
 
 /// The editor line under the plan dialog, as measured on 2.1.310:
@@ -5596,7 +5634,7 @@ fn revise_settled(
 
 /// The plan dialog's cursor row on `screen`, if it shows exactly one.
 fn plan_cursor(screen: &str) -> Option<usize> {
-    dialog_rows(screen).and_then(|rows| cursor(&rows).ok())
+    plan_menu(screen).and_then(|rows| menu_cursor(&rows).ok())
 }
 
 /// One key of a plan sent back with words (T-943), read off the screen
@@ -5617,15 +5655,15 @@ fn revise_step(
     if !matches!(dialog.content, api::DialogContent::Plan { .. }) || !plan_dialog_drawn(screen) {
         return Err(Miss::ShapeUnrecognised);
     }
-    let rows = dialog_rows(screen).ok_or(Miss::ShapeUnrecognised)?;
-    let current = cursor(&rows)?;
-    let fields = feedback_fields(screen, rows.len()).ok_or(Miss::ShapeUnrecognised)?;
+    let rows = plan_menu(screen).ok_or(Miss::ShapeUnrecognised)?;
+    let current = menu_cursor(&rows)?;
+    let fields: Vec<&String> = rows.iter().map(|r| &r.field).collect();
     let label = squeeze(FEEDBACK_ROW);
     let Some(&row) = walk.pasted.first() else {
         if walk.at.is_some_and(|at| at != current) {
             return Err(Miss::CursorMoved);
         }
-        let mut empty = fields.iter().enumerate().filter(|(_, f)| **f == label);
+        let mut empty = fields.iter().enumerate().filter(|(_, f)| ***f == label);
         return match (empty.next(), empty.next()) {
             // The feedback row closes the menu; a numbered line after it is
             // a draft's, which the walk cannot tell from a row.
@@ -5646,8 +5684,8 @@ fn revise_step(
         return Err(Miss::FieldTouched);
     }
     match fields.get(row) {
-        Some(field) if *field == squeeze(text) => Ok(DialogStep::Submit),
-        Some(field) if *field == label => Ok(DialogStep::Wait),
+        Some(field) if **field == squeeze(text) => Ok(DialogStep::Submit),
+        Some(field) if **field == label => Ok(DialogStep::Wait),
         _ => Err(Miss::FieldTouched),
     }
 }
@@ -8176,6 +8214,33 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         let twice = plan_screen("Use echo\n        shift+tab to approve with this feedback", 2);
         assert_eq!(revise_step(&d, "Use echo", &twice, &pasted), Err(Miss::FieldTouched));
         // The measured screen, hints and all, still reads the words alone.
+        assert_eq!(
+            revise_step(&d, "Use echo", &plan_screen("Use echo", 2), &pasted),
+            Ok(DialogStep::Submit)
+        );
+    }
+
+    /// T-943, the third read: a draft in the field that holds a numbered
+    /// menu of its own, a later `1.` with a cursor, never replaces the
+    /// dialog's menu. The rows run 1, 2, 3 from the question, and a
+    /// numbered line out of that order stops the walk, before the paste
+    /// and after it, as a second question does.
+    #[test]
+    fn a_draft_s_own_numbered_menu_never_restarts_the_plan_menu() {
+        let d = plan_dialog();
+        let pasted = Walk { pasted: vec![2], at: Some(2), ..Walk::default() };
+        let menu = "my notes\n   1. Yes, and use auto mode\n   2. Yes, manually approve \
+                    edits\n   ❯ 3. Use echo";
+        let submit = plan_screen(menu, 2).replacen("❯ 3. my notes", "  3. my notes", 1);
+        assert_eq!(revise_step(&d, "Use echo", &submit, &pasted), Err(Miss::ShapeUnrecognised));
+        let empty = "my notes\n   1. a\n   2. b\n   ❯ 3. Tell Claude what to change";
+        let paste = plan_screen(empty, 2).replacen("❯ 3. my notes", "  3. my notes", 1);
+        let walk = Walk { at: Some(2), ..Walk::default() };
+        assert_eq!(revise_step(&d, "Use echo", &paste, &walk), Err(Miss::ShapeUnrecognised));
+        assert_eq!(plan_cursor(&paste), None, "no arrow is aimed by the draft's cursor");
+        let again = plan_screen("Use echo\n Would you like to proceed?\n ❯ 1. Yes", 2);
+        assert_eq!(revise_step(&d, "Use echo", &again, &pasted), Err(Miss::ShapeUnrecognised));
+        // The plan's own numbered steps above the question are no rows.
         assert_eq!(
             revise_step(&d, "Use echo", &plan_screen("Use echo", 2), &pasted),
             Ok(DialogStep::Submit)
