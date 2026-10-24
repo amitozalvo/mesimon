@@ -34083,6 +34083,17 @@ belongs to a later turn.
   after it in a live read, or the seed's abort when the look back finds that dialog ended
   interrupted. Whatever drops the end then drops all of it, and the flag is gone. An abort with
   no dialog's result before it stays the Low hint it was.
+- **Only on the owned seat, and only the attributed abort's hint (round 6).** Round 5's rule
+  reached two places it must not:
+  - **An observed or `Unknown` record.** An adopted session (empty `argv`) and an `Unknown`
+    spell's live read have no end to carry the Esc (`held` is `None` and the `left` filter wants
+    a held tool or `Running`), so suppressing the Low abort left the card on a dismissed dialog.
+    The skip is now `abort_only`'s alone, and those roads keep their Low abort.
+  - **The first read removed every abort hint** once the look back found any interrupt after
+    A's result. Now `aborted_since` names the abort it read by its record `uuid`, `closed_dialog`
+    names the interrupt right after A's result the same way (`ClosedDialog::interrupt`), and the
+    line hints keep their record. Only the hint of that interrupt goes, the seed's or a line's.
+    A second abort, back to back or past a reply, stays its own hint. No clock or text is read.
 - **After a restart** a dialog this daemon never projected counts from the daemon's start.
 - **In the read:** a person's prompt (`adopt::user_prompt`) after an interrupt in the same read
   drops the interrupted end and every `AbortedMidStream` read before it.
@@ -34122,6 +34133,18 @@ belongs to a later turn.
   - an Esc and a prompt in one read give no end and no hint;
   - an Esc alone gives its call's end and nothing beside it, on a live read and on the first
     read's look back.
+- Unit, `recovery::an_esc_s_low_hint_is_dropped_only_beside_its_owned_end` (round 6):
+  - an adopted session's plan and question, result plus Esc, keep the Low abort, and the
+    machine rests at `Idle{Interrupted}`, Low;
+  - an `Unknown` live call, result and Esc give the dialog's hint, then the abort, with the same
+    end;
+  - a first read with A's interrupt and another abort after it, back to back and past a reply,
+    gives A's end and the other abort's hint;
+  - a look back on a poll whose lines hold A's interrupt and an unrelated abort drops the first
+    hint and keeps the second.
+
+  It fails with the skip ungated (the adopted case) and with the old removal of every abort
+  hint (the first-read case).
 - Unit, `tail::a_dialog_s_call_and_its_own_result_are_read_by_id`, on the 2.1.310 record
   trimmed. T-363's restatement test now expects the end on its accepted plan.
 - Unit, `composer::startup_and_dialogs_are_not_a_composer` gained the question screen (2.1.287's

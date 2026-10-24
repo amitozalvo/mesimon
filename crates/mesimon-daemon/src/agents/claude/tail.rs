@@ -100,18 +100,21 @@ pub fn turn_done_since(path: &Path, since: u64) -> bool {
 
 /// Recover only a recent explicit cancellation when a cursor is first minted.
 /// A newer user/assistant turn record stops the search; old aborts cannot cancel
-/// a new turn just because they remain in the bounded history window.
-pub fn aborted_since(path: &Path, since: u64) -> bool {
-    let Some(records) = tail_records(path) else { return false };
-    for record in records {
+/// a new turn just because they remain in the bounded history window. The
+/// abort's record `uuid`, so a look back can tell whether it is the one a
+/// dialog's result was followed by (T-957 round 6).
+pub fn aborted_since(path: &Path, since: u64) -> Option<String> {
+    for record in tail_records(path)? {
         if classify_tail_record(&record) == TailEvent::Aborted {
-            return mesimon_core::adopt::record_ms(&record).is_some_and(|at| at >= since);
+            return mesimon_core::adopt::record_ms(&record)
+                .filter(|at| *at >= since)
+                .and_then(|_| record.get("uuid")?.as_str().map(String::from));
         }
         if !matches!(turn_edge(&record), TurnEdge::Unsaid) {
-            return false;
+            return None;
         }
     }
-    false
+    None
 }
 
 /// Did a person's prompt (`adopt::user_prompt`: a typed or pasted prompt, a
@@ -229,9 +232,9 @@ pub fn speaks(v: &serde_json::Value) -> bool {
 /// or before the first read of a spell).
 pub struct ClosedDialog {
     pub id: String,
-    /// An interrupt record came right after the result: an Esc, the turn
-    /// stopped.
-    pub interrupted: bool,
+    /// The interrupt record that came right after the result, by its
+    /// `uuid`: an Esc, the turn stopped.
+    pub interrupt: Option<String>,
     /// The result is the last word on the tail.
     pub last: bool,
 }
@@ -248,9 +251,10 @@ pub fn closed_dialog(path: &Path, tool: TailTool, since: u64) -> Option<ClosedDi
     let text = window_text(path, len, PROMPT_WINDOW)?;
     let end = text.len();
     // Each result read so far: its call, its stamp, and what came right
-    // after it (`None`: nothing, it is the last word).
-    let mut results: Vec<(String, Option<u64>, Option<bool>)> = Vec::new();
-    let mut newer: Option<bool> = None;
+    // after it (`None`: nothing, it is the last word; else the interrupt's
+    // `uuid` when it was one).
+    let mut results: Vec<(String, Option<u64>, Option<Option<String>>)> = Vec::new();
+    let mut newer: Option<Option<String>> = None;
     for v in (TailRecords { text, end }) {
         if !speaks(&v) {
             continue;
@@ -262,8 +266,8 @@ pub fn closed_dialog(path: &Path, tool: TailTool, since: u64) -> Option<ClosedDi
             let (_, at, after) = results.into_iter().find(|(r, _, _)| r == id)?;
             return at.filter(|at| *at >= since).map(|_| ClosedDialog {
                 id: id.to_string(),
-                interrupted: after == Some(true),
                 last: after.is_none(),
+                interrupt: after.flatten(),
             });
         }
         if mesimon_core::adopt::user_prompt(&v).is_some() {
@@ -272,10 +276,13 @@ pub fn closed_dialog(path: &Path, tool: TailTool, since: u64) -> Option<ClosedDi
         if carries_tool_result(&v) {
             let blocks = v["message"]["content"].as_array()?;
             for id in blocks.iter().filter_map(|b| b["tool_use_id"].as_str()) {
-                results.push((id.to_string(), record_ms(&v), newer));
+                results.push((id.to_string(), record_ms(&v), newer.clone()));
             }
         }
-        newer = Some(classify_tail_record(&v) == TailEvent::Aborted);
+        newer = Some(
+            (classify_tail_record(&v) == TailEvent::Aborted)
+                .then(|| v["uuid"].as_str().unwrap_or_default().to_string()),
+        );
     }
     None
 }
@@ -508,17 +515,17 @@ mod tests {
             "message":{"content":"[Request interrupted by user]"}});
         let stamp = mesimon_core::adopt::record_ms(&record).unwrap();
         std::fs::write(&path, format!("{record}\n")).unwrap();
-        assert!(aborted_since(&path, stamp - 1));
-        assert!(!aborted_since(&path, stamp + 1));
+        assert_eq!(aborted_since(&path, stamp - 1).as_deref(), Some("abort"));
+        assert_eq!(aborted_since(&path, stamp + 1), None);
         let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
         writeln!(
             file,
             "{{\"uuid\":\"new\",\"type\":\"user\",\"message\":{{\"content\":\"next prompt\"}}}}"
         )
         .unwrap();
-        assert!(!aborted_since(&path, stamp - 1));
+        assert_eq!(aborted_since(&path, stamp - 1), None);
         std::fs::write(&path, "{\"uuid\":\"abort\",\"type\":\"user\",\"message\":{\"content\":\"[Request interrupted by user]\"}}\n").unwrap();
-        assert!(!aborted_since(&path, 0), "undated history is not fresh evidence");
+        assert_eq!(aborted_since(&path, 0), None, "undated history is not fresh evidence");
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

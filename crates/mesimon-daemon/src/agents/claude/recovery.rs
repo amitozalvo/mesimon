@@ -329,6 +329,10 @@ impl ClaudeRecovery {
         // The restart's seed has one proof before the hint (T-663): the
         // turn the last daemon left open closed on the tail after it did.
         let mut closed = None;
+        // The abort the seed read, by its record: the look back removes its
+        // hint only when that abort is the one a dialog's result was
+        // followed by (round 6).
+        let mut seed_abort = None;
         let backfill = if unknown && !self.rested {
             self.rested = true;
             if turn_closed_in_the_gap(record, &path) {
@@ -344,10 +348,9 @@ impl ClaudeRecovery {
                     .filter(|h| *h != TailHint::StaleQuiet || !self.claude_busy(record, now))
             }
         } else if fresh && abort_only {
-            record
-                .state_changed_at
-                .filter(|since| tail::aborted_since(&path, *since))
-                .map(|_| TailHint::AbortedMidStream)
+            seed_abort =
+                record.state_changed_at.and_then(|since| tail::aborted_since(&path, since));
+            seed_abort.as_ref().map(|_| TailHint::AbortedMidStream)
         } else {
             None
         };
@@ -433,9 +436,13 @@ impl ClaudeRecovery {
         // that the machine's refusal road waits for, so the card wore
         // needs-you until the turn's end. A newer call after the result is a
         // dialog that stands again; an interrupt right after it is the Esc
-        // that stopped the turn, and is that end's alone (round 5): no Low
-        // hint is read beside it, so whatever drops the end drops all of it.
+        // that stopped the turn, and on a seat this adapter owns it is that
+        // end's alone (round 5): no Low hint is read beside it, so whatever
+        // drops the end drops all of it. An observed or `Unknown` record has
+        // no end to carry it and keeps the Low hint (round 6).
         let mut answered = None;
+        // Each abort hint the lines gave, by its index and record.
+        let mut live_aborts: Vec<(usize, String)> = Vec::new();
         for line in &lines {
             let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { continue };
             let mut attributed = false;
@@ -461,10 +468,17 @@ impl ClaudeRecovery {
             if mesimon_core::adopt::user_prompt(&value).is_some() {
                 answered = answered.filter(|(_, interrupted)| !interrupted);
                 hints.retain(|(kind, _)| *kind != TailHint::AbortedMidStream);
+                live_aborts.clear();
+                seed_abort = None;
             }
             match classify_tail_record(&value) {
-                TailEvent::Aborted if attributed => {}
-                TailEvent::Aborted => hints.push((TailHint::AbortedMidStream, None)),
+                TailEvent::Aborted if attributed && abort_only => {}
+                TailEvent::Aborted => {
+                    if let Some(uuid) = value.get("uuid").and_then(serde_json::Value::as_str) {
+                        live_aborts.push((hints.len(), uuid.to_string()));
+                    }
+                    hints.push((TailHint::AbortedMidStream, None));
+                }
                 _ if abort_only => {}
                 TailEvent::AssistantText { text } => {
                     hints.push((TailHint::AssistantText, Some(crate::census::sanitize(&text))));
@@ -506,12 +520,18 @@ impl ClaudeRecovery {
                         if c.last {
                             self.ended = Some((tool, c.id.clone()));
                         }
-                        // The abort the seed read is this end's, as a live
-                        // read's is (round 5).
-                        if c.interrupted {
-                            hints.retain(|(kind, _)| *kind != TailHint::AbortedMidStream);
+                        // The interrupt right after the result is this end's,
+                        // as a live read's is (round 5): its hint goes, the
+                        // seed's or a line's, and no other abort's (round 6).
+                        if let Some(interrupt) = &c.interrupt {
+                            let line = live_aborts.iter().find(|(_, u)| u == interrupt);
+                            if let Some(&(at, _)) = line {
+                                hints.remove(at);
+                            } else if seed_abort.as_ref() == Some(interrupt) {
+                                hints.remove(0);
+                            }
                         }
-                        answered = Some(((tool, c.id), c.interrupted));
+                        answered = Some(((tool, c.id), c.interrupt.is_some()));
                     }
                 }
                 None => {}
@@ -1213,6 +1233,155 @@ mod recovery_tests {
             {"type":"tool_result","tool_use_id":"plan10","is_error":true,"content":refused}]}}));
         let mut recovery = fresh(&mut record, &history, 10);
         assert!(stays(&recovery.poll(&record, RecoverySample::Transcript, 20_000)), "undated");
+    }
+
+    /// T-957 round 6: the no-duplicate rule is the owned seat's, and the
+    /// first read removes only the hint of the abort it tied to the dialog.
+    /// An adopted session and an `Unknown` live read have no end to carry an
+    /// Esc, and keep the Low abort that takes the record off a dialog gone;
+    /// a second abort after the attributed one, on the first read or in the
+    /// same poll, stays its own hint.
+    #[test]
+    fn an_esc_s_low_hint_is_dropped_only_beside_its_owned_end() {
+        let call = |id: &str, name: &str| {
+            serde_json::json!({"uuid": format!("call-{id}"), "type":"assistant", "message":{
+                "content":[{"type":"tool_use","id":id,"name":name,"input":{}}]}})
+        };
+        let at = |second: u32| format!("2026-10-24T16:10:{second:02}.000Z");
+        let ms = |second: u32| mesimon_core::adopt::iso_ms(&at(second)).unwrap();
+        let result = |id: &str, second: u32| {
+            serde_json::json!({"uuid": format!("result-{id}"), "type":"user",
+                "timestamp": at(second), "message":{"content":[{"type":"tool_result",
+                    "tool_use_id":id,"is_error":true,"content":"STOP what you are doing."}]}})
+        };
+        let abort = |uuid: &str, second: u32| {
+            serde_json::json!({"uuid": uuid, "type":"user", "timestamp": at(second), "message":{
+                "content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}})
+        };
+        let text = |uuid: &str| {
+            serde_json::json!({"uuid": uuid, "type":"assistant", "message":{
+                "content":[{"type":"text","text":"Stopping."}]}})
+        };
+        let hints = |seen: &[RecoveryObservation]| -> Vec<TailHint> {
+            seen.iter()
+                .filter_map(|o| match o.signal {
+                    Signal::TranscriptHint { kind } => Some(kind),
+                    _ => None,
+                })
+                .collect()
+        };
+        let ends = |seen: &[RecoveryObservation]| -> Vec<(String, bool)> {
+            seen.iter()
+                .filter_map(|o| match o.signal {
+                    Signal::DialogEnded { interrupted } => {
+                        Some((o.dialog.clone().unwrap_or_default(), interrupted))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        // What the machine makes of the observations, from `state`.
+        let settle = |state: SessionState, seen: &[RecoveryObservation]| {
+            let mut m = attention::Machine::new(state, 0);
+            for o in seen {
+                m.apply(&o.signal, 1_000);
+            }
+            m.tick(10_000);
+            let view = m.view();
+            (view.state, view.confidence)
+        };
+        let interrupted = SessionState::Idle { stop_reason: StopReason::Interrupted };
+
+        // An adopted session's plan and question: the call puts the card on
+        // the dialog at Low, its result and the Esc take it off at Low.
+        for (tool, reason, hint) in [
+            ("ExitPlanMode", Reason::Plan, TailHint::ExitPlanMode),
+            ("AskUserQuestion", Reason::Question, TailHint::AskUserQuestion),
+        ] {
+            let history = History::new();
+            let mut rec = record(SessionState::Running);
+            rec.provenance = Provenance::Adopted;
+            rec.argv.clear();
+            rec.transcript_path = Some(history.0.display().to_string());
+            let mut recovery = ClaudeRecovery::default();
+            assert!(recovery.needs_poll(&rec, RecoveryChannel::Transcript, 1000));
+            assert!(recovery.poll(&rec, RecoverySample::Transcript, 1000).is_empty());
+            history.append(call("d", tool));
+            assert_eq!(hints(&recovery.poll(&rec, RecoverySample::Transcript, 2000)), [hint]);
+            rec.state = SessionState::RequiresAction { reason };
+            history.append(result("d", 5));
+            history.append(abort("esc", 5));
+            let seen = recovery.poll(&rec, RecoverySample::Transcript, 3000);
+            assert!(ends(&seen).is_empty(), "{seen:?}");
+            assert_eq!(hints(&seen), [TailHint::AbortedMidStream], "{tool}");
+            assert_eq!(
+                settle(SessionState::RequiresAction { reason }, &seen),
+                (interrupted.clone(), mesimon_core::board::Confidence::Low)
+            );
+        }
+
+        // An `Unknown` spell's live read of a call, its result and the Esc:
+        // the dialog's hint and the Low abort after it.
+        let history = History::new();
+        history.append(serde_json::json!({"uuid":"p", "type":"user", "message":{"content":"go"}}));
+        let unknown = SessionState::Unknown { reason: UnknownReason::DaemonRestarted };
+        let mut rec = record(unknown.clone());
+        rec.transcript_path = Some(history.0.display().to_string());
+        let mut recovery = ClaudeRecovery::default();
+        assert!(recovery.needs_poll(&rec, RecoveryChannel::Transcript, 1000));
+        let _ = recovery.poll(&rec, RecoverySample::Transcript, 1000);
+        history.append(call("u", "ExitPlanMode"));
+        history.append(result("u", 5));
+        history.append(abort("esc-u", 5));
+        let seen = recovery.poll(&rec, RecoverySample::Transcript, 2000);
+        assert!(ends(&seen).is_empty(), "{seen:?}");
+        assert_eq!(hints(&seen), [TailHint::ExitPlanMode, TailHint::AbortedMidStream]);
+        assert_eq!(
+            settle(unknown, &seen),
+            (interrupted.clone(), mesimon_core::board::Confidence::Low)
+        );
+
+        // The first read: A's own interrupt X is the end's; another abort Y
+        // after it, back to back or past a reply, keeps its hint.
+        let plan = SessionState::RequiresAction { reason: Reason::Plan };
+        for between in [false, true] {
+            let history = History::new();
+            history.append(call("a", "ExitPlanMode"));
+            history.append(result("a", 12));
+            history.append(abort("x", 12));
+            if between {
+                history.append(text("reply"));
+            }
+            history.append(abort("y", 13));
+            let mut rec = record(plan.clone());
+            rec.transcript_path = Some(history.0.display().to_string());
+            rec.state_changed_at = Some(ms(10));
+            let mut recovery = ClaudeRecovery::default();
+            assert!(recovery.needs_poll(&rec, RecoveryChannel::Transcript, 20_000));
+            let seen = recovery.poll(&rec, RecoverySample::Transcript, 20_000);
+            assert_eq!(ends(&seen), [("a".to_string(), true)], "{seen:?}");
+            assert_eq!(hints(&seen), [TailHint::AbortedMidStream], "Y's, between: {between}");
+        }
+
+        // A cursor minted after A's call, so the look back runs on a poll
+        // whose lines hold A's result, its interrupt X and an unrelated abort
+        // Y: X's line hint goes with the end, Y's stays.
+        let history = History::new();
+        history.append(call("a", "ExitPlanMode"));
+        let mut rec = record(SessionState::Running);
+        rec.transcript_path = Some(history.0.display().to_string());
+        let mut recovery = ClaudeRecovery::default();
+        assert!(recovery.needs_poll(&rec, RecoveryChannel::Transcript, 1000));
+        assert!(recovery.poll(&rec, RecoverySample::Transcript, 1000).is_empty());
+        rec.state = plan.clone();
+        rec.state_changed_at = Some(ms(10));
+        history.append(result("a", 12));
+        history.append(abort("x", 12));
+        history.append(text("reply"));
+        history.append(abort("y", 13));
+        let seen = recovery.poll(&rec, RecoverySample::Transcript, 20_000);
+        assert_eq!(ends(&seen), [("a".to_string(), true)], "{seen:?}");
+        assert_eq!(hints(&seen), [TailHint::AbortedMidStream], "Y's alone: {seen:?}");
     }
 
     /// T-802: a usage limit is restated off the tail once a minute while
