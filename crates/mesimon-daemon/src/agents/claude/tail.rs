@@ -212,6 +212,74 @@ pub fn carries_result_of(v: &serde_json::Value, id: &str) -> bool {
         })
 }
 
+/// Whether `v` is a word in the conversation: not a latch, an attachment
+/// or a `system` row inside a turn (a retry's, a hook's). What lies between
+/// a dialog's result and the record after it (T-957).
+pub fn speaks(v: &serde_json::Value) -> bool {
+    match v.get("type").and_then(serde_json::Value::as_str) {
+        _ if classify_tail_record(v) == TailEvent::Latch => false,
+        Some("attachment") => false,
+        Some("system") => matches!(turn_edge(v), TurnEdge::Done(_)),
+        _ => true,
+    }
+}
+
+/// A held dialog's call that already ended on the tail, read where a cursor
+/// starts after its result (T-957 round 1: a refusal in a restart's window,
+/// or before the first read of a spell).
+pub struct ClosedDialog {
+    pub id: String,
+    /// An interrupt record came right after the result: an Esc, the turn
+    /// stopped.
+    pub interrupted: bool,
+    /// The result is the last word on the tail.
+    pub last: bool,
+}
+
+/// The last plan or question call on the tail, when it is `tool`'s and its
+/// own result is there, stamped at or after `since` (the held spell's
+/// start): the dialog the record holds, ended. Walks back from the end as
+/// far as `prompted_since` does. Any other answer is `None`: a newer call
+/// of the other tool, the call still open, an undated or older result
+/// (history of an earlier dialog of the same kind), or a person's prompt
+/// after it, a turn the hook stream says.
+pub fn closed_dialog(path: &Path, tool: TailTool, since: u64) -> Option<ClosedDialog> {
+    let len = std::fs::metadata(path).ok()?.len();
+    let text = window_text(path, len, PROMPT_WINDOW)?;
+    let end = text.len();
+    // Each result read so far: its call, its stamp, and what came right
+    // after it (`None`: nothing, it is the last word).
+    let mut results: Vec<(String, Option<u64>, Option<bool>)> = Vec::new();
+    let mut newer: Option<bool> = None;
+    for v in (TailRecords { text, end }) {
+        if !speaks(&v) {
+            continue;
+        }
+        if let Some((called, id)) = dialog_call(&v) {
+            if called != tool {
+                return None;
+            }
+            let (_, at, after) = results.into_iter().find(|(r, _, _)| r == id)?;
+            return at.filter(|at| *at >= since).map(|_| ClosedDialog {
+                id: id.to_string(),
+                interrupted: after == Some(true),
+                last: after.is_none(),
+            });
+        }
+        if mesimon_core::adopt::user_prompt(&v).is_some() {
+            return None;
+        }
+        if carries_tool_result(&v) {
+            let blocks = v["message"]["content"].as_array()?;
+            for id in blocks.iter().filter_map(|b| b["tool_use_id"].as_str()) {
+                results.push((id.to_string(), record_ms(&v), newer));
+            }
+        }
+        newer = Some(classify_tail_record(&v) == TailEvent::Aborted);
+    }
+    None
+}
+
 /// The interaction tool's `tool_use` block of an assistant record that
 /// calls one (`classify_tail_record`'s `NeedsHuman`).
 fn dialog_block(v: &serde_json::Value) -> Option<(TailTool, &serde_json::Value)> {

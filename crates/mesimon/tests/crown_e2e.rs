@@ -8702,9 +8702,11 @@ fn a_plan_sent_back_leaves_needs_you_only_on_a_screen_without_it() {
 /// feedback row, or an Esc, fire no hook (T-447), and neither the hook set
 /// nor the classic mod relays the next ordinary tool's `PreToolUse`. The
 /// stand-in writes the transcript as 2.1.310 does, the plan's own call and
-/// then its result; that result is the departure, with words or with an Esc:
-/// the record leaves its plan, `get_ticket` reads no `needs_you` and
-/// `ask_agent` is admitted (taken into the queue).
+/// then its result; that result is the departure. With words the record
+/// runs again; with an Esc, whose interrupt follows the result, it rests
+/// interrupted, under the flap pin too. Either way `get_ticket` reads no
+/// `needs_you`: `ask_agent` is admitted (taken into the queue) after the
+/// words, and delivered into the composer once the Esc leaves the seat idle.
 #[test]
 fn a_plan_a_person_sends_back_in_the_pane_leaves_needs_you() {
     let Some(mut b) = PlanBed::boot("crown_person_refuses") else { return };
@@ -8755,16 +8757,29 @@ fn a_plan_a_person_sends_back_in_the_pane_leaves_needs_you() {
     ask(&mut b, "mesimon-probe-957 after words");
 
     // ---- the person's Esc on the next plan ---------------------------------
-    // The interrupt record after the result is the turn's end, a Low hint
-    // the flap pin drops this soon after four changes: the record has left
-    // the plan, running until a probe says the turn is over.
+    // The interrupt record right after the plan's result is the turn's end:
+    // one High end, interrupted, which the flap pin (armed by this many
+    // changes in 20 s) lets through, as it drops the Low interrupt hint.
     b.show_plan_in(Some(&transcript), "toolu_p2");
     b.person_keys(&["Escape"]);
-    b.c.await_state(ws, "off the plan once its result is written", |s| {
-        !matches!(s, SessionState::RequiresAction { .. })
+    b.c.await_state(ws, "interrupted once the plan's result is written", |s| {
+        *s == SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Interrupted }
     });
     assert_eq!(departures(&b), 2, "{}", b.feed());
-    ask(&mut b, "mesimon-probe-957 after an Esc");
+    let esc = b
+        .feed()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .rfind(|v| v["kind"] == "state_decision" && v["source"] == "dialog_result")
+        .expect("the Esc's end");
+    let pinned = esc["decision"]["before"]["pinned_until"].as_u64();
+    assert!(pinned.is_some_and(|until| until > esc["at_ms"].as_u64().unwrap()), "pinned: {esc}");
+    // At rest off the plan, the seat takes the words queued after the first
+    // refusal: they reach its composer.
+    assert!(read(&mut b.c, b.sa, &kw).unwrap().needs_you.is_none(), "no plan stands");
+    wait_until(std::time::Duration::from_secs(10), "the queued ask typed into W", || {
+        b.typed().contains("mesimon-probe-957 after words")
+    });
 }
 
 /// A replan inside the leave a plan sent back started (T-955 with T-943's

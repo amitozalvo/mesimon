@@ -398,6 +398,168 @@ fn accepts_go_one_per_quiet_checkout_and_a_column_accepts_every_plan() {
     let _ = c.request(Command::Shutdown);
 }
 
+/// One Claude seat on a stub that only sleeps, with the transcript its
+/// `SessionStart` names (T-957): the test writes what Claude Code writes,
+/// and sends what its hooks send.
+struct Bed {
+    h: Harness,
+    c: TestClient,
+    ticket: ulid::Ulid,
+    sid: uuid::Uuid,
+    transcript: std::path::PathBuf,
+}
+
+const REFUSED: &str = "The user doesn't want to proceed with this tool use. The tool use was \
+                       rejected (eg. if it was a file edit, the new_string was NOT written to the \
+                       file). To tell you how to proceed, the user said: keep planning.";
+
+impl Bed {
+    fn boot(name: &str) -> Option<Self> {
+        let h = Harness::boot_with_env(
+            name,
+            Some("#!/bin/sh\nexec sleep 120\n"),
+            &[("MESIMON_PANE_QUIET_MS", "600000")],
+        )?;
+        let mut c = h.client(name);
+        let ticket = match c.request(Command::CreateTicket {
+            column: "TODO".into(),
+            title: "refused".into(),
+            workspace: None,
+            tier: None,
+        }) {
+            Response::Created { id, .. } => id,
+            other => panic!("{other:?}"),
+        };
+        let sid = match c.request(Command::SpawnSession {
+            ticket,
+            kind: SessionKind::Claude,
+            submit_prompt: false,
+            plan: false,
+        }) {
+            Response::Spawned { id, .. } => id,
+            other => panic!("spawn failed: {other:?}"),
+        };
+        let transcript = h.dir.join(format!("{name}.jsonl"));
+        let bed = Bed { h, c, ticket, sid, transcript };
+        bed.append(serde_json::json!({"uuid": "p", "type": "user", "message": {"content": "go"}}));
+        Some(bed)
+    }
+
+    fn hook(&self, event: &str, body: &str) {
+        hook_send(&self.h.paths.hook_sock(), &self.sid.to_string(), event, body);
+    }
+
+    /// The transcript named, the seat at rest, then running.
+    fn start(&mut self) {
+        let start = serde_json::json!({"session_id": "x", "transcript_path": self.transcript,
+            "cwd": "/tmp"});
+        let sock = self.h.paths.hook_sock();
+        hook_send_with(
+            &sock,
+            &self.sid.to_string(),
+            "SessionStart",
+            Some("startup"),
+            &start.to_string(),
+        );
+        self.c.await_state(self.sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+        self.prompt();
+    }
+
+    fn prompt(&mut self) {
+        self.hook("UserPromptSubmit", r#"{"prompt":"go"}"#);
+        self.c.await_state(self.sid, "running", |s| *s == SessionState::Running);
+    }
+
+    fn append(&self, record: serde_json::Value) {
+        use std::io::Write;
+        let mut f =
+            std::fs::OpenOptions::new().create(true).append(true).open(&self.transcript).unwrap();
+        writeln!(f, "{record}").unwrap();
+    }
+
+    fn input(tool: &str) -> serde_json::Value {
+        match tool {
+            "ExitPlanMode" => serde_json::json!({"plan": "# Plan"}),
+            _ => serde_json::json!({"questions": [{"question": "Which?", "header": "Which",
+                "options": [{"label": "A", "description": ""}, {"label": "B", "description": ""}],
+                "multiSelect": false}]}),
+        }
+    }
+
+    /// The call written, as the engine writes it before its hook.
+    fn call(&self, tool: &str, id: &str) {
+        self.append(serde_json::json!({"uuid": format!("c-{id}"), "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "id": id, "name": tool,
+                "input": Self::input(tool)}]}}));
+    }
+
+    /// The dialog's `PreToolUse`, and the seat stopped on it.
+    fn stop_on(&mut self, tool: &str, id: &str) {
+        let reason = if tool == "ExitPlanMode" { Reason::Plan } else { Reason::Question };
+        let frame = serde_json::json!({"tool_name": tool, "tool_use_id": id, "tool_input": Self::input(tool)});
+        self.hook("PreToolUse", &frame.to_string());
+        self.c
+            .await_state(self.sid, "dialog up", |s| *s == SessionState::RequiresAction { reason });
+    }
+
+    fn result(&self, id: &str, error: bool, text: &str) {
+        self.append(serde_json::json!({"uuid": format!("r-{id}"), "type": "user",
+            "timestamp": now_iso(), "message": {"content": [{"type": "tool_result",
+                "tool_use_id": id, "is_error": error, "content": text}]}}));
+    }
+
+    fn state(&mut self) -> Option<SessionState> {
+        board_of(self.c.request(Command::Snapshot))
+            .sessions
+            .iter()
+            .find(|s| s.id == self.sid)
+            .map(|s| s.state.clone())
+    }
+
+    fn column(&mut self) -> String {
+        board_of(self.c.request(Command::Snapshot)).ticket(self.ticket).unwrap().column.clone()
+    }
+
+    /// The machine's decisions for the seat, from the feed.
+    fn decisions(&self) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(self.h.paths.state_dir.join("activity.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|v| v["kind"] == "state_decision" && v["session"] == self.sid.to_string())
+            .collect()
+    }
+
+    fn departures(&self) -> Vec<serde_json::Value> {
+        self.decisions().into_iter().filter(|v| v["source"] == "dialog_result").collect()
+    }
+}
+
+/// Now, as Claude Code stamps a transcript record.
+fn now_iso() -> String {
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
+        as u64;
+    let (secs, milli) = (ms / 1000, ms % 1000);
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    // Civil from days (Howard Hinnant's algorithm), UTC.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{milli:03}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
+}
+
 /// T-447 (2026-09-23): a person's refusal of a plan or a question in the
 /// pane ("No, keep planning", the words on `Tell Claude what to change`, an
 /// Esc) fires no hook of its own — no `PostToolUse`, no `PostToolUseFailure`,
@@ -410,51 +572,8 @@ fn accepts_go_one_per_quiet_checkout_and_a_column_accepts_every_plan() {
 /// leave the dialog held (T-595).
 #[test]
 fn a_refused_dialog_clears_on_its_own_result_in_the_transcript() {
-    let Some(h) = Harness::boot_with_env(
-        "planno",
-        Some("#!/bin/sh\nexec sleep 120\n"),
-        &[("MESIMON_PANE_QUIET_MS", "600000")],
-    ) else {
-        return;
-    };
-    let hooks = h.paths.hook_sock();
-    let mut c = h.client("planno");
-    let ticket = match c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: "refused".into(),
-        workspace: None,
-        tier: None,
-    }) {
-        Response::Created { id, .. } => id,
-        other => panic!("{other:?}"),
-    };
-    let sid = match c.request(Command::SpawnSession {
-        ticket,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn failed: {other:?}"),
-    };
-    let session = sid.to_string();
-    let transcript = h.dir.join("refused.jsonl");
-    let append = |record: serde_json::Value| {
-        use std::io::Write;
-        let mut f =
-            std::fs::OpenOptions::new().create(true).append(true).open(&transcript).unwrap();
-        writeln!(f, "{record}").unwrap();
-    };
-    append(serde_json::json!({"uuid": "p", "type": "user", "message": {"content": "go"}}));
-    let start =
-        serde_json::json!({"session_id": "x", "transcript_path": transcript, "cwd": "/tmp"});
-    hook_send_with(&hooks, &session, "SessionStart", Some("startup"), &start.to_string());
-    c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    hook_send(&hooks, &session, "UserPromptSubmit", r#"{"prompt":"go"}"#);
-    c.await_state(sid, "running", |s| *s == SessionState::Running);
-    let refused = "The user doesn't want to proceed with this tool use. The tool use was \
-                   rejected (eg. if it was a file edit, the new_string was NOT written to the \
-                   file). To tell you how to proceed, the user said: keep planning.";
+    let Some(mut b) = Bed::boot("planno") else { return };
+    b.start();
     for (tool, id, reason) in [
         ("ExitPlanMode", "toolu_plan", Reason::Plan),
         ("AskUserQuestion", "toolu_ask", Reason::Question),
@@ -462,36 +581,184 @@ fn a_refused_dialog_clears_on_its_own_result_in_the_transcript() {
         // The call beside a sibling, as the engine writes them, then the
         // dialog's hook.
         let sibling = format!("{id}_sibling");
-        append(serde_json::json!({"uuid": format!("c-{sibling}"), "type": "assistant",
-            "message": {"content": [{"type": "tool_use", "id": sibling, "name": "Read",
-                "input": {"file_path": "/x"}}]}}));
-        append(serde_json::json!({"uuid": format!("c-{id}"), "type": "assistant",
-            "message": {"content": [{"type": "tool_use", "id": id, "name": tool,
-                "input": {}}]}}));
-        let frame = serde_json::json!({"tool_name": tool, "tool_use_id": id, "tool_input": {}});
-        hook_send(&hooks, &session, "PreToolUse", &frame.to_string());
-        c.await_state(sid, "dialog up", |s| *s == SessionState::RequiresAction { reason });
+        b.call("Read", &sibling);
+        b.call(tool, id);
+        b.stop_on(tool, id);
         // A subagent's tool ending, and the sibling's result: not the answer.
-        hook_send(
-            &hooks,
-            &session,
+        b.hook(
             "PostToolUse",
             r#"{"tool_name":"Read","tool_input":{"file_path":"/x"},"agent_id":"sub-1"}"#,
         );
-        append(serde_json::json!({"uuid": format!("r-{sibling}"), "type": "user",
-            "message": {"content": [{"type": "tool_result", "tool_use_id": sibling,
-                "content": "x"}]}}));
+        b.result(&sibling, false, "x");
         std::thread::sleep(Duration::from_millis(4000));
-        let held = board_of(c.request(Command::Snapshot))
-            .sessions
-            .iter()
-            .any(|s| s.id == sid && s.state == SessionState::RequiresAction { reason });
-        assert!(held, "a subagent's call or a sibling's result left {reason:?} held");
+        assert_eq!(
+            b.state(),
+            Some(SessionState::RequiresAction { reason }),
+            "a subagent's call or a sibling's result left the dialog"
+        );
         // The refusal: no frame, the dialog's own result on the transcript.
-        append(serde_json::json!({"uuid": format!("r-{id}"), "type": "user",
-            "message": {"content": [{"type": "tool_result", "tool_use_id": id,
-                "is_error": true, "content": refused}]}}));
-        c.await_state(sid, "working after the refusal", |s| *s == SessionState::Running);
+        b.result(id, true, REFUSED);
+        b.c.await_state(b.sid, "working after the refusal", |s| *s == SessionState::Running);
+    }
+}
+
+/// T-447's own road, kept (T-957): the native road (T-657) relays every
+/// `tool.call` as a `PreToolUse`, so there the agent's next call is the
+/// refusal's first frame, and no transcript result is written here for
+/// anything to read instead. A subagent's call (`agent_id`) is not the
+/// lead's answer and leaves the dialog held; the lead's clears it.
+#[test]
+fn a_refused_dialog_clears_on_the_native_road_s_next_tool_call() {
+    let Some(mut b) = Bed::boot("planno_native") else { return };
+    b.prompt();
+    for (tool, id, reason) in [
+        ("ExitPlanMode", "toolu_plan", Reason::Plan),
+        ("AskUserQuestion", "toolu_ask", Reason::Question),
+    ] {
+        b.stop_on(tool, id);
+        let sub = r#"{"tool_name":"Read","tool_input":{"file_path":"/x"},"agent_id":"sub-1"}"#;
+        b.hook("PreToolUse", sub);
+        b.hook("PostToolUse", sub);
+        std::thread::sleep(Duration::from_millis(2000));
+        assert_eq!(b.state(), Some(SessionState::RequiresAction { reason }), "a subagent's call");
+        b.hook("PreToolUse", r#"{"tool_name":"Bash","tool_input":{"command":"grep -n x"}}"#);
+        b.c.await_state(b.sid, "working after the refusal", |s| *s == SessionState::Running);
+    }
+}
+
+/// T-957 round 1: the dialog's result is read on the tail's next poll, up to
+/// 2 s after it was written, and a fast agent's `Stop` can come first: the
+/// projected dialog drops with it and the record settles to the turn's end.
+/// The result read inside that settle must not turn it back to `Running`:
+/// the stated end stands, and the ticket moves on it (REVIEW). For a
+/// refusal and for an accept. The poll's phase is not the test's to set,
+/// so a case repeats until the feed shows the result read inside the
+/// `Stop`'s settle (three in four do).
+#[test]
+fn a_stop_heard_before_the_dialog_s_result_is_read_keeps_its_turn_end() {
+    let Some(mut b) = Bed::boot("planstop") else { return };
+    b.start();
+    let stop = r#"{"stop_hook_active":false}"#;
+    let mut n = 0;
+    for (error, text) in [(true, REFUSED), (false, "User has approved your plan.")] {
+        let mut met = false;
+        for _ in 0..8 {
+            n += 1;
+            let id = format!("toolu_s{n}");
+            b.call("ExitPlanMode", &id);
+            b.stop_on("ExitPlanMode", &id);
+            let seen = b.departures().len();
+            b.result(&id, error, text);
+            b.hook("Stop", stop);
+            b.c.await_state(b.sid, "the turn's end", |s| {
+                *s == SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn }
+            });
+            wait_until(Duration::from_secs(6), "the move on the turn's end", || {
+                b.column() == "REVIEW"
+            });
+            // Past the settle and two polls: the end stood.
+            std::thread::sleep(Duration::from_millis(4500));
+            assert_eq!(
+                b.state(),
+                Some(SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn })
+            );
+            assert_eq!(b.column(), "REVIEW");
+            let departures = b.departures();
+            if let Some(d) = departures.get(seen) {
+                if d["decision"]["before"]["pending"]["state"]["state"] == "idle" {
+                    assert_eq!(
+                        d["decision"]["after"]["pending"], d["decision"]["before"]["pending"],
+                        "the Stop's leave kept: {d}"
+                    );
+                    met = true;
+                }
+            }
+            b.prompt();
+            if met {
+                break;
+            }
+        }
+        assert!(met, "no read of the result landed inside a Stop's settle in eight tries");
+    }
+}
+
+/// T-957's replan guard: the old dialog's result never ends the new one.
+/// (1) B's `PreToolUse` lands before A's result is read and before B's own
+/// line reaches the file: the hook stream projects B, so A's end is
+/// dropped; B's line and then B's result end B. (2) B's `PreToolUse` lands
+/// inside the settle A's result started: the leave is cancelled and the
+/// record stays on B.
+#[test]
+fn a_replan_s_hook_keeps_its_dialog_against_the_old_result() {
+    let Some(mut b) = Bed::boot("planguard") else { return };
+    b.start();
+    let plan = SessionState::RequiresAction { reason: Reason::Plan };
+
+    // ---- (1) B's hook first, A's result read after, B's line later --------
+    b.call("ExitPlanMode", "toolu_a");
+    b.stop_on("ExitPlanMode", "toolu_a");
+    b.stop_on("ExitPlanMode", "toolu_b");
+    b.result("toolu_a", true, REFUSED);
+    std::thread::sleep(Duration::from_millis(4500));
+    assert_eq!(b.state(), Some(plan.clone()), "A's end dropped while B stands");
+    assert!(b.departures().is_empty(), "nothing given to the machine: {:?}", b.departures());
+    b.call("ExitPlanMode", "toolu_b");
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(b.state(), Some(plan.clone()));
+    b.result("toolu_b", true, REFUSED);
+    b.c.await_state(b.sid, "B's own end", |s| *s == SessionState::Running);
+
+    // ---- (2) B's hook inside the settle A's result started ----------------
+    b.call("ExitPlanMode", "toolu_c");
+    b.stop_on("ExitPlanMode", "toolu_c");
+    let seen = b.departures().len();
+    b.result("toolu_c", true, REFUSED);
+    wait_until(Duration::from_secs(6), "C's end read", || b.departures().len() > seen);
+    let left = std::time::Instant::now();
+    b.call("ExitPlanMode", "toolu_d");
+    b.stop_on("ExitPlanMode", "toolu_d");
+    assert!(left.elapsed() < Duration::from_millis(1500), "inside the settle");
+    std::thread::sleep(Duration::from_millis(3500));
+    assert_eq!(b.state(), Some(plan), "the replan inside the settle kept the dialog");
+}
+
+/// T-957 round 1: a refusal written while no daemon read the tail. A record
+/// on a dialog keeps it across a restart, and the new daemon's cursor
+/// starts at the end of the file, past the call and its result; its first
+/// look back for the held call finds it ended inside the spell, and the
+/// record leaves: running after words, interrupted after an Esc.
+#[test]
+fn a_refusal_in_a_restart_s_window_is_read_when_the_cursor_starts() {
+    let Some(mut b) = Bed::boot("planrestart") else { return };
+    b.start();
+    let interrupted =
+        SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Interrupted };
+    for (n, (tool, id, reason, esc)) in [
+        ("ExitPlanMode", "toolu_r1", Reason::Plan, false),
+        ("AskUserQuestion", "toolu_r2", Reason::Question, true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        b.call(tool, id);
+        b.stop_on(tool, id);
+        b.h.restart_after(|| {
+            b.result(id, true, REFUSED);
+            if esc {
+                b.append(serde_json::json!({"uuid": "abort", "type": "user", "message": {
+                    "content": [{"type": "text",
+                        "text": "[Request interrupted by user for tool use]"}]}}));
+            }
+        });
+        b.c = b.h.client(&format!("planrestart_{n}"));
+        let want = if esc { interrupted.clone() } else { SessionState::Running };
+        b.c.await_state(b.sid, "off the dialog after the restart", |s| *s == want);
+        let held = b.decisions().iter().any(|d| {
+            d["source"] == "dialog_result"
+                && d["decision"]["before"]["state"]
+                    == serde_json::to_value(SessionState::RequiresAction { reason }).unwrap()
+        });
+        assert!(held, "the dialog's end, read off the tail: {:?}", b.departures());
     }
 }
 

@@ -33997,62 +33997,123 @@ other candidate, needs a screen shape for every dialog; the result is keyed to t
 arrives first, so it is the one road.
 
 **What shipped.**
-- **The reader** (`tail::dialog_call`, `tail::carries_result_of`). The Claude recovery adapter
-  already reads the tail every 2 s for a record at a dialog (`abort_only`). It now keeps the last
-  plan or question call it saw with no result after it. A cursor minted after the call (a
-  restart, a turn resumed straight onto a plan) reads it once per held spell through T-933's
-  `open_dialog`.
-- **The departure.** When the held call's own result is read, and no newer dialog call follows
-  it in the same read, the adapter gives the machine `ToolStarted { nested: false }` with source
-  `dialog_result`. That is the refusal road's signal, as T-955's `plan_sent_back`: High, so it
-  passes the flap pin, and it goes through the 1500 ms leave settle, so a replan inside it keeps
-  the dialog. `requires_action` follows the record and `needs_you` follows the state.
+- **The reader** (`tail::dialog_call`, `tail::carries_result_of`, `tail::closed_dialog`). The
+  Claude recovery adapter already reads the tail every 2 s for a record at a dialog
+  (`abort_only`). It now keeps the last plan or question call it saw with no result after it.
+  A cursor minted after the call (a restart, or a turn resumed straight onto a plan) looks back
+  once per held spell. It finds the call either still open (T-933's `open_dialog`) or already
+  ended (`closed_dialog`).
+- **The departure is its own signal, `Signal::DialogEnded { interrupted }`** (source
+  `dialog_result`), not `ToolStarted`: genuine next-tool starts are unchanged.
+  - When the held call's own result is read and no newer dialog call follows it, the dialog
+    ends to `Running`. It goes through the 1500 ms leave settle, so a replan inside it keeps the
+    dialog.
+  - When an interrupt record follows that result (in the same read or the next), the dialog
+    ends to `Idle{Interrupted}`. "Follows" means nothing in between but latches, attachments and
+    mid-turn `system` rows. This holds from the plan, and from the `Running` the departure left
+    for.
+  - It never replaces a leave already settling anywhere but `Running`. A `Stop` heard before the
+    tail read the result is the turn's end (or its park), and its `on_done`, its move and the
+    crown's wake ride it.
+  - `requires_action` follows the record, and `needs_you` follows the state.
 - **The guard.** A replan's `PreToolUse` can beat its call's line to the file, so the hook stream
   already projects the new dialog when the old result is read. The observation carries the
   answered id (`RecoveryObservation::dialog`), and `feed_recovery` drops the departure while the
   seat's projected dialog is another request (`control_dialog_request`).
-- **Unchanged:** the projection itself, T-943's walk and T-955's window and `sent_back_left`. A
-  plan the crown sends back now usually leaves by this road within one tail read of its Enter,
-  and `sent_back_left` finds the record already off the plan. It stays as the backstop for a
-  record with no transcript path; the cut is not trivial, so the code stays.
+- **Why `High`, against the rule that tail-derived state is Low until a hook says it.** It is a
+  narrowly fenced fact that this dialog ended, keyed by its call's id, and the engine writes it
+  at the keypress. It is not a claim that work started. Its fences:
+  - the held call's id, with a sibling's result never counted (T-595);
+  - the projected request (the guard above);
+  - the EOF cursor, which reads only lines written since it started;
+  - for the look back, the spell. The result must be stamped at or after the held spell's start,
+    the last dialog call on the tail must be the held tool's, and an undated result counts for
+    nothing.
+
+  Its freshness limits: the live read has no timestamp fence. A rotation (`len < offset`)
+  resets the cursor to 0 and can replay lines; only the projected-id guard and the held-state
+  check stand against a replayed result.
+- **Unchanged:** the projection itself, T-943's walk, T-955's window and `sent_back_left`. A plan
+  the crown sends back now usually leaves by this road within one tail read of its Enter, and
+  `sent_back_left` then finds the record already off the plan. It stays as the backstop for a
+  record with no transcript path. The cut is not trivial, so the code stays.
+
+**Round 1 (the independent read of `276c59bc`).** The first delivery handed the machine
+`ToolStarted`, had no look back for a call already ended, and left the Esc to the Low interrupt
+hint. Three holes followed from that:
+- A result read inside a `Stop`'s settle replaced the stated `Idle{EndTurn}` with `Running`. The
+  `Stop` had dropped the projection, so the guard let it through, and `abort_only` ignored the
+  later close.
+- A refusal written before the cursor started was never read.
+- Under the flap pin, an Esc read `Running` and the status file could not clear it:
+  `confirms_idle` needs an idle stamp after the new spell. The first block's "until the
+  status-file probe" was not a true bound.
 
 **Tests.**
+- Unit, `attention::a_dialog_s_end_off_the_tail_leaves_it_and_keeps_a_stated_leave`:
+  - a plan and a question end through the settle;
+  - the interrupted end commits High under the pin;
+  - the interrupted end replaces the departure's pending `Running`;
+  - a `Stop`'s pending `EndTurn`, `Background` and `Monitoring` survive either end;
+  - nothing happens from a permission, a rest or `Unknown`.
 - Unit, `recovery::a_held_dialog_leaves_on_its_own_call_s_result`:
-  - the plan's result is the departure, once;
-  - a sibling's result is not;
+  - the plan's result ends it, once, and a sibling's result does not;
   - a replan in the same read stands;
-  - a question's Esc gives the departure and then `AbortedMidStream`;
+  - a question's Esc is one interrupted end, then the Low hint;
+  - a plan's Esc split across reads ends interrupted from `Running`, and an interrupt after a
+    reply is not the dialog's;
   - another dialog's result says nothing;
-  - a cursor minted after the call learns it.
-- Unit, `tail::a_dialog_s_call_and_its_own_result_are_read_by_id`, on the 2.1.310 record trimmed.
-  T-363's restatement test now expects the departure on its accepted plan.
+  - a cursor minted after the call learns it;
+  - a refusal or an Esc already on the tail inside the spell is read on the first look, once,
+    with the interrupt a read later still its Esc;
+  - an older result before the spell, the other tool's call last, and an undated result clear
+    nothing.
+- Unit, `tail::a_dialog_s_call_and_its_own_result_are_read_by_id`, on the 2.1.310 record
+  trimmed. T-363's restatement test now expects the end on its accepted plan.
 - Unit, `composer::startup_and_dialogs_are_not_a_composer` gained the question screen (2.1.287's
   capture, the cursor on each row, `Chat about this` under a rule) and a permission dialog. The
   permission screen is written from its rows, not a capture.
 - `fake_claude_dialog.py` writes the transcript as 2.1.310 does when the dialog file names
-  `transcript` and `tool_use_id`: the call when drawn, then the result at the ending key.
+  `transcript` and `tool_use_id`: the call when drawn, then at the ending key the result. After
+  an Escape it also writes the interrupt and the turn's close.
 - `crown_e2e::a_plan_a_person_sends_back_in_the_pane_leaves_needs_you`, with no crown walk and no
-  `PreToolUse`: the person's words on the feedback row put the record at `Running`, then an Esc
-  on the next plan takes it off the plan. One `dialog_result` decision each, no `needs_you`, and
-  `ask_agent` answers `AgentAsked`. It passes on the hook road and on the mod pass, and fails
-  without the departure.
-- T-447's e2e, renamed `plan_accept_e2e::a_refused_dialog_clears_on_its_own_result_in_the_transcript`.
-  It now sends only what the engine sends: the calls in the transcript, the dialog's
-  `PreToolUse`, a subagent's `PostToolUse`, a sibling's result (all leave the dialog held), then
-  the dialog's own `is_error` result (`Running`). Both roads pass.
+  `PreToolUse`:
+  - the person's words on the feedback row put the record at `Running`, and `ask_agent` answers
+    `AgentAsked`;
+  - an Esc on the next plan, with the flap pin armed (asserted), rests it at `Idle{Interrupted}`,
+    and the queued ask is typed into the composer;
+  - no `needs_you` either way.
+
+  It passes on both roads and fails without the end.
+- `plan_accept_e2e`, on a stub seat whose transcript the test writes and whose hooks it sends as
+  the engine does:
+  - `a_refused_dialog_clears_on_its_own_result_in_the_transcript` (T-447's, rewritten): the calls
+    in the transcript, the dialog's `PreToolUse`, a subagent's `PostToolUse` and a sibling's
+    result all leave it held; its own `is_error` result ends it.
+  - `a_refused_dialog_clears_on_the_native_road_s_next_tool_call`: T-447's own road kept for the
+    native road, which relays every `tool.call`, with no transcript result to read.
+  - `a_stop_heard_before_the_dialog_s_result_is_read_keeps_its_turn_end`: for a refusal and for
+    an accept, the result read inside a `Stop`'s settle (repeated until the feed shows it) leaves
+    `Idle{EndTurn}` and the move to REVIEW. It fails without the machine's fence, stuck at
+    `Running`.
+  - `a_replan_s_hook_keeps_its_dialog_against_the_old_result`: B's hook before A's result is read
+    and before B's line, and B's hook inside A's settle, each keep the plan. It fails without the
+    guard.
+  - `a_refusal_in_a_restart_s_window_is_read_when_the_cursor_starts`: a plan refused with words
+    and a question Esc'd while no daemon ran are read on the new daemon's first look (`Running`,
+    `Idle{Interrupted}`). It fails without the look back.
 
 **Not done (seen, not changed).**
-- **An Esc under the flap pin.** The Esc's turn end is the interrupt record's Low hint, which the
-  pin drops (more than four committed changes in 20 s), so the record reads `Running` after the
-  departure until the status-file probe says idle. Before this change it read `plan` until the
-  stale demote. The e2e meets the pin and asserts only that the record left the plan.
 - **T-943's walk e2e** (`the_crown_sends_a_plan_back_with_words`) and `PlanBed::clear` still end
-  a dialog with an ordinary tool's `PreToolUse`. That is the native road's frame, and on the
-  other roads the receipt waits for T-955's window instead.
+  a dialog with an ordinary tool's `PreToolUse`. That is the native road's frame; on the other
+  roads the receipt waits for T-955's window instead.
+- **T-955's `sent_back_left`** still hands the machine `ToolStarted`, so a `Stop` settling before
+  its window's end is open to the same replacement round 1 closed here. The brief kept that road
+  as it was.
 - **Owed to T-955's block:**
-  - The departure assumes the engine replans. An engine that sits idle after the rejection
-    reads `Running` until the quiet probe or the next frame. This road has the same assumption
-    for a plan sent back with words.
+  - The departure assumes the engine replans. An engine that sits idle after a rejection with
+    words reads `Running` until the quiet probe or the next frame. This road has the same
+    assumption; an Esc no longer does.
   - The composer reader's `Absent` for the question and permission dialogs rested on their shape
     and had no test. The question screen is now tested on a capture; the permission screen is
     still not from one.

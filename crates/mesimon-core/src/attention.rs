@@ -319,6 +319,21 @@ pub enum Signal {
     ToolStarted {
         nested: bool,
     },
+    /// The held plan or question dialog ended, read off the transcript
+    /// (T-957): its own call's result, keyed by the call's `tool_use_id`,
+    /// which Claude Code writes at the keypress whatever ended it. A
+    /// person's refusal in the pane fires no hook (T-447), and neither the
+    /// hook set nor the classic mod sends the next tool's `PreToolUse`, so
+    /// this is the refusal road where those roads have none. `interrupted`:
+    /// an interrupt record came right after that result (an Esc), and the
+    /// turn stopped. A fact about that dialog ending, not that work started:
+    /// it leaves a held dialog through the settle, an interrupted one also
+    /// the `Running` it left for, and it never replaces a leave already
+    /// settling anywhere but `Running` (a `Stop`'s turn end or park that
+    /// came before the tail was read).
+    DialogEnded {
+        interrupted: bool,
+    },
     Notification {
         kind: NotificationKind,
     },
@@ -783,6 +798,16 @@ impl Machine {
             }
         }
 
+        // A dialog's end off the tail keeps a stated leave already settling
+        // (T-957): a `Stop` heard before the tail poll read the result is the
+        // turn's end, and its `on_done` and the crown's wake ride it. Only a
+        // leave to `Running` (the accept's `PostToolUse`, or this signal's
+        // own) gives way, to the interrupt that stopped it.
+        if matches!(sig, Signal::DialogEnded { .. })
+            && self.pending.as_ref().is_some_and(|p| p.to != SessionState::Running)
+        {
+            return None;
+        }
         if to == self.state {
             // Re-affirmation cancels any scheduled leave (11 §11.7.4: the
             // clearing event must survive 1500 ms without a re-trigger). A
@@ -1156,6 +1181,18 @@ impl Machine {
                 S::Unknown { .. } => t(S::Running),
                 _ => None,
             },
+            Signal::DialogEnded { interrupted } => {
+                let to = if *interrupted {
+                    S::Idle { stop_reason: StopReason::Interrupted }
+                } else {
+                    S::Running
+                };
+                match &self.state {
+                    S::RequiresAction { reason: Reason::Plan | Reason::Question } => t(to),
+                    S::Running if *interrupted => t(to),
+                    _ => None,
+                }
+            }
             Signal::Notification { kind } => match kind {
                 NotificationKind::QuotaStale | NotificationKind::QuotaDisabled => {
                     t(S::RequiresAction { reason: Reason::QuotaResume })
@@ -2135,6 +2172,65 @@ mod tests {
         let mut done = m(SessionState::Idle { stop_reason: StopReason::EndTurn });
         assert_eq!(done.apply(&Signal::ToolCompleted { nested: true }, 1_000), None);
         assert!(done.pending.is_none());
+    }
+
+    #[test]
+    fn a_dialog_s_end_off_the_tail_leaves_it_and_keeps_a_stated_leave() {
+        // T-957: the dialog's own result is its departure, through the
+        // settle; with its interrupt after it, the turn stopped, under the
+        // flap pin too (a High signal), and from the `Running` it left for.
+        let ended = Signal::DialogEnded { interrupted: false };
+        let esc = Signal::DialogEnded { interrupted: true };
+        let interrupted = SessionState::Idle { stop_reason: StopReason::Interrupted };
+        for reason in [Reason::Plan, Reason::Question] {
+            let mut m1 = m(SessionState::RequiresAction { reason });
+            assert!(m1.apply(&ended, 1_000).is_none());
+            assert_eq!(m1.tick(1_000 + SETTLE_MS).unwrap().to, SessionState::Running);
+            let mut m2 = m(SessionState::RequiresAction { reason });
+            m2.pinned_until = Some(60_000);
+            assert!(m2.apply(&esc, 1_000).is_none());
+            let c = m2.tick(1_000 + SETTLE_MS).unwrap();
+            assert_eq!((c.to, c.confidence), (interrupted.clone(), Confidence::High));
+            // The departure first, the interrupt read a poll later.
+            let mut m3 = m(SessionState::RequiresAction { reason });
+            m3.apply(&ended, 1_000);
+            assert!(m3.apply(&esc, 1_500).is_none(), "replaces the pending Running");
+            assert_eq!(m3.tick(1_500 + SETTLE_MS).unwrap().to, interrupted);
+        }
+        // A `Stop` heard before the tail was read: its end stands, park or not.
+        let stop = |blocking_tasks, monitoring_tasks| Signal::Stop {
+            stop_hook_active: false,
+            has_agent_id: false,
+            blocking_tasks,
+            monitoring_tasks,
+            teammates: 0,
+        };
+        for (blocking, monitoring, rest) in [
+            (false, false, StopReason::EndTurn),
+            (true, false, StopReason::Background),
+            (false, true, StopReason::Monitoring),
+        ] {
+            for sig in [&ended, &esc] {
+                let mut m4 = m(SessionState::RequiresAction { reason: Reason::Plan });
+                assert!(m4.apply(&stop(blocking, monitoring), 1_000).is_none());
+                assert!(m4.apply(sig, 1_200).is_none());
+                let c = m4.tick(1_000 + SETTLE_MS).expect("the Stop's own deadline");
+                assert_eq!(c.to, SessionState::Idle { stop_reason: rest }, "{sig:?}");
+            }
+        }
+        // Nothing anywhere else: no permission, no rest, no interrupt of
+        // a turn that is not the one the dialog was in.
+        for state in [
+            SessionState::RequiresAction { reason: Reason::Permission },
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+            SessionState::Unknown { reason: UnknownReason::NoSignal },
+        ] {
+            let mut m5 = m(state.clone());
+            assert_eq!(m5.apply(&ended, 1_000), None, "{state:?}");
+            assert_eq!(m5.apply(&esc, 1_000), None, "{state:?}");
+            assert!(m5.pending.is_none());
+        }
+        assert_eq!(m(SessionState::Running).apply(&ended, 1_000), None);
     }
 
     #[test]
