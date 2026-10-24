@@ -178,7 +178,8 @@ pub const CROWN_WAKES: &str = concat!(
     "The board wakes this session on its own: when an agent the crown started delivers, \
      finishes a turn with nothing pending on it (no words queued for it, no hand up, no merge \
      the merge train will make), is merged, answers the crown's ask, raises its hand, asks a \
-     question, stops on a plan, hits a usage limit, or its pull request has news from the forge (a pipeline failed \
+     question, stops on a plan, hits a usage limit, ends its turn on an error (get_ticket's state \
+     carries why, under failed), or its pull request has news from the forge (a pipeline failed \
      or passed, a job waiting, a deployment, a conflict, a review, a later PR merged, each \
      named with its PR; \
      its get_ticket carries the PR under prs), one sentence naming \

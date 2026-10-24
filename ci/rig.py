@@ -1814,11 +1814,13 @@ Reply with the single word ready and end your turn."""
                 return False
             self.closed()
             return True
-        if what == "limit":
+        if what in ("limit", "fail"):
             # L1 (T-802): the account's usage limit, as Claude Code reports
             # it — a `StopFailure` whose class is `rate_limit` — sent through
             # the real hook binary on both roads (the daemon takes the one
             # the session reports by). No real account is made to hit one.
+            # E1 (T-936): `fail` is the same frame with a server error's
+            # class (`class`, server_error unless said): the turn failed.
             rec = self.agent_of(self.board(), test["ticket"])
             # `live` (T-930's review): the limit ends a turn, so it lands on
             # a worker proven in one, never on one already done and parked.
@@ -1826,20 +1828,25 @@ Reply with the single word ready and end your turn."""
                 record["failures"].append(f"the limit came to a worker not in a turn ({word_of(rec['state'])})")
                 return False
             mark = len(self.feed_lines)
-            body = json.dumps({"error": "rate_limit", "last_assistant_message":
-                               "You've reached your Sonnet limit. Run /usage-credits to continue "
-                               "or switch models with /model."})
+            if what == "limit":
+                cls = "rate_limit"
+                words = ("You've reached your Sonnet limit. Run /usage-credits to continue "
+                         "or switch models with /model.")
+            else:
+                cls = step.get("class", "server_error")
+                words = "API Error: 500 Internal server error"
+            body = json.dumps({"error": cls, "last_assistant_message": words})
             for road in (["--road", "mod"], []):
                 subprocess.run([self.bin, "hook", "--sock", os.path.join(self.paths.rt_dir, "hook.sock"),
                                 "--session", rec["id"], "--event", "StopFailure",
-                                "--reason", "rate_limit", *road],
+                                "--reason", cls, *road],
                                input=body, text=True, capture_output=True, timeout=10)
-            wake = self.wait_for("the board's limit wake for the crown", lambda: next((
+            wake = self.wait_for(f"the board's {what} wake for the crown", lambda: next((
                 l for l in self.feed_lines[mark:] if l.get("kind") == "crown_wake"
                 and l.get("worker") == test["ticket"]), None), WAKE_GRACE, self.watch)
             record["wakes"].append(wake.get("cause") if wake else "none came")
             if not wake:
-                record["failures"].append("the board never woke the crown for the limit")
+                record["failures"].append(f"the board never woke the crown for the {what}")
                 return False
             sent = self.wait_for("the wake's delivery", lambda: next((
                 l for l in self.feed_lines[mark:] if l.get("kind") == "board"

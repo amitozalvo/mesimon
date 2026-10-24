@@ -277,6 +277,10 @@ pub(super) enum WakeCause {
     Merged,
     Delivered,
     Answered,
+    /// Its turn ended on an error (T-936): a server's, a refused request, a
+    /// model gone. Above an answer, since the answer's turn is the one that
+    /// failed, and under a limit, which a person ends.
+    Failed,
     /// Its turn ended on a usage limit (T-802): above an answer, since the
     /// answer's turn is the one the limit cut, and under a hand, which a
     /// worker raised on purpose.
@@ -300,6 +304,7 @@ impl WakeCause {
             WakeCause::Merged => "merged",
             WakeCause::Delivered => "delivered",
             WakeCause::Answered => "answered your ask",
+            WakeCause::Failed => "ended its turn on an error",
             WakeCause::Limited => "hit a usage limit",
             WakeCause::Raised => "raised its hand",
             // Never the plan's words (T-414's rule for a hand's reason):
@@ -321,6 +326,7 @@ impl WakeCause {
             WakeCause::Merged => "merged",
             WakeCause::Delivered => "delivered",
             WakeCause::Answered => "answered",
+            WakeCause::Failed => "failed",
             WakeCause::Limited => "limited",
             WakeCause::Raised => "raised",
             WakeCause::Planned => "planned",
@@ -357,6 +363,10 @@ pub(super) struct CrownWake {
     /// worktree that was not cut, said in the line's brackets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     unstarted: Option<String>,
+    /// What a failed turn ended on (T-936), as the board saw it fail: said
+    /// first in the line's brackets, never read off a later state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    failed: Option<mesimon_core::board::FailReason>,
 }
 
 /// What rides a wake beside its cause and delta, as `owe_wake` folds it.
@@ -536,6 +546,7 @@ impl CrownWake {
         if let (WakeCause::Unstarted, Some(why)) = (self.cause, &self.unstarted) {
             return vec![why.clone()];
         }
+        let failed = self.failed.filter(|_| self.cause == WakeCause::Failed);
         let mut out = match &self.to {
             None => Vec::new(),
             Some(to) if self.cause != WakeCause::Finished => delta(self.from.as_ref(), to),
@@ -545,6 +556,9 @@ impl CrownWake {
                 out
             }
         };
+        if let Some(reason) = failed {
+            out.insert(0, mesimon_core::board::agent_fail_word(reason).to_string());
+        }
         if self.late {
             out.push("after a restart".to_string());
         }
@@ -630,6 +644,33 @@ pub(super) fn limits_the_crown(kind: SessionKind, change: &Change) -> Option<Wak
     let quota = SessionState::RequiresAction { reason: Reason::QuotaResume };
     (kind.is_agent() && change.from != change.to && change.to == quota)
         .then_some(WakeCause::Limited)
+}
+
+/// An agent's turn ending on an error (T-936), as `hear_failure` takes it:
+/// the reason, and whether it is a failure of its own. Only a change into
+/// `Failed` is one: a repeated hook changes nothing. One from another
+/// failure is the same failure read again (T-659's transcript class), which
+/// refines its reason and wakes nobody; and only a hook's or a proven
+/// close's (High, Medium) is a failure the board saw: the restart's
+/// re-derivation at Low reads one already told, or one nobody saw.
+pub(super) fn failure_edge(kind: SessionKind, change: &Change) -> Option<Failure> {
+    let SessionState::Failed { reason } = change.to else { return None };
+    if !kind.is_agent() || change.from == change.to {
+        return None;
+    }
+    if matches!(change.from, SessionState::Failed { .. }) {
+        return Some(Failure { reason, new: false });
+    }
+    matches!(change.confidence, Confidence::High | Confidence::Medium)
+        .then_some(Failure { reason, new: true })
+}
+
+/// `failure_edge`'s answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Failure {
+    pub(super) reason: mesimon_core::board::FailReason,
+    /// A failure of its own; false for the same one with its reason refined.
+    pub(super) new: bool,
 }
 
 /// What is pending on a worker's ticket (T-596): the list in the module's
@@ -930,6 +971,7 @@ impl Heard {
             linger: None,
             late: self.restored || late,
             unstarted: None,
+            failed: None,
         });
         true
     }
@@ -1525,6 +1567,7 @@ impl Daemon {
             linger: None,
             late,
             unstarted: None,
+            failed: None,
         };
         heard.forging = Some(Forging { wake, since_ms: now_ms() });
         self.feed.board("automation", "crown_wake_deferred:forge", Some(worker));
@@ -1845,6 +1888,7 @@ impl Daemon {
                 | WakeCause::Merged
                 | WakeCause::Raised
                 | WakeCause::Limited
+                | WakeCause::Failed
         );
         watched_news && (self.watched_by_crown(worker, crown) || self.held_by_crown(worker, crown))
     }
@@ -1921,6 +1965,7 @@ impl Daemon {
                 linger,
                 late,
                 unstarted: None,
+                failed: None,
             });
         }
         // A watch ends at the merge (T-712): the wait it was for is over,
@@ -1945,6 +1990,31 @@ impl Daemon {
         self.enter_wake(crown, worker, WakeCause::Unstarted, None, None, Owed::default());
         if let Some(w) = self.crown_wakes.iter_mut().find(|w| w.worker == worker) {
             w.unstarted = Some(why);
+        }
+        self.drain_crown_wakes(None);
+        self.broadcast();
+    }
+
+    /// A worker's turn ended on an error (T-936): the crown that hears it
+    /// is woken once, the reason as the board saw it on the wake. A refined
+    /// reason moves the one still owed and wakes nobody. A failure is no
+    /// turn's end the board looks at: it says nothing delivered or finished.
+    pub(super) fn hear_failure(&mut self, worker: ulid::Ulid, failure: Failure) {
+        if !failure.new {
+            if let Some(w) =
+                self.crown_wakes.iter_mut().find(|w| w.worker == worker && w.failed.is_some())
+            {
+                w.failed = Some(failure.reason);
+            }
+            return;
+        }
+        let Some(crown) = self.board.crown_holder().map(|t| t.id) else { return };
+        if !self.crown_claims(worker, crown, WakeCause::Failed) {
+            return;
+        }
+        self.enter_wake(crown, worker, WakeCause::Failed, None, None, Owed::default());
+        if let Some(w) = self.crown_wakes.iter_mut().find(|w| w.worker == worker) {
+            w.failed = Some(failure.reason);
         }
         self.drain_crown_wakes(None);
         self.broadcast();
@@ -2117,6 +2187,7 @@ impl Daemon {
                 first.linger = w.linger.or(first.linger);
                 first.late |= w.late;
                 first.unstarted = w.unstarted.or(first.unstarted.take());
+                first.failed = w.failed.or(first.failed);
             } else {
                 self.crown_wakes.push(w);
             }
@@ -2402,6 +2473,7 @@ mod tests {
             linger: Some(l(3, 30)),
             late: false,
             unstarted: None,
+            failed: None,
         };
         assert_eq!(w.clause(), "has been idle with 3 background tasks for 30 min");
         assert!(w.changed().is_empty(), "no delta: nothing about the work moved");
@@ -2648,6 +2720,7 @@ mod tests {
             linger: None,
             late: false,
             unstarted: None,
+            failed: None,
         };
         let head = checkout("1234567890abcdef", "REVIEW");
         assert_eq!(
@@ -2843,12 +2916,84 @@ mod tests {
         assert_eq!(WakeCause::Limited.clause(), "hit a usage limit");
     }
 
+    /// T-936: a turn ending on an error wakes the crown on the edge into
+    /// it, from any agent, at a hook's confidence; a repeated hook changes
+    /// nothing, a failure read again refines its reason and wakes nobody,
+    /// and the restart's re-derivation at Low is no failure the board saw.
+    /// The line says the reason the board saw, first; a failure says
+    /// nothing delivered or finished, and nothing pending holds it.
+    #[test]
+    fn a_failed_turn_wakes_the_crown_on_its_edge() {
+        use mesimon_core::board::FailReason;
+        let failed = |reason| SessionState::Failed { reason };
+        let change = |from: SessionState, to: SessionState, confidence| Change {
+            from,
+            to,
+            attention_added: false,
+            confidence,
+        };
+        let server = failed(FailReason::Server);
+        let fell = change(SessionState::Running, server.clone(), Confidence::High);
+        for kind in [SessionKind::Claude, SessionKind::Codex] {
+            assert_eq!(
+                failure_edge(kind, &fell),
+                Some(Failure { reason: FailReason::Server, new: true }),
+                "{kind:?}"
+            );
+        }
+        assert_eq!(failure_edge(SessionKind::Bash, &fell), None, "a shell's turn is no agent's");
+        let proven = change(SessionState::Running, server.clone(), Confidence::Medium);
+        assert!(failure_edge(SessionKind::Claude, &proven).is_some_and(|f| f.new));
+        let guessed = change(
+            SessionState::Unknown { reason: UnknownReason::DaemonRestarted },
+            server.clone(),
+            Confidence::Low,
+        );
+        assert_eq!(failure_edge(SessionKind::Claude, &guessed), None, "a restart's guess");
+        let again = change(server.clone(), server.clone(), Confidence::High);
+        assert_eq!(failure_edge(SessionKind::Claude, &again), None, "a repeated hook");
+        let refined = change(failed(FailReason::Unknown), server.clone(), Confidence::Medium);
+        assert_eq!(
+            failure_edge(SessionKind::Claude, &refined),
+            Some(Failure { reason: FailReason::Server, new: false })
+        );
+        let left = change(server.clone(), SessionState::Running, Confidence::High);
+        assert_eq!(failure_edge(SessionKind::Claude, &left), None);
+
+        let busy = Pending { turn: true, words: true, ..Pending::default() };
+        assert_eq!(due(Some(WakeCause::Failed), None, &busy), Due::Wake(WakeCause::Failed));
+        let mut wake = CrownWake {
+            worker: ulid::Ulid::new(),
+            cause: WakeCause::Failed,
+            from: None,
+            to: None,
+            finished: false,
+            linger: None,
+            late: false,
+            unstarted: None,
+            failed: Some(FailReason::Server),
+        };
+        assert_eq!(wake.clause(), "ended its turn on an error");
+        assert_eq!(wake.changed(), ["server error"]);
+        // A delivery owed before it keeps its delta beside the reason.
+        let ahead = branch("bbb", "ahead", 1, "REVIEW");
+        wake.fold(WakeCause::Delivered, None, Some(ahead));
+        assert_eq!(wake.cause, WakeCause::Failed);
+        assert_eq!(wake.changed()[0], "server error");
+        wake.late = true;
+        assert_eq!(wake.changed().last().map(String::as_str), Some("after a restart"));
+        // A stronger cause folded over it says its own line, not the reason.
+        wake.fold(WakeCause::Raised, None, None);
+        assert!(!wake.changed().iter().any(|c| c == "server error"));
+    }
+
     #[test]
     fn coalesced_causes_keep_the_strongest() {
         assert!(WakeCause::Asked > WakeCause::Planned);
         assert!(WakeCause::Planned > WakeCause::Raised);
         assert!(WakeCause::Raised > WakeCause::Limited);
-        assert!(WakeCause::Limited > WakeCause::Answered);
+        assert!(WakeCause::Limited > WakeCause::Failed);
+        assert!(WakeCause::Failed > WakeCause::Answered);
         assert!(WakeCause::Answered > WakeCause::Delivered);
         assert!(WakeCause::Delivered > WakeCause::Merged);
         assert!(WakeCause::Merged > WakeCause::Finished);
@@ -2873,6 +3018,7 @@ mod tests {
             linger: None,
             late: false,
             unstarted: None,
+            failed: None,
         };
         assert_eq!(wake.changed(), ["column PROD", "deployed to production !11"]);
         assert_eq!(wake.sent_at("DONE").changed(), ["column DONE", "deployed to production !11"]);
@@ -2949,6 +3095,7 @@ mod tests {
             linger: None,
             late: false,
             unstarted: None,
+            failed: None,
         };
         let h = heard(Some(delivered.clone()), Some(delivered.clone()));
         let cause = merge_verdict(true, &h, &landed).unwrap();
@@ -3081,6 +3228,7 @@ mod tests {
             linger: None,
             late: false,
             unstarted: None,
+            failed: None,
         };
         assert_eq!(wake.clause(), "merged");
     }
@@ -3200,6 +3348,7 @@ mod tests {
             linger: None,
             late: h.restored,
             unstarted: None,
+            failed: None,
         };
         h.judged = Some(landed.clone());
         assert_eq!(wake.changed(), ["merge_state ahead → merged", "after a restart"]);
@@ -3249,6 +3398,7 @@ mod tests {
             linger: None,
             late: false,
             unstarted: None,
+            failed: None,
         };
         assert_eq!(wake.changed(), ["merge_state merged", "column DONE"]);
         // Owed across the restart, it says so; a fold keeps saying it.
@@ -3284,6 +3434,7 @@ mod tests {
             linger: None,
             late: false,
             unstarted: None,
+            failed: None,
         };
         wake.fold(WakeCause::Forge, None, Some(news("review approved !1")));
         assert_eq!(wake.changed(), ["pipeline passed !1, review approved !1"]);
@@ -3344,6 +3495,7 @@ mod tests {
             linger: None,
             late: false,
             unstarted: None,
+            failed: None,
         };
         let passed = Told {
             forge: Some("pipeline passed !2".into()),

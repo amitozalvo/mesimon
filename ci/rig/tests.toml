@@ -29,7 +29,9 @@
 #              `restart_plain` (back to the Claude Code on PATH), `doctor`
 #              (read its claude road line), `limit` (T-802: the worker's
 #              session reports a usage limit through the real hook binary;
-#              the step ends with the crown's turn on the board's wake).
+#              the step ends with the crown's turn on the board's wake),
+#              `fail` (T-936: the same, a turn ending on an error, its
+#              `class` server_error unless said).
 #   until      for a crown step: `stops = N` (that many Stop frames from the
 #              worker since the step began) and/or `events = [...]`, then the
 #              worker's card word `state` (working | needs_you | idle |
@@ -1282,6 +1284,22 @@ checks = ["woke:limited", "crown:sleep_agent", "crown:start_agent=2", "crown:ask
   crown = "L2: {key}'s agent hit the account's usage limit before its task was finished. Carry it on with the rig-alt tier until it finishes, then end your turn with the single line: L2 moved."
   until = { stops = 1, state = "idle" }
   wake = true
+
+[[test]]
+id = "E1"
+title = "E1 · a worker whose turn ends on an error: do the steps below"
+workspace = "worktree"
+brief = "Reply with the single word done and end your turn. Read no file and run no command."
+expect = "the crown starts the worker, which answers and ends its turn; then its session reports that its turn ended on a server error, and the board wakes the crown, ended its turn on an error (server error) (T-936): the reason is in the line, and the worker's get_ticket reads state failed with failed: server error. What the crown does on that wake is its own to decide."
+checks = ["woke:failed"]
+
+  [[test.steps]]
+  crown = "E1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: E1 started."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "fail"
 
 [[test]]
 id = "X1"

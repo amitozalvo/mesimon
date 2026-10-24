@@ -32611,3 +32611,40 @@ crown, Sonnet workers at low effort, 6.2 minutes.
 - **Fable's one risk, for T-935:** S2's brief says "keep the card current as each stage
   lands", and T-727's failures came from briefs that said no such thing. A variant of S2 with a
   bare brief would measure what the cut box criterion cost, which this run did not.
+
+## Crown wake and tool gaps: a failed turn, a refused fallback, old news after a restart, a start's stamp, a long plan (T-936, 2026-10-24, "Crown wake and tool gaps: hold races its stamp after start, handover replays old merges, a failed turn wakes nobody, a wake counts as told before it is taken")
+
+Gaps the crown (T-925) logged while running the board, planned with the crown and two independent
+reads (T-940). Each is the least code that makes the board say what it does.
+
+**A turn that ends on an error wakes the crown (item 3).** T-930's worker sat `failed` for 2 h 24 min
+overnight and the crown heard nothing: only `Idle{EndTurn}` sends a turn's look, and a
+`StopFailure` into `Failed` goes to `turn_ended(…, false)`.
+- `WakeCause::Failed`, `ended its turn on an error`, ranked between `Answered` (the answer's turn
+  is the one that failed) and `Limited` (which a person ends). A watched or held ticket hears it,
+  beside `Limited`.
+- The reason is the one the board saw at the edge, kept on the wake (`CrownWake::failed`) and said
+  first in the brackets in `board::agent_fail_word`'s words (`server error`, `invalid request`,
+  `model not found`, `max output tokens`, `unknown`). A send-time read of the live state was
+  refused: a held wake can go out after a restart, a new turn or another failure.
+- One wake per failure (`failure_edge`): a change into `Failed` from another state, at High or
+  Medium. A repeated hook changes nothing; `Failed → Failed` is the same failure read again
+  (T-659's transcript class) and refines the reason of the wake still owed, waking nobody; the
+  restart's re-derivation at Low is no failure the board saw, so a told failure is not told again.
+  A failure while no daemon ran is read back at Low only and wakes nobody; `get_ticket` shows it.
+- A failure says nothing delivered or finished: no look is sent for it, as before.
+- `get_ticket`'s `state` gains `failed` (the same words) while the state is `failed`; `state` stays
+  one word. `CROWN_WAKES` names the wake in its list, one clause.
+- `overloaded` is not a failure: it reads `Throttled` (the server passes), and wakes nobody.
+- **`crown.json` goes to schema 2.** `WakeCause` is a persisted enum with no unknown arm, and a
+  same-schema file that fails to parse is quarantined, so a schema-1 build reading a `failed` wake
+  would set the whole ledger aside. Under the bump it leaves the file untouched with writes barred.
+  A schema-1 file reads as it is. (`Forge`, `Unstarted` and `Limited` were added without one; an
+  older build met them by quarantine.)
+
+Tests: `crownwake::a_failed_turn_wakes_the_crown_on_its_edge`;
+`crownledger::a_schema_1_ledger_reads_and_a_failed_wake_round_trips`;
+`crown_e2e::a_failed_turn_wakes_the_crown_once_with_why` (one line with its reason, a repeated hook
+silent, a refined reason on the wake still owed across a restart after the worker moved on, a later
+failure of its own a second line, none saying delivered or finished; both roads); the rig's `E1`
+(the `fail` step, the `limit` step's frame with a server error's class).

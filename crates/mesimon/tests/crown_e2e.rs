@@ -24,7 +24,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use mesimon_core::board::{CrownMode, MergeInto, SessionKind, SessionState, WorkspaceStrategy};
+use mesimon_core::board::{
+    CrownMode, FailReason, MergeInto, SessionKind, SessionState, WorkspaceStrategy,
+};
 use mesimon_core::command::{
     AgentTicketView, AskRoad, AskWake, Command, CrownTouch, Deliver, PendingAction, Response,
     StartPrompt,
@@ -7449,6 +7451,122 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
     });
     std::thread::sleep(std::time::Duration::from_millis(1000));
     assert_eq!(held_count(), 1, "once");
+}
+
+/// T-936: a worker the crown started whose turn ends on an error wakes the
+/// crown once, the reason as the board saw it in the line, and its
+/// `get_ticket` says why. A failure is no delivery and no finished turn. A
+/// repeated hook wakes nobody; a failure read again refines the reason of
+/// the wake still owed; a wake owed across a restart keeps the reason it
+/// was given, after the worker moved on; and a later failure of its own
+/// wakes the crown again.
+#[test]
+fn a_failed_turn_wakes_the_crown_once_with_why() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_failed",
+        Some(RECORDING_STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_failed");
+    let got = h.dir.join("got.txt");
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let fail = |c: &mut TestClient, sid: uuid::Uuid, class: &str, reason: FailReason| {
+        let body = json!({ "error": class, "last_assistant_message": "API Error" }).to_string();
+        hook_send_with(&hook_sock, &sid.to_string(), "StopFailure", Some(class), &body);
+        c.await_state(sid, "failed", |s| *s == SessionState::Failed { reason });
+    };
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-936 worker");
+    let kw = key_of(&mut c, w);
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    assert!(matches!(
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket {
+                key: kw.clone(),
+                seen: v.seen,
+                plan: false,
+                tier: None,
+                workspace: Some("worktree".into()),
+            },
+        ),
+        Response::AgentStarted { .. }
+    ));
+    wait_until(std::time::Duration::from_secs(15), "W's worktree start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).expect("W holds a seat").id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let worker = format!("{kw} \"mesimon-probe-936 worker\" ");
+    let lines = || -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(&worker))
+            .map(str::to_string)
+            .collect()
+    };
+    let failed_line = |reason: &str| format!("{worker}ended its turn on an error ({reason}");
+
+    // ---- 1. a failure wakes the crown, with the reason -----------------------
+    start(&mut c, ws);
+    fail(&mut c, ws, "server_error", FailReason::Server);
+    wait_until(std::time::Duration::from_secs(10), "the failure's wake on the crown", || {
+        lines().iter().any(|l| l.contains(&failed_line("server error")))
+    });
+    let state = read(&mut c, sa, &kw).unwrap().state.expect("W's state");
+    assert_eq!((state.state.as_str(), state.failed.as_deref()), ("failed", Some("server error")));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    // The same hook again changes nothing.
+    fail(&mut c, ws, "server_error", FailReason::Server);
+
+    // ---- 2. owed while the crown works: refined, then across a restart -----
+    start(&mut c, sa);
+    start(&mut c, ws);
+    fail(&mut c, ws, "unknown", FailReason::Unknown);
+    fail(&mut c, ws, "invalid_request", FailReason::InvalidRequest);
+    drop(c);
+    h.restart();
+    let mut c = h.client("crown_failed_2");
+    // The worker moves on before the wake goes: the line says what it failed on.
+    start(&mut c, ws);
+    stop(&mut c, sa);
+    wait_until(std::time::Duration::from_secs(15), "the owed failure's wake", || {
+        lines().len() >= 2
+    });
+    let second = lines()[1].clone();
+    assert!(second.contains(&failed_line("invalid request")), "{second}");
+    assert!(second.contains("after a restart"), "{second}");
+    start(&mut c, sa);
+    stop(&mut c, sa);
+
+    // ---- 3. a later failure of its own wakes the crown again -----------------
+    fail(&mut c, ws, "max_output_tokens", FailReason::MaxOutputTokens);
+    wait_until(std::time::Duration::from_secs(10), "the second failure's wake", || {
+        lines().len() >= 3
+    });
+    let all = lines();
+    assert!(all[2].contains(&failed_line("max output tokens")), "{all:?}");
+    // One line per failure, and none says the worker delivered or finished.
+    assert_eq!(all.len(), 3, "{all:?}");
+    assert!(all.iter().all(|l| l.contains("ended its turn on an error")), "{all:?}");
 }
 
 /// What a start_agent wake's receipt says waits for the agent (T-920), read

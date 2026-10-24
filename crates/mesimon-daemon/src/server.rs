@@ -14,10 +14,10 @@ use anyhow::{Context, Result};
 use mesimon_backend_tmux::TmuxBackend;
 use mesimon_core::attention::{self, Change, EndKind, Machine, Signal, StartSource};
 use mesimon_core::board::{
-    agent_reason_word, agent_state_word, bash_mode_foreground, foreground_of, sanitize_tag,
-    AgentProvider, AgentTools, Archived, Board, Confidence, CrownMode, ExitReason, MergeInto,
-    PickedUp, Provenance, Reason, SessionKind, SessionRecord, SessionState, StopReason, Tag,
-    TagRef, Ticket, UnknownReason, WorkspaceStrategy, PICKED_AT_DESK, PICKED_BY_AGENT,
+    agent_fail_word, agent_reason_word, agent_state_word, bash_mode_foreground, foreground_of,
+    sanitize_tag, AgentProvider, AgentTools, Archived, Board, Confidence, CrownMode, ExitReason,
+    MergeInto, PickedUp, Provenance, Reason, SessionKind, SessionRecord, SessionState, StopReason,
+    Tag, TagRef, Ticket, UnknownReason, WorkspaceStrategy, PICKED_AT_DESK, PICKED_BY_AGENT,
 };
 use mesimon_core::command::{
     AgentAutomoveView, AgentBackgroundView, AgentBoardView, AgentMergeView, AgentNeedsYouView,
@@ -6485,6 +6485,11 @@ impl Daemon {
         if let Some(cause) = crownwake::limits_the_crown(snapshot.kind, change) {
             self.note_crown_wake(snapshot.ticket, cause, None, None);
         }
+        // A turn that ended on an error wakes it too (T-936): no turn's end
+        // is probed for it, so nothing else would tell the crown.
+        if let Some(failure) = crownwake::failure_edge(snapshot.kind, change) {
+            self.hear_failure(snapshot.ticket, failure);
+        }
         // A turn ended, or a target died: the queued asks look again. The
         // settle that lands `Idle{EndTurn}` comes through here from the
         // tick, and so does the shutdown flush — the words go out on the
@@ -8021,6 +8026,10 @@ impl Daemon {
             state: seat.state_word().to_string(),
             since_secs: s.state_changed_at.map(|at| now.saturating_sub(at) / 1000),
             raised: t.raised.as_ref().map(|r| r.reason.clone()),
+            failed: match s.state {
+                SessionState::Failed { reason } => Some(agent_fail_word(reason).to_string()),
+                _ => None,
+            },
         })
     }
 

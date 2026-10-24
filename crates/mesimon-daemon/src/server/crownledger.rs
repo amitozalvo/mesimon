@@ -25,7 +25,11 @@ use serde::{Deserialize, Serialize};
 use super::crownwake::{CrownWake, Entering, Heard, ToldHand, TurnAsk};
 use super::*;
 
-pub const CROWN_SCHEMA: u32 = 1;
+/// 2 since T-936: a wake may be `failed`, a cause a schema-1 build cannot
+/// read, and a same-schema file that fails to parse is quarantined, which
+/// would lose the whole ledger. A newer schema is left untouched with its
+/// writes barred instead. A schema-1 file reads as it is.
+pub const CROWN_SCHEMA: u32 = 2;
 
 /// How long after a start the restart's look waits for a worker's agent to
 /// settle (`hear_restored`) before letting it go to its turn's end.
@@ -282,6 +286,31 @@ mod tests {
         assert!(parse("{\"schema_version\": 1}").unwrap().held.is_empty());
         assert!(parse("{\"schema_version\": 1}").unwrap().hands.is_empty());
         assert!(parse("{\"schema_version\": 1}").unwrap().entering.is_none());
+    }
+
+    /// T-936: a schema-1 ledger reads as it was under schema 2, its wakes
+    /// and baselines kept; a schema-2 ledger holds a failed turn's wake
+    /// with its reason through its own bytes.
+    #[test]
+    fn a_schema_1_ledger_reads_and_a_failed_wake_round_trips() {
+        let crown = ulid::Ulid::from_parts(1, 1);
+        let w = ulid::Ulid::from_parts(1, 7);
+        let told = r#"{"tip": "aaa", "merge": "ahead", "ahead": 1, "column": "REVIEW"}"#;
+        let v1 = format!(
+            r#"{{"schema_version": 1, "crown": "{crown}",
+                "wakes": [{{"worker": "{w}", "cause": "delivered", "to": {told}}}],
+                "heard": {{"{w}": {{"judged": {told}, "told": {told}}}}}}}"#
+        );
+        let old = parse(&v1).unwrap();
+        assert_eq!((old.wakes.len(), old.heard.len()), (1, 1));
+        let v2 = format!(
+            r#"{{"schema_version": 2, "crown": "{crown}",
+                "wakes": [{{"worker": "{w}", "cause": "failed", "failed": "server"}}]}}"#
+        );
+        let ledger = parse(&v2).unwrap();
+        let text = serde_json::to_string_pretty(&ledger).unwrap();
+        assert!(text.contains(r#""cause": "failed""#) && text.contains(r#""failed": "server""#));
+        assert_eq!(serde_json::to_string_pretty(&parse(&text).unwrap()).unwrap(), text);
     }
 
     /// Not an assertion about wall clock (see `search.rs`): the number in

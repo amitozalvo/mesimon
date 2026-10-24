@@ -2524,6 +2524,19 @@ pub fn agent_state_word(state: &SessionState) -> &'static str {
     }
 }
 
+/// What a `failed` agent's turn ended on (T-936), in plain words for an
+/// agent reading the ticket and for the crown's wake line:
+/// `agent_state_word` says `failed`, and this says why.
+pub fn agent_fail_word(reason: FailReason) -> &'static str {
+    match reason {
+        FailReason::Server => "server error",
+        FailReason::InvalidRequest => "invalid request",
+        FailReason::ModelNotFound => "model not found",
+        FailReason::MaxOutputTokens => "max output tokens",
+        FailReason::Unknown => "unknown",
+    }
+}
+
 /// Why a `needs-you` agent stopped, as ONE WORD for an agent reading the
 /// ticket (T-566): `agent_state_word`'s companion, lower-case and plain
 /// where the card's `reason_word` is a badge (`INPUT`, `SETUP`). Both

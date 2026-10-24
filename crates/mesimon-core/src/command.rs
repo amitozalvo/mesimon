@@ -2614,6 +2614,10 @@ pub struct AgentStateView {
     /// The agent's `raise_hand` reason, while the hand is up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raised: Option<String>,
+    /// What a `failed` turn ended on (T-936), `board::agent_fail_word`'s
+    /// words, while the state is `failed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed: Option<String>,
 }
 
 /// An agent idle with background tasks still running (T-599): `tasks` the
