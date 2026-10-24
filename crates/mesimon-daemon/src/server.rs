@@ -8326,9 +8326,25 @@ impl Daemon {
     /// the road `deliver` takes for it, asked as `deliver` and `paste_at`
     /// ask it. Claude Code 2.1.309 keeps a draft in the box through a
     /// submit, and keys typed while its turn starts stay in the box unsent,
-    /// so neither a person in the pane nor their draft holds it.
+    /// so neither a person in the pane nor their draft holds it. Not while
+    /// a person's Esc stopped the crown (T-936): Claude Code refuses a
+    /// plugin's input then, until the person types (T-894), and by that
+    /// refusal the wake would be told and its hands down. Then the wake is
+    /// the paste road's, held for a person in the pane or their draft, as
+    /// before T-931, and nothing is told until it goes.
     fn crown_wake_by_submit(&self, id: uuid::Uuid) -> bool {
-        !self.relaunches(id, false) && self.takes_by_submit(id, &self.crown_wake_text())
+        !self.stopped_by_person(id)
+            && !self.relaunches(id, false)
+            && self.takes_by_submit(id, &self.crown_wake_text())
+    }
+
+    /// The seat's last turn ended on a person's Esc (`Idle{Interrupted}`),
+    /// and nothing has been sent since: the one state Claude Code's refusal
+    /// of a plugin's input follows (T-894, T-936).
+    fn stopped_by_person(&self, id: uuid::Uuid) -> bool {
+        self.board.sessions.iter().any(|s| {
+            s.id == id && s.state == SessionState::Idle { stop_reason: StopReason::Interrupted }
+        })
     }
 
     /// The sample time at which this pane's clients and box were both read
@@ -12350,7 +12366,10 @@ impl Daemon {
         // A Claude session whose mod is up takes the words by its `submit`
         // (T-575): a turn of its own, held behind a running one, never typed.
         // A slash command is for the box, and is typed into it.
-        if !immediately && self.takes_by_submit(id, text) {
+        // The crown's wake after a person's Esc is typed (T-936,
+        // `crown_wake_by_submit`).
+        let stopped = ack.word == Ack::CROWN_WAKE.word && self.stopped_by_person(id);
+        if !immediately && !stopped && self.takes_by_submit(id, text) {
             let words = Parked { text: text.to_string(), brief: false, title: false };
             if !self.mod_submit(id, ticket, words, ack) {
                 return Err("nothing to send".into());

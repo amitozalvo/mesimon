@@ -32770,3 +32770,24 @@ schema 2 reads it); `crown_e2e::a_codex_worker_s_failed_turns_are_told_by_turn` 
 runtime: turn A, then turn B into the same state with no `Running` read between, two wakes; B read
 again and refined, none; a new session's turn of the same id, a third; with the change rule it
 fails at B).
+
+**Review (Astra), first round: words kept unsent are not a wake still owed (item 6).** Commit 2's
+guard stays: a refused submit is never pasted into a pane with a client or a box holding text,
+fail closed. By the time the refusal arrives, though, `drain_crown_wakes` has called `told`, and
+a worker's hand may be down. So the hold this block first refused now stands. While the crown's
+seat reads `Idle{Interrupted}` (`stopped_by_person`), the one state Claude Code's refusal follows,
+`crown_wake_by_submit` is false and `paste_at` types the crown's wake rather than submitting it.
+The wake keeps the hold from before T-931 (a person in the pane, their draft), stays in
+`crown_wakes`, owed and shown on the crown's row, and nothing is told until a delivery goes.
+- **The limit still left to T-938** is a submit already on its way when the person's Esc comes,
+  refused after it. The words stay unsent and nothing is typed under the person, but the wake was
+  already told.
+
+Test: `crown_e2e::a_crown_a_person_stopped_holds_its_wake_and_its_hand`.
+- A crown stopped by an Esc, a person in its pane, the mod refusing: a worker's hand wakes it, and
+  no submit and no paste go; the hand stays up and the wake is owed.
+- The person leaves: one paste into the empty box, and only then the hand down.
+- A submit pending as a person comes in and types, then refused: unsent, the draft alone in the box.
+
+It fails with `stopped_by_person` off. The fake mod gains `mod-hold-submit` and
+`mod-release-submit`.

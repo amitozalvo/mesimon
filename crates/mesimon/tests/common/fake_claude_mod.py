@@ -191,6 +191,12 @@ def main():
             with open(RECORD, "a") as f:
                 f.write(line + "\n")
             kind = frame.get("kind")
+            if kind == "submit" and switch("mod-hold-submit"):
+                # T-936: the submit stays pending until the test lets it go,
+                # so a person can come into the pane meanwhile.
+                deadline = time.time() + 20
+                while not switch("mod-release-submit") and time.time() < deadline:
+                    time.sleep(0.05)
             if kind == "ping":
                 relay("ModPong", frame_id, {})
             elif kind == "submit" and switch("mod-drop-submit"):

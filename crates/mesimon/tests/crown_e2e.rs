@@ -1945,6 +1945,179 @@ fn a_mod_road_crown_s_refused_wake_is_never_pasted_under_a_person() {
     let _ = client.wait();
 }
 
+/// T-936, Astra's raised-hand specimen. A worker's hand wakes a mod-road
+/// crown that a person's Esc stopped (`Idle{Interrupted}`, the one state in
+/// which Claude Code refuses a plugin's input, T-894). While the person is
+/// in the crown's pane the wake is held as before T-931: no submit and no
+/// paste, the worker's hand still up and the wake still owed. Once they
+/// leave, one paste into the empty box delivers it, and only then does the
+/// hand come down. And a submit still pending as a person comes in and
+/// types, refused after their Esc, types nothing under them.
+#[test]
+fn a_crown_a_person_stopped_holds_its_wake_and_its_hand() {
+    let Some(h) = Harness::boot_bare(
+        "crown_mod_esc",
+        Some(BOX_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "1500"),
+            ("MESIMON_CLAUDE_ROAD", "mod"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let tmux_sock = h.paths.tmux_sock();
+    let mut c = h.client("crown_mod_esc");
+    let got = h.dir.join("got.txt");
+    let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let end_turn = SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| *s == end_turn);
+    };
+    let up = |sid: uuid::Uuid| {
+        let pid = h.dir.join(format!("mod-bridge-{sid}.pid"));
+        wait_until(std::time::Duration::from_secs(10), "the mod's bridge", || pid.exists());
+        hook_send_with(
+            &hook_sock,
+            &sid.to_string(),
+            "SessionStart",
+            Some("startup"),
+            r#"{"session_id":"x","transcript_path":"/tmp/t-mod.jsonl","cwd":"/tmp"}"#,
+        );
+    };
+    let wake_rows = |c: &mut TestClient, t: ulid::Ulid| -> Vec<mesimon_core::command::Pending> {
+        pending_of(c, Some(t))
+            .into_iter()
+            .filter(|p| p.action == mesimon_core::command::PendingAction::CrownWake)
+            .collect()
+    };
+    let attach = |crown: &str| {
+        let client = tmux(&tmux_sock)
+            .args(["-C", "attach", "-t", crown])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("a control-mode tmux client");
+        wait_until(std::time::Duration::from_secs(10), "the client on the crown's session", || {
+            tmux(&tmux_sock)
+                .args(["list-clients", "-t", crown, "-F", "#{client_name}"])
+                .output()
+                .is_ok_and(|o| !o.stdout.is_empty())
+        });
+        client
+    };
+
+    let a = c.create_ticket("coordinate");
+    let w1 = c.create_ticket("mesimon-probe-936 worker");
+    let kw1 = key_of(&mut c, w1);
+    let sa = c.spawn_claude(a);
+    up(sa);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw1).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw1.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("shared_checkout".into()),
+        },
+    ) {
+        Response::AgentStarted { session_started: true, .. } => {}
+        other => panic!("start_agent {kw1}: {other:?}"),
+    }
+    let ws1 = c.board().live_agent(w1).expect("W1 holds a seat").id;
+    up(ws1);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let crown = c.board().sessions.iter().find(|s| s.id == sa).unwrap().sid16();
+    let raise = |c: &mut TestClient, why: &str| match c
+        .send(Principal::Agent { session: ws1 }, Command::AgentRaiseHand { reason: why.into() })
+    {
+        Response::AgentRaised { .. } => {}
+        other => panic!("raise_hand: {other:?}"),
+    };
+    let hand_up = |c: &mut TestClient| c.board().ticket(w1).unwrap().raised.is_some();
+    let raised = format!("{kw1} \"mesimon-probe-936 worker\" raised its hand");
+    let frames = || read_file(&h.dir.join(format!("mod-{sa}.ndjson")));
+    // The frames are JSON, the title's quotes escaped in them.
+    let submitted = || {
+        frames()
+            .lines()
+            .filter(|l| l.contains("\"submit\"") && l.contains("raised its hand"))
+            .count()
+    };
+    let pasted = || read_file(&got).lines().filter(|l| l.contains(&raised)).count();
+    // Claude Code refuses the mod's submit, as after a person's Esc.
+    std::fs::write(h.dir.join("mod-stopped-submit"), "").unwrap();
+
+    // ---- A. stopped by a person's Esc, the person in the pane: held ---------
+    start(&mut c, sa);
+    c.await_state(sa, "stopped by the person", |s| {
+        *s == SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Interrupted }
+    });
+    let mut client = attach(&crown);
+    raise(&mut c, "which key?");
+    wait_until(std::time::Duration::from_secs(10), "the wake held for the person", || {
+        wake_rows(&mut c, a).first().is_some_and(|p| p.held.as_deref() == Some("when you leave"))
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!((submitted(), pasted()), (0, 0), "nothing went: {}", frames());
+    assert!(hand_up(&mut c), "the worker's hand is still up");
+    assert_eq!(wake_rows(&mut c, a).len(), 1, "the wake is still owed");
+
+    // ---- C. they leave: one paste into the empty box settles it -------------
+    client.kill().unwrap();
+    let _ = client.wait();
+    wait_until(std::time::Duration::from_secs(10), "the wake typed into the empty box", || {
+        pasted() == 1
+    });
+    assert_eq!(submitted(), 0, "typed, never submitted to a refusing mod");
+    wait_until(std::time::Duration::from_secs(5), "the hand down once it went", || {
+        !hand_up(&mut c) && wake_rows(&mut c, a).is_empty()
+    });
+    start(&mut c, sa);
+    stop(&mut c, sa);
+
+    // ---- B. a submit pending as a person comes in and types -----------------
+    std::fs::write(h.dir.join("mod-hold-submit"), "").unwrap();
+    raise(&mut c, "which key, again?");
+    wait_until(std::time::Duration::from_secs(10), "the submit on its way", || submitted() == 1);
+    let mut client = attach(&crown);
+    assert!(tmux(&tmux_sock)
+        .args(["send-keys", "-t", &crown, "-l", "half a thought"])
+        .status()
+        .unwrap()
+        .success());
+    std::fs::write(h.dir.join("mod-release-submit"), "").unwrap();
+    wait_until(std::time::Duration::from_secs(10), "the refused wake kept unsent", || {
+        c.board()
+            .sessions
+            .iter()
+            .find(|s| s.id == sa)
+            .and_then(|s| s.unsent.clone())
+            .is_some_and(|u| u.text.contains(&raised))
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let screen = tmux(&tmux_sock).args(["capture-pane", "-p", "-t", &crown]).output().unwrap();
+    let screen = String::from_utf8_lossy(&screen.stdout).to_string();
+    assert!(screen.contains("half a thought") && !screen.contains("raised its hand"), "{screen}");
+    assert_eq!(pasted(), 1, "nothing typed under them");
+    client.kill().unwrap();
+    let _ = client.wait();
+}
+
 /// A Codex crown's wake and a person at its box (T-918), on the synthetic
 /// runtime, whose screen the test draws (`fake_codex_runtime.py` echoes no
 /// paste at an idle). The wake is pasted only on a sample that read the
