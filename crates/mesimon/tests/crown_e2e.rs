@@ -5989,12 +5989,16 @@ const BED_PLAN: &str = "1. Read the code\n2. Write the code";
 
 impl PlanBed {
     fn boot(name: &str) -> Option<Self> {
+        Self::boot_with(name, &[])
+    }
+
+    /// `boot` with more of the daemon's environment: a road forced for
+    /// every pane, say.
+    fn boot_with(name: &str, extra: &[(&str, &str)]) -> Option<Self> {
         const STUB: &str = include_str!("common/fake_claude_dialog.py");
-        let h = Harness::boot_bare(
-            name,
-            Some(STUB),
-            &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
-        )?;
+        let mut env = vec![("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")];
+        env.extend_from_slice(extra);
+        let h = Harness::boot_bare(name, Some(STUB), &env)?;
         init_repo(&h.repo, "a.txt", "hello\n");
         let mut c = h.client(name);
         let a = c.create_ticket("coordinate");
@@ -6444,6 +6448,119 @@ fn a_new_plan_while_its_wake_is_owed_is_one_wake_then_the_current_request() {
         other => panic!("accept_plan on the new plan: {other:?}"),
     }
     b.c.await_state(ws, "running the plan", |s| *s == SessionState::Running);
+}
+
+/// A new plan while the crown's wake for the old one is still entering
+/// (T-943 on T-936, Astra's specimen). Every pane is on the mod road, so the
+/// crown's wake goes down its mod as a `submit` frame and is `Entering`
+/// until that frame's `entered`; the crown's mod holds it. Meanwhile the
+/// crown sends the plan back and the worker replans. When the old frame
+/// enters and settles, the new plan's obligation is still owed and its
+/// request is the one `get_ticket` reads: the crown is woken for it again.
+#[test]
+fn a_new_plan_while_the_old_wake_is_entering_outlives_its_settle() {
+    let Some(mut b) =
+        PlanBed::boot_with("crown_revise_entering", &[("MESIMON_CLAUDE_ROAD", "mod")])
+    else {
+        return;
+    };
+    let (kw, sa) = (b.kw.clone(), b.sa);
+    let wake = format!("{kw} \"mesimon-probe-943 worker\" stops on a plan");
+    let crown_wakes = |b: &mut PlanBed| -> usize {
+        pending_of(&mut b.c, None)
+            .into_iter()
+            .filter(|p| p.action == mesimon_core::command::PendingAction::CrownWake)
+            .count()
+    };
+    let submits = |b: &PlanBed| -> usize {
+        std::fs::read_to_string(b.h.dir.join(format!("mod-{sa}.ndjson")))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|v| v["kind"] == "submit" && v.to_string().contains("stops on a plan"))
+            .count()
+    };
+    let (hold, release) = (b.h.dir.join("mod-hold-submit"), b.h.dir.join("mod-release-submit"));
+    // The crown is busy: W's first plan is owed; the crown's mod will hold
+    // the frame the wake goes down as.
+    b.show_plan("toolu_w1");
+    std::fs::write(&hold, "").unwrap();
+    b.stop(sa);
+    wait_until(std::time::Duration::from_secs(10), "the wake's frame held by the mod", || {
+        submits(&b) == 1
+    });
+    assert!(crown_wakes(&mut b) > 0, "the entering wake is still pending");
+    assert_eq!(b.typed().matches(&wake).count(), 0, "not entered yet");
+    // While it is entering, the crown sends the plan back; W replans.
+    let receipt = b.call("toolu_w1", "Use echo in Bash instead of the Write tool.");
+    let changed = b.changed();
+    wait_until(std::time::Duration::from_secs(10), "the plan sent back", || changed.exists());
+    std::fs::write(
+        b.h.dir.join(format!("dialog-{kw}.json")),
+        json!({ "plan": BED_PLAN }).to_string(),
+    )
+    .unwrap();
+    b.hook("PreToolUse", "ExitPlanMode", "toolu_w2");
+    assert_eq!(revised(receipt), ("input_sent".to_string(), None));
+    // The old frame enters and settles.
+    std::fs::write(&release, "").unwrap();
+    wait_until(std::time::Duration::from_secs(25), "the old wake entered", || {
+        b.typed().matches(&wake).count() == 1
+    });
+    // The new plan's obligation outlived that settle: the crown hears of it
+    // again, by a frame of its own, and reads the new request.
+    wait_until(std::time::Duration::from_secs(20), "the new plan's wake", || {
+        b.typed().matches(&wake).count() == 2
+    });
+    assert_eq!(submits(&b), 2, "a frame of its own");
+    let needs = read(&mut b.c, sa, &kw).unwrap().needs_you.expect("the new plan");
+    assert_eq!(needs.request.as_deref(), Some("toolu_w2"));
+    for name in [&hold, &release] {
+        let _ = std::fs::remove_file(name);
+    }
+}
+
+/// A plan sent back whose replan ends on an API error inside the receipt's
+/// window (T-943 on T-936, Fable's specimen), in the order a crown meets
+/// it: woken for the plan, it sends the plan back from its own turn, and
+/// the worker's replan fails. The error ends the turn and drops the dialog's
+/// projection, so the receipt says `input_sent` at once, not at the
+/// window's end; T-936 owes the crown the failed turn's wake, which it hears
+/// at its idle. The crown reads two lines that agree: the words went in and
+/// the dialog left, and the worker's turn then ended on an error, with its
+/// class, which `get_ticket` reads too.
+#[test]
+fn a_plan_sent_back_whose_replan_fails_reads_two_lines_that_agree() {
+    let Some(mut b) = PlanBed::boot("crown_revise_failed") else { return };
+    let (kw, ws, sa) = (b.kw.clone(), b.ws, b.sa);
+    let wake = format!("{kw} \"mesimon-probe-943 worker\" stops on a plan");
+    b.show_plan("toolu_w1");
+    b.stop(sa);
+    wait_until(std::time::Duration::from_secs(10), "the plan's wake", || b.typed().contains(&wake));
+    b.start(sa);
+    let receipt = b.call("toolu_w1", "Use echo in Bash instead of the Write tool.");
+    let changed = b.changed();
+    wait_until(std::time::Duration::from_secs(10), "the plan sent back", || changed.exists());
+    let body = json!({ "error": "server_error", "last_assistant_message": "API Error" });
+    hook_send_with(
+        &b.h.paths.hook_sock(),
+        &ws.to_string(),
+        "StopFailure",
+        Some("server_error"),
+        &body.to_string(),
+    );
+    b.c.await_state(ws, "failed", |s| *s == SessionState::Failed { reason: FailReason::Server });
+    assert_eq!(revised(receipt), ("input_sent".to_string(), None));
+    b.stop(sa);
+    let failed =
+        format!("{kw} \"mesimon-probe-943 worker\" ended its turn on an error (server error");
+    wait_until(std::time::Duration::from_secs(10), "the failed turn's wake", || {
+        b.typed().contains(&failed)
+    });
+    let view = read(&mut b.c, sa, &kw).unwrap();
+    let state = view.state.expect("W's state");
+    assert_eq!((state.state.as_str(), state.failed.as_deref()), ("failed", Some("server error")));
+    assert!(view.needs_you.is_none(), "no plan stands");
 }
 
 /// A plan sent back stops at any hand but the crown's (T-943), and the

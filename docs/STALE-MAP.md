@@ -33250,6 +33250,25 @@ into that row.
   request with `get_ticket`, an accept of the request it sent back is refused as a changed plan,
   and the accept takes the current one. This is on main's tip; T-936's delivery of a wake
   is run again with it once T-936 lands.
+- **On T-936's merged ledger** (`46fdffe4`), the composition set:
+  - `crown_e2e::a_new_plan_while_the_old_wake_is_entering_outlives_its_settle` (Astra's
+    specimen). Every pane is on the mod road, and the crown's mod holds its wake's `submit` frame,
+    so the wake is `Entering`. The crown sends the plan back and the worker replans. When the old
+    frame enters and settles, the new plan's obligation survives: a second wake by a frame of its
+    own, and `get_ticket` reads `toolu_w2`.
+  - `crown_e2e::a_plan_sent_back_whose_replan_fails_reads_two_lines_that_agree` (Fable's
+    specimen). The crown, woken for the plan, sends it back from its turn, and the replan ends
+    on a `StopFailure`. The receipt is `input_sent` at once, not at the window's end: the error
+    drops the dialog's projection. The crown's next wake says `ended its turn on an error
+    (server error`, and `get_ticket` reads `failed` with no plan standing. The two agree.
+  - `a_new_plan_while_its_wake_is_owed_is_one_wake_then_the_current_request`, unchanged, passes on
+    the merged ledger.
+  - **Seen, not changed:** when the plan's wake is still owed (the crown busy) and the replan
+    then fails, the two obligations fold into one wake (`CrownWake::fold` keeps the stronger
+    cause), and `Planned` ranks above `Failed`. The crown's one notification then says
+    `stops on a plan`, while `get_ticket` reads `failed` with no plan. That is the existing ledger,
+    not this road, and any plan whose agent fails before the crown idles meets it. It is left to
+    the crown to file.
 - `crown_rules_e2e::a_deferred_plan_sent_back_as_the_first_call_carries_the_rules` (with T-930):
   the deferred `input_sent` receipt goes through the rule-delivery wrapper, and the next call
   carries no rules.
