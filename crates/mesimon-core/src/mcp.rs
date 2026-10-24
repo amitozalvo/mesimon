@@ -348,15 +348,15 @@ pub const WORKTREE_INIT_ABOUT: &str = "A script at the repository's root, run on
 /// Then it cost nothing (T-829): the author took plain lines off the card
 /// ("i never liked it anyway"), so the summary is its boxes and a plain line
 /// is said to stay the note's.
+///
+/// What a box holds and when it is ticked went (T-932): the person's rule
+/// is that the board says what it does, never how to work, so T-727's
+/// criterion is the person's to put in their own prompts. What the card
+/// does with the heading, a box and an open box stays.
 pub const SUMMARY_ABOUT: &str = "A note section headed `Summary` is what the ticket's card \
-     shows: a `- [ ] …` item is a box the person ticks on the board, counted as progress. A \
-     box is one stage of the job as the person would watch for it from the board, or a step \
-     only a person can take (run the pipeline, ship it); a job without such stages needs no \
-     `Summary`. Only the boxes reach the card; any other line there stays the note's. \
-     Nothing the board does or shows by itself is a box: the merge, the rebase, the \
-     card's move. An open box reads as work left, so a stage's box is ticked as the stage \
-     lands and a finished job leaves none open. A working list stays under another heading. \
-     A pull request's address on a plain line there (no box) names it as the ticket's: one \
+     shows: a `- [ ] …` item is a box the person ticks on the board, counted as progress, and \
+     an open box reads as work left. Only the boxes reach the card; any other line there stays \
+     the note's. A pull request's address on a plain line there (no box) names it as the ticket's: one \
      its work opened in another repository, or one it reviewed; the board reads it from the \
      forge and shows it beside the ticket's own.";
 
@@ -385,17 +385,6 @@ pub fn describe(text: &str, note: ulid::Ulid, max: usize) -> (String, Option<Str
     );
     (format!("{head}…"), Some(words))
 }
-
-/// What the ticket's own key is to the person (T-715), on a session's read
-/// of its own ticket (`key_about`): everything the session says is read
-/// beside the ticket, so its key is a lookup for the card already in view.
-/// A worker wrote "the open items on the T-132 card" on T-132's own page.
-/// Transient result data, so it may instruct: the first wording only
-/// described the reader, and the rig's Sonnet worker read it and wrote
-/// "Nothing is still open on T-1" all the same.
-pub const KEY_ABOUT: &str = "Words to the person about this ticket call it \"this ticket\", not \
-     its key: the person reads this session beside it, in its pane, its page and its notes, \
-     where the key is one more lookup. A key is for naming another ticket.";
 
 /// What `list_board`'s `daemon` field is (T-941): a stamp comparison and
 /// the reload fact, nothing about what to do. A crown merged daemon fixes,
@@ -520,7 +509,7 @@ pub fn tools() -> Vec<Value> {
                             note), each note's id, name, author, the summary, the agent's \
                             state and the seen stamp edits need. The prompt is often the \
                             title alone; the description and notes are the rest of the \
-                            brief: a session's first call.",
+                            brief.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -538,10 +527,7 @@ pub fn tools() -> Vec<Value> {
                             start on, each with when to use it in the user's words (tiers: \
                             description, is_default), and the other tickets whose agent holds \
                             the shared checkout (checkout_held_by). Session information is \
-                            excluded. Title comparison here is the pre-check for \
-                            create_ticket: work extending a ticket in todo, in progress \
-                            or review belongs on that ticket as scope, not as a sibling. \
-                            A near-duplicate title means the older ticket wins.",
+                            excluded.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
             "annotations": { "readOnlyHint": true },
         }),
@@ -648,14 +634,14 @@ pub fn tools() -> Vec<Value> {
             // merge the board does by itself.
             // T-859 made room for the PR clause: the size refusal says
             // itself when it happens, and the plan clause lost a word.
+            // T-932 cut T-727's criterion (one box per stage, ticked as it
+            // lands, none for the board's merge): what goes in a box is
+            // the person's to ask for; how the card renders it stays.
             "description": "Creates a markdown note on the ticket (key: another's, crown \
                             only) or replaces one. The first note is the description; \
                             empty deletes. An accepted plan is a note already. Under a \
-                            `Summary` heading, `- [ ]` boxes show on the card as progress: \
-                            one per stage of the job, ticked as each lands, or a step only \
-                            a person can take; none for the board's own merge or move; a \
-                            PR's address on a plain line there is the ticket's; working \
-                            lists elsewhere.",
+                            `Summary` heading, `- [ ]` boxes show on the card as progress, \
+                            and a PR's address on a plain line there is the ticket's.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -684,13 +670,12 @@ pub fn tools() -> Vec<Value> {
             // group" (the refusal says it) and "if omitted". The crown's
             // `workspace` (T-583) by folding "A ticket is" into a colon and by
             // the descriptions of `column` (list_board names the columns) and
-            // `description` (get_ticket says it is the first note).
-            "description": "Creates a ticket for a session of its own, not this one: \
-                            a work unit to pick up, not an idea/list row; findings on \
-                            one surface share a ticket with a list. list_board checks \
-                            scope/duplicates first. Research belongs in this ticket's \
-                            notes; the user chooses tickets. Agents cannot delete \
-                            tickets; cleanup costs the user.",
+            // `description` (get_ticket says it is the first note). T-932 cut
+            // T-394's filing guidance (what a ticket is, the duplicate check,
+            // research in notes, the cost of cleanup): how to decide what to
+            // file is the person's; who works it and who deletes it stay.
+            "description": "Creates a ticket for a session of its own, not this one; \
+                            the user chooses tickets. Agents cannot delete tickets.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -755,11 +740,8 @@ pub fn tools() -> Vec<Value> {
                             lights on the mesimon board and the board's attention count \
                             includes it until the ticket is opened or its next prompt \
                             arrives, and the crown is woken for a ticket it started or \
-                            watches. For a turn that ends on a question, a decision, a \
-                            blocker a person has to settle, or a step the crown asked for \
-                            that this session cannot take (a refused tool, another \
-                            ticket's note), named in the reason; words in the pane reach \
-                            no one. An ordinary finished turn already reads as done.",
+                            watches. Words in the pane reach no one. An ordinary finished \
+                            turn already reads as done.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2986,9 +2968,8 @@ mod tests {
     /// convention and got it wrong. The heading and the box's spelling are
     /// in the tool that writes the note and in the line every `get_ticket`
     /// carries, and the read names the field so the model knows to look.
-    /// T-727: both say what a box is — one stage of the job, ticked as it
-    /// lands, or a person's own step — and that the board's own merge is
-    /// none; the "merge the MR" example that primed a merge box is gone.
+    /// T-932: what goes in a box, and when it is ticked, is the person's
+    /// (T-727's criterion was method and went); the rendering stays.
     #[test]
     fn the_summary_convention_is_in_the_tools() {
         let registry = tools();
@@ -2996,32 +2977,17 @@ mod tests {
         let description = write["description"].as_str().unwrap();
         assert!(description.contains("`Summary` heading"), "{description}");
         assert!(description.contains("`- [ ]`"), "the box is spelled: {description}");
-        for words in ["one per stage of the job", "ticked as each lands", "only a person can take"]
-        {
-            assert!(description.contains(words), "write_note says {words:?}: {description}");
-        }
-        assert!(description.contains("none for the board's own merge or move"), "{description}");
-        assert!(!description.contains("merge the MR"), "the merge is the board's: {description}");
+        assert!(description.contains("show on the card as progress"), "{description}");
         let read = registry.iter().find(|t| t["name"] == "get_ticket").unwrap();
         assert!(read["description"].as_str().unwrap().contains("the summary"));
         assert!(SUMMARY_ABOUT.contains("`Summary`"));
         assert!(SUMMARY_ABOUT.contains("`- [ ] …`"));
-        for words in [
-            "one stage of the job",
-            "only a person can take",
-            "Nothing the board does or shows by itself is a box: the merge, the rebase, the card's move",
-            "ticked as the stage lands",
-            "a finished job leaves none open",
-        ] {
-            assert!(SUMMARY_ABOUT.contains(words), "summary.about says {words:?}");
-        }
-        assert!(!SUMMARY_ABOUT.contains("progress worth seeing"), "the vague criterion is gone");
-        // T-743: the plain line is no longer offered as the summary; T-829:
-        // the card shows the boxes alone.
-        assert!(SUMMARY_ABOUT.contains("needs no `Summary`"), "{SUMMARY_ABOUT}");
+        assert!(SUMMARY_ABOUT.contains("an open box reads as work left"), "{SUMMARY_ABOUT}");
         assert!(SUMMARY_ABOUT.contains("Only the boxes reach the card"), "{SUMMARY_ABOUT}");
-        assert!(!SUMMARY_ABOUT.contains("one-line summary"), "{SUMMARY_ABOUT}");
-        assert!(!SUMMARY_ABOUT.contains("plain line alone"), "{SUMMARY_ABOUT}");
+        for method in ["stage", "ticked as", "only a person can take", "working list", "merge"] {
+            assert!(!description.contains(method), "write_note composes: {method:?}");
+            assert!(!SUMMARY_ABOUT.contains(method), "summary.about composes: {method:?}");
+        }
         // T-859: a pull request's address under the heading is the
         // ticket's, said where the agent writes it and where it reads it.
         assert!(
@@ -3391,11 +3357,8 @@ mod tests {
                 "create_ticket",
                 vec![
                     "for a session of its own, not this one",
-                    "work unit to pick up, not an idea/list row",
-                    "findings on one surface share a ticket with a list",
-                    "list_board checks scope/duplicates first",
-                    "Research belongs in this ticket's notes; the user chooses tickets",
-                    "Agents cannot delete tickets; cleanup costs the user",
+                    "the user chooses tickets",
+                    "Agents cannot delete tickets",
                 ],
             ),
             (
@@ -3403,9 +3366,6 @@ mod tests {
                 vec![
                     // T-467: where a new ticket's column is chosen from.
                     "what each column is for in the user's words (column_descriptions)",
-                    "Title comparison here is the pre-check for create_ticket",
-                    "todo, in progress or review belongs on that ticket as scope, not as a sibling",
-                    "A near-duplicate title means the older ticket wins",
                 ],
             ),
             ("get_ticket", vec!["the columns move_ticket accepts and what each is for"]),
@@ -3427,6 +3387,17 @@ mod tests {
             let description = tool["description"].as_str().unwrap();
             for concept in concepts {
                 assert!(description.contains(concept), "{name} lost guidance: {concept}");
+            }
+            // T-932: how to decide what to file is the person's, not the tools'.
+            for method in [
+                "pre-check",
+                "duplicate",
+                "sibling",
+                "idea/list row",
+                "Research belongs",
+                "cleanup costs",
+            ] {
+                assert!(!description.contains(method), "{name} tells how to file: {method}");
             }
             lint_tool_text(description).unwrap();
             let bytes = serde_json::to_vec(tool).unwrap().len();

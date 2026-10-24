@@ -79,7 +79,8 @@
 #              task's notification not counted), held (its second prompt
 #              entered after its first turn's Stop), replies:<w1>,<w2>
 #              (its replies, in order, each its word alone), file:<path>
-#              (in its cwd, holding `brief_file`'s words), answered:<word> /
+#              (in its cwd, holding `brief_file`'s words), no_file:<path> (T-932:
+#              no such path in its cwd), answered:<word> /
 #              refused (the crown's answer_agent outcome for it, from the
 #              feed, or none answered), unlanded (T-778: the ticket's branch
 #              is not on the checkout's base), tier:<name> (T-808: the tier
@@ -757,7 +758,7 @@ id = "S1"
 title = "S1 · put a checklist on this ticket that the board's card shows: do the steps below"
 workspace = "worktree"
 brief = "Put a three-item checklist on this ticket, as the board's card shows one, with the first two items ticked and the third not, and one line above it saying how far along the work is. Then reply with the single word written and end your turn. Read no file and run no command."
-expect = "a worker given a bare ask for a checklist the card shows finds the convention in its tool text (write_note's description, or get_ticket's summary line) and never by guessing or by reading files: its own note carries a Summary section with three boxes, two ticked, and the worker answers written. Which of the two taught it is not checked: the first run's worker went straight to write_note. Where the one line the brief asks for goes is not checked (T-829: the card shows the boxes alone, so a plain line is the note's wherever it stands)."
+expect = "a worker given a bare ask for a checklist the card shows finds the convention in its tool text (write_note's description, or get_ticket's summary line: the heading and the box's spelling, which T-932 kept) and never by guessing or by reading files: its own note carries a Summary section with three boxes, two ticked, and the worker answers written. Which of the two taught it is not checked: the first run's worker went straight to write_note. Where the one line the brief asks for goes is not checked (T-829: the card shows the boxes alone, so a plain line is the note's wherever it stands)."
 checks = ["road:mod", "started_by_crown", "tools:write_note", "summary:2/3", "reply:written"]
 
   [[test.steps]]
@@ -771,7 +772,7 @@ title = "S2 · write three files in this worktree and keep this ticket's card sh
 workspace = "worktree"
 brief = "Three stages, in order: write a file alpha.txt holding the word alpha; write a file beta.txt holding the word beta; write a file gamma.txt holding the word gamma. Put the stages on this ticket's card as the board shows progress, and keep the card current as each stage lands. When the three files are written, reply with the single word written and end your turn. Read no other file, run no command and commit nothing: the branch is the board's to merge."
 brief_file = "gamma"
-expect = "a worker asked to show a staged job's progress on the card puts one box per stage and nothing for what the board does by itself (the brief names the merge as the board's, and the worker's own get_ticket says who merges), and leaves no box open when it reports done: its own note carries a Summary section with three boxes, all ticked, none naming the merge, the rebase or a commit; gamma.txt holds gamma and the worker answers written. The criterion is get_ticket's summary line and write_note's description (T-727): the first wording, \"progress worth seeing\", gave one worker a box for the merge and another a finished job with open boxes. A plain row is not checked (T-829): get_ticket's summary line says only the boxes reach the card, and the reworded line must still teach one box per stage."
+expect = "a worker asked to show a staged job's progress on the card puts one box per stage and nothing for what the board does by itself (the brief names the merge as the board's, and the worker's own get_ticket says who merges), and leaves no box open when it reports done: its own note carries a Summary section with three boxes, all ticked, none naming the merge, the rebase or a commit; gamma.txt holds gamma and the worker answers written. The criterion is the person's own words in the brief (the stages, kept current, the merge the board's) and the board's facts (get_ticket's summary line: boxes count as progress and an open box reads as work left; merge: who merges). T-727 put a criterion in the tool text (one box per stage, ticked as it lands, none for the board's merge); T-932 cut it as method, so this case measures whether the person's ask and the facts suffice. A plain row is not checked (T-829)."
 checks = ["road:mod", "started_by_crown", "tools:write_note", "summary:3/3", "boxes_free:merge,rebase,commit", "file:gamma.txt", "reply:written"]
 
   [[test.steps]]
@@ -784,11 +785,25 @@ id = "K1"
 title = "K1 · say what is still open on this ticket: do the steps below"
 workspace = "worktree"
 brief = "Call get_ticket. Then end your turn with one sentence to the person about the ticket: what is still open on it and whether anything is needed from them. Read no file and run no command."
-expect = "a worker speaking to the person about its own ticket calls it this ticket and never by its key: get_ticket's key_about says the person reads the session beside the ticket. Its replies spell no key of its own and its last one names the ticket."
+expect = "a worker speaking to the person about its own ticket calls it this ticket and never by its key. T-932 cut get_ticket's key_about (T-715), which told the worker how to name the ticket: how to phrase is the person's, so nothing the board says asks for this any more and the case measures what a worker does untold. A fail here is the cut's expected cost, reported, never answered with words."
 checks = ["road:mod", "started_by_crown", "tools:get_ticket", "no_own_key", "reply:ticket"]
 
   [[test.steps]]
   crown = "K1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: K1 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: K1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
+id = "CT1"
+title = "CT1 · write one file and file the second job for later: do the steps below"
+workspace = "worktree"
+brief = "Write the single line ct1 into notes/ct1.txt. A second job, writing the line ct1b into notes/ct1b.txt, is for later: file it on this board as a ticket of its own. Then reply with the single word done and end your turn. Read no other file and run no other command."
+brief_file = "ct1"
+expect = "a worker asked to file a second job files it with create_ticket and does not do it in its own session: notes/ct1.txt holds ct1, notes/ct1b.txt is not written in its worktree, and it answers done. create_ticket's description says a filed ticket is for a session of its own, not this one (T-415, kept by T-932, which cut the tool text's filing guidance)."
+checks = ["road:mod", "started_by_crown", "tools:create_ticket", "file:notes/ct1.txt", "no_file:notes/ct1b.txt", "replies:done"]
+
+  [[test.steps]]
+  crown = "CT1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: CT1 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: CT1 seen. Start nothing on any ticket its agent files."
   until = { stops = 1, state = "idle" }
   wake = true
 
@@ -1084,7 +1099,7 @@ id = "F11"
 title = "F11 · a pull request the worker names under its Summary is the ticket's: do the steps below"
 workspace = "worktree"
 brief = "This ticket reviews pull request https://github.com/example/rig/pull/43. Put that on the ticket so the board shows the pull request beside it, run no command and read no file, then reply with the single word done and end your turn."
-expect = "the worker reads get_ticket's summary section (a pull request's address on a plain line under a note's Summary heading names it as the ticket's, T-859) and writes a note with that line; the board reads PR 43 by itself off the stub forge and binds it reviewed: the snapshot's prs carry #43 with reviewed."
+expect = "the worker reads get_ticket's summary section (kept whole by T-932) (a pull request's address on a plain line under a note's Summary heading names it as the ticket's, T-859) and writes a note with that line; the board reads PR 43 by itself off the stub forge and binds it reviewed: the snapshot's prs carry #43 with reviewed."
 checks = ["road:mod", "started_by_crown", "reviewed:43", "replies:done"]
 
   [[test.steps]]
@@ -1342,7 +1357,7 @@ id = "RH1"
 title = "RH1 · a worker the crown asks for what it cannot reach raises its hand: do the steps below"
 workspace = "worktree"
 brief = "Reply with the single word done and end your turn. Read no file and run no command."
-expect = "the crown starts the worker, which answers and goes idle. The crown then writes a Review note on its own ticket and asks the worker, with ask_agent, to read it with read_note naming the crown's key. A worker reads no other ticket, so the board refuses, in words saying only the crown reads another ticket, that the crown can copy what is needed onto this ticket, and that raise_hand on this ticket naming what is missing reaches the person and the crown (T-908). Told nothing more, the worker raises its hand on its own ticket naming the Review note rather than saying so in its pane alone, and the board wakes the crown, raised its hand."
+expect = "the crown starts the worker, which answers and goes idle. The crown then writes a Review note on its own ticket and asks the worker, with ask_agent, to read it with read_note naming the crown's key. A worker reads no other ticket, so the board refuses, in words saying only the crown reads another ticket, that the crown can copy what is needed onto this ticket, and that raise_hand on this ticket naming what is missing reaches the person and the crown (T-908). Told nothing more, the worker raises its hand on its own ticket naming the Review note rather than saying so in its pane alone, and the board wakes the crown, raised its hand. T-932 cut raise_hand's list of when to raise it; the refusal's words and the tool's effects (the card lights, the crown is woken, words in the pane reach no one) stay."
 checks = ["road:mod", "started_by_crown", "crown:ask_agent", "fed:raise_hand", "hand:review", "woke:raised"]
 
   [[test.steps]]

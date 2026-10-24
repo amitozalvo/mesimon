@@ -32500,3 +32500,104 @@ wire-version system.
 - `ci/test_installer.py`'s `InstallerChannel`: an absent choice and an opposite one replaced, a
   promotion picked on unstable, the wait that keeps the binary, a save that fails, an unreadable
   installed version, `--version` alone, and the marker fallback.
+
+## A worker is told what the board does, and never how to work (T-932, 2026-10-24, "Worker text says what the board does, never how the agent should work")
+
+**The rule** is T-930's, applied to what a worker reads: the eight worker tools plus
+`read_attachment` and `read_shell`, every `*_ABOUT` on a worker's result, `WORKER_UNDER_CROWN`
+and the brief. Each sentence was classed mechanics (keep), boundary (keep) or method (cut).
+A method sentence was kept only where its absence had produced a measured failure on a tier the
+board names (the Fable review, T-942). A cheap tier's benefit was no reason (the Astra review,
+T-940). The board's cheapest worker tiers are Sonnet (`quick`, `fix`), and the rig's worker is
+Sonnet at low effort.
+
+**Cut (method):**
+- `get_ticket`: "a session's first call". The requirement's one home is the brief; the fact
+  that the prompt is often the title alone stays.
+- `list_board`: T-394's filing check (title comparison, scope against siblings, the older
+  ticket wins).
+- `create_ticket`: what a ticket is, where research goes, "list_board checks
+  scope/duplicates" (it checks nothing), and "cleanup costs the user". Kept: a filed ticket is
+  for a session of its own (T-415 measured its absence), the user chooses tickets, agents
+  cannot delete them.
+- `write_note` and `SUMMARY_ABOUT`: T-727's criterion (one box per stage, ticked as it lands,
+  a person's step, none for the board's merge, working lists elsewhere, no `Summary` without
+  stages). Kept: the heading, the box's spelling, that boxes count as progress, that an open
+  box reads as work left, that only boxes reach the card, the PR line.
+- `raise_hand`: the list of when to raise it, and "named in the reason" (the schema already
+  says the reason is the card's words). Kept: its effects, "words in the pane reach no one",
+  "an ordinary finished turn already reads as done". T-908's refusal still names the hand at
+  the moment a read is refused.
+- `KEY_ABOUT` and the `key_about` field (T-715): how to name the ticket to the person is
+  phrasing. Its history is a measured failure of a descriptive wording on K1, but K1's
+  acceptance is itself the method.
+
+**Kept whole:** `move_ticket`, `read_note`, `read_attachment`, `read_shell`, `tag_ticket`,
+`PRS_ABOUT`, `WORKTREE_INIT_ABOUT`, `DAEMON_ABOUT` and `WORKER_UNDER_CROWN` (T-930 cut it to
+facts and measured it; its pane sentence repeats `raise_hand`'s and was left alone so as not to
+stack risk on that measurement).
+
+**The brief is unchanged** (the plan's option A). Each of its sentences has a recorded failure
+behind it: T-224 (under a hedged line agents skipped the ticket) and T-415 (an agent offered to
+work a filed ticket in its own session). Option B (six lines, without "FIRST, before reading
+code or planning" and the repeated "Do not start work without them") waits on the person's
+word and needs a rig case that measures reading before work, which none does today.
+
+**Not added, for the two gaps the crown logged:**
+- **A note added after the start:** `get_ticket` already lists every note's id and
+  `edited_at`. No line was added, and edit-after-read visibility is unmeasured.
+- **A foreground wait holding the crown's words:** T-934's measured boundaries stand, and no
+  rule was added.
+
+**Bytes:**
+
+| text | before | after |
+|---|---|---|
+| get_ticket | 582 | 558 |
+| list_board | 601 | 385 |
+| create_ticket | 317 | 112 |
+| write_note | 441 | 298 |
+| raise_hand | 531 | 327 |
+| SUMMARY_ABOUT | 869 | 467 |
+| KEY_ABOUT | 221 | 0 |
+| all worker text | 6,649 | 5,234 |
+
+- Every own `get_ticket` carries 1,090 bytes of fixed prose fewer: 467 where it was 1,090.
+- The brief stays at 362 bytes.
+
+**Rig** (Sonnet workers, Opus crown, the cases once each, no retries, against the last
+recorded result):
+
+Run `20261024-162142`: Claude Code 2.1.310, this branch's tree built on `16106162`, Opus 5.5
+crown, Sonnet workers at low effort, 6.2 minutes.
+
+| case | last recorded | now | observed |
+|---|---|---|---|
+| S1 | PASS (T-727) | PASS | `[x] First step`, `[x] Second step`, `[ ] Third step` |
+| S2 | PASS (T-727) | PASS | three stage boxes, all ticked, none naming merge, rebase or commit |
+| F11 | PASS (T-859) | PASS | #43 bound, reviewed |
+| CT1 | new | PASS | filed with create_ticket; `notes/ct1b.txt` not written |
+| H1 | PASS (T-749) | PASS | answered with `automove.held`, pipeline running |
+| RH1 | PASS (T-930) | PASS | hand raised naming the Review note; crown woken, raised |
+| RH2 | PASS (T-922) | PASS | question on the hand; answered rh2-teal |
+| WR1 | PASS (T-930) | PASS | report asks the person for nothing of the board's |
+| K1 | PASS (T-715) | **FAIL** | "T-3 has no open Summary boxes and nothing is needed from you" |
+
+- **K1's fail is the cut's expected cost**, reported as it is and not answered with words.
+  Untold, a Sonnet worker names its own ticket by key. Whether that matters is the person's to
+  say in their own prompts. K1 stays in the suite as the measure of what a worker does untold.
+- **Spend, as quota, 16:21 to 16:28:** Claude's 5-hour window went from 59% to 62% and its
+  weekly from 23% to 23%, every session on the account included.
+
+**Tests.**
+- `ticket_creation_guidance_is_bounded_and_descriptive` and
+  `the_summary_convention_is_in_the_tools` assert the kept facts and the absence of the cut
+  words.
+- `notes_e2e` asserts that an own `get_ticket` carries no `key_about`.
+- The rig gains CT1 (a filed job is not done in the worker's own session, with a new
+  `no_file:<path>` check). K1's, S1's, S2's, RH1's and F11's `expect` say what T-932 cut.
+
+**Limits.**
+- N = 1 per case sees only a case that breaks outright.
+- No case measures filing judgement (what deserves a ticket, duplicates), because that
+  guidance is gone on purpose.

@@ -2837,6 +2837,11 @@ Reply with the single word ready and end your turn."""
                     held = None
                 ok = held is not None and test.get("brief_file", "") in held
                 check(c, ok, f"{arg}: {held.strip()[:40]!r}" if held is not None else f"no {arg}")
+            elif name == "no_file":
+                # T-932: the job a worker filed for a session of its own is
+                # not done in its own cwd.
+                there = os.path.exists(os.path.join(rec["cwd"], arg))
+                check(c, not there, f"{arg} written here" if there else f"no {arg}")
             elif name == "summary":
                 # T-710: the worker's own notes (not the rig's two), read
                 # off the board's disk as the card reads them.

@@ -6680,9 +6680,6 @@ impl Daemon {
                 }
                 match self.agent_ticket_view(ticket) {
                     Some(mut view) => {
-                        // Its own ticket: the person reads it beside the
-                        // ticket, where the key is a lookup (T-715).
-                        view.key_about = Some(mesimon_core::mcp::KEY_ABOUT.to_string());
                         view.crowned = Some(self.board.is_crowned(ticket));
                         // A worker the board's crown started reads who merges
                         // under it (T-599): the crown worn now, whichever
@@ -9400,7 +9397,6 @@ impl Daemon {
             shells,
             shells_about,
             key: t.short_key.clone(),
-            key_about: None,
             title: t.title.clone(),
             column: t.column.clone(),
             workspace: workspace.to_string(),
