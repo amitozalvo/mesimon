@@ -4939,7 +4939,11 @@ impl Daemon {
         // (T-930): a startup, a `/clear` or a compaction's new start. A
         // resume keeps the history it read them in.
         if frame.event == "SessionStart"
-            && frame.payload.get("source").and_then(serde_json::Value::as_str).or(frame.reason.as_deref())
+            && frame
+                .payload
+                .get("source")
+                .and_then(serde_json::Value::as_str)
+                .or(frame.reason.as_deref())
                 != Some("resume")
         {
             self.forget_crown_rules(Some(id));
@@ -9420,8 +9424,9 @@ impl Daemon {
             // own and wakes the crown, so no session watches a pipeline.
             // On any board where the ticket has one (T-930): `CROWN_WAKES`
             // points here for the cadence.
-            prs_about: (self.through_prs() || self.forge.sets.get(&id).is_some_and(|s| !s.is_empty()))
-                .then(|| mesimon_core::mcp::PRS_ABOUT.to_string()),
+            prs_about: (self.through_prs()
+                || self.forge.sets.get(&id).is_some_and(|s| !s.is_empty()))
+            .then(|| mesimon_core::mcp::PRS_ABOUT.to_string()),
             // The ticket's pull requests as the forge last said (T-739),
             // newest first: a worker sees its own red pipeline on the next
             // read, and the crown reads a worker's.
@@ -16784,8 +16789,9 @@ impl Daemon {
                 continue;
             }
             let old = self.forge.sets.get(&t).cloned();
-            // Read against `forge.json`'s set (T-937): its news happened
-            // while no daemon read, and says so.
+            // Inside the ticket's recovery window (T-937): its set came
+            // back from `forge.json` and no whole read has refreshed it, so
+            // its news may predate this daemon and says `after a restart`.
             let late = self.forge.since_restart(t, read.contains(&t));
             let set = crate::forge::carry(old.as_deref(), set, &answered);
             // A PR the backfill's URLs name binds as a baseline (T-810): read

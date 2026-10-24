@@ -1581,11 +1581,12 @@ pub struct State {
     /// conflict was. In `forge.json` beside the sets (T-785), so a conflict
     /// said before a restart says its clear after it.
     pub conflicted: HashMap<ulid::Ulid, Vec<(String, u64)>>,
-    /// The tickets whose set came back from `forge.json` and no whole read
-    /// of this daemon's has answered since (T-937): an edge that read finds
-    /// happened while no daemon read, and its line says `after a restart`
-    /// by this fact, not by whether the restart's look at the worker landed
-    /// first.
+    /// A recovery-window marker per ticket (T-937): its set came back from
+    /// `forge.json` and the ticket has not completed its first whole
+    /// refresh since restoration. News read while it holds is owed as
+    /// `late` (`after a restart`): the edge may predate this daemon. The
+    /// mark is no proof that it does (one repository can answer twice
+    /// while another fails, and the first one's second change is live).
     pub restored: HashSet<ulid::Ulid>,
     /// URLs the backfill found in a ticket's old transcripts (T-810), each
     /// bound as a baseline by the read that first finds its PR
@@ -1661,9 +1662,9 @@ impl State {
         opens
     }
 
-    /// Whether a read of `t` reads against the set `forge.json` brought
-    /// back (T-937), so its news is owed across the restart; a whole read
-    /// answers it, and the next read's news is current.
+    /// Whether `t`'s recovery window (`restored`, T-937) holds for this
+    /// read: its news is owed as `late`. A whole read closes the window, so
+    /// the next read's news is not marked.
     pub fn since_restart(&mut self, t: ulid::Ulid, whole: bool) -> bool {
         if whole {
             self.restored.remove(&t)
@@ -3054,8 +3055,8 @@ mod tests {
         let mut s = restart(&s);
         assert!(said(&mut s, &stuck, &clean).is_empty(), "cleared once, across a restart");
         // Said, and cleared while the daemon was down: the first read says
-        // it, as owed across the restart (T-937); a partial read leaves that
-        // to the first whole one, and the read after is current.
+        // it, inside the ticket's recovery window (T-937); a partial read
+        // leaves the window open, the first whole read closes it.
         assert_eq!(said(&mut s, &clean, &stuck), ["conflict #4"]);
         let mut s = restart(&s);
         assert!(s.since_restart(t, false), "a partial read");
@@ -3078,6 +3079,46 @@ mod tests {
         s.say_conflicts(t, &mut again);
         assert!(again.conflict.is_empty(), "said already");
         assert_eq!(said(&mut s, &stuck, &clean), ["conflict cleared #4"]);
+    }
+
+    /// The recovery window (T-937) across two restarts: restored, a partial
+    /// read that updates the set keeps it open, a second save and restore
+    /// rebuilds it from the surviving (updated) set, the first whole read
+    /// closes it, and a later read is outside it.
+    #[test]
+    fn the_recovery_window_survives_a_partial_read_and_a_second_restart() {
+        let t = ulid::Ulid::new();
+        let round = |s: &State| {
+            let text = serde_json::to_string(&ForgeFile::of(s)).unwrap();
+            let mut back = State::default();
+            back.restore(crate::store::parse_versioned(&text, FORGE_SCHEMA).unwrap(), |_| true);
+            back
+        };
+        let mut s = State::default();
+        s.sets.insert(t, vec![pr(4, PrState::Open, Pipeline::Running(String::new()))]);
+        assert!(!s.since_restart(t, false), "a live set is no recovery");
+        let mut s = round(&s);
+        assert!(s.restored.contains(&t));
+        // A partial read updates the set and leaves the window open.
+        assert!(s.since_restart(t, false));
+        let updated = pr(4, PrState::Open, Pipeline::Passed);
+        s.sets.insert(t, vec![updated.clone()]);
+        assert!(s.restored.contains(&t), "still open");
+        // Saved and restored again before any whole read: the window is
+        // rebuilt from the set that survived, the partial read's.
+        let mut s = round(&s);
+        assert_eq!(s.sets.get(&t).map(Vec::as_slice), Some(std::slice::from_ref(&updated)));
+        assert!(s.restored.contains(&t));
+        // The first whole read is inside it and closes it.
+        assert!(s.since_restart(t, true));
+        assert!(!s.restored.contains(&t));
+        // A later read, partial or whole, is outside it.
+        assert!(!s.since_restart(t, false));
+        assert!(!s.since_restart(t, true));
+        // And a ticket the board no longer holds leaves it.
+        let mut s = round(&s);
+        s.keep_tickets(&HashSet::new());
+        assert!(s.restored.is_empty());
     }
 
     /// T-769, finding 3, and T-782: one pass's words in the forge's order

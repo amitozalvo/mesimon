@@ -903,13 +903,22 @@ impl Heard {
     /// flight on the worker (T-596): both baselines move to it now, so the
     /// crown hears it once, and the line waits in `stepped`. A second one
     /// before the step is over folds in, as two wakes owed to a working
-    /// crown do. True the first time.
-    fn hold_for_step(&mut self, worker: ulid::Ulid, cause: WakeCause, now: Told) -> bool {
+    /// crown do. True the first time. `late` is the caller's own reading
+    /// that the news is owed across a restart (a forge read's, T-937): it
+    /// rides the held line, a fold's included, beside `restored`.
+    fn hold_for_step(
+        &mut self,
+        worker: ulid::Ulid,
+        cause: WakeCause,
+        now: Told,
+        late: bool,
+    ) -> bool {
         self.judged = Some(now.clone());
         self.deferred = None;
         let from = self.told.replace(now.clone());
         if let Some(w) = self.stepped.as_mut() {
             w.fold(cause, from, Some(now));
+            w.late |= late;
             return false;
         }
         self.stepped = Some(CrownWake {
@@ -919,7 +928,7 @@ impl Heard {
             to: Some(now),
             finished: true,
             linger: None,
-            late: self.restored,
+            late: self.restored || late,
             unstarted: None,
         });
         true
@@ -1461,7 +1470,7 @@ impl Daemon {
             Due::Step(cause) => {
                 // Held, so the claim is judged now, when the turn's look did.
                 if held.is_some() || self.crown_hears(p.worker, p.crown) {
-                    self.hold_for_step(p.worker, cause, now);
+                    self.hold_for_step(p.worker, cause, now, false);
                 }
                 return;
             }
@@ -1572,8 +1581,8 @@ impl Daemon {
     /// A landing that waits for the merge step in flight on its worker
     /// (T-596), said in the feed the first time. The claim on the worker is
     /// the caller's to have judged.
-    fn hold_for_step(&mut self, worker: ulid::Ulid, cause: WakeCause, now: Told) {
-        if self.crown_heard.entry(worker).or_default().hold_for_step(worker, cause, now) {
+    fn hold_for_step(&mut self, worker: ulid::Ulid, cause: WakeCause, now: Told, late: bool) {
+        if self.crown_heard.entry(worker).or_default().hold_for_step(worker, cause, now, late) {
             self.feed.board("automation", "crown_wake_deferred:merge_step", Some(worker));
         }
     }
@@ -1686,7 +1695,7 @@ impl Daemon {
                     self.owe_crown_wake(crown, worker, cause, from, Some(now), false);
                     woke = true;
                 }
-                Due::Step(cause) => self.hold_for_step(worker, cause, now),
+                Due::Step(cause) => self.hold_for_step(worker, cause, now, false),
                 Due::Hold(_) | Due::Silent => {}
             }
         }
@@ -1768,7 +1777,7 @@ impl Daemon {
                 worker != crown && (heard.deferred.is_some() || self.crown_hears(worker, crown));
             let cause = merge_verdict(started, &heard, &now);
             match due(cause, None, &self.pending_on(worker, None)) {
-                Due::Step(cause) => self.hold_for_step(worker, cause, now),
+                Due::Step(cause) => self.hold_for_step(worker, cause, now, false),
                 Due::Wake(cause) => {
                     let heard = self.crown_heard.entry(worker).or_default();
                     heard.judged = Some(now.clone());
@@ -1986,8 +1995,10 @@ impl Daemon {
     /// A pass that also flipped the branch to merged (the forge's merged
     /// clause, T-769) says the merge in this line, as `merged`, and moves
     /// both baselines to it as `hear_merges` does: the flags' wake on the
-    /// tick then finds it told and folds into it. News the first whole read
-    /// after a restart found (`late`, T-937) says `after a restart`.
+    /// tick then finds it told and folds into it. News read inside the
+    /// ticket's recovery window (`late`, `forge::State::restored`, T-937)
+    /// says `after a restart`, held for a step or not; the look-based
+    /// `restored` of T-602 still adds the same words in `enter_wake`.
     pub(super) fn hear_forge(&mut self, news: Vec<(ulid::Ulid, String, bool)>) -> bool {
         let Some(crown) = self.board.crown_holder().map(|t| t.id) else { return false };
         let mut woke = false;
@@ -2016,7 +2027,7 @@ impl Daemon {
                     .is_some_and(|t| t.merge == Some("merged") && t.tip == now.tip);
             let cause = if landing { WakeCause::Merged } else { WakeCause::Forge };
             match due(Some(cause), None, &self.pending_on(worker, None)) {
-                Due::Step(cause) => self.hold_for_step(worker, cause, now),
+                Due::Step(cause) => self.hold_for_step(worker, cause, now, late),
                 Due::Wake(cause) => {
                     let heard = self.crown_heard.entry(worker).or_default();
                     if landing {
@@ -3028,7 +3039,7 @@ mod tests {
         let cause = merge_verdict(true, &h, &landed);
         assert_eq!(cause, MERGED);
         assert_eq!(due(cause, None, &STEP), Due::Step(WakeCause::Merged));
-        assert!(h.hold_for_step(ulid::Ulid::nil(), WakeCause::Merged, landed.clone()));
+        assert!(h.hold_for_step(ulid::Ulid::nil(), WakeCause::Merged, landed.clone(), false));
         assert_eq!(merge_verdict(true, &h, &landed), None, "the flags again, mid-turn");
         let wake = h.step_over(Some("DONE".into())).expect("the held merge");
         assert_eq!(wake.clause(), "merged and finished its turn");
@@ -3082,16 +3093,44 @@ mod tests {
         let cause = merge_verdict(true, &h, &landed);
         assert_eq!(cause, DELIVERED);
         assert_eq!(due(cause, None, &STEP), Due::Step(WakeCause::Delivered));
-        assert!(h.hold_for_step(ulid::Ulid::nil(), WakeCause::Delivered, landed.clone()));
+        assert!(h.hold_for_step(ulid::Ulid::nil(), WakeCause::Delivered, landed.clone(), false));
         assert!(h.deferred.is_none(), "the train's part is done");
         assert!(h.awaits_merge());
         assert_eq!(merge_verdict(true, &h, &landed), None, "heard once");
         let wake = h.step_over(Some("DONE".into())).expect("the held delivery");
         assert_eq!(wake.clause(), "delivered and finished its turn");
         assert_eq!(wake.changed(), ["merge_state merged", "column DONE"]);
-        assert!(h.hold_for_step(ulid::Ulid::nil(), WakeCause::Merged, landed));
+        assert!(h.hold_for_step(ulid::Ulid::nil(), WakeCause::Merged, landed, false));
         assert!(h.step_over(None).is_none(), "the ticket is gone");
         assert!(h.stepped.is_none());
+    }
+
+    /// A forge read's `late` (T-937) rides a landing held for its merge
+    /// step, newly held or folded into one held already, after the
+    /// restart's look cleared `restored`: the step's release says
+    /// `after a restart`. One held with neither says nothing of a restart.
+    #[test]
+    fn a_forge_read_s_late_rides_a_landing_held_for_its_step() {
+        let landed = branch("bbb", "merged", 0, "REVIEW");
+        let mut h = heard(None, None);
+        assert!(h.hold_for_step(ulid::Ulid::nil(), WakeCause::Merged, landed.clone(), true));
+        let wake = h.step_over(Some("DONE".into())).expect("held");
+        assert!(wake.late);
+        assert_eq!(wake.changed().last().map(String::as_str), Some("after a restart"));
+        // Held by a live reading first, then the restored read's news folds
+        // in: the fold keeps the mark.
+        let mut h = heard(None, None);
+        assert!(h.hold_for_step(ulid::Ulid::nil(), WakeCause::Delivered, landed.clone(), false));
+        assert!(!h.stepped.as_ref().unwrap().late);
+        assert!(!h.hold_for_step(ulid::Ulid::nil(), WakeCause::Merged, landed.clone(), true));
+        let wake = h.step_over(Some("DONE".into())).expect("held");
+        assert!(wake.late, "the fold keeps the read's mark");
+        assert_eq!(wake.changed().last().map(String::as_str), Some("after a restart"));
+        // Neither the read nor the ledger says restart: nothing does.
+        let mut h = heard(None, None);
+        assert!(h.hold_for_step(ulid::Ulid::nil(), WakeCause::Merged, landed, false));
+        let wake = h.step_over(Some("DONE".into())).expect("held");
+        assert!(!wake.changed().iter().any(|w| w == "after a restart"));
     }
 
     /// A worker's ledger as `crown.json` carries it through a restart
@@ -3112,7 +3151,7 @@ mod tests {
         let mut h = heard(Some(delivered.clone()), Some(delivered.clone()));
         h.deferred = Some(Held { cause: WakeCause::Finished, look: BranchLook::default() });
         h.unjudged = Some(Unjudged { asked: Some(TurnAsk::Merge), fresh: true });
-        assert!(h.hold_for_step(ulid::Ulid::nil(), WakeCause::Merged, delivered.clone()));
+        assert!(h.hold_for_step(ulid::Ulid::nil(), WakeCause::Merged, delivered.clone(), false));
         h.looks = 2;
         let back = restarted(&h);
         assert_eq!(back.judged, h.judged);
