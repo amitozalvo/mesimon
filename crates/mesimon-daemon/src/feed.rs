@@ -179,7 +179,9 @@ impl FeedWriter {
 
     /// A board line that carries the decision itself (T-569): the crown's
     /// answer to a worker's question is a person-visible decision, unlike
-    /// an ask's words, so the option label or the text rides the line.
+    /// an ask's words, so the option label or the text rides the line. A
+    /// receipt's reason rides it too, when there is one (T-958): why keys
+    /// stopped, in the receipt's own word.
     pub fn board_answer(
         &mut self,
         actor: &str,
@@ -187,15 +189,20 @@ impl FeedWriter {
         ticket: Option<ulid::Ulid>,
         outcome: &str,
         answer: &str,
+        reason: Option<&str>,
     ) {
-        self.push(json!({
+        let mut line = json!({
             "kind": "board",
             "actor": actor,
             "cmd": cmd,
             "ticket": ticket,
             "outcome": outcome,
             "answer": answer,
-        }));
+        });
+        if let Some(reason) = reason {
+            line["reason"] = json!(reason);
+        }
+        self.push(line);
     }
 
     /// ≤1 `write()` per call; rotates by size afterwards, off the hot path.

@@ -33799,3 +33799,74 @@ less than an end-to-end "never before expiry"; the arithmetic unit test is the b
 - The bound's value, which wants observed wake durations.
 - A release when the client that kept the stamp fresh has left while another stays: the session
   stamp keeps the leaver's activity until the bound passes.
+
+## One attached-person guard before every key the board sends into an agent's pane (T-958, 2026-10-24, found by the independent reviews of T-942, bundled reads 3, 5 and 6)
+
+T-918 held the crown's wake for a person in the crown's pane, T-936 kept a refused submit's paste
+after a stop out of an attached pane, and T-943's plan sent back checked before each key. Three
+older roads typed into an agent's pane with nobody checking who else had it open.
+
+**Measured first.** `TmuxBackend::has_clients("=<sid16>")` is `tmux list-clients -t =<session>`.
+Every agent is its own tmux session named `sid16`, and the board holds no client on one; entering
+a pane from it (`handover`) is the person's own client. So it reads the clients on the pane the
+keys go into, never the board's or the crown's.
+
+**What shipped.**
+- `Daemon::person_at_pane(sid)` is the one predicate: `has_clients`, one fork, read at the edge
+  just before the first key, and a client the server cannot list counts as there. T-936's
+  fallback and T-943's `crown_revise_held` call it now too. The receipt and feed word is
+  `a_person_attached` (`A_PERSON_ATTACHED`), as T-943 already spelled it.
+- **The crown's dialog answer** (`control_deliver_dialogs`). Each key of a crown key walk on a
+  question (`Deliverer::Crown` with `DeliveryAnswer::Dialog`) reads it after the mod's branch and
+  before the step. A person there ends the walk on the existing `Err` arm: the receipt is
+  `unknown { a_person_attached }`, and keys already in stay where they are. That covers words,
+  choices and the Escape of a refusal, since a person typing in the "Type something." field
+  would have any of them land in it. An answer the mod carries is one frame and no key, and
+  still goes. The crown's `answer_agent` feed line now carries the receipt's `reason` when it has
+  one (`FeedWriter::board_answer`, a new optional field).
+- **A fill's send-now** (`on_mod_fill`'s `filled` arm). A person there takes the existing
+  send-now-failed arm: `prompt_send_now_failed` with outcome `a_person_attached`. The words stand
+  in the box the mod filled, and a crown ask reads `unknown` with that reason. The board cannot
+  read what becomes of words a person may send.
+- **The paste road** (`paste_at`). The guard goes after the mod's fill and submit branches, which
+  type nothing, and before `paste_input`/`paste_text`. A person there gets an `Err` saying the
+  words were not sent, and the feed gets `prompt_not_sent`/`a_person_attached`. Every direct
+  caller hands that error back as it handles any paste error: a person's send, a phone's steer,
+  a note's nudge, a merge ask.
+- **Queued words stay queued.** `drain_queue` and `send_queued_ask` remove an ask before they
+  paste it, so a refusal inside `paste_at` would lose a person's queued words. The queue
+  therefore asks first (`typed_under_a_person`: a Claude pane whose words take keys, not the
+  mod's `submit` and not a relaunch):
+  - `queued_target_ready` reads it off the pane sample (`attached`), so the tick forks nothing
+    (T-857).
+  - `drain_queue` reads it fresh before an entry leaves the queue, which catches a person who
+    attached since the sample.
+  - `send_queued_ask` reads it fresh beside its dialog arm (`ANSWER_IN_PANE_FIRST`, the same
+    shape). It refuses with "the words stay queued" and writes `queued_ask_kept`. The crown's
+    `deliver: now|immediately` ask then reads `queued`, and goes once the pane is free and its
+    agent takes words.
+- Nothing changes where no client is attached. No timer, no retry, and no card word was added.
+
+**Tests.**
+- `crown_e2e::the_crown_s_answer_types_nothing_under_a_person_s_hands`: a control-mode client on
+  the worker's pane, and the crown answers in words.
+  - Hook road: no key, receipt `unknown { a_person_attached }`, the feed line with that reason,
+    and the field as it was. With the client gone the same answer walks and is `answered`.
+  - Mod road: the frame goes, `answered`, and no key reaches the pane.
+- `crown_e2e::the_crown_sends_immediately_into_a_working_turn`, new last section:
+  - Mod road: the fill lands, no send-now follows, the feed reads `prompt_send_now_failed`/
+    `a_person_attached`, and the ask reads `unknown`.
+  - Hook road: a person's direct send is refused ("were not sent", `prompt_not_sent`). The
+    crown's `immediately` ask is refused and kept (`queued_ask_kept`, `queued`). At W's idle with
+    the person still there nothing lands. With the person gone the words land and the ask reads
+    `sent`.
+- With `person_at_pane` stubbed to `false`, all three cases fail.
+
+**Not done (seen, not changed).**
+- A Codex pane's parked words (`drive_codex_inputs`) and steer (`codex_steer`) have no such guard.
+- A plan or tier relaunch of an attached pane is not held either.
+- Words that take `paste_at`'s `immediately` paste because the mod speaks `submit` and not `fill`
+  are still removed from the queue before the refusal.
+- The merge train's rebase ask, refused while a person is attached, is asked again on the
+  train's own 10 s bucket, with `merge_train_refused:deliver_failed` each time, as any delivery
+  failure is.

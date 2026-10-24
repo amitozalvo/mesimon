@@ -6040,6 +6040,72 @@ fn the_crown_sends_immediately_into_a_working_turn() {
         std::fs::remove_file(h.dir.join("mod-draft")).unwrap();
         hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"x"}"#);
     }
+
+    // ---- a person has W's pane open: no key of the board's goes in (T-958) ---
+    let sid = ws.simple().to_string()[..16].to_string();
+    let tmux_sock = h.paths.tmux_sock();
+    let asked = |c: &mut TestClient| read(c, sa, &kw).unwrap().asked.expect("the crown's ask");
+    let client = person_attaches(&tmux_sock, &sid);
+    if test_road() == "mod" {
+        // The mod fills the words, and the send-now over them is a key:
+        // withheld, the words left standing in the box, and the ask unknown.
+        assert_eq!(
+            road_of(ask(&mut c, "mesimon-probe-76 under hands", Deliver::Immediately)),
+            (false, AskRoad::SentImmediately)
+        );
+        feed_has("daemon", "prompt_send_now_failed", Some("a_person_attached"));
+        wait_until(std::time::Duration::from_secs(5), "the words filled", || {
+            landed("mesimon-probe-76 under hands")
+        });
+        assert!(!sent_now("mesimon-probe-76 under hands"), "no send-now under their hands");
+        let out = asked(&mut c);
+        assert_eq!(out.status, "unknown");
+        assert!(out.why.contains("a person has its pane open"), "{out:?}");
+        person_leaves(&tmux_sock, &sid, client);
+    } else {
+        // A person's own send straight to the pane is refused, not typed.
+        match c.request(Command::PromptSession {
+            ticket: w,
+            text: "mesimon-probe-77 by hand".into(),
+            queued: false,
+            immediately: false,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+            resend: false,
+            uploads: Vec::new(),
+        }) {
+            Response::Err { message } => {
+                assert!(message.contains("a person has its pane open"), "{message}");
+                assert!(message.contains("were not sent"), "{message}");
+            }
+            other => panic!("a send under a person's hands: {other:?}"),
+        }
+        feed_has("daemon", "prompt_not_sent", Some("a_person_attached"));
+        // The crown's ask keeps its words on the queue, and says so.
+        match ask(&mut c, "mesimon-probe-76 under hands", Deliver::Immediately) {
+            Response::Err { message } => {
+                assert!(message.contains("a person has its pane open"), "{message}");
+                assert!(message.contains("stay queued"), "{message}");
+            }
+            other => panic!("ask_agent under a person's hands: {other:?}"),
+        }
+        feed_has("daemon", "queued_ask_kept", Some("a_person_attached"));
+        assert_eq!(asked(&mut c).status, "queued");
+        // W at its idle takes words, and the person is still there.
+        stop(&mut c, ws);
+        std::thread::sleep(std::time::Duration::from_millis(2000));
+        assert!(!landed("mesimon-probe-76"), "nothing typed under their hands");
+        assert!(!landed("mesimon-probe-77"));
+        assert_eq!(asked(&mut c).status, "queued");
+        // The person gone, the queued words go.
+        person_leaves(&tmux_sock, &sid, client);
+        wait_until(std::time::Duration::from_secs(10), "the queued words", || {
+            landed("mesimon-probe-76 under hands")
+        });
+        assert_eq!(asked(&mut c).status, "sent");
+        start(&mut c, ws);
+    }
     stop(&mut c, ws);
 
     let feed = std::fs::read_to_string(&feed_path).unwrap();
@@ -7052,6 +7118,189 @@ fn the_crown_answers_a_batch_one_answer_per_question() {
         detail.as_deref(),
         Some(format!("answered by {ka}: Green; Cheese, Basil; Large please").as_str())
     );
+}
+
+/// A tmux client on `sid`'s pane, as a person who opened it from another
+/// terminal (T-958): a control-mode client, listed once the server has it.
+/// Kill it and wait on it to leave.
+fn person_attaches(sock: &std::path::Path, sid: &str) -> std::process::Child {
+    let client = tmux(sock)
+        .args(["-C", "attach", "-t", sid])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("a control-mode tmux client");
+    let listed = || {
+        tmux(sock)
+            .args(["list-clients", "-t", sid, "-F", "#{client_name}"])
+            .output()
+            .is_ok_and(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+    };
+    wait_until(std::time::Duration::from_secs(10), "the person's client listed", listed);
+    client
+}
+
+/// The person's client gone, and the server says so.
+fn person_leaves(sock: &std::path::Path, sid: &str, mut client: std::process::Child) {
+    client.kill().unwrap();
+    let _ = client.wait();
+    wait_until(std::time::Duration::from_secs(10), "the person's client gone", || {
+        tmux(sock)
+            .args(["list-clients", "-t", sid, "-F", "#{client_name}"])
+            .output()
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim().is_empty())
+    });
+}
+
+/// The crown's answer types nothing under a person's hands (T-958). A
+/// person has the worker's pane open, on its one-question dialog, and the
+/// crown answers it in words: on the hook road no key goes in, the receipt
+/// is `unknown { a_person_attached }`, the feed line says so, and the dialog
+/// stands as it was; on the mod road the answer is one frame, no key at
+/// all, and goes. With the person gone, the same answer walks its keys and
+/// is `answered`.
+#[test]
+fn the_crown_s_answer_types_nothing_under_a_person_s_hands() {
+    const STUB: &str = include_str!("common/fake_claude_dialog.py");
+    let Some(h) = Harness::boot_bare(
+        "crown_answer_held",
+        Some(STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let tmux_sock = h.paths.tmux_sock();
+    let mut c = h.client("crown_answer_held");
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-958 worker");
+    let kw = key_of(&mut c, w);
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
+        Response::Ok
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let v = read(&mut c, sa, &kw).unwrap();
+    assert!(matches!(
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket {
+                key: kw.clone(),
+                seen: v.seen,
+                plan: false,
+                tier: None,
+                workspace: Some("shared_checkout".into()),
+            },
+        ),
+        Response::AgentStarted { .. }
+    ));
+    let ws = c.board().live_agent(w).expect("W holds a seat").id;
+    let sid = ws.simple().to_string()[..16].to_string();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, ws);
+
+    let input = json!({ "questions": [
+        { "question": "Which color?", "header": "Color", "multiSelect": false,
+          "options": [{ "label": "Blue", "description": "" },
+                      { "label": "Green", "description": "" }] }
+    ]});
+    std::fs::write(h.dir.join(format!("dialog-{kw}.json")), input.to_string()).unwrap();
+    let frame = json!({
+        "tool_name": "AskUserQuestion", "tool_use_id": "toolu_c1", "tool_input": input
+    })
+    .to_string();
+    let pane = |c: &mut TestClient| match c.request(Command::PaneTail { session: ws, lines: 60 }) {
+        Response::PaneTail { lines, .. } => lines.join("\n"),
+        _ => String::new(),
+    };
+    wait_until(std::time::Duration::from_secs(10), "the question drawn", || {
+        pane(&mut c).contains("Which color?")
+    });
+    hook_send(&hook_sock, &ws.to_string(), "PreToolUse", &frame);
+    c.await_state(ws, "asking", |s| {
+        *s == SessionState::RequiresAction { reason: mesimon_core::board::Reason::Question }
+    });
+    let keys = h.dir.join(format!("keys-{kw}"));
+    let typed = || std::fs::read_to_string(&keys).unwrap_or_default();
+    let answered = h.dir.join(format!("answered-{kw}.json"));
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    let call = |c: &mut TestClient| {
+        let v = read(c, sa, &kw).unwrap();
+        let cmd = Command::AgentAnswerTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            request: "toolu_c1".into(),
+            index: None,
+            text: Some("Mauve please".into()),
+            answers: None,
+        };
+        let sock = h.paths.orch_sock();
+        std::thread::spawn(move || {
+            TestClient::connect(&sock).send(Principal::Agent { session: sa }, cmd)
+        })
+    };
+
+    // ---- a person has the pane open --------------------------------------------
+    let client = person_attaches(&tmux_sock, &sid);
+    let before = typed();
+    let receipt = call(&mut c);
+    if test_road() == "mod" {
+        // One frame down the mod, no key: nothing lands under their hands.
+        wait_until(std::time::Duration::from_secs(10), "the mod's answer", || answered.exists());
+        match receipt.join().unwrap() {
+            Response::AgentAnswered { outcome, reason, .. } => {
+                assert_eq!((outcome.as_str(), reason), ("answered", None));
+            }
+            other => panic!("answer_agent: {other:?}"),
+        }
+        assert_eq!(typed(), before, "no key reaches the pane");
+        person_leaves(&tmux_sock, &sid, client);
+        return;
+    }
+    match receipt.join().unwrap() {
+        Response::AgentAnswered { outcome, reason, .. } => {
+            assert_eq!(outcome, "unknown");
+            assert_eq!(reason.as_deref(), Some("a_person_attached"));
+        }
+        other => panic!("answer_agent: {other:?}"),
+    }
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    assert_eq!(typed(), before, "no key under their hands");
+    assert!(!answered.exists(), "the dialog was not answered");
+    assert!(pane(&mut c).contains("Type something."), "the field stands as it was");
+    let feed = std::fs::read_to_string(&feed_path).unwrap();
+    assert!(
+        feed.lines().any(|l| l.contains("\"cmd\":\"answer_agent\"")
+            && l.contains("\"outcome\":\"unknown\"")
+            && l.contains("\"reason\":\"a_person_attached\"")),
+        "{feed}"
+    );
+
+    // ---- the person gone: the same answer walks its keys -----------------------
+    person_leaves(&tmux_sock, &sid, client);
+    let receipt = call(&mut c);
+    wait_until(std::time::Duration::from_secs(30), "the dialog answered", || answered.exists());
+    let took: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&answered).unwrap()).unwrap();
+    assert_eq!(took, json!({ "Which color?": "Mauve please" }));
+    hook_send(&hook_sock, &ws.to_string(), "PostToolUse", &frame);
+    match receipt.join().unwrap() {
+        Response::AgentAnswered { outcome, reason, answer, .. } => {
+            assert_eq!(
+                (outcome.as_str(), reason, answer.as_str()),
+                ("answered", None, "Mauve please")
+            );
+        }
+        other => panic!("answer_agent: {other:?}"),
+    }
 }
 
 /// The crown accepts a plan (T-582), by default. The panes run the stand-in

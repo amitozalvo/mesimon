@@ -207,6 +207,12 @@ const TAIL_POLL_TICKS: u64 = 8;
 const WAKE_SENDING: &str = "sending";
 /// How often a held crown wake asks who is in the crown's pane (T-918).
 const PERSON_READ_MS: u64 = 1000;
+/// Keys the board did not send because a tmux client has the agent's pane
+/// open (T-943, T-958; `Daemon::person_at_pane`): the receipt's reason and
+/// the feed's outcome.
+const A_PERSON_ATTACHED: &str = "a_person_attached";
+/// The same refusal in words, where a receipt or an error says why.
+const PERSON_AT_PANE: &str = "a person has its pane open, so the board typed nothing into it";
 /// How long a write to a subscriber's socket may block the writer thread
 /// before the subscriber is dropped (T-838). Long enough for a board
 /// answer to a client reading it under load; a client that reads nothing
@@ -5659,18 +5665,42 @@ impl Daemon {
         if outcome == "filled" {
             self.mod_taken(id, fid);
             let ticket = self.owed.get(&id).map(|o| o.ticket);
-            match self.backend.send_now(&sid) {
+            // Never under a person's hands (T-958): one typing since the
+            // fill would have their keys sent with the words. `None` is that
+            // refusal, before any key: the words stand in the box as after
+            // keys that failed, and what becomes of them is not the board's
+            // to read.
+            let sent = if self.person_at_pane(&sid) {
+                Err(None)
+            } else {
+                self.backend.send_now(&sid).map_err(Some)
+            };
+            match sent {
                 Ok(()) => self.feed.board("daemon", "prompt_sent_immediately", ticket),
                 Err(e) => {
                     // The words stand in the box; the person sends them.
-                    self.journal.line(&format!("send-now for session {id} failed: {e}"));
-                    self.feed.board_outcome("daemon", "prompt_send_now_failed", ticket, "keys");
-                    // The crown's ask (T-938): the keys may have half gone.
-                    self.crown_ask_unread(
-                        id,
-                        fid,
-                        "the send-now keys failed after the words were filled into its box",
-                    );
+                    let (word, why) = match e {
+                        Some(e) => {
+                            self.journal.line(&format!("send-now for session {id} failed: {e}"));
+                            // The crown's ask (T-938): the keys may have half gone.
+                            (
+                                "keys",
+                                "the send-now keys failed after the words were filled into its box",
+                            )
+                        }
+                        None => {
+                            self.journal.line(&format!(
+                                "send-now for session {id}: a person has its pane open"
+                            ));
+                            (
+                                A_PERSON_ATTACHED,
+                                "the words were filled into its box, and a person has its pane open, \
+                                 so the board pressed no send-now: they stand in the box unsent",
+                            )
+                        }
+                    };
+                    self.feed.board_outcome("daemon", "prompt_send_now_failed", ticket, word);
+                    self.crown_ask_unread(id, fid, why);
                 }
             }
             self.persist_and_notify();
@@ -5944,7 +5974,7 @@ impl Daemon {
                 .find(|s| s.id == id && s.kind == SessionKind::Claude && s.state.has_pane())
                 .map(|s| s.sid16());
             let free = pane.as_deref().is_some_and(|sid| {
-                !self.backend.has_clients(&format!("={sid}")).unwrap_or(true)
+                !self.person_at_pane(sid)
                     && self
                         .backend
                         .capture_input_screen(sid)
@@ -8636,6 +8666,19 @@ impl Daemon {
             QueuedSeat::Wake(_) => false,
             QueuedSeat::Start(_) => true,
         }
+    }
+
+    /// A tmux client has this pane open (T-958): the person there may be
+    /// typing, and a key of the board's would land in their field, or send
+    /// it. `list-clients` on the pane's own session, the agent's and never
+    /// the board's, one fork read at the edge just before the first key; a
+    /// client the server cannot list counts as there. Every road that sends
+    /// keys into an agent's pane asks this: a paste of words (`paste_at`), a
+    /// fill's send-now (`on_mod_fill`), the crown's dialog walk and plan
+    /// sent back (`control_deliver_dialogs`), and a refused submit's paste
+    /// after a stop (`on_mod_submit`).
+    pub(super) fn person_at_pane(&self, sid: &str) -> bool {
+        self.backend.has_clients(&format!("={sid}")).unwrap_or(true)
     }
 
     /// Why words of the board's would land on a person's (T-918), as the
@@ -12929,6 +12972,14 @@ impl Daemon {
             }
             return Ok(());
         }
+        // The keys go into the pane from here, and never under a person's
+        // hands (T-958): a paste and its Enter in a field someone is typing
+        // in would send their keys with ours. Refused like a command into a
+        // draft, before any key: the words stay with whoever sent them.
+        if self.person_at_pane(&sid) {
+            self.feed.board_outcome("daemon", "prompt_not_sent", Some(ticket), A_PERSON_ATTACHED);
+            return Err(format!("{PERSON_AT_PANE} ∙ the words were not sent"));
+        }
         if immediately {
             // The paste, then the send-now in its own call, as an Enter
             // goes in its own (`paste_text`): keys in the paste's burst are
@@ -14391,7 +14442,11 @@ impl Daemon {
             // its tasks with it, so it waits for a true idle (T-599).
             QueuedSeat::Pane(id) if q.plan => self.session_idle(id),
             QueuedSeat::Pane(id) if self.tier_owed(id) => self.session_at_rest(id),
-            QueuedSeat::Pane(id) => self.session_takes_words(id),
+            // Words that would be typed wait while a person has the pane
+            // open (T-958), read off the pane sample: the tick forks nothing.
+            QueuedSeat::Pane(id) => {
+                self.session_takes_words(id) && !self.typed_under_a_person(id, q, false)
+            }
             // A Codex record wakes only once its runtime confirmed the stop
             // (a tier switch parks one and queues its words here, T-443);
             // trying earlier is a refusal, and the words would be lost.
@@ -14420,6 +14475,31 @@ impl Daemon {
     /// model; a plan relaunch stays on the tier the limit is on.
     fn session_at_rest(&self, id: uuid::Uuid) -> bool {
         self.board.sessions.iter().any(|s| s.id == id && mesimon_core::quiet::at_rest(s))
+    }
+
+    /// Words for this pane would be typed into it under a person's hands
+    /// (T-958): a Claude pane whose words take `paste_at`'s keys rather than
+    /// the mod's `submit` or a relaunch (`relaunches`), and a tmux client on
+    /// it. `fresh` asks the server now (`person_at_pane`, the edge's one
+    /// fork); otherwise the newest pane sample answers, for the queue's
+    /// every-pass test, which forks nothing.
+    fn typed_under_a_person(&self, id: uuid::Uuid, q: &QueuedAsk, fresh: bool) -> bool {
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id && s.state.has_pane())
+        else {
+            return false;
+        };
+        if rec.kind != SessionKind::Claude
+            || self.takes_by_submit(id, &q.text)
+            || self.relaunches(id, q.plan)
+        {
+            return false;
+        }
+        let sid = rec.sid16();
+        if fresh {
+            self.person_at_pane(&sid)
+        } else {
+            self.attached.contains(&sid)
+        }
     }
 
     /// Will this pane's session take words now — `session_idle`, idle at
@@ -14478,6 +14558,13 @@ impl Daemon {
         take.sort_unstable_by(|a, b| b.cmp(a));
         let mut changed = false;
         for i in take {
+            // The edge's own read (T-958): a person who opened the pane
+            // since the sample keeps the words on the queue, where they were.
+            if let QueuedSeat::Pane(id) = self.queued[i].seat {
+                if self.typed_under_a_person(id, &self.queued[i], true) {
+                    continue;
+                }
+            }
             let QueuedAsk { ticket, seat, text, plan, by, from_board, .. } = self.queued.remove(i);
             changed = true;
             let word = seat.word();
@@ -14937,6 +15024,20 @@ impl Daemon {
             if self.pane_waits_on_you(id) {
                 return Response::Err {
                     message: mesimon_core::command::ANSWER_IN_PANE_FIRST.into(),
+                };
+            }
+            // And a person with the pane open (T-958): the paste and its
+            // Enter would land in what they type. The words keep waiting,
+            // and go from the queue once the pane is theirs no longer.
+            if self.typed_under_a_person(id, &self.queued[i], true) {
+                self.feed.board_outcome(
+                    "daemon",
+                    "queued_ask_kept",
+                    Some(ticket),
+                    A_PERSON_ATTACHED,
+                );
+                return Response::Err {
+                    message: format!("{PERSON_AT_PANE} ∙ the words stay queued"),
                 };
             }
         }

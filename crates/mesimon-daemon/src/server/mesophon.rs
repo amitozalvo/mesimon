@@ -1595,6 +1595,15 @@ impl Daemon {
                 capture.is_none() && matches!(pending.answer, DeliveryAnswer::Revise { .. });
             let screen = capture.unwrap_or_default();
             let kind = self.session_kind(id);
+            let sid = id.simple().to_string()[..16].to_string();
+            // The crown's keys never go under a person's hands (T-958): a
+            // tmux client on the pane, read fresh before each key, ends the
+            // walk where it stands, as a plan sent back's does (T-943,
+            // `crown_revise_held`, which has read it already).
+            let crown_keys = matches!(
+                (&pending.by, &pending.answer),
+                (Deliverer::Crown { .. }, DeliveryAnswer::Dialog(_))
+            );
             let step = match standing {
                 None => Err("state_changed"),
                 Some(_) if !allowed => Err(held),
@@ -1604,9 +1613,9 @@ impl Daemon {
                     Err("deadline")
                 }
                 Some(_) if unseen => Err("pane_unreachable"),
+                Some(_) if crown_keys && self.person_at_pane(&sid) => Err(A_PERSON_ATTACHED),
                 Some(s) => dialog_step_for(kind, s, &screen, &pending.walk).map_err(Miss::word),
             };
-            let sid = id.simple().to_string()[..16].to_string();
             // A plan sent back expects the cursor where its arrow puts it
             // (T-943): a cursor anywhere else on the next screen is a
             // person's hand, and stops the walk.
@@ -1889,7 +1898,14 @@ impl Daemon {
                     revise,
                 );
                 let cmd = if revise { "accept_plan" } else { "answer_agent" };
-                self.feed.board_answer(by.actor(), cmd, Some(pending.ticket), status, &answer);
+                self.feed.board_answer(
+                    by.actor(),
+                    cmd,
+                    Some(pending.ticket),
+                    status,
+                    &answer,
+                    reason.as_deref(),
+                );
                 let key = self.board.ticket(pending.ticket).map(|t| t.short_key.clone());
                 let seen = Some(self.seen_token(pending.ticket));
                 // A plan sent back answers as the accept does (T-943): the
@@ -2138,8 +2154,8 @@ impl Daemon {
         }) else {
             return Some("state_changed");
         };
-        if self.backend.has_clients(&format!("={}", rec.sid16())).unwrap_or(true) {
-            return Some("a_person_attached");
+        if self.person_at_pane(&rec.sid16()) {
+            return Some(A_PERSON_ATTACHED);
         }
         None
     }
