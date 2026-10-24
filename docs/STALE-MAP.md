@@ -31798,8 +31798,43 @@ clock takes a background-command park off that state long before 30 minutes, so 
 told about a worker whose only work is background commands, and the card's count goes away at ten
 minutes. Left for its own ticket.
 
-Tests: `quiet::monitoring_is_quiet_but_holds_the_machine` (it was
-`monitoring_releases_working_and_keep_awake_holds`, inverted), `quiet::mid_turn_over_every_stop_reason`
-(an exhaustive match over `StopReason`, for Claude and Codex), and
-`caffeine_watch::a_monitoring_idle_holds_and_a_finished_turn_releases`; the observer's existing
-tests and `state_lab_e2e` are unchanged and green.
+`Idle{Monitoring}` is the latest observation, not proof that a task runs now: it says the last
+Stop listed a shell or watch as running. The hold rests on the fact that a task's end is a turn
+whose Stop says so.
+
+Tests:
+- `quiet::monitoring_is_quiet_but_holds_the_machine`: this was
+  `monitoring_releases_working_and_keep_awake_holds`, now inverted.
+- `quiet::mid_turn_over_every_stop_reason`: an exhaustive match over `StopReason`, for Claude and
+  Codex.
+- `quiet::a_stale_command_park_holds_until_its_completion_turn_ends`: the causal sequence through
+  `attention::Machine`, not a record built by hand. The command's Stop parks the lead at
+  `Idle{Background}`. Nothing comes for `PARK_STALE_MS`, and it reads `Idle{Monitoring}` with the
+  hold kept. The completion's turn and its task-free Stop end at `Idle{EndTurn}`, and the hold
+  goes. At every step, a record with no pane and one waiting on a person release.
+- `caffeine_watch::a_monitoring_idle_holds_and_a_finished_turn_releases`.
+- The observer's existing tests and `state_lab_e2e` are unchanged and green.
+
+**Observed on macOS (2026-10-24, Darwin 27.0).** Predicate tests do not establish the OS
+assertion, so this was watched once on the real thing:
+- The setup was a harness daemon with a stub Claude pane. The hook frames were a lead's: a `Bash`
+  `PostToolUse` arming `backgroundTaskId`, then a Stop listing it as a running `shell`.
+- A real `sleep 700` stood in for the task. The board's own `caffeine_watch::Monitor`, on the
+  native IOKit rung, was handed every snapshot as `App::absorb` does.
+- `pmset -g assertions` was filtered to the test's pid. The harness and its test-only hook were
+  written for this run and not committed; it needed the fixture deadline raised past
+  `test_guard.py`'s 180 s.
+
+```
+13:34:05  +0s    Running                 pid 58957(keep_awake_observe_e2e-72e023b0): [0x00030bff00019e4f] 00:00:00 PreventUserIdleSystemSleep named: "mesimon: an agent is working"
+13:34:07  +2s    Idle{Background}        … 00:00:02 PreventUserIdleSystemSleep named: "mesimon: an agent is working"
+13:44:07  +602s  Idle{Monitoring}        … 00:10:02 PreventUserIdleSystemSleep named: "mesimon: an agent is working"
+13:44:27  +622s  Idle{Monitoring}        … 00:10:22 PreventUserIdleSystemSleep named: "mesimon: an agent is working"   (past the tenth minute: held)
+13:45:45  +700s  sleep 700 exited; the completion's UserPromptSubmit and a Stop listing no task sent
+13:45:47  +702s  Idle{EndTurn}           (no assertion for the pid)
+13:45:48  +703s  sample after the end: holding=false, pmset lists nothing for the pid
+```
+
+The park clock fired 600 s after the park, as at 02:03:10. The same assertion id was held
+straight through the change to `Monitoring`, which before this change released it, and it was
+released within a second of the turn's end.

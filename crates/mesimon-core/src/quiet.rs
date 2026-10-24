@@ -30,8 +30,8 @@
 //! anything" as against "is this turn over" (T-288's keep-awake hold). It is
 //! written in terms of `is_working`, so a fifth working state — or another
 //! agent kind — joins both answers at once. It adds one state back: an agent
-//! idle at `Idle{Monitoring}`, quiet for the checkout, whose watch or
-//! background command is still the machine's work (T-939).
+//! idle at `Idle{Monitoring}`, quiet for the checkout, whose last word was
+//! a watch or background command still running (T-939).
 
 use std::collections::HashSet;
 
@@ -135,7 +135,9 @@ pub fn holds_against_accept(s: &SessionRecord) -> bool {
 /// a keep-awake hold exists to protect.
 ///
 /// And it adds an agent at `Idle{Monitoring}` (T-939): the turn is over, so
-/// the checkout is quiet, but a shell or watch the agent started still runs.
+/// the checkout is quiet, but the last observation listed a shell or watch
+/// the agent started as running — the latest word, not proof it runs now; a
+/// task's end is a turn whose Stop says so.
 /// A background command lands there too once its park goes ten minutes with
 /// no frame (`attention::PARK_STALE_MS`, T-483) — a rig run let the machine
 /// sleep for ten hours that way. Ambient `monitor` rows never make the state
@@ -419,7 +421,7 @@ mod tests {
         let mut s = session(ulid::Ulid::new(), SessionKind::Claude, "/tmp", monitoring.clone());
         assert!(!is_working(&s));
         assert!(takes_words(&s) && at_rest(&s), "the turn is over");
-        assert!(is_mid_turn(&s), "its tasks still run");
+        assert!(is_mid_turn(&s), "its tasks were last seen running");
         s.state = SessionState::Idle { stop_reason: StopReason::Background };
         assert!(is_working(&s));
         assert!(is_mid_turn(&s));
@@ -432,6 +434,69 @@ mod tests {
         }
         let shell = session(ulid::Ulid::new(), SessionKind::Bash, "/tmp", monitoring);
         assert!(!is_mid_turn(&shell), "a shell is liveness, not activity");
+    }
+
+    /// T-939's sequence through the attention machine, not a record built
+    /// by hand: a Stop that lists a silent background command parks the
+    /// lead at `Idle{Background}`; no frame comes for `PARK_STALE_MS`, the
+    /// park falls to `Idle{Monitoring}`, and the keep-awake still holds; the
+    /// turn the command's completion starts ends with a Stop that lists no
+    /// task, and the hold goes. A record with no pane, or one waiting on a
+    /// person, releases at every step.
+    #[test]
+    fn a_stale_command_park_holds_until_its_completion_turn_ends() {
+        use crate::attention::{Machine, Signal, PARK_STALE_MS, SETTLE_MS};
+        let mut rec = session(ulid::Ulid::new(), SessionKind::Claude, "/r", SessionState::Running);
+        let check = |rec: &mut SessionRecord, state: &SessionState, holds: bool| {
+            rec.state = state.clone();
+            assert_eq!(is_mid_turn(rec), holds, "{state:?}");
+            for gone in [
+                SessionState::Sleeping,
+                SessionState::Exited { reason: crate::board::ExitReason::Crashed },
+            ] {
+                rec.state = gone;
+                assert!(!is_mid_turn(rec), "no pane beside {state:?}");
+            }
+            rec.state = SessionState::RequiresAction { reason: Reason::Permission };
+            assert!(!is_mid_turn(rec), "a person's wait beside {state:?}");
+        };
+        // What `hooks::signal_with_background` makes of the lead's Stop
+        // after a `Bash` result armed `backgroundTaskId`: the registry calls
+        // the command work, the payload's `shell` row a watch.
+        let parked_on_command = Signal::Stop {
+            stop_hook_active: false,
+            has_agent_id: false,
+            blocking_tasks: true,
+            monitoring_tasks: true,
+            teammates: 0,
+        };
+        let mut m = Machine::new(SessionState::Running, 0);
+        assert!(m.apply(&parked_on_command, 1_000).is_none(), "a leave settles");
+        let parked = 1_000 + SETTLE_MS;
+        let c = m.tick(parked).expect("parks");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::Background });
+        check(&mut rec, &c.to, true);
+        assert!(m.tick(parked + PARK_STALE_MS - 1).is_none(), "the command says nothing");
+        let c = m.tick(parked + PARK_STALE_MS).expect("the park goes stale");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::Monitoring });
+        check(&mut rec, &c.to, true);
+        // The command ends: Claude Code's task notification is a turn, and
+        // its Stop lists nothing left.
+        let done = parked + PARK_STALE_MS + 90_000;
+        let c = m.apply(&Signal::UserPromptSubmit, done).expect("the notification's turn");
+        assert_eq!(c.to, SessionState::Running);
+        check(&mut rec, &c.to, true);
+        let finished = Signal::Stop {
+            stop_hook_active: false,
+            has_agent_id: false,
+            blocking_tasks: false,
+            monitoring_tasks: false,
+            teammates: 0,
+        };
+        assert!(m.apply(&finished, done + 5_000).is_none(), "a leave settles");
+        let c = m.tick(done + 5_000 + SETTLE_MS).expect("the turn ends");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
+        check(&mut rec, &c.to, false);
     }
 
     /// Every way an agent's turn can end, against the keep-awake: a park on
