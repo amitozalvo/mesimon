@@ -1761,10 +1761,14 @@ pub fn compute_flags(
         .filter(|i| !i.branch.is_empty())
         .map(|i| {
             let tip = tips.get(&i.branch).cloned().unwrap_or_default();
-            let read = git_read(
-                repo,
-                &["rev-list", "--left-right", "--count", &format!("{base}...{}", i.branch)],
-            );
+            // The counts read the refs `branch_tips` read (T-937): by name, a
+            // merge landing between the two reads paired the base's old tip
+            // with the new counts, and `came_to_base` re-cut the merged
+            // branch on its own tip.
+            let from = if base_tip.oid.is_empty() { base.as_str() } else { base_tip.oid.as_str() };
+            let to = if tip.oid.is_empty() { i.branch.as_str() } else { tip.oid.as_str() };
+            let read =
+                git_read(repo, &["rev-list", "--left-right", "--count", &format!("{from}...{to}")]);
             // A read that failed is the leg's word (T-754), never a clean
             // leg: the tips' failure first, else this count's.
             let trouble = read_trouble.clone().or_else(|| read.as_ref().err().map(git_trouble));
@@ -1782,7 +1786,8 @@ pub fn compute_flags(
             // `merged` with no words); the counts become the upstream's.
             let mut trouble = trouble;
             if !counted.is_empty() && trouble.is_none() {
-                match left_right(repo, &counted, &i.branch) {
+                let up = if target_tip.is_empty() { counted.as_str() } else { target_tip.as_str() };
+                match left_right(repo, up, to) {
                     Ok((behind, up_ahead)) => (ahead, ff) = (up_ahead, behind == 0),
                     Err(e) => trouble = Some(git_trouble(&e)),
                 }
