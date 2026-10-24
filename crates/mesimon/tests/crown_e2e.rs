@@ -6354,6 +6354,105 @@ fn the_crown_sends_a_plan_back_with_words() {
     assert_eq!(needs.request.as_deref(), Some("toolu_w3"));
 }
 
+/// A new plan while the wake for the one before it is still owed (T-943's
+/// composition, as the rig's worker did it): the crown sends a plan back
+/// from inside its own turn, the worker replans at once, and the new plan's
+/// wake waits for the crown's idle with the earlier one's. The two fold into
+/// one wake for the worker, which names its plan, and what the crown then
+/// reads is the new request, which its accept takes.
+#[test]
+fn a_new_plan_while_its_wake_is_owed_is_one_wake_for_the_new_request() {
+    let Some(mut b) = PlanBed::boot("crown_revise_owed") else { return };
+    let (kw, ws, w) = (b.kw.clone(), b.ws, b.w);
+    let wake = format!("{kw} \"mesimon-probe-943 worker\" stops on a plan");
+    let owed = |b: &PlanBed| {
+        b.feed()
+            .lines()
+            .filter(|l| {
+                l.contains("\"kind\":\"crown_wake\"")
+                    && l.contains(&format!("\"worker\":\"{w}\""))
+                    && l.contains("\"cause\":\"planned\"")
+            })
+            .count()
+    };
+    let sent = |b: &PlanBed| b.feed().matches("\"cmd\":\"crown_wake_sent\"").count();
+    // The crown is in its turn (the bed leaves it running): W's plan is owed.
+    b.show_plan("toolu_w1");
+    wait_until(std::time::Duration::from_secs(10), "the first plan's wake owed", || owed(&b) == 1);
+    assert_eq!(b.typed().matches(&wake).count(), 0, "owed, not sent: the crown is busy");
+    // Still in its turn, the crown sends the plan back; W replans at once.
+    let receipt = b.call("toolu_w1", "Use echo in Bash instead of the Write tool.");
+    let changed = b.changed();
+    wait_until(std::time::Duration::from_secs(10), "the plan sent back", || changed.exists());
+    std::fs::write(
+        b.h.dir.join(format!("dialog-{kw}.json")),
+        json!({ "plan": BED_PLAN }).to_string(),
+    )
+    .unwrap();
+    b.hook("PreToolUse", "ExitPlanMode", "toolu_w2");
+    assert_eq!(revised(receipt), ("input_sent".to_string(), None));
+    wait_until(std::time::Duration::from_secs(10), "the new plan's wake owed", || owed(&b) == 2);
+    assert_eq!(b.typed().matches(&wake).count(), 0, "still owed: the crown's turn runs");
+    // The crown's turn ends: one wake for the worker, not two. The feed is
+    // flushed on the tick, so the count is read once it shows the send; then
+    // the crown idles once more, and the hook line of that `Stop` is pushed
+    // in the same writer message as the drain it starts, so once that line
+    // is on disk, any second wake that drain sent is on disk with it.
+    let mod_road = test_road() == "mod";
+    let stops = |b: &PlanBed| {
+        b.feed()
+            .lines()
+            .filter(|l| {
+                l.contains("\"kind\":\"hook\"")
+                    && l.contains(&format!("\"session\":\"{}\"", b.sa))
+                    && l.contains("\"event\":\"Stop\"")
+                    && l.contains("\"road\":\"mod\"") == mod_road
+            })
+            .count()
+    };
+    let before = sent(&b);
+    b.stop(b.sa);
+    wait_until(std::time::Duration::from_secs(10), "the wake on the crown", || {
+        b.typed().matches(&wake).count() == 1 && sent(&b) > before
+    });
+    b.start(b.sa);
+    let idled = stops(&b);
+    b.stop(b.sa);
+    wait_until(std::time::Duration::from_secs(10), "the next idle's drain on disk", || {
+        stops(&b) > idled
+    });
+    assert_eq!(sent(&b), before + 1, "the two plans' wakes fold into one");
+    b.start(b.sa);
+    assert_eq!(b.typed().matches(&wake).count(), 1);
+    let needs = read(&mut b.c, b.sa, &kw).unwrap().needs_you.expect("the new plan");
+    assert_eq!(needs.request.as_deref(), Some("toolu_w2"));
+    // The new request is the one an accept takes; the old one is refused.
+    let v = read(&mut b.c, b.sa, &kw).unwrap();
+    let stale = Command::AgentAcceptPlan {
+        key: kw.clone(),
+        seen: v.seen.clone(),
+        request: "toolu_w1".into(),
+    };
+    match b.c.send(Principal::Agent { session: b.sa }, stale) {
+        Response::Err { message } => assert!(message.contains("plan changed"), "{message}"),
+        other => panic!("accept_plan on the plan sent back: {other:?}"),
+    }
+    let accepted = b.h.dir.join(format!("accepted-{kw}"));
+    let accept =
+        Command::AgentAcceptPlan { key: kw.clone(), seen: v.seen, request: "toolu_w2".into() };
+    let (sock, sa) = (b.h.paths.orch_sock(), b.sa);
+    let receipt = std::thread::spawn(move || {
+        TestClient::connect(&sock).send(Principal::Agent { session: sa }, accept)
+    });
+    wait_until(std::time::Duration::from_secs(10), "the new plan accepted", || accepted.exists());
+    b.hook("PostToolUse", "ExitPlanMode", "toolu_w2");
+    match receipt.join().unwrap() {
+        Response::AgentPlanAccepted { outcome, .. } => assert_eq!(outcome, "accepted"),
+        other => panic!("accept_plan on the new plan: {other:?}"),
+    }
+    b.c.await_state(ws, "running the plan", |s| *s == SessionState::Running);
+}
+
 /// A plan sent back stops at any hand but the crown's (T-943), and the
 /// receipt then says `unknown`, never `input_sent`: words a person typed
 /// into the field first get no paste and no Enter; a person attaching
