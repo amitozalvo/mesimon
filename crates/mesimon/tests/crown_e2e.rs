@@ -6098,6 +6098,30 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
                 assert!(shown.ends_with(&format!("its first 64 KiB of {kib} KiB")), "marked cut");
             }
         }
+        if plan.len() > 64 * 1024 {
+            continue;
+        }
+        // The 26 KiB plan, read whole, is accepted on the road section 1's took.
+        let accepted = h.dir.join(format!("accepted-{kw}"));
+        let _ = std::fs::remove_file(&accepted);
+        let v = read(&mut c, sa, &kw).unwrap();
+        let cmd = Command::AgentAcceptPlan { key: kw.clone(), seen: v.seen, request: id.into() };
+        let sock = h.paths.orch_sock();
+        let receipt = std::thread::spawn(move || {
+            TestClient::connect(&sock).send(Principal::Agent { session: sa }, cmd)
+        });
+        wait_until(std::time::Duration::from_secs(10), "the long plan accepted", || {
+            accepted.exists()
+        });
+        append(&[result(id)]);
+        hook_send(&hook_sock, &ws.to_string(), "PostToolUse", &edge("ExitPlanMode", id, &input));
+        match receipt.join().unwrap() {
+            Response::AgentPlanAccepted { outcome, reason, .. } => {
+                assert_eq!((outcome.as_str(), reason), ("accepted", None))
+            }
+            other => panic!("accept_plan on the long plan: {other:?}"),
+        }
+        c.await_state(ws, "running the long plan", |s| *s == SessionState::Running);
     }
 }
 

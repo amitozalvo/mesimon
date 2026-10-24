@@ -5396,9 +5396,12 @@ fn dialog_content(tool: &str, input: &serde_json::Value) -> Option<api::DialogCo
     }
 }
 
-/// The most of a plan a phone's board carries (T-936): one board answer
-/// fits 48 KiB (`Control::answer`), and its trim drops no dialog.
-const PHONE_PLAN_MAX_BYTES: usize = 16 * 1024;
+/// The most a plan's dialog takes of a phone's board answer, as the JSON it
+/// is sent as (T-936): its escaping, its cut mark, its request and its own
+/// fields included. One board answer fits 48 KiB (`Control::answer`), and
+/// its trim drops no dialog; a 16 KiB head counted in raw bytes can escape
+/// to six times that.
+const PHONE_DIALOG_MAX_BYTES: usize = 16 * 1024;
 
 /// A plan's markdown as a reader that carries at most `max` bytes of it
 /// shows it (T-936): whole, or its head and a line that says it was cut.
@@ -5409,19 +5412,37 @@ pub(super) fn plan_head(markdown: &str, max: usize) -> String {
     }
     format!(
         "{head}\n\n… the plan is cut here: its first {} KiB of {} KiB",
-        max / 1024,
+        head.len().div_ceil(1024),
         markdown.len().div_ceil(1024)
     )
 }
 
-/// A dialog as a phone's board carries it: a plan cut to
-/// `PHONE_PLAN_MAX_BYTES`, its request the one an answer binds to.
+/// A dialog as a phone's board carries it: a plan's head, as long as the
+/// dialog's JSON stays within `PHONE_DIALOG_MAX_BYTES`, marked cut, and its
+/// request the one an answer binds to.
 fn phone_dialog(dialog: &api::Dialog) -> api::Dialog {
-    let mut dialog = dialog.clone();
-    if let api::DialogContent::Plan { markdown } = &mut dialog.content {
-        *markdown = plan_head(markdown, PHONE_PLAN_MAX_BYTES);
+    let api::DialogContent::Plan { markdown } = &dialog.content else { return dialog.clone() };
+    let sized = |head: usize| {
+        let content = api::DialogContent::Plan { markdown: plan_head(markdown, head) };
+        let cut = api::Dialog { request: dialog.request.clone(), content };
+        let bytes = serde_json::to_vec(&cut).map_or(usize::MAX, |b| b.len());
+        (cut, bytes)
+    };
+    let (whole, bytes) = sized(markdown.len());
+    if bytes <= PHONE_DIALOG_MAX_BYTES {
+        return whole;
     }
-    dialog
+    // The longest head that fits, found by halving: its JSON grows with it.
+    let (mut fits, mut over) = (0, markdown.len().min(PHONE_DIALOG_MAX_BYTES));
+    while fits + 1 < over {
+        let mid = (fits + over) / 2;
+        if sized(mid).1 <= PHONE_DIALOG_MAX_BYTES {
+            fits = mid;
+        } else {
+            over = mid;
+        }
+    }
+    sized(fits).0
 }
 
 /// Whether this hook frame ends `dialog` (T-567), and how: its own tool's
@@ -5509,7 +5530,11 @@ mod tests {
     }
 
     /// T-936: a plan is kept whole, however long, and each reader cuts it
-    /// to what it carries, marked; questions keep their 16 KiB bound.
+    /// to what it carries, marked; questions keep their 16 KiB bound. A
+    /// phone's head is bounded by the dialog's JSON, escaping, mark and
+    /// request included, so the board answer it rides fits
+    /// `Control::answer`'s 48 KiB: an ASCII plan, an escape-heavy one (a
+    /// control byte escapes to six) and a long Unicode one.
     #[test]
     fn a_long_plan_is_kept_whole_and_cut_where_it_is_shown() {
         let long: String = (0..2000).map(|n| format!("{n}. a step of the design\n")).collect();
@@ -5520,17 +5545,68 @@ mod tests {
             panic!("a long plan is a dialog");
         };
         assert_eq!(markdown, long, "kept whole");
-        let dialog = api::Dialog {
-            request: "toolu_1".into(),
-            content: api::DialogContent::Plan { markdown },
-        };
-        let phone = phone_dialog(&dialog);
-        assert_eq!(phone.request, "toolu_1", "an answer binds to the same request");
-        let api::DialogContent::Plan { markdown: head } = &phone.content else { panic!() };
-        assert!(head.starts_with("0. a step") && head.len() < PHONE_PLAN_MAX_BYTES + 100);
-        let kib = long.len().div_ceil(1024);
-        assert!(head.ends_with(&format!("its first 16 KiB of {kib} KiB")), "{}", &head[16000..]);
         assert_eq!(plan_head("1. short", 16 * 1024), "1. short", "a short plan is not marked");
+        let escaped: String = "\u{1}\"\\\t".repeat(10_000);
+        let unicode: String =
+            (0..1500).map(|n| format!("{n}. שלב בתכנון 🚀 עם טבלה | 表 | ✓\n")).collect();
+        assert!(unicode.len() > 64 * 1024);
+        for plan in [&long, &escaped, &unicode] {
+            let dialog = api::Dialog {
+                request: "toolu_1".into(),
+                content: api::DialogContent::Plan { markdown: plan.clone() },
+            };
+            let phone = phone_dialog(&dialog);
+            assert_eq!(phone.request, "toolu_1", "an answer binds to the same request");
+            let bytes = serde_json::to_vec(&phone).unwrap().len();
+            assert!(bytes <= PHONE_DIALOG_MAX_BYTES, "{bytes} bytes");
+            let api::DialogContent::Plan { markdown: head } = &phone.content else { panic!() };
+            let (cut, mark) = head.split_once("\n\n… the plan is cut here: ").expect("marked");
+            assert!(plan.starts_with(cut) && !cut.is_empty(), "its head");
+            assert!(mark.ends_with(&format!("of {} KiB", plan.len().div_ceil(1024))), "{mark}");
+            // The board answer it rides, two agents on such plans at once.
+            let ticket = |n: u32| api::Ticket {
+                queued: None,
+                queue: None,
+                id: format!("01J{n}"),
+                key: format!("T-{n}"),
+                title: "a long plan".into(),
+                column: "IN PROGRESS".into(),
+                agent: Some(api::Agent {
+                    permission: None,
+                    dialog: Some(phone.clone()),
+                    trust: None,
+                    session: uuid::Uuid::nil().to_string(),
+                    provider: "claude".into(),
+                    state: "needs_you".into(),
+                    promptable: false,
+                    since: None,
+                    doing: None,
+                    said: None,
+                    tier: None,
+                }),
+                tags: Vec::new(),
+                picked: None,
+                notes: 0,
+                noted: String::new(),
+                crown: false,
+                crowned: None,
+                workspace: None,
+                tier: None,
+                created: None,
+            };
+            let reply = Reply::Board {
+                title: "b".into(),
+                columns: vec!["IN PROGRESS".into()],
+                tickets: (1..=2).map(ticket).collect(),
+                default_column: None,
+                column_descriptions: BTreeMap::new(),
+                allowed_tags: vec![],
+                tiers: vec![],
+                archived: vec![],
+            };
+            let answer = measure(&reply).unwrap();
+            assert!(answer <= 48 * 1024, "the board answer: {answer} bytes");
+        }
         let many = serde_json::json!({ "questions": [{
             "question": "x".repeat(17 * 1024), "header": "h",
             "options": [{ "label": "a", "description": "" }], "multiSelect": false }] });

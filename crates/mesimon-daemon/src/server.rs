@@ -19400,8 +19400,8 @@ fn created_at_ms(created_at: &str) -> Option<u64> {
 }
 
 /// The longest plan `get_ticket.needs_you.plan` carries (T-582), past it
-/// the head marked cut (`plan_head`). 64 KiB since T-936: a plan the crown
-/// accepts is one it read whole, and a design plan measured 26 KiB.
+/// the head marked cut (`plan_head`). 64 KiB since T-936, where a design
+/// plan measured 26 KiB: one of that size is read whole.
 const AGENT_PLAN_MAX_BYTES: usize = 64 * 1024;
 
 fn now_iso() -> String {

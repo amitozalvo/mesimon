@@ -32729,8 +32729,9 @@ T-938 entered its plan stop at 09:43:39Z by `PreToolUse`, so the board never hel
 before the restart or after it.
 - A plan is kept whole in the dialog, and each reader cuts it to what it carries, its head marked
   (`plan_head`: `… the plan is cut here: its first N KiB of M KiB`). The crown's `get_ticket`
-  carries 64 KiB (`AGENT_PLAN_MAX_BYTES`, from 16): a plan the crown accepts is one it read whole.
-  Questions keep their 16 KiB bound.
+  carries 64 KiB (`AGENT_PLAN_MAX_BYTES`, from 16), so a 26 KiB plan is read whole; past 64 KiB
+  the crown reads a marked head, and `accept_plan` still takes it. Questions keep their 16 KiB
+  bound.
 - **The phone's board keeps 16 KiB** (`PHONE_PLAN_MAX_BYTES`, `phone_dialog`). The phone road
   was checked before building: a board answer must fit 48 KiB (`Control::answer`), and its trim
   drops agents' words and archived tickets but never a dialog, so one 64 KiB plan would have had
@@ -32809,3 +32810,20 @@ runtime, a finished turn is told; the lost observation opens a turn in `crown.js
 precondition); the runtime is killed, so the pane-died hook lands `Exited` with `codex_stopping`
 set; the ledger keeps no turn open; and after a restart there is no line. It fails on the old
 rule. The downtime tests stay green.
+
+**Review (Astra), first round: the phone's head is bounded by what it is sent as (item 5).** The
+first cut measured the phone's 16 KiB head in raw bytes. JSON escaping takes a control byte to six
+(Astra measured about 98 KB for an escape-heavy 16 KiB head), and one such dialog would have had
+`Control::answer` refuse the phone's whole board.
+- `phone_dialog` now keeps the longest head whose dialog, as JSON, fits `PHONE_DIALOG_MAX_BYTES`
+  (16 KiB). That counts the escaping, the cut mark, the request and the dialog's own fields. The
+  head is found by halving, and the request and the mark always stay.
+- The mark names the head's own size.
+- Two agents on such plans fit one board answer. Several more crowding one answer is as it was
+  before this ticket.
+
+Tests: `mesophon::a_long_plan_is_kept_whole_and_cut_where_it_is_shown` (an ASCII plan, an
+escape-heavy one and a long Unicode one, each within the bound with its request and mark, and a
+board answer with two of them under 48 KiB);
+`crown_e2e::a_worker_s_dialog_outlives_a_daemon_restart` section 4 (the 26 KiB plan is now also
+accepted after the restart, on the road section 1 takes).
