@@ -4544,10 +4544,17 @@ fn the_crown_sends_now_into_a_working_turn() {
 /// refusals drop it, by the agent, with no slower road taken.
 #[test]
 fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
+    // Round 3: an Enter that fails after its paste went in, on the test's ask.
+    let fail_enter = std::env::temp_dir().join(format!("msmn-fail-enter-{}", std::process::id()));
+    let _ = std::fs::remove_file(&fail_enter);
     let Some(h) = Harness::boot_with_env(
         "crown_ask_words",
         Some(RECORDING_STUB),
-        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_TEST_FAIL_ENTER", fail_enter.to_str().unwrap()),
+        ],
     ) else {
         return;
     };
@@ -4949,6 +4956,95 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         let after = receipt(ask(&mut c, "mesimon-probe-9397 next", Deliver::Idle));
         assert_ne!(after.ask, pasted.ask, "the paste's turn end lifted the block");
         assert!(!landed("mesimon-probe-9396"), "the refused words reach nobody");
+        wait_until(std::time::Duration::from_secs(25), "the next ask entered", || {
+            word(&mut c).as_deref() == Some("handed")
+        });
+        start(&mut c, ws);
+        stop(&mut c, ws);
+        wake_for(&after.ask, "taken");
+        start(&mut c, sa);
+        stop(&mut c, sa);
+
+        // ---- that paste's Enter fails after the words went in (round 3, 2)
+        // The refused submit's words are pasted and the Enter after them
+        // fails: whether the agent has them is not known, so the ask reads
+        // unknown, never dropped, and nothing is tried again.
+        switch("mod-stopped-submit", true);
+        std::fs::write(&fail_enter, "").unwrap();
+        let half = receipt(ask(&mut c, "mesimon-probe-9398 half sent", Deliver::Idle));
+        wait_until(std::time::Duration::from_secs(25), "the paste's failure read", || {
+            word(&mut c).as_deref() == Some("unknown")
+        });
+        let _ = std::fs::remove_file(&fail_enter);
+        switch("mod-stopped-submit", false);
+        let read_half = asked(&mut c).unwrap();
+        assert_eq!(read_half.ask, half.ask);
+        assert!(read_half.why.contains("failed part-way"), "{read_half:?}");
+        settle();
+        assert_eq!(word(&mut c).as_deref(), Some("unknown"), "not overwritten as dropped");
+        // The box holds the words the Enter never sent: the person's to send.
+        assert!(c.board().live_agent(w).is_some_and(|s| s.unsent.is_some()), "kept unsent");
+
+        // ---- a parked seat's frame is its live pane's (round 3, 1) ---------
+        // Words to a parked worker go down its mod as a frame in the pane its
+        // wake made, bound there at the dispatch. An `entered` for that frame
+        // while the seat has no pane, or once a new pane replaced it, hands
+        // nothing, and the tick resolves the ask, so nothing blocks for good.
+        let v = read(&mut c, sa, &kw).unwrap();
+        match c.send(
+            Principal::Agent { session: sa },
+            Command::AgentSleepTicket { key: kw.clone(), seen: v.seen },
+        ) {
+            Response::AgentTicket { .. } => {}
+            other => panic!("sleep_agent: {other:?}"),
+        }
+        c.await_state(ws, "sleeping", |s| *s == SessionState::Sleeping);
+        switch("mod-hold-entered", true);
+        let parked = receipt(ask(&mut c, "mesimon-probe-9399 to a parked seat", Deliver::Now));
+        assert_eq!(parked.status, "sent", "{parked:?}");
+        hook_send(&hook_sock, &ws.to_string(), "SessionStart", r#"{"source":"resume"}"#);
+        let mod_record = h.dir.join(format!("mod-{ws}.ndjson"));
+        let frame_of = |probe: &str| {
+            std::fs::read_to_string(&mod_record)
+                .unwrap_or_default()
+                .lines()
+                .rfind(|l| l.contains(probe))
+                .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["id"].to_string())
+        };
+        wait_until(std::time::Duration::from_secs(15), "the parked words' frame", || {
+            frame_of("mesimon-probe-9399").is_some()
+        });
+        let old = frame_of("mesimon-probe-9399").unwrap().trim_matches('"').to_string();
+        let entered = |fid: &str| {
+            hook_send_road(
+                &hook_sock,
+                &ws.to_string(),
+                "ModSubmit",
+                Some(fid),
+                None,
+                r#"{"outcome":"entered"}"#,
+                Some("mod"),
+            )
+        };
+        assert!(matches!(c.request(Command::SleepSession { id: ws }), Response::Ok));
+        c.await_state(ws, "asleep", |s| *s == SessionState::Sleeping);
+        switch("mod-hold-entered", false);
+        entered(&old);
+        settle();
+        assert_ne!(word(&mut c).as_deref(), Some("handed"), "no pane: the report is no one's");
+        match c.request(Command::WakeSession { id: ws }) {
+            Response::Spawned { .. } => {}
+            other => panic!("the wake: {other:?}"),
+        }
+        hook_send(&hook_sock, &ws.to_string(), "SessionStart", r#"{"source":"resume"}"#);
+        entered(&old);
+        settle();
+        assert_ne!(word(&mut c).as_deref(), Some("handed"), "a new pane: still no one's");
+        wait_until(std::time::Duration::from_secs(10), "the tick resolves it", || {
+            word(&mut c).as_deref() == Some("unknown")
+        });
+        let next = receipt(ask(&mut c, "mesimon-probe-9400 after", Deliver::Idle));
+        assert_ne!(next.ask, parked.ask, "no permanent block");
     }
 }
 

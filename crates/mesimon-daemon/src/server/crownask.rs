@@ -13,19 +13,23 @@
 //! - **sent** — the dispatch went through (the paste into the pane, the
 //!   frame into the mod's outbox), and no edge of the agent's has named
 //!   these words yet;
-//! - **handed** — the agent's own edge for them: the `UserPromptSubmit`
-//!   that acks the owed paste tagged with this ask, with nobody in the pane
-//!   who could have typed it instead; the mod's `entered` for its frame;
-//!   the Codex steer or launch counted;
+//! - **handed** — a receipt of the agent's that names these words: the
+//!   mod's `entered` for their frame, from the seat and live pane it went
+//!   to, or the Codex steer or launch counted. A Claude prompt hook names no
+//!   words, so a paste is never handed: its ack only marks the turn, and
+//!   the ask stays `sent`;
 //! - **taken** — the turn these words started has ended. It says nothing
 //!   of absorption inside a turn already running (words that went into one
 //!   stay `handed`), and an end, normal or not, says nothing of whether the
 //!   work succeeded;
 //! - **dropped** — a refusal or a cancellation confirmed before the agent
-//!   had them, and by whom;
+//!   had them, and by whom: a person's take-back or replacement, the
+//!   board's seat gone, or the mod's own `refused`, `dropped` or `rejected`;
 //! - **unknown** — an effect the board cannot read: keys that failed after
-//!   the words were in the box, a mod frame never acknowledged, a pane
-//!   replaced under the words, a restart. Never resent.
+//!   the words were in the box (a paste whose Enter failed included), a mod
+//!   frame never acknowledged or reported in a word the board does not
+//!   read, a pane replaced or gone under the words, a restart. Never
+//!   resent.
 //!
 //! A second ask is refused while the first reads `sent` or `handed`
 //! (`blocks`), so a resend never puts in a second copy behind the board's
@@ -38,9 +42,10 @@
 //!
 //! Memory only, as every crown ask is (T-550): a restart keeps nothing but
 //! the turn the crown's ask rode (`TurnAsk::Asked` in `crown.json`), which
-//! comes back as `unknown`. A restart between `sent` and `handed` leaves no
-//! trace, so no `asked` after a restart is no evidence, not proof that
-//! nothing was sent.
+//! comes back as `unknown`. A `sent` ask whose ack marked its turn is in
+//! that ledger; an unmarked one (a held `submit`, a paste not yet acked) may
+//! leave no trace, so no `asked` after a restart is no evidence, not proof
+//! that nothing was sent.
 
 use super::*;
 use crownwake::Said;
@@ -138,14 +143,17 @@ impl CrownAsk {
     /// The refusal a second ask meets while this one is out.
     pub(super) fn refusal(&self, key: &str, now: u64) -> String {
         let secs = now.saturating_sub(self.since_ms) / 1000;
-        let wait = if self.submit {
-            "Claude Code runs a plugin's prompt when the running turn ends"
+        let (wait, lifts) = if self.submit {
+            (
+                "Claude Code runs a plugin's prompt when the running turn ends",
+                "the turn it starts ends",
+            )
         } else {
-            "the turn it went into has not ended"
+            ("the turn it went into has not ended", "that turn ends")
         };
         format!(
             "{key}'s agent has ask {} ({}, {secs}s): {wait}. A second ask is refused while the \
-             first is out; get_ticket's asked says when it is taken, dropped or unknown.",
+             first is out, until {lifts} or get_ticket's asked reads taken, dropped or unknown.",
             self.id,
             self.stage.word(),
         )
@@ -183,8 +191,10 @@ impl Daemon {
         let owed = self.owed.get(&session).filter(|o| o.ticket == target);
         let frame = owed.and_then(|o| o.frame.clone());
         let submit = owed.is_some_and(|o| o.frame.is_some() && !o.fill);
-        // A parked seat's pane is the one its wake makes: bound at the first
-        // edge that names it (`bind_pane`), never the pane it slept in.
+        // A parked seat's pane is the one its wake makes: bound when its
+        // frame is dispatched there (`crown_ask_framed`), or for a paste at
+        // the first edge of its own that names it (`bind_pane`), never the
+        // pane it slept in.
         let pane = self
             .board
             .sessions
@@ -319,20 +329,32 @@ impl Daemon {
     }
 
     /// The ask a mod report from `session` about `frame` is for: the one
-    /// whose seat, frame and pane it names. A report delayed from a pane
-    /// since replaced is no one's. A parked seat's ask binds its pane here.
+    /// whose seat, frame and pane it names, that pane live now. A report
+    /// delayed from a pane since replaced or gone is no one's, and a report
+    /// binds nothing: the pane is the frame's, bound at its dispatch.
     fn crown_ask_by_frame(
-        &mut self,
+        &self,
         session: uuid::Uuid,
         frame: &str,
     ) -> Option<(ulid::Ulid, ulid::Ulid)> {
         let pane = self.pane_of(session);
-        let (target, a) = self
-            .crown_asks
-            .iter_mut()
-            .find(|(_, a)| reports_to(a, session, frame, pane.as_deref()))?;
-        bind_pane(a, pane.as_deref());
-        Some((*target, a.id))
+        self.crown_asks
+            .iter()
+            .find(|(_, a)| reports_to(a, session, frame, pane.as_deref()))
+            .map(|(target, a)| (*target, a.id))
+    }
+
+    /// A parked seat's words went down its mod as `frame`, in the pane its
+    /// wake made: the ask is that frame's and that pane's from here, a turn
+    /// of its own (round 3: bound at dispatch, never by a later report).
+    pub(super) fn crown_ask_framed(&mut self, session: uuid::Uuid, ask: ulid::Ulid, frame: String) {
+        let pane = self.pane_of(session);
+        if let Some(a) = self.crown_asks.values_mut().find(|a| a.id == ask) {
+            a.frame = Some(frame);
+            a.submit = true;
+            a.own_turn = true;
+            a.pane = pane;
+        }
     }
 
     /// Whether a mod report from `session` about `frame` is a crown ask's,
@@ -558,11 +580,14 @@ pub(super) fn reports_to(
 ) -> bool {
     a.session == Some(session)
         && a.frame.as_deref() == Some(frame)
-        && a.pane.as_deref().is_none_or(|p| Some(p) == pane)
+        && pane.is_some()
+        && a.pane.as_deref() == pane
 }
 
-/// Whether `pane` is the one `a` went to, binding it where the ask was sent
-/// to a parked seat and this is the first edge that names its pane.
+/// Whether `pane` is the one `a` went to, binding it where a paste was sent
+/// to a parked seat and this is the first edge of the seat's own (its ack,
+/// its turn's end) that names its pane. A frame's pane is bound at its
+/// dispatch (`crown_ask_framed`), never here.
 pub(super) fn bind_pane(a: &mut CrownAsk, pane: Option<&str>) -> bool {
     match (&a.pane, pane) {
         (None, Some(p)) => {
@@ -607,7 +632,7 @@ pub(super) fn settle_why(
     // Handed into a pane since replaced: no end in the pane it went to is
     // coming.
     if a.stage == Stage::Handed {
-        return (moved && a.pane.is_some())
+        return moved
             .then_some("the pane it went to was replaced before the turn it went into ended");
     }
     if a.stage != Stage::Sent {
@@ -722,16 +747,21 @@ mod tests {
         assert_eq!(end_said(&Stage::Taken, true), None, "taken once");
     }
 
-    /// An ask sent to a parked seat binds the pane its wake made at the
-    /// first edge that names one; a bound pane only ever matches itself.
+    /// Round 3: a frame report needs a live pane, the one the frame was
+    /// dispatched to. An unbound ask is no report's (its pane is bound at
+    /// the dispatch, never chosen by a report), a seat with no pane reports
+    /// nothing, and a paste's own edge binds the pane its wake made.
     #[test]
-    fn a_parked_seat_s_ask_binds_the_pane_its_wake_made() {
+    fn a_frame_report_needs_the_live_pane_its_frame_went_to() {
         let mut a = out(true);
-        a.pane = None;
         let s = uuid::Uuid::from_u128(7);
-        assert!(reports_to(&a, s, "F1", Some("200:%4")), "unbound: the wake's pane");
+        assert!(!reports_to(&a, s, "F1", None), "no live pane: no one's");
+        a.pane = None;
+        assert!(!reports_to(&a, s, "F1", Some("200:%4")), "unbound: no wildcard");
+        assert!(!reports_to(&a, s, "F1", None));
         assert!(bind_pane(&mut a, Some("200:%4")));
         assert_eq!(a.pane.as_deref(), Some("200:%4"));
+        assert!(reports_to(&a, s, "F1", Some("200:%4")));
         assert!(!bind_pane(&mut a, Some("200:%5")), "bound: another pane is not it");
         assert!(!reports_to(&a, s, "F1", Some("200:%5")));
     }
@@ -747,6 +777,9 @@ mod tests {
         let mut moved = idle.clone();
         moved.pane_key = Some("100:%2".into());
         assert!(settle_why(&a, Some(&moved), false, false).is_some_and(|w| w.contains("replaced")));
+        // Round 3: an unbound handed ask whose seat is gone resolves too.
+        a.pane = None;
+        assert!(settle_why(&a, None, false, false).is_some_and(|w| w.contains("replaced")));
     }
 
     #[test]

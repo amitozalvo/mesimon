@@ -350,6 +350,41 @@ def tool_calls(rows):
     return out
 
 
+# The words of `CrownAsk::refusal` (T-938): a second ask refused because the
+# first is still out, not for any other reason (a stale seen stamp).
+OUTSTANDING_ASK_MARK = "A second ask is refused while the first is out"
+
+
+def second_ask_refusal(rows, key):
+    """(ok, observed) for the crown's first two ask_agent calls on `key`, from
+    its own tool results, never its summary (T-938, round 3): the first's
+    receipt names its ask, and the second's answer is the outstanding-ask
+    refusal naming that same ask."""
+    results, asks = {}, []
+    for row in rows:
+        content = (row.get("message") or {}).get("content")
+        for b in content if isinstance(content, list) else []:
+            if not isinstance(b, dict):
+                continue
+            if b.get("type") == "tool_result":
+                body = b.get("content")
+                results[b.get("tool_use_id")] = body if isinstance(body, str) else " ".join(
+                    x.get("text", "") for x in body or [] if isinstance(x, dict))
+            elif (b.get("type") == "tool_use"
+                  and (b.get("name") or "").rsplit("__", 1)[-1] == "ask_agent"
+                  and str((b.get("input") or {}).get("key", "")).strip() == key):
+                asks.append(b.get("id"))
+    said = [results.get(i) for i in asks]
+    if len(said) < 2 or said[0] is None or said[1] is None:
+        return False, f"{len(said)} ask_agent call(s) on {key} with results"
+    try:
+        first = json.loads(said[0])["asked"]["ask"]
+    except (ValueError, KeyError, TypeError):
+        return False, f"the first receipt names no ask: {said[0][:120]!r}"
+    ok = OUTSTANDING_ASK_MARK in said[1] and first in said[1]
+    return ok, f"first ask {first}; second answered {said[1][:160]!r}"
+
+
 def row_ms(row):
     """A transcript row's time in epoch ms, or None."""
     import datetime
@@ -3097,6 +3132,12 @@ Reply with the single word ready and end your turn."""
                 else:
                     ok = word.lower() in line.lower()
                 check(c, ok, f"said {line[:120]!r}" if line else f"no line {prefix!r}")
+            elif name == "second_ask":
+                # `second_ask:refused_outstanding` (T-938, round 3): read off
+                # the crown's own call results, so a stale-seen refusal fails.
+                crown = self.agent_of(board, self.crown)
+                ok, seen = second_ask_refusal(transcript(crown) if crown else [], key)
+                check(c, ok and arg == "refused_outstanding", seen)
             elif name == "woke":
                 causes = [l.get("cause") for l in lines if l.get("kind") == "crown_wake"
                           and l.get("worker") == tid]

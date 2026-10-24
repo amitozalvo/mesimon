@@ -826,7 +826,8 @@ sets it, `hooks` unless the test process has `MESIMON_TEST_ROAD=mod`, the mod ro
 wraps every stub with `tests/common/fake_claude_mod.py` and twins every `hook_send`),
 `MESIMON_REQUIRE_CLAUDE` (turns `mod_plugin`'s skip without `claude` into a failure; the release
 sets it; a mods-off refusal stays a named skip), `MESIMON_RIG_NO_FLAGS` (the rig's `--flags-off`:
-every launch gets `DISABLE_GROWTHBOOK=1`; never a user's).
+every launch gets `DISABLE_GROWTHBOOK=1`; never a user's), `MESIMON_TEST_FAIL_ENTER` (a file
+path: while it exists, a pane's Enter fails after its paste went in, T-938).
 
 The e2e pattern is an in-process daemon thread + real tmux + the real built binary via
 `env!("CARGO_BIN_EXE_mesimon")`, which is only available in `crates/mesimon/tests/`.

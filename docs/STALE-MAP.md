@@ -33535,5 +33535,40 @@ rebase" and "Main moved again"):
   holds the checkout's queue for its 10 s window when the stub sends no `UserPromptSubmit` for
   it (T-936's retention). Real Claude Code sends that prompt, so this is test timing only.
 
+**Round 3** (the crown's note "Round 3 after the fourth independent read"):
+- **A frame report needs the live pane its frame went to.** `reports_to` admits no unbound ask
+  and no seat without a pane, and a report binds nothing. A parked seat's ask is bound to the
+  pane its frame is dispatched to (`crown_ask_framed`, from `mod_deliver_parked`). `mod_taken`
+  runs only for a report an owner claims. A `handed` ask whose seat moved settles `unknown` with
+  its pane bound or not.
+  - Tested: the predicate (`a_frame_report_needs_the_live_pane_its_frame_went_to`), and end to
+    end on the mod pass (a parked ask's frame, then an old `entered` with no pane and after a new
+    pane: never `handed`, then `unknown`, and the next ask goes).
+  - **The e2e alone does not tell the old wildcard from the fix**, measured by restoring it.
+    The tick resolves a pane-less ask within a tick, before the test's late report lands; the
+    unit test is the discriminating one.
+- **A failed paste after a refused submit is `unknown`, never `dropped`.** `paste_text` is the
+  paste and then its Enter, so an error may follow words that went in. Only the recognised
+  refusals (`dropped`, `rejected`; a fill's `refused`) drop a crown ask. An absent or unread
+  outcome is `unknown`, with no fallback keys. The person's unsent handling is unchanged.
+  - Tested on the mod pass: the paste goes in and its Enter fails (`MESIMON_TEST_FAIL_ENTER`, a
+    file-gated test seam on `send_enter`), and the ask reads `unknown` ("failed part-way"), stays
+    so, and the words stay unsent for the person.
+- **Words.** `ask_agent` is refused "while its last ask is still outstanding". The refusal names
+  its release ("until that turn ends or get_ticket's asked reads taken, dropped or unknown"). The
+  status comments in `AgentAskedView` and `crownask.rs` say what the code does: a prompt hook
+  hands no paste, `unknown` is more than a restart, only a recognised refusal is `dropped`, and a
+  marked `sent` ask survives in the ledger.
+- **Rig A2's oracle.** `second_ask:refused_outstanding` replaces `crown_line:A2 second:refused`.
+  It reads the crown's own call results: the first `ask_agent` receipt's ask id, and the second
+  call's answer, which must be `CrownAsk::refusal`'s words naming that id. Checked offline on
+  three synthetic transcripts: the stale-seen refusal fails, another ask's id fails, and the
+  outstanding-ask refusal passes.
+- **The `bf4736d4` run is partial evidence.** It passed its nine checks on Claude Code 2.1.310
+  (crown claude-opus-5-5) and did not exercise the block: the second call was refused for a
+  stale `seen`, since the worker's turn had just ended. The deterministic e2e establishes the
+  block. A rerun with the corrected oracle is deferred, and the block on real Claude stays
+  unverified.
+
 **Not covered by an e2e:** send-now keys failing after a filled box, since the harness has no
-backend failure seam. The code path is the `unknown` edge in `on_mod_fill`.
+backend failure seam there. The code path is the `unknown` edge in `on_mod_fill`.

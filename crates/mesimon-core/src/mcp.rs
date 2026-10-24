@@ -896,7 +896,7 @@ pub fn tools() -> Vec<Value> {
                             autonomous, an agent it started or whose ticket it watches gets them \
                             as deliver says (asked says where they stand). Refused with no agent, \
                             on this session's ticket, at once at a dialog, or while its last ask \
-                            is sent or handed. A turn ending after them wakes this session.",
+                            is still outstanding. A turn ending after them wakes this session.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -3323,7 +3323,8 @@ mod tests {
     /// T-568: the crown learns where an ask of its that never went is read.
     #[test]
     fn the_crown_is_told_where_a_dropped_ask_is_read() {
-        for words in ["dropped (by a person, the agent's side or the board", "none of them resent"] {
+        for words in ["dropped (by a person, the agent's side or the board", "none of them resent"]
+        {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
         }
     }
@@ -3439,7 +3440,7 @@ mod tests {
                 vec![
                     "A turn ending after them wakes this session",
                     "gets them as deliver says (asked says where they stand)",
-                    "at once at a dialog, or while its last ask",
+                    "while its last ask is still outstanding",
                 ],
             ),
         ] {

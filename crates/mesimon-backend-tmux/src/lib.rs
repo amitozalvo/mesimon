@@ -518,6 +518,14 @@ impl TmuxBackend {
     /// negative test, reconfirmed 2026-08-31 against a fresh Claude pane).
     /// The caller owns the timing — see `Daemon::arm_owed` and `settle_owed`.
     pub fn send_enter(&self, sid16: &str) -> Result<()> {
+        // A test seam (T-938): while the file it names exists, the Enter
+        // fails after whatever went before it, as a pane gone between a
+        // paste and its Enter does.
+        if std::env::var_os("MESIMON_TEST_FAIL_ENTER")
+            .is_some_and(|f| std::path::Path::new(&f).exists())
+        {
+            bail!("send-keys Enter failed (MESIMON_TEST_FAIL_ENTER)");
+        }
         self.run(&["send-keys", "-t", sid16, "Enter"])?;
         Ok(())
     }

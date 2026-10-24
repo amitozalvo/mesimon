@@ -5607,12 +5607,11 @@ impl Daemon {
         let ours = self.owed.get(&id).is_some_and(|o| o.fill && o.frame.as_deref() == Some(fid));
         if !ours {
             self.journal.line(&format!("mod fill {fid} for session {id}: {outcome}, nothing owed"));
-            // A crown ask's refused fill after its owed window (T-938): still
-            // that ask's, by seat, frame and pane. A late `filled` presses
-            // nothing: whether its keys would still be the board's is not
-            // known.
-            // Only the known `refused` is a confirmed drop; a late `filled`,
-            // or a word the board does not read, is unknown.
+            // A crown ask's fill report after its owed window (T-938): still
+            // that ask's, by seat, frame and pane. Only the known `refused`
+            // is a confirmed drop; a late `filled` presses nothing (whether
+            // its keys would still be the board's is not known) and, like a
+            // word the board does not read, is unknown.
             let changed = match outcome {
                 "refused" => self.crown_ask_refused(id, fid, "its mod refused to fill the words"),
                 "filled" => self.crown_ask_unread(
@@ -5662,8 +5661,18 @@ impl Daemon {
         // The crown's ask is not slowed to the turn's end behind its back
         // (T-938): the refusal stands, and `asked` says it. Whose fill it
         // was is the delivery's crown tag, whatever the record could take.
+        // Only the known `refused` is a confirmed drop; an absent or unread
+        // outcome is unknown (round 3), and no keys follow either.
         if owed.ask.is_some() {
-            self.crown_ask_refused(id, fid, why);
+            if outcome == "refused" {
+                self.crown_ask_refused(id, fid, why);
+            } else {
+                self.crown_ask_unread(
+                    id,
+                    fid,
+                    "its mod reported the fill in a word the board does not read",
+                );
+            }
             if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                 rec.pending_submit = false;
             }
@@ -5736,11 +5745,7 @@ impl Daemon {
         // A parked wake's words went down the mod: the ask's frame is this
         // one, and it runs as a turn of its own (T-938).
         if let (Some(ask), Some(frame)) = (ask, self.owed.get(&id).and_then(|o| o.frame.clone())) {
-            if let Some(a) = self.crown_asks.values_mut().find(|a| a.id == ask) {
-                a.frame = Some(frame);
-                a.submit = true;
-                a.own_turn = true;
-            }
+            self.crown_ask_framed(id, ask, frame);
         }
         true
     }
@@ -5787,7 +5792,10 @@ impl Daemon {
             } else {
                 SubmitOwner::Nobody
             };
-            self.mod_taken(id, fid);
+            // A report no owner claims marks nothing taken either (round 3).
+            if !matches!(owner, SubmitOwner::Nobody) {
+                self.mod_taken(id, fid);
+            }
             match owner {
                 // Told on its own receipt, which the feed says.
                 SubmitOwner::Wake => {
@@ -5887,6 +5895,9 @@ impl Daemon {
         ));
         let Some(owed) = self.drop_owed(id) else { return };
         let ticket = owed.ticket;
+        // Only a known refusal is a confirmed one (round 3): for the crown's
+        // ask an absent or unread outcome is unknown, with no fallback keys.
+        let refused = matches!(outcome, "dropped" | "rejected");
         // Claude Code holds a plugin's input after a person's Esc until the
         // person types (2.1.308, T-894: "the session was stopped and nobody
         // has sent input since"), and a submit is a plugin's. The paste road
@@ -5900,7 +5911,7 @@ impl Daemon {
         // a crown's wake was let past that hold only because a submit types
         // nothing (T-931). Such words stay unsent below, as a box holding
         // text keeps them; a client the server cannot list counts as there.
-        if said.is_some_and(input_held_after_stop) {
+        if said.is_some_and(input_held_after_stop) && (refused || owed.ask.is_none()) {
             use crate::agents::claude::composer::{self, Composer};
             let pane = self
                 .board
@@ -5936,7 +5947,24 @@ impl Daemon {
                         self.persist_and_notify();
                         return;
                     }
-                    Err(e) => self.journal.line(&format!("session {id}: the paste failed: {e}")),
+                    Err(e) => {
+                        self.journal.line(&format!("session {id}: the paste failed: {e}"));
+                        // `paste_text` is the paste and then its Enter: an
+                        // error may follow words that went in. The crown's
+                        // ask is unknown, never dropped (round 3), and is
+                        // not tried again.
+                        if let Some(ask) = owed.ask {
+                            self.crown_ask_unknown(
+                                ticket,
+                                Some(ask),
+                                &format!(
+                                    "its Claude Code refused the prompt after a stop, and the \
+                                     paste that followed failed part-way: {}",
+                                    mesimon_core::text::cap_bytes(&e.to_string(), 120)
+                                ),
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -5947,7 +5975,19 @@ impl Daemon {
         // the agent's own side (`get_ticket`'s `asked: dropped, by: agent`),
         // never silently.
         self.mark_unsent(id, owed.sent);
-        self.crown_ask_refused(id, fid, &format!("its Claude Code refused the prompt: {outcome}"));
+        if refused {
+            self.crown_ask_refused(
+                id,
+                fid,
+                &format!("its Claude Code refused the prompt: {outcome}"),
+            );
+        } else {
+            self.crown_ask_unread(
+                id,
+                fid,
+                "its mod reported the words in a word the board does not read",
+            );
+        }
         self.feed.board_outcome("daemon", "prompt_submit_refused", Some(ticket), outcome);
         self.persist_and_notify();
     }

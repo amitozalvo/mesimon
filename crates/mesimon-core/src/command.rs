@@ -2729,16 +2729,20 @@ pub struct AgentNeedsYouView {
 ///
 /// - `queued`: on the board, waiting for the agent's idle or a person's
 ///   `^y`; a new ask replaces it;
-/// - `sent`: out of the queue, into the pane or down the mod, and no edge
-///   of the agent's has said it has them yet;
-/// - `handed`: the agent's own edge for these words came — the prompt hook
-///   the paste fired, the mod's `entered`, a Codex steer counted;
+/// - `sent`: out of the queue, into the pane or down the mod, and no
+///   receipt of the agent's has named these words yet (a paste's prompt
+///   hook names none, so a paste stays `sent`);
+/// - `handed`: a receipt that names them came: the mod's `entered` for
+///   their frame, a Codex steer or launch counted;
 /// - `taken`: the turn these words started has ended;
-/// - `dropped`: they did not go, `by` whom: `person` (words of their own
-///   over the crown's, taken back, or talked past in the pane), `board`
-///   (the seat went, the delivery failed, the mod never took them) or
-///   `agent` (its Claude Code refused them, T-894), with `why`;
-/// - `unknown`: the board restarted, and it keeps no ask across one.
+/// - `dropped`: confirmed not to go, `by` whom: `person` (words of their
+///   own over the crown's, taken back, or talked past in the pane),
+///   `board` (the seat was gone when the queue reached it) or `agent` (its
+///   Claude Code or mod refused them, T-894), with `why`;
+/// - `unknown`: what became of them cannot be read, with `why`: keys that
+///   failed after the words went in, a mod frame never acknowledged or
+///   reported in a word the board does not read, a pane replaced under
+///   them, or a restart. Never resent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentAskedView {
     pub status: String,
