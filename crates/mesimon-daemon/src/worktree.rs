@@ -1641,10 +1641,11 @@ struct Tip {
 }
 
 /// One binding's content question, so the verdict below reads as a sentence
-/// rather than as eight arguments.
+/// rather than as eight arguments. Git is asked of the captured OIDs
+/// (`tip`, `target_tip`) alone; `target` is the label the verdict keeps
+/// (T-937).
 struct Scan<'a> {
     repo: &'a Path,
-    branch: &'a str,
     tip: &'a Tip,
     target: &'a str,
     target_tip: &'a str,
@@ -1674,6 +1675,11 @@ fn content_verdict(
         merged,
         oid,
     };
+    // A target the sample did not read is no question to ask of it (T-937):
+    // its live name would mix a second observation into this one.
+    if scan.tip.oid.is_empty() || scan.target_tip.is_empty() {
+        return None;
+    }
     if let Some(s) = seen {
         // A branch that has moved has work that may not be up there, whatever
         // was true of the tip before it.
@@ -1681,7 +1687,7 @@ fn content_verdict(
             if s.target == scan.target && s.target_tip == scan.target_tip {
                 return Some(s.clone());
             }
-            if s.merged && !s.oid.is_empty() && is_merged(scan.repo, &s.oid, scan.target) {
+            if s.merged && !s.oid.is_empty() && is_merged(scan.repo, &s.oid, scan.target_tip) {
                 return Some(fresh(true, s.oid.clone()));
             }
         }
@@ -1693,10 +1699,10 @@ fn content_verdict(
         return None;
     }
     *budget -= 1;
-    if !scan.target_is_base && is_merged(scan.repo, scan.branch, scan.target) {
+    if !scan.target_is_base && is_merged(scan.repo, &scan.tip.oid, scan.target_tip) {
         return Some(fresh(true, String::new()));
     }
-    Some(match content_merged(scan.repo, scan.branch, scan.target, scan.tip.time) {
+    Some(match content_merged(scan.repo, &scan.tip.oid, scan.target_tip, scan.tip.time) {
         Some(oid) => fresh(true, oid),
         None => fresh(false, String::new()),
     })
@@ -1737,7 +1743,26 @@ pub fn compute_flags(
     forge: bool,
     inputs: &[FlagInput],
 ) -> WtFlags {
-    let (tips, upstream_tip, read_trouble) = branch_tips(repo, upstream);
+    compute_flags_on(repo, base, upstream, forge, inputs, branch_tips(repo, upstream))
+}
+
+/// `compute_flags` on what one read of the refs captured (T-937): every
+/// ancestry, count and content question below is asked of the captured
+/// OIDs, the names only labelling the answers, and one the read did not
+/// capture is trouble or unknown, never asked of the live name. So each
+/// judgment is against the captured pair even when a ref moves while it
+/// runs; the next sample reads the newer one. Not an atomic snapshot of
+/// every ref: `for-each-ref` reads them one by one. Split from the read so
+/// a test can move refs between the two.
+fn compute_flags_on(
+    repo: &Path,
+    base: &str,
+    upstream: Option<&str>,
+    forge: bool,
+    inputs: &[FlagInput],
+    captured: (HashMap<String, Tip>, Tip, Option<String>),
+) -> WtFlags {
+    let (tips, upstream_tip, read_trouble) = captured;
     let base = base.to_string();
     let base_tip = tips.get(&base).cloned().unwrap_or_default();
     // ONE target for the pass (T-267): the ref a merged PR lands on where
@@ -1748,7 +1773,8 @@ pub fn compute_flags(
     let (target, target_tip) = match upstream {
         Some(u)
             if !upstream_tip.oid.is_empty()
-                && (base_tip.oid.is_empty() || is_merged(repo, &base, u)) =>
+                && (base_tip.oid.is_empty()
+                    || is_merged(repo, &base_tip.oid, &upstream_tip.oid)) =>
         {
             (u.to_string(), upstream_tip.oid.clone())
         }
@@ -1761,14 +1787,20 @@ pub fn compute_flags(
         .filter(|i| !i.branch.is_empty())
         .map(|i| {
             let tip = tips.get(&i.branch).cloned().unwrap_or_default();
-            // The counts read the refs `branch_tips` read (T-937): by name, a
-            // merge landing between the two reads paired the base's old tip
-            // with the new counts, and `came_to_base` re-cut the merged
-            // branch on its own tip.
-            let from = if base_tip.oid.is_empty() { base.as_str() } else { base_tip.oid.as_str() };
-            let to = if tip.oid.is_empty() { i.branch.as_str() } else { tip.oid.as_str() };
-            let read =
-                git_read(repo, &["rev-list", "--left-right", "--count", &format!("{from}...{to}")]);
+            // The counts read the tips `branch_tips` captured (T-937): by
+            // name, a merge landing between the two reads paired the base's
+            // old tip with the new counts, and `came_to_base` re-cut the
+            // merged branch on its own tip. A tip not captured is trouble.
+            let read = match (base_tip.oid.as_str(), tip.oid.as_str()) {
+                ("", _) => Err(anyhow::anyhow!("git rev-list: {base}: not read in this sample")),
+                (_, "") => {
+                    Err(anyhow::anyhow!("git rev-list: {}: not read in this sample", i.branch))
+                }
+                (from, to) => git_read(
+                    repo,
+                    &["rev-list", "--left-right", "--count", &format!("{from}...{to}")],
+                ),
+            };
             // A read that failed is the leg's word (T-754), never a clean
             // leg: the tips' failure first, else this count's.
             let trouble = read_trouble.clone().or_else(|| read.as_ref().err().map(git_trouble));
@@ -1786,8 +1818,8 @@ pub fn compute_flags(
             // `merged` with no words); the counts become the upstream's.
             let mut trouble = trouble;
             if !counted.is_empty() && trouble.is_none() {
-                let up = if target_tip.is_empty() { counted.as_str() } else { target_tip.as_str() };
-                match left_right(repo, up, to) {
+                // `counted` is set only where `target_tip` was captured.
+                match left_right(repo, &target_tip, &tip.oid) {
                     Ok((behind, up_ahead)) => (ahead, ff) = (up_ahead, behind == 0),
                     Err(e) => trouble = Some(git_trouble(&e)),
                 }
@@ -1805,7 +1837,6 @@ pub fn compute_flags(
             if !ancestor && !tip.oid.is_empty() && tip.oid != i.base_oid {
                 let scan = Scan {
                     repo,
-                    branch: &i.branch,
                     tip: &tip,
                     target: &target,
                     target_tip: &target_tip,
