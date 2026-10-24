@@ -1001,13 +1001,18 @@ fn the_crown_hears_the_forges_edges() {
     assert_eq!(forge_wakes(), 3, "{}", std::fs::read_to_string(&got).unwrap());
 
     // ---- the PR merges: the flags' merged wake alone (T-757) ---------------
-    // A commit made in the worktree and stepped back from first: in HEAD's
-    // reflog, so a later PR at it binds, and not on the branch.
+    // A commit made in the worktree off the branch: in HEAD's reflog, so a
+    // later PR at it binds, and never on the branch. Made on a detached HEAD
+    // (T-937): committed on the branch and reset away, the branch's tip
+    // stood at it for a moment, a flag sample could read it there, and the
+    // forge, reading #42 merged at a head no longer the leg's tip, said the
+    // merge the flags were to say.
+    git(&path, &["checkout", "-q", "--detach"]);
     std::fs::write(path.join("greeting.txt"), "hi\n").unwrap();
     git(&path, &["add", "."]);
     git(&path, &["commit", "-qm", "greeting"]);
     let fix = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
-    git(&path, &["reset", "-q", "--hard", "HEAD~1"]);
+    git(&path, &["checkout", "-q", &wt.branch]);
     // An open PR carries no verdict: a PR bound with one says it (T-769).
     let gh_pr = |number: u64, branch: &str, head: &str, state: &str, merge: &str, at: &str| {
         let (checks, review) =
