@@ -32276,8 +32276,17 @@ T-740's `came_to_base` read that as a branch that came to a base that stood stil
 on its own tip, on disk too. With a 1.5 s gap between the reads (a temporary `DBG_FLAGS_GAP_MS`) and
 the test pausing around the commit, `came_to_base fired` and the wait timed out. **Fix (daemon):**
 the counts take the oids the sample read (`base_tip`, the branch's tip, and the upstream's for
-T-786's count), so one sample is one snapshot. Under the same hooks, 4 of 5 runs read the window's
-sample as `merged false ahead 1` and none re-cut.
+T-786's count). Under the same hooks, 4 of 5 runs read the window's sample as `merged false ahead
+1` and none re-cut. The second independent read found the sample's other Git questions still
+asked by name and filed under the captured tips: target selection, the cached verdict's
+re-affirmation, the plain ancestry check and the patch comparison. All of them now take the
+captured OIDs (`compute_flags_on` judges a captured read), names stay labels, and a tip not
+captured is trouble for the counts and unknown for the content, never asked of the live name.
+These are judgments against captured OIDs, not an atomic snapshot of every ref: `for-each-ref`
+reads them one by one. `worktree::tests::a_sample_judges_the_tips_it_captured` moves a ref after
+the capture in three windows (a ff-merge, the branch moving on, the target taking a squash). The
+flags and the memo name the captured pair, and the next sample names the newer one. With the content
+questions asked by name, it fails on both content windows.
 
 **Diagnostics kept.** A failing e2e's echo (`ci/test_support.rs`) now tails every `daemon.log` and
 `activity.jsonl` under the fixture as well as `child-N.log`. That is what named test 3's and test
