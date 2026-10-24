@@ -252,7 +252,9 @@ REDIRECT = re.compile(r"(?<![=<>-])[0-9&]?>>?(?![>&=])\s*(?!/dev/null\b)[^\s&|;)
 WRITE_MARKS = ("tee ", "<<", "touch ", "cp ", "mv ", "install ", "sed -i",
                "python -c", "python3 -c", "perl -e", "perl -i", "node -e", "ruby -e")
 WRITE_GIT = re.compile(r"\bgit\b(?:\s+(?:-C|-c|--git-dir|--work-tree)(?:=|\s+)\S+)*\s+"
-                       r"(?:add|commit|apply|am|cherry-pick|merge|rebase|reset|checkout|switch|stash|restore|rm|mv)\b")
+                       r"(?:add|commit|apply|am|cherry-pick|merge|rebase|reset|checkout|switch|stash|restore|rm|mv)"
+                       # The verb whole (T-930: `git merge-base` reads, it does not merge).
+                       r"(?=\s|$)")
 
 
 def command_writes(command, names):

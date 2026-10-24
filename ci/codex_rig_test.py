@@ -322,12 +322,15 @@ class CrownTests(unittest.TestCase):
     def test_a_claude_crown_s_bash_write_of_the_work_is_its_own_too(self):
         names = ["greet.py", "test_greet.py"]
         for command in ("cat > greet.py << 'EOF'\ndef greet(n): ...\nEOF", "git add greet.py && git commit -m g",
+                        "git merge msmn/T-187-greet.py-greet",
                         "git -C /rig/wt commit -am 'add test_greet.py'", "sed -i '' s/x/y/ greet.py"):
             with self.subTest(command=command):
                 self.assertTrue(rig.command_writes(command, names))
         for command in ("cat greet.py", "python3 -m unittest test_greet", "git log -- greet.py",
                         "echo done > /tmp/x", "git log -- greet.py 2>&1", "cat greet.py 2>/dev/null",
-                        "python3 -m unittest test_greet >/dev/null 2>&1", "echo greet.py"):
+                        "python3 -m unittest test_greet >/dev/null 2>&1", "echo greet.py",
+                        "git merge-base main msmn/T-187-greet.py-greet",
+                        "git rev-parse msmn/T-187-greet.py-greet"):
             with self.subTest(command=command):
                 self.assertFalse(rig.command_writes(command, names))
 
