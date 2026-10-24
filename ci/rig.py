@@ -1820,6 +1820,11 @@ Reply with the single word ready and end your turn."""
             # the real hook binary on both roads (the daemon takes the one
             # the session reports by). No real account is made to hit one.
             rec = self.agent_of(self.board(), test["ticket"])
+            # `live` (T-930's review): the limit ends a turn, so it lands on
+            # a worker proven in one, never on one already done and parked.
+            if step and step.get("live") and word_of(rec["state"]) != "working":
+                record["failures"].append(f"the limit came to a worker not in a turn ({word_of(rec['state'])})")
+                return False
             mark = len(self.feed_lines)
             body = json.dumps({"error": "rate_limit", "last_assistant_message":
                                "You've reached your Sonnet limit. Run /usage-credits to continue "
@@ -2570,7 +2575,7 @@ Reply with the single word ready and end your turn."""
             name, _, arg = c.partition(":")
             # A start that made no agent (U1) is judged on the board's and
             # the crown's side alone.
-            if rec is None and name not in ("woke", "crown_hand", "crown_reply", "crown_line",
+            if rec is None and name not in ("woke", "crown_hand", "crown_reply", "crown_line", "crown_obstacle",
                                             "crown", "crown_board", "peer_fed", "filed",
                                             "crown_wrote_nothing"):
                 check(c, False, "no agent record on the ticket")
@@ -3024,6 +3029,16 @@ Reply with the single word ready and end your turn."""
                 hit = next((i for i, f in enumerate(fed) if str(f).startswith(prefix)), None)
                 check(c, at is not None and hit is not None and hit > at,
                       f"{first} at {at}, first {prefix}* at {hit} ({fed[hit] if hit is not None else 'none'})")
+            elif name == "crown_obstacle":
+                # T-930's review (F3): the crown's hands or its last words
+                # name the merge's owner or what blocks it, any of `arg`'s
+                # words, case aside; no call is required of it.
+                crown = self.agent_of(board, self.crown)
+                rows_c = transcript(crown) if crown else []
+                hands = [i.get("reason", "") for n, i in tool_inputs(rows_c) if (n or "").endswith("raise_hand")]
+                words = [w.lower() for w in arg.split(",")]
+                said = [t for t in hands + [last_reply(rows_c)] if any(w in t.lower() for w in words)]
+                check(c, said, repr(said[0][:100]) if said else f"no hand or line names {arg}")
             elif name == "crown_reply":
                 # The crown's last words on the test (T-774), `arg` within.
                 crown = self.agent_of(board, self.crown)

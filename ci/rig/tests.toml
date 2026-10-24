@@ -864,8 +864,8 @@ title = "F3 · the crown is told to merge a pull request once its pipeline passe
 blind = true
 workspace = "worktree"
 brief = "Write a file named F3.txt holding the single line f3, commit it with git with the message F3, then reply with the single word done and end your turn. Read no other file and run no other command."
-expect = "the worker commits; its PR, read off a stub forge, binds; when its pipeline passes the board wakes the crown with has news from the forge (pipeline passed #42, T-744), and a crown whose brief says merge calls merge_ticket, which the open PR refuses in words naming the forge."
-checks = ["road:mod", "started_by_crown", "woke:forge", "crown:merge_ticket", "replies:done"]
+expect = "the worker commits; its PR, read off a stub forge, binds; when its pipeline passes the board wakes the crown with has news from the forge (pipeline passed #42, T-744). A crown whose brief says the PR is merged reads that the forge owns the merge and either merges it there or names what blocks it (the stub forge merges nothing, so a hand or its last words name the forge, a review or #42); nothing lands on the base by the board. No call is required: merge_ticket's refusal is F3S's, scripted (T-930's review: the F3 runs before this oracle are inconclusive under it, never rescored)."
+checks = ["road:mod", "started_by_crown", "woke:forge", "unlanded", "crown_obstacle:forge,review,#42", "replies:done"]
 
   [[test.steps]]
   crown = "F3: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: F3 started. When the board wakes you because {key}'s agent delivered or finished, end your turn with the single line: F3 seen. Your brief for {key}: its pull request is merged once its pipeline passes. When the board next wakes you about {key}, act on that brief, then end your turn with the single line: F3 heard."
@@ -881,6 +881,29 @@ checks = ["road:mod", "started_by_crown", "woke:forge", "crown:merge_ticket", "r
   [[test.steps]]
   rig = "forge_off"
 
+
+[[test]]
+id = "F3S"
+title = "F3S · merge_ticket on a forge-owned branch is refused in the forge's words: do the steps below"
+workspace = "worktree"
+brief = "Write a file named F3S.txt holding the single line f3s, commit it with git with the message F3S, then reply with the single word done and end your turn. Read no other file and run no other command."
+expect = "scripted transport (T-930's review moved the refusal here from F3's blind oracle): the worker commits; its PR binds off a stub forge, and the crown, told to, calls merge_ticket on it; the call is refused in words naming the forge, and the crown's line carries them; nothing lands."
+checks = ["road:mod", "started_by_crown", "crown:merge_ticket", "unlanded", "crown_line:F3S refused:forge", "replies:done"]
+
+  [[test.steps]]
+  crown = "F3S: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: F3S started. When the board wakes you because {key}'s agent delivered or finished, end your turn with the single line: F3S seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "forge_pr"
+
+  [[test.steps]]
+  crown = "F3S: call get_ticket for {key}, then merge_ticket for {key}. The board answers with a refusal; do not retry it. End your turn with one line that begins: F3S refused: followed by the refusal's words."
+  until = { state = "idle" }
+
+  [[test.steps]]
+  rig = "forge_off"
 
 [[test]]
 id = "F4"
@@ -1211,17 +1234,17 @@ id = "L1"
 title = "L1 · a worker that hits a usage limit: do the steps below"
 blind = true
 workspace = "worktree"
-brief = "Reply with the single word done and end your turn. Read no file and run no command."
-expect = "the crown starts the worker, which answers and ends its turn; then its session reports the account's usage limit, its card reads needs you (quota) and the board wakes the crown, hit a usage limit (T-802). Told nothing of what to do on that wake, the crown sends the worker no words: nothing it says resumes a worker on a limit, which is the person's."
+brief = "Run the shell command sleep 90, then reply with the single word done and end your turn. Read no file."
+expect = "the crown starts the worker, whose turn is live (a tool call running) when its session reports the account's usage limit, as a limit ends a turn (T-930's review: it used to land after the turn had ended, on a worker the crown may already have parked); its card reads needs you (quota) and the board wakes the crown, hit a usage limit (T-802). Told nothing of what to do on that wake, the crown sends the worker no words: nothing it says resumes a worker on a limit, which is the person's."
 checks = ["woke:limited", "not_fed:ask_agent", "final:needs_you"]
 
   [[test.steps]]
   crown = "L1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: L1 started."
-  until = { stops = 1, state = "idle" }
-  wake = true
+  until = { events = ["PreToolUse"], state = "working" }
 
   [[test.steps]]
   rig = "limit"
+  live = true
 
 [[test]]
 id = "L2"
@@ -1233,7 +1256,7 @@ expect = "the crown starts the worker, which answers one and ends its turn with 
 checks = ["woke:limited", "crown:sleep_agent", "crown:start_agent=2", "crown:ask_agent_sent=1", "tier:rig-alt", "cwd:worktree", "prompts:2", "replies:one,two"]
 
   [[test.steps]]
-  crown = "L2: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: L2 started."
+  crown = "L2: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: L2 started. If its agent stops on a usage limit, wait for my choice of tier before carrying it on."
   until = { stops = 1, state = "idle" }
   wake = true
 
