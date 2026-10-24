@@ -32585,7 +32585,9 @@ crown, Sonnet workers at low effort, 6.2 minutes.
 
 - **K1's fail is the cut's expected cost**, reported as it is and not answered with words.
   Untold, a Sonnet worker names its own ticket by key. Whether that matters is the person's to
-  say in their own prompts. K1 stays in the suite as the measure of what a worker does untold.
+  say in their own prompts. **K1 is retired with `KEY_ABOUT`** (the crown's acceptance): its
+  acceptance judged the wording, which is the method itself. This FAIL is its final raw reading,
+  and it is gone from `ci/rig/tests.toml`.
 - **Spend, as quota, 16:21 to 16:28:** Claude's 5-hour window went from 59% to 62% and its
   weekly from 23% to 23%, every session on the account included.
 
@@ -32595,7 +32597,8 @@ crown, Sonnet workers at low effort, 6.2 minutes.
   words.
 - `notes_e2e` asserts that an own `get_ticket` carries no `key_about`.
 - The rig gains CT1 (a filed job is not done in the worker's own session, with a new
-  `no_file:<path>` check). K1's, S1's, S2's, RH1's and F11's `expect` say what T-932 cut.
+  `no_file:<path>` check) and loses K1. S1's, S2's, RH1's and F11's `expect` say what T-932
+  cut.
 
 **Limits.**
 - N = 1 per case sees only a case that breaks outright.
