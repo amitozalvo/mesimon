@@ -237,7 +237,8 @@ class CrownTests(unittest.TestCase):
 
     def test_a_worker_s_push_is_declined_and_nothing_else_is(self):
         push = lambda c: {"what": "command", "command": c}  # noqa: E731
-        for command in ("git push -u origin msmn/T-1-x", "/bin/zsh -lc 'git push -u origin msmn/T-1-x'"):
+        for command in ("git push -u origin msmn/T-1-x", "/bin/zsh -lc 'git push -u origin msmn/T-1-x'",
+                        "/bin/zsh -lc \"git add README.md && git commit -m 'x' && git push -u origin HEAD\""):
             self.assertTrue(rig.worker_push(push(command)), command)
         for command in ("git commit -m push", "/bin/zsh -lc 'git status'", "gh pr create", "git pushx"):
             self.assertFalse(rig.worker_push(push(command)), command)

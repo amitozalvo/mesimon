@@ -510,11 +510,13 @@ def worker_push(request):
     except ValueError:
         return False
     if len(words) == 3 and words[0] in ("/bin/zsh", "/bin/bash", "/bin/sh") and words[1] == "-lc":
-        try:
-            words = shlex.split(words[2])
-        except ValueError:
-            return False
-    return request.get("what") == "command" and words[:2] == ["git", "push"]
+        command = words[2]
+    # Any step of an `&&` chain (Sol: `git add … && git commit … && git push`).
+    try:
+        steps = [shlex.split(part) for part in command.split("&&")]
+    except ValueError:
+        return False
+    return request.get("what") == "command" and any(step[:2] == ["git", "push"] for step in steps)
 
 
 def dialog_allows(screen):
