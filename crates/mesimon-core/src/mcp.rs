@@ -83,15 +83,13 @@ macro_rules! persons_questions {
 pub const PERSONS_QUESTIONS: &str = persons_questions!();
 
 /// The plans that stay a person's (T-582): the crown accepts a plan as the
-/// board's own accept does, and has no road to send one back — the
-/// dialog's revise row takes words a person types. The `accept_plan`
-/// receipt carries it (`PERSONS_PLANS`) and `CROWN_WAKES` says it before
-/// the questions' clause; the tool's own description says the same.
+/// board's own accept does, or sends a Claude agent's back with words
+/// through the dialog's feedback row (T-943). The `accept_plan` receipt
+/// carries it (`PERSONS_PLANS`) and `CROWN_WAKES` says it before the
+/// questions' clause; the tool's own description says the same.
 macro_rules! persons_plans {
     () => {
-        "A plan that reaches past the ticket's brief is a person's, and so is one the crown \
-         would change: no road of the crown's sends a plan back, since the dialog's revise row \
-         takes words a person types."
+        "A plan that reaches past the ticket's brief is a person's."
     };
 }
 
@@ -967,21 +965,27 @@ pub fn tools() -> Vec<Value> {
         // The crown's plan accept (T-582): the board's own accept (T-420),
         // Enter on the dialog's default row once the screen shows it there,
         // for a plan an agent the crown started stops on, under the same
-        // switch as its answers. Sending a plan back stays a person's.
+        // switch as its answers. With `change` (T-943), the plan is sent
+        // back instead: the words go into the dialog's feedback row, as a
+        // person's typing there does. The tool says what goes in, never
+        // what the agent does with it.
         json!({
             "name": "accept_plan",
             "description": "Accepts the plan an agent the crown started stops on (crown \
-                            only, if the board lets it), as the board's own accept: Enter on \
-                            the plan dialog's default row. request: needs_you.request; \
-                            needs_you.plan is the plan. A plan past the brief, or one the \
-                            crown would change, is a person's. Outcome: accepted, input_sent, queued (its checkout busy) \
-                            or unknown.",
+                            only, if the board lets it): Enter on its dialog's default row. \
+                            request: needs_you.request; needs_you.plan is the plan. With change \
+                            (Claude only): the words go in through the feedback row, Tell \
+                            Claude what to change, instead. A plan past the brief is a \
+                            person's. Outcome: \
+                            accepted, input_sent, queued (checkout busy) or unknown; with \
+                            change, input_sent or unknown.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "key": { "type": "string", "description": "The ticket's key, from list_board." },
                     "seen": { "type": "string", "description": "get_ticket's seen stamp." },
                     "request": { "type": "string", "description": "needs_you.request." },
+                    "change": { "type": "string" },
                 },
                 "required": ["key", "seen", "request"],
                 "additionalProperties": false,
@@ -1200,6 +1204,9 @@ pub enum ToolCall {
         key: String,
         seen: String,
         request: String,
+        /// The words that send the plan back (T-943), as they came: the
+        /// daemon refuses what a dialog cannot take, and rewrites nothing.
+        change: Option<String>,
     },
     CreateTicket {
         title: String,
@@ -1446,6 +1453,11 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
             key: word(args, "key")?,
             seen: word(args, "seen")?,
             request: word(args, "request")?,
+            change: match args.get("change") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(s)) => Some(s.clone()),
+                Some(other) => return Err(format!("change must be a string, not {other}")),
+            },
         }),
         "read_attachment" => Ok(ToolCall::ReadAttachment {
             attachment: args
@@ -1668,6 +1680,10 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // dialog an agent the crown started stopped on, behind the same
         // switch and provenance as the answer. `PromptSession` stays below.
         | Command::AgentAcceptPlan { .. }
+        // The crown's plan sent back with words (T-943): `accept_plan`'s
+        // `change`, the same gates, its own command so an older daemon
+        // refuses it rather than accept the plan.
+        | Command::AgentRevisePlan { .. }
         // T1 ANNOTATE: notes on the caller's OWN ticket. Unlike a tag, a
         // note is what D10 enumerated a tier for, and it is the one channel
         // through which the ticket's description reaches the agent without
@@ -1967,7 +1983,8 @@ pub fn tier_needed_by(cmd: &Command) -> Option<AgentTools> {
         | Command::AgentAskBoard { .. }
         | Command::AgentAnswerTicket { .. }
         | Command::AgentRequestCloseShell { .. }
-        | Command::AgentAcceptPlan { .. } => AgentTools::Full,
+        | Command::AgentAcceptPlan { .. }
+        | Command::AgentRevisePlan { .. } => AgentTools::Full,
         _ => return None,
     })
 }
@@ -2202,6 +2219,15 @@ mod tests {
                 "accept_plan",
             ),
             (
+                Command::AgentRevisePlan {
+                    key: "T-1".into(),
+                    seen: None,
+                    request: "toolu_1".into(),
+                    text: "x".into(),
+                },
+                "accept_plan",
+            ),
+            (
                 Command::AgentCreateTicket {
                     title: "x".into(),
                     column: None,
@@ -2300,7 +2326,9 @@ mod tests {
     }
 
     /// The crown's plan accept (T-582): key, seen and request are required
-    /// words, and nothing else rides it — no words for the plan.
+    /// words. `change` (T-943) is optional and passes exactly as it came,
+    /// spaces and all: what a dialog cannot take is the daemon's refusal,
+    /// never a rewrite here.
     #[test]
     fn accept_plan_parses_and_refuses() {
         let base = json!({ "key": " T-4 ", "seen": "abc", "request": "toolu_p" });
@@ -2309,9 +2337,25 @@ mod tests {
             Ok(ToolCall::AcceptPlan {
                 key: "T-4".into(),
                 seen: "abc".into(),
-                request: "toolu_p".into()
+                request: "toolu_p".into(),
+                change: None,
             })
         );
+        let mut changed = base.clone();
+        changed["change"] = json!("  Use echo, not Write. ");
+        assert_eq!(
+            parse_tool_call("accept_plan", &changed),
+            Ok(ToolCall::AcceptPlan {
+                key: "T-4".into(),
+                seen: "abc".into(),
+                request: "toolu_p".into(),
+                change: Some("  Use echo, not Write. ".into()),
+            })
+        );
+        changed["change"] = json!(["x"]);
+        assert!(parse_tool_call("accept_plan", &changed)
+            .unwrap_err()
+            .contains("change must be a string"));
         for missing in ["key", "seen", "request"] {
             let mut v = base.clone();
             v.as_object_mut().unwrap().remove(missing);
@@ -3062,27 +3106,29 @@ mod tests {
         assert_eq!(lint_tool_text(PERSONS_STEPS), Ok(()));
     }
 
-    /// T-582: a plan the crown would change stays a person's, said in the
-    /// tool, the receipt's clause and the wake words alike, with why (the
-    /// crown has no road to send one back); the tool names where the plan is
-    /// read and every outcome its receipt can carry.
+    /// T-582: a plan past the brief stays a person's, said in the tool, the
+    /// receipt's clause and the wake words alike; the tool names where the
+    /// plan is read, the feedback row a change goes in by (T-943), and every
+    /// outcome its receipt can carry.
     #[test]
     fn the_crown_is_told_which_plans_are_a_person_s() {
         let registry = tools();
         let tool = registry.iter().find(|t| t["name"] == "accept_plan").unwrap();
         let description = tool["description"].as_str().unwrap();
         for text in [description, PERSONS_PLANS, CROWN_WAKES] {
-            for case in ["would change", "past", "a person's"] {
+            for case in ["past", "a person's"] {
                 assert!(text.contains(case), "{case:?} is named in {text:?}");
             }
         }
-        assert!(PERSONS_PLANS.contains("no road of the crown's sends a plan back"));
+        assert!(!PERSONS_PLANS.contains("would change"), "the crown sends a plan back (T-943)");
         for words in [
             "crown only",
             "an agent the crown started",
             "needs_you.request",
             "needs_you.plan",
             "default row",
+            "With change",
+            "feedback row, Tell Claude what to change",
         ] {
             assert!(description.contains(words), "accept_plan says {words:?}");
         }
@@ -3598,12 +3644,20 @@ mod tests {
                 answers: None,
             },
             Command::AgentAcceptPlan { key: "T-1".into(), seen: None, request: "toolu_1".into() },
+            Command::AgentRevisePlan {
+                key: "T-1".into(),
+                seen: None,
+                request: "toolu_1".into(),
+                text: "x".into(),
+            },
             Command::AgentAskBoard { board: "relay".into(), text: "x".into() },
         ];
         for c in &allowed {
             assert!(agent_allows(c), "{c:?} should be in the tier");
         }
-        assert_eq!(allowed.len(), tools().len() + 1);
+        // `get_ticket` with a key, and `accept_plan` with a change (T-943),
+        // are commands of their own.
+        assert_eq!(allowed.len(), tools().len() + 2);
         // The peer carrier and the links are nobody's tool (T-733).
         assert!(!agent_allows(&Command::PeerAsk {
             crown_key: "T-1".into(),

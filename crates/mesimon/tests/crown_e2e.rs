@@ -5971,6 +5971,396 @@ fn the_crown_accepts_a_plan_by_default() {
     assert_eq!(pressed(), before, "the crown pressed nothing");
 }
 
+/// A crown (A) and the worker it started (W) on a board whose panes run the
+/// stand-in for Claude Code's dialog (`fake_claude_dialog.py`), W stopped on
+/// nothing yet; A is running, so a wake waits for its idle. For T-943's plan
+/// sent back.
+struct PlanBed {
+    h: Harness,
+    c: TestClient,
+    w: ulid::Ulid,
+    ka: String,
+    kw: String,
+    sa: uuid::Uuid,
+    ws: uuid::Uuid,
+}
+
+const BED_PLAN: &str = "1. Read the code\n2. Write the code";
+
+impl PlanBed {
+    fn boot(name: &str) -> Option<Self> {
+        const STUB: &str = include_str!("common/fake_claude_dialog.py");
+        let h = Harness::boot_bare(
+            name,
+            Some(STUB),
+            &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+        )?;
+        init_repo(&h.repo, "a.txt", "hello\n");
+        let mut c = h.client(name);
+        let a = c.create_ticket("coordinate");
+        let w = c.create_ticket("mesimon-probe-943 worker");
+        let (ka, kw) = (key_of(&mut c, a), key_of(&mut c, w));
+        let sa = c.spawn_claude(a);
+        assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let mut bed = PlanBed { h, c, w, ka, kw, sa, ws: uuid::Uuid::nil() };
+        bed.start(sa);
+        bed.stop(sa);
+        let v = read(&mut bed.c, sa, &bed.kw).unwrap();
+        assert!(matches!(
+            bed.c.send(
+                Principal::Agent { session: sa },
+                Command::AgentStartTicket {
+                    key: bed.kw.clone(),
+                    seen: v.seen,
+                    plan: true,
+                    tier: None,
+                    workspace: Some("worktree".into()),
+                },
+            ),
+            Response::AgentStarted { .. }
+        ));
+        wait_until(std::time::Duration::from_secs(15), "W's start to land", || {
+            bed.c.board().live_agent(w).is_some()
+        });
+        bed.ws = bed.c.board().live_agent(w).expect("W holds a seat").id;
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        bed.start(bed.ws);
+        bed.start(sa);
+        Some(bed)
+    }
+
+    fn start(&mut self, sid: uuid::Uuid) {
+        let sock = self.h.paths.hook_sock();
+        hook_send(&sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        self.c.await_state(sid, "running", |s| *s == SessionState::Running);
+    }
+
+    fn stop(&mut self, sid: uuid::Uuid) {
+        let sock = self.h.paths.hook_sock();
+        hook_send(&sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        self.c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    }
+
+    fn frame(request: &str) -> String {
+        json!({ "tool_name": "ExitPlanMode", "tool_use_id": request, "tool_input": { "plan": BED_PLAN } })
+            .to_string()
+    }
+
+    /// W's hook frame `event` for the tool call `request` of `tool`.
+    fn hook(&self, event: &str, tool: &str, request: &str) {
+        let body = match tool {
+            "ExitPlanMode" => Self::frame(request),
+            _ => json!({ "tool_name": tool, "tool_use_id": request, "tool_input": {} }).to_string(),
+        };
+        hook_send(&self.h.paths.hook_sock(), &self.ws.to_string(), event, &body);
+    }
+
+    fn pane(&mut self) -> String {
+        match self.c.request(Command::PaneTail { session: self.ws, lines: 60 }) {
+            Response::PaneTail { lines, .. } => lines.join("\n"),
+            _ => String::new(),
+        }
+    }
+
+    /// W's plan drawn in its pane, then the hook that stops it on it.
+    fn show_plan(&mut self, request: &str) {
+        let dialog = self.h.dir.join(format!("dialog-{}.json", self.kw));
+        std::fs::write(dialog, json!({ "plan": BED_PLAN }).to_string()).unwrap();
+        wait_until(std::time::Duration::from_secs(10), "the plan drawn", || {
+            self.pane().contains("Would you like to proceed?")
+        });
+        self.hook("PreToolUse", "ExitPlanMode", request);
+        let at_plan = |s: &SessionState| {
+            *s == SessionState::RequiresAction { reason: mesimon_core::board::Reason::Plan }
+        };
+        self.c.await_state(self.ws, "on its plan", at_plan);
+    }
+
+    /// The dialog gone from W's pane, the way a refusal leaves it, and the
+    /// agent's next call clearing its plan.
+    fn clear(&mut self, next: &str) {
+        let _ = std::fs::remove_file(self.h.dir.join(format!("dialog-{}.json", self.kw)));
+        wait_until(std::time::Duration::from_secs(10), "the dialog gone", || {
+            !self.pane().contains("Would you like to proceed?")
+        });
+        self.hook("PreToolUse", "Read", next);
+        self.c.await_state(self.ws, "running", |s| *s == SessionState::Running);
+    }
+
+    fn keys(&self) -> String {
+        std::fs::read_to_string(self.h.dir.join(format!("keys-{}", self.kw))).unwrap_or_default()
+    }
+
+    fn typed(&self) -> String {
+        std::fs::read_to_string(self.h.dir.join("got.txt")).unwrap_or_default()
+    }
+
+    fn feed(&self) -> String {
+        std::fs::read_to_string(self.h.paths.state_dir.join("activity.jsonl")).unwrap_or_default()
+    }
+
+    fn changed(&self) -> std::path::PathBuf {
+        self.h.dir.join(format!("changed-{}.json", self.kw))
+    }
+
+    /// A person's keys in W's pane, through tmux.
+    fn person_keys(&self, keys: &[&str]) {
+        let sid = &self.ws.simple().to_string()[..16];
+        let ok = tmux(&self.h.paths.tmux_sock())
+            .args(["send-keys", "-t", sid])
+            .args(keys)
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(ok, "send-keys {keys:?}");
+    }
+
+    fn revise_cmd(&mut self, key: &str, request: &str, text: &str) -> Command {
+        let v = read(&mut self.c, self.sa, key).unwrap();
+        Command::AgentRevisePlan {
+            key: key.into(),
+            seen: v.seen,
+            request: request.into(),
+            text: text.into(),
+        }
+    }
+
+    fn refused(&mut self, key: &str, request: &str, text: &str) -> String {
+        let cmd = self.revise_cmd(key, request, text);
+        match self.c.send(Principal::Agent { session: self.sa }, cmd) {
+            Response::Err { message } => message,
+            other => panic!("accept_plan with change {key} {request}: {other:?}"),
+        }
+    }
+
+    /// The call on a connection of its own: the receipt waits for the walk,
+    /// as long as the shim waits for it (75 s; the window alone is 30 s).
+    fn call(&mut self, request: &str, text: &str) -> std::thread::JoinHandle<Response> {
+        let kw = self.kw.clone();
+        let cmd = self.revise_cmd(&kw, request, text);
+        let (sock, sa) = (self.h.paths.orch_sock(), self.sa);
+        std::thread::spawn(move || {
+            let mut client = TestClient::connect(&sock);
+            client.write.set_read_timeout(Some(std::time::Duration::from_secs(75))).unwrap();
+            client.send(Principal::Agent { session: sa }, cmd)
+        })
+    }
+}
+
+/// The receipt of a plan sent back: its outcome and reason.
+fn revised(receipt: std::thread::JoinHandle<Response>) -> (String, Option<String>) {
+    match receipt.join().unwrap() {
+        Response::AgentPlanAccepted { outcome, reason, .. } => (outcome, reason),
+        other => panic!("accept_plan with change: {other:?}"),
+    }
+}
+
+/// The crown sends a plan back with words (T-943), `accept_plan`'s `change`
+/// on the wire as `agent_revise_plan`. Refusals in words, typing nothing:
+/// a dialog that changed, blank, two lines, past 1000 bytes, characters a
+/// dialog cannot take, supervised mode. Then the walk: two arrows to the
+/// `Tell Claude what to change` row, one paste of the words exactly, one
+/// Enter, which the stand-in records with the row it was on; the receipt
+/// waits for the dialog to leave (the agent's next tool call) and says
+/// `input_sent`, never more; `♛ sent plan back`, the card's line and the feed
+/// line carry the words; and the agent's next plan is a new request that
+/// `get_ticket` reads as `needs_you: plan` and that wakes the crown again.
+#[test]
+fn the_crown_sends_a_plan_back_with_words() {
+    let Some(mut b) = PlanBed::boot("crown_revise") else { return };
+    let (ka, kw, ws, w) = (b.ka.clone(), b.kw.clone(), b.ws, b.w);
+    b.show_plan("toolu_w1");
+    let wake = format!("{kw} \"mesimon-probe-943 worker\" stops on a plan");
+    b.stop(b.sa);
+    wait_until(std::time::Duration::from_secs(10), "the plan's wake on the crown", || {
+        b.typed().contains(&wake)
+    });
+    b.start(b.sa);
+
+    // ---- refusals in words, none typing a key or writing a feed line --------
+    let before = b.keys();
+    let why = b.refused(&kw, "toolu_old", "Use echo.");
+    assert!(why.contains("plan changed; read get_ticket again"), "{why}");
+    for (text, says) in [
+        ("", "change is blank"),
+        ("  ", "change is blank"),
+        ("first\nsecond", "change is one line"),
+        ("red \u{1b}[31m", "plain words only"),
+    ] {
+        let why = b.refused(&kw, "toolu_w1", text);
+        assert!(why.contains(says), "{text:?}: {why}");
+    }
+    let why = b.refused(&kw, "toolu_w1", &"a".repeat(1001));
+    assert!(why.contains("1001 bytes") && why.contains("at most 1000"), "{why}");
+    let why = b.refused(&ka, "toolu_w1", "Use echo.");
+    assert!(why.contains("own ticket"), "{why}");
+    assert!(matches!(
+        b.c.request(Command::SetCrownMode { mode: CrownMode::Supervised }),
+        Response::Ok
+    ));
+    let why = b.refused(&kw, "toolu_w1", "Use echo.");
+    assert!(why.contains("Crown mode is supervised"), "{why}");
+    assert!(matches!(
+        b.c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
+        Response::Ok
+    ));
+    assert_eq!(b.keys(), before, "a refusal types nothing");
+    assert!(!b.feed().contains("\"accept_plan\""), "a refusal writes nothing");
+
+    // ---- the walk: two arrows, the paste, the Enter on the feedback row -----
+    let words = "Use echo in Bash instead of the Write tool.";
+    let receipt = b.call("toolu_w1", words);
+    let changed = b.changed();
+    wait_until(std::time::Duration::from_secs(10), "the plan sent back in W's pane", || {
+        changed.exists()
+    });
+    let took: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&changed).unwrap()).unwrap();
+    assert_eq!(took, json!({ "row": "Tell Claude what to change", "text": words }));
+    let walked = b.keys()[before.len()..].to_string();
+    assert_eq!(walked.matches("\\x1b[200~").count(), 1, "one paste: {walked}");
+    assert!(walked.contains(&format!("\\x1b[200~{words}\\x1b[201~")), "the words: {walked}");
+    assert_eq!(walked.matches("\\r").count(), 1, "one Enter: {walked}");
+    assert_eq!(walked.matches("[B").count(), 2, "two arrows down: {walked}");
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    assert!(!receipt.is_finished(), "the receipt waits for the dialog to leave");
+    // The replanning agent's next call is the refusal road's edge (T-447).
+    b.hook("PreToolUse", "Edit", "toolu_edit");
+    assert_eq!(revised(receipt), ("input_sent".to_string(), None));
+    assert!(
+        touches(&mut b.c).iter().any(|t| t.ticket == w && t.action == "sent plan back"),
+        "♛ sent plan back on the card"
+    );
+    assert!(
+        b.feed().lines().any(|l| l.contains("\"cmd\":\"accept_plan\"")
+            && l.contains("\"actor\":\"agent\"")
+            && l.contains("\"outcome\":\"input_sent\"")
+            && l.contains(&format!("\"answer\":\"{words}\""))),
+        "{}",
+        b.feed()
+    );
+    assert!(!b.feed().contains("\"outcome\":\"changed\""), "nothing claims the words were read");
+    let detail = b.c.board().sessions.iter().find(|s| s.id == ws).and_then(|s| s.detail.clone());
+    assert_eq!(detail, Some(format!("plan sent back by {ka}: {words}")));
+
+    // ---- the agent's next plan: a new request, needs-you, the crown woken ---
+    b.hook("PostToolUse", "Edit", "toolu_edit");
+    b.stop(b.sa);
+    b.show_plan("toolu_w2");
+    wait_until(std::time::Duration::from_secs(10), "the next plan's wake on the crown", || {
+        b.typed().matches(&wake).count() == 2
+    });
+    b.start(b.sa);
+    let needs = read(&mut b.c, b.sa, &kw).unwrap().needs_you.expect("the next plan");
+    assert_eq!(needs.reason, "plan");
+    assert_eq!(needs.request.as_deref(), Some("toolu_w2"));
+}
+
+/// A plan sent back stops at any hand but the crown's (T-943), and the
+/// receipt then says `unknown`, never `input_sent`: words a person typed
+/// into the field first get no paste and no Enter; a person attaching
+/// between the paste and the Enter gets no Enter; a person's Esc, an
+/// unrelated error ending the call, and a plan replaced, each mid-walk, stop
+/// it; and an Enter the dialog did not take is `unknown { dialog_stands }`
+/// once the window is out, never retried.
+#[test]
+fn a_plan_sent_back_stops_at_any_hand_but_the_crown_s() {
+    let Some(mut b) = PlanBed::boot("crown_revise_hands") else { return };
+    let words = "Use echo in Bash instead of the Write tool.";
+    let pastes = |b: &PlanBed| b.keys().matches("\\x1b[200~").count();
+    let enters = |b: &PlanBed| b.keys().matches("\\r").count();
+    let delay = b.h.dir.join(format!("paste-delay-{}", b.kw));
+
+    // ---- a person's words already in the field ------------------------------
+    b.show_plan("toolu_w1");
+    b.person_keys(&["Down", "Down"]);
+    b.person_keys(&["-l", "my own note"]);
+    wait_until(std::time::Duration::from_secs(10), "their words drawn", || {
+        b.pane().contains("my own note")
+    });
+    let (p0, e0) = (pastes(&b), enters(&b));
+    let receipt = b.call("toolu_w1", words);
+    assert_eq!(revised(receipt), ("unknown".to_string(), Some("field_touched".to_string())));
+    assert_eq!((pastes(&b), enters(&b)), (p0, e0), "no paste, no Enter");
+    assert!(!b.changed().exists());
+    assert!(b.pane().contains("my own note"), "their words are left as they were");
+    b.clear("toolu_r1");
+
+    // ---- a person attaches between the paste and the Enter ------------------
+    std::fs::write(&delay, "3").unwrap();
+    b.show_plan("toolu_w2");
+    let (p0, e0) = (pastes(&b), enters(&b));
+    let receipt = b.call("toolu_w2", words);
+    wait_until(std::time::Duration::from_secs(10), "the crown's paste", || pastes(&b) == p0 + 1);
+    let sid = b.ws.simple().to_string()[..16].to_string();
+    let tmux_sock = b.h.paths.tmux_sock();
+    let mut client = tmux(&tmux_sock)
+        .args(["-C", "attach", "-t", &sid])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("a control-mode tmux client");
+    let (outcome, reason) = revised(receipt);
+    assert_eq!(outcome, "unknown");
+    assert!(reason.as_deref().is_some_and(|r| r.starts_with("a_person_attached")), "{reason:?}");
+    wait_until(std::time::Duration::from_secs(10), "the words drawn late", || {
+        b.pane().contains(words)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    assert_eq!(enters(&b), e0, "no Enter under their hands");
+    assert!(!b.changed().exists());
+    client.kill().unwrap();
+    let _ = client.wait();
+    b.clear("toolu_r2");
+
+    // ---- a person's Esc mid-walk: no hook says it, the screen does ----------
+    b.show_plan("toolu_w3");
+    let (p0, e0) = (pastes(&b), enters(&b));
+    let receipt = b.call("toolu_w3", words);
+    wait_until(std::time::Duration::from_secs(10), "the crown's paste", || pastes(&b) == p0 + 1);
+    b.person_keys(&["Escape"]);
+    let (outcome, _) = revised(receipt);
+    assert_eq!(outcome, "unknown");
+    assert_eq!(enters(&b), e0, "no Enter after the Esc");
+    b.clear("toolu_r3");
+
+    // ---- an unrelated error ends the plan's call mid-walk -------------------
+    b.show_plan("toolu_w4");
+    let (p0, e0) = (pastes(&b), enters(&b));
+    let receipt = b.call("toolu_w4", words);
+    wait_until(std::time::Duration::from_secs(10), "the crown's paste", || pastes(&b) == p0 + 1);
+    b.hook("PostToolUseFailure", "ExitPlanMode", "toolu_w4");
+    let (outcome, _) = revised(receipt);
+    assert_eq!(outcome, "unknown");
+    assert_eq!(enters(&b), e0, "no Enter once the call ended");
+    b.clear("toolu_r4");
+
+    // ---- the plan replaced mid-walk -----------------------------------------
+    b.show_plan("toolu_w5");
+    let (p0, e0) = (pastes(&b), enters(&b));
+    let receipt = b.call("toolu_w5", words);
+    wait_until(std::time::Duration::from_secs(10), "the crown's paste", || pastes(&b) == p0 + 1);
+    b.hook("PreToolUse", "ExitPlanMode", "toolu_w6");
+    let (outcome, _) = revised(receipt);
+    assert_eq!(outcome, "unknown");
+    assert_eq!(enters(&b), e0, "no Enter into the plan that replaced it");
+    let needs = read(&mut b.c, b.sa, &b.kw.clone()).unwrap().needs_you.expect("the new plan");
+    assert_eq!(needs.request.as_deref(), Some("toolu_w6"));
+    b.clear("toolu_r5");
+
+    // ---- an Enter the dialog did not take: unknown once the window is out ---
+    std::fs::remove_file(&delay).unwrap();
+    std::fs::write(b.h.dir.join(format!("keep-{}", b.kw)), "").unwrap();
+    b.show_plan("toolu_w7");
+    let (p0, e0) = (pastes(&b), enters(&b));
+    let receipt = b.call("toolu_w7", words);
+    wait_until(std::time::Duration::from_secs(10), "the Enter", || enters(&b) == e0 + 1);
+    assert_eq!(revised(receipt), ("unknown".to_string(), Some("dialog_stands".to_string())));
+    assert_eq!((pastes(&b), enters(&b)), (p0 + 1, e0 + 1), "never retried");
+    assert!(!b.feed().contains("\"outcome\":\"changed\""));
+}
+
 /// T-933: a worker stopped on a plan or a question across a daemon restart
 /// keeps its dialog. The hook stream filled the dialog the crown reads and
 /// answers, and a restart emptied it: `needs_you` carried the reason alone

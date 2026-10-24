@@ -49,7 +49,8 @@ const READ_TIMEOUT_SECS: u64 = 20;
 /// to the daemon's 60 s `DIALOG_WALK_MAX` for a batch) and the 5 s hook
 /// window, so this is that and a margin. `accept_plan`'s (T-582) waits
 /// as long: at most the daemon's 30 s for a busy checkout and its 8 s for
-/// the hook edge.
+/// the hook edge; a plan sent back (T-943), its walk's 8 s and the 30 s it
+/// waits for the dialog to leave.
 const ANSWER_WAIT_SECS: u64 = 75;
 
 pub fn run(args: &[String]) -> ! {
@@ -214,8 +215,13 @@ fn tool_result(params: &Value, sock: &std::path::Path, session: uuid::Uuid) -> V
         ToolCall::AnswerAgent { key, seen, request, index, text, answers } => {
             Command::AgentAnswerTicket { key, seen: Some(seen), request, index, text, answers }
         }
-        ToolCall::AcceptPlan { key, seen, request } => {
+        // A change is a command of its own (T-943), so a daemon from before
+        // it refuses the call rather than accept the plan.
+        ToolCall::AcceptPlan { key, seen, request, change: None } => {
             Command::AgentAcceptPlan { key, seen: Some(seen), request }
+        }
+        ToolCall::AcceptPlan { key, seen, request, change: Some(text) } => {
+            Command::AgentRevisePlan { key, seen: Some(seen), request, text }
         }
         ToolCall::CreateTicket {
             title,
@@ -481,8 +487,10 @@ fn render(resp: Response) -> Value {
         // The crown's plan accept (T-582), once its press settled:
         // `accepted` only on the plan's own hook edge, `input_sent` for an
         // Enter unconfirmed, `queued` while a busy checkout holds the press,
-        // `unknown` with its reason when no Enter went. The receipt repeats
-        // which plans stay a person's.
+        // `unknown` with its reason when no Enter went. A plan sent back
+        // (T-943) answers here too: `input_sent` once its Enter went and the
+        // dialog left, `unknown` otherwise. The receipt repeats which plans
+        // stay a person's.
         Response::AgentPlanAccepted { key, outcome, reason, seen } => {
             let mut body = json!({
                 "key": key,
@@ -535,7 +543,9 @@ fn render(resp: Response) -> Value {
 fn ask(sock: &std::path::Path, env: &Envelope) -> Result<Response, String> {
     use mesimon_daemon::oneshot::{one_shot, Fault};
     let wait = match env.command {
-        Command::AgentAnswerTicket { .. } | Command::AgentAcceptPlan { .. } => ANSWER_WAIT_SECS,
+        Command::AgentAnswerTicket { .. }
+        | Command::AgentAcceptPlan { .. }
+        | Command::AgentRevisePlan { .. } => ANSWER_WAIT_SECS,
         _ => READ_TIMEOUT_SECS,
     };
     let read = Some(std::time::Duration::from_secs(wait));

@@ -3277,6 +3277,7 @@ impl Daemon {
             | Command::AgentAskBoard { .. }
             | Command::AgentAnswerTicket { .. }
             | Command::AgentAcceptPlan { .. }
+            | Command::AgentRevisePlan { .. }
             | Command::AgentRaiseHand { .. }
             // The mod's bridge polls as its session, never as a person.
             | Command::ModNext { .. } => {
@@ -7254,8 +7255,8 @@ impl Daemon {
                     };
                 }
                 // A plan stands (T-582): words queued now would wait behind
-                // it and the turn it starts. The crown accepts it, or raises
-                // its hand for a plan it would change.
+                // it and the turn it starts. The crown accepts it, or sends it
+                // back with words (T-943).
                 if self.board.live_agent(target).is_some_and(|rec| {
                     rec.state == SessionState::RequiresAction { reason: Reason::Plan }
                 }) {
@@ -7263,8 +7264,9 @@ impl Daemon {
                         message: format!(
                             "{key}'s agent stopped on a plan; accept_plan accepts it where the \
                              board lets the crown answer, and get_ticket shows the plan \
-                             (needs_you); a plan the crown would change is a person's. Words \
-                             queued now would wait behind the plan and the turn it starts."
+                             (needs_you), or with change submits words through its feedback row \
+                             instead; a plan past the brief is a person's. Words queued now would \
+                             wait behind the plan and the turn it starts."
                         ),
                     };
                 }
@@ -7512,6 +7514,45 @@ impl Daemon {
                         self.plan_waits = Some(id);
                         // What a caller that is not the writer loop reads:
                         // the press is on its way, nothing yet confirmed.
+                        Response::AgentPlanAccepted {
+                            key,
+                            outcome: "awaiting_delivery".into(),
+                            reason: None,
+                            seen: Some(self.seen_token(target)),
+                        }
+                    }
+                    Err(message) => Response::Err { message },
+                }
+            }
+            // The crown's plan sent back with words (T-943): `accept_plan`'s
+            // `change`, past the accept's gates and its own (`crown_plan_check`,
+            // `crown_plan_revise`), walked into the dialog's feedback field by
+            // Remote Control's road. The receipt waits for the dialog to
+            // leave: the writer parks the call's reply with the walk
+            // (`answer_waits`).
+            Command::AgentRevisePlan { key, seen, request, text } => {
+                let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
+                    Ok(t) => t,
+                    Err(message) => return Response::Err { message },
+                };
+                if target == ticket {
+                    return Response::Err {
+                        message: format!(
+                            "{key} is this session's own ticket; accept_plan is for another \
+                             ticket's agent"
+                        ),
+                    };
+                }
+                let by = Principal::Agent { session };
+                if let Decision::Deny { reason } =
+                    authorize(&by, &Action::Mutate, &Resource::Ticket { id: target })
+                {
+                    return Response::Err { message: format!("denied: {reason}") };
+                }
+                let key = self.board.ticket(target).map(|t| t.short_key.clone()).unwrap_or(key);
+                match self.crown_plan_revise(ticket, session, target, &key, &request, text) {
+                    Ok(id) => {
+                        self.answer_waits = Some(id);
                         Response::AgentPlanAccepted {
                             key,
                             outcome: "awaiting_delivery".into(),

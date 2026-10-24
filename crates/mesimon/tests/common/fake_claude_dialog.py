@@ -22,10 +22,19 @@ from (the daemon's unit tests hold the captured screens themselves):
 * a plan (T-582), when the tool input is `{"plan": "..."}`: the plan's lines,
   `Would you like to proceed?` and the three rows measured on 2.1.287 (T-573,
   row 6) — `1. Yes, auto-accept edits`, `2. Yes, manually approve edits`,
-  `3. Tell Claude what to change` — the cursor on the first. Enter on either
-  `Yes` row accepts it: the row's label is written to `accepted-<ticket>`.
-  Enter on the third row does nothing here (it opens a text box nobody types
-  into in these tests).
+  `3. Tell Claude what to change` — the cursor on the first — and under them
+  the two lines 2.1.310 draws (T-943): `shift+tab to approve with this
+  feedback` and `ctrl+g to edit in Nvim · <plan file>`. Enter on either `Yes`
+  row accepts it: the row's label is written to `accepted-<ticket>`. The
+  third row is a field in place, as measured on 2.1.310: words typed or
+  pasted with the cursor on it are drawn in place of its label, and Enter on
+  it with words in it sends the plan back, written to `changed-<ticket>.json`
+  (`{"row": <its label>, "text": <the words>}`); Enter on it empty does
+  nothing. Two switches for the tests, files next to this one: with
+  `paste-delay-<ticket>` (seconds) a paste into the field is drawn that much
+  later, a window for what a person does between a paste and its Enter; with
+  `keep-<ticket>` the dialog stays up after a plan sent back, as one whose
+  Enter was not taken.
 
 Escape anywhere declines. The dialog is `dialog-<MESIMON_TICKET>.json` next to
 this file, the tool input (`{"questions": [...]}` or `{"plan": "..."}`),
@@ -43,6 +52,7 @@ import os
 import select
 import sys
 import termios
+import time
 import tty
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -82,13 +92,24 @@ class Plan:
         self.plan = tool_input["plan"]
         self.cursor = 0
         self.accepted = None
+        self.field = ""
+        self.pending = []
+
+    def tick(self):
+        """Draw the pastes whose delay is over."""
+        now = time.monotonic()
+        while self.pending and self.pending[0][0] <= now:
+            self.field += self.pending.pop(0)[1]
 
     def draw(self):
         lines = [RULE, " Ready to code?", "", " Here is Claude's plan:", ""]
         lines += ["  " + line for line in self.plan.splitlines()]
         lines += ["", " Would you like to proceed?", ""]
         for i, row in enumerate(self.ROWS):
-            lines.append((" ❯ " if self.cursor == i else "   ") + f"{i + 1}. {row}")
+            label = self.field if i == 2 and self.field else row
+            lines.append((" ❯ " if self.cursor == i else "   ") + f"{i + 1}. {label}")
+        lines.append("      shift+tab to approve with this feedback")
+        lines.append(" ctrl+g to edit in Nvim · ~/.claude/plans/fake.md")
         return lines
 
     def key(self, kind, text=""):
@@ -101,6 +122,18 @@ class Plan:
         elif kind == "enter" and self.cursor < 2:
             self.accepted = self.ROWS[self.cursor]
             return "accept"
+        elif kind == "enter" and self.field:
+            return "change"
+        elif kind == "paste" and self.cursor == 2:
+            try:
+                with open(os.path.join(HERE, f"paste-delay-{TICKET}")) as f:
+                    delay = float(f.read().strip() or "0")
+            except (OSError, ValueError):
+                delay = 0.0
+            self.pending.append((time.monotonic() + delay, text))
+            self.tick()
+        elif kind in ("char", "space") and self.cursor == 2:
+            self.field += text or " "
         return None
 
 
@@ -287,6 +320,8 @@ def main():
         elif json.dumps(questions) != source:
             shape = Plan if isinstance(questions, dict) else Dialog
             dialog, source = shape(questions), json.dumps(questions)
+        if isinstance(dialog, Plan):
+            dialog.tick()
         top = "\x1b[2J\x1b[H" + "".join(line + "\r\n" for line in banner())
         if dialog:
             screen = top + "\r\n".join(dialog.draw())
@@ -317,6 +352,11 @@ def main():
             if ended == "accept":
                 with open(os.path.join(HERE, f"accepted-{TICKET}"), "w") as f:
                     f.write(dialog.accepted)
+            elif ended == "change":
+                with open(os.path.join(HERE, f"changed-{TICKET}.json"), "w") as f:
+                    json.dump({"row": dialog.ROWS[2], "text": dialog.field}, f)
+                if os.path.exists(os.path.join(HERE, f"keep-{TICKET}")):
+                    continue
             elif ended == "submit":
                 answers = {q["question"]: dialog.answer(i) for i, q in enumerate(dialog.qs)}
                 with open(os.path.join(HERE, f"answered-{TICKET}.json"), "w") as f:

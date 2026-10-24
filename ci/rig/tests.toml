@@ -612,6 +612,21 @@ checks = ["road:mod", "crown:accept_plan", "words:working,needs_you,working,idle
   until = { stops = 1, state = "idle" }
   wake = true
 
+[[test]]
+id = "D6"
+title = "D6 · the crown sends a worker's plan back with words, then accepts the next"
+workspace = "worktree"
+brief = "Plan this, then do it once your plan is accepted: create the file notes/d6.txt holding the single line plan first. Use the ExitPlanMode tool to present the plan. After writing the file, reply with the single word done and end your turn. Run no command."
+brief_file = "plan changed"
+plan = true
+expect = "the worker presents its plan and the board wakes the crown, which sends it back with accept_plan's change (T-943: the board walks the native dialog to Tell Claude what to change, pastes the words into its empty field and presses Enter, on the mod road as on the hook road); the receipt says input_sent; the worker replans in its own session, still in plan mode, and stops on a new plan whose request differs, which wakes the crown again; the crown accepts that one, and the worker writes the corrected line and replies done."
+checks = ["road:mod", "crown:accept_plan=2", "crown_line:D6 sent back:input_sent", "crown_line:D6 accepted:new", "file:notes/d6.txt", "reply:done"]
+
+  [[test.steps]]
+  crown = "D6: call start_agent for {key} with workspace worktree, no tier and plan true, then end your turn with the single line: D6 started. Its agent will stop on its plan: when the board wakes you for that plan, read it with get_ticket for {key} and send it back with accept_plan, its change being the words: Write the line plan changed instead of plan first. Then end your turn with the single line: D6 sent back: <the receipt's outcome word>. When the board wakes you for that agent's next plan, read it with get_ticket, accept it with accept_plan, and end your turn with the single line: D6 accepted: new if its needs_you.request differs from the request you sent back, else D6 accepted: same. When the board wakes you because {key}'s agent finished, end your turn with the single line: D6 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
 # ---- Tools and gate (T-577): the board's tools registered by the mod, no
 # shim, no --mcp-config, no --allowedTools; the gate in-process.
 

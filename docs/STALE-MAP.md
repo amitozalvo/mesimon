@@ -33059,3 +33059,125 @@ Tests:
   and the daemon restarts. The person leaves: no keys for three seconds, the hand up, the wake
   owed. The box draws empty, and the wake is typed once. It fails on round six's code.
   `a_detached_draft_holds_a_crown_wake_the_launch_handed_back` stays green.
+
+## The crown sends a plan back with words (T-943, 2026-10-24, T-925's gap log row 27; the person: "Why cant you? You should. If not it's a gap.")
+
+**The gap.** A worker the crown started stopped on a plan, and `accept_plan` (Enter on the
+dialog's default row) was the crown's only road. A correction waited as a note until a person
+answered the dialog in the pane or on the phone, and two plans did (T-936, T-938) while the
+person was away. The brief said the phone's reject walks "Tell Claude what to change". It does
+not: `DialogStep::Reject` is Esc, the refusal with no words. Nothing in the board had ever typed
+into that row.
+
+**Measured first** (Claude Code 2.1.310, Haiku, a private tmux, 2026-10-24):
+- **The dialog.** `Claude has written up a plan and is ready to execute. Would you like to
+  proceed?`, then `1. Yes, and use auto mode`, `2. Yes, manually approve edits` and `3. Tell
+  Claude what to change`. Under the rows come `shift+tab to approve with this feedback` and
+  `ctrl+g to edit in Nvim · <plan file>`. There is no `Enter to select` footer.
+- **Row 3 is a field in place.** With the cursor on it, typed words and a bracketed paste
+  (`paste-buffer -p`) are drawn where its label was. A two-line paste stays two lines.
+- **Enter on the filled row rejects the plan.** The `tool_result` is `is_error`: "The user doesn't
+  want to proceed with this tool use. … To tell you how to proceed, the user said:\n<words>". A
+  pasted newline reaches the model as `\r`.
+- **The model replans in the same turn, in plan mode.** It edits its plan file, then calls
+  `ExitPlanMode` again with a new `tool_use_id`. That happened twice.
+- **No hook fires for the rejection itself** (T-447). The next `PreToolUse` is the hook road's
+  `Dismissed` edge. On the mod road it is the same frame, plus the mod's existing `ModAnswer
+  declined` for an `ExitPlanMode` result marked `isError`.
+
+**What shipped.**
+- **The tool.** `accept_plan` takes an optional `change`, and its words go in through the dialog's
+  feedback row instead of the accept.
+- **The wire.** A present `change` is a command of its own, `Command::AgentRevisePlan { key, seen,
+  request, text }`, never a field on `AgentAcceptPlan`. A daemon from before it ignores an unknown
+  field and would accept the plan. It has no variant for an unknown command, so its envelope
+  refuses the call. `a_plan_sent_back_never_reads_as_an_accept_to_an_older_daemon` freezes the old
+  reader.
+- **The gates.** The accept's gates are shared (`crownplan::crown_plan_check`): the switch, a live
+  agent the crown started, `RequiresAction{Plan}`, the request fence, and nothing on its way,
+  which now includes any dialog delivery. Then:
+  - Claude only. A codex's plan sent back is unmeasured.
+  - No checkout-quiet hold, since a plan sent back starts no edit.
+  - The words are refused, never rewritten (`mesophon::dialog_text_refusal`, the question text's
+    own check): blank, a newline, more than 1000 bytes, or anything `sanitize_prompt` would change,
+    its trim included. Accepted words pass exactly as they came. Nothing flattens, scrubs, trims
+    or cuts them.
+- **The walk.** It is Remote Control's dialog delivery with the crown's name on it
+  (`DeliveryAnswer::Revise`, `Deliverer::Crown`), and the same keys go in on both roads: the mod
+  road draws the native dialog too. Answering in the mod would mean spelling Claude Code's own
+  rejection text, and it would add a third `deny` to the mod's never-list.
+- **Before every key** (`crown_revise_held`), the walk checks again:
+  - the seat, its pane key and the request;
+  - the plan state and the crown's authority;
+  - that no tmux client is attached to the pane (`has_clients`, asked fresh, and a client the
+    server cannot list counts as attached).
+- **What the screen must show** (`revise_step`):
+  - The one row whose field reads the untouched label `Tell Claude what to change`. It is found by
+    its label, never by its place: the older four-row dialog has it fourth.
+  - The cursor where the last arrow put it (`Walk::at`).
+  - A paste only with the cursor on that empty field.
+  - After the paste, the cursor still there and the field reading the words whole: the squeezed
+    row equals the squeezed words, and only the two hint lines follow (`feedback_field`). Words
+    that spell a hint are cut at it and never read whole. A field still empty is the paste not yet
+    drawn (`DialogStep::Wait`).
+  - Anything else stops the walk with nothing more typed, and the receipt is `unknown` with its
+    word: `field_touched`, `cursor_moved`, `a_person_attached`, `state_changed`,
+    `shape_unrecognised`. Nothing falls back to the composer or an accept row.
+- **The receipt claims only what is proven.** `input_sent` means the final Enter went and the
+  dialog left: a `Dismissed` edge, the projection dropped, or no plan dialog on the screen when
+  the 30 s window (`PLAN_CHANGE_CONFIRM`) runs out. Everything else is `unknown`:
+  `plan_accepted` when an accept ended the dialog, `dialog_stands` when the window ran out with the
+  dialog up, and any stop before the Enter. There is no `changed`. An Esc, a person's own
+  rejection and an unrelated error leave the dialog the same way, so nothing proves these words
+  were read. A timeout never retries the paste.
+- **Who sees it.** `♛ sent plan back` on the card; `plan sent back by T-…: <words>` on the
+  agent's line until the next state edge; the feed's `accept_plan` line with its outcome and the
+  words. The turn takes `TurnAsk::Crown` at the Enter, as an answer's does. The agent's next plan
+  wakes the crown `stops on a plan` from the state edge.
+- **Words.**
+  - The tool's text describes the input, not the model: "the words go in through the feedback row,
+    Tell Claude what to change, instead".
+  - `PERSONS_PLANS` is "A plan that reaches past the ticket's brief is a person's.", and "one the
+    crown would change" is gone from it, from the tool and from `ask_agent`'s refusal (T-930's
+    wording otherwise kept).
+  - `ask_agent`'s refusal at a plan names the change.
+  - The worker is told nothing new.
+
+**Tests.**
+- Core: `accept_plan_parses_and_refuses` (`change` passes as it came),
+  `the_crown_is_told_which_plans_are_a_person_s`, the tier and agent-allows tables, and the
+  frozen-reader test.
+- Daemon: `a_plan_sent_back_walks_to_the_empty_feedback_field_and_pastes_there`,
+  `a_plan_sent_back_presses_enter_only_on_its_own_words`,
+  `a_plan_sent_back_sends_nothing_into_another_screen` and
+  `a_plan_change_is_refused_never_rewritten`, all on the screen captured above.
+- **The stand-in.** `fake_claude_dialog.py` draws 2.1.310's rows and hint lines and keeps row 3
+  as a field. It records a plan sent back to `changed-<ticket>.json` with its row, and has two
+  switches: a late-drawn paste and a dialog that stays.
+- `crown_e2e::the_crown_sends_a_plan_back_with_words`:
+  - Refusals type nothing: a changed request, blank, two lines, 1001 bytes, an escape sequence,
+    the crown's own ticket, supervised mode.
+  - The walk is two arrows, one paste of the exact words and one Enter on the feedback row.
+  - The receipt waits for the next tool call and reads `input_sent`.
+  - Touch, card line and feed line are as above, and no `changed` appears anywhere.
+  - The next plan is `toolu_w2` in `needs_you` and wakes the crown again.
+- `crown_e2e::a_plan_sent_back_stops_at_any_hand_but_the_crown_s` (each case `unknown`, no Enter):
+  - a person's words already in the field: no paste either, and their words left;
+  - a control-mode client attaching between the paste and the Enter;
+  - a person's Esc mid-walk;
+  - a `PostToolUseFailure` on the call mid-walk;
+  - the plan replaced mid-walk;
+  - an Enter the dialog did not take: `dialog_stands` after the window, never retried.
+- Both pass on the hook road and on the mod pass, with `the_crown_accepts_a_plan_by_default`
+  beside them.
+- Rig `D6`: the crown, asked to send the plan back with one correction, reads `input_sent`, and
+  then accepts the next plan, whose request is new. The worker writes the corrected line.
+
+**Not done.**
+- A codex's plan sent back.
+- The dialog's `shift+tab to approve with this feedback`.
+- Words over more than one line.
+- A `changed` outcome: it needs a measured rejection body tied to the request on both roads,
+  with Esc and error controls.
+- A key's last moment stays a check-then-send: the screen is read, then the key goes, so a person
+  acting inside those milliseconds is not seen.

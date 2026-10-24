@@ -16,8 +16,13 @@
 //! press keeps its place and goes when the checkout is quiet), and
 //! `unknown` with a reason when no Enter went: a person answered first,
 //! the dialog never showed at its default row, or what allowed the call no
-//! longer holds. Sending a plan back stays a person's: the crown raises its
-//! hand for that, and mesimon reads no plan's words to decide anything.
+//! longer holds. mesimon reads no plan's words to decide anything.
+//!
+//! `accept_plan` with `change` sends a Claude agent's plan back instead
+//! (T-943, `AgentRevisePlan`): past the same gates (`crown_plan_check`), the
+//! words go into the dialog's `Tell Claude what to change` field as Remote
+//! Control's walk types an answer (`mesophon::crown_plan_revise`), with no
+//! checkout hold, since a plan sent back starts no edit.
 
 use super::*;
 
@@ -59,6 +64,38 @@ impl Daemon {
         &mut self,
         crown: ulid::Ulid,
         session: uuid::Uuid,
+        target: ulid::Ulid,
+        key: &str,
+        request: &str,
+    ) -> std::result::Result<uuid::Uuid, String> {
+        let id = self.crown_plan_check(target, key, request)?;
+        self.crown_plans.insert(
+            id,
+            CrownPlan {
+                crown,
+                session,
+                ticket: target,
+                request: request.into(),
+                reply: None,
+                asked_at: now_ms(),
+                pressed: None,
+                tries: 0,
+                miss: "",
+                prior: None,
+            },
+        );
+        // The dialog is up: press now where the checkout lets it, rather
+        // than a second from now.
+        self.service_crown_plans();
+        Ok(id)
+    }
+
+    /// What `accept_plan` asks of a plan, with or without a change (T-582,
+    /// T-943): the board's switch, the agent, its provenance and kind, the
+    /// stop, the dialog `request` names, and nothing already on its way for
+    /// it, each refused in words. `Ok` is the worker's session.
+    pub(super) fn crown_plan_check(
+        &self,
         target: ulid::Ulid,
         key: &str,
         request: &str,
@@ -121,24 +158,9 @@ impl Daemon {
         if self.crown_plans.contains_key(&id) || self.plan_accept.contains_key(&id) || queued {
             return Err(format!("an accept for {key}'s plan is already on its way"));
         }
-        self.crown_plans.insert(
-            id,
-            CrownPlan {
-                crown,
-                session,
-                ticket: target,
-                request: request.into(),
-                reply: None,
-                asked_at: now_ms(),
-                pressed: None,
-                tries: 0,
-                miss: "",
-                prior: None,
-            },
-        );
-        // The dialog is up: press now where the checkout lets it, rather
-        // than a second from now.
-        self.service_crown_plans();
+        if self.dialog_delivery_pending(id) {
+            return Err(format!("an answer to {key}'s plan is already on its way"));
+        }
         Ok(id)
     }
 

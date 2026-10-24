@@ -529,9 +529,13 @@ agent's. The crown reads the plan on that agent's ticket and may accept it the w
 own accept does: one Enter on the plan dialog's first row, only once the screen shows the dialog
 with the cursor there, and only while no other agent is working in the same checkout. The card lights `♛ accepted plan` and reads `plan
 accepted by T-411` while the agent works on the plan, and the activity feed records the accept as
-the agent's. The crown is told that a plan reaching past its brief is yours, and so is one it
-would change, since it has no way to send a plan back: you answer the dialog. If you answer first,
-the crown presses nothing.
+the agent's. The crown may instead send a Claude agent's plan back with words, as you would on the
+dialog's `Tell Claude what to change` row: the board moves to that row, pastes the crown's words
+into its empty field and presses Enter, reading the screen before every key. It stops, with nothing
+more typed, when you are attached to that agent's pane, when the field already holds words, when
+the cursor moves, or when the plan changes. The card lights `♛ sent plan back` and reads `plan sent
+back by T-411: <words>`. The crown is told that a plan reaching past its brief is yours: you answer
+the dialog. If you answer first, the crown presses nothing.
 
 When the crown starts an agent in a worktree and the worktree cannot be made (the repository has
 no commits yet, or the ticket's branch already exists), the crown is told why, in the words the

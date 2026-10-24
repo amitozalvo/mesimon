@@ -137,6 +137,11 @@ enum DeliveryAnswer {
     Dialog(api::DialogAnswer),
     /// A Codex approval waiting in `permissions`, a phone's alone.
     Approval { allow: bool },
+    /// The crown's plan sent back with words (T-943): the plan dialog's
+    /// `Tell Claude what to change` row, its empty field pasted into and
+    /// Enter pressed, walked only while the seat holds the pane it held at
+    /// the call (`pane`, the record's key then) and no tmux client is in it.
+    Revise { text: String, pane: Option<String> },
 }
 /// The request a delivery answers while it still stands, with its answer:
 /// what `dialog_step_for` walks.
@@ -144,6 +149,8 @@ enum DeliveryAnswer {
 enum Standing<'a> {
     Dialog(&'a api::Dialog, &'a api::DialogAnswer),
     Approval(&'a api::Permission, bool),
+    /// A plan dialog the crown sends back, with its words (T-943).
+    Revise(&'a api::Dialog, &'a str),
 }
 /// Whose answer a dialog delivery carries, and where its receipt goes.
 enum Deliverer {
@@ -177,6 +184,10 @@ impl Deliverer {
 }
 /// How long an answer's last key waits for the hook edge (T-567).
 const DIALOG_CONFIRM: Duration = Duration::from_secs(5);
+/// How long a plan sent back waits for its dialog to leave after the Enter
+/// (T-943): the replanning model's first tool call, the hook road's edge,
+/// came 7 s after it on 2.1.310. Inside the shim's 75 s; never retried.
+const PLAN_CHANGE_CONFIRM: Duration = Duration::from_secs(30);
 /// The longest a batch's keys may walk (T-571): `walk_budget`'s ceiling,
 /// and with `DIALOG_CONFIRM` inside the shim's wait for `answer_agent`
 /// (`ANSWER_WAIT_SECS` in the `mesimon` crate's `mcp.rs`).
@@ -1358,6 +1369,40 @@ impl Daemon {
                     }
                     continue;
                 }
+                // A plan sent back (T-943) claims only that its Enter went
+                // and the dialog left: any edge that ends it the refusal way
+                // (the next tool call, the mod's `declined`), the projection
+                // dropped, or at the window's end a screen without it. An
+                // Esc or an error leaves it alike, so nothing says the words
+                // were read; an accept that ended it is not this answer.
+                if let DeliveryAnswer::Revise { .. } = pending.answer {
+                    match self.control_dialog_edge(id, &pending.request) {
+                        Some(DialogEdge::Answered | DialogEdge::ModAnswered) => {
+                            let reason = Some("plan_accepted".into());
+                            self.control_settle_dialog(id, pending, "unknown", reason, "")
+                        }
+                        Some(DialogEdge::Dismissed) => {
+                            self.control_settle_dialog(id, pending, "input_sent", None, "")
+                        }
+                        None if self.delivery_standing(id, &pending).is_none() => {
+                            self.control_settle_dialog(id, pending, "input_sent", None, "")
+                        }
+                        None if Instant::now() >= until => {
+                            let screen = self.dialog_screen(id);
+                            let shown = plan_dialog_drawn(&screen);
+                            let (status, reason) = match shown {
+                                true => ("unknown", Some("dialog_stands".to_string())),
+                                false => ("input_sent", None),
+                            };
+                            self.control_settle_dialog(id, pending, status, reason, &screen);
+                        }
+                        None => {
+                            pending.next = Instant::now() + Duration::from_millis(250);
+                            self.control.dialog_deliveries.insert(id, pending);
+                        }
+                    }
+                    continue;
+                }
                 let edge = self.control_dialog_edge(id, &pending.request);
                 let reject =
                     matches!(pending.answer, DeliveryAnswer::Dialog(api::DialogAnswer::Reject));
@@ -1411,11 +1456,13 @@ impl Daemon {
                 }
                 continue;
             }
+            // Why a plan sent back may not take its next key (T-943).
+            let mut held = "state_changed";
             let allowed = match &pending.by {
                 Deliverer::Phone { grant, device, .. } => {
                     let by = pending.by.principal();
                     let (action, waiting) = match pending.answer {
-                        DeliveryAnswer::Dialog(_) => {
+                        DeliveryAnswer::Dialog(_) | DeliveryAnswer::Revise { .. } => {
                             (Action::PromptExisting, self.dialog_waiting(id))
                         }
                         DeliveryAnswer::Approval { .. } => {
@@ -1428,9 +1475,18 @@ impl Daemon {
                             == Some(id)
                         && waiting
                 }
-                Deliverer::Crown { crown, session, .. } => {
-                    self.crown_answer_allowed(*crown, *session, pending.ticket, id)
-                }
+                Deliverer::Crown { crown, session, .. } => match &pending.answer {
+                    DeliveryAnswer::Revise { pane, .. } => {
+                        match self.crown_revise_held(*crown, *session, pending.ticket, id, pane) {
+                            Some(why) => {
+                                held = why;
+                                false
+                            }
+                            None => true,
+                        }
+                    }
+                    _ => self.crown_answer_allowed(*crown, *session, pending.ticket, id),
+                },
                 Deliverer::Board => self.dialog_waiting(id),
             };
             let standing = self.delivery_standing(id, &pending);
@@ -1445,7 +1501,7 @@ impl Daemon {
                 .filter(|_| self.mod_speaks(id, "answer"))
                 .and_then(|s| match s {
                     Standing::Dialog(d, response) => Some((d, dialog_plan(d, response))),
-                    Standing::Approval(..) => None,
+                    Standing::Approval(..) | Standing::Revise(..) => None,
                 })
                 .and_then(|(d, plan)| match (&d.content, plan) {
                     (api::DialogContent::Questions { questions }, Some(Plan::Single(a))) => {
@@ -1479,7 +1535,7 @@ impl Daemon {
             let kind = self.session_kind(id);
             let step = match standing {
                 None => Err("state_changed"),
-                Some(_) if !allowed => Err("state_changed"),
+                Some(_) if !allowed => Err(held),
                 Some(_)
                     if Instant::now() >= pending.deadline || pending.steps >= pending.max_steps =>
                 {
@@ -1488,6 +1544,19 @@ impl Daemon {
                 Some(s) => dialog_step_for(kind, s, &screen, &pending.walk).map_err(Miss::word),
             };
             let sid = id.simple().to_string()[..16].to_string();
+            // A plan sent back expects the cursor where its arrow puts it
+            // (T-943): a cursor anywhere else on the next screen is a
+            // person's hand, and stops the walk.
+            if let (
+                DeliveryAnswer::Revise { .. },
+                Ok(arrow @ (DialogStep::Up | DialogStep::Down)),
+            ) = (&pending.answer, &step)
+            {
+                pending.walk.at = plan_cursor(&screen).map(|at| match arrow {
+                    DialogStep::Up => at.saturating_sub(1),
+                    _ => at + 1,
+                });
+            }
             // `Ok(true)` is the last key: Enter, or Escape for a refusal. A
             // tick is remembered for one key, so the next screen must show it.
             pending.walk.toggled = None;
@@ -1514,6 +1583,8 @@ impl Daemon {
                             false
                         })
                     }
+                    // No key: the screen has not drawn the last one yet.
+                    DialogStep::Wait => Ok(false),
                 }
                 .map_err(|_| "pane_unreachable")
             });
@@ -1523,7 +1594,11 @@ impl Daemon {
                     let pause = if last { 250 } else { 350 };
                     pending.next = Instant::now() + Duration::from_millis(pause);
                     if last {
-                        pending.confirm = Some(Instant::now() + DIALOG_CONFIRM);
+                        let window = match pending.answer {
+                            DeliveryAnswer::Revise { .. } => PLAN_CHANGE_CONFIRM,
+                            _ => DIALOG_CONFIRM,
+                        };
+                        pending.confirm = Some(Instant::now() + window);
                         // The crown's answer is the turn's from here (T-569):
                         // its end wakes the crown with `answered your ask`,
                         // as the turn that took a sent ask does (T-469).
@@ -1603,6 +1678,13 @@ impl Daemon {
                 .get(&id)
                 .filter(|p| p.codex() && p.projection.request == pending.request)
                 .map(|p| Standing::Approval(&p.projection, *allow)),
+            DeliveryAnswer::Revise { text, .. } => self
+                .control
+                .dialogs
+                .get(&id)
+                .filter(|d| d.request == pending.request)
+                .filter(|d| matches!(d.content, api::DialogContent::Plan { .. }))
+                .map(|d| Standing::Revise(d, text)),
         }
     }
 
@@ -1663,7 +1745,13 @@ impl Daemon {
         if let Some(dialog) = self.control.dialogs.get(&id).filter(|d| d.request == pending.request)
         {
             trust = matches!(dialog.content, api::DialogContent::Trust { .. });
-            if waiting && dialog_shape_for(kind, dialog, screen) {
+            // A plan sent back may leave its words in the field (T-943),
+            // where the empty row's label no longer shows.
+            let drawn = match pending.answer {
+                DeliveryAnswer::Revise { .. } => plan_dialog_drawn(screen),
+                _ => dialog_shape_for(kind, dialog, screen),
+            };
+            if waiting && drawn {
                 standing = true;
             } else {
                 self.control.dialogs.remove(&id);
@@ -1681,7 +1769,9 @@ impl Daemon {
         match pending.by {
             Deliverer::Phone { grant, command, .. } => {
                 let event = match pending.answer {
-                    DeliveryAnswer::Dialog(_) => "mesophon_dialog_answer",
+                    DeliveryAnswer::Dialog(_) | DeliveryAnswer::Revise { .. } => {
+                        "mesophon_dialog_answer"
+                    }
                     DeliveryAnswer::Approval { .. } => {
                         if status != "unknown" {
                             self.control.permissions.remove(&id);
@@ -1700,6 +1790,7 @@ impl Daemon {
                 self.feed.board_outcome(by.actor(), "trust_accept", Some(pending.ticket), status);
             }
             Deliverer::Crown { crown, session, answer, reply, prior, .. } => {
+                let revise = matches!(pending.answer, DeliveryAnswer::Revise { .. });
                 self.crown_answer_settled(
                     id,
                     pending.ticket,
@@ -1708,21 +1799,28 @@ impl Daemon {
                     status,
                     standing,
                     prior,
+                    revise,
                 );
-                self.feed.board_answer(
-                    by.actor(),
-                    "answer_agent",
-                    Some(pending.ticket),
-                    status,
-                    &answer,
-                );
+                let cmd = if revise { "accept_plan" } else { "answer_agent" };
+                self.feed.board_answer(by.actor(), cmd, Some(pending.ticket), status, &answer);
                 let key = self.board.ticket(pending.ticket).map(|t| t.short_key.clone());
-                let response = Response::AgentAnswered {
-                    key: key.unwrap_or_default(),
-                    outcome: status.into(),
-                    reason,
-                    answer,
-                    seen: Some(self.seen_token(pending.ticket)),
+                let seen = Some(self.seen_token(pending.ticket));
+                // A plan sent back answers as the accept does (T-943): the
+                // crown called `accept_plan`.
+                let response = match revise {
+                    true => Response::AgentPlanAccepted {
+                        key: key.unwrap_or_default(),
+                        outcome: status.into(),
+                        reason,
+                        seen,
+                    },
+                    false => Response::AgentAnswered {
+                        key: key.unwrap_or_default(),
+                        outcome: status.into(),
+                        reason,
+                        answer,
+                        seen,
+                    },
                 };
                 if let Some(reply) = reply {
                     // Mid-tick, before the tick's own flush (T-582): the
@@ -1860,6 +1958,105 @@ impl Daemon {
         }
     }
 
+    /// The crown's plan sent back with words (T-943), past the accept's
+    /// gates (`crown_plan_check`): a Claude agent's alone, the words as they
+    /// came or refused, and the walk queued on Remote Control's road with the
+    /// crown's name on it, its seat's pane kept for every key's check. `Ok`
+    /// is the session whose dialog it walks; the receipt waits for it to
+    /// settle (`control_park_reply`).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn crown_plan_revise(
+        &mut self,
+        crown: ulid::Ulid,
+        session: uuid::Uuid,
+        target: ulid::Ulid,
+        key: &str,
+        request: &str,
+        text: String,
+    ) -> std::result::Result<uuid::Uuid, String> {
+        let id = self.crown_plan_check(target, key, request)?;
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
+            return Err(format!("{key} has no agent, so no plan to send back"));
+        };
+        if rec.kind != SessionKind::Claude {
+            return Err(format!(
+                "{key}'s agent is a codex, whose plan the board does not send back with words; \
+                 a person does, in the pane"
+            ));
+        }
+        let pane = rec.pane_key.clone();
+        if let Some(why) = dialog_text_refusal("change", &text) {
+            return Err(why);
+        }
+        if self.control_input_in_flight(id) {
+            return Err(format!("words for {key}'s agent are on their way; its plan waits"));
+        }
+        let (max_steps, walk) = ONE_WALK;
+        self.control.dialog_deliveries.insert(
+            id,
+            DialogDelivery {
+                by: Deliverer::Crown {
+                    crown,
+                    session,
+                    answer: text.clone(),
+                    reply: None,
+                    prior: None,
+                },
+                ticket: target,
+                request: request.into(),
+                answer: DeliveryAnswer::Revise { text, pane },
+                deadline: Instant::now() + walk,
+                next: Instant::now(),
+                steps: 0,
+                max_steps,
+                walk: Walk::default(),
+                confirm: None,
+                by_mod: None,
+            },
+        );
+        Ok(id)
+    }
+
+    /// Whether a dialog answer is on its way down `id`'s pane, anyone's.
+    pub(super) fn dialog_delivery_pending(&self, id: uuid::Uuid) -> bool {
+        self.control.dialog_deliveries.contains_key(&id)
+    }
+
+    /// Why the crown's plan sent back may not take its next key (T-943),
+    /// `None` when it may: what allowed it at the call (`crown_plan_allowed`'s
+    /// list), the same pane, and fresh, at the key, no tmux client in it. A
+    /// person there may be typing, and one the server cannot list counts as
+    /// there.
+    fn crown_revise_held(
+        &self,
+        crown: ulid::Ulid,
+        session: uuid::Uuid,
+        ticket: ulid::Ulid,
+        id: uuid::Uuid,
+        pane: &Option<String>,
+    ) -> Option<&'static str> {
+        let by = Principal::Agent { session };
+        let rec = self.board.live_agent(ticket).filter(|rec| {
+            rec.id == id
+                && rec.started_by.is_some()
+                && rec.kind == SessionKind::Claude
+                && rec.state.has_pane()
+                && rec.state == SessionState::RequiresAction { reason: Reason::Plan }
+                && &rec.pane_key == pane
+        });
+        let Some(rec) = rec.filter(|_| {
+            self.board.is_crowned(crown)
+                && self.board.crown_mode.answers()
+                && !authorize(&by, &Action::Mutate, &Resource::Ticket { id: ticket }).denied()
+        }) else {
+            return Some("state_changed");
+        };
+        if self.backend.has_clients(&format!("={}", rec.sid16())).unwrap_or(true) {
+            return Some("a_person_attached");
+        }
+        None
+    }
+
     /// Whether the crown's answer may take its next key (T-569): what
     /// allowed it at the call still holds — the crown on its ticket, the
     /// board's switch, an agent the crown started on that ticket at a
@@ -1888,7 +2085,8 @@ impl Daemon {
     /// card's line `answered by T-411: <answer>` until the next state edge
     /// (`crown_answer_lines`). Keys that went in with the dialog still up
     /// give the turn its mark back. An answer no key carried shows nothing:
-    /// its feed line is the record.
+    /// its feed line is the record. A plan sent back (`revise`, T-943) reads
+    /// `♛ sent plan back` and `plan sent back by T-411: <words>`.
     #[allow(clippy::too_many_arguments)]
     fn crown_answer_settled(
         &mut self,
@@ -1899,6 +2097,7 @@ impl Daemon {
         status: &str,
         standing: bool,
         prior: Option<Option<TurnAsk>>,
+        revise: bool,
     ) {
         // The mod's answer lost the race to the person's own (T-576): the
         // turn is theirs, so it gets its mark back, as keys a dialog never
@@ -1924,13 +2123,17 @@ impl Daemon {
         let by = self.board.ticket(crown).map(|t| t.short_key.clone()).unwrap_or_default();
         let shown = mesimon_core::text::cap_bytes(answer, CROWN_ANSWER_LINE_BYTES);
         let tail = if shown.len() < answer.len() { "…" } else { "" };
-        let line = format!("answered by {by}: {shown}{tail}");
+        let (head, touch) = match revise {
+            true => ("plan sent back by", "sent plan back"),
+            false => ("answered by", "answered"),
+        };
+        let line = format!("{head} {by}: {shown}{tail}");
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
             rec.detail = Some(line.clone());
             self.crown_answer_lines.insert(id, line);
             self.persist_sessions();
         }
-        self.crown_touched(crown, ticket, "answered");
+        self.crown_touched(crown, ticket, touch);
         self.crown_said(ticket, answer);
         self.broadcast();
     }
@@ -4506,21 +4709,12 @@ fn crown_answers(
                     return Err(format!("indices names an option twice for {which}"));
                 }
             }
-            Q::Text { text } if text.contains(['\n', '\r']) => {
-                return Err("text is one line; a newline would submit the dialog early".into());
+            Q::Text { text } => {
+                if let Some(why) = dialog_text_refusal("text", text) {
+                    return Err(why);
+                }
             }
-            Q::Text { text } if text.len() > DIALOG_TEXT_MAX => {
-                return Err(format!(
-                    "text is {} bytes; a dialog takes at most {DIALOG_TEXT_MAX}",
-                    text.len()
-                ));
-            }
-            Q::Text { text } if !dialog_text_ok(text) => {
-                return Err("text is blank or carries characters a dialog cannot take; plain \
-                            words only"
-                    .into());
-            }
-            Q::Choice { .. } | Q::Text { .. } => {}
+            Q::Choice { .. } => {}
         }
     }
     Ok(answers)
@@ -4575,6 +4769,9 @@ enum DialogStep {
         question: usize,
         text: String,
     },
+    /// No key this pass (T-943): the field still reads empty after the
+    /// paste, which the screen has not drawn yet.
+    Wait,
 }
 
 /// What an answer's earlier keys did that the screen alone does not say
@@ -4584,6 +4781,8 @@ enum DialogStep {
 struct Walk {
     pasted: Vec<usize>,
     toggled: Option<(usize, usize)>,
+    /// The row a plan sent back's last arrow put the cursor on (T-943).
+    at: Option<usize>,
 }
 
 /// The keys and the time a walk to one row and its Enter may take (T-567):
@@ -4643,6 +4842,11 @@ enum Miss {
     /// The batch's review lists an answer other than the one sent (T-571),
     /// so `Submit answers` is not pressed.
     AnswerDiffers,
+    /// The cursor is not where the last arrow put it (T-943): a person's.
+    CursorMoved,
+    /// The plan dialog's feedback field holds words that are not the
+    /// crown's (T-943): a person's, never added to or submitted.
+    FieldTouched,
 }
 impl Miss {
     fn word(self) -> &'static str {
@@ -4652,6 +4856,8 @@ impl Miss {
             Miss::ShapeUnrecognised => "shape_unrecognised",
             Miss::TickNotTaken => "tick_not_taken",
             Miss::AnswerDiffers => "answer_differs",
+            Miss::CursorMoved => "cursor_moved",
+            Miss::FieldTouched => "field_touched",
         }
     }
 }
@@ -4666,6 +4872,25 @@ enum Plan {
     Batch(Vec<api::QuestionAnswer>),
     Accept,
     Reject,
+}
+
+/// Why a dialog's text row may not take `text`, in the words the crown
+/// reads, its argument named `name` (`text`, or `change` for a plan sent
+/// back, T-943); `None` when it may. Refused, never rewritten: a newline
+/// would submit the dialog early, a cut changes what was meant.
+pub(super) fn dialog_text_refusal(name: &str, text: &str) -> Option<String> {
+    if text.contains(['\n', '\r']) {
+        return Some(format!("{name} is one line; a newline would submit the dialog early"));
+    }
+    if text.len() > DIALOG_TEXT_MAX {
+        return Some(format!(
+            "{name} is {} bytes; a dialog takes at most {DIALOG_TEXT_MAX}",
+            text.len()
+        ));
+    }
+    (!dialog_text_ok(text)).then(|| {
+        format!("{name} is blank or carries characters a dialog cannot take; plain words only")
+    })
 }
 
 /// Words a dialog's text row may take: one line, Remote Control's cap, and
@@ -4993,6 +5218,10 @@ fn dialog_step_for(
 ) -> Result<DialogStep, Miss> {
     match standing {
         Standing::Approval(projection, allow) => codex_approval_step(screen, allow, projection),
+        // A codex's plan sent back is unmeasured (T-943): refused at the
+        // call, and no key here.
+        Standing::Revise(..) if kind == SessionKind::Codex => Err(Miss::ShapeUnrecognised),
+        Standing::Revise(dialog, text) => revise_step(dialog, text, screen, walk),
         Standing::Dialog(dialog, response) if codex_shapes(kind, dialog) => {
             codex_dialog_step(dialog, response, screen)
         }
@@ -5217,6 +5446,87 @@ fn dialog_step(
     }
     let target = option_row(&rows, &label, &description)?;
     Ok(toward(current, target, DialogStep::Submit))
+}
+
+/// The plan dialog's feedback row as Claude Code draws it (measured on
+/// 2.1.310, T-943): `N. Tell Claude what to change` while its field is
+/// empty, the field's words in that place once typed or pasted, and under it
+/// the hint `shift+tab to approve with this feedback` and the `ctrl+g to
+/// edit in <editor> · <plan file>` line, which `dialog_rows` joins onto it.
+const FEEDBACK_ROW: &str = "Tell Claude what to change";
+const FEEDBACK_HINTS: [&str; 2] = ["shift+tab to approve with this feedback", "ctrl+g to edit"];
+
+/// A plan dialog row's field, squeezed: its text up to the hints drawn
+/// under the feedback row, or `None` when what follows is not those hints
+/// alone (the approve hint, then the editor line, each optional). Words
+/// that spell a hint are cut there and never read as the field.
+fn feedback_field(row: &str) -> Option<String> {
+    let row = squeeze(row);
+    let [approve, edit] = FEEDBACK_HINTS.map(squeeze);
+    let cut = [&approve, &edit].iter().filter_map(|h| row.find(h.as_str())).min();
+    let (field, tail) = row.split_at(cut.unwrap_or(row.len()));
+    let tail = tail.strip_prefix(approve.as_str()).unwrap_or(tail);
+    (tail.is_empty() || tail.starts_with(edit.as_str())).then(|| field.to_string())
+}
+
+/// Whether `screen` draws Claude Code's plan dialog, its feedback field
+/// empty or not (T-943): the question and the manual accept row, which every
+/// measured version shows.
+fn plan_dialog_drawn(screen: &str) -> bool {
+    let screen = squeeze(screen);
+    screen.contains("Wouldyouliketoproceed?") && screen.contains("Yes,manuallyapproveedits")
+}
+
+/// The plan dialog's cursor row on `screen`, if it shows exactly one.
+fn plan_cursor(screen: &str) -> Option<usize> {
+    dialog_rows(screen).and_then(|rows| cursor(&rows).ok())
+}
+
+/// One key of a plan sent back with words (T-943), read off the screen
+/// before every key, the same for both roads (the mod road draws the native
+/// dialog too). Before the paste: the cursor where the last arrow put it,
+/// the one row whose field is the untouched `Tell Claude what to change`,
+/// arrows toward it, and the paste only with the cursor on it. After: the
+/// cursor still there and the field reading the words whole (squeezed, the
+/// row's hints aside), then Enter; a field still empty is the paste not yet
+/// drawn. Anything else sends nothing: words that are not the crown's are a
+/// person's, never added to, and no other row is ever pressed.
+fn revise_step(
+    dialog: &api::Dialog,
+    text: &str,
+    screen: &str,
+    walk: &Walk,
+) -> Result<DialogStep, Miss> {
+    if !matches!(dialog.content, api::DialogContent::Plan { .. }) || !plan_dialog_drawn(screen) {
+        return Err(Miss::ShapeUnrecognised);
+    }
+    let rows = dialog_rows(screen).ok_or(Miss::ShapeUnrecognised)?;
+    let current = cursor(&rows)?;
+    let fields: Vec<Option<String>> = rows.iter().map(|r| feedback_field(&r.text)).collect();
+    let label = squeeze(FEEDBACK_ROW);
+    let Some(&row) = walk.pasted.first() else {
+        if walk.at.is_some_and(|at| at != current) {
+            return Err(Miss::CursorMoved);
+        }
+        let mut empty = fields.iter().enumerate().filter(|(_, f)| f.as_deref() == Some(&label));
+        return match (empty.next(), empty.next()) {
+            (Some((target, _)), None) if target == current => {
+                Ok(DialogStep::Paste { question: target, text: text.to_string() })
+            }
+            (Some((target, _)), None) => Ok(toward(current, target, DialogStep::Wait)),
+            // The plan dialog is drawn and no row reads the empty field:
+            // someone has typed into it.
+            _ => Err(Miss::FieldTouched),
+        };
+    };
+    if current != row {
+        return Err(Miss::CursorMoved);
+    }
+    match fields.get(row).and_then(Option::as_deref) {
+        Some(field) if field == squeeze(text) => Ok(DialogStep::Submit),
+        Some(field) if field == label => Ok(DialogStep::Wait),
+        _ => Err(Miss::FieldTouched),
+    }
 }
 
 /// One key of a trust dialog's accept (T-844): the dialog's own Yes row,
@@ -5510,7 +5820,7 @@ mod tests {
     }
     /// A walk that has pasted into the first question's text row.
     fn pasted() -> Walk {
-        Walk { pasted: vec![0], toggled: None }
+        Walk { pasted: vec![0], ..Walk::default() }
     }
     fn question() -> api::Dialog {
         api::Dialog {
@@ -7587,5 +7897,146 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         assert!(Daemon::codex_questions(&[q(9, false)]).is_none());
         assert!(Daemon::codex_questions(&[]).is_none());
         assert!(Daemon::codex_questions(&vec![q(2, false); 5]).is_none());
+    }
+
+    /// Claude Code 2.1.310's plan dialog as captured on 2026-10-24 (T-943),
+    /// the plan's own numbered steps above it, with `field` drawn where the
+    /// feedback row's label is and the cursor `❯` on row `at` (0-based).
+    fn plan_screen(field: &str, at: usize) -> String {
+        let rows = ["Yes, and use auto mode", "Yes, manually approve edits", field];
+        let mut screen = String::from(
+            "   Ready to code?\n   Here is Claude's plan:\n   Steps\n   1. Write a.txt with \
+             the content hi.\n   2. Verify by reading a.txt.\n   Claude has written up a plan \
+             and is ready to execute. Would you like to proceed?\n",
+        );
+        for (i, row) in rows.iter().enumerate() {
+            let mark = if i == at { "❯" } else { " " };
+            screen.push_str(&format!("   {mark} {}. {row}\n", i + 1));
+        }
+        screen.push_str("        shift+tab to approve with this feedback\n");
+        screen.push_str("   ctrl+g to edit in Nvim · ~/.claude/plans/peaceful-brooks.md\n");
+        screen
+    }
+
+    fn plan_dialog() -> api::Dialog {
+        api::Dialog {
+            request: "toolu_p".into(),
+            content: api::DialogContent::Plan { markdown: "1. Write a.txt".into() },
+        }
+    }
+
+    /// T-943: the walk to the feedback row reads its measured label, moves
+    /// one row a key, and pastes only with the cursor on the empty field.
+    #[test]
+    fn a_plan_sent_back_walks_to_the_empty_feedback_field_and_pastes_there() {
+        let d = plan_dialog();
+        let words = "Use echo in Bash instead of the Write tool.";
+        let empty = |at| plan_screen("Tell Claude what to change", at);
+        assert_eq!(revise_step(&d, words, &empty(0), &Walk::default()), Ok(DialogStep::Down));
+        let after_one = Walk { at: Some(1), ..Walk::default() };
+        assert_eq!(revise_step(&d, words, &empty(1), &after_one), Ok(DialogStep::Down));
+        let after_two = Walk { at: Some(2), ..Walk::default() };
+        assert_eq!(
+            revise_step(&d, words, &empty(2), &after_two),
+            Ok(DialogStep::Paste { question: 2, text: words.into() })
+        );
+        // A cursor the arrow did not put there is a person's hand.
+        assert_eq!(revise_step(&d, words, &empty(0), &after_one), Err(Miss::CursorMoved));
+        // The older dialog's four rows (`No, keep planning` third): the
+        // row is found by its label, never by its place.
+        let four = "Would you like to proceed?\n ❯ 1. Yes, and use auto mode\n   2. Yes, \
+                    manually approve edits\n   3. No, keep planning\n   4. Tell Claude what \
+                    to change\n";
+        assert_eq!(revise_step(&d, words, four, &Walk::default()), Ok(DialogStep::Down));
+        let on_four = four.replace("❯ 1.", "  1.").replace("  4.", "❯ 4.");
+        let walk = Walk { at: Some(3), ..Walk::default() };
+        assert_eq!(
+            revise_step(&d, words, &on_four, &walk),
+            Ok(DialogStep::Paste { question: 3, text: words.into() })
+        );
+    }
+
+    /// T-943: Enter only once the field reads the words whole, its hints
+    /// aside; a field still empty waits for the paste to draw, and anything
+    /// else (other words, a cursor gone, a field typed into first) sends
+    /// nothing.
+    #[test]
+    fn a_plan_sent_back_presses_enter_only_on_its_own_words() {
+        let d = plan_dialog();
+        let words = "Use echo in Bash instead of the Write tool.";
+        let pasted = Walk { pasted: vec![2], at: Some(2), ..Walk::default() };
+        let typed = plan_screen(words, 2);
+        assert_eq!(revise_step(&d, words, &typed, &pasted), Ok(DialogStep::Submit));
+        let empty = plan_screen("Tell Claude what to change", 2);
+        assert_eq!(revise_step(&d, words, &empty, &pasted), Ok(DialogStep::Wait));
+        // A long line wraps under its row and still reads whole.
+        let long = "Name the file b.txt instead, write the word bye into it, and verify it \
+                    by reading it back before the turn ends.";
+        let wrapped = plan_screen(
+            "Name the file b.txt instead, write the word bye into it, and verify\n        it by \
+             reading it back before the turn ends.",
+            2,
+        );
+        assert_eq!(revise_step(&d, long, &wrapped, &pasted), Ok(DialogStep::Submit));
+        // A prefix is not the words, nor are the words with more after them.
+        let cut = plan_screen("Use echo in Bash", 2);
+        assert_eq!(revise_step(&d, words, &cut, &pasted), Err(Miss::FieldTouched));
+        let more = plan_screen(&format!("{words} and more"), 2);
+        assert_eq!(revise_step(&d, words, &more, &pasted), Err(Miss::FieldTouched));
+        // A person moved the cursor back to an accept row after the paste.
+        assert_eq!(revise_step(&d, words, &plan_screen(words, 0), &pasted), Err(Miss::CursorMoved));
+        // Words already in the field before any paste are a person's.
+        let theirs = plan_screen("my own note", 0);
+        assert_eq!(revise_step(&d, words, &theirs, &Walk::default()), Err(Miss::FieldTouched));
+        // Words that spell a hint are cut at it, so they never read whole.
+        let hinted = "see ctrl+g to edit";
+        assert_eq!(
+            revise_step(&d, hinted, &plan_screen(hinted, 2), &pasted),
+            Err(Miss::FieldTouched)
+        );
+    }
+
+    /// T-943: no plan dialog, two cursors, or a question's dialog: no key.
+    #[test]
+    fn a_plan_sent_back_sends_nothing_into_another_screen() {
+        let d = plan_dialog();
+        let words = "x";
+        assert_eq!(
+            revise_step(&d, words, "❯ ordinary composer", &Walk::default()),
+            Err(Miss::ShapeUnrecognised)
+        );
+        let two = plan_screen("Tell Claude what to change", 0).replace("  2.", "❯ 2.");
+        assert_eq!(revise_step(&d, words, &two, &Walk::default()), Err(Miss::ShapeUnrecognised));
+        let question = api::Dialog {
+            request: "toolu_p".into(),
+            content: api::DialogContent::Questions { questions: vec![] },
+        };
+        let screen = plan_screen("Tell Claude what to change", 0);
+        assert_eq!(
+            revise_step(&question, words, &screen, &Walk::default()),
+            Err(Miss::ShapeUnrecognised)
+        );
+    }
+
+    /// T-943: the crown's words are refused, never rewritten: blank, a
+    /// newline, past 1000 bytes, or anything `sanitize_prompt` would change
+    /// (its trim among them); what passes is the words exactly.
+    #[test]
+    fn a_plan_change_is_refused_never_rewritten() {
+        assert_eq!(dialog_text_refusal("change", "Use echo,  not Write."), None);
+        for (bad, says) in [
+            ("", "blank"),
+            ("   ", "blank"),
+            (" padded ", "characters"),
+            ("one\ntwo", "one line"),
+            ("one\rtwo", "one line"),
+            ("\u{1b}[31mred", "characters"),
+        ] {
+            let why = dialog_text_refusal("change", bad).expect(bad);
+            assert!(why.starts_with("change is") && why.contains(says), "{bad:?}: {why}");
+        }
+        let long = "a".repeat(DIALOG_TEXT_MAX + 1);
+        assert!(dialog_text_refusal("change", &long).unwrap().contains("1000"));
+        assert_eq!(dialog_text_refusal("change", &"a".repeat(DIALOG_TEXT_MAX)), None);
     }
 }

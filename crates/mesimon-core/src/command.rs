@@ -1283,6 +1283,22 @@ pub enum Command {
         seen: Option<String>,
         request: String,
     },
+    /// Send back the plan another ticket's agent stopped on, with words
+    /// (T-943): `accept_plan` with its `change`, as a person's "Tell Claude
+    /// what to change" does. The board walks the plan dialog to that row,
+    /// pastes `text` into its empty field and presses Enter, the screen read
+    /// before every key. The same gates as `AgentAcceptPlan`, Claude only. A
+    /// command of its own, never a field on the accept: a daemon from before
+    /// it ignores an unknown field and would ACCEPT the plan, and an unknown
+    /// command it refuses. The receipt is `AgentPlanAccepted`, its outcome
+    /// `input_sent` or `unknown`.
+    AgentRevisePlan {
+        key: String,
+        #[serde(default)]
+        seen: Option<String>,
+        request: String,
+        text: String,
+    },
     /// Mint a NEW ticket (`create_ticket`). The one agent command that is
     /// not about the caller's own ticket, and the one place the tier makes a
     /// second card: an agent that finds work outside its ticket's scope
@@ -1699,6 +1715,7 @@ impl Command {
             | AgentAskBoard { .. }
             | AgentAnswerTicket { .. }
             | AgentAcceptPlan { .. }
+            | AgentRevisePlan { .. }
             | AgentRaiseHand { .. } => m(Mutate, false, None),
         }
     }
@@ -1707,6 +1724,47 @@ impl Command {
 #[cfg(test)]
 mod meta_tests {
     use super::*;
+
+    /// T-943: a plan sent back with words must never read as an accept to a
+    /// daemon from before it. That daemon's `Command`, frozen here as far as
+    /// the plan goes, ignores a field it does not know, so a `change` riding
+    /// `agent_accept_plan` would be accepted; `agent_revise_plan` is a
+    /// command it has no variant for, which its envelope refuses.
+    #[test]
+    fn a_plan_sent_back_never_reads_as_an_accept_to_an_older_daemon() {
+        #[derive(Debug, Deserialize)]
+        #[serde(tag = "cmd", rename_all = "snake_case")]
+        #[allow(dead_code)]
+        enum OldCommand {
+            AgentAcceptPlan {
+                key: String,
+                #[serde(default)]
+                seen: Option<String>,
+                request: String,
+            },
+        }
+        let revise = Command::AgentRevisePlan {
+            key: "T-1".into(),
+            seen: Some("s".into()),
+            request: "toolu_1".into(),
+            text: "Use echo, not Write.".into(),
+        };
+        let wire = serde_json::to_value(&revise).unwrap();
+        assert_eq!(wire["cmd"], "agent_revise_plan");
+        assert!(serde_json::from_value::<OldCommand>(wire).is_err(), "an old reader refuses it");
+        // The hole the separate command closes: the same words as a field.
+        let mut accept = serde_json::to_value(Command::AgentAcceptPlan {
+            key: "T-1".into(),
+            seen: Some("s".into()),
+            request: "toolu_1".into(),
+        })
+        .unwrap();
+        accept["change"] = serde_json::json!("Use echo, not Write.");
+        assert!(matches!(
+            serde_json::from_value::<OldCommand>(accept),
+            Ok(OldCommand::AgentAcceptPlan { .. })
+        ));
+    }
 
     #[test]
     fn the_feed_name_is_the_wire_name() {
@@ -2354,6 +2412,9 @@ pub enum Response {
     /// followed inside the window, `queued` with `reason` naming what holds
     /// the checkout when the press still waits for it, `unknown` with
     /// `reason` when no Enter went — `a_person_answered` among them.
+    /// AgentRevisePlan's too (T-943): `input_sent` once its Enter went and
+    /// the dialog left, `unknown` with `reason` for anything else. Nothing
+    /// says the words were read: the dialog leaves the same way for an Esc.
     AgentPlanAccepted {
         key: String,
         outcome: String,
