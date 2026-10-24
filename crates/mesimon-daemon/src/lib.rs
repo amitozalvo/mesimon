@@ -99,7 +99,12 @@ pub fn spawn_detached(repo_root: &Path) -> Result<()> {
 /// call this, so they cannot disagree about which fields they read; a `None`
 /// on either side means "unknown" and never "changed" (D26 fails closed).
 pub fn exe_stamp() -> Option<mesimon_core::command::ExeStamp> {
-    let exe = mesimon_core::exe::current_exe().ok()?;
+    exe_stamp_at(&mesimon_core::exe::current_exe().ok()?)
+}
+
+/// `exe_stamp` of the file at `exe`: the daemon re-reads its own path with it
+/// for `list_board`'s `daemon` (T-941).
+pub fn exe_stamp_at(exe: &std::path::Path) -> Option<mesimon_core::command::ExeStamp> {
     let md = std::fs::metadata(exe).ok()?;
     let mtime_ms = mesimon_core::clock::epoch_ms(md.modified().ok()?)?;
     Some(mesimon_core::command::ExeStamp { mtime_ms, len: md.len() })

@@ -31843,3 +31843,45 @@ assertion, so this was watched once on the real thing:
 The park clock fired 600 s after the park, as at 02:03:10. The same assertion id was held
 straight through the change to `Monitoring`, which before this change released it, and it was
 released within a second of the turn's end.
+
+## `list_board` states the running daemon and the file at its path (T-941, 2026-10-24, "The board states the running daemon's build and whether the binary on disk is newer")
+
+**The gap.** A crown merged two daemon fixes (T-931 at 00:18, T-933 at 00:40), the binary was
+rebuilt at 00:47, and the daemon that had started at 00:01:51 ran the night on the old code. The
+restart is a person's `U`; the crown had no board fact saying the fixes were not running.
+
+**The change, a fact.** `list_board` carries `daemon { build, started_at, path, binary, about }`
+(`AgentDaemonView`, additive and optional on `AgentBoardView`):
+- `build` is `Hello`'s, from one `Daemon::build()` both read, `MESIMON_FAKE_BUILD` included.
+- `started_at` is the daemon's start, spelt `@<secs>` as notes' `edited_at`.
+- `path` is the file compared: `MESIMON_DAEMON_EXE` (the seam), else `exe::current_exe`.
+- `binary` is `same | differs | unknown` (`BinaryStamp::compare`). It compares `(mtime, len)`
+  taken at start, still the first statement of `run`, with one stat of that path at the read: no
+  fork, no tick, nothing stored.
+- `about` is `mcp::DAEMON_ABOUT`, two sentences. The first says what `binary` compares, and that
+  `differs` means the file changed, not which code is newer. The second says a rebuild or install
+  replaces the file while the daemon keeps the code it started with until it restarts.
+
+**Refused, on purpose** (T-940's review, then the crown's cuts):
+- **`newer`.** The brief's word was `newer`. An mtime is a stamp, not commit ancestry or a hash, so
+  the word is `differs`, and the comparison is unordered: an older file put back reads `differs`
+  too.
+- **`build_skew`.** The TUI helper mixes the comparison with permission to restart: a foreground
+  daemon, the in-process e2e daemon and `MESIMON_NO_DAEMON_RESTART` all read false there. The view
+  is never gated on `detached`.
+- **Client builds.** The builds a connected client's `Hello` names were planned and cut: another
+  fact, with its own parsing, that the gap did not need.
+- **Advice.** No advice, no warning, no acknowledgement state, and nothing about a running
+  worker's mod. The tool descriptions are unchanged; T-930 owns that text.
+
+**Tests.**
+- `command::tests::a_binary_stamp_says_same_differs_or_unknown`: a same-version rebuild (mtime
+  alone), a length change, an older stamp, either side unknown, and the wire words.
+- `mcp::tests::the_daemon_about_states_the_stamp_and_the_reload`: two sentences, under 400 bytes,
+  linted.
+- `mcp_e2e::list_board_states_the_running_daemon`: a foreground daemon on a stand-in file with
+  `MESIMON_FAKE_BUILD`. It reads `same`, then `differs` after `set_modified`, then `unknown` once
+  the file is removed. The build matches `Hello`'s, and `board_version` does not move.
+- The rig's DB1: `binary_moved` moves the rig binary's mtime a second on, bytes untouched. The crown,
+  asked in plain words, answers `differs` and starts nothing. `binary_back` restores the stamp,
+  and `until = { crown_only = true }` is the worker-free wait it needed.

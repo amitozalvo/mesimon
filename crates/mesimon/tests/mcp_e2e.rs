@@ -690,6 +690,84 @@ fn agent_board_tools_tier_and_collisions() {
     let _ = daemon.join();
 }
 
+/// T-941: `list_board` states the daemon that answers: `Hello`'s build, and
+/// the file at its own path now against the one it started from. The file is
+/// a stand-in (`MESIMON_DAEMON_EXE`), so the binary every parallel test runs
+/// is never touched. A foreground daemon (no restart is ever ours to make)
+/// reports all the same, and reading the field moves nothing on the board.
+#[test]
+fn list_board_states_the_running_daemon() {
+    if !common::require_tmux() {
+        return;
+    }
+    let fixture = common::TestFixture::new("mcp-daemon");
+    let dir = fixture.dir.clone();
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let paths = fixture.paths(&repo);
+    let sock = paths.orch_sock();
+
+    let stub = dir.join("claude-stub.sh");
+    std::fs::write(&stub, "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do sleep 1; done\n").unwrap();
+    std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let exe = dir.join("mesimon-standin");
+    std::fs::write(&exe, "the daemon's binary").unwrap();
+
+    fixture.set_env("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
+    fixture.set_env("MESIMON_CLAUDE_BIN", &stub);
+    fixture.set_env("MESIMON_NO_TAG_SEED", "1");
+    fixture.set_env("MESIMON_DAEMON_EXE", &exe);
+    fixture.set_env("MESIMON_FAKE_BUILD", "0.0.1-fake");
+    let daemon = fixture.daemon(&repo);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !sock.exists() {
+        assert!(Instant::now() < deadline, "daemon socket never appeared");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let mut c = TestClient::connect(&sock);
+    let Response::Hello { build, detached, .. } = c.request(Command::Hello {
+        version: mesimon_core::command::PROTOCOL_VERSION,
+        client: "mcp-daemon-e2e".into(),
+    }) else {
+        panic!("hello")
+    };
+    assert!(!detached, "a foreground daemon, which no client may restart");
+    let ticket = c.create_ticket("the work");
+    let sid = c.spawn_claude(ticket);
+    let mut shim = Shim::start(&sock, sid);
+    let _ = shim.rpc("initialize", json!({"protocolVersion": "2025-11-25"}));
+    shim.notify("notifications/initialized");
+
+    let fresh = shim.call_ok("list_board", json!({}));
+    let version = fresh["board_version"].clone();
+    let d = &fresh["daemon"];
+    assert_eq!(d["build"], build.as_str(), "the build Hello says: {d}");
+    assert_eq!(d["build"], "0.0.1-fake", "{d}");
+    assert_eq!(d["path"], exe.display().to_string(), "the file compared is named: {d}");
+    assert_eq!(d["binary"], "same", "a fresh boot: {d}");
+    assert!(d["started_at"].as_str().unwrap().starts_with('@'), "{d}");
+    assert_eq!(d["about"], mesimon_core::mcp::DAEMON_ABOUT);
+
+    // A same-version rebuild: same bytes, a later mtime. The stamp differs,
+    // and the build the daemon runs does not move with it.
+    let later = std::time::SystemTime::now() + Duration::from_secs(60);
+    std::fs::File::options().write(true).open(&exe).unwrap().set_modified(later).unwrap();
+    let moved = shim.call_ok("list_board", json!({}));
+    assert_eq!(moved["daemon"]["binary"], "differs", "{}", moved["daemon"]);
+    assert_eq!(moved["daemon"]["build"], "0.0.1-fake");
+
+    // Gone from its path: the comparison is unavailable, never "differs".
+    std::fs::remove_file(&exe).unwrap();
+    let gone = shim.call_ok("list_board", json!({}));
+    assert_eq!(gone["daemon"]["binary"], "unknown", "{}", gone["daemon"]);
+
+    assert_eq!(gone["board_version"], version, "reading the field changes nothing");
+
+    drop(shim);
+    let _ = c.request(Command::Shutdown);
+    let _ = daemon.join();
+}
+
 /// Run the real `mesimon gate` over a PreToolUse payload and return its stdout.
 fn gate_raw(
     hook_sock: &std::path::Path,

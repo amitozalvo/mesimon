@@ -2954,6 +2954,52 @@ pub struct AgentBoardView {
     /// person linked none; the crown then asks no other board.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub linked_boards: Vec<LinkView>,
+    /// The daemon answering (T-941): its build, when it started, and whether
+    /// the file at its own path is still the one it started from. A crown
+    /// planned a night on fixes merged and rebuilt after the daemon began.
+    /// Absent from a daemon before the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daemon: Option<AgentDaemonView>,
+}
+
+/// `list_board`'s `daemon` (T-941). A fact, never advice: nothing here
+/// restarts or warns, and `binary` is a stamp comparison, not a version
+/// relation (an mtime does not say which code is newer).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentDaemonView {
+    /// What `Hello` says the daemon's build is.
+    pub build: String,
+    /// When this daemon started, as notes' `edited_at` spells a time.
+    pub started_at: String,
+    /// The file `binary` compares; empty when the daemon could not name it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub path: String,
+    pub binary: BinaryStamp,
+    /// `mcp::DAEMON_ABOUT`.
+    pub about: String,
+}
+
+/// The file at the daemon's path now against the one it started from, by
+/// (mtime, len) as `Hello`'s `exe_stamp` reads it (T-941).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BinaryStamp {
+    Same,
+    /// The file changed since the daemon started: replaced, rebuilt or
+    /// touched. Not "newer code", which a stamp cannot establish.
+    Differs,
+    /// Either stamp could not be read (D26: unknown is never "changed").
+    Unknown,
+}
+
+impl BinaryStamp {
+    pub fn compare(started: Option<ExeStamp>, now: Option<ExeStamp>) -> BinaryStamp {
+        match (started, now) {
+            (Some(a), Some(b)) if a == b => BinaryStamp::Same,
+            (Some(_), Some(_)) => BinaryStamp::Differs,
+            _ => BinaryStamp::Unknown,
+        }
+    }
 }
 
 /// One tier as `list_board` shows it (T-584). `model` empty and `effort`
@@ -3756,6 +3802,29 @@ pub enum Event {
 
 #[cfg(test)]
 mod tests {
+
+    /// T-941: the stamp comparison says only what a stamp establishes. A
+    /// same-version rebuild moves the mtime alone and reads `differs`; an
+    /// unreadable stamp on either side is `unknown`, never `differs`.
+    #[test]
+    fn a_binary_stamp_says_same_differs_or_unknown() {
+        use super::{BinaryStamp, ExeStamp};
+        let s = |mtime_ms, len| Some(ExeStamp { mtime_ms, len });
+        assert_eq!(BinaryStamp::compare(s(5, 100), s(5, 100)), BinaryStamp::Same);
+        assert_eq!(BinaryStamp::compare(s(5, 100), s(6, 100)), BinaryStamp::Differs);
+        assert_eq!(BinaryStamp::compare(s(5, 100), s(5, 101)), BinaryStamp::Differs);
+        assert_eq!(BinaryStamp::compare(s(6, 100), s(5, 100)), BinaryStamp::Differs, "not ordered");
+        assert_eq!(BinaryStamp::compare(None, s(5, 100)), BinaryStamp::Unknown);
+        assert_eq!(BinaryStamp::compare(s(5, 100), None), BinaryStamp::Unknown);
+        assert_eq!(BinaryStamp::compare(None, None), BinaryStamp::Unknown);
+        for (b, w) in [
+            (BinaryStamp::Same, "same"),
+            (BinaryStamp::Differs, "differs"),
+            (BinaryStamp::Unknown, "unknown"),
+        ] {
+            assert_eq!(serde_json::to_string(&b).unwrap(), format!("\"{w}\""));
+        }
+    }
 
     /// T-920: a start receipt's `prompt` is the same word on the wire and on
     /// the crown's receipt, and a daemon from before it sends none.

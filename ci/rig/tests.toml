@@ -144,6 +144,10 @@
 #              would; `person_leaves` waits for the board to owe the crown
 #              its wake, stays `hold` seconds watching the wake row and the
 #              feed, then detaches and ends at the crown's turn on the wake.
+#              `binary_moved` (T-941) moves the rig daemon's binary's mtime a
+#              second on, bytes untouched, and `binary_back` restores it (DB1); a
+#              crown step with `until = { crown_only = true }` waits on the
+#              crown's settle alone, no worker.
 #
 # The prompts are explicit and small, so the repository's CLAUDE.md does not
 # send a Sonnet worker off to work: a run is a few turns per test, cents.
@@ -1383,3 +1387,21 @@ checks = ["started_by_crown", "held_for_person", "crown_line:A1:seen"]
   [[test.steps]]
   rig = "person_leaves"
   hold = 12
+
+[[test]]
+id = "DB1"
+title = "DB1 · the crown says whether the board's daemon still runs the binary at its path: do the steps below"
+workspace = "worktree"
+brief = "Nothing starts on this ticket: the test is the crown's read of the board."
+expect = "the rig daemon's binary keeps its bytes and its mtime moves a second on, as a same-version rebuild leaves it. Asked in plain words whether the daemon runs the file now on disk, naming no tool or field, the crown reads list_board's daemon (T-941) and answers that the file differs from the one the daemon started from; it restarts nothing and starts no agent."
+checks = ["crown_line:DB1 binary:differs", "crown:start_agent=0"]
+
+  [[test.steps]]
+  rig = "binary_moved"
+
+  [[test.steps]]
+  crown = "DB1: was this board's daemon started from the file now at its binary's path, or has that file changed since the daemon started? Answer from the board and change nothing, then end your turn with the single line: DB1 binary: followed by same, differs or unknown."
+  until = { crown_only = true }
+
+  [[test.steps]]
+  rig = "binary_back"

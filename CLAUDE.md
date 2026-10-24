@@ -783,6 +783,8 @@ a runner without tmux otherwise reports a green suite that ran almost nothing), 
 (relaxes two wall-clock budgets in `hook_e2e`), `MESIMON_NO_DAEMON_RESTART`, `MESIMON_FAKE_BUILD`
 (manufacture a stale or newer build in `Hello`), `MESIMON_DAEMON_BIN` (what `spawn_detached`
 respawns; required by `restart_skew_e2e`, the only test driving the real `Client::connect`),
+`MESIMON_DAEMON_EXE` (the file the daemon stamps at start and re-reads for `list_board`'s
+`daemon`, T-941, so an e2e moves a stand-in and never the shared binary),
 `MESIMON_CLAUDE_HOME` (census root for fabricated `~/.claude` trees), `MESIMON_COMPOSER_WAIT_MS`
 (how long launch words wait for Claude's composer), `MESIMON_SLEEP_MIN_AGE_MS`,
 `MESIMON_LINGER_MS` (how long a crown-started worker sits idle with background tasks before the

@@ -517,6 +517,11 @@ pub struct Daemon {
     /// describes the binary actually running — not whatever landed at that
     /// path since. A newer client compares it to decide we are stale.
     exe_stamp: Option<mesimon_core::command::ExeStamp>,
+    /// The path `exe_stamp` was read from, read again for `list_board`'s
+    /// `daemon` (T-941); `None` when the binary's path was unknown.
+    own_exe: Option<std::path::PathBuf>,
+    /// When this daemon started, as `now_iso` spells it (T-941).
+    started_at: String,
     /// Set only when `spawn_detached` started us. A human's foreground
     /// `mesimon daemon --repo` is never restarted under them.
     detached: bool,
@@ -1036,7 +1041,13 @@ struct NestedFetch {
 pub fn run(paths: Paths) -> Result<()> {
     // First statement: the stamp must describe the binary that is executing,
     // not one that replaced it at the same path while we were starting.
-    let exe_stamp = crate::exe_stamp();
+    // MESIMON_DAEMON_EXE names another file (test seam, T-941): an e2e moves
+    // its stamp without touching the binary every parallel test runs.
+    let own_exe = std::env::var_os("MESIMON_DAEMON_EXE")
+        .map(std::path::PathBuf::from)
+        .or_else(|| mesimon_core::exe::current_exe().ok());
+    let exe_stamp = own_exe.as_deref().and_then(crate::exe_stamp_at);
+    let started_at = now_iso();
     paths.ensure_dirs()?;
 
     // Singleton (02 §4): flock on the lock file; loser exits quietly.
@@ -1355,6 +1366,8 @@ pub fn run(paths: Paths) -> Result<()> {
         tick_slowest: ("", Duration::ZERO),
         notices,
         exe_stamp,
+        own_exe,
+        started_at,
         detached: std::env::var_os("MESIMON_DETACHED").is_some(),
         columns_barred: columns_write_barred,
         sessions_barred: sessions_write_barred,
@@ -2782,10 +2795,7 @@ impl Daemon {
                 Response::Hello {
                     version: PROTOCOL_VERSION,
                     daemon_pid: std::process::id(),
-                    // MESIMON_FAKE_BUILD lets a stale daemon be manufactured
-                    // without shipping two binaries (test seam).
-                    build: std::env::var("MESIMON_FAKE_BUILD")
-                        .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string()),
+                    build: Self::build(),
                     exe_stamp: self.exe_stamp,
                     detached: self.detached,
                     repo_root: self.my_root(),
@@ -9523,7 +9533,31 @@ impl Daemon {
             .map(|h| h.key)
             .collect(),
             linked_boards: self.links_view(),
+            daemon: Some(self.agent_daemon_view()),
         }
+    }
+
+    /// `list_board`'s `daemon` (T-941): `Hello`'s build, and the file at our
+    /// own path now against the stamp taken as we started. One stat, no
+    /// fork. Never gated on `detached` or a restart seam: a foreground
+    /// daemon's file changes all the same.
+    fn agent_daemon_view(&self) -> mesimon_core::command::AgentDaemonView {
+        let now = self.own_exe.as_deref().and_then(crate::exe_stamp_at);
+        mesimon_core::command::AgentDaemonView {
+            build: Self::build(),
+            started_at: self.started_at.clone(),
+            path: self.own_exe.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
+            binary: mesimon_core::command::BinaryStamp::compare(self.exe_stamp, now),
+            about: mesimon_core::mcp::DAEMON_ABOUT.to_string(),
+        }
+    }
+
+    /// This daemon's build, as `Hello` and `list_board` both say it.
+    /// MESIMON_FAKE_BUILD lets a stale daemon be manufactured without
+    /// shipping two binaries (test seam).
+    fn build() -> String {
+        std::env::var("MESIMON_FAKE_BUILD")
+            .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string())
     }
 
     /// `list_board`'s tiers (T-584): what an agent may name for a ticket it

@@ -424,6 +424,14 @@ pub const KEY_ABOUT: &str = "Words to the person about this ticket call it \"thi
      its key: the person reads this session beside it, in its pane, its page and its notes, \
      where the key is one more lookup. A key is for naming another ticket.";
 
+/// What `list_board`'s `daemon` field is (T-941): a stamp comparison and
+/// the reload fact, nothing about what to do. A crown merged daemon fixes,
+/// the binary was rebuilt, and the daemon that ran the night was the old one.
+pub const DAEMON_ABOUT: &str = "binary compares the file at path now with the one this daemon \
+     started from, by modification time and size, so differs says the file changed since, not \
+     which code is newer. A rebuild or an install replaces the file and the running daemon \
+     keeps the code it started with until it restarts.";
+
 pub const WORKER_UNDER_CROWN: &str = "The board's crown, the agent coordinating this board \
      from another ticket, started this session. Under a crown the merge is the board's: the \
      merge train lands a finished branch, else the crown does, and the board asks for its \
@@ -2985,6 +2993,17 @@ mod tests {
         assert_eq!(lint_tool_text(PERSONS_PLANS), Ok(()));
         assert_eq!(lint_tool_text(WORKTREE_INIT_ABOUT), Ok(()));
         assert_eq!(lint_tool_text(SUMMARY_ABOUT), Ok(()));
+        assert_eq!(lint_tool_text(DAEMON_ABOUT), Ok(()));
+    }
+
+    /// T-941: the daemon field's words stay two sentences, say the stamp is
+    /// not a version relation, and say a rebuild does not reload the daemon.
+    #[test]
+    fn the_daemon_about_states_the_stamp_and_the_reload() {
+        assert_eq!(DAEMON_ABOUT.matches(". ").count() + 1, 2, "{DAEMON_ABOUT}");
+        assert!(DAEMON_ABOUT.contains("not which code is newer"), "{DAEMON_ABOUT}");
+        assert!(DAEMON_ABOUT.contains("keeps the code it started with"), "{DAEMON_ABOUT}");
+        assert!(DAEMON_ABOUT.len() < 400, "{}", DAEMON_ABOUT.len());
     }
 
     /// T-710: an agent asked for a checklist on the ticket guessed the

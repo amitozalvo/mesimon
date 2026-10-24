@@ -1350,6 +1350,10 @@ Reply with the single word ready and end your turn."""
                 tid = next(iter(self.crown_filed(self.feed_lines[mark:])), None)
                 if tid is None:
                     return False
+            if until.get("crown_only"):
+                # A step that is the crown's read alone (DB1, T-941): no
+                # worker and no feed line; the crown's settle ends it.
+                return True
             if until.get("crown_fed"):
                 # A step with no worker (X1): a board line of the crown's
                 # own ticket since the step began, `cmd` as named.
@@ -1827,6 +1831,19 @@ Reply with the single word ready and end your turn."""
                 record["failures"].append("the merge train never took the returned ticket")
                 return False
             self.log(f"the train took {test['key']}: {said.get('cmd')}")
+            return True
+        if what == "binary_moved":
+            # DB1 (T-941): the rig daemon's binary, same bytes, its mtime a
+            # second on, as a same-version rebuild leaves it; `binary_back`
+            # puts the original stamp back.
+            st = os.stat(self.bin)
+            self.bin_times = (st.st_atime_ns, st.st_mtime_ns)
+            os.utime(self.bin, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+            return True
+        if what == "binary_back":
+            if getattr(self, "bin_times", None):
+                os.utime(self.bin, ns=self.bin_times)
+                self.bin_times = None
             return True
         if what == "restart":
             self.restart()
