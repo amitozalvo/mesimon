@@ -3008,6 +3008,92 @@ mod tests {
         assert!(content_merged(&r.dir, "other", "main", 0).is_none());
     }
 
+    /// T-937: a sample judges the tips it captured, whatever moves while it
+    /// runs, and the next sample reads the newer ones. Three moves between
+    /// the read and the judgment, each one a by-name question answered from
+    /// the moved ref and filed under the captured tips: the branch
+    /// fast-forwarded into the base (the counts, `came_to_base`'s window),
+    /// the branch moving on before the patch comparison, and the target
+    /// taking the squash before it.
+    #[test]
+    fn a_sample_judges_the_tips_it_captured() {
+        let Some(r) = Repo::new("captured") else { return };
+        let tip = |b: &str| branch_tip(&r.dir, b);
+        let input = |branch: &str, base_oid: &str, seen: Option<ContentSeen>| FlagInput {
+            ticket: ulid::Ulid(1),
+            branch: branch.to_string(),
+            base_oid: base_oid.to_string(),
+            seen,
+        };
+        let judge = |captured, i: &FlagInput| {
+            compute_flags_on(&r.dir, "main", None, false, std::slice::from_ref(i), captured)
+        };
+        let sample =
+            |i: &FlagInput| compute_flags(&r.dir, "main", None, false, std::slice::from_ref(i));
+        let one = |w: WtFlags| w.flags.into_iter().next().expect("one binding, one answer");
+
+        // The counts: captured before the branch is fast-forwarded into main.
+        let a = tip("main");
+        r.run(&["checkout", "-q", "-b", "ff"]);
+        r.commit("ff.txt", "ff\n", "ff");
+        let b = tip("ff");
+        r.run(&["checkout", "-q", "main"]);
+        let captured = branch_tips(&r.dir, None);
+        r.run(&["merge", "-q", "--ff-only", "ff"]);
+        let w = judge(captured, &input("ff", &a, None));
+        assert_eq!(w.base_tip, a, "the base as captured");
+        let f = one(w);
+        assert_eq!((f.tip.as_str(), f.merged, f.ahead), (b.as_str(), false, 1), "{f:?}");
+        let w = sample(&input("ff", &a, None));
+        assert_eq!(w.base_tip, b, "the next sample reads the merge");
+        let f = one(w);
+        assert!(f.merged && f.ahead == 0, "{f:?}");
+
+        // The patch comparison: the branch moves on after the read.
+        r.run(&["checkout", "-q", "-b", "sq"]);
+        r.commit("s.txt", "one\n", "s1");
+        let s1 = tip("sq");
+        r.run(&["checkout", "-q", "main"]);
+        r.run(&["merge", "-q", "--squash", "sq"]);
+        r.run(&["commit", "-qm", "sq (#1)"]);
+        let m = tip("main");
+        let captured = branch_tips(&r.dir, None);
+        r.run(&["checkout", "-q", "sq"]);
+        r.commit("s2.txt", "two\n", "s2");
+        let s2 = tip("sq");
+        r.run(&["checkout", "-q", "main"]);
+        let f = one(judge(captured, &input("sq", &b, None)));
+        assert_eq!(
+            (f.tip.as_str(), f.merged, f.merged_oid.as_str()),
+            (s1.as_str(), true, m.as_str())
+        );
+        let seen = f.seen.clone().expect("a verdict");
+        assert_eq!((seen.branch_tip.as_str(), seen.target_tip.as_str()), (s1.as_str(), m.as_str()));
+        assert!(seen.merged, "filed under the captured pair, and true of it");
+        let f = one(sample(&input("sq", &b, Some(seen))));
+        let seen = f.seen.clone().expect("a verdict");
+        assert_eq!((f.tip.as_str(), f.merged), (s2.as_str(), false), "{f:?}");
+        assert_eq!((seen.branch_tip.as_str(), seen.merged), (s2.as_str(), false));
+
+        // The patch comparison: the target takes the squash after the read.
+        r.run(&["checkout", "-q", "-b", "late"]);
+        r.commit("l.txt", "late\n", "l1");
+        let l1 = tip("late");
+        r.run(&["checkout", "-q", "main"]);
+        let captured = branch_tips(&r.dir, None);
+        r.run(&["merge", "-q", "--squash", "late"]);
+        r.run(&["commit", "-qm", "late (#2)"]);
+        let m2 = tip("main");
+        let f = one(judge(captured, &input("late", &m, None)));
+        let seen = f.seen.clone().expect("a verdict");
+        assert_eq!((f.tip.as_str(), f.merged), (l1.as_str(), false), "{f:?}");
+        assert_eq!((seen.target_tip.as_str(), seen.merged), (m.as_str(), false));
+        let f = one(sample(&input("late", &m, Some(seen))));
+        let seen = f.seen.clone().expect("a verdict");
+        assert_eq!((f.merged, f.merged_oid.as_str()), (true, m2.as_str()), "{f:?}");
+        assert_eq!((seen.target_tip.as_str(), seen.merged), (m2.as_str(), true));
+    }
+
     /// The board's case (T-740): a worker rebased its branch before it had
     /// a commit, ancestry read it merged, and the crown heard a delivery
     /// from a worker still in its first turn. The base stood still between
