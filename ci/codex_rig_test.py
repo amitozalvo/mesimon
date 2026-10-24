@@ -238,7 +238,7 @@ class CrownTests(unittest.TestCase):
     def test_the_crown_s_results_are_weighed_with_the_rules_among_them(self):
         rows = [{"payload": {"type": "custom_tool_call_output",
                              "output": [{"type": "input_text", "text": "Script completed\n"},
-                                        {"type": "input_text", "text": "This session wears the board's crown"}]}},
+                                        {"type": "input_text", "text": "The board wakes this session on its own: …"}]}},
                 {"payload": {"type": "function_call_output", "output": "Script failed: boom"}},
                 {"payload": {"type": "message", "content": []}}]
         got = rig.result_measures(rows)

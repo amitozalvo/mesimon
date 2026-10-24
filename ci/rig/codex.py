@@ -181,7 +181,7 @@ def tool_calls(rows, since=0):
 
 def result_measures(rows):
     """What the crown's tool results weighed (T-930): every output's bytes,
-    those that carry the crown's rules (CROWN_ROLE's opening words), and the
+    those that carry the crown's rules (CROWN_WAKES's opening words), and the
     scripts that failed."""
     outs = []
     for row in rows:
@@ -192,7 +192,7 @@ def result_measures(rows):
                 part.get("text", "") for part in body or [] if isinstance(part, dict))
             outs.append(text)
     return dict(results=len(outs), bytes=sum(len(t.encode()) for t in outs),
-                rules_bytes=[len(t.encode()) for t in outs if "wears the board's crown" in t],
+                rules_bytes=[len(t.encode()) for t in outs if "The board wakes this session on its own" in t],
                 failed=sum(1 for t in outs if t.startswith("Script failed") or '"isError": true' in t))
 
 

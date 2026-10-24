@@ -360,9 +360,10 @@ def row_ms(row):
         return None
 
 
-# A result that carries the crown's rules: `CROWN_ROLE`'s first words, which
-# open `crown_view()` wherever it rides.
-CROWN_RULES_MARK = "wears the board's crown"
+# A result that carries the crown's rules: `CROWN_WAKES`'s first words, in
+# `crown_view()` wherever it rides and in every receipt of the text before
+# T-930.
+CROWN_RULES_MARK = "The board wakes this session on its own"
 
 
 def crown_measures(rows, since_ms):
