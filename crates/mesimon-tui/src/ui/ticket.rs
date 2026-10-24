@@ -1876,74 +1876,12 @@ fn draw_rail(
         lines.extend(trailer(&[keymap::Verb::NoteNew]));
     }
 
-    // The rail scrolls to keep the selected row in view (T-970): a ticket
-    // with more notes than the rail is tall cut its tail, and the cursor
-    // walked into rows the page did not show. A session row, the terminal
-    // and the offer reach the top (the heading with them); a note's own
-    // lines are all it asks for, so a row already in view moves nothing.
-    let at = owners
-        .iter()
-        .find(|(_, _, idx)| *idx == rail_idx)
-        .map(|&(from, to, _)| (if rail_idx < notes_start { 0 } else { from }, to));
-    let prev = match app.rail_scroll.get() {
-        Some((id, top)) if id == ticket_id => top,
-        _ => 0,
-    };
-    let top = at.map_or(0, |(from, to)| {
-        rail_offset(prev, from, to, area.height as usize, lines.len())
-    });
-    app.rail_scroll.set(Some((ticket_id, top)));
-
-    f.render_widget(Paragraph::new(lines).scroll((top as u16, 0)), area);
+    f.render_widget(Paragraph::new(lines), area);
     let mut hits = app.hits.borrow_mut();
     for (from, to, idx) in owners {
-        if to <= top {
-            continue;
-        }
-        let from = from.max(top) - top;
         let y = area.y.saturating_add(from as u16);
-        let h = (to - top - from) as u16;
+        let h = (to - from) as u16;
         let rect = Rect { y, height: h, ..area }.intersection(area);
         hits.record(rect, crate::mouse::Target::Rail(idx));
-    }
-}
-
-/// The rail's first shown line (T-970): `prev` while the selected row's
-/// lines `from..to` sit inside the rail's `height`, else the least move
-/// that brings them in, never past the last line of `total`. A row taller
-/// than the rail shows its first line.
-fn rail_offset(prev: usize, from: usize, to: usize, height: usize, total: usize) -> usize {
-    let prev = prev.min(total.saturating_sub(height));
-    if from < prev || to - from >= height {
-        from
-    } else if to > prev + height {
-        to - height
-    } else {
-        prev
-    }
-}
-
-#[cfg(test)]
-mod rail_tests {
-    use super::rail_offset;
-
-    #[test]
-    fn the_rail_moves_only_to_bring_the_selected_row_in() {
-        // Twenty lines in a rail ten tall, the window at line 5 (5..15).
-        // In view, at its top, middle or bottom: the window stays.
-        assert_eq!(rail_offset(5, 5, 6, 10, 20), 5, "at the top");
-        assert_eq!(rail_offset(5, 9, 10, 10, 20), 5, "in the middle");
-        assert_eq!(rail_offset(5, 14, 15, 10, 20), 5, "at the bottom");
-        // One past either edge: the least move.
-        assert_eq!(rail_offset(5, 15, 16, 10, 20), 6, "below: it sits at the bottom");
-        assert_eq!(rail_offset(5, 4, 5, 10, 20), 4, "above: it sits at the top");
-        // A two-line row half cut by the bottom edge comes in whole.
-        assert_eq!(rail_offset(5, 14, 16, 10, 20), 6);
-        // Taller than the rail: its first line, at the top.
-        assert_eq!(rail_offset(0, 12, 25, 10, 30), 12);
-        // Everything fits: nothing scrolls, and a window left over from a
-        // longer rail comes home.
-        assert_eq!(rail_offset(0, 7, 8, 10, 9), 0);
-        assert_eq!(rail_offset(8, 7, 8, 10, 12), 2);
     }
 }

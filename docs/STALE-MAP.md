@@ -33942,36 +33942,28 @@ the attempt installed, then returns `Reply::Rejected`. No owed entry, due paste 
   `merge_train_refused:deliver_failed`, as any delivery failure does. The smallest cleanup is one
   line per ticket and reason until the hold ends.
 
-## The ticket page's rail scrolls to its cursor (T-970, 2026-10-25, reported by the person on T-925's 165 notes: "the NOTES list on the ticket page is not scrollable")
+## The ticket page's rail scrolled to its cursor, and was taken back for T-975 (T-970, 2026-10-25, reported by the person on T-925's 165 notes: "the NOTES list on the ticket page is not scrollable")
 
-`draw_rail` painted every session row, the terminal, the offer and every note into one
-`Paragraph` with no scroll, so `area.height` cut the tail. The cursor (`rail_idx`) still walked
-into the hidden rows, and their mouse rects clipped to nothing.
+`draw_rail` paints every session row, the terminal, the offer and every note into one
+`Paragraph` with no scroll, so `area.height` cuts the tail. The cursor (`rail_idx`) still walks
+into the hidden rows, and their mouse rects clip to nothing. That is still how the rail draws.
 
-**Shipped.** The rail keeps a first shown line, `App::rail_scroll`, keyed by ticket and draw-side
-like `rail_marquee`. `ticket::rail_offset` keeps it still while the selected row's lines are in
-view, and otherwise moves it the least distance that brings them in. A row taller than the rail
-shows its first line. The offset is clamped so that a rail which has shrunk comes home. A session
-row, the terminal and the offer count from line 0, so they bring back the SESSIONS heading. A
-note asks for its own line alone, and the `n new note` trailer under the last note shows only when
-it fits. The offset goes
-through `Paragraph::scroll`, and each `owners` rect is shifted by it before `hits.record`. A row
-scrolled off the top records nothing, and a click lands on the row it shows. The page draws
-nothing extra: no scrollbar and no cut mark. The `NOTES 165` count is the only sign of more rows.
+**What shipped (507031de, then round 1, 4864eda5).**
+- The rail kept a first shown line, `App::rail_scroll`, keyed by ticket. `ticket::rail_offset`
+  moved it the least distance that brought the selected row into view. Session rows brought the
+  SESSIONS heading back.
+- The line went through `Paragraph::scroll`, and the `owners` hit rects were shifted by it.
+  Nothing extra was drawn.
+- Two goldens covered it: `ticket_rail_first_note_120x30` and `ticket_rail_last_note_120x30`.
+- Round 1 fixed main's red `ticket_prompt_field_sits_over_the_footer_on_a_narrow_page`. The last
+  row's range had been stretched over the `n new note` trailer. So on a rail one line short, the
+  cursor's row, already in view, scrolled the heading off for a hint. A note then asked for its
+  own line alone. The miss came from reading `cargo ut` through `grep … | head -20`: passing test
+  names containing "failed" filled the 20 lines before mesimon-tui's FAILED line.
 
-**Tests.** `ticket_rail_first_note_120x30` (cursor on the first of 40 notes: the old frame) and
-`ticket_rail_last_note_120x30` (the last rows, the heading off the top, the click on the last
-note hits `Rail(last)`, one press up keeps the window, a session row brings it home).
-`rail_tests::the_rail_moves_only_to_bring_the_selected_row_in` covers the arithmetic.
+**What the person saw.** On the merged board the rail flickered while scrolling, and it did not
+read as a list.
 
-**Not done.** A dim `…` row at a cut edge is the person's call. The footer's `jk select
-session` on a note row predates this ticket.
-
-**Round 1 after the merge.** Main went red on
-`ticket_prompt_field_sits_over_the_footer_on_a_narrow_page`. At 100x24 with the prompt field
-open the rail is 9 rows tall and holds 10 lines, and the cursor sits on the last note (line 8),
-already in view. The last row's range had been stretched over the trailer (line 9), so the
-offset went to 1 and the SESSIONS heading scrolled off for a hint. That was a scroll the
-selected row did not need. A note now asks for its own lines alone, and the test stands as
-written. The miss: the delivery's `cargo ut` was read through `grep … | head -20`, and passing
-test names containing "failed" filled the 20 lines before mesimon-tui's result line.
+**Taken back whole.** The scroll is a design question first, and T-975 owns it. This branch
+restores `crates/mesimon-tui` to e5a7cf76's tree. `rail_scroll`, `rail_offset` and its unit, and
+both goldens are gone.
