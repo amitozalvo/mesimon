@@ -146,6 +146,7 @@ Use the smallest relevant check while iterating, then the repository gates appro
 change:
 
 ```sh
+python3 -B ci/release-watch.py [--dry-run|--mark-read]  # on a claude/codex version change: print the upstream digest; the crown files the research ticket
 cargo ut
 cargo test -p mesimon-core <test-filter>
 cargo test -p mesimon --test hook_e2e

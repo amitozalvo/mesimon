@@ -31897,3 +31897,52 @@ restart is a person's `U`; the crown had no board fact saying the fixes were not
   `crown`, then no `binary_back`.
 - `ci/codex_rig_test.py`'s `ClaudeRigBinaryStampTests` drive the real `run_test` with a failing
   crown, a raising one and one that rebuilds the file.
+
+## T-947 — Read harness releases before choosing changes (2026-10-24)
+
+`ci/release-watch.py` reads installed Claude Code and Codex versions, walks GitHub
+release pages back through the last-read tag, cross-checks Claude's changelog, and
+prints watched lines plus every other line. The Codex comparison is the complete
+default `app-server generate-ts` output, matching T-934's generation command.
+Published Claude mod declarations and Codex plugin/hook references are compared
+separately: moving documentation is not evidence of installed behavior. Claude's
+public declarations still identify 2.1.277 at this reading.
+
+Only `--mark-read` advances the cursor at
+`~/.local/state/mesimon/release-watch/release-watch.json` and saves a content-addressed
+API capture in the same state directory, with the cursor written last. A version
+missing from both sources, failed read, corrupt capture or downgrade refuses advancement. `--dry-run` reads synthetic fixtures,
+starts no binary, uses no network and cannot mark those versions read. No daemon,
+crown text, ticket filing, harness configuration or conversation behavior changes.
+AGENTS.md and CLAUDE.md record the author's process: run on a version change, and
+the crown files a research ticket from the digest. This ticket files none.
+
+The first review is on T-947: Claude 2.1.309 → 2.1.310, Codex 0.164.0 → 0.164.0.
+All 751 freshly generated Codex files equal T-934's retained generation. Comparing
+Claude's embedded declarations finds only image/tmux documentation and the optional
+`UiBlitResult.fix` code; unchanged types do not prove unchanged runtime behavior.
+The note distinguishes proposed regression checks and adoption ideas from measured
+results. Offline unit tests cover classification, release bounds/pagination,
+protocol changes, failed captures, atomic bookkeeping and dry-run isolation.
+
+### T-947 review — local captures and independent release sources (2026-10-24)
+
+The cursor and content-addressed capture now live only in
+`~/.local/state/mesimon/release-watch/`; the initial two files were moved there
+byte-for-byte and removed from the tree. Upstream text stays local. Synthetic
+fixtures remain in `ci/release-watch/fixtures/` and dry-run reads those regardless
+of the state directory. Neither the cursor nor upstream captures enter public history.
+
+The watched terms include the measured turn/tool/session events, agent spawn,
+paste, stop, interrupt and subagent edges. Both guides list the release-watch
+command in their shell command block. Claude versions appearing in just one
+upstream source now print a labeled section instead of refusing the digest; either
+source can establish a version anchor, while failed fetches and versions absent
+from both sources still refuse advancement. Tests cover source-only intermediate
+versions and both endpoints, alongside the expanded matching lines.
+
+The optional `--claude-decls` step now extracts the installed native binary's zstd
+frame without starting a session, hashes it and prints its diff against a separate
+local `claude-decls.json`. Only `--mark-read` saves that baseline. Ordinary release
+runs are unchanged; the optional extraction requires Python 3.14 and refuses an
+unsupported or oversized frame. Its fixture and tests contain synthetic text only.

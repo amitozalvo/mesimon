@@ -82,6 +82,7 @@ Cargo is on PATH (`~/.cargo/bin`, via the shell profile). A session whose shell 
 that was set up may need `source ~/.cargo/env`.
 
 ```sh
+python3 -B ci/release-watch.py [--dry-run|--mark-read]  # on a claude/codex version change: print the upstream digest; the crown files the research ticket
 cargo ut                                              # the inner loop: every unit test, ~1 s
 cargo test -p mesimon-core attention                  # one module's tests
 cargo test -p mesimon --test hook_e2e                 # one e2e; skips without tmux

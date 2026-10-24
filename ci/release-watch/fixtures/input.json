@@ -1,0 +1,47 @@
+{
+  "state": {
+    "claude": {
+      "version": "2.1.9",
+      "read_at": "2026-01-01"
+    },
+    "codex": {
+      "version": "0.163.0",
+      "read_at": "2026-01-01"
+    }
+  },
+  "before": {
+    "protocol": {
+      "v2/TurnSteerParams.ts": "export type TurnSteerParams = {threadId: string};\n"
+    },
+    "surfaces": {
+      "claude-mods.d.ts": "interface Prompt { submit(): void }\n",
+      "codex-plugins.md": "# Plugins\nOld settings.\n",
+      "codex-hooks.md": "# Hooks\nSessionStart\n"
+    }
+  },
+  "versions": {
+    "claude": "2.1.11",
+    "codex": "0.164.0"
+  },
+  "protocol": {
+    "v2/TurnSteerParams.ts": "export type TurnSteerParams = {threadId: string, clientUserMessageId?: string};\n"
+  },
+  "responses": {
+    "https://api.github.com/repos/anthropics/claude-code/releases?per_page=100&page=1": "[{\"tag_name\": \"v2.1.12\", \"prerelease\": false, \"draft\": false, \"body\": \"- Fixed PermissionRequest hooks.\\n- Changed logo colors.\", \"published_at\": \"2026-01-02T00:00:00Z\", \"html_url\": \"https://github.com/anthropics/claude-code/releases/tag/v2.1.12\"}, {\"tag_name\": \"v2.1.11\", \"prerelease\": false, \"draft\": false, \"body\": \"- Fixed PermissionRequest hooks.\\n- Changed logo colors.\", \"published_at\": \"2026-01-02T00:00:00Z\", \"html_url\": \"https://github.com/anthropics/claude-code/releases/tag/v2.1.11\"}, {\"tag_name\": \"v2.1.10\", \"prerelease\": false, \"draft\": false, \"body\": \"- Fixed PermissionRequest hooks.\\n- Changed logo colors.\", \"published_at\": \"2026-01-02T00:00:00Z\", \"html_url\": \"https://github.com/anthropics/claude-code/releases/tag/v2.1.10\"}, {\"tag_name\": \"v2.1.9\", \"prerelease\": false, \"draft\": false, \"body\": \"- Fixed PermissionRequest hooks.\\n- Changed logo colors.\", \"published_at\": \"2026-01-02T00:00:00Z\", \"html_url\": \"https://github.com/anthropics/claude-code/releases/tag/v2.1.9\"}]",
+    "https://api.github.com/repos/openai/codex/releases?per_page=100&page=1": "[{\"tag_name\": \"rust-v0.165.0-alpha.1\", \"prerelease\": true, \"draft\": false, \"body\": \"- Fixed PermissionRequest hooks.\\n- Changed logo colors.\", \"published_at\": \"2026-01-02T00:00:00Z\", \"html_url\": \"https://github.com/openai/codex/releases/tag/rust-v0.165.0-alpha.1\"}, {\"tag_name\": \"rust-v0.164.0\", \"prerelease\": false, \"draft\": false, \"body\": \"- Fixed PermissionRequest hooks.\\n- Changed logo colors.\", \"published_at\": \"2026-01-02T00:00:00Z\", \"html_url\": \"https://github.com/openai/codex/releases/tag/rust-v0.164.0\"}, {\"tag_name\": \"rust-v0.163.0\", \"prerelease\": false, \"draft\": false, \"body\": \"- Fixed PermissionRequest hooks.\\n- Changed logo colors.\", \"published_at\": \"2026-01-02T00:00:00Z\", \"html_url\": \"https://github.com/openai/codex/releases/tag/rust-v0.163.0\"}]",
+    "https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md": "# Changelog\n\n## 2.1.12\n\n- Fixed PermissionRequest hooks.\n- Changed logo colors.\n\n## 2.1.11\n\n- Fixed PermissionRequest hooks.\n- Changed logo colors.\n\n## 2.1.10\n\n- Fixed PermissionRequest hooks.\n- Changed logo colors.\n\n## 2.1.9\n\n- Fixed PermissionRequest hooks.\n- Changed logo colors.\n\n",
+    "https://raw.githubusercontent.com/anthropics/claude-code/main/mods/types/claude-code.d.ts": "interface Prompt { submit(): void }\nNew queue API (synthetic test data).\n",
+    "https://developers.openai.com/plugins/build/plugins.md": "# Plugins\nOld settings.\nNew queue API (synthetic test data).\n",
+    "https://learn.chatgpt.com/docs/hooks.md": "# Hooks\nSessionStart\nNew queue API (synthetic test data).\n"
+  },
+  "claude_decls": {
+    "before": {
+      "version": "2.1.9",
+      "read_at": "2026-01-01",
+      "sha256": "344fd8a77a03350424397e68dddc75d59358749b2eb2ec9e9781a28e9e3146a3",
+      "text": "// Synthetic declarations\ninterface Prompt { submit(): void }\n"
+    },
+    "version": "2.1.11",
+    "text": "// Synthetic declarations\ninterface Prompt { submit(): void }\ninterface Turn { step(): void }\n"
+  }
+}
