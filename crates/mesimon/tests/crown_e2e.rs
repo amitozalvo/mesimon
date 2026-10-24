@@ -6283,8 +6283,9 @@ fn the_crown_sends_a_plan_back_with_words() {
 
     // ---- the same dialog said again wakes nobody again ----------------------
     // The crown is idle, so a second wake would land at once. The feed's
-    // hook line is written in the writer turn that judges the frame, so its
-    // count says the repeats were ingested before anything is asserted.
+    // hook line says the daemon received a repeat (its handler entered);
+    // the board reads after it are served by the same writer, so they come
+    // after its handling.
     let hook_sock = b.h.paths.hook_sock();
     let mod_road = test_road() == "mod";
     let ingested = |b: &PlanBed, session: uuid::Uuid, event: &str| {
