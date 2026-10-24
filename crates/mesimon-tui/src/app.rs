@@ -24256,24 +24256,26 @@ mod tests {
     }
 
     /// The terminal's late answer to the colour query, fed the way `tick`
-    /// feeds it: `alt+]` `1` `1` `;` `rgb:…` `alt+\`. The `1`s are the
-    /// quick-tag key and the `r` is rename, and neither may fire — and the
-    /// machine is idle again afterwards, so the next real `r` does.
+    /// feeds it, long after the query's budget: `alt+]` `1` `0` `;` `rgb:…`
+    /// ctrl+g, then the same for `11`. The digits are the quick-tag cycle
+    /// and the `r` is rename, and neither may fire (T-953: the foreground
+    /// half opened a rename and typed `gb:53ec/53ec/53ec`) — and the machine
+    /// is idle again afterwards, so the next real `r` does.
     #[test]
     fn a_late_colour_reply_neither_tags_nor_renames() {
         let mut board = board_three_columns();
         board.register_tag(1, "BUG").expect("registered");
+        board.register_tag(10, "LATER").expect("registered");
         let (mut app, sent) = App::for_test_logged(board, theme(), false);
         app.cursor_col = 0;
         app.cursor_row = Some(0);
-        app.on_key(KeyCode::Char(']'), KeyModifiers::ALT).unwrap();
-        for c in "11;rgb:1e1e/1e1e/1e1e".chars() {
-            app.on_key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        for (code, mods) in crate::osc::tests::late_colour_reply() {
+            app.on_key(code, mods).unwrap();
         }
-        app.on_key(KeyCode::Char('\\'), KeyModifiers::ALT).unwrap();
         assert!(!sent_contains(&sent, "SetTag"), "{:?}", sent.borrow());
         assert!(!matches!(app.mode, Mode::Input { .. }), "rename opened");
         assert!(app.tag_flash.is_none());
+        assert_eq!(app.reply_swallow.dropped(), 2);
 
         assert!(app.on_key(KeyCode::Char('r'), KeyModifiers::NONE).unwrap());
         assert!(matches!(app.mode, Mode::Input { .. }), "a real r still renames");
@@ -24287,11 +24289,9 @@ mod tests {
         let mut app = app_three_columns();
         press(&mut app, 'o');
         press(&mut app, 'x');
-        app.on_key(KeyCode::Char(']'), KeyModifiers::ALT).unwrap();
-        for c in "11;rgb:1e1e/1e1e/1e1e".chars() {
-            app.on_key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        for (code, mods) in crate::osc::tests::late_colour_reply() {
+            app.on_key(code, mods).unwrap();
         }
-        app.on_key(KeyCode::Char('\\'), KeyModifiers::ALT).unwrap();
         let Mode::Input { buffer, .. } = &app.mode else { panic!("composer closed") };
         assert_eq!(buffer.as_str(), "x");
     }

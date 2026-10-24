@@ -33283,3 +33283,43 @@ into that row.
   with Esc and error controls.
 - A key's last moment stays a check-then-send: the screen is read, then the key goes, so a person
   acting inside those milliseconds is not seen.
+
+## Every OSC reply is dropped from the key stream, not only `OSC 11`'s (T-953, 2026-10-24, "A terminal colour reply typed into the board opened a rename on a card and filled it with the reply's text")
+
+**Seen.** Three times on the author's board (iTerm2 3.6.11), each after a `U` re-exec: a RENAME
+field open on the selected card holding its title plus `gb:53ec/53ec/53ec` (twice) or
+`gb:dcaa/dcab/dcaa`, nobody at the keyboard, 20–30 s after the re-exec.
+
+**Cause, reproduced.** `detect::query_ground` is `terminal_colorsaurus::theme_mode`, which
+writes `OSC 10 ; ? BEL`, `OSC 11 ; ? BEL`, `DA1` and reads for 150 ms — the FOREGROUND first,
+since M3.5. `osc::ReplySwallow` (2026-09-02, above) was cut from a sample whose leaked half was
+`11;`, so its prefix was exactly `alt+] 1 1 ;`. A late answer's foreground half,
+`alt+] 1 0 ; rgb:dcaa/dcab/dcaa ^G`, failed the prefix at `0`, replayed `alt+] 1 0 ;` to the
+board — `1` and `0` are the quick tag cycle (groups 1 and 10, silent mutations of the selected
+card) — then `r` opened rename and the body was typed; the background half after it was
+swallowed. The two colours are the foreground under the profile iTerm2 had at each moment (a
+dark grey on light, a light grey on dark). After a `U` the reply waits in the tty queue until the
+new process reads keys, which is after the daemon handover and the first snapshot: that is the
+20–30 s (inferred from the order in `lib.rs::run`, not measured). Why the query missed its budget
+on that road is not measured. `detect::tests::a_colour_reply_after_the_budget_is_never_keys`
+reproduces the leak whole: a pty child runs the real query, the parent answers as iTerm2 does
+after the budget and then types `z`, and the child reads crossterm's keys through the swallow.
+With the old `1 1` prefix the child passed `alt+] 1 0 ; r g b : d c a a / …`; with the fix, `z`
+alone.
+
+**Fix.** The prefix is any OSC reply's: `alt+]`, one to five digits, `;` — still nothing a hand
+types, still held and replayed in order when it is not one. The body grammar gains `;` (a palette
+entry's `4 ; n ; rgb:…`, tmux asks those at an attach) and takes a capital as crossterm reports it
+(Shift; the old tests fed `#1E1E1E` without it, which no terminal produces). Not a generic body
+(any printable until a terminator): a reply cut before its terminator would then eat a person's
+typing until a non-text key, and every reply that reaches the board is a colour. Each dropped
+reply is counted (`ReplySwallow::dropped`). `MESIMON_TTY_LOG=<file>`, read in `lib.rs::run`
+only, appends a timed line for the startup query (its answer and how long it took) and for each
+reply dropped (its text), so the next sighting says which query and how late.
+
+**Not done.** The split-at-Esc gap stands (a bare Esc is not an opener). A DCS reply
+(`ESC P`, XTVERSION's, CLAUDE.md's tmux trap) is not in the grammar: nothing of the board's asks
+one. Tests: `osc.rs` (five, `a_late_colour_reply_types_nothing_and_counts_both_halves` and
+`every_osc_reply_and_every_terminator_is_dropped` new), the two `app.rs` late-reply tests now
+feed colorsaurus's real reply (both halves, `BEL`) with a group-10 tag on the board, and the pty
+test above.

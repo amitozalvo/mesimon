@@ -162,6 +162,7 @@ pub fn run(repo_root: &Path) -> Result<()> {
     // slots differ (T-625) — asks the OS first: a subprocess, no tty, and
     // with an answer the terminal is not asked at all. Nothing re-asks the terminal later, ever: `appearance::Watch`
     // is the live half, and it asks the OS on a thread of its own.
+    crate::osc::set_tty_log(std::env::var_os("MESIMON_TTY_LOG").map(std::path::PathBuf::from));
     let known = resolved.follows_os().then(appearance::probe).flatten();
     let detected = detect::detect(known);
     // The pin outranks the slot; the slot is the ground's.

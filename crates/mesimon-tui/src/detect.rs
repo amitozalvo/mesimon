@@ -168,7 +168,7 @@ fn forced_flavor() -> Option<Flavor> {
     Flavor::from_name(&std::env::var("MESIMON_THEME").ok()?)
 }
 
-/// One OSC 11 round-trip through terminal-colorsaurus (which reads
+/// One colour round-trip through terminal-colorsaurus (which reads
 /// `/dev/tty`, sidestepping the T-4 stdin race). `None` is "no usable
 /// answer" — unsupported, timed out, or unparseable — and is discarded
 /// silently (06 §2.9).
@@ -177,7 +177,12 @@ fn query_ground() -> Option<Ground> {
     // 06 §2.9: 150 ms budget. Terminals that can't answer are detected as
     // such well before the timeout; the ladder must not stall startup.
     opts.timeout = Duration::from_millis(150);
-    match terminal_colorsaurus::theme_mode(opts) {
+    // `OSC 10` and `OSC 11`, then `DA1`: a reply that misses the budget is
+    // still coming, and `osc::ReplySwallow` takes it out of the key stream.
+    let asked = std::time::Instant::now();
+    let answer = terminal_colorsaurus::theme_mode(opts);
+    crate::osc::log(&format!("asked OSC 10, OSC 11, DA1: {answer:?} in {:?}", asked.elapsed()));
+    match answer {
         Ok(terminal_colorsaurus::ThemeMode::Light) => Some(Ground::Light),
         Ok(terminal_colorsaurus::ThemeMode::Dark) => Some(Ground::Dark),
         Err(_) => None,
@@ -347,5 +352,109 @@ mod tests {
         }
         assert_eq!(Flavor::from_name("dark"), Some(Flavor::Graphite));
         assert_eq!(Flavor::from_name("light"), Some(Flavor::Chalk));
+    }
+
+    /// The pty test's child: the startup colour query on the terminal it was
+    /// born on, then the board's key road — crossterm under the reply swallow
+    /// — until a `z`, printing every key that got through.
+    #[test]
+    #[ignore = "run by a_colour_reply_after_the_budget_is_never_keys, inside its pty"]
+    fn pty_child() {
+        if std::env::var_os("DETECT_PTY_CHILD").is_none() {
+            return;
+        }
+        use ratatui::crossterm::event::{self, Event, KeyCode};
+        use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+        let ground = query_ground();
+        enable_raw_mode().expect("raw mode");
+        print!("asked {ground:?}, reading\r\n");
+        let mut swallow = crate::osc::ReplySwallow::default();
+        let mut passed = Vec::new();
+        'read: while event::poll(Duration::from_secs(10)).expect("poll") {
+            let Event::Key(key) = event::read().expect("read") else { continue };
+            if let crate::osc::Feed::Pass(keys) = swallow.feed(key.code, key.modifiers) {
+                for k in keys {
+                    passed.push(k);
+                    if k.0 == KeyCode::Char('z') {
+                        break 'read;
+                    }
+                }
+            }
+        }
+        print!("passed {passed:?}\r\n");
+        disable_raw_mode().expect("cooked mode");
+    }
+
+    /// T-953: the colour query at startup misses its 150 ms budget, and the
+    /// terminal's answer — `OSC 10` first, then `OSC 11`, then `DA1`, as
+    /// iTerm2 gives it — lands in the key stream afterwards. Not one of its
+    /// bytes is a key: the `z` typed after it is the only thing that passes.
+    #[test]
+    fn a_colour_reply_after_the_budget_is_never_keys() {
+        use std::io::{Read, Write};
+        use std::os::fd::{FromRawFd, OwnedFd};
+        use std::os::unix::process::CommandExt;
+        use std::sync::{Arc, Mutex};
+        use std::time::Instant;
+        let (mut m, mut s) = (0, 0);
+        let (name, termp, winp) =
+            (std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
+        assert_eq!(unsafe { libc::openpty(&mut m, &mut s, name, termp, winp) }, 0, "openpty");
+        let mut master = unsafe { std::fs::File::from_raw_fd(m) };
+        let slave = unsafe { OwnedFd::from_raw_fd(s) };
+        let tty = || std::process::Stdio::from(slave.try_clone().expect("slave"));
+        let mut cmd = std::process::Command::new(mesimon_core::exe::current_exe().expect("exe"));
+        cmd.args(["--exact", "detect::tests::pty_child", "--ignored", "--nocapture"])
+            .env("DETECT_PTY_CHILD", "1")
+            .env("TERM", "xterm-256color")
+            .env_remove("TMUX")
+            .stdin(tty())
+            .stdout(tty())
+            .stderr(tty());
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut child = cmd.spawn().expect("spawn the child");
+        drop(cmd);
+        drop(slave);
+        let out = Arc::new(Mutex::new(Vec::new()));
+        let (mut reader, sink) = (master.try_clone().expect("master"), out.clone());
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 8192];
+            while let Ok(n @ 1..) = reader.read(&mut buf) {
+                sink.lock().expect("out").extend_from_slice(&buf[..n]);
+            }
+        });
+        let shows = |what: &str| {
+            let until = Instant::now() + Duration::from_secs(30);
+            while Instant::now() < until {
+                let out = out.lock().expect("out");
+                if out.windows(what.len()).any(|w| w == what.as_bytes()) {
+                    return true;
+                }
+                drop(out);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            false
+        };
+        assert!(shows("\x1b]10;?\x07\x1b]11;?\x07\x1b[c"), "the child never asked");
+        // The child gave up on its own: the answer comes after its budget.
+        assert!(shows("asked None, reading"), "the query did not time out");
+        master
+            .write_all(b"\x1b]10;rgb:dcaa/dcab/dcaa\x07\x1b]11;rgb:53ec/53ec/53ec\x07\x1b[?62;4c")
+            .expect("answer");
+        master.flush().expect("flush");
+        std::thread::sleep(Duration::from_millis(200));
+        master.write_all(b"z").expect("type");
+        assert!(shows("passed ["), "the child never read the z");
+        let _ = child.wait();
+        let text = String::from_utf8_lossy(&out.lock().expect("out")).into_owned();
+        let passed = text.lines().find(|l| l.starts_with("passed ")).expect("the passed line");
+        assert_eq!(passed.trim_end(), r#"passed [(Char('z'), KeyModifiers(0x0))]"#, "{text}");
     }
 }
