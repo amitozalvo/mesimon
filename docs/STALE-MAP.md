@@ -35250,3 +35250,75 @@ cleanup stood. Five corrections in the expectation and rig rules:
   looping`. The crown made 2 turns and 4 tool calls; no Bash, and its one non-board call
   (ToolSearch) named nothing banned. The Claude account's weekly quota (all models) read 59 %
   before the run and 59 % at its end.
+
+## An interaction's replacement behind a lost identifying hook, measured: the engine never sends that shape; no code change (T-976, 2026-10-25, named by T-957's cold reader on T-967)
+
+**The question.** Since T-957 round 12, an id-less `PermissionRequest` whose print (the tool and a
+hash of its input) equals the record's `dialog_print` is read as a repeat of the held dialog and
+keeps `dialog_call`. If dialog B's `PreToolUse` were lost and B arrived as an id-less
+`PermissionRequest` with exactly A's input while A is held, B would keep A's identity. The
+ticket asked whether claude ever sends that shape, before choosing any evidence beyond the print.
+
+**How.** Claude Code 2.1.310, the npm `latest` on the day, run from T-573's spike harness
+(`mod-spike/drive.py`, Sonnet, a private tmux). Each session carries the parity hook set (the
+hooks road: each command hook's stdin) and the spike mod (the mod road: the `classic.*`
+envelopes the shipped mod relays as they come, plus `tool.call` and `tool.check`), so both
+roads record the same dialogs. The native road's `PermissionRequest` comes from the one-entry
+hook set, so it is the hooks road's payload. Four scenarios: a question refused with Esc and
+asked again with the same input twice, then answered; two identical questions in one message;
+a plan refused ("keep planning") and sent again unchanged; two identical plans in one message.
+The driver, the frames and a timeline reader live under `<state>/t976/`, not in this repository.
+
+**What the engine sends.**
+- **A `PermissionRequest` never carries `tool_use_id`.** In the binary, 2.1.310's hook input is
+  `{tool_name, tool_input, permission_suggestions}` plus the common fields, with no id. Live, 0
+  of 18 frames carried one, on either road. So the "sometimes with the id, sometimes without"
+  case cannot happen: every `PermissionRequest` is id-less, a repeat included.
+- **Every interaction dialog has its `PreToolUse` first.** 9 of 9 live dialogs, on both roads,
+  went `PreToolUse` (with the id), then `PermissionRequest` 30 to 150 ms later. In the binary,
+  `classic.PreToolUse` is a layer inside the `tool.call` dispatch, ahead of the check that raises
+  `PermissionRequest`, and every caller of the request hook sits inside a tool's permission check.
+  No new dialog arrived as an id-less `PermissionRequest` alone. A window resize while a question
+  was drawn sent no second `PermissionRequest`.
+- **Two distinct calls with byte-identical input in one turn do happen, on request.** Two
+  questions in one message: `PreToolUse(A) PreToolUse(B) PermissionRequest PermissionRequest`,
+  both requests identical, and the dialogs were drawn and answered one after the other (6 s
+  apart). Two plans in one message: `PreToolUse(A) PermissionRequest PreToolUse(B)
+  PermissionRequest`. One Esc refused both plans, whose results came in the same millisecond.
+  Every hook in this shape arrived, so neither print nor id is missing from it.
+- **`prompt_id` is on every hooks-road frame and on the mod's `classic.PermissionRequest`** (not
+  on the mod's `classic.PreToolUse`). It is the engine's id of the prompt the turn runs under,
+  and it is new with each prompt. It would tell a dialog in a later prompt from a repeat. It
+  would not tell two calls in one prompt apart. Nothing reads it today.
+
+**What mesimon has heard.** The activity journals of the 17 boards on this machine whose repo
+is not a test fixture (rotated, so this is recent history only): 76 interaction `PreToolUse`
+frames (51 on the hooks road, 25 on the mod's), each followed by its `PermissionRequest` within
+3 s. There were 16 `PermissionRequest` frames with no `PreToolUse` before them, and every one
+moved its record to `requires_action{permission}`: a tool's permission dialog, which the
+two-tool `PreToolUse` matcher never covers. No question or plan arrived without its
+`PreToolUse`. The e2e fixture boards do send that shape, scripted
+(`plan_accept_e2e::a_same_print_repeat_inside_a_prompt_s_settle_keeps_the_newer_dialog`, T-968).
+
+**How often models repeat an input.** Every transcript under `~/.claude/projects` (2.1.283 to
+2.1.310, 161 interaction calls once a re-recorded call line is counted once):
+- Identical input in one message, or while an identical call was still open: none, outside
+  this ticket's two asked-for runs.
+- Identical input later in the same turn: 1. T-943's probe sent a plan back with words, and
+  the model re-sent the same plan, after A's result.
+- Identical input in a later turn: 8.
+
+**Decided: no code.** The engine never sends a new dialog as an id-less `PermissionRequest`
+alone. The shape exists only if mesimon loses B's `PreToolUse` (the hook fails open: its
+500 ms self-abort, or a daemon that is down). The retained history shows no such loss for an
+interaction. On top of that, it needs A still held and B's input byte-identical to A's. The
+print stays the repeat predicate.
+**Revisit** if a claude version sends a `PermissionRequest` with no `PreToolUse` before it for a
+question or a plan, or if lost interaction hooks show up in the journals. Then `prompt_id` is
+engine identity at hand for the cross-prompt case. Two identical calls in one prompt would still
+need the transcript's next call line.
+
+**Beside it, not this ticket, and not tested:** in the two-questions shape, the hook road's
+`PostToolUse` for a question carries no id into the machine (`hooks.rs`, `Signal::PostToolUse`).
+Read from the code, A's answer would end the question while B's dialog is still to be drawn,
+whatever the inputs. The live run shows that dialog standing for 6 s after A's answer.
