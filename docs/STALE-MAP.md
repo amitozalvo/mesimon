@@ -36841,3 +36841,29 @@ test's own stub. Nothing in the daemon changed.
   `a_crown_wake_refused_while_unknown_is_owed_until_it_goes` (ubuntu, the cause above) and in
   `a_crown_wake_nobody_answers_is_retired_and_goes_again` (macos-14, "a new attempt", in one of
   five runs).
+
+## A killed Codex seat's late pane death no longer takes the seat back (T-1026, 2026-10-26)
+
+T-1019's last red, fixed. `kill_session` closes a Codex record `Exited { Killed }` and raises
+`codex_stopping` itself; the runtime's `stopped` report lowers it, the seat is free, and a
+fast restart starts the next agent on the ticket. The killed pane's `PaneDied` could land after
+that (1 ms after the crown's `start_agent` on the ubuntu-24.04 runner), and the `on_hook` arm
+raised `codex_stopping` again on the closed record: it held the agent seat beside the new one
+and `Board::live_agent` named the dead record first, so `pane_target`, `board_enter`,
+`auto_move`, `card_glyph` and the worktree lock all read the wrong seat. A person who kills a
+Codex session and restarts it quickly took the same road.
+- **The rule:** `SessionRecord::pane_died` raises the flag only on a Codex record still on its
+  pane (`state.has_pane()`), read before the machine moves it. A record the board already
+  closed (`Exited` by a kill, `Sleeping` by a park) raised the flag when it closed, and a death
+  frame after that names no runtime the board has not already accounted for. Every road that
+  closes a Codex record (`kill_session`, `park_record`, the restart's reconcile, the `PaneDied`
+  arm itself) sets the flag where a process remains; no other road writes `Exited` on one.
+- **Not changed:** `kill_session`'s order and `holds_agent_seat`. An `Exited` record with
+  `codex_stopping` still holds the seat, on purpose: its runtime has not confirmed it stopped.
+- **Tests:** `board::tests::a_pane_s_death_after_its_record_closed_holds_no_seat`, and
+  `crown_e2e::a_codex_worker_s_failed_turns_are_told_by_turn` now sends the killed pane's
+  `PaneDied` (by name, with the record's own pane key) after the restart, waits for its
+  `state_decision` line and asserts the one seat is the new agent's. It first removes the killed
+  seat's report: the synthetic runtime leaves its `stopped` behind, which cleared a re-raised
+  flag on the next poll and hid the bug locally (the real runtime removes its files). Red with
+  the arm restored, green 3/3 on each road with the fix.

@@ -773,6 +773,23 @@ impl SessionRecord {
         self.kind.is_agent() && (self.state.is_live() || self.codex_stopping)
     }
 
+    /// The pane's death frame, read before the machine moves the record: a
+    /// Codex pane that died with the record still on it leaves a runtime
+    /// winding down, which holds the seat until cleanup confirms. A record
+    /// the board already closed (`kill_session`'s `Exited`, a park's
+    /// `Sleeping`) raised the flag itself when it closed, and its cleanup
+    /// may have confirmed since: a death frame arriving after that names no
+    /// new runtime, and raising it again put a dead seat beside the next
+    /// agent on the ticket (T-1026). True when the record changed.
+    pub fn pane_died(&mut self) -> bool {
+        if self.kind != SessionKind::Codex || !self.state.has_pane() {
+            return false;
+        }
+        self.codex_stopping = true;
+        self.observation_hold = true;
+        true
+    }
+
     /// On the plan dialog (T-420): the card's `≡`.
     pub fn on_plan_dialog(&self) -> bool {
         self.state == (SessionState::RequiresAction { reason: Reason::Plan })
@@ -4098,6 +4115,52 @@ mod tests {
         assert!(board.pane_target(ticket).is_none());
         board.sessions[0].codex_stopping = false;
         assert!(board.live_agent(ticket).is_none());
+    }
+
+    /// T-1026: a killed Codex seat's cleanup confirmed, the next agent
+    /// started, and only then the old pane's death frame came. It must
+    /// leave the closed record closed, so the ticket's one seat is the new
+    /// agent's; a death with the record still on its pane holds the seat.
+    #[test]
+    fn a_pane_s_death_after_its_record_closed_holds_no_seat() {
+        let ticket = ulid::Ulid::new();
+        let record = |state: SessionState| {
+            SessionRecord::new(
+                uuid::Uuid::new_v4(),
+                SessionKind::Codex,
+                ticket,
+                vec!["codex".into()],
+                "/repo".into(),
+                state,
+            )
+        };
+        let next = record(SessionState::Idle { stop_reason: StopReason::EndTurn });
+        for closed in [SessionState::Exited { reason: ExitReason::Killed }, SessionState::Sleeping]
+        {
+            let parked = closed == SessionState::Sleeping;
+            let mut old = record(closed);
+            let was = old.clone();
+            assert!(!old.pane_died(), "{:?}", old.state);
+            assert!(!old.codex_stopping, "{:?}", old.state);
+            assert_eq!(old.observation_hold, was.observation_hold, "{:?}", old.state);
+            let board = Board {
+                sessions: if parked { vec![old] } else { vec![old, next.clone()] }.into(),
+                ..Board::default()
+            };
+            if !parked {
+                assert_eq!(board.live_agent(ticket).map(|s| s.id), Some(next.id));
+            }
+        }
+        // Still on its pane: the runtime winds down and holds the seat.
+        let mut dying = record(SessionState::Running);
+        assert!(dying.pane_died());
+        assert!(dying.codex_stopping && dying.observation_hold);
+        dying.state = SessionState::Exited { reason: ExitReason::Crashed };
+        assert!(dying.holds_agent_seat());
+        // A shell or a Claude seat carries no Codex cleanup.
+        let mut claude = record(SessionState::Running);
+        claude.kind = SessionKind::Claude;
+        assert!(!claude.pane_died() && !claude.codex_stopping);
     }
 
     #[test]

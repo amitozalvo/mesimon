@@ -12890,6 +12890,42 @@ fn a_codex_worker_s_failed_turns_are_told_by_turn() {
     });
     let ws2 = start(&mut c);
     assert_ne!(ws2, ws, "another session");
+    // The killed pane's death frame after the restart (T-1026): a fast
+    // restart lands it on the closed record, which must not take the seat
+    // back beside the new agent. Waited for by its feed line.
+    let deaths = || -> usize {
+        std::fs::read_to_string(&feed)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|l| {
+                l["kind"] == "state_decision"
+                    && l["session"] == ws.to_string()
+                    && l["source"] == "PaneDied"
+            })
+            .count()
+    };
+    // A stopped runtime's report is gone with it (the synthetic one leaves
+    // its `stopped` behind, which would clear a re-raised flag on the next
+    // poll and hide the seat it took).
+    std::fs::remove_file(mesimon_daemon::agents::codex::snapshot_path(&h.paths, ws)).unwrap();
+    let before = deaths();
+    // As tmux's pane-died hook sends it: by name, from the killed pane.
+    let old = c.board().sessions.iter().find(|s| s.id == ws).cloned().unwrap();
+    hook_send_from_pane(
+        &hook_sock,
+        &old.sid16(),
+        "PaneDied",
+        Some("0"),
+        old.pane_key.as_deref(),
+        "{}",
+    );
+    wait_until(std::time::Duration::from_secs(10), "the old pane's death read", || {
+        deaths() > before
+    });
+    let board = c.board();
+    assert_eq!(board.live_agent(w).map(|s| s.id), Some(ws2), "one seat, the new agent's");
+    assert!(board.sessions.iter().any(|s| s.id == ws && !s.codex_stopping));
     fail(ws2, "turn-b", "server", "B failed in the new session");
     wait_until(std::time::Duration::from_secs(10), "the new session's wake", || {
         failed_wakes() == 3

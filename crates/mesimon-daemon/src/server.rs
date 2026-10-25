@@ -5599,16 +5599,11 @@ impl Daemon {
                 self.feed.hook_event(&frame.session, &frame.event, Some("straggler"));
                 return;
             }
+            // A Codex runtime outlives its pane until cleanup confirms; a
+            // record already closed is left as it closed (T-1026).
             if matches!(sig, Signal::PaneDied { .. }) {
-                if let Some(record) = self
-                    .board
-                    .sessions
-                    .iter_mut()
-                    .find(|s| s.id == id && s.kind == SessionKind::Codex)
-                {
-                    record.codex_stopping = true;
-                    record.observation_hold = true;
-                    dirty = true;
+                if let Some(record) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                    dirty |= record.pane_died();
                 }
             }
             // A prompt reached the agent — every road ends here: the board's
