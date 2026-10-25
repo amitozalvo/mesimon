@@ -36315,3 +36315,54 @@ reads nor clears the stamp. Inside it, a stamp still holds when the cached sampl
 client. Test: `queued_person_push_tests::a_refusal_holds_a_typed_ask_and_not_one_the_mod_submits`.
 On a stamped mod pane that speaks `submit`, a plain ask is not held and a `/` command is. With
 the stamp read outside the scope, it fails on the plain ask.
+
+## The first Claude launch after Claude Code updates itself takes the hook set: a stated limit, no code (T-1000, 2026-10-25, T-962's stated limit, T-1003's cold read)
+
+**Measured.** On the author's machine, from the board's `daemon.log`, its feed (41 h,
+2026-10-23 17:45Z to 10-25 11:18Z) and `~/.local/share/claude/versions`:
+- **How often.** Claude Code updated itself daily and overnight: 2.1.308 on 10-22 04:41Z,
+  2.1.309 on 10-23 23:11Z, 2.1.310 written 10-23 23:37Z with the `~/.local/bin/claude` link moved
+  10-24 00:11Z. The probe key follows the link, so the link's move is the update.
+- **How long the probe takes.** Warm, run by hand twice: `--version` 0.04 s, `plugin validate`
+  0.66 s, `plugin test` 0.51 to 0.56 s, `auth status --json` 0.12 s, about 1.4 s in all. Cold, on
+  the update's day: `probe.json` was written about 2 s after the launch that started it.
+- **The window is not the probe's 2 s.** The probe is started only by a launch (`auto_road`) or
+  by a shell-environment capture, and a capture runs only at the daemon's start or on the
+  person's offer. A daemon that lives across an update asks nothing about the new binary until
+  its first Claude launch. The daemon that started 10-23 21:01Z ran across the 00:11Z update.
+  T-936's launch at 10-24 09:31:36Z, 9 h 20 min later, started the probe (`probe.json`
+  09:31:38Z), and its session's `SessionStart` carried no `road`: it was on the hook set. T-938's
+  launch, 8 s later, took the mod.
+- **How many launches.** 52 Claude starts in the feed's 41 h; 51 on the mod and 1 on the hook
+  set, which is that one. A board restarted often (the author's restarted 20 times on 10-24)
+  usually covers an update with a restart's warm probe.
+
+**The limit.** The first Claude launch under `auto` after Claude Code updates itself, on a
+daemon that has not restarted since, takes the hook set for its life (`road.json`:
+`probing the Claude Code on PATH`). Its own launch starts the probe, and later launches take the
+mod once that probe lands. That is about one session per update, and that session works, on the
+hook set's roads.
+
+**Declined: probing on the slow bucket.** The first shape called `warm_road_probe` every 10 s.
+T-1003's cold read found it narrows the window rather than removing it: a launch between the
+key's move and the probe's answer still takes the hook set, and the bound is the bucket plus the
+probe's own budgets (20/60/60/20 s), not the 12 s observed warm. Its costs fall on every board:
+- PATH metadata, canonicalisation and a SHA-256 of the mod sources on the writer every bucket,
+  and a lay and check of the mod and load-probe folders, with fsyncs, whenever a probe is due
+  (repeated every bucket while either folder cannot be laid);
+- the four CLI commands on an idle board every 6 h, at a mods-off or classic-off verdict's
+  recheck;
+- more exposure of the sticky failure cache below, now reached with no launch.
+A removal beats an addition for one launch per update.
+
+**Inherited hazards, for a later ticket.** Both predate T-1000, and polling would have reached
+them more often:
+- **A failure verdict sticks until the binary changes.** `claude_binary` takes the first regular
+  file on PATH without checking the executable bit, so a replacement seen before its `chmod`
+  caches a failure, and the `chmod` does not move the `ProbeKey` (path, mtime, length). A
+  6-hour recheck of a mods-off or classic-off verdict that meets a transient validate or load
+  failure replaces an expiring verdict with one that never expires, and a restart does not
+  retry it.
+- **`run_bounded` joins its pipe readers with no deadline** (`modroad.rs`): the deadline covers
+  the child's exit, and the group is killed only past it. A child that exits in time and leaves
+  a process holding stdout or stderr open holds the probe's worker on the joins, with no bound.
