@@ -91,6 +91,10 @@
 #              after_wake:<cmd>:<cause> (T-973: the crown's first <cmd>
 #              board line for the ticket follows the board's first wake of
 #              <cause> for it),
+#              sampled_before:<prefix> (T-973, round 1: in the crown's
+#              transcript the overrun line for the ticket arrives, then in
+#              that same turn a sample_agent of its key returns a reading,
+#              not an error, then the reply beginning <prefix>),
 #              crown_line:<prefix>:<word> (T-810: the crown's last line
 #              beginning <prefix> holds <word>, or with `!<word>` does not),
 #              shell:<line> / shell_out:<text> / no_shell (T-876: the
@@ -99,7 +103,8 @@
 #              hand:<word> (T-908: the worker raised its hand on its own
 #              ticket, the reason naming <word>, case aside),
 #              crown_never:<w1,w2,...> (T-895: no Bash call of the crown's
-#              since the test began holds any of the words, and no Monitor
+#              since the test began holds any of the words, nor any other
+#              tool's input but the board's own (T-973: a Read, a Grep), and no Monitor
 #              ran: the board's wake is the wait), fed_after:<cmd>:<prefix>
 #              (T-919: the ticket's first board line whose cmd begins
 #              <prefix> follows its first <cmd> line, none before it),
@@ -1705,7 +1710,7 @@ blind = true
 workspace = "worktree"
 brief = "Run this one command with the Bash tool, in the foreground, exactly as written, with a timeout of 600000 ms, and wait for it: until [ -f /tmp/msmn-rig-sa1-never ]; do sleep 5; done. When it returns, reply with the single word done and end your turn. Run nothing else."
 expect = "told by the board that the worker's turn ran past the expect_secs the crown gave its start (T-973), the crown reads the worker with sample_agent after that wake and before it answers, and says the worker is looping: its command waits on a file that never appears."
-checks = ["road:mod", "started_by_crown", "woke:overrun", "crown:sample_agent", "after_wake:sample_agent:overrun", "crown_line:SA1 worker:looping", "crown_never:.jsonl,capture-pane,.claude/projects"]
+checks = ["road:mod", "started_by_crown", "woke:overrun", "crown:sample_agent", "after_wake:sample_agent:overrun", "sampled_before:SA1 worker", "crown_line:SA1 worker:looping", "crown_never:.jsonl,capture-pane,.claude/projects"]
 
   [[test.steps]]
   crown = "SA1: call start_agent for {key} with workspace worktree, no tier, no plan and expect_secs 30, then end your turn with the single line: SA1 started. When the board next wakes you for {key}, end your turn with the single line: SA1 worker: followed by long_job if its agent is on a long job that is getting somewhere, or looping if it is stuck in a loop."

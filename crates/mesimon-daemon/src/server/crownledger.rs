@@ -217,7 +217,25 @@ impl Daemon {
         self.turn_asks = ledger.asks.into_iter().filter(|(w, _)| on_board(w)).collect();
         // A turn begun before the restart is timed from when it began; its
         // wake, owed now, says it may be late.
-        self.crown_expects = crownexpect::restore(ledger.expects, crown, on_board).into();
+        // A begun expectation times only the turn it began (T-973, round 1):
+        // its seat's transcript must show no close since then, read back far
+        // enough to reach that moment. A Codex seat, or a transcript that
+        // cannot say, keeps none.
+        let same_turn = |e: &Expect| {
+            let seat = e.session.and_then(|id| self.board.sessions.iter().find(|s| s.id == id));
+            let path = seat
+                .filter(|s| s.kind == SessionKind::Claude)
+                .and_then(|s| s.transcript_path.as_deref());
+            match (path, e.began_ms) {
+                (Some(path), Some(at)) => {
+                    crate::agents::claude::tail::turn_closed_since(std::path::Path::new(path), at)
+                        == Some(false)
+                }
+                _ => false,
+            }
+        };
+        self.crown_expects =
+            crownexpect::restore(ledger.expects, crown, on_board, same_turn).into();
         // An archived worker's hand was forgotten as it went (T-922); one
         // still on file came from a ledger written before that.
         let showing = |w: &ulid::Ulid| self.board.ticket(*w).is_some_and(|t| !t.is_archived());

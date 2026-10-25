@@ -98,6 +98,34 @@ pub fn turn_done_since(path: &Path, since: u64) -> bool {
     false
 }
 
+/// How far back `turn_closed_since` reads: a long turn's tool output runs
+/// past the 64 KiB the other readers take.
+const CLOSE_WINDOW: u64 = 4 * 1024 * 1024;
+
+/// Did the turn under way at `since` (epoch ms) close since then (T-973,
+/// round 1)? `Some(true)` for a close (`adopt::turn_edge`'s `Done`) or an
+/// abort dated at or after it, whatever opened after; `Some(false)` where
+/// the walk back reaches a record dated before `since` with neither; `None`
+/// with no transcript, or a window that ends first: a restart asks it of an
+/// expectation, which it keeps only on `Some(false)`.
+pub fn turn_closed_since(path: &Path, since: u64) -> Option<bool> {
+    let len = std::fs::metadata(path).ok()?.len();
+    let text = window_text(path, len, CLOSE_WINDOW)?;
+    let end = text.len();
+    for v in (TailRecords { text, end }) {
+        let at = record_ms(&v);
+        let closed = matches!(turn_edge(&v), TurnEdge::Done(_))
+            || classify_tail_record(&v) == TailEvent::Aborted;
+        if closed && at.is_none_or(|at| at >= since) {
+            return Some(true);
+        }
+        if at.is_some_and(|at| at < since) {
+            return Some(false);
+        }
+    }
+    None
+}
+
 /// Recover only a recent explicit cancellation when a cursor is first minted.
 /// A newer user/assistant turn record stops the search; old aborts cannot cancel
 /// a new turn just because they remain in the bounded history window. The
@@ -379,7 +407,8 @@ pub fn api_error(path: &Path) -> Option<ApiError> {
 /// none where the newest call came back or a turn's end or an abort is newer
 /// than it; `recent_tools` the names of the last five calls, newest first;
 /// `last_text` the last text the agent wrote (`adopt::assistant_text`). All
-/// inside the last 64 KiB, so a long tool result may leave fewer.
+/// inside the last 64 KiB, so a long tool result may leave fewer, and a call
+/// whose start lies further back is not seen in flight.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct TailSample {
     pub current_tool: Option<(String, Option<u64>)>,
@@ -422,11 +451,13 @@ pub fn sample(path: &Path) -> Option<TailSample> {
                     blocks.iter().rev().filter(|b| field(b, "type").as_deref() == Some("tool_use"))
                 {
                     let name = field(b, "name").unwrap_or_else(|| "tool".into());
-                    if !current_settled {
+                    // The newest call with no result is in flight; a newer
+                    // one that came back (a parallel sibling) does not end
+                    // the search, a turn's end or an abort does (round 1).
+                    let came_back = field(b, "id").is_some_and(|id| answered.contains(&id));
+                    if !current_settled && !came_back {
                         current_settled = true;
-                        if !field(b, "id").is_some_and(|id| answered.contains(&id)) {
-                            out.current_tool = Some((name.clone(), record_ms(&v)));
-                        }
+                        out.current_tool = Some((name.clone(), record_ms(&v)));
                     }
                     if out.recent_tools.len() < SAMPLE_TOOLS {
                         out.recent_tools.push(name);
@@ -438,7 +469,7 @@ pub fn sample(path: &Path) -> Option<TailSample> {
         if out.last_text.is_none() {
             out.last_text = mesimon_core::adopt::assistant_text(&v).map(str::to_string);
         }
-        if out.last_text.is_some() && out.recent_tools.len() == SAMPLE_TOOLS {
+        if current_settled && out.last_text.is_some() && out.recent_tools.len() == SAMPLE_TOOLS {
             break;
         }
     }
@@ -492,7 +523,9 @@ pub(crate) fn window_text(path: &Path, len: u64, window: u64) -> Option<String> 
     let start = len.saturating_sub(window);
     f.seek(SeekFrom::Start(start)).ok()?;
     let mut buf = Vec::new();
-    f.read_to_end(&mut buf).ok()?;
+    // Up to `len` and no further (T-973, round 1): bytes appended since the
+    // stat do not stretch the window.
+    f.take(len.saturating_sub(start)).read_to_end(&mut buf).ok()?;
     let text = String::from_utf8_lossy(&buf).into_owned();
     if start == 0 {
         return Some(text);
@@ -650,6 +683,92 @@ mod tests {
         assert_eq!(sample(&path.with_file_name("absent.jsonl")), None);
         std::fs::write(&path, "").unwrap();
         assert_eq!(sample(&path), Some(TailSample::default()));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    /// Round 1: a parallel batch whose newer call came back leaves the
+    /// older one in flight; either answered leaves the other; both answered
+    /// leave none; a turn's end or an abort after them settles it.
+    #[test]
+    fn a_sample_finds_the_call_still_running_in_a_parallel_batch() {
+        let path = tmp("sample-parallel");
+        let batch = serde_json::json!({"uuid": "p", "type": "assistant",
+            "timestamp": "2026-10-25T02:00:00Z",
+            "message": {"content": [
+                {"type": "tool_use", "id": "a", "name": "Bash", "input": {}},
+                {"type": "tool_use", "id": "b", "name": "Grep", "input": {}}]}});
+        let result = |id: &str| {
+            serde_json::json!({"uuid": format!("r-{id}"), "type": "user",
+                "message": {"content": [{"type": "tool_result", "tool_use_id": id, "content": "ok"}]}})
+        };
+        let current = |lines: &[serde_json::Value]| {
+            let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+            std::fs::write(&path, body).unwrap();
+            sample(&path).unwrap().current_tool.map(|(name, _)| name)
+        };
+        assert_eq!(current(&[batch.clone(), result("b")]).as_deref(), Some("Bash"), "only B back");
+        assert_eq!(current(&[batch.clone(), result("a")]).as_deref(), Some("Grep"), "only A back");
+        assert_eq!(
+            current(std::slice::from_ref(&batch)).as_deref(),
+            Some("Grep"),
+            "neither: the newest"
+        );
+        assert_eq!(current(&[batch.clone(), result("a"), result("b")]), None, "both back");
+        let done = serde_json::json!({"uuid": "d", "type": "system", "subtype": "turn_duration"});
+        assert_eq!(current(&[batch.clone(), result("b"), done]), None, "a turn's end after them");
+        let abort = serde_json::json!({"uuid": "x", "type": "user",
+            "message": {"content": "[Request interrupted by user]"}});
+        assert_eq!(current(&[batch.clone(), result("b"), abort]), None, "an abort after them");
+        // The names stay the last five, whatever the search found.
+        let s = sample(&path).unwrap();
+        assert_eq!(s.recent_tools, ["Grep", "Bash"]);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    /// Round 1: a turn under way at a moment closed since only on a close
+    /// or an abort dated after it; a record from before it with neither
+    /// says open; a transcript that cannot reach it says nothing.
+    #[test]
+    fn a_turn_closed_since_reads_back_to_its_moment() {
+        let path = tmp("closed-since");
+        let at = |ts: &str| mesimon_core::adopt::iso_ms(ts).unwrap();
+        let prompt = serde_json::json!({"uuid": "u", "type": "user",
+            "timestamp": "2026-10-25T03:00:00Z", "message": {"content": "go"}});
+        let tool = serde_json::json!({"uuid": "t", "type": "assistant",
+            "timestamp": "2026-10-25T03:00:05Z", "message": {"content": [
+                {"type": "tool_use", "id": "b", "name": "Bash", "input": {}}]}});
+        let close = serde_json::json!({"uuid": "d", "type": "system", "subtype": "turn_duration",
+            "timestamp": "2026-10-25T03:10:00Z"});
+        let again = serde_json::json!({"uuid": "u2", "type": "user",
+            "timestamp": "2026-10-25T03:11:00Z", "message": {"content": "next"}});
+        let abort = serde_json::json!({"uuid": "x", "type": "user",
+            "timestamp": "2026-10-25T03:10:00Z",
+            "message": {"content": "[Request interrupted by user]"}});
+        let write = |lines: &[&serde_json::Value]| {
+            let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+            std::fs::write(&path, body).unwrap();
+        };
+        let since = at("2026-10-25T03:00:01Z");
+        write(&[&prompt, &tool]);
+        assert_eq!(turn_closed_since(&path, since), Some(false), "still the same turn");
+        write(&[&prompt, &tool, &close, &again]);
+        assert_eq!(turn_closed_since(&path, since), Some(true), "closed, and another began");
+        write(&[&prompt, &tool, &abort, &again]);
+        assert_eq!(turn_closed_since(&path, since), Some(true), "aborted, and another began");
+        write(&[&tool]);
+        assert_eq!(turn_closed_since(&path, at("2026-10-25T02:00:00Z")), None, "never reaches it");
+        assert_eq!(turn_closed_since(&path.with_file_name("absent.jsonl"), since), None);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    /// Round 1: the window ends at the length it was asked for, so bytes
+    /// appended after the stat do not stretch it.
+    #[test]
+    fn a_window_reads_no_further_than_its_length() {
+        let path = tmp("window-len");
+        std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+        assert_eq!(window_text(&path, 8, 1024).as_deref(), Some("one\ntwo\n"));
+        assert_eq!(window_text(&path, 8, 5).as_deref(), Some("two\n"), "its first line cut");
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

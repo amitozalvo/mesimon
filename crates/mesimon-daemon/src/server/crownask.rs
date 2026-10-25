@@ -309,7 +309,7 @@ impl Daemon {
         };
         ask.session = Some(session);
         ask.pane = pane;
-        ask.frame = frame;
+        ask.frame = frame.clone();
         ask.submit = submit;
         ask.own_turn = submit || !working;
         ask.set(Stage::Sent, now_ms());
@@ -317,6 +317,8 @@ impl Daemon {
         if let Some(o) = self.owed.get_mut(&session).filter(|o| o.ticket == target) {
             o.ask = Some(id);
         }
+        // Its expectation keeps the receipt that begins its turn (T-973).
+        self.expect_dispatched(target, id, session, frame.filter(|_| submit));
         // A wake behind a worktree rebuild parks its words on the resume
         // (T-278), and they are owed when it replays (`crown_ask_retag`).
     }
@@ -384,6 +386,10 @@ impl Daemon {
         a.frame = None;
         a.submit = false;
         a.own_turn = true;
+        let target = self.all_crown_asks().find(|(_, a)| a.id == ask).map(|(t, _)| t);
+        if let Some(target) = target {
+            self.expect_dispatched(target, ask, session, None);
+        }
     }
 
     /// The agent's own edge for the words: its turn now carries the ask,
@@ -468,11 +474,20 @@ impl Daemon {
     /// of its own (round 3: bound at dispatch, never by a later report).
     pub(super) fn crown_ask_framed(&mut self, session: uuid::Uuid, ask: ulid::Ulid, frame: String) {
         let pane = self.pane_of(session);
-        if let Some(a) = self.crown_asks.values_mut().flatten().find(|a| a.id == ask) {
-            a.frame = Some(frame);
+        let mut target = None;
+        let found = self
+            .crown_asks
+            .iter_mut()
+            .find_map(|(t, list)| list.iter_mut().find(|a| a.id == ask).map(|a| (*t, a)));
+        if let Some((t, a)) = found {
+            a.frame = Some(frame.clone());
             a.submit = true;
             a.own_turn = true;
             a.pane = pane;
+            target = Some(t);
+        }
+        if let Some(target) = target {
+            self.expect_dispatched(target, ask, session, Some(frame));
         }
     }
 
@@ -484,7 +499,7 @@ impl Daemon {
     }
 
     /// The pane `session` lives in now, if it has one.
-    fn pane_of(&self, session: uuid::Uuid) -> Option<String> {
+    pub(super) fn pane_of(&self, session: uuid::Uuid) -> Option<String> {
         self.board
             .sessions
             .iter()

@@ -35124,3 +35124,49 @@ panes and transcripts by hand, logged as a gap each time.
   - the crown called `sample_agent` once, after the wake, and said `SA1 worker: looping`;
   - it ran no Bash and read no transcript or pane by hand;
   - the crown's spend: 2 turns, 5 tool calls.
+
+**Round 1 (the cold read of `2fc187c4`).**
+- **The sample's landing passes the call's gate again.**
+  - One function, `sample_gate`, holds every check: the caller's ticket wears the crown, the key
+    names another ticket on the board, the switch is on, the ticket holds an agent, the crown
+    started it, and `authorize` agrees. The call and the read's landing both pass it.
+  - The landing then compares the whole seat taken at the call: the same record, the same
+    `pane_key`, and a pane where there was one. It compares even when the capture read nothing.
+  - So a read delayed past a switch turned off, a crown taken off, a park, or a park-then-wake
+    into a new pane under the same session is refused, never answered.
+  - The e2e holds the read open on both sides of its capture with a new seam,
+    `MESIMON_SAMPLE_DELAY_MS`.
+- **A restored expectation times only its own turn.**
+  - Begun before the restart, it comes back only where its seat's transcript shows no turn close
+    (`turn_edge`'s `Done`) and no abort since it began, read back up to 4 MiB to reach that
+    moment (`tail::turn_closed_since`). A Codex seat, or a transcript that cannot say, keeps
+    none.
+  - A restored one goes at its seat's next turn-begin edge, which only an unseen end allows.
+  - Not yet begun, it comes back only where its ask's words went down a mod `submit` and its
+    `entered` can still come. `Expect` now keeps the dispatch identity (`frame`, the seat, its
+    `pane`), and that frame's `entered` begins it from that seat and pane whoever else owns the
+    report (`expect_entered`).
+  - A queued ask, a paste whose ack the restart lost, and a start's launch are memory, so their
+    expectations go with them. A begun or pending expectation also goes when its seat leaves the
+    pane it was given.
+- **`current_tool` is the newest call still running.** A newer parallel sibling that came back
+  no longer ends the search; a turn's end or an abort still does. The five names stay
+  independent of the search.
+- **The outgoing crown's expectations go with its wake ledger** (`drop_crown_wakes`), so no other
+  crown is woken by them and none is saved under another crown's ledger.
+- **Rig.**
+  - `SA1` adds `sampled_before:<prefix>`: in the crown's own transcript, after the overrun
+    line, a `sample_agent` of the worker's key returns a reading (not an error, its fields
+    present) in the same turn, before the reply that judges.
+  - `crown_never` now reads every non-board tool's input, so a Read or a Grep of a transcript
+    counts as a Bash `cat` does.
+  - Rerun once (run 20261025-050806, `c1e74f97`, Opus 5.5 crown): PASS, `wake → sampled →
+    verdict`, `SA1 worker: looping`. The crown made 2 turns and 4 tool calls; no Bash, and its
+    one non-board call named no transcript or pane. The Claude account's weekly quota (all
+    models) read 55 % before and 56 % after; the 5-hour window read 8 % then 9 %.
+- **The 64 KiB window is exact.** `window_text` reads up to the length it stat'd and no
+  further, so lines appended during the read do not stretch it.
+- **Schemas, as accepted.** v0.1.0-beta.13 writes columns 8 and crown 1, so 9 and 2 protect
+  every shipped reader. A downgrade to an unshipped intermediate 9 or 2 build (one before T-973
+  on main) is not protected: it would drop `crown_samples = false` and `expects`, and quarantine
+  a ledger that holds an `overrun` wake.

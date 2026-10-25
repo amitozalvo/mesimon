@@ -6186,6 +6186,9 @@ impl Daemon {
         let Some(fid) = frame.reason.as_deref() else { return };
         let outcome = frame.payload["outcome"].as_str().unwrap_or("");
         if outcome == "entered" {
+            // The turn a crown's expectation times (T-973), whoever owns the
+            // frame: after a restart, the ask's own record is gone.
+            self.expect_entered(id, fid);
             // Whose frame it is, resolved before any effect (T-936), by seat,
             // frame and live pane: the crown's submitted wake, the delivery
             // its owed entry holds, a crown ask whose owed window has passed
@@ -7193,6 +7196,7 @@ impl Daemon {
         if snapshot.kind.is_agent() {
             if crownexpect::turn_begins(&change.from, &change.to) {
                 self.turn_since.insert(id, now);
+                self.expect_new_turn(snapshot.ticket, id);
                 self.expect_began(snapshot.ticket, None, Some(id), now);
             } else if !crownexpect::turn_open(&change.to) {
                 self.turn_since.remove(&id);

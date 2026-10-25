@@ -24,14 +24,19 @@ const PANE_BYTES: usize = 4 * 1024;
 /// At most how many bytes of the agent's last text, its end kept.
 const TEXT_BYTES: usize = 1024;
 
-/// A sample on its way: who asked, which seat it reads, and the reply the
-/// writer loop parked for it (`sample_park_reply`).
+/// A sample on its way: who asked (its session and the crowned ticket it
+/// asked from), which seat it reads and as what it found it (its pane, and
+/// whether it had one), and the reply the writer loop parked for it
+/// (`sample_park_reply`). The landing passes the call's gate again and
+/// finds the same seat in the same pane, or answers nothing of it.
 pub(super) struct Sampling {
     session: uuid::Uuid,
+    own: ulid::Ulid,
     target: ulid::Ulid,
     key: String,
     seat: uuid::Uuid,
     pane_key: Option<String>,
+    awake: bool,
     reply: Option<Sender<ClientReply>>,
 }
 
@@ -41,6 +46,15 @@ pub(super) struct SampleRead {
     at_ms: u64,
     pane: Option<Vec<String>>,
     tail: Option<TailSample>,
+}
+
+/// How long the worker waits before it reads, and again before its read
+/// lands (`MESIMON_SAMPLE_DELAY_MS`, an e2e's seam, round 1): the landing's
+/// gate is tested against what changes on either side of the capture.
+/// Nothing in life sets it.
+fn sample_delay() -> std::time::Duration {
+    let ms = std::env::var("MESIMON_SAMPLE_DELAY_MS").ok().and_then(|v| v.parse().ok());
+    std::time::Duration::from_millis(ms.unwrap_or(0))
 }
 
 /// The pane's rows as they leave for another process: scrubbed, the last
@@ -61,77 +75,94 @@ fn last_text(text: &str) -> Option<String> {
 }
 
 impl Daemon {
-    /// `sample_agent` (T-973): the refusals in order, then the read handed
-    /// to a worker thread, the reply parked until it lands.
-    pub(super) fn agent_sample(
-        &mut self,
+    /// What `sample_agent` asks of the caller and the target, in order, at
+    /// the call and again when the read lands (round 1): the caller's
+    /// ticket wears the crown and the key names another ticket on the board,
+    /// the board lets the crown sample, the ticket holds an agent, the crown
+    /// started it, and `authorize` agrees. The target and its seat, or the
+    /// refusal in words.
+    fn sample_gate(
+        &self,
         session: uuid::Uuid,
         own: ulid::Ulid,
         key: &str,
-    ) -> Response {
-        let refused = |d: &mut Daemon, target: Option<ulid::Ulid>, message: String| {
-            d.feed.board_outcome("agent", "sample_agent", target, "refused");
-            Response::Err { message }
-        };
-        let target = match self.crown_target(own, key, false) {
-            Ok(t) => t,
-            Err(message) => return refused(self, None, message),
-        };
+    ) -> std::result::Result<(ulid::Ulid, &SessionRecord), (Option<ulid::Ulid>, String)> {
+        let target = self.crown_target(own, key, false).map_err(|m| (None, m))?;
         if target == own {
             let message = format!(
                 "{key} is this session's own ticket; sample_agent is for an agent the crown \
                  started"
             );
-            return refused(self, Some(target), message);
+            return Err((Some(target), message));
         }
         if !self.board.crown_samples {
             let message = format!(
                 "Settings → Crown → Samples agents is off; a person turns it on, or {key}'s \
                  card and get_ticket say what the board shows"
             );
-            return refused(self, Some(target), message);
+            return Err((Some(target), message));
         }
         let Some(rec) = self.board.live_agent(target) else {
-            let message = format!("{key} has no agent; start_agent starts one");
-            return refused(self, Some(target), message);
+            return Err((Some(target), format!("{key} has no agent; start_agent starts one")));
         };
         let started = rec.started_by.is_some();
-        let (seat, kind, pane_key, sid16, transcript) = (
-            rec.id,
-            rec.kind,
-            rec.pane_key.clone(),
-            rec.state.has_pane().then(|| rec.sid16()),
-            crate::cost::transcript_of(rec).map(|(path, _)| path),
-        );
         if !started {
             let message = format!(
                 "a person started {key}'s agent, and it is the person's to read, in its pane; \
                  sample_agent is for an agent the crown started"
             );
-            return refused(self, Some(target), message);
+            return Err((Some(target), message));
         }
         let by = Principal::Agent { session };
         let action = Action::SampleAgent { crown: self.board.is_crowned(own) && started };
-        if let Decision::Deny { reason } = authorize(&by, &action, &Resource::Session { id: seat })
+        if let Decision::Deny { reason } =
+            authorize(&by, &action, &Resource::Session { id: rec.id })
         {
-            return refused(self, Some(target), format!("denied: {reason}"));
+            return Err((Some(target), format!("denied: {reason}")));
         }
+        Ok((target, rec))
+    }
+
+    /// `sample_agent` (T-973): the gate, then the read handed to a worker
+    /// thread, the reply parked until it lands.
+    pub(super) fn agent_sample(
+        &mut self,
+        session: uuid::Uuid,
+        own: ulid::Ulid,
+        key: &str,
+    ) -> Response {
+        let (target, rec) = match self.sample_gate(session, own, key) {
+            Ok(found) => found,
+            Err((target, message)) => {
+                self.feed.board_outcome("agent", "sample_agent", target, "refused");
+                return Response::Err { message };
+            }
+        };
+        let (seat, kind, pane_key, awake, sid16, transcript) = (
+            rec.id,
+            rec.kind,
+            rec.pane_key.clone(),
+            rec.state.has_pane(),
+            rec.state.has_pane().then(|| rec.sid16()),
+            crate::cost::transcript_of(rec).map(|(path, _)| path),
+        );
         self.sample_seq = self.sample_seq.wrapping_add(1);
         let id = self.sample_seq;
         let key =
             self.board.ticket(target).map_or_else(|| key.to_string(), |t| t.short_key.clone());
-        self.samples.insert(
-            id,
-            Sampling { session, target, key: key.clone(), seat, pane_key, reply: None },
-        );
+        self.samples
+            .insert(id, Sampling { session, own, target, key, seat, pane_key, awake, reply: None });
         self.sample_wait = Some(id);
         let backend = self.backend.clone();
         let tx = self.tx.clone();
         let claude = kind == SessionKind::Claude;
+        let delay = sample_delay();
         std::thread::spawn(move || {
+            std::thread::sleep(delay);
             let pane = sid16.and_then(|sid| backend.capture_tail(&sid, PANE_ROWS).ok());
             let tail = transcript.filter(|_| claude).and_then(|path| tail::sample(&path));
             let read = SampleRead { at_ms: now_ms(), pane, tail };
+            std::thread::sleep(delay);
             let _ = tx.send(Msg::AgentSampled(id, Box::new(read)));
         });
         // Never sent: the writer loop parks the reply on `sample_wait`.
@@ -161,12 +192,23 @@ impl Daemon {
     /// answered with another agent's pane.
     pub(super) fn sample_landed(&mut self, id: u64, read: SampleRead) {
         let Some(s) = self.samples.remove(&id) else { return };
-        let rec = self
-            .board
-            .live_agent(s.target)
-            .filter(|r| r.id == s.seat && (read.pane.is_none() || r.pane_key == s.pane_key));
-        let response = match rec {
-            None => {
+        // The call's gate again (round 1): the crown may have moved, the
+        // switch been turned off or the agent changed hands meanwhile. Then
+        // the same seat in the same pane, whether or not the capture read
+        // one: a park, a relaunch or a wake is another agent's screen.
+        let found = self.sample_gate(s.session, s.own, &s.key).map(|(target, rec)| {
+            let same = target == s.target
+                && rec.id == s.seat
+                && rec.pane_key == s.pane_key
+                && rec.state.has_pane() == s.awake;
+            (same, rec)
+        });
+        let response = match found {
+            Err((_, message)) => {
+                self.feed.board_outcome("agent", "sample_agent", Some(s.target), "refused");
+                Response::Err { message }
+            }
+            Ok((false, _)) => {
                 self.feed.board_outcome("agent", "sample_agent", Some(s.target), "changed");
                 Response::Err {
                     message: format!(
@@ -175,7 +217,7 @@ impl Daemon {
                     ),
                 }
             }
-            Some(rec) => {
+            Ok((true, rec)) => {
                 let state = mesimon_core::board::agent_state_word(&rec.state).to_string();
                 let tail = read.tail.unwrap_or_default();
                 let sample = AgentSampleView {

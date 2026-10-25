@@ -3005,10 +3005,14 @@ Reply with the single word ready and end your turn."""
                 words = [w for w in arg.split(",") if w]
                 calls = tool_inputs(crown_rows)
                 ran = [i.get("command", "") for n, i in calls if n == "Bash"]
-                bad = [r for r in ran if any(w in r for w in words)]
+                # T-973, round 1: every tool's input but the board's own, so
+                # a Read, Grep or Glob of a transcript counts as a Bash `cat`.
+                hand = [f"<{n}> {json.dumps(i)}" for n, i in calls
+                        if not (n or "").startswith("mcp__") and n != "Bash"]
+                bad = [r for r in ran + hand if any(w in r for w in words)]
                 bad += [f"<{n}>" for n, _ in calls if n == "Monitor"]
                 check(c, not bad, " → ".join(repr(b[:60]) for b in bad)
-                      or f"{len(ran)} bash calls, none of {words}")
+                      or f"{len(ran)} bash calls, {len(hand)} other tool calls, none of {words}")
             elif name == "compacted":
                 # T-969, round 1: the worker's own transcript records a
                 # compaction of trigger `arg` with a reply on each side of
@@ -3464,6 +3468,53 @@ Reply with the single word ready and end your turn."""
                 causes = [l.get("cause") for l in lines if l.get("kind") == "crown_wake"
                           and l.get("worker") == tid]
                 check(c, arg in causes, f"wakes {causes}" if causes else "no wake")
+            elif name == "sampled_before":
+                # `sampled_before:<prefix>` (T-973, round 1): in the crown's
+                # own transcript, the board's overrun line for this ticket
+                # comes in as a prompt, then in that same turn (no other
+                # prompt between) a `sample_agent` of this key answers with
+                # a reading (not an error, its fields there), then the reply
+                # beginning <prefix>: the judgement came after the reading.
+                crown = self.agent_of(board, self.crown)
+                since = record.get("t0_ms", 0)
+                crown_rows = [r for r in (transcript(crown) if crown else [])
+                              if (iso_ms(r.get("timestamp") or "") or 0) >= since]
+                results_by = {}
+                for r in crown_rows:
+                    for b in (r.get("message") or {}).get("content") or []:
+                        if isinstance(b, dict) and b.get("type") == "tool_result":
+                            body = b.get("content")
+                            results_by[b.get("tool_use_id")] = (bool(b.get("is_error")), body if isinstance(body, str)
+                                else " ".join(x.get("text", "") for x in body or [] if isinstance(x, dict)))
+                stage, seen = "wake", []
+                for r in crown_rows:
+                    said = "\n".join(texts(r))
+                    if r.get("type") == "user" and not r.get("isMeta") and said.strip() \
+                            and not said.startswith("<task-notification>"):
+                        if f"{key} " in said and "has run its turn" in said:
+                            stage, seen = "sample", ["wake"]
+                        elif stage != "wake":
+                            stage, seen = "wake", seen + ["a prompt before the verdict"]
+                        continue
+                    if stage == "sample" and r.get("type") == "assistant":
+                        for b in (r.get("message") or {}).get("content") or []:
+                            if not (isinstance(b, dict) and b.get("type") == "tool_use"):
+                                continue
+                            if (b.get("name") or "").endswith("sample_agent") \
+                                    and (b.get("input") or {}).get("key") == key:
+                                err, text = results_by.get(b.get("id"), (True, ""))
+                                fields = all(f'"{f}"' in text for f in ("state", "captured_at_ms"))
+                                if not err and fields:
+                                    stage = "verdict"
+                                    seen.append("sampled")
+                                else:
+                                    seen.append(f"sample refused: {text[:80]!r}")
+                    if stage == "verdict" and r.get("type") == "assistant" \
+                            and any(l.strip().strip("*`").startswith(arg) for l in said.splitlines()):
+                        stage = "done"
+                        seen.append("verdict")
+                        break
+                check(c, stage == "done", " → ".join(seen) or "no overrun line reached the crown")
             elif name == "after_wake":
                 # `after_wake:<cmd>:<cause>` (T-973): the crown's first <cmd>
                 # board line for the ticket follows the board's first wake of

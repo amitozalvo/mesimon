@@ -14502,3 +14502,433 @@ fn the_crown_samples_an_agent_it_started() {
     assert!(matches!(c.request(Command::SetCrownSamples { on: true }), Response::Ok));
     assert!(sample(&mut c, sa, &kw).is_ok(), "on again");
 }
+
+/// T-973, round 1: a sample's read lands through the call's own gate again
+/// and finds the same seat in the same pane, or says nothing of it. Each
+/// sample here waits on both sides of its capture (`MESIMON_SAMPLE_DELAY_MS`)
+/// while the board changes: the switch turned off, the crown taken off,
+/// the agent parked (the seat lost its pane), and the agent parked before
+/// the capture (which then reads no pane) and woken after it into a new
+/// pane under the same session.
+#[test]
+fn a_samples_landing_passes_the_gate_again_and_finds_the_same_pane() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_sample_fence",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_SAMPLE_DELAY_MS", "1500"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let orch = h.paths.orch_sock();
+    let mut c = h.client("crown_sample_fence");
+    let send = |sid: uuid::Uuid, event: &str, body: &str| {
+        hook_send(&hook_sock, &sid.to_string(), event, body);
+    };
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-973 fenced");
+    let kw = key_of(&mut c, w);
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    send(sa, "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sa, "running", |s| *s == SessionState::Running);
+    send(sa, "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+            expect_secs: None,
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    wait_attached(&mut c, w);
+    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    send(ws, "UserPromptSubmit", r#"{"prompt":"the brief"}"#);
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+    send(ws, "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    // A sample on a second connection: its reply waits for the read.
+    let in_flight = || {
+        let orch = orch.clone();
+        let kw = kw.clone();
+        std::thread::spawn(move || {
+            let mut c2 = TestClient::try_connect(&orch, std::time::Duration::from_secs(5))
+                .expect("a second connection");
+            sample(&mut c2, sa, &kw)
+        })
+    };
+    let ms = |n| std::thread::sleep(std::time::Duration::from_millis(n));
+    let pane = |c: &mut TestClient| c.board().live_agent(w).and_then(|r| r.pane_key.clone());
+
+    // ---- unchanged, it lands ------------------------------------------------
+    assert!(in_flight().join().unwrap().is_ok(), "a delayed sample of an unchanged seat");
+
+    // ---- the switch turned off mid-read -------------------------------------
+    let j = in_flight();
+    ms(300);
+    assert!(matches!(c.request(Command::SetCrownSamples { on: false }), Response::Ok));
+    let off = j.join().unwrap().unwrap_err();
+    assert!(off.contains("Samples agents is off"), "{off}");
+    assert!(matches!(c.request(Command::SetCrownSamples { on: true }), Response::Ok));
+
+    // ---- the crown taken off mid-read ---------------------------------------
+    let j = in_flight();
+    ms(300);
+    assert!(matches!(c.request(Command::Uncrown), Response::Ok));
+    let gone = j.join().unwrap().unwrap_err();
+    assert!(gone.contains("crown"), "no crown, no sample: {gone}");
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    assert!(sample(&mut c, sa, &kw).is_ok(), "crowned again");
+
+    // ---- parked mid-read: the seat lost its pane ----------------------------
+    let j = in_flight();
+    ms(300);
+    assert!(matches!(c.request(Command::SleepSession { id: ws }), Response::Ok));
+    c.await_state(ws, "asleep", |s| *s == SessionState::Sleeping);
+    let parked = j.join().unwrap().unwrap_err();
+    assert!(parked.contains("changed during the sample"), "{parked}");
+
+    // ---- read while parked, woken into a new pane before it lands -----------
+    match c.request(Command::WakeSession { id: ws }) {
+        Response::Spawned { .. } => {}
+        other => panic!("the wake: {other:?}"),
+    }
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Idle again, so a person's park takes it.
+    send(ws, "UserPromptSubmit", r#"{"prompt":"again"}"#);
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+    send(ws, "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    match c.request(Command::SleepSession { id: ws }) {
+        Response::Ok => {}
+        other => panic!("the second park: {other:?}"),
+    }
+    c.await_state(ws, "asleep", |s| *s == SessionState::Sleeping);
+    let before = pane(&mut c);
+    let j = in_flight();
+    // The capture runs 1.5 s in, on a parked seat: no pane to read.
+    ms(2200);
+    match c.request(Command::WakeSession { id: ws }) {
+        Response::Spawned { .. } => {}
+        other => panic!("the second wake: {other:?}"),
+    }
+    let relaunched = j.join().unwrap().unwrap_err();
+    assert!(relaunched.contains("changed during the sample"), "{relaunched}");
+    assert_ne!(pane(&mut c), before, "the same session, another pane");
+}
+
+/// An ISO stamp for a fabricated transcript record, `ms` past the epoch.
+fn stamp(ms: u64) -> String {
+    let t = mesimon_core::usage::utc_of(ms / 1000);
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        t.year + 1900,
+        t.mon + 1,
+        t.mday,
+        t.hour,
+        t.min,
+        t.sec,
+        ms % 1000
+    )
+}
+
+/// T-973, round 1: an expectation across a restart times only the turn it
+/// began. Restarted inside its deadline on the same turn (the transcript
+/// shows no close since), it wakes the crown once, after a restart; a
+/// second restart after that wake says nothing again. A turn that closed
+/// while no daemon listened, another begun after it, takes the expectation
+/// with it: no wake, no `overrun`. On the mod pass, words down a `submit`
+/// whose `entered` comes only after a restart still begin their turn. The
+/// crown taken off, or moved to another ticket and back, takes every
+/// expectation with it.
+#[test]
+fn an_expectation_across_a_restart_times_only_its_own_turn() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_overrun_restart",
+        Some(RECORDING_STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_overrun_restart");
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    let send = |sid: uuid::Uuid, event: &str, body: &str| {
+        hook_send(&hook_sock, &sid.to_string(), event, body);
+    };
+    let crown_turn = |c: &mut TestClient, sa: uuid::Uuid| {
+        send(sa, "UserPromptSubmit", r#"{"prompt":"wake"}"#);
+        c.await_state(sa, "the crown running", |s| *s == SessionState::Running);
+        send(sa, "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sa, "the crown idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let mod_road = test_road() == "mod";
+    let switch = |name: &str, on: bool| {
+        let f = h.dir.join(name);
+        if on {
+            std::fs::write(f, "").unwrap();
+        } else {
+            let _ = std::fs::remove_file(f);
+        }
+    };
+    let transcript = h.dir.join("restart.jsonl");
+    let record = |kind: &str, at: u64, extra: serde_json::Value| {
+        let mut r = json!({"uuid": format!("{kind}-{at}"), "type": kind, "timestamp": stamp(at)});
+        r.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        let mut f =
+            std::fs::OpenOptions::new().create(true).append(true).open(&transcript).unwrap();
+        use std::io::Write;
+        writeln!(f, "{r}").unwrap();
+    };
+    let prompt = |at: u64| record("user", at, json!({"message": {"content": "go"}}));
+    let close = |at: u64| record("system", at, json!({"subtype": "turn_duration"}));
+
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-973 restarts");
+    let b = c.create_ticket("mesimon-probe-973 another crown");
+    let kw = key_of(&mut c, w);
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
+        Response::Ok
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    crown_turn(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+            expect_secs: None,
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    wait_attached(&mut c, w);
+    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    let start = format!(
+        r#"{{"session_id":"x","transcript_path":"{}","cwd":"/tmp"}}"#,
+        transcript.display()
+    );
+    let t0 = epoch_ms();
+    prompt(t0 - 60_000);
+    close(t0 - 30_000);
+    hook_send_with(&hook_sock, &ws.to_string(), "SessionStart", Some("startup"), &start);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    send(ws, "UserPromptSubmit", r#"{"prompt":"the brief"}"#);
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+    send(ws, "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    let worker = format!("{kw} \"mesimon-probe-973 restarts\"");
+    wait_until(std::time::Duration::from_secs(15), "the finished wake", || {
+        !lines_with(&format!("{worker} finished its turn")).is_empty()
+    });
+    crown_turn(&mut c, sa);
+    let overrun = format!("{worker} has run its turn ");
+    let ask = |c: &mut TestClient, text: &str, secs: u64| {
+        let v = read(c, sa, &kw).unwrap();
+        match c.send(
+            Principal::Agent { session: sa },
+            Command::AgentAskTicket {
+                key: kw.clone(),
+                text: text.into(),
+                seen: v.seen,
+                plan: false,
+                deliver: Deliver::Idle,
+                expect_secs: Some(secs),
+            },
+        ) {
+            Response::AgentAsked { held_for_person: false, .. } => {}
+            other => panic!("ask_agent: {other:?}"),
+        }
+    };
+    // Back from a restart, the worker's next frame says it works, and the
+    // crown's that it is idle.
+    let after_restart = |c: &mut TestClient| {
+        send(ws, "PostToolUse", r#"{"tool_name":"Read","tool_response":{}}"#);
+        c.await_state(ws, "the worker running again", |s| *s == SessionState::Running);
+        send(sa, "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sa, "the crown idle again", |s| matches!(s, SessionState::Idle { .. }));
+    };
+
+    // ---- 1. restarted inside its deadline, the same turn: one late wake -----
+    ask(&mut c, "mesimon-probe-973 one", 10);
+    wait_until(std::time::Duration::from_secs(10), "the first ask's words", || {
+        !lines_with("mesimon-probe-973 one").is_empty()
+    });
+    prompt(epoch_ms());
+    send(ws, "UserPromptSubmit", r#"{"prompt":"mesimon-probe-973 one"}"#);
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+    drop(c);
+    h.restart();
+    let mut c = h.client("crown_overrun_restart_2");
+    after_restart(&mut c);
+    wait_until(std::time::Duration::from_secs(25), "the overrun wake after a restart", || {
+        lines_with(&overrun).len() == 1
+    });
+    let line = lines_with(&overrun).remove(0);
+    assert!(line.contains("after a restart"), "{line}");
+    crown_turn(&mut c, sa);
+
+    // ---- 2. another restart after the wake: told stays told -----------------
+    drop(c);
+    h.restart();
+    let mut c = h.client("crown_overrun_restart_3");
+    after_restart(&mut c);
+    std::thread::sleep(std::time::Duration::from_millis(4000));
+    assert_eq!(lines_with(&overrun).len(), 1, "never said twice");
+    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_some(), "the same turn, still past it");
+    send(ws, "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    close(epoch_ms());
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    for _ in 0..2 {
+        // The answer's and the finish's lines, if any, taken by the crown.
+        if matches!(
+            c.board().live_agent(a).map(|r| r.state.clone()),
+            Some(SessionState::Idle { .. })
+        ) {
+            crown_turn(&mut c, sa);
+        }
+    }
+    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none(), "the turn ended");
+
+    // ---- 3. a turn that closed in the gap, another begun after it -----------
+    ask(&mut c, "mesimon-probe-973 two", 10);
+    wait_until(std::time::Duration::from_secs(15), "the second ask's words", || {
+        !lines_with("mesimon-probe-973 two").is_empty()
+    });
+    prompt(epoch_ms());
+    send(ws, "UserPromptSubmit", r#"{"prompt":"mesimon-probe-973 two"}"#);
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+    drop(c);
+    h.restart_after(|| {
+        let now = epoch_ms();
+        close(now);
+        prompt(now + 1);
+    });
+    let mut c = h.client("crown_overrun_restart_4");
+    after_restart(&mut c);
+    std::thread::sleep(std::time::Duration::from_millis(12_000));
+    assert_eq!(lines_with(&overrun).len(), 1, "the new turn is not the one it expected");
+    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+    send(ws, "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    close(epoch_ms());
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    if matches!(c.board().live_agent(a).map(|r| r.state.clone()), Some(SessionState::Idle { .. })) {
+        crown_turn(&mut c, sa);
+    }
+
+    // ---- 4. the mod pass: a submit whose entered comes after a restart ------
+    let mut c = if mod_road {
+        switch("mod-hold-entered", true);
+        ask(&mut c, "mesimon-probe-973 three", 4);
+        wait_until(std::time::Duration::from_secs(15), "the third ask's words", || {
+            !lines_with("mesimon-probe-973 three").is_empty()
+        });
+        drop(c);
+        h.restart();
+        let mut c = h.client("crown_overrun_restart_5");
+        send(sa, "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sa, "the crown idle again", |s| matches!(s, SessionState::Idle { .. }));
+        prompt(epoch_ms());
+        switch("mod-release", true);
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        send(ws, "UserPromptSubmit", r#"{"prompt":"mesimon-probe-973 three"}"#);
+        c.await_state(ws, "running", |s| *s == SessionState::Running);
+        wait_until(std::time::Duration::from_secs(25), "the overrun of the held submit", || {
+            lines_with(&overrun).len() == 2
+        });
+        crown_turn(&mut c, sa);
+        switch("mod-hold-entered", false);
+        switch("mod-release", false);
+        send(ws, "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+        close(epoch_ms());
+        std::thread::sleep(std::time::Duration::from_millis(2000));
+        if matches!(
+            c.board().live_agent(a).map(|r| r.state.clone()),
+            Some(SessionState::Idle { .. })
+        ) {
+            crown_turn(&mut c, sa);
+        }
+        c
+    } else {
+        c
+    };
+    let base = lines_with(&overrun).len();
+
+    // ---- 5. the crown taken off, or moved and back, takes them --------------
+    for transfer in [false, true] {
+        ask(&mut c, &format!("mesimon-probe-973 four {transfer}"), 4);
+        wait_until(std::time::Duration::from_secs(15), "the fourth ask's words", || {
+            !lines_with(&format!("mesimon-probe-973 four {transfer}")).is_empty()
+        });
+        send(ws, "UserPromptSubmit", r#"{"prompt":"four"}"#);
+        c.await_state(ws, "running", |s| *s == SessionState::Running);
+        if transfer {
+            assert!(matches!(c.request(Command::CrownTicket { id: b }), Response::Ok));
+        } else {
+            assert!(matches!(c.request(Command::Uncrown), Response::Ok));
+        }
+        assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+        std::thread::sleep(std::time::Duration::from_millis(6000));
+        assert_eq!(lines_with(&overrun).len(), base, "the outgoing crown's expectation went");
+        assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+        send(ws, "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+        close(epoch_ms());
+        std::thread::sleep(std::time::Duration::from_millis(2000));
+        if matches!(
+            c.board().live_agent(a).map(|r| r.state.clone()),
+            Some(SessionState::Idle { .. })
+        ) {
+            crown_turn(&mut c, sa);
+        }
+    }
+}

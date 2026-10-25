@@ -2546,6 +2546,11 @@ impl Daemon {
         self.crown_recheck.clear();
         self.crown_watched.clear();
         self.crown_hands.clear();
+        // The outgoing crown's expectations (T-973, round 1): a turn it
+        // timed wakes no other crown, and is kept in no other's ledger.
+        if !self.crown_expects.is_empty() {
+            self.crown_expects.clear();
+        }
         // A Codex box holding the wake for its Enter (T-918): the seat is
         // no crown's now, so nothing presses it. The words stay in the box
         // as they are, for whoever is at it.

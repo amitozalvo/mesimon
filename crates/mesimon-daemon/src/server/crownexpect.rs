@@ -40,9 +40,18 @@ pub(super) struct Expect {
     /// When the turn began, wall clock, so a restart keeps the count.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) began_ms: Option<u64>,
-    /// The seat whose turn it is, from the moment it began.
+    /// The seat whose turn it is, from its words' dispatch or the moment
+    /// the turn began, and the pane it was in (`<server pid>:<pane id>`):
+    /// a relaunch is another pane, so another turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) session: Option<uuid::Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) pane: Option<String>,
+    /// The mod `submit` frame an ask's words went down in (round 1): its
+    /// `entered` begins the turn, after a restart too, when the ask's own
+    /// record is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) frame: Option<String>,
     /// The crown was woken for it: never again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) told: bool,
@@ -53,7 +62,16 @@ pub(super) struct Expect {
 
 impl Expect {
     pub(super) fn armed(ask: Option<ulid::Ulid>, expect_secs: u64) -> Self {
-        Expect { ask, expect_secs, began_ms: None, session: None, told: false, restored: false }
+        Expect {
+            ask,
+            expect_secs,
+            began_ms: None,
+            session: None,
+            pane: None,
+            frame: None,
+            told: false,
+            restored: false,
+        }
     }
 }
 
@@ -120,18 +138,28 @@ fn span(secs: u64) -> String {
     }
 }
 
-/// The ledger's expectations back at start (`restore_crown`): the crown's
-/// own ticket and a ticket gone from the board drop out; one told stays
-/// told, so its wake is never said twice; one begun before the restart is
-/// timed from then, and its wake, owed now, says `after a restart`.
+/// The ledger's expectations back at start (`restore_crown`). The crown's
+/// own ticket and a ticket gone from the board drop out. One begun before
+/// the restart comes back only where `same_turn` proves its turn is still
+/// the one running (round 1: its transcript shows no close since it began),
+/// timed from then: told stays told, so its wake is never said twice, and a
+/// wake owed now says `after a restart`. One not yet begun comes back only
+/// where its words went down a mod `submit` whose `entered` can still come
+/// (`frame`); a queued ask, a paste whose ack the restart lost and a start
+/// are memory, so theirs go.
 pub(super) fn restore(
     expects: std::collections::BTreeMap<ulid::Ulid, Expect>,
     crown: ulid::Ulid,
     on_board: impl Fn(&ulid::Ulid) -> bool,
+    same_turn: impl Fn(&Expect) -> bool,
 ) -> std::collections::BTreeMap<ulid::Ulid, Expect> {
     expects
         .into_iter()
         .filter(|(w, _)| *w != crown && on_board(w))
+        .filter(|(_, e)| match e.began_ms {
+            Some(_) => same_turn(e),
+            None => e.ask.is_some() && e.frame.is_some(),
+        })
         .map(|(w, mut e)| {
             e.restored = e.began_ms.is_some();
             (w, e)
@@ -161,9 +189,76 @@ impl Daemon {
             return;
         }
         let session = session.or_else(|| self.board.live_agent(ticket).map(|s| s.id));
+        let pane = session.and_then(|id| self.pane_of(id));
         if let Some(e) = self.crown_expects.get_mut(&ticket) {
             e.began_ms = Some(now);
             e.session = session;
+            e.pane = pane;
+        }
+    }
+
+    /// The armed ask's words went out (`crown_ask_sent`, `crown_ask_framed`,
+    /// `crown_ask_repasted`): into `session`'s `pane`, down the mod as
+    /// `frame` or pasted (`None`). Kept so a restart before the receipt
+    /// still knows the receipt that begins the turn (round 1).
+    pub(super) fn expect_dispatched(
+        &mut self,
+        ticket: ulid::Ulid,
+        ask: ulid::Ulid,
+        session: uuid::Uuid,
+        frame: Option<String>,
+    ) {
+        let armed = self
+            .crown_expects
+            .get(&ticket)
+            .is_some_and(|e| e.began_ms.is_none() && e.ask == Some(ask));
+        if !armed {
+            return;
+        }
+        let pane = self.pane_of(session);
+        if let Some(e) = self.crown_expects.get_mut(&ticket) {
+            e.session = Some(session);
+            e.pane = pane;
+            e.frame = frame;
+        }
+    }
+
+    /// The mod's `entered` for `frame` from `session` (round 1): the turn the
+    /// expectation's words begin, fenced by seat, frame and the pane they
+    /// went to. Whatever owns the frame otherwise (an ask whose record a
+    /// restart dropped is no one's), its expectation begins here.
+    pub(super) fn expect_entered(&mut self, session: uuid::Uuid, frame: &str) {
+        let pane = self.pane_of(session);
+        let Some(ticket) = self
+            .crown_expects
+            .iter()
+            .find(|(_, e)| {
+                e.began_ms.is_none()
+                    && e.session == Some(session)
+                    && e.frame.as_deref() == Some(frame)
+                    && pane.is_some()
+                    && e.pane == pane
+            })
+            .map(|(t, _)| *t)
+        else {
+            return;
+        };
+        if let Some(e) = self.crown_expects.get_mut(&ticket) {
+            e.began_ms = Some(now_ms());
+        }
+    }
+
+    /// A turn began on `session` (`turn_begins`): an expectation the restart
+    /// brought back for that seat timed an older one, whose end the daemon
+    /// did not see, so it goes (round 1). A turn begun in this daemon's life
+    /// was ended by `expect_left`.
+    pub(super) fn expect_new_turn(&mut self, ticket: ulid::Ulid, session: uuid::Uuid) {
+        let stale = self
+            .crown_expects
+            .get(&ticket)
+            .is_some_and(|e| e.restored && e.session.is_none_or(|s| s == session));
+        if stale {
+            self.crown_expects.remove(&ticket);
         }
     }
 
@@ -199,17 +294,24 @@ impl Daemon {
     }
 
     /// Whether an expectation still has a turn to time: its ticket on the
-    /// board; begun, its seat still has a pane; not begun, its ask is still
-    /// the crown's last on the ticket and not dropped. An ask the restart
-    /// left unread (no record) keeps it: its words may still go in.
+    /// board; its seat, once known, still in the pane it was given (a
+    /// relaunch or a park is another turn); not begun, its ask still the
+    /// crown's last on the ticket and not dropped, or, with no record (a
+    /// restart's), its `submit` frame still out in that pane.
     fn expect_alive(&self, ticket: ulid::Ulid, e: &Expect) -> bool {
         if self.board.ticket(ticket).is_none() {
             return false;
         }
+        let in_its_pane = e.session.is_none_or(|id| {
+            self.board.sessions.iter().any(|s| {
+                s.id == id && s.state.has_pane() && (e.pane.is_none() || s.pane_key == e.pane)
+            })
+        });
+        if !in_its_pane {
+            return false;
+        }
         if e.began_ms.is_some() {
-            return e.session.is_none_or(|id| {
-                self.board.sessions.iter().any(|s| s.id == id && s.state.has_pane())
-            });
+            return true;
         }
         // The ticket holds a list of the crown's asks (T-974): its own ask
         // still among them and not dropped, or gone with the list's turnover.
@@ -218,7 +320,8 @@ impl Daemon {
                 .iter()
                 .find(|a| a.id == id)
                 .is_some_and(|a| !matches!(a.stage, Stage::Dropped { .. })),
-            _ => true,
+            (Some(_), None) => e.frame.is_some() && e.session.is_some(),
+            (None, _) => true,
         }
     }
 
@@ -329,15 +432,29 @@ mod tests {
             (gone, begun(60, 1_000)),
             (crown, begun(60, 1_000)),
         ]);
-        let back = restore(ledger, crown, |w| *w != gone);
-        assert_eq!(back.keys().copied().collect::<Vec<_>>(), [told, due, armed]);
+        let back = restore(ledger, crown, |w| *w != gone, |_| true);
+        assert_eq!(back.keys().copied().collect::<Vec<_>>(), [told, due]);
         let now = 3_600_000;
         assert_eq!(overrun_due(&back[&told], now, true), None, "told before: never again");
         assert!(overrun_of(&back[&told], now).is_some(), "get_ticket still reads it");
         assert!(back[&due].restored, "its wake says after a restart");
         assert_eq!(overrun_due(&back[&due], now, false), None, "not until it reads Running");
         assert!(overrun_due(&back[&due], now, true).is_some());
-        assert!(!back[&armed].restored && back[&armed].began_ms.is_none(), "waits for its words");
+        assert!(!back.contains_key(&armed), "a queued ask's words are memory, and so is it");
+        // Round 1: a begun one whose turn is not proven the same goes; an
+        // unbegun one whose words went down a mod submit waits for its entered.
+        let other_turn = std::collections::BTreeMap::from([(due, begun(60, 1_000))]);
+        assert!(restore(other_turn, crown, |_| true, |_| false).is_empty());
+        let submitted = Expect {
+            frame: Some("01SUBMIT".into()),
+            session: Some(uuid::Uuid::nil()),
+            ..Expect::armed(Some(ulid::Ulid::from_parts(1, 9)), 60)
+        };
+        let start = Expect::armed(None, 60);
+        let pending = std::collections::BTreeMap::from([(due, submitted.clone()), (told, start)]);
+        let back = restore(pending, crown, |_| true, |_| true);
+        assert_eq!(back.get(&due), Some(&submitted), "its entered can still come");
+        assert!(!back.contains_key(&told), "a start's launch is memory");
     }
 
     #[test]
