@@ -445,6 +445,98 @@ def second_ask_refusal(rows, key):
     return ok, f"first ask {first}; second answered {said[1][:160]!r}"
 
 
+def plan_read_order(rows, key, word):
+    """`plan_read` (T-991, D7): the crown had this request's whole plan before
+    it accepted it, read off its transcript in order, record by record and
+    block by block (the `assistant` and `user` records the model saw; Claude
+    Code's `api-request-blob` copies are skipped). A get_ticket on `key` with
+    plan true whose own result, not an error, carries the plan whole (`word`
+    in it, no plan_bytes) and its request; then, called after that result,
+    an accept_plan on `key` for that request whose own result is
+    `accepted`. How the crown gets there is its own (T-930): a head read is
+    not asked for, but one made before is checked, and every plain read
+    that carries a plan must carry a head (at most 512 UTF-8 bytes before
+    its `…`, without `word`), its plan_bytes the whole's UTF-8 length for
+    the same request. (passed, the order seen)."""
+    if not word:
+        return False, "no word from the worker"
+    word = word.lower()
+    calls, heads, seen = {}, {}, []
+    whole, done, bad = None, False, False
+
+    def reading(b):
+        body = b.get("content")
+        text = body if isinstance(body, str) else " ".join(
+            x.get("text", "") for x in body or [] if isinstance(x, dict))
+        try:
+            got = json.loads(text)
+        except ValueError:
+            return None
+        return None if b.get("is_error") or not isinstance(got, dict) else got
+
+    for r in rows:
+        if r.get("type") not in ("assistant", "user") or done:
+            continue
+        blocks = (r.get("message") or {}).get("content")
+        for b in blocks if isinstance(blocks, list) else []:
+            if not isinstance(b, dict) or done:
+                continue
+            if b.get("type") == "tool_use":
+                name = (b.get("name") or "").rsplit("__", 1)[-1]
+                args = b.get("input") or {}
+                if str(args.get("key", "")).strip() != key:
+                    continue
+                step = {("get_ticket", False): "head", ("get_ticket", True): "whole",
+                        ("accept_plan", False): "accept"}.get((name, args.get("plan") is True))
+                if step is None:
+                    continue
+                if step == "accept" and whole is None:
+                    seen.append("accept_plan (before a whole read's result: not counted)")
+                    continue
+                seen.append(f"{name}{' plan' if step == 'whole' else ''}")
+                calls[b.get("id")] = (step, args.get("request"), whole)
+            elif b.get("type") == "tool_result" and b.get("tool_use_id") in calls:
+                step, asked, after = calls.pop(b.get("tool_use_id"))
+                got = reading(b)
+                needs = (got or {}).get("needs_you") or {}
+                plan = needs.get("plan") if isinstance(needs.get("plan"), str) else None
+                request = needs.get("request")
+                if step == "head" and plan is None:
+                    seen.append("  → no plan")
+                elif step == "head":
+                    bare = plan[:-1] if plan.endswith("…") else None
+                    good = bare is not None and len(bare.encode()) <= 512 \
+                        and word not in plan.lower() and isinstance(needs.get("plan_bytes"), int) \
+                        and bool(request)
+                    seen.append(f"  → head {len(plan.encode())} B, plan_bytes "
+                                f"{needs.get('plan_bytes')}, word "
+                                f"{'in' if word in plan.lower() else 'not in'}"
+                                + ("" if good else ": not a head"))
+                    bad |= not good
+                    if good:
+                        heads.setdefault(request, set()).add(needs["plan_bytes"])
+                elif step == "whole":
+                    good = plan is not None and bool(request) and word in plan.lower() \
+                        and "plan_bytes" not in needs
+                    size = len(plan.encode()) if plan else 0
+                    match = heads.get(request, {size}) == {size}
+                    seen.append(f"  → whole {size} B, word "
+                                f"{'in' if plan and word in plan.lower() else 'not in'}, request "
+                                f"…{str(request)[-8:]}"
+                                + ("" if request not in heads else
+                                   f", the head's plan_bytes {'match' if match else 'differ'}")
+                                + ("" if good else ": not the whole"))
+                    bad |= not match
+                    if good and match:
+                        whole = request
+                else:
+                    outcome = (got or {}).get("outcome") or "refused"
+                    seen.append(f"  → {outcome}, request "
+                                f"{'the whole read' if asked == after else 'another'}'s")
+                    done = asked == after and outcome == "accepted"
+    return done and not bad, f"{word!r}: " + "; ".join(seen)
+
+
 def row_ms(row):
     """A transcript row's time in epoch ms, or None."""
     import datetime
@@ -3503,6 +3595,11 @@ Reply with the single word ready and end your turn."""
                 # The line runs to the end of its reply: a crown may put
                 # the prefix on a line of its own and its answer under it.
                 prefix, _, word = arg.rpartition(":")
+                # `{reply}` (T-991, D7): the word the worker chose, its last
+                # reply, which no board text names before the crown's line.
+                if word == "{reply}":
+                    word = last_reply(transcript(rec)).strip().strip("*`.").strip() if rec else ""
+                    word = word or "\0"
                 crown = self.agent_of(board, self.crown)
                 line = ""
                 for r in reversed(replies(transcript(crown)) if crown else []):
@@ -3517,6 +3614,13 @@ Reply with the single word ready and end your turn."""
                 else:
                     ok = word.lower() in line.lower()
                 check(c, ok, f"said {line[:120]!r}" if line else f"no line {prefix!r}")
+            elif name == "plan_read":
+                # T-991 (D7): the head, then the whole with plan, then the
+                # accept, the word the worker's own last reply.
+                crown = self.agent_of(board, self.crown)
+                word = last_reply(transcript(rec)).strip().strip("*`.").strip() if rec else ""
+                ok, seen = plan_read_order(transcript(crown) if crown else [], key, word)
+                check(c, ok, seen)
             elif name == "second_ask":
                 # `second_ask:refused_outstanding` (T-938, round 3): read off
                 # the crown's own call results, so a stale-seen refusal fails.

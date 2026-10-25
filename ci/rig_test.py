@@ -106,6 +106,108 @@ class SampledBeforeTests(unittest.TestCase):
         self.assertFalse(self.judge(rows))
 
 
+REQ = "toolu_plan1"
+WHOLE = "1. a step of the design ┌──┐\n" * 40 + "\nThe code word is quince.\n"
+
+
+def plan_call(cid, name, plan=False, request=None):
+    args = {"key": "T-1"}
+    if plan:
+        args["plan"] = True
+    if request:
+        args["request"] = request
+    return {"type": "tool_use", "id": cid, "name": f"mcp__mesimon__{name}", "input": args}
+
+
+def plan_result(cid, body, error=False):
+    return {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": cid,
+                                                     "is_error": error, "content": body}]}}
+
+
+def head_body(request=REQ):
+    head = WHOLE.encode()[:512].decode("utf-8", "ignore") + "…"
+    return json.dumps({"key": "T-1", "needs_you": {
+        "reason": "plan", "request": request, "plan": head, "plan_bytes": len(WHOLE.encode())}})
+
+
+def whole_body(request=REQ):
+    return json.dumps({"key": "T-1", "needs_you": {"reason": "plan", "request": request, "plan": WHOLE}})
+
+
+ACCEPTED = json.dumps({"key": "T-1", "outcome": "accepted"})
+
+
+class PlanReadTests(unittest.TestCase):
+    """T-991, rounds 2 and 3: D7's outcome, read in order: this request's
+    whole plan, then its accept, each on its own good result; a head read is
+    the crown's choice, and checked where it made one."""
+
+    def judge(self, rows):
+        return rig.plan_read_order(rows, "T-1", "quince")[0]
+
+    def sequential(self, accept=REQ, accept_body=ACCEPTED, error=False):
+        return [assistant(plan_call("g1", "get_ticket")), plan_result("g1", head_body()),
+                assistant(plan_call("g2", "get_ticket", plan=True)), plan_result("g2", whole_body()),
+                assistant(plan_call("a1", "accept_plan", request=accept)),
+                plan_result("a1", accept_body, error)]
+
+    def test_head_then_whole_then_accept_passes(self):
+        self.assertTrue(self.judge(self.sequential()))
+
+    def test_an_accept_batched_with_the_whole_read_fails(self):
+        rows = [assistant(plan_call("g1", "get_ticket")), plan_result("g1", head_body()),
+                assistant(plan_call("g2", "get_ticket", plan=True),
+                          plan_call("a1", "accept_plan", request=REQ)),
+                plan_result("g2", whole_body()), plan_result("a1", ACCEPTED)]
+        self.assertFalse(self.judge(rows))
+
+    def test_an_accept_before_the_whole_result_fails(self):
+        rows = [assistant(plan_call("g1", "get_ticket")), plan_result("g1", head_body()),
+                assistant(plan_call("g2", "get_ticket", plan=True)),
+                assistant(plan_call("a1", "accept_plan", request=REQ)),
+                plan_result("g2", whole_body()), plan_result("a1", ACCEPTED)]
+        self.assertFalse(self.judge(rows))
+
+    def test_a_refused_accept_fails(self):
+        self.assertFalse(self.judge(self.sequential(accept_body="plan changed; read get_ticket again",
+                                                    error=True)))
+
+    def test_an_accept_for_another_request_fails(self):
+        self.assertFalse(self.judge(self.sequential(accept="toolu_other")))
+
+    def test_a_whole_read_of_another_request_fails(self):
+        rows = self.sequential()
+        rows[3] = plan_result("g2", whole_body(request="toolu_other"))
+        self.assertFalse(self.judge(rows))
+
+    def test_a_plain_read_that_carried_the_whole_fails(self):
+        rows = [assistant(plan_call("g1", "get_ticket")), plan_result("g1", whole_body())] \
+            + self.sequential()[2:]
+        self.assertFalse(self.judge(rows), "a read without plan carried the whole")
+
+    def test_the_whole_read_first_then_the_accept_passes(self):
+        # The round-2 run's order: no head read, the whole, the accept.
+        self.assertTrue(self.judge(self.sequential()[2:]))
+
+    def test_a_head_whose_size_is_not_the_whole_s_fails(self):
+        rows = self.sequential()
+        body = json.loads(head_body())
+        body["needs_you"]["plan_bytes"] += 1
+        rows[1] = plan_result("g1", json.dumps(body))
+        self.assertFalse(self.judge(rows))
+
+    def test_the_request_blob_copies_count_for_nothing(self):
+        blob = {"type": "api-request-blob", "message": {"content": [
+            plan_call("a0", "accept_plan", request=REQ)]}}
+        rows = self.sequential()
+        rows.insert(3, blob)
+        rows.insert(4, {"type": "api-request-blob", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "a0", "content": ACCEPTED}]}})
+        self.assertTrue(self.judge(rows))
+        only_blob = self.sequential()[:4] + rows[3:5]
+        self.assertFalse(self.judge(only_blob), "a blob's accept, after the whole, is no accept")
+
+
 class RestartEnvironmentTests(unittest.TestCase):
     def test_a_losing_attempt_s_capture_is_not_the_winner_s(self):
         with tempfile.TemporaryDirectory() as d:

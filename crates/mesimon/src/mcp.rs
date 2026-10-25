@@ -163,8 +163,8 @@ fn tool_result(params: &Value, sock: &std::path::Path, session: uuid::Uuid) -> V
     let command = match call {
         // `get_ticket` with a key is its own command on the wire (T-411), so
         // a shim from before the crown still parses at the daemon.
-        ToolCall::GetTicket { key: None } => Command::AgentGetTicket,
-        ToolCall::GetTicket { key: Some(key) } => Command::AgentReadTicket { key },
+        ToolCall::GetTicket { key: None, .. } => Command::AgentGetTicket,
+        ToolCall::GetTicket { key: Some(key), plan } => Command::AgentReadTicket { key, plan },
         ToolCall::ListBoard => Command::AgentListBoard,
         ToolCall::ReadShell { shell, key } => Command::AgentReadShell { shell, key },
         ToolCall::RequestCloseShell { shell, key } => {

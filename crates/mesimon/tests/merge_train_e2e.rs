@@ -857,9 +857,10 @@ fn a_relaunched_agent_at_its_composer_does_not_hold_the_train() {
         c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
         Response::Ok
     ));
-    let merge = match c
-        .send(Principal::Agent { session: sa }, Command::AgentReadTicket { key: "T-1".into() })
-    {
+    let merge = match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentReadTicket { key: "T-1".into(), plan: false },
+    ) {
         Response::AgentTicket { ticket } => ticket.merge.expect("a branch has a merger"),
         other => panic!("get_ticket: {other:?}"),
     };

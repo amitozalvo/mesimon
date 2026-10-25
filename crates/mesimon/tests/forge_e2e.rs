@@ -887,9 +887,10 @@ fn the_crown_hears_the_forges_edges() {
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(Duration::from_millis(500));
     turn(&mut c, sa);
-    let seen = match c
-        .send(Principal::Agent { session: sa }, Command::AgentReadTicket { key: kw.clone() })
-    {
+    let seen = match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentReadTicket { key: kw.clone(), plan: false },
+    ) {
         Response::AgentTicket { ticket } => ticket.seen,
         other => panic!("read: {other:?}"),
     };
@@ -1470,9 +1471,10 @@ fn a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_co
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(Duration::from_millis(500));
     turn(&mut c, sa);
-    let seen = match c
-        .send(Principal::Agent { session: sa }, Command::AgentReadTicket { key: kw.clone() })
-    {
+    let seen = match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentReadTicket { key: kw.clone(), plan: false },
+    ) {
         Response::AgentTicket { ticket } => ticket.seen,
         other => panic!("read: {other:?}"),
     };
@@ -1553,9 +1555,10 @@ fn a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_co
     });
     assert!(lines_with("a manual job").is_empty(), "never the bare wait once named");
     // The crown's read of the worker: where it landed, and no merger.
-    let view = match c
-        .send(Principal::Agent { session: sa }, Command::AgentReadTicket { key: kw.clone() })
-    {
+    let view = match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentReadTicket { key: kw.clone(), plan: false },
+    ) {
         Response::AgentTicket { ticket } => ticket,
         other => panic!("read: {other:?}"),
     };
@@ -1701,9 +1704,10 @@ fn a_two_repo_tickets_first_merge_and_its_wait_are_said() {
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(Duration::from_millis(500));
     turn(&mut c, sa);
-    let seen = match c
-        .send(Principal::Agent { session: sa }, Command::AgentReadTicket { key: kw.clone() })
-    {
+    let seen = match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentReadTicket { key: kw.clone(), plan: false },
+    ) {
         Response::AgentTicket { ticket } => ticket.seen,
         other => panic!("read: {other:?}"),
     };
@@ -1777,9 +1781,10 @@ fn a_two_repo_tickets_first_merge_and_its_wait_are_said() {
     wait_until(Duration::from_secs(20), "the crown to hear !2's waiting job", || {
         !lines_with("waiting on deploy:production !2").is_empty()
     });
-    let view = match c
-        .send(Principal::Agent { session: sa }, Command::AgentReadTicket { key: kw.clone() })
-    {
+    let view = match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentReadTicket { key: kw.clone(), plan: false },
+    ) {
         Response::AgentTicket { ticket } => ticket,
         other => panic!("read: {other:?}"),
     };
@@ -2419,9 +2424,10 @@ fn crowned(h: &Harness, c: &mut TestClient) -> Crowned {
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(Duration::from_millis(500));
     h.one_turn(c, sa);
-    let seen = match c
-        .send(Principal::Agent { session: sa }, Command::AgentReadTicket { key: kw.clone() })
-    {
+    let seen = match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentReadTicket { key: kw.clone(), plan: false },
+    ) {
         Response::AgentTicket { ticket } => ticket.seen,
         other => panic!("read: {other:?}"),
     };
@@ -3114,9 +3120,10 @@ fn a_turn_end_wake_waits_for_the_turns_forge_read() {
     h.one_turn(&mut c, k.ws);
     wait_until(Duration::from_secs(30), "the turn's wake", || !lines_with(&finished).is_empty());
     let waited = ended.elapsed();
-    let prs = match c
-        .send(Principal::Agent { session: k.crown }, Command::AgentReadTicket { key: key.clone() })
-    {
+    let prs = match c.send(
+        Principal::Agent { session: k.crown },
+        Command::AgentReadTicket { key: key.clone(), plan: false },
+    ) {
         Response::AgentTicket { ticket } => ticket.prs,
         other => panic!("read: {other:?}"),
     };
@@ -4082,9 +4089,10 @@ fn parked_squash_merge(name: &str, restart: bool) {
         prs_of(&mut c).iter().any(|p| p.ticket == k.worker && p.number == 42)
     });
     // The crown parks its worker, as a crown does once a delivery is heard.
-    let seen = match c
-        .send(Principal::Agent { session: k.crown }, Command::AgentReadTicket { key: kw.clone() })
-    {
+    let seen = match c.send(
+        Principal::Agent { session: k.crown },
+        Command::AgentReadTicket { key: kw.clone(), plan: false },
+    ) {
         Response::AgentTicket { ticket } => ticket.seen,
         other => panic!("read: {other:?}"),
     };
@@ -4597,9 +4605,10 @@ fn a_summary_address_and_news_on_a_warm_pull_request_are_read_within_seconds() {
     std::thread::sleep(Duration::from_millis(500));
     h.one_turn(&mut c, ps);
     // The crown watches it (T-712), so its turns' ends are the crown's.
-    let seen = match c
-        .send(Principal::Agent { session: k.crown }, Command::AgentReadTicket { key: kp.clone() })
-    {
+    let seen = match c.send(
+        Principal::Agent { session: k.crown },
+        Command::AgentReadTicket { key: kp.clone(), plan: false },
+    ) {
         Response::AgentTicket { ticket } => ticket.seen,
         other => panic!("read: {other:?}"),
     };

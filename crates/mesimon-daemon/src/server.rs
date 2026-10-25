@@ -7665,7 +7665,7 @@ impl Daemon {
                 }
             }
             // Another ticket, by key (T-411): the crown's one read.
-            Command::AgentReadTicket { key } => {
+            Command::AgentReadTicket { key, plan } => {
                 let target = match self.crown_target(ticket, &key, true) {
                     Ok(t) => t,
                     Err(message) => return Response::Err { message },
@@ -7684,6 +7684,9 @@ impl Daemon {
                             view.crowned = Some(self.board.is_crowned(ticket));
                         }
                         view.watched = target != ticket && self.crown_watched.contains(&target);
+                        if plan {
+                            view.needs_you = self.agent_needs_you(target, true);
+                        }
                         // The crown's reads are the crown's (T-969, round
                         // 1): a worker naming its own key reads its ticket
                         // and nothing of them.
@@ -7997,7 +8000,7 @@ impl Daemon {
                         message: format!(
                             "{key}'s agent stopped on a plan; accept_plan accepts it where the \
                              board lets the crown answer, and get_ticket shows the plan \
-                             (needs_you), or with change submits words through its feedback row \
+                             (needs_you, its head; with plan, whole), or with change submits words through its feedback row \
                              instead; a plan past the brief is a person's. Words queued now would \
                              wait behind the plan and the turn it starts."
                         ),
@@ -10909,7 +10912,7 @@ impl Daemon {
             context_about: None,
             cost: None,
             cost_about: None,
-            needs_you: self.agent_needs_you(id),
+            needs_you: self.agent_needs_you(id, false),
             asked: None,
             told_hand: None,
             overrun: None,
@@ -10982,25 +10985,34 @@ impl Daemon {
     /// question the dialog as Remote Control draws it, gated on the state
     /// as that draw is — a dialog the agent has since left is not shown.
     /// On a plan (T-582), the plan's markdown, for the crown to read before
-    /// it accepts. The words are an agent's, leaving for another agent:
-    /// scrubbed.
-    fn agent_needs_you(&self, id: ulid::Ulid) -> Option<AgentNeedsYouView> {
+    /// it accepts: its head, and with `whole` (a keyed read's `plan`, T-991)
+    /// all of it to `AGENT_PLAN_MAX_BYTES`. The words are an agent's,
+    /// leaving for another agent: scrubbed.
+    fn agent_needs_you(&self, id: ulid::Ulid, whole: bool) -> Option<AgentNeedsYouView> {
         let rec = self.board.live_agent(id)?;
         let SessionState::RequiresAction { reason } = rec.state else { return None };
         let dialog = (reason == Reason::Question).then(|| self.control_questions(rec.id)).flatten();
         let plan = (reason == Reason::Plan).then(|| self.control_plan(rec.id)).flatten();
         let scrub = mesimon_core::text::scrub_text;
+        let text = plan.map(|(_, markdown)| mesimon_core::text::scrub_lines(markdown));
+        let shown = text.as_deref().map(|text| {
+            if whole {
+                mesophon::plan_head(text, AGENT_PLAN_MAX_BYTES)
+            } else {
+                mesimon_core::mcp::plan_head(text, mesimon_core::mcp::PLAN_HEAD_MAX_BYTES)
+            }
+        });
+        let plan_bytes = text
+            .as_deref()
+            .filter(|text| shown.as_deref() != Some(*text))
+            .map(|text| text.len() as u64);
         Some(AgentNeedsYouView {
             reason: agent_reason_word(reason).to_string(),
             request: dialog
                 .map(|(request, _)| request.to_string())
                 .or_else(|| plan.map(|(request, _)| request.to_string())),
-            plan: plan.map(|(_, markdown)| {
-                mesophon::plan_head(
-                    &mesimon_core::text::scrub_lines(markdown),
-                    AGENT_PLAN_MAX_BYTES,
-                )
-            }),
+            plan: shown,
+            plan_bytes,
             questions: dialog
                 .map(|(_, qs)| qs)
                 .unwrap_or_default()
@@ -21038,9 +21050,9 @@ fn created_at_ms(created_at: &str) -> Option<u64> {
     created_at.strip_prefix('@').and_then(|s| s.parse::<u64>().ok()).map(|s| s * 1000)
 }
 
-/// The longest plan `get_ticket.needs_you.plan` carries (T-582), past it
-/// the head marked cut (`plan_head`). 64 KiB since T-936, where a design
-/// plan measured 26 KiB: one of that size is read whole.
+/// The longest plan `get_ticket.needs_you.plan` carries on a keyed read
+/// with `plan` (T-582, T-991), past it the head marked cut (`plan_head`).
+/// 64 KiB since T-936, where a design plan measured 26 KiB.
 const AGENT_PLAN_MAX_BYTES: usize = 64 * 1024;
 
 fn now_iso() -> String {

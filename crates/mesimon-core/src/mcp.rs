@@ -241,11 +241,12 @@ pub const CROWN_WAKES: &str = concat!(
      stopped on a question or a \
      plan reads needs-you, and \
      get_ticket on its ticket carries it (needs_you: the reason, the request, and the \
-     question's words and options or the plan's markdown); ask_agent is refused while it \
+     question's words and options or the plan's markdown, a long plan's head and its \
+     size in plan_bytes, and with plan the whole of it); ask_agent is refused while it \
      stands. Where the board lets the crown answer (Settings → Agents → Crown mode: \
      autonomous unless a person chose supervised), a question an agent the crown started \
      asks wakes this session and answer_agent answers it, and a plan one stops on wakes it \
-     and accept_plan accepts it; get_ticket shows the plan. \
+     and accept_plan accepts it. \
      Every other stop, an agent a person started, and a board that does not let the crown \
      answer stay a person's. \
      ask_agent's words wait for the agent's idle by default (deliver idle). With deliver now \
@@ -369,9 +370,8 @@ pub const SUMMARY_ABOUT: &str = "A note section headed `Summary` is what the tic
      its work opened in another repository, or one it reviewed; the board reads it from the \
      forge and shows it beside the ticket's own.";
 
-/// How much of the description rides `get_ticket` (T-896): the plan's bound
-/// (`needs_you.plan`), so a routine read never carries more than a plan does,
-/// and four times what the crown's longest brief has run to. The whole of it
+/// How much of the description rides `get_ticket` (T-896): four times what
+/// the crown's longest brief has run to. The whole of it
 /// is one `read_note` away, and [`describe`] says so when it cuts; 4 KiB
 /// until then, cut to a bare `…`, which a crown read as the whole brief.
 pub const DESCRIPTION_MAX_BYTES: usize = 16 * 1024;
@@ -393,6 +393,22 @@ pub fn describe(text: &str, note: ulid::Ulid, max: usize) -> (String, Option<Str
         head.len()
     );
     (format!("{head}…"), Some(words))
+}
+
+/// How much of a plan rides `get_ticket`'s `needs_you.plan` (T-991): enough
+/// to name the plan on a read for a `seen` stamp, where the whole cost a
+/// crown 30 KB a read (T-975's, beside 4–7 KB for the rest of the view). A
+/// keyed read with `plan` carries the whole.
+pub const PLAN_HEAD_MAX_BYTES: usize = 512;
+
+/// A plan's head as `get_ticket` carries it (T-991): whole within `max`,
+/// past it its longest head on a character boundary ending in `…`.
+pub fn plan_head(text: &str, max: usize) -> String {
+    let head = crate::text::cap_bytes(text, max);
+    if head.len() == text.len() {
+        return text.to_string();
+    }
+    format!("{head}…")
 }
 
 /// What the ticket's own key is to the person (T-715), on a session's read
@@ -544,8 +560,8 @@ pub fn tools() -> Vec<Value> {
         json!({
             "name": "get_ticket",
             "description": "Returns this session's ticket, or with key another (crown \
-                            only): key, title, column, workspace, branch, merge state per \
-                            repo, who merges (merge), pull requests (prs), the init script, \
+                            only): key, title, column, workspace, branch, merge state by \
+                            repo, who merges (merge), PRs (prs), the init script, \
                             the columns move_ticket accepts and what each is for, the \
                             board's moves and why it last held it (automove), tags, the \
                             board's (allowed_tags), the description, each note's id, name, \
@@ -556,7 +572,8 @@ pub fn tools() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "key": { "type": "string", "description": "Optional. Another ticket's key; crown only." },
+                    "key": { "type": "string", "description": "Optional. Another ticket's key." },
+                    "plan": { "type": "boolean" },
                 },
                 "additionalProperties": false,
             },
@@ -1170,6 +1187,8 @@ pub enum ToolCall {
     /// daemon on every other ticket.
     GetTicket {
         key: Option<String>,
+        /// With `key`: the plan its agent stopped on, whole (T-991).
+        plan: bool,
     },
     ListBoard,
     ReadShell {
@@ -1435,7 +1454,13 @@ fn question_answer(item: &Value, n: usize) -> Result<crate::mesophon::QuestionAn
 /// `tool_reference` for a tool that no longer exists.
 pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
     match name {
-        "get_ticket" => Ok(ToolCall::GetTicket { key: opt_word(args, "key")? }),
+        "get_ticket" => {
+            let (key, plan) = (opt_word(args, "key")?, flag(args, "plan")?);
+            if plan && key.is_none() {
+                return Err("plan reads another ticket's plan, with key".into());
+            }
+            Ok(ToolCall::GetTicket { key, plan })
+        }
         "list_board" => Ok(ToolCall::ListBoard),
         "move_ticket" => {
             let to_column = args
@@ -2245,7 +2270,7 @@ mod tests {
             (Command::AgentGetTicket, "get_ticket"),
             // `get_ticket` with a key is its own command on the wire (T-411)
             // and sits on the same rung as the tool it rides.
-            (Command::AgentReadTicket { key: "T-1".into() }, "get_ticket"),
+            (Command::AgentReadTicket { key: "T-1".into(), plan: false }, "get_ticket"),
             (Command::AgentListBoard, "list_board"),
             (Command::AgentReadNote { note: ulid::Ulid::nil(), key: None }, "read_note"),
             (
@@ -2626,13 +2651,23 @@ mod tests {
     fn keyed_tools_parse_and_refuse() {
         assert_eq!(
             parse_tool_call("get_ticket", &json!({ "key": " T-4 " })),
-            Ok(ToolCall::GetTicket { key: Some("T-4".into()) })
+            Ok(ToolCall::GetTicket { key: Some("T-4".into()), plan: false })
         );
         assert_eq!(
             parse_tool_call("get_ticket", &json!({ "key": "" })),
-            Ok(ToolCall::GetTicket { key: None })
+            Ok(ToolCall::GetTicket { key: None, plan: false })
         );
         assert!(parse_tool_call("get_ticket", &json!({ "key": 4 })).is_err());
+        // T-991: the whole plan, on the crown's keyed read alone.
+        assert_eq!(
+            parse_tool_call("get_ticket", &json!({ "key": "T-4", "plan": true })),
+            Ok(ToolCall::GetTicket { key: Some("T-4".into()), plan: true })
+        );
+        assert!(parse_tool_call("get_ticket", &json!({ "plan": true })).is_err());
+        assert!(parse_tool_call("get_ticket", &json!({ "key": "T-4", "plan": "yes" })).is_err());
+        let wire =
+            serde_json::to_value(Command::AgentReadTicket { key: "T-4".into(), plan: false });
+        assert!(!wire.unwrap().to_string().contains("plan"), "an older daemon reads it as before");
         assert_eq!(
             parse_tool_call(
                 "move_ticket",
@@ -3094,6 +3129,25 @@ mod tests {
         assert_eq!(lint_tool_text(&cut.replace(&note.to_string(), "the id")), Ok(()));
     }
 
+    /// The plan road (T-991): a plan within the head rides whole; T-975's
+    /// 30 KB design plan rides as its head, ending in `…`, cut on a
+    /// character boundary (its box-drawing frames are three bytes each).
+    #[test]
+    fn a_long_plan_rides_get_ticket_as_its_head() {
+        let short = "1. Read the code\n2. Write the code";
+        assert_eq!(plan_head(short, PLAN_HEAD_MAX_BYTES), short);
+        let exact = "y".repeat(PLAN_HEAD_MAX_BYTES);
+        assert_eq!(plan_head(&exact, PLAN_HEAD_MAX_BYTES), exact);
+
+        let long = format!("# Design\n\n{}\nthe last paragraph\n", "┌──┐ │ │ └──┘\n".repeat(900));
+        let head = plan_head(&long, PLAN_HEAD_MAX_BYTES);
+        assert!(head.starts_with("# Design\n"), "{head}");
+        let bare = head.strip_suffix('…').expect("marked cut");
+        assert!(bare.len() <= PLAN_HEAD_MAX_BYTES && bare.len() > PLAN_HEAD_MAX_BYTES - 3);
+        assert!(long.starts_with(bare), "on a boundary");
+        assert!(!head.contains("the last paragraph"));
+    }
+
     /// T-566: the crown is told where a worker's question is read and whose
     /// it is to answer. Result data may instruct; these words describe, and
     /// the tool-text lint says so.
@@ -3113,6 +3167,8 @@ mod tests {
             "stops on a plan",
             "accept_plan accepts it",
             "the plan's markdown",
+            // T-991: a long plan's head, and the whole on get_ticket's plan.
+            "a long plan's head and its size in plan_bytes, and with plan the whole of it",
         ] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
         }
@@ -3802,7 +3858,7 @@ mod tests {
         // daemon judges it against the crown.
         assert_eq!(
             parse_tool_call("get_ticket", &json!({"ticket": "OTHER-9"})).unwrap(),
-            ToolCall::GetTicket { key: None }
+            ToolCall::GetTicket { key: None, plan: false }
         );
         assert_eq!(parse_tool_call("list_board", &json!(null)).unwrap(), ToolCall::ListBoard);
     }
@@ -3817,7 +3873,7 @@ mod tests {
             Command::AgentReadShell { shell: uuid::Uuid::nil(), key: None },
             Command::AgentRequestCloseShell { shell: uuid::Uuid::nil(), key: "T-1".into() },
             Command::AgentGetTicket,
-            Command::AgentReadTicket { key: "T-1".into() },
+            Command::AgentReadTicket { key: "T-1".into(), plan: false },
             Command::AgentListBoard,
             Command::AgentMoveTicket {
                 to_column: "X".into(),

@@ -53,7 +53,10 @@ fn key_of(c: &mut TestClient, id: ulid::Ulid) -> String {
 }
 
 fn read(c: &mut TestClient, session: uuid::Uuid, key: &str) -> Result<AgentTicketView, String> {
-    match c.send(Principal::Agent { session }, Command::AgentReadTicket { key: key.into() }) {
+    match c.send(
+        Principal::Agent { session },
+        Command::AgentReadTicket { key: key.into(), plan: false },
+    ) {
         Response::AgentTicket { ticket } => Ok(ticket),
         Response::Err { message } => Err(message),
         other => panic!("read {key}: {other:?}"),
@@ -146,7 +149,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     let reach = |key: &str| -> Vec<Command> {
         let key = Some(key.to_string());
         vec![
-            Command::AgentReadTicket { key: key.clone().unwrap() },
+            Command::AgentReadTicket { key: key.clone().unwrap(), plan: false },
             Command::AgentReadNote { note: ulid::Ulid::new(), key: key.clone() },
             Command::AgentReadAttachment { attachment: ulid::Ulid::new(), key: key.clone() },
             Command::AgentReadShell { shell: uuid::Uuid::new_v4(), key: key.clone() },
@@ -8191,7 +8194,14 @@ fn the_crown_s_answer_types_nothing_under_a_person_s_hands() {
 fn the_crown_accepts_a_plan_by_default() {
     use mesimon_core::board::Reason;
     const STUB: &str = include_str!("common/fake_claude_dialog.py");
-    const PLAN: &str = "1. Read the code\n2. Write the code";
+    // T-991: a design plan, its frame and its last paragraph past the head.
+    let plan = format!(
+        "1. Read the code\n2. Write the code\n\n{}\n┌──────┐\n│ rail │\n└──────┘\n\n\
+         The last paragraph names mesimon-probe-991-tail.\n",
+        "- a step of the design, one line of it\n".repeat(16)
+    );
+    let plan = plan.as_str();
+    assert!(plan.find('┌').unwrap() > 512, "the frame past the head");
     let Some(h) = Harness::boot_bare(
         "crown_plan",
         Some(STUB),
@@ -8217,7 +8227,7 @@ fn the_crown_accepts_a_plan_by_default() {
     };
     let at_plan = |s: &SessionState| *s == SessionState::RequiresAction { reason: Reason::Plan };
     let frame = |request: &str| {
-        json!({ "tool_name": "ExitPlanMode", "tool_use_id": request, "tool_input": { "plan": PLAN } })
+        json!({ "tool_name": "ExitPlanMode", "tool_use_id": request, "tool_input": { "plan": plan } })
             .to_string()
     };
     let pane = |c: &mut TestClient, sid: uuid::Uuid| match c
@@ -8229,7 +8239,7 @@ fn the_crown_accepts_a_plan_by_default() {
     // The plan drawn in a pane, then the hook that stops its agent on it.
     let show_plan = |c: &mut TestClient, key: &str, sid: uuid::Uuid, request: &str| {
         let dialog = h.dir.join(format!("dialog-{key}.json"));
-        std::fs::write(dialog, json!({ "plan": PLAN }).to_string()).unwrap();
+        std::fs::write(dialog, json!({ "plan": plan }).to_string()).unwrap();
         wait_until(std::time::Duration::from_secs(10), "the plan drawn", || {
             pane(c, sid).contains("Would you like to proceed?")
         });
@@ -8307,6 +8317,8 @@ fn the_crown_accepts_a_plan_by_default() {
     stop(&mut c, sp);
 
     // ---- the crown's worker stops on a plan: the crown wakes, not its words --
+    let notes_before = read(&mut c, sa, &kw).unwrap().notes.len();
+    assert_eq!(notes_before, 0, "a title-only ticket");
     show_plan(&mut c, &kw, ws, "toolu_w1");
     let wake = format!("{kw} \"mesimon-probe-582 worker\" stops on a plan");
     wait_until(std::time::Duration::from_secs(10), "the plan's wake on the crown", || {
@@ -8317,7 +8329,24 @@ fn the_crown_accepts_a_plan_by_default() {
     let needs = read(&mut c, sa, &kw).unwrap().needs_you.expect("the plan");
     assert_eq!(needs.reason, "plan");
     assert_eq!(needs.request.as_deref(), Some("toolu_w1"));
-    assert_eq!(needs.plan.as_deref(), Some(PLAN), "the markdown, lines kept");
+    // T-991: the head, marked cut, and the plan's size; with `plan`, the
+    // whole of it, its lines and its frame kept. No note is written for it.
+    let head = needs.plan.as_deref().expect("the head");
+    let head = head.strip_suffix('…').expect("marked cut");
+    assert!(head.len() <= 512 && plan.starts_with(head), "{head}");
+    assert!(!head.contains('┌') && !head.contains("probe-991-tail"), "the tail is not in it");
+    assert_eq!(needs.plan_bytes, Some(plan.len() as u64));
+    let whole = match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentReadTicket { key: kw.clone(), plan: true },
+    ) {
+        Response::AgentTicket { ticket } => ticket.needs_you.expect("the plan"),
+        other => panic!("get_ticket with plan: {other:?}"),
+    };
+    assert_eq!(whole.plan.as_deref(), Some(plan), "the markdown whole, the frame kept");
+    assert_eq!(whole.plan_bytes, None, "nothing cut");
+    assert_eq!(whole.request.as_deref(), Some("toolu_w1"));
+    assert_eq!(read(&mut c, sa, &kw).unwrap().notes.len(), notes_before, "no note for a plan");
 
     // ---- refusals in words, none typing a key or writing a feed line --------
     let keys = h.dir.join(format!("keys-{kw}"));
@@ -9871,7 +9900,8 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
 
     // ---- 4. T-936: a long plan, whole to 64 KiB, its head marked cut past it -
     // A 26 KiB design plan was refused a dialog by a 16 KiB bound, on the
-    // hook stream's road and the transcript's alike.
+    // hook stream's road and the transcript's alike. T-991: a read rides its
+    // 512-byte head and its size; a read with `plan` rides it as T-936 had it.
     let plan_of = |bytes: usize| -> String {
         let mut plan = String::new();
         for n in 0.. {
@@ -9882,6 +9912,13 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
         }
         plan
     };
+    let whole_of = |c: &mut TestClient| match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentReadTicket { key: kw.clone(), plan: true },
+    ) {
+        Response::AgentTicket { ticket } => ticket.needs_you.expect("the plan, whole"),
+        other => panic!("get_ticket with plan: {other:?}"),
+    };
     let long = plan_of(26 * 1024);
     let huge = plan_of(80 * 1024);
     for (id, plan, name) in
@@ -9891,19 +9928,30 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
         let input = json!({ "plan": plan });
         stop_on(&mut c, "ExitPlanMode", id, &input);
         let first = read(&mut c, sa, &kw).unwrap().needs_you.expect("the plan");
+        let first_whole = whole_of(&mut c);
         drop(c);
         h.restart();
-        let (again, needs) = read_after_restart(name);
+        let (mut again, needs) = read_after_restart(name);
+        let whole = whole_of(&mut again);
         c = again;
         for needs in [first, needs] {
+            assert_eq!(needs.request.as_deref(), Some(id), "accept_plan has its request");
+            assert_eq!(needs.plan_bytes, Some(plan.len() as u64));
+            let shown = needs.plan.expect("the plan's head");
+            let head = shown.strip_suffix('…').expect("its head, marked");
+            assert!(head.len() <= 512 && plan.starts_with(head), "{head}");
+        }
+        for needs in [first_whole, whole] {
             assert_eq!(needs.request.as_deref(), Some(id), "accept_plan has its request");
             let shown = needs.plan.expect("the plan's words");
             if plan.len() <= 64 * 1024 {
                 assert_eq!(&shown, plan, "whole");
+                assert_eq!(needs.plan_bytes, None);
             } else {
                 let kib = plan.len().div_ceil(1024);
                 assert!(shown.starts_with(&plan[..60 * 1024]), "its head");
                 assert!(shown.ends_with(&format!("its first 64 KiB of {kib} KiB")), "marked cut");
+                assert_eq!(needs.plan_bytes, Some(plan.len() as u64));
             }
         }
         if plan.len() > 64 * 1024 {

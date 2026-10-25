@@ -55,7 +55,7 @@ fn the_crown_is_told_its_rules_once_per_crowning() {
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     match c.send_raw(
         Principal::Agent { session: sa },
-        Command::AgentReadTicket { key: "T-999".into() },
+        Command::AgentReadTicket { key: "T-999".into(), plan: false },
     ) {
         Response::CrownRules { rules, inner } => {
             assert_eq!(rules, crown_view());
@@ -178,7 +178,10 @@ fn crown_and_worker(c: &mut TestClient, h: &Harness) -> (uuid::Uuid, uuid::Uuid,
 }
 
 fn read_seen(c: &mut TestClient, session: uuid::Uuid, key: &str) -> String {
-    match c.send(Principal::Agent { session }, Command::AgentReadTicket { key: key.into() }) {
+    match c.send(
+        Principal::Agent { session },
+        Command::AgentReadTicket { key: key.into(), plan: false },
+    ) {
         Response::AgentTicket { ticket } => ticket.seen.expect("a stamp"),
         other => panic!("read {key}: {other:?}"),
     }

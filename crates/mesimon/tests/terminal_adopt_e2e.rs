@@ -570,9 +570,10 @@ fn crown_archive_and_the_bulk_offer_leave_idle_adopted_shells_alive() {
         let command = if matches!(principal, Principal::Local) {
             Command::ArchiveTicket { id: owner }
         } else {
-            let Response::AgentTicket { ticket: view } =
-                c.send(principal.clone(), Command::AgentReadTicket { key: key.clone() })
-            else {
+            let Response::AgentTicket { ticket: view } = c.send(
+                principal.clone(),
+                Command::AgentReadTicket { key: key.clone(), plan: false },
+            ) else {
                 panic!("crown reads target first")
             };
             Command::AgentArchiveTicket { key: key.clone(), restore: false, seen: view.seen }

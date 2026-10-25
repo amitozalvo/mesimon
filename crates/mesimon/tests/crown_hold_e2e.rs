@@ -23,7 +23,10 @@ fn key_of(c: &mut TestClient, id: ulid::Ulid) -> String {
 }
 
 fn read(c: &mut TestClient, session: uuid::Uuid, key: &str) -> Result<AgentTicketView, String> {
-    match c.send(Principal::Agent { session }, Command::AgentReadTicket { key: key.into() }) {
+    match c.send(
+        Principal::Agent { session },
+        Command::AgentReadTicket { key: key.into(), plan: false },
+    ) {
         Response::AgentTicket { ticket } => Ok(ticket),
         Response::Err { message } => Err(message),
         other => panic!("read {key}: {other:?}"),

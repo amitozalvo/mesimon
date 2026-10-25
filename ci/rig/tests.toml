@@ -96,7 +96,13 @@
 #              that same turn a sample_agent of its key returns a reading,
 #              not an error, then the reply beginning <prefix>),
 #              crown_line:<prefix>:<word> (T-810: the crown's last line
-#              beginning <prefix> holds <word>, or with `!<word>` does not),
+#              beginning <prefix> holds <word>, or with `!<word>` does not;
+#              `{reply}` is the worker's last reply, T-991), plan_read
+#              (T-991: the crown's transcript in order: a get_ticket with plan
+#              true whose own result has the whole plan and the worker's word,
+#              then, called after it, an accept_plan for that request,
+#              accepted; a head read is not asked for, but any plain read's
+#              plan must be a head without the word, plan_bytes the whole's),
 #              shell:<line> / shell_out:<text> / no_shell (T-876: the
 #              worker's transcript records <line> as a `!` line that ran in
 #              its box, some such line printed <text>, or no `!` line ran),
@@ -667,6 +673,22 @@ checks = ["road:mod", "crown:accept_plan=2", "crown_line:D6 sent back:input_sent
 
   [[test.steps]]
   crown = "D6: call start_agent for {key} with workspace worktree, no tier and plan true, then end your turn with the single line: D6 started. Its agent will stop on its plan: when the board wakes you for that plan, read it with get_ticket for {key} and send it back with accept_plan, its change being the words: Write the line plan changed instead of plan first. Then end your turn with the single line: D6 sent back: <the receipt's outcome word>. When the board wakes you for that agent's next plan, read it with get_ticket, accept it with accept_plan, and end your turn with the single line: D6 accepted: new if its needs_you.request differs from the request you sent back, else D6 accepted: same. When the board wakes you because {key}'s agent finished, end your turn with the single line: D6 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
+id = "D7"
+title = "D7 · the crown reads a long plan to its last paragraph and accepts it"
+blind = true
+workspace = "worktree"
+brief = "Plan this, then do it once your plan is accepted: create the file notes/d7.txt holding the single line plan accepted. Use the ExitPlanMode tool to present the plan. Write the plan as at least twenty numbered steps of one full sentence each, and end it with a last paragraph naming a code word: one English fruit of your own choosing, named nowhere in this description. After writing the file, reply with that code word alone and end your turn. Run no command."
+brief_file = "plan accepted"
+plan = true
+expect = "the worker presents a plan of twenty steps or more, its code word in the last paragraph, past get_ticket's 512-byte head (T-991); the board wakes the crown; the crown, told only to find the code word in the plan's last paragraph, has that request's whole plan (get_ticket with plan true) before it accepts it, by whatever reads it chooses, any head it reads bounded and without the word; it names the worker's word and accepts; the worker writes the file and replies with that word. No note is written for the plan before the accept."
+checks = ["road:mod", "crown:accept_plan", "file:notes/d7.txt", "crown_line:D7 word:{reply}", "plan_read"]
+
+  [[test.steps]]
+  crown = "D7: call start_agent for {key} with workspace worktree, no tier and plan true, then end your turn with the single line: D7 started. Its agent will stop on its plan: when the board wakes you for that plan, read the plan with get_ticket for {key}, find the code word its last paragraph names, accept the plan with accept_plan, and end your turn with the single line: D7 word: <that code word>. When the board wakes you because {key}'s agent finished, end your turn with the single line: D7 seen."
   until = { stops = 1, state = "idle" }
   wake = true
 

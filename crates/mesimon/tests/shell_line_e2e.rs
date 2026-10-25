@@ -288,9 +288,10 @@ fn an_agent_s_shell_line_and_shell_title_are_refused() {
     }
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     let kb = c.board().ticket(b).unwrap().short_key.clone();
-    let seen = match c
-        .send(Principal::Agent { session: sa }, Command::AgentReadTicket { key: kb.clone() })
-    {
+    let seen = match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentReadTicket { key: kb.clone(), plan: false },
+    ) {
         Response::AgentTicket { ticket: AgentTicketView { seen, .. } } => seen,
         other => panic!("get_ticket: {other:?}"),
     };

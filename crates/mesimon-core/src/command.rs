@@ -1051,6 +1051,10 @@ pub enum Command {
     /// parses on the wire.
     AgentReadTicket {
         key: String,
+        /// The plan its agent stopped on, whole (T-991): `needs_you.plan`
+        /// is otherwise its head.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        plan: bool,
     },
     /// Board metadata only. Deliberately NOT `Snapshot`: no session, argv,
     /// transcript path, cwd or cost ever reaches an agent, at any tier.
@@ -2865,9 +2869,16 @@ pub struct AgentNeedsYouView {
     pub answerable: Option<bool>,
     /// On a plan stop (T-582): the plan's markdown as the pre-approval
     /// frames carry it (`tool_input.plan`), scrubbed, for the crown to read
-    /// before `accept_plan`. `request` then names the plan's dialog.
+    /// before `accept_plan`. `request` then names the plan's dialog. Its
+    /// first `mcp::PLAN_HEAD_MAX_BYTES`, ending in `…` when cut (T-991);
+    /// whole to the daemon's 64 KiB, marked past it, on a keyed read with
+    /// `plan`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
+    /// How long the plan is (T-991), in bytes as a read with `plan` carries
+    /// it, wherever `plan` above is shorter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_bytes: Option<u64>,
 }
 
 /// The crown's last ask to a ticket's agent (T-568, T-938), one record read

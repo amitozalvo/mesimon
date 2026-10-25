@@ -35772,3 +35772,74 @@ the hook set's rule instead (round 1).
   It fails with round 1's eviction put back.
 - The ledger round trip keeps a taken wake.
 - T-602's restart tests are unchanged.
+
+## A plan rides get_ticket as its head; the crown reads it whole with plan (T-991, 2026-10-25, gap row 62 on T-925)
+
+**Measured, before any code** (the crown's own transcripts, 2026-10-24 to 25): a plan stop's
+`get_ticket` carried the plan whole to 64 KiB (T-936), and the plan was most of the read. The
+plans ran 4.7 to 29.6 KB: T-968 9.7 and 11.1, T-973 17.2, T-974 8.4 and 11.3, T-975 29.6
+(517 lines of box-drawing frames, the person's "Large MCP response"). The rest of the view ran
+4.4 to 7.4 KB. The crown read each plan stop one to five times, and every read after the first
+was for a `seen` stamp before `hold_ticket`, `ask_agent` or `accept_plan`.
+
+**Now.** `needs_you.plan` is the plan's first `mcp::PLAN_HEAD_MAX_BYTES` (512), cut on a
+character boundary and ending in `…`, taken from the same `scrub_lines` text as before.
+`plan_bytes` gives the plan's length wherever `plan` is shorter than it. The crown's keyed read
+takes `plan` (`AgentReadTicket { key, plan }`, `#[serde(default)]` and not serialised when
+false, so an older daemon reads the command as before). With it, `needs_you.plan` is today's
+road: whole to 64 KiB, marked past it, frames kept. `get_ticket`'s schema gains a bare `plan`
+boolean. Its meaning is CROWN_WAKES' fact ("a long plan's head and its size in plan_bytes, and
+with plan the whole of it"). `plan` without `key` is refused when the call is parsed. T-975's
+read goes from 36 KB to about 6.5.
+
+**`get_ticket`'s text, to fit the property.** Main's tool was 817 of the 820 bytes, and the bare
+property costs 26. Three cuts lose no fact: the key's "; crown only" (the description already
+says it), "pull requests (prs)" becoming "PRs (prs)", and "merge state per repo" becoming "by
+repo". The pinned phrases stay word for word ("the columns move_ticket accepts and what each is
+for", "who merges (merge)", "the summary", the crown's reads).
+
+**Refuted in round 1 (T-993's cold read): the plan as a note at the stop.** The first build
+wrote a Claude plan as the agent's note when it stopped, and pointed `plan_cut` at it. The note
+store scrubs for cells (`scrub_cells` takes U+2500 to U+259F), so the frames of T-975's own
+kind of plan were gone from the "whole" note. An ordinary note can also become `notes[0]`, the
+description, and so a later launch's brief: a rejected plan as the brief. Its `Summary` boxes
+reached the card, and a restart's rebuild overwrote a person's edit or brought back a deleted
+note. Fencing each of those took three mechanisms, and the argument removed them all. A Claude
+plan's note is again only the one written at acceptance. Codex's is untouched.
+
+Tests: `mcp::a_long_plan_rides_get_ticket_as_its_head` and the parse cases in
+`keyed_tools_parse_and_refuse`. `crown_e2e::the_crown_accepts_a_plan_by_default` stops on a plan
+whose box frame and last paragraph sit past byte 512 and checks four things: the head lacks
+them, `plan_bytes` is the whole size, a read with `plan` returns it whole with the frame kept,
+and the title-only ticket has no note before the accept.
+`crown_e2e::a_worker_s_dialog_outlives_a_daemon_restart` checks the head on both sides of a
+restart, and T-936's whole and cut reads through `plan`. Rig `D7` is blind: the worker picks its
+plan's code word, and `plan_read` reads the crown's transcript for a head without the word, then
+a read with `plan` that has it, then `accept_plan`, in that order.
+
+**Round 2 (T-993's second read): D7's checker read results out of order.** The first
+`plan_read_order` gathered every result before it checked the order of the calls. So an
+`accept_plan` batched with the whole read passed, as did a refused accept or an accept for
+another request. It now walks the `assistant` and `user` records in order, skipping Claude Code's
+`api-request-blob` copies of each call and result. A call counts only at its own stage, and a
+stage moves only on that call's own good result. The head is at most 512 UTF-8 bytes before its
+`…`, it lacks the word, and its `plan_bytes` is the whole plan's UTF-8 length. The whole read
+names the head's request and has the word. The accept is called after that result, names that
+request, and reads `accepted`. `ci/rig_test.py::PlanReadTests` holds the sequential control and
+six counterexamples: batched, accept before the whole result, refused, another request on the
+accept or on the whole read, and a first read that carried the whole plan. It also checks that a
+blob's copy of an accept counts for nothing. The round-2 D7 run on Opus, a fresh crown, read the
+plan's wake with `get_ticket` and `plan` at once (1,858 B, the word in it) and accepted that
+request, `accepted`, with no head read before it. The checker failed it on the head stage, as
+specified.
+
+**Round 3: D7 proves an outcome, not a road (T-930).** The crown had this request's whole plan
+before it accepted it. How it got there is its own business. `plan_read` now asks for two
+things: a good `get_ticket` with `plan`, the word in it and no `plan_bytes` of its own; then,
+called after that result, an `accept_plan` for the same request that reads `accepted`. A head
+read is not required. One the crown makes is checked: any plain read that carries a plan must be
+a head, at most 512 UTF-8 bytes before its `…` and without the word, and its `plan_bytes` must
+equal the whole's UTF-8 length for the same request. The six counterexamples still fail. A plain
+read that carried the whole plan fails, while the round-2 run's order (no head, the whole, the
+accept) and a head whose size differs from the whole have fixtures of their own. The first passes
+and the second fails.
