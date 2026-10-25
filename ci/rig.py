@@ -1920,6 +1920,48 @@ Reply with the single word ready and end your turn."""
                 return False
             self.log(f"the person's prompt to a working {test['key']}: {r.get('resp')}")
             return True
+        if what == "prompt_at_start":
+            # T-961: the person's words the moment the wake returns, while
+            # the woken seat is still spawning: its box cannot be drawn yet
+            # (a resume draws 0.1-4 s after `SessionStart`, which comes later
+            # still), so the board's wait for the box is what is tested, never
+            # a race with it. The step ends at the worker's turn on them and
+            # the crown's wake.
+            rec = self.agent_of(self.board(), test["ticket"])
+            self.wire.sleep(rec["id"])
+            if not self.wait_for("the worker parked", lambda: word_of((self.agent_of(
+                    self.board(), test["ticket"]) or {}).get("state")) == "sleeping", 60, self.watch):
+                record["failures"].append("the worker would not park")
+                return False
+            self.watch()
+            mark = len(self.feed_lines)
+            self.wire.wake(rec["id"])
+            try:
+                r = self.wire.prompt(test["ticket"], step["text"], queued=False)
+            except WireError as e:
+                record["failures"].append(f"the person's prompt at the wake: {e}")
+                return False
+            state = (self.agent_of(self.board(), test["ticket"]) or {}).get("state")
+            self.log(f"the person's prompt at {test['key']}'s wake, the seat {word_of(state)}: "
+                     f"{r.get('resp')}")
+
+            def answered():
+                r = self.agent_of(self.board(), test["ticket"])
+                return r and word_of(r["state"]) == "idle" and any(
+                    l.get("kind") == "hook" and of_session(l, r["id"]) and l.get("event") == "Stop"
+                    for l in self.feed_lines[mark:])
+
+            if not self.wait_for("the worker's turn on the person's words", answered,
+                                 STEP_TIMEOUT, self.watch):
+                record["failures"].append("the worker never answered the person's words")
+                return False
+            wake = self.wait_for("the board's wake for the crown", lambda: next((
+                l for l in self.feed_lines[mark:] if l.get("kind") == "crown_wake"
+                and l.get("worker") == test["ticket"]), None), WAKE_GRACE, self.watch)
+            self.quiet_since = None
+            self.wait_for("crown", lambda: self.crown_settled(after_ms=wake["at_ms"], quiet=0)
+                          if wake else self.crown_settled(), STEP_TIMEOUT, self.watch)
+            return True
         if what == "person_start":
             # The person starts the test's agent themselves (W1, T-734): the
             # composer's Shift+Enter, in the test's workspace, and the step
@@ -3312,6 +3354,18 @@ Reply with the single word ready and end your turn."""
                 got = user_prompts(rows)
                 check(c, len(got) == int(arg), f"{len(got)} prompts: "
                       + "; ".join(repr(p[:30]) for p in got))
+            elif name == "prompt_once":
+                # T-961: the person's words reached the worker as one prompt
+                # of their own, exactly once, whole: a user prompt equal to
+                # <words>, and no other that holds them (doubled, or joined
+                # to a title or a draft). The one normalisation is
+                # `user_prompts`' trim of the text's surrounding whitespace.
+                prompts = user_prompts(rows)
+                exact = [p for p in prompts if p == arg]
+                holding = [p for p in prompts if arg in p]
+                check(c, len(exact) == 1 and len(holding) == 1,
+                      f"{len(exact)} exact, {len(holding)} holding the words: "
+                      + "; ".join(repr(p[:60]) for p in holding))
             elif name == "held":
                 # The second prompt entered after the first turn's Stop: the
                 # engine held it for its own turn. The Stop is the daemon's

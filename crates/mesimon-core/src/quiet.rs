@@ -377,6 +377,8 @@ mod tests {
             provenance: Provenance::Spawned,
             claude_session_id: None,
             pane_key: None,
+            launched_at: None,
+            typed_title: None,
             road: crate::road::Road::Hooks,
             native: false,
             codex_thread_id: None,

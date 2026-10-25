@@ -589,6 +589,21 @@ pub fn rescan_external(c: &mut TestClient) -> Vec<ExternalItem> {
     }
 }
 
+/// Waits for the composer a stub paints in `sid`'s pane (T-961): a stub's
+/// first exec can be held by Gatekeeper for a second (T-738), and a command
+/// (`!`, `/`) on a seat this young goes only into a box read empty, so a
+/// test that sends one waits for the box first, as a person sees it.
+pub fn wait_composer(h: &Harness, sid: uuid::Uuid) {
+    let sid16: String = sid.simple().to_string().chars().take(16).collect();
+    let sock = h.paths.tmux_sock();
+    wait_until(Duration::from_secs(15), "the stub's composer", || {
+        tmux(&sock)
+            .args(["capture-pane", "-p", "-t", &sid16])
+            .output()
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains('❯'))
+    });
+}
+
 pub fn wait_until(timeout: Duration, what: &str, mut f: impl FnMut() -> bool) {
     let deadline = Instant::now() + timeout;
     while !f() {
@@ -689,6 +704,77 @@ pub fn feed_count(h: &Harness, cmd: &str, ticket: ulid::Ulid) -> usize {
 /// one (`agents::claude::composer`), so every stand-in for Claude paints it.
 pub const COMPOSER: &str = "printf '\\033[999;1H\\033[3A────────────────────\\n❯ \\n\
                             ────────────────────\\n  ? for shortcuts\\033[H'\n";
+
+/// T-961's stand-in for Claude Code's box, as 2.1.310 behaves around it.
+/// While `nopaint` exists beside it the pane is a cooked tty with no box:
+/// keys typed then wait in the tty. Once it goes, the stub takes raw mode
+/// (keeping those keys), reads every key already waiting, and draws its
+/// first frame, [`COMPOSER`]'s shape, with them in the box, as Claude Code
+/// shows a start's typed title; that first box is written to `first.txt`.
+/// Then it edits the box itself: printable keys join it, a backspace takes
+/// one off, one Ctrl+C empties it (counted in `cleared.txt`), and Enter
+/// submits it as a line of `got.txt`. It asks for no bracketed paste, so a
+/// paste arrives as keys. It answers Claude Code's probes as a 2.1.288 whose
+/// mods validate and load nothing (`mod_auto_e2e`'s silent launch).
+pub const BOX_STUB: &str = r#"#!/usr/bin/env python3
+import os, select, sys, termios, time, tty
+argv = sys.argv[1:3]
+answers = {
+    ("--version",): "2.1.288 (Claude Code)",
+    ("plugin", "validate"): "✔ Validation passed",
+    ("plugin", "test"): " 1 pass",
+    ("auth", "status"): '{"loggedIn":true,"subscriptionType":"max"}',
+}
+for key, answer in answers.items():
+    if tuple(argv[:len(key)]) == key:
+        print(answer)
+        sys.exit(0)
+d = os.path.dirname(os.path.abspath(__file__))
+fd = sys.stdin.fileno()
+while os.path.exists(os.path.join(d, "nopaint")):
+    time.sleep(0.05)
+# TCSANOW: keys typed before the box stay for it (the default flushes them).
+tty.setraw(fd, termios.TCSANOW)
+box, esc = "", False
+def take(data):
+    global box, esc
+    for ch in data.decode("utf-8", "replace"):
+        if esc:
+            esc = not (ch.isalpha() or ch == "~")
+        elif ch == "\x1b":
+            esc = True
+        elif ch in "\r\n":
+            with open(os.path.join(d, "got.txt"), "a") as f:
+                f.write(box + "\n")
+            box = ""
+        elif ch == "\x03":
+            box = ""
+            with open(os.path.join(d, "cleared.txt"), "a") as f:
+                f.write("^C\n")
+        elif ch in "\x7f\x08":
+            box = box[:-1]
+        elif ch >= " ":
+            box += ch
+def draw():
+    rule = "─" * 20
+    sys.stdout.write("\x1b[2J\x1b[999;1H\x1b[3A" + rule + "\r\n❯ " + box + "\r\n" + rule
+                     + "\r\n  ? for shortcuts\x1b[999;1H\x1b[2A\x1b[%dG" % (3 + len(box)))
+    sys.stdout.flush()
+while select.select([fd], [], [], 0.1)[0]:
+    data = os.read(fd, 4096)
+    if not data:
+        sys.exit(0)
+    take(data)
+draw()
+with open(os.path.join(d, "first.txt"), "w") as f:
+    f.write(box)
+while True:
+    data = os.read(fd, 4096)
+    if not data:
+        break
+    take(data)
+    draw()
+"#;
 
 /// A shell stub for Claude that paints [`COMPOSER`] before its own body.
 /// A stub in another language is left as written: it paints its own, or

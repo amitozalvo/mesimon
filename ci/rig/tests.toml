@@ -78,7 +78,9 @@
 #              aside; a plain row may),
 #              mod_report:<event>:<reason> (a report the worker's mod relayed),
 #              prompts:N (user prompts in its transcript, a background
-#              task's notification not counted), held (its second prompt
+#              task's notification not counted), prompt_once:<words> (T-961:
+#              exactly one of those prompts is <words>, whole, trimmed of
+#              surrounding whitespace, and no other holds them), held (its second prompt
 #              entered after its first turn's Stop), replies:<w1>,<w2>
 #              (its replies, in order, each its word alone), file:<path>
 #              (in its cwd, holding `brief_file`'s words), no_file:<path> (T-932:
@@ -1611,6 +1613,30 @@ checks = ["started_by_crown", "went_past_idle_person:120", "crown_line:A3:seen"]
   [[test.steps]]
   rig = "person_idles"
   hold = 180
+
+  [[test.steps]]
+  rig = "crown_road"
+  road = "mod"
+
+[[test]]
+id = "EP1"
+title = "EP1 · a person's words reach an agent the moment it wakes: do the steps below"
+workspace = "worktree"
+brief = "Reply with the single word done and end your turn. Read no file and run no command."
+expect = "the worker runs on the hook set, where a person's words are pasted into its box. Once it has answered and gone idle it is parked and woken, and the person's words go to it the moment the wake returns, while the seat is still spawning and before Claude Code has drawn its box: they wait for the box (the board says prompt_waits_for_composer), go in once (exactly one prompt in the worker's conversation holds them), and the worker answers them in a turn of its own with the word ready; the board never gives up on them (no paste_unacked, prompt_submit_not_ready or prompt_submit_gave_up for the ticket) (T-961)."
+checks = ["started_by_crown", "fed:prompt_waits_for_composer", "prompt_once:Reply with the single word ready and end your turn. Read no file and run no command.", "reply:ready", "not_fed:paste_unacked", "not_fed:prompt_submit_not_ready", "not_fed:prompt_submit_gave_up"]
+
+  [[test.steps]]
+  rig = "crown_road"
+  road = "hooks"
+
+  [[test.steps]]
+  crown = "EP1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: EP1 started. Each time the board wakes you for {key}, end your turn with the single line: EP1 seen."
+  until = { stops = 1, state = "idle" }
+
+  [[test.steps]]
+  rig = "prompt_at_start"
+  text = "Reply with the single word ready and end your turn. Read no file and run no command."
 
   [[test.steps]]
   rig = "crown_road"

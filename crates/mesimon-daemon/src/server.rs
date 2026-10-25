@@ -236,6 +236,11 @@ const COMPOSER_UNREAD: &str = "composer could not be read";
 const BOX_NOT_READY: &str = "no composer yet";
 /// The tail `paste_at` puts on a refusal before any key.
 const NOT_SENT: &str = " ∙ the words were not sent";
+/// Why words for a seat are refused while another's still wait to go in
+/// (T-961): the seat holds one owed entry, and it is not replaced.
+const PROMPT_WAITING: &str = "a prompt is already waiting for this session";
+/// Why a command is refused on a young seat whose box is not drawn (T-961).
+const BOX_NOT_DRAWN: &str = "the prompt box is not drawn yet";
 /// How long a write to a subscriber's socket may block the writer thread
 /// before the subscriber is dropped (T-838). Long enough for a board
 /// answer to a client reading it under load; a client that reads nothing
@@ -2735,6 +2740,17 @@ fn idle_box(
         Some(Composer::Absent) => Some(BoxRead::Unknown),
         Some(Composer::Empty) | None => Some(BoxRead::Unread),
     }
+}
+
+/// `Daemon::young_seat`'s rule (T-961): `Spawning`, or `Idle{Unknown}` (the
+/// state `SessionStart` sets), in a pane launched less than `wait` before
+/// `now`. The pane's own launch is the clock, never a state change: a
+/// recovery reads an old pane `Idle{Unknown}` too. No launch, not young.
+fn young_seat(state: &SessionState, launched_at: Option<u64>, now: u64, wait: u64) -> bool {
+    matches!(
+        state,
+        SessionState::Spawning | SessionState::Idle { stop_reason: StopReason::Unknown }
+    ) && launched_at.is_some_and(|at| now.saturating_sub(at) < wait)
 }
 
 impl QueuedAsk {
@@ -7119,6 +7135,9 @@ impl Daemon {
                         if !wake {
                             self.mark_unsent(id, words);
                         }
+                        // A phone waiting on these words gets its last word
+                        // (T-961): they never went in.
+                        self.control_unsent(id);
                         self.feed.board("daemon", "prompt_submit_not_ready", Some(ticket));
                         changed = true;
                         continue;
@@ -13803,6 +13822,16 @@ impl Daemon {
         if rec.kind == SessionKind::Codex {
             return self.codex_park(id, ticket, text, ack, false);
         }
+        // One owed entry per seat (T-961): words still parked for this pane,
+        // a launch's or an early prompt's, are never replaced, by a paste, a
+        // fill or a submit. Refused before any key, as for a person at the
+        // pane: the words stay with whoever sent them, a queue road keeps its
+        // entry, and the parked words keep theirs and their receipt.
+        if self.parked(id) {
+            self.refused_for_person = Some(id);
+            self.feed.board_outcome("daemon", "prompt_not_sent", Some(ticket), PROMPT_WAITING);
+            return Err(PROMPT_WAITING.into());
+        }
         let immediately = immediately && !self.session_idle(id);
         // A shell line (T-876) is the box's: `!` switches Claude Code into
         // bash mode only from an empty box, and into one holding a draft
@@ -13811,16 +13840,34 @@ impl Daemon {
         // screen that cannot be read refuses nothing.
         // A `!` line or a `/` command (T-876, T-894) runs only from an empty
         // box: into a draft it is text.
+        // On a seat whose box may not be drawn yet (T-961) only a box read
+        // empty takes one: a command never waits for the box, since the box
+        // that draws may hold the start's title, and the line would be text.
         let command = road::is_command(text);
         if command {
             use crate::agents::claude::composer::{self, Composer};
-            if let Ok(screen) = self.backend.capture_input_screen(&sid) {
-                if composer::read(&screen) == Composer::Holding {
-                    let what = if road::is_shell(text) { "a `!` line" } else { "a `/` command" };
+            let what = if road::is_shell(text) { "a `!` line" } else { "a `/` command" };
+            let read = self.backend.capture_input_screen(&sid).ok().map(|s| composer::read(&s));
+            match read {
+                Some(Composer::Holding) => {
                     return Err(format!(
                         "the prompt box holds text ∙ {what} runs only from an empty box"
                     ));
                 }
+                Some(Composer::Empty) => {}
+                // Refused before any key, as for a person at the pane: a
+                // queue road keeps the ask this send took (T-961 round 3).
+                _ if self.young_seat(id) => {
+                    self.refused_for_person = Some(id);
+                    self.feed.board_outcome(
+                        "daemon",
+                        "prompt_not_sent",
+                        Some(ticket),
+                        BOX_NOT_DRAWN,
+                    );
+                    return Err(format!("{BOX_NOT_DRAWN} ∙ {what} runs only from an empty box"));
+                }
+                _ => {}
             }
         }
         // Immediately on the mod road (T-601): the words into the empty
@@ -13855,11 +13902,22 @@ impl Daemon {
         // would read as a failed delivery and hold it until its seat moves.
         // A client idle past T-945's bound is not at the box (T-966), and the
         // box then decides: only one read empty takes the keys.
+        // A seat that came up seconds ago may not have drawn its box yet
+        // (T-961): keys typed before Claude Code asks for raw mode land in
+        // the box once it draws and their Enter is lost (2.1.310), so the
+        // words wait on the launch road's composer read and wait, read
+        // fresh at the key, and are kept `unsent` if no box comes.
         if ack.word != Ack::CROWN_WAKE.word {
-            let refused = self.clients_at_pane(&sid).refusal(|| {
-                use crate::agents::claude::composer;
-                self.backend.capture_input_screen(&sid).ok().map(|screen| composer::read(&screen))
-            });
+            use crate::agents::claude::composer::{self, Composer};
+            let clients = self.clients_at_pane(&sid);
+            let young = clients != PaneClients::Here && self.young_seat(id);
+            let read = (young || clients == PaneClients::Idle)
+                .then(|| self.backend.capture_input_screen(&sid).ok().map(|s| composer::read(&s)))
+                .flatten();
+            if young && !command && !matches!(read, Some(Composer::Empty | Composer::Holding)) {
+                return self.park_until_composer(id, ticket, text, ack);
+            }
+            let refused = clients.refusal(|| read);
             if let Some(why) = refused {
                 self.refused_for_person = Some(id);
                 self.feed.board_outcome(
@@ -13884,6 +13942,75 @@ impl Daemon {
             self.backend.paste_text(&sid, text).map_err(|e| format!("could not deliver: {e}"))?;
         }
         self.paste_entered(id, ticket, text, ack, None);
+        Ok(())
+    }
+
+    /// A Claude seat whose box may not be drawn yet (T-961): still
+    /// `Spawning`, or idle since its `SessionStart` (`Idle{Unknown}`), in a
+    /// pane launched less than the composer's wait ago (`launched_at`, kept
+    /// across a restart). An older seat's words go as they always did: the
+    /// composer reader has limits, and a long-lived pane is not held on them.
+    fn young_seat(&self, id: uuid::Uuid) -> bool {
+        self.board
+            .sessions
+            .iter()
+            .find(|s| s.id == id)
+            .is_some_and(|s| young_seat(&s.state, s.launched_at, now_ms(), composer_wait_ms()))
+    }
+
+    /// A pane was launched for `id` (T-879, T-961): its mod's bridge is
+    /// awaited from `now`, and the record's launch facts are this pane's,
+    /// with no title typed yet. Every agent pane's launch says so, once the
+    /// record is on the board (the first spawn writes its own record).
+    fn pane_launched(&mut self, id: uuid::Uuid, now: u64) {
+        self.await_bridge(id, now);
+        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+            rec.launched_at = Some(now);
+            rec.typed_title = None;
+        }
+    }
+
+    /// The title just typed into `id`'s pane (T-961): a box holding exactly
+    /// it is the board's own (`park_until_composer`'s `typed`).
+    fn title_typed(&mut self, id: uuid::Uuid, title: &str) {
+        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+            rec.typed_title = Some(title.to_string());
+        }
+    }
+
+    /// Words for a young seat whose box reads no composer yet (T-961), parked
+    /// as a launch's are and armed now: `settle_owed` pastes them once a box
+    /// is drawn and the key's own read passes (`launch_refusal`), holds them
+    /// on a draft, and keeps them `unsent` for the seat's resend when the
+    /// composer's wait runs out. No Ctrl+C: the box is never the board's to
+    /// clear. A seat already owed words is refused, never overwritten.
+    fn park_until_composer(
+        &mut self,
+        id: uuid::Uuid,
+        ticket: ulid::Ulid,
+        text: &str,
+        ack: Ack,
+    ) -> Result<(), String> {
+        if self.owed.contains_key(&id) {
+            return Err(PROMPT_WAITING.into());
+        }
+        let now = now_ms();
+        let words = Parked { text: text.to_string(), brief: false, title: false };
+        let mut owed = Owed::launch(ticket, words, ack);
+        owed.next_press = Some(now);
+        owed.ready_by = Some(now + composer_wait_ms());
+        // The title this pane was typed before any box (a start's, a fresh
+        // wake's, T-603): a box holding exactly that is the board's, and
+        // the words go after it, as the composed spawn's brief does (T-987).
+        // A resume typed none, and a rename since changes nothing typed.
+        owed.typed =
+            self.board.sessions.iter().find(|s| s.id == id).and_then(|s| s.typed_title.clone());
+        self.owed.insert(id, owed);
+        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+            rec.pending_submit = true;
+        }
+        self.feed.board("daemon", "prompt_waits_for_composer", Some(ticket));
+        self.persist_sessions();
         Ok(())
     }
 
@@ -16193,7 +16320,10 @@ impl Daemon {
         else {
             return;
         };
-        let _ = self.backend.send_text(&rec.sid16(), &format!("{title} "));
+        let (id, title) = (rec.id, title.to_string());
+        if self.backend.send_text(&rec.sid16(), &format!("{title} ")).is_ok() {
+            self.title_typed(id, &title);
+        }
     }
 
     /// Wake the ticket's parked claude and hold `words` for its first tick:
@@ -17539,7 +17669,9 @@ impl Daemon {
             Ok(pane) => rec.pane_key = Some(pane),
             Err(e) => return Response::Err { message: format!("spawn failed: {e}") },
         }
-        self.await_bridge(id, now_ms());
+        let launched = now_ms();
+        self.pane_launched(id, launched);
+        rec.launched_at = Some(launched);
         // Prefill the ticket title into the agent's input box — typed, never
         // submitted; the user edits and presses Enter (zero token injection).
         // Fresh Claude spawns only: resume/wake replay argv elsewhere and must
@@ -17565,13 +17697,20 @@ impl Daemon {
         // nor its `<pasted_content>` wrapping (T-588) is in the way.
         let by_mod = submit_prompt && kind == SessionKind::Claude && road == Road::Mod;
         if kind.is_agent() {
-            if let Some(title) =
-                self.board.ticket(ticket).map(|t| t.title.trim()).filter(|t| !t.is_empty())
+            if let Some(title) = self
+                .board
+                .ticket(ticket)
+                .map(|t| t.title.trim().to_string())
+                .filter(|t| !t.is_empty())
             {
                 if kind == SessionKind::Codex
                     || by_mod
                     || self.backend.send_text(&rec.sid16(), &format!("{title} ")).is_ok()
                 {
+                    // This pane's box will hold the title (T-961).
+                    if kind == SessionKind::Claude && !by_mod {
+                        rec.typed_title = Some(title.clone());
+                    }
                     rec.pending_submit = submit_prompt;
                     // And when mesimon is the one pressing Enter, the whole
                     // brief goes with it (T-224, 2026-09-05): the ticket's
@@ -19888,7 +20027,7 @@ impl Daemon {
             }
         };
         let now = now_ms();
-        self.await_bridge(id, now);
+        self.pane_launched(id, now);
         let resumed_thread = rec.codex_thread_id.clone();
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
             rec.pane_key = Some(pane);
@@ -20291,7 +20430,7 @@ impl Daemon {
                     Err(e) => return Response::Err { message: format!("wake spawn failed: {e}") },
                 };
                 let now = now_ms();
-                self.await_bridge(id, now);
+                self.pane_launched(id, now);
                 if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                     rec.pane_key = Some(pane);
                     rec.set_state(SessionState::Running);
@@ -21220,6 +21359,26 @@ fn rig_no_flags() -> bool {
 mod queued_person_tests {
     use super::*;
     use crate::agents::claude::composer::Composer;
+
+    /// T-961: a seat is young, its box perhaps not drawn, while it spawns or
+    /// sits idle since its `SessionStart`, inside the composer's wait from
+    /// its pane's own launch; a turn that ended, a pane past the wait, or a
+    /// pane this daemon did not launch (no stamp: a recovered `StaleQuiet`
+    /// seat reads `Idle{Unknown}` too, round 1) is not.
+    #[test]
+    fn a_seat_is_young_from_its_pane_s_launch_to_the_composer_s_wait() {
+        let (wait, now) = (30_000, 1_792_888_100_000);
+        let unknown = SessionState::Idle { stop_reason: StopReason::Unknown };
+        assert!(young_seat(&SessionState::Spawning, Some(now - 500), now, wait));
+        assert!(!young_seat(&SessionState::Spawning, None, now, wait), "no launch stamp");
+        assert!(!young_seat(&unknown, None, now, wait), "a recovered pane");
+        assert!(young_seat(&unknown, Some(now - 200), now, wait));
+        assert!(!young_seat(&unknown, Some(now - wait), now, wait), "past the wait");
+        assert!(!young_seat(&SessionState::Spawning, Some(now - wait - 1), now, wait));
+        let ended = SessionState::Idle { stop_reason: StopReason::EndTurn };
+        assert!(!young_seat(&ended, Some(now - 200), now, wait), "a turn ended");
+        assert!(!young_seat(&SessionState::Running, Some(now - 200), now, wait));
+    }
 
     /// T-966, round 1: a listing's clients under T-945's bound. A blank or
     /// malformed row (`None`) holds as a client that may be typing, beside an

@@ -555,6 +555,14 @@ impl Daemon {
                         owed.frame = None;
                         owed.taken = false;
                         owed.sent = None;
+                        // The replacement pane's own prefill, never the old
+                        // pane's (T-961): this branch types none.
+                        owed.typed = self
+                            .board
+                            .sessions
+                            .iter()
+                            .find(|s| s.id == id)
+                            .and_then(|s| s.typed_title.clone());
                         self.owed.insert(id, owed);
                         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                             rec.pending_submit = pending_submit;
@@ -574,7 +582,10 @@ impl Daemon {
                         let sid16 =
                             self.board.sessions.iter().find(|s| s.id == id).map(|s| s.sid16());
                         if let (Some(title), Some(sid16)) = (title, sid16) {
-                            let _ = self.backend.send_text(&sid16, &format!("{title} "));
+                            // The new pane's box holds it (T-961).
+                            if self.backend.send_text(&sid16, &format!("{title} ")).is_ok() {
+                                self.title_typed(id, &title);
+                            }
                         }
                     }
                     None => {}

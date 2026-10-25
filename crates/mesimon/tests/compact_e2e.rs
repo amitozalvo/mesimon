@@ -85,6 +85,7 @@ fn seat(h: &Harness, c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid
         other => panic!("spawn failed: {other:?}"),
     };
     std::fs::write(h.dir.join("session"), sid.to_string()).unwrap();
+    wait_composer(h, sid);
     (ticket, sid)
 }
 

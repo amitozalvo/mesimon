@@ -36366,3 +36366,104 @@ them more often:
 - **`run_bounded` joins its pipe readers with no deadline** (`modroad.rs`): the deadline covers
   the child's exit, and the group is killed only past it. A child that exits in time and leaves
   a process holding stdout or stderr open holds the probe's worker on the joins, with no bound.
+
+## A person's prompt into a box not yet drawn waits on the launch road (T-961, 2026-10-25, found by T-945's rig run, named by the second Fable review in T-960's first bundle)
+
+**Measured first, Claude Code 2.1.310 (Haiku), one private tmux, the daemon's shape by hand.**
+A `SessionStart` hook wrote a timestamp, and the screen was polled every 20 ms for the composer.
+- **When the box draws.** A fresh launch reached `SessionStart` 520–610 ms after the spawn, and
+  its composer drew 92–160 ms after that, over seven runs. The first run of the day was no
+  slower than the rest.
+- **A paste before it** (`paste-buffer -p`, then a separate Enter, 21–36 ms after `SessionStart`,
+  three runs). The words were not lost. They stood in the box once it drew (`❯ reply with the
+  single word ok`), but the Enter was lost every time. No `UserPromptSubmit` fired and no turn
+  began. The board then said `paste_unacked` 30 s later, kept nothing, and left the person a box
+  holding words they never typed, which their next Enter would send.
+- **Why only some seats.** `paste_at` read the box only when a tmux client was attached and idle
+  (T-966). With nobody attached it typed at once, and that is the usual case for `^y`, a phone
+  and the crown's `ask_agent`.
+
+**What shipped: one road with T-987's launch words, not a second reader.**
+- **A young seat** (`Daemon::young_seat`, `server::young_seat`) is `Spawning`, or `Idle{Unknown}`
+  (what `SessionStart` sets) entered less than the composer's wait ago (`COMPOSER_WAIT_MS`, 30 s).
+  On a young Claude seat, `paste_at` reads the box now, on the paste road and with nobody at the
+  pane, before any key goes in. The one capture is shared with T-966's idle-client read. The
+  crown's wake is excluded: it has its own sample gate (T-936).
+  - **The box reads empty:** typed at once, as before.
+  - **It holds text:** today's rule (T-966). Nobody attached types at once; an idle client
+    refuses.
+  - **No composer, or the screen can't be read:** the words are **parked** as an armed launch
+    entry (`park_until_composer`). The feed says `prompt_waits_for_composer`, the seat shows
+    `pending_submit` (the card's sending arc, chosen with the person over lighting `unsent` at
+    once), and `Ok` goes back to the caller. Its after-steps find the entry as they find a wake's
+    parked words: the merge tag, the crown ask's `o.ask`, `queued ∙ sending`.
+- **From there it is T-987's road, unchanged.** `settle_owed` waits while the sample reads no
+  composer, and reads the clients and the box again at the key (`launch_refusal`). A draft holds
+  the words (`composer_held`). At the composer's wait they go `unsent` with
+  `prompt_submit_not_ready`, the card lights, and the seat's Shift+Enter resends them. A person's
+  own prompt in the pane first drops them (`prompt_dropped_by_hand`).
+- **A plain start and a fresh wake type the title before any box** (T-603). So the parked entry
+  carries `typed` = the ticket's title: a box holding exactly that is the board's own, and the
+  words go after it, as the composed spawn's brief does. No Ctrl+C: the box is never the board's
+  to clear.
+- **A seat already owed words** (a launch's brief still parked) is refused with `a prompt is
+  already waiting for this session`, Codex's words, rather than overwritten. Before this, the
+  paste's owed entry replaced the brief's.
+- **No new timer.** The wait is the existing composer wait, counted from the park.
+
+**Stated limits.**
+- A seat past the wait, or one whose state moved (`Idle{EndTurn}`, `Running`), types as before.
+  The composer reader has known limits (T-987: a cursor at the start of the input), and a
+  long-lived pane is not held on them.
+- `immediately` on a parked young seat is dropped: before a box there is no turn to cut into.
+- On the mod road the `submit` returns before this (`takes_by_submit`) and nothing waits. A mod
+  seat whose bridge has not polled yet is on the paste road and takes the gate.
+
+**Tests.**
+- `server::queued_person_tests::a_seat_is_young_from_its_spawn_to_the_composer_s_wait_after_its_start`.
+- `prompt_e2e::a_person_s_prompt_waits_for_a_box_not_yet_drawn`, on T-987's `draft_stub` with its
+  `nopaint` file:
+  - a woken seat's box held undrawn: the words are typed nowhere and the seat is sending, not
+    unsent; they go alone once the box draws, and the ack clears the entry;
+  - a box that never draws inside the wait (6 s in the test): `unsent` holds the prompt, and the
+    resend lands it once the box draws;
+  - a seat past the wait: typed at once, no wait word.
+
+  On the mod pass the same seat's words go by the mod's `submit`, and nothing waits.
+- Rig `EP1`: the crown starts a worker on the hook set. The rig parks it, wakes it, and sends the
+  person's words the instant the woken pane's `SessionStart` reaches the feed. The worker answers
+  `ready`, and no `paste_unacked`, `prompt_submit_not_ready` or `prompt_submit_gave_up` is fed.
+  The rig step is `prompt_at_start`. **Run on 2.1.310 (Sonnet worker, Opus crown): PASS.** The
+  person's words reached the daemon 106 ms after the woken worker's `SessionStart`. The board
+  fed `prompt_waits_for_composer`, and the worker took them 2.1 s later in a turn of its own and
+  answered `ready`. A `--resume` draws its box in about 2 s, not a fresh launch's ~100 ms, which
+  is the "first second or two" of T-945's two misses.
+
+**Round 1 (T-998's cold read, the crown's six corrections).**
+1. **One owed entry per seat, checked before every dispatch road.** A seat holding unpasted parked words (a launch's, an early prompt's) refuses the next prompt. The check sits in `paste_at`, ahead of the mod's `fill` and `submit`, the paste and the park. It sets `refused_for_person` and feeds `prompt_not_sent` with `a prompt is already waiting for this session`, so `ahead_of_queue` and the drain keep their queued entry. The parked words keep theirs and their receipt. Before this, a second send after the box drew pasted at once, and `paste_entered` replaced the first entry: never pasted, never kept, its phone receipt open to the second's ack.
+2. **`typed` is what this pane typed.** `Daemon::pane_launch` (memory) holds each session's current pane: `at` its spawn and `typed` the title typed into it. `pane_launched`, beside `await_bridge`, is called by every agent spawn. `title_typed` is called where the plain or composed start and `retype_title` actually type the title. A resume types none, so a person's draft equal to the title is a draft. A rename after the prefill changes nothing typed.
+3. **A command never parks.** On a young seat, a `!` line or `/` command needs a box read empty at the request. With no box drawn it is refused (`the prompt box is not drawn yet ∙ … runs only from an empty box`), since the box that draws may hold the start's title and the line would be text.
+4. **Youth is the pane's own launch.** `young_seat` reads `pane_launch.at`, not `state_changed_at`, and no launch stamp is not young. So an old pane that a restarted daemon's recovery reads `Idle{Unknown}` (a stale quiet tail, stamped now by `apply_change`) takes the words at once.
+5. **A phone's never-pasted send is finished.** The composer timeout that drops parked words to `unsent` calls `control_unsent`, which writes the phone's `rejected`. Before this, `control.pending` waited indefinitely. No harness in this repository drives a phone send: phones reach the daemon only through the relay's encrypted control channel. This one line has no test here.
+6. **The checks prove the edge.**
+   - The e2e's stub is now `BOX_STUB`, a Python stand-in that keeps a cooked tty while `nopaint` exists, then takes raw mode with `TCSANOW` (the default flush discards the keys typed before the box) and owns its box: the keys typed before it, a backspace, one Ctrl+C empties it.
+   - The phases: a fresh wake's title in the box, then the words after it. A command refused before the box. A rename after the prefill. A resumed pane whose draft equals the title holds the words, and a second send meanwhile is refused while a queued ask survives. A box never drawn, then the resend sent before the late draw, with no Ctrl+C. An older seat. A recovered seat after a restart.
+   - Each of corrections 1–4, switched off alone, fails its phase (run by hand against this tree).
+   - Rig `EP1` now also requires `fed:prompt_waits_for_composer` and `prompt_once:<the person's words>` (a new check: exactly one user prompt in the worker's conversation holds them). **Rerun on `610190e5`, 2.1.310: PASS.** The words came 134 ms after the woken worker's `SessionStart`, waited, and went in as one prompt 4.2 s later; the worker answered `ready`.
+
+**Round 2 (T-998's second read, the crown's four corrections).**
+1. **A young pane stays young across a restart.** Round 1's in-memory `pane_launch` map is gone. A restart emptied it, so every surviving pane read as old, and an early prompt pasted into a box not yet drawn: the measured lost Enter.
+   - The launch's facts now sit on the `SessionRecord` beside `pane_key`: `launched_at` (epoch ms) and `typed_title` (the exact title typed into the current pane, or `None`). Both are `#[serde(default)]` and skipped when `None`, with no schema bump: an older build drops them, which only makes a pane old.
+   - `pane_launched` writes them at every launch (the first spawn writes its own record before it joins the board), and `sessions.json` keeps them. Recovery stamps nothing, and a record with no stamp is not young.
+   - The restart phase is now two: a young pane whose box is not drawn waits through the restart and delivers once; an old pane, past the wait at the restart, takes the words at once. With `launched_at` not persisted, the young phase fails.
+2. **The silent-mod relaunch records what it types.** `relaunch_on_hooks` types the title into a fresh replacement pane, and now records it (`title_typed`). Its carried entry takes the replacement pane's prefill (none, in that branch), not the old pane's title. Two tests in `mod_auto_e2e`, each failing with its line undone:
+   - `a_silent_mod_relaunch_records_the_title_it_types`: a plain start's relaunch with an early prompt; the words go after the retyped title.
+   - `a_carried_relaunch_entry_takes_the_new_pane_s_prefill`: words parked on the first pane, carried. The new box holds a person's draft equal to the title, which holds the words until it is deleted.
+3. **EP1 compares the whole prompt.** `prompt_once` passes only when exactly one user prompt equals the step's whole text, and no other prompt holds it. The one normalisation is `user_prompts`' trim of surrounding whitespace. The test's argument is the step's whole text.
+4. **`BOX_STUB` draws its first frame from its buffered input.** It reads every key waiting in the tty before the first frame, so no frame shows an empty box ahead of a title or draft typed before it. That first box goes to `first.txt`, and the title, draft, resend and restart phases wait on it. The stub moved to `tests/common` with Claude Code's probe answers (a 2.1.288 whose mods load nothing) for the relaunch tests. The prompt e2e's composer wait is 10 s, so a young pane is still young after a restart under load.
+   - **EP1 rerun on round 2 (`6330f639`, 2.1.310): FAIL on `fed:prompt_waits_for_composer`.** Every other check passed: exactly one prompt equal to the step's text, answered `ready`, no `paste_unacked`. The person's words reached the daemon 249 ms after the woken worker's `SessionStart` (106 and 134 ms in the two earlier runs), and `UserPromptSubmit` followed 70 ms later. That resume had drawn its box already, so the board pasted at once into an empty box, which is the right road, and nothing waited. The wait check is a race: the rig sends at the `SessionStart` line it reads off the feed, and a resume draws in 0.1–4 s. **Taken after round 2: `prompt_at_start` now sends the words at the wake's return**, while the seat is `Spawning` (young, its box certainly undrawn), so the wait check cannot lose the race. Rerun on `39ef70b7`, 2.1.310: **PASS**, all seven checks. The words parked 8 ms after the wake (`prompt_waits_for_composer`); `SessionStart` came 0.6 s later, and the words went in as one prompt 1.5 s after it; answered `ready`.
+5. **Three fixtures sent a command before their stub's box was drawn.** `compact_e2e::a_slash_command_from_the_board_is_acked_off_the_screen` and both of `shell_line_e2e`'s tests start a plain seat and send `/compact` or `!echo` right after its `SessionStart`. A stub's first exec can be held by Gatekeeper (T-738), so the box was sometimes not drawn yet, and round 1's rule (a young seat's command needs a box read empty) refused it. Round 1's full run passed only because each stub painted in time. The fixtures now wait for the composer first (`common::wait_composer`), as a person sees the box before typing a command into it. The rule is unchanged.
+
+**Round 3 (T-1005's third read, the last on this mechanism).**
+- **A young-undrawn command refusal keeps a queued ask.** The refusal returned its error before any key but without the zero-key road's mark, so `ahead_of_queue` dropped an ask already queued for the ticket, which the send had taken ahead of it, and a phone read `unknown`. It now sets `refused_for_person` and feeds `prompt_not_sent` ("the prompt box is not drawn yet"), as the other zero-key refusals do. Test: `prompt_e2e::a_command_refused_for_an_undrawn_box_keeps_the_queued_ask` (a recovered young pane, an ask queued behind another agent in the same checkout, then a refused `/compact`; the ask is still queued, nothing typed, nothing owed). It fails without the line.
+- **Stated limit, no code:** "no stamp is not young" reads a genuinely young pane as old across an upgrade from a build without `launched_at`, or a downgrade and re-upgrade that dropped it, so that one inherited pane loses the gate. Recovery does not invent a birth, which would make old panes young.

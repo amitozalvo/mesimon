@@ -16,7 +16,7 @@ use common::*;
 
 use std::time::{Duration, Instant};
 
-use mesimon_core::board::{SessionKind, SessionState};
+use mesimon_core::board::{SessionKind, SessionState, StopReason};
 use mesimon_core::command::{Command, Response};
 
 #[test]
@@ -787,5 +787,399 @@ fn a_first_brief_gives_way_to_a_person_s_prompt_and_to_their_presence() {
     assert!(!read().contains("mesimon-probe-987i"), "nothing typed under them: {:?}", read());
     person_leaves(&tmux_sock, &sid16(s3), person);
 
+    assert!(matches!(c.request(Command::Shutdown), Response::Ok));
+}
+
+/// T-961. A person's prompt into a seat that came up seconds ago, its box not
+/// drawn yet. Measured on Claude Code 2.1.310: keys pasted 20–40 ms after
+/// `SessionStart`, ~100 ms before the composer draws, land in the box once it
+/// does and their Enter is lost, so the words stood there unsent and the feed
+/// said `paste_unacked`. Now they wait on the launch road's composer read:
+/// nothing is typed while no box is drawn, the seat reads as sending, and
+/// they go once it is, after the title this pane was typed and only that; a
+/// box that never comes inside the composer's wait leaves them `unsent`, and
+/// the seat's resend sends them. Round 1: one owed entry per seat (a second
+/// send is refused and a queued ask survives it), a command never waits, a
+/// resumed pane types no title so a draft equal to the title is a draft, a
+/// rename after the prefill changes nothing typed, and youth is the pane's
+/// own launch: a seat past the wait takes the words at once as before.
+/// Round 2: the launch is on the record, so a young pane stays young across
+/// a daemon restart and its words wait, while an old pane a restarted daemon
+/// recovers takes them at once; the stub's first frame already holds what
+/// was typed before it. On the mod road the mod's `submit` takes them and
+/// nothing waits.
+#[test]
+fn a_person_s_prompt_waits_for_a_box_not_yet_drawn() {
+    // Ten seconds: a young pane must still be young after a daemon restart.
+    let env = [("MESIMON_COMPOSER_WAIT_MS", "10000")];
+    let Some(h) = Harness::boot_bare("prompt-early", Some(BOX_STUB), &env) else { return };
+    let mod_road = test_road() == "mod";
+    let got = h.dir.join("got.txt");
+    let tmux_sock = h.paths.tmux_sock();
+    let hook_sock = h.paths.hook_sock();
+    let nopaint = h.dir.join("nopaint");
+    let mut c = h.client("prompt-early");
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "early seat".into(),
+        workspace: None,
+        tier: None,
+    });
+    let ticket = c.board().tickets.first().expect("ticket").id;
+    let read = || std::fs::read_to_string(&got).unwrap_or_default();
+    let sid16 = |sid: uuid::Uuid| -> String { sid.simple().to_string().chars().take(16).collect() };
+    let pane = |sid: uuid::Uuid| -> String {
+        tmux(&tmux_sock)
+            .args(["capture-pane", "-p", "-t", &sid16(sid)])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+    };
+    let keys = |sid: uuid::Uuid, args: &[&str]| {
+        tmux(&tmux_sock).args(["send-keys", "-t", &sid16(sid)]).args(args).output().unwrap();
+    };
+    let ask = |c: &mut TestClient, text: &str, queued: bool, resend: bool| {
+        c.request(Command::PromptSession {
+            ticket,
+            text: text.into(),
+            queued,
+            immediately: false,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+            resend,
+            uploads: Vec::new(),
+        })
+    };
+    let prompt = |c: &mut TestClient, text: &str| ask(c, text, false, false);
+    let waits = || feed_count(&h, "prompt_waits_for_composer", ticket);
+    // The feed is written behind the answer: a count is waited for.
+    let waited = |n: usize| {
+        wait_until(Duration::from_secs(5), "the wait said", || waits() == n);
+    };
+    let record = |c: &mut TestClient, sid: uuid::Uuid| {
+        c.board().sessions.into_iter().find(|s| s.id == sid).expect("seat")
+    };
+    let sid = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn failed: {other:?}"),
+    };
+    // The transcript `SessionStart` names, at the name a wake looks for. While
+    // it is absent the conversation never took a prompt and a wake types the
+    // title again (T-603); once it exists a wake resumes and types nothing.
+    let transcript = h.dir.join(format!("{sid}.jsonl"));
+    let start = serde_json::json!({ "transcript_path": transcript }).to_string();
+    wait_until(Duration::from_secs(15), "the plain start's title in the box", || {
+        pane(sid).contains("❯ early seat")
+    });
+    hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("startup"), &start);
+    // Each phase parks the seat and wakes it: a pane whose box is held
+    // undrawn while `nopaint` exists.
+    let fresh_pane = |c: &mut TestClient| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+        assert!(matches!(c.request(Command::SleepSession { id: sid }), Response::Ok));
+        c.await_state(sid, "sleeping", |s| *s == SessionState::Sleeping);
+        for f in ["got.txt", "first.txt", "cleared.txt"] {
+            let _ = std::fs::remove_file(h.dir.join(f));
+        }
+        let _ = std::fs::remove_file(h.dir.join(format!("mod-bridge-{sid}.pid")));
+        std::fs::write(&nopaint, "").unwrap();
+        let _ = c.request(Command::ResumeSession { id: sid, confirm: false });
+        wait_until(Duration::from_secs(15), "the woken pane", || {
+            c.board().sessions.iter().any(|s| s.id == sid && s.state.has_pane())
+        });
+        if mod_road {
+            let pid = h.dir.join(format!("mod-bridge-{sid}.pid"));
+            wait_until(Duration::from_secs(10), "the mod's bridge", || pid.exists());
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("resume"), &start);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let draw = || {
+        std::fs::remove_file(&nopaint).unwrap();
+    };
+    let ack = |c: &mut TestClient, n: usize| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        wait_until(Duration::from_secs(5), "the prompt's ack", || {
+            feed_count(&h, "prompt_submitted", ticket) == n
+        });
+        assert!(!record(c, sid).pending_submit, "nothing owed after the ack");
+    };
+    // The stub's first frame: what was typed before the box, in it.
+    let first = |held: &str| {
+        let path = h.dir.join("first.txt");
+        wait_until(Duration::from_secs(15), "the box's first frame", || path.exists());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), held, "the first frame's box");
+    };
+    let line = |probe: &str| {
+        wait_until(Duration::from_secs(15), probe, || read().contains(probe));
+        read()
+    };
+
+    // A fresh wake: the title is typed again before any box, then the words
+    // wait, typed nowhere, and go after the title once the box draws.
+    fresh_pane(&mut c);
+    assert!(matches!(prompt(&mut c, "mesimon-probe-961a the words"), Response::Ok));
+    std::thread::sleep(Duration::from_secs(2));
+    if mod_road {
+        // The mod's `submit` takes them (T-575): no box is read, nothing
+        // waits. (The stand-in engine types a submit into its own pane.)
+        assert_eq!(waits(), 0, "the submit road never waits on the box");
+        draw();
+        assert!(line("mesimon-probe-961a").contains("mesimon-probe-961a the words\n"), "once");
+        assert!(matches!(c.request(Command::Shutdown), Response::Ok));
+        return;
+    }
+    assert!(!pane(sid).contains("mesimon-probe-961a"), "nothing typed: {:?}", pane(sid));
+    waited(1);
+    let rec = record(&mut c, sid);
+    assert!(rec.pending_submit, "the seat reads as sending");
+    assert!(rec.unsent.is_none(), "not given up: {:?}", rec.unsent);
+    draw();
+    first("early seat ");
+    let text = line("mesimon-probe-961a");
+    assert_eq!(text, "early seat mesimon-probe-961a the words\n", "after the title, once");
+    ack(&mut c, 1);
+
+    // A command needs a box read empty at the request: refused before the
+    // title shows, nothing parked. A rename after the wake typed the title
+    // changes nothing typed: the old title is still the board's.
+    fresh_pane(&mut c);
+    match prompt(&mut c, "/compact") {
+        Response::Err { message } => assert!(message.contains("not drawn yet"), "{message}"),
+        other => panic!("a command into an undrawn box is refused: {other:?}"),
+    }
+    let renamed = c.request(Command::RenameTicket { id: ticket, title: "renamed seat".into() });
+    assert!(matches!(renamed, Response::Ok), "{renamed:?}");
+    assert!(matches!(prompt(&mut c, "mesimon-probe-961b the words"), Response::Ok));
+    waited(2);
+    draw();
+    first("early seat ");
+    let text = line("mesimon-probe-961b");
+    assert_eq!(text, "early seat mesimon-probe-961b the words\n", "after the typed title");
+    assert!(!text.contains("/compact"), "the command never went: {text:?}");
+    assert_eq!(waits(), 2, "a command never waits");
+    ack(&mut c, 2);
+
+    // From here every wake resumes and types no title.
+    std::fs::write(&transcript, "{}\n").unwrap();
+
+    // A resumed pane whose box draws holding a person's draft equal to the
+    // ticket's title: a draft, not the board's. The words wait. A second
+    // send meanwhile is refused, and a queued ask survives the refusal.
+    fresh_pane(&mut c);
+    keys(sid, &["-l", "renamed seat"]);
+    assert!(matches!(prompt(&mut c, "mesimon-probe-961c the words"), Response::Ok));
+    waited(3);
+    draw();
+    first("renamed seat");
+    wait_until(Duration::from_secs(10), "the words held for the draft", || {
+        feed_count(&h, "composer_held", ticket) == 1
+    });
+    assert!(read().is_empty(), "nothing typed under the draft: {:?}", read());
+    assert!(matches!(
+        ask(&mut c, "mesimon-probe-961q queued", true, false),
+        Response::Queued { .. }
+    ));
+    match prompt(&mut c, "mesimon-probe-961x second") {
+        Response::Err { message } => {
+            assert!(message.contains("a prompt is already waiting"), "{message}")
+        }
+        other => panic!("a second send while words wait is refused: {other:?}"),
+    }
+    let queue = pending_of(&mut c, Some(ticket));
+    assert!(
+        queue.iter().any(|p| p.text.as_deref() == Some("mesimon-probe-961q queued")),
+        "the queued ask survives the refusal: {queue:?}"
+    );
+    assert_eq!(feed_count(&h, "queued_ask_dropped", ticket), 0);
+    for _ in 0.."renamed seat".len() {
+        keys(sid, &["BSpace"]);
+    }
+    let text = line("mesimon-probe-961c");
+    assert_eq!(text, "mesimon-probe-961c the words\n", "alone, once");
+    assert!(!text.contains("961x"), "the refused words never went: {text:?}");
+    ack(&mut c, 3);
+
+    // No box inside the composer's wait: kept unsent. The resend goes before
+    // the late draw and lands once it comes, into an empty box with no clear.
+    fresh_pane(&mut c);
+    assert!(matches!(prompt(&mut c, "mesimon-probe-961d the words"), Response::Ok));
+    wait_until(Duration::from_secs(15), "the wait to run out", || {
+        feed_count(&h, "prompt_submit_not_ready", ticket) == 1
+    });
+    let unsent = record(&mut c, sid).unsent.expect("kept unsent");
+    assert_eq!(unsent.text, "mesimon-probe-961d the words");
+    assert!(!unsent.brief);
+    assert!(read().is_empty(), "nothing typed: {:?}", read());
+    assert!(matches!(ask(&mut c, "", false, true), Response::Ok));
+    std::thread::sleep(Duration::from_millis(700));
+    assert!(read().is_empty(), "the resend waits for the box too: {:?}", read());
+    draw();
+    assert_eq!(line("mesimon-probe-961d"), "mesimon-probe-961d the words\n", "alone, once");
+    first("");
+    assert!(!h.dir.join("cleared.txt").exists(), "an empty box takes no Ctrl+C");
+    ack(&mut c, 4);
+    assert!(record(&mut c, sid).unsent.is_none(), "the ack clears the mark");
+
+    // A seat past the composer's wait: the words go at once, as before.
+    fresh_pane(&mut c);
+    std::thread::sleep(Duration::from_millis(10_500));
+    assert!(matches!(prompt(&mut c, "mesimon-probe-961e the words"), Response::Ok));
+    draw();
+    line("mesimon-probe-961e");
+    assert_eq!(waits(), 4, "an older seat does not wait");
+    ack(&mut c, 5);
+
+    // A daemon restart, with the pane alive: its recovery reads the quiet
+    // transcript `Idle{Unknown}`, and the launch on the record decides.
+    let reply =
+        r#"{"uuid":"a1","type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}"#;
+    let quiet_tail = || {
+        std::fs::write(&transcript, format!("{reply}\n")).unwrap();
+        let old = std::process::Command::new("touch")
+            .args(["-t", "202001010000"])
+            .arg(&transcript)
+            .status()
+            .unwrap();
+        assert!(old.success());
+    };
+    let unknown = |s: &SessionState| *s == SessionState::Idle { stop_reason: StopReason::Unknown };
+
+    // A young pane, its box not drawn: still young after the restart, so
+    // the words wait through it and go once the box draws.
+    fresh_pane(&mut c);
+    quiet_tail();
+    drop(c);
+    h.restart();
+    let mut c = h.client("prompt-early-2");
+    c.await_state(sid, "recovered", unknown);
+    assert!(matches!(prompt(&mut c, "mesimon-probe-961f the words"), Response::Ok));
+    waited(5);
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(read().is_empty(), "nothing typed into the undrawn box: {:?}", read());
+    draw();
+    first("");
+    assert_eq!(line("mesimon-probe-961f"), "mesimon-probe-961f the words\n", "alone, once");
+    ack(&mut c, 6);
+
+    // An old pane, past the wait when the daemon restarts: the words go at
+    // once, as before.
+    fresh_pane(&mut c);
+    std::thread::sleep(Duration::from_millis(10_500));
+    quiet_tail();
+    drop(c);
+    h.restart();
+    let mut c = h.client("prompt-early-3");
+    c.await_state(sid, "recovered", unknown);
+    assert!(matches!(prompt(&mut c, "mesimon-probe-961g the words"), Response::Ok));
+    draw();
+    line("mesimon-probe-961g");
+    assert_eq!(waits(), 5, "an old recovered pane does not wait");
+
+    assert!(matches!(c.request(Command::Shutdown), Response::Ok));
+}
+
+/// T-961, round 3. A command into a young seat whose box is not drawn is
+/// refused before any key, and the refusal is the zero-key road's: an ask
+/// already queued for the ticket, which the send took ahead of it, is put
+/// back (`refused_for_person`), never dropped. The seat is one a restarted
+/// daemon recovered, still young by its launch on the record; the ask waits
+/// behind another ticket's agent working in the same checkout.
+#[test]
+fn a_command_refused_for_an_undrawn_box_keeps_the_queued_ask() {
+    let env = [("MESIMON_COMPOSER_WAIT_MS", "30000")];
+    let Some(h) = Harness::boot_bare("prompt-early-queue", Some(BOX_STUB), &env) else { return };
+    std::fs::write(h.dir.join("nopaint"), "").unwrap();
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("prompt-early-queue");
+    let seat = |c: &mut TestClient, title: &str| -> (ulid::Ulid, uuid::Uuid) {
+        let _ = c.request(Command::CreateTicket {
+            column: "TODO".into(),
+            title: title.into(),
+            workspace: None,
+            tier: None,
+        });
+        let ticket = c.board().tickets.iter().find(|t| t.title == title).expect("ticket").id;
+        match c.request(Command::SpawnSession {
+            ticket,
+            kind: SessionKind::Claude,
+            submit_prompt: false,
+            plan: false,
+        }) {
+            Response::Spawned { id, .. } => (ticket, id),
+            other => panic!("spawn failed: {other:?}"),
+        }
+    };
+    let (ticket, sid) = seat(&mut c, "queued seat");
+    let (_, busy) = seat(&mut c, "busy seat");
+    // A quiet transcript, so the restarted daemon's recovery reads the seat
+    // `Idle{Unknown}`; its box stays undrawn while `nopaint` exists.
+    let transcript = h.dir.join(format!("{sid}.jsonl"));
+    let reply =
+        r#"{"uuid":"a1","type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}"#;
+    std::fs::write(&transcript, format!("{reply}\n")).unwrap();
+    let old = std::process::Command::new("touch")
+        .args(["-t", "202001010000"])
+        .arg(&transcript)
+        .status()
+        .unwrap();
+    assert!(old.success());
+    let start = serde_json::json!({ "transcript_path": transcript }).to_string();
+    hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("startup"), &start);
+    hook_send_with(&hook_sock, &busy.to_string(), "SessionStart", Some("startup"), "{}");
+    c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    drop(c);
+    h.restart();
+    let mut c = h.client("prompt-early-queue-2");
+    c.await_state(sid, "recovered", |s| {
+        *s == SessionState::Idle { stop_reason: StopReason::Unknown }
+    });
+    let rec = c.board().sessions.into_iter().find(|s| s.id == sid).expect("seat");
+    assert!(rec.launched_at.is_some(), "the launch is on the record");
+    // The other agent works in the same checkout: the ask waits behind it.
+    hook_send(&hook_sock, &busy.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(busy, "working", |s| *s == SessionState::Running);
+    let ask = |c: &mut TestClient, text: &str, queued: bool| {
+        c.request(Command::PromptSession {
+            ticket,
+            text: text.into(),
+            queued,
+            immediately: false,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+            resend: false,
+            uploads: Vec::new(),
+        })
+    };
+    let queued = ask(&mut c, "mesimon-probe-961k queued", true);
+    assert!(matches!(queued, Response::Queued { .. }), "{queued:?}");
+    let pending_before = c.board().sessions.iter().find(|s| s.id == sid).unwrap().pending_submit;
+    match ask(&mut c, "/compact", false) {
+        Response::Err { message } => assert!(message.contains("not drawn yet"), "{message}"),
+        other => panic!("a command into an undrawn box is refused: {other:?}"),
+    }
+    let queue = pending_of(&mut c, Some(ticket));
+    assert!(
+        queue.iter().any(|p| p.text.as_deref() == Some("mesimon-probe-961k queued")),
+        "the queued ask is still there: {queue:?}"
+    );
+    wait_until(Duration::from_secs(5), "the refusal said", || {
+        feed_count(&h, "prompt_not_sent", ticket) == 1
+    });
+    assert_eq!(feed_count(&h, "queued_ask_dropped", ticket), 0, "nothing dropped");
+    let rec = c.board().sessions.into_iter().find(|s| s.id == sid).expect("seat");
+    assert_eq!(rec.pending_submit, pending_before, "no owed words");
+    std::thread::sleep(Duration::from_millis(500));
+    let got = std::fs::read_to_string(h.dir.join("got.txt")).unwrap_or_default();
+    assert!(got.is_empty(), "no input: {got:?}");
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
 }

@@ -99,6 +99,7 @@ fn a_shell_line_is_pasted_and_acked_off_the_screen_on_every_road() {
         other => panic!("spawn failed: {other:?}"),
     };
     let sid_s = sid.to_string();
+    wait_composer(&h, sid);
     hook_send_with(&hook_sock, &sid_s, "SessionStart", Some("startup"), "{}");
     c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
     // On the mod pass, the words would go down the mod as a submit were
@@ -277,6 +278,7 @@ fn an_agent_s_shell_line_and_shell_title_are_refused() {
     let sa = spawn(&mut c, a);
     let sb = spawn(&mut c, b);
     for s in [sa, sb] {
+        wait_composer(&h, s);
         hook_send_with(&hook_sock, &s.to_string(), "SessionStart", Some("startup"), "{}");
         c.await_state(s, "idle", |st| matches!(st, SessionState::Idle { .. }));
         // On the mod pass a launch is still coming up until its bridge

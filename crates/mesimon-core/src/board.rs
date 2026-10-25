@@ -372,6 +372,17 @@ pub struct SessionRecord {
     /// frame is then trusted as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_key: Option<String>,
+    /// When the current pane was launched, epoch ms (T-961): written with
+    /// `pane_key` at every launch and kept in `sessions.json`, so a restart
+    /// reads a young pane as young. `None` on a record from an older build or
+    /// an adopted pane, which is never young; nothing else stamps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launched_at: Option<u64>,
+    /// The title typed into the current pane before its box drew (T-961): a
+    /// start's prefill or a fresh wake's retype, exactly as typed; `None`
+    /// when the launch typed nothing (a resume). Renewed with `launched_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typed_title: Option<String>,
     /// The road this record's process reports on (T-574): `mod` when its
     /// launch was handed the mod mesimon lays. Re-decided at every launch and
     /// wake, like the tier; absent means the hook set alone. Since T-577 a
@@ -671,6 +682,8 @@ impl SessionRecord {
             provenance: Provenance::default(),
             claude_session_id: None,
             pane_key: None,
+            launched_at: None,
+            typed_title: None,
             road: crate::road::Road::Hooks,
             native: false,
             codex_thread_id: None,

@@ -686,3 +686,181 @@ fn with_no_last_capture_a_launch_before_the_capture_takes_the_hook_set_and_says_
     assert_eq!(road_json(&h).unwrap()["probe"], "no shell environment captured yet");
     std::fs::remove_file(&barrier).unwrap();
 }
+
+/// What T-961's relaunch tests share: a board under `auto` on `BOX_STUB`,
+/// which answers the probe as a 2.1.288 whose mods load nothing, a plain
+/// start on the mod road, and the pane's keys and files.
+struct Relaunch {
+    h: Harness,
+    c: TestClient,
+    ticket: ulid::Ulid,
+    sid: uuid::Uuid,
+}
+
+impl Relaunch {
+    fn boot(name: &str, title: &str, bridge_wait: &str, nopaint: bool) -> Option<Self> {
+        let env = [
+            ("MESIMON_CLAUDE_ROAD", "auto"),
+            ("MESIMON_MOD_BRIDGE_WAIT_MS", bridge_wait),
+            ("MESIMON_COMPOSER_WAIT_MS", "6000"),
+        ];
+        let h = Harness::boot_bare(name, Some(BOX_STUB), &env)?;
+        wait_until(Duration::from_secs(30), "the startup probe", || {
+            road_json(&h).is_some_and(|v| v["road"] == "mod")
+        });
+        if nopaint {
+            std::fs::write(h.dir.join("nopaint"), "").unwrap();
+        }
+        let mut c = h.client(name);
+        let ticket = match c.request(Command::CreateTicket {
+            column: "TODO".into(),
+            title: title.into(),
+            workspace: None,
+            tier: None,
+        }) {
+            Response::Created { id, .. } => id,
+            other => panic!("create: {other:?}"),
+        };
+        let sid = match c.request(Command::SpawnSession {
+            ticket,
+            kind: SessionKind::Claude,
+            submit_prompt: false,
+            plan: false,
+        }) {
+            Response::Spawned { id, .. } => id,
+            other => panic!("spawn: {other:?}"),
+        };
+        assert_eq!(record(&mut c, sid).road, Road::Mod);
+        Some(Relaunch { h, c, ticket, sid })
+    }
+
+    fn keys(&self, args: &[&str]) {
+        let sid16: String = self.sid.simple().to_string().chars().take(16).collect();
+        tmux(&self.h.paths.tmux_sock())
+            .args(["send-keys", "-t", &sid16])
+            .args(args)
+            .output()
+            .unwrap();
+    }
+
+    fn file(&self, name: &str) -> String {
+        std::fs::read_to_string(self.h.dir.join(name)).unwrap_or_default()
+    }
+
+    /// The box's first frame (`BOX_STUB`'s `first.txt`), then gone for the next pane's.
+    fn first(&self, held: &str) {
+        let path = self.h.dir.join("first.txt");
+        wait_until(Duration::from_secs(15), "the box's first frame", || path.exists());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), held, "the first frame's box");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    fn paint(&self, on: bool) {
+        let path = self.h.dir.join("nopaint");
+        if on {
+            let _ = std::fs::remove_file(path);
+        } else {
+            std::fs::write(path, "").unwrap();
+        }
+    }
+
+    fn relaunched(&mut self) {
+        let sid = self.sid;
+        let c = &mut self.c;
+        wait_until(Duration::from_secs(15), "the relaunch on the hook set", || {
+            let rec = record(c, sid);
+            rec.road == Road::Hooks && rec.argv.iter().any(|a| a == "--settings")
+        });
+    }
+
+    fn start(&mut self) {
+        let hook_sock = self.h.paths.hook_sock();
+        hook_send_with(&hook_sock, &self.sid.to_string(), "SessionStart", Some("startup"), "{}");
+        self.c.await_state(self.sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    }
+
+    fn prompt(&mut self, text: &str) {
+        let resp = self.c.request(Command::PromptSession {
+            ticket: self.ticket,
+            text: text.into(),
+            queued: false,
+            immediately: false,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+            resend: false,
+            uploads: Vec::new(),
+        });
+        assert!(matches!(resp, Response::Ok), "{resp:?}");
+        let h = &self.h;
+        wait_until(Duration::from_secs(5), "the words waiting for the box", || {
+            feed_has(h, "prompt_waits_for_composer")
+        });
+    }
+}
+
+/// T-961, round 2. A plain start on the mod road whose mod never comes up is
+/// relaunched on the hook set, and the fresh pane gets the title typed again
+/// (T-603); that title is recorded as this pane's own. A person's prompt sent
+/// before the new pane's box draws waits, and goes after the title once it
+/// does, never held as a draft or left unsent.
+#[test]
+fn a_silent_mod_relaunch_records_the_title_it_types() {
+    let Some(mut r) = Relaunch::boot("mod-relaunch-title", "silent seat", "1500", false) else {
+        return;
+    };
+    r.first("silent seat ");
+    r.paint(false);
+    r.relaunched();
+    let rec = record(&mut r.c, r.sid);
+    assert_eq!(rec.typed_title.as_deref(), Some("silent seat"), "the new pane's prefill");
+    r.start();
+    r.prompt("mesimon-probe-961r the words");
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(r.file("got.txt").is_empty(), "nothing typed before the box: {:?}", r.file("got.txt"));
+    r.paint(true);
+    r.first("silent seat ");
+    wait_until(Duration::from_secs(10), "the words after the title", || {
+        r.file("got.txt").contains("mesimon-probe-961r")
+    });
+    assert_eq!(r.file("got.txt"), "silent seat mesimon-probe-961r the words\n", "once");
+    let _ = r.c.request(Command::KillSession { id: r.sid });
+}
+
+/// T-961, round 2. Words parked on a silent mod launch are carried into its
+/// relaunch, whose pane types nothing for them: the carried entry takes the
+/// new pane's prefill (none), not the old pane's title. So a person's draft
+/// in the new box that equals the title holds the words, which go alone once
+/// it is deleted.
+#[test]
+fn a_carried_relaunch_entry_takes_the_new_pane_s_prefill() {
+    let Some(mut r) = Relaunch::boot("mod-relaunch-carried", "carried seat", "4000", true) else {
+        return;
+    };
+    // The first pane: the title and a person's draft typed before its box,
+    // the words parked, then held for the draft once the box draws.
+    r.keys(&["-l", "draft-b"]);
+    r.prompt("mesimon-probe-961s the words");
+    r.paint(true);
+    r.first("carried seat draft-b");
+    r.paint(false);
+    r.relaunched();
+    let rec = record(&mut r.c, r.sid);
+    assert_eq!(rec.typed_title, None, "the relaunch typed nothing for carried words");
+    assert!(rec.pending_submit || r.file("got.txt").is_empty(), "the words are carried");
+    // The new pane: a draft equal to the title, typed before its box.
+    r.keys(&["-l", "carried seat"]);
+    r.start();
+    r.paint(true);
+    r.first("carried seat");
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(r.file("got.txt").is_empty(), "nothing under the draft: {:?}", r.file("got.txt"));
+    for _ in 0.."carried seat".len() {
+        r.keys(&["BSpace"]);
+    }
+    wait_until(Duration::from_secs(10), "the words alone", || {
+        r.file("got.txt").contains("mesimon-probe-961s")
+    });
+    assert_eq!(r.file("got.txt"), "mesimon-probe-961s the words\n", "alone, once");
+    let _ = r.c.request(Command::KillSession { id: r.sid });
+}
