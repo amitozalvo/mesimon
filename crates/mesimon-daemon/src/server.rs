@@ -216,6 +216,14 @@ const PERSON_AT_PANE: &str = "a person has its pane open, so the board typed not
 /// The refusal past an idle client (T-966): the box holds words nobody sent.
 const DRAFT_IN_BOX: &str =
     "a person left words in its prompt box, so the board typed nothing into it";
+/// The refusal past an idle client (T-966, round 1): the box did not read
+/// as an empty composer, so nothing says the words would land on nobody's.
+const BOX_UNKNOWN: &str =
+    "its prompt box could not be read as empty, so the board typed nothing into it";
+/// The queued row's word for that hold: leaving is the release a person has.
+const BOX_UNKNOWN_WORD: &str = "box unknown ∙ leave";
+/// The tail `paste_at` puts on a refusal before any key.
+const NOT_SENT: &str = " ∙ the words were not sent";
 /// How long a write to a subscriber's socket may block the writer thread
 /// before the subscriber is dropped (T-838). Long enough for a board
 /// answer to a client reading it under load; a client that reads nothing
@@ -2397,6 +2405,44 @@ enum PaneClients {
     Here,
 }
 
+impl PaneClients {
+    /// From every listed client's `#{client_activity}` (a row that did not
+    /// parse is `None`), at `now` under `bound`: any client that holds by
+    /// `crownwake::client_hold`, an unknown reading included, is `Here`;
+    /// clients all idle past the bound are `Idle`; only no row at all is
+    /// `Away`.
+    fn of(clients: &[Option<u64>], now: u64, bound: u64) -> PaneClients {
+        if clients.iter().any(|a| crownwake::client_hold(*a, now, bound).is_some()) {
+            PaneClients::Here
+        } else if clients.is_empty() {
+            PaneClients::Away
+        } else {
+            PaneClients::Idle
+        }
+    }
+
+    /// Why `paste_at` types nothing past these clients (T-966), `None` to
+    /// type. Past clients all idle, the box is read at this edge (`capture`)
+    /// and only a composer read positively empty takes the keys: words in it
+    /// are a draft, and a box that reads as no composer, or a screen that
+    /// cannot be read, says nothing about whose words are there.
+    fn refusal(
+        self,
+        capture: impl FnOnce() -> Option<crate::agents::claude::composer::Composer>,
+    ) -> Option<&'static str> {
+        use crate::agents::claude::composer::Composer;
+        match self {
+            PaneClients::Away => None,
+            PaneClients::Here => Some(PERSON_AT_PANE),
+            PaneClients::Idle => match capture() {
+                Some(Composer::Empty) => None,
+                Some(Composer::Holding) => Some(DRAFT_IN_BOX),
+                Some(Composer::Absent) | None => Some(BOX_UNKNOWN),
+            },
+        }
+    }
+}
+
 /// Why a queued ask's typed words wait for a person at its pane (T-966,
 /// `Daemon::queued_person_hold`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2404,21 +2450,53 @@ enum AskHold {
     /// A client tmux heard from inside the bound, or one whose reading is
     /// not to be trusted (T-945).
     Client(crownwake::ClientHold),
-    /// Every client idle past the bound, and the box holding words (`draft`,
-    /// by its newest read) or not yet read on the sample the clients were.
-    Box { draft: bool },
+    /// Every client idle past the bound, and the box not read positively
+    /// empty on the sample the clients were read on (`idle_box`).
+    Box(BoxRead),
+}
+
+/// What the newest read of a pane's box says while every client on it is
+/// idle past the bound (T-966).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BoxRead {
+    /// Words in the composer: a draft.
+    Draft,
+    /// No composer read at all: a dialog, a clipped screen, one the reader
+    /// does not know.
+    Unknown,
+    /// No read yet on the sample the clients were read on.
+    Unread,
 }
 
 impl AskHold {
-    /// The queued row's word for the hold, the crown's wake's words: none
-    /// for a box not yet read, which the next sample settles.
+    /// The queued row's word for the hold, the crown's wake's words where
+    /// they are true: none for a box not yet read, which the next sample
+    /// settles.
     fn word(self) -> Option<&'static str> {
         use crownwake::PersonHold;
         match self {
             AskHold::Client(hold) => Some(PersonHold::Client(hold).word()),
-            AskHold::Box { draft: true } => Some(PersonHold::Draft.word()),
-            AskHold::Box { draft: false } => None,
+            AskHold::Box(BoxRead::Draft) => Some(PersonHold::Draft.word()),
+            AskHold::Box(BoxRead::Unknown) => Some(BOX_UNKNOWN_WORD),
+            AskHold::Box(BoxRead::Unread) => None,
         }
+    }
+}
+
+/// The box's hold past clients all idle (T-966): `None` only for a composer
+/// read positively empty on the sample that read the clients (`coherent`).
+/// The newest read names the hold otherwise, an older one included, so the
+/// row keeps its word between samples.
+fn idle_box(
+    read: Option<crate::agents::claude::composer::Composer>,
+    coherent: bool,
+) -> Option<BoxRead> {
+    use crate::agents::claude::composer::Composer;
+    match read {
+        Some(Composer::Empty) if coherent => None,
+        Some(Composer::Holding) => Some(BoxRead::Draft),
+        Some(Composer::Absent) => Some(BoxRead::Unknown),
+        Some(Composer::Empty) | None => Some(BoxRead::Unread),
     }
 }
 
@@ -8832,14 +8910,7 @@ impl Daemon {
         let Ok(clients) = self.backend.client_activities(&format!("={sid}")) else {
             return PaneClients::Here;
         };
-        let (now, bound) = (now_ms(), crownwake::person_idle_ms());
-        if clients.iter().any(|a| crownwake::client_hold(*a, now, bound).is_some()) {
-            PaneClients::Here
-        } else if clients.is_empty() {
-            PaneClients::Away
-        } else {
-            PaneClients::Idle
-        }
+        PaneClients::of(&clients, now_ms(), crownwake::person_idle_ms())
     }
 
     /// Why words of the board's would land on a person's (T-918), as the
@@ -13150,21 +13221,12 @@ impl Daemon {
         // clients and box (T-918, T-936, T-945's bound), and a refusal here
         // would read as a failed delivery and hold it until its seat moves.
         // A client idle past T-945's bound is not at the box (T-966), and the
-        // box then decides: a draft left in it would be joined and sent.
+        // box then decides: only one read empty takes the keys.
         if ack.word != Ack::CROWN_WAKE.word {
-            let refused = match self.clients_at_pane(&sid) {
-                PaneClients::Away => None,
-                PaneClients::Here => Some(PERSON_AT_PANE),
-                PaneClients::Idle => {
-                    use crate::agents::claude::composer::{self, Composer};
-                    // A screen that cannot be read refuses nothing, as above.
-                    let draft = self
-                        .backend
-                        .capture_input_screen(&sid)
-                        .is_ok_and(|screen| composer::read(&screen) == Composer::Holding);
-                    draft.then_some(DRAFT_IN_BOX)
-                }
-            };
+            let refused = self.clients_at_pane(&sid).refusal(|| {
+                use crate::agents::claude::composer;
+                self.backend.capture_input_screen(&sid).ok().map(|screen| composer::read(&screen))
+            });
             if let Some(why) = refused {
                 self.refused_for_person = Some(id);
                 self.feed.board_outcome(
@@ -13173,7 +13235,7 @@ impl Daemon {
                     Some(ticket),
                     A_PERSON_ATTACHED,
                 );
-                return Err(format!("{why} ∙ the words were not sent"));
+                return Err(format!("{why}{NOT_SENT}"));
             }
         }
         if immediately {
@@ -14701,8 +14763,8 @@ impl Daemon {
     /// them (never `immediately`), not the mod's `submit` nor a relaunch,
     /// with a tmux client on it that holds as the crown's wake's does
     /// (T-945, `active_clients`); or, every client idle past the bound, its
-    /// box, which goes only once the same sample read it holding no draft.
-    /// A pane with no client holds nothing, as before T-958.
+    /// box, which goes only once the same sample read it an empty composer
+    /// (`idle_box`). A pane with no client holds nothing, as before T-958.
     fn queued_person_hold(&self, id: uuid::Uuid, q: &QueuedAsk) -> Option<AskHold> {
         let rec = self.board.sessions.iter().find(|s| s.id == id && s.state.has_pane())?;
         if rec.kind != SessionKind::Claude
@@ -14718,12 +14780,15 @@ impl Daemon {
         if !self.attached.contains(&sid) {
             return None;
         }
-        use crate::agents::claude::composer::{self, Composer};
-        let draft = self
-            .screens
-            .get(&sid)
-            .is_some_and(|(_, screen)| composer::read(screen) == Composer::Holding);
-        (draft || self.person_read_at(&sid).is_none()).then_some(AskHold::Box { draft })
+        use crate::agents::claude::composer;
+        let read = self.screens.get(&sid).map(|(_, screen)| composer::read(screen));
+        idle_box(read, self.person_read_at(&sid).is_some()).map(AskHold::Box)
+    }
+
+    /// Every queued ask's row word for a person (T-966), to tell a sample
+    /// that changed one: nothing else a pane sample absorbs repaints for it.
+    fn queued_person_words(&self) -> Vec<Option<&'static str>> {
+        self.queued.iter().map(|q| self.queued_person_word(q)).collect()
     }
 
     /// `paste_at` refused `id`'s words for a person at its pane, sending no
@@ -15369,12 +15434,13 @@ impl Daemon {
         if matches!(response, Response::Err { .. }) && self.took_person_refusal(seat_id) {
             self.queue_kept(i, kept);
             self.broadcast();
-            // Why, as `paste_at` said it: a client at the pane, or the
-            // draft an idle one left (T-966).
+            // Why, as `paste_at` said it: a client at the pane, the draft
+            // an idle one left, or a box not read empty (T-966).
             let why = match &response {
-                Response::Err { message } if message.starts_with(DRAFT_IN_BOX) => DRAFT_IN_BOX,
-                _ => PERSON_AT_PANE,
+                Response::Err { message } => message.strip_suffix(NOT_SENT),
+                _ => None,
             };
+            let why = why.unwrap_or(PERSON_AT_PANE);
             return Response::Err { message: format!("{why} ∙ the words stay queued") };
         }
         // The crown's words, sent by a person or on its say-so: the record
@@ -18247,6 +18313,9 @@ impl Daemon {
         let at = s.at;
         let mut changed = false;
         let mut repaint = false;
+        // A queued ask's row word for a person (T-966) moves with the clients
+        // and the box this sample reads, which nothing below repaints for.
+        let person_words = self.queued_person_words();
         changed |= stage!(self, "probe_codex_startup", self.probe_codex_startup(&s.screens, at));
         changed |= stage!(self, "probe_claude_startup", self.probe_claude_startup(&s.screens, at));
         if let Some(facts) = &s.facts {
@@ -18290,6 +18359,7 @@ impl Daemon {
                 self.screens.insert(sid, (at, screen));
             }
         }
+        repaint |= self.queued_person_words() != person_words;
         // The crown's wake goes on the sample its delivery asked for
         // (T-918), the moment it lands.
         if !self.crown_wakes.is_empty() {
@@ -20456,6 +20526,71 @@ fn mod_dir() -> Option<std::path::PathBuf> {
 /// while the remote flag has mods off.
 fn rig_no_flags() -> bool {
     std::env::var("MESIMON_RIG_NO_FLAGS").as_deref() == Ok("1")
+}
+
+#[cfg(test)]
+mod queued_person_tests {
+    use super::*;
+    use crate::agents::claude::composer::Composer;
+
+    /// T-966, round 1: a listing's clients under T-945's bound. A blank or
+    /// malformed row (`None`) holds as a client that may be typing, beside an
+    /// expired one too; only no row at all is nobody there.
+    #[test]
+    fn a_pane_s_clients_hold_unless_every_reading_is_idle_past_the_bound() {
+        let (bound, at) = (5_000, 1_792_888_100_000);
+        let idle = Some(at / 1000 - 60);
+        let fresh = Some(at / 1000);
+        assert_eq!(PaneClients::of(&[], at, bound), PaneClients::Away);
+        assert_eq!(PaneClients::of(&[idle], at, bound), PaneClients::Idle);
+        assert_eq!(PaneClients::of(&[idle, idle], at, bound), PaneClients::Idle);
+        assert_eq!(PaneClients::of(&[fresh], at, bound), PaneClients::Here);
+        assert_eq!(PaneClients::of(&[idle, fresh], at, bound), PaneClients::Here);
+        assert_eq!(PaneClients::of(&[None], at, bound), PaneClients::Here, "unknown");
+        assert_eq!(PaneClients::of(&[idle, None], at, bound), PaneClients::Here);
+    }
+
+    /// T-966, round 1: past clients all idle, only a box read positively
+    /// empty at the edge takes the keys. A draft, a box with no composer and
+    /// a capture that failed each refuse before any key, so a queue keeps
+    /// its entry; with nobody there the box is not read at all.
+    #[test]
+    fn the_edge_types_past_an_idle_client_only_into_a_box_read_empty() {
+        let refusal = |clients: PaneClients, read: Option<Composer>| {
+            let mut asked = false;
+            let why = clients.refusal(|| {
+                asked = true;
+                read
+            });
+            (why, asked)
+        };
+        assert_eq!(refusal(PaneClients::Idle, Some(Composer::Empty)), (None, true));
+        assert_eq!(refusal(PaneClients::Idle, Some(Composer::Holding)), (Some(DRAFT_IN_BOX), true));
+        assert_eq!(refusal(PaneClients::Idle, Some(Composer::Absent)), (Some(BOX_UNKNOWN), true));
+        assert_eq!(refusal(PaneClients::Idle, None), (Some(BOX_UNKNOWN), true), "capture failed");
+        assert_eq!(
+            refusal(PaneClients::Here, Some(Composer::Empty)),
+            (Some(PERSON_AT_PANE), false)
+        );
+        assert_eq!(refusal(PaneClients::Away, Some(Composer::Holding)), (None, false));
+    }
+
+    /// T-966, round 1: readiness past clients all idle releases only on a
+    /// composer read empty on the sample that read the clients; any other
+    /// read holds, named by the newest read so the row keeps its word.
+    #[test]
+    fn readiness_past_an_idle_client_releases_only_on_a_coherent_empty_box() {
+        assert_eq!(idle_box(Some(Composer::Empty), true), None);
+        assert_eq!(idle_box(Some(Composer::Empty), false), Some(BoxRead::Unread), "an older read");
+        assert_eq!(idle_box(None, false), Some(BoxRead::Unread));
+        assert_eq!(idle_box(Some(Composer::Absent), true), Some(BoxRead::Unknown));
+        assert_eq!(idle_box(Some(Composer::Absent), false), Some(BoxRead::Unknown));
+        assert_eq!(idle_box(Some(Composer::Holding), true), Some(BoxRead::Draft));
+        assert_eq!(idle_box(Some(Composer::Holding), false), Some(BoxRead::Draft));
+        assert_eq!(AskHold::Box(BoxRead::Draft).word(), Some("after your draft"));
+        assert_eq!(AskHold::Box(BoxRead::Unknown).word(), Some("box unknown ∙ leave"));
+        assert_eq!(AskHold::Box(BoxRead::Unread).word(), None);
+    }
 }
 
 #[cfg(test)]

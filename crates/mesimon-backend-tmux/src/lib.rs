@@ -817,16 +817,10 @@ impl TmuxBackend {
     }
 
     /// `#{client_activity}` of every client on `target`, epoch seconds, one
-    /// fork (T-966): the last input tmux read from each. A line that does not
-    /// parse is `None`, which a caller reads as unknown, never as idle; an
-    /// empty listing is nobody attached.
+    /// fork (T-966): the last input tmux read from each (`client_activities`).
     pub fn client_activities(&self, target: &str) -> Result<Vec<Option<u64>>> {
         let out = self.run(&["list-clients", "-t", target, "-F", "#{client_activity}"])?;
-        Ok(out
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .map(|l| l.trim().parse::<u64>().ok())
-            .collect())
+        Ok(client_activities(&out))
     }
 
     pub fn capture_input_screen(&self, sid16: &str) -> Result<InputScreen> {
@@ -1182,8 +1176,33 @@ pub fn is_cut_off(why: &str) -> bool {
 #[path = "../../../ci/test_support.rs"]
 mod test_support;
 
+/// One `#{client_activity}` reading per listed client (T-966, round 1):
+/// every row is a client, and a row that does not parse, a blank one
+/// included, is `None`, which a caller reads as unknown, never as idle.
+/// Only no row at all is nobody attached.
+fn client_activities(out: &str) -> Vec<Option<u64>> {
+    out.lines().map(|l| l.trim().parse::<u64>().ok()).collect()
+}
+
 #[cfg(test)]
 mod tests {
+    /// T-966, round 1: a blank or malformed row is a client whose reading is
+    /// unknown, beside a valid one too; only an empty listing is none.
+    #[test]
+    fn every_listed_client_is_a_reading_and_a_blank_one_is_unknown() {
+        use super::client_activities;
+        assert_eq!(client_activities(""), Vec::<Option<u64>>::new(), "nobody attached");
+        assert_eq!(client_activities("\n"), vec![None], "a blank row");
+        assert_eq!(client_activities("   \n"), vec![None], "a whitespace row");
+        assert_eq!(client_activities("soon\n"), vec![None], "malformed");
+        assert_eq!(client_activities("1792888057\n"), vec![Some(1_792_888_057)]);
+        assert_eq!(
+            client_activities("1792888057\n\n"),
+            vec![Some(1_792_888_057), None],
+            "an expired row beside a blank one"
+        );
+    }
+
     use super::*;
 
     fn fixture(name: &str, sock: &str) -> test_support::Fixture {

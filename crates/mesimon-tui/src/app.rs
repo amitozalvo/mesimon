@@ -23623,7 +23623,9 @@ mod tests {
         app.pending[0].action = Ask;
         app.pending[0].held = None;
         app.pending[0].by = None;
-        for why in ["leave or 10m idle", "idle unknown ∙ leave", "after your draft"] {
+        for why in
+            ["leave or 10m idle", "idle unknown ∙ leave", "after your draft", "box unknown ∙ leave"]
+        {
             app.pending[0].person = Some(why.into());
             let whole = format!("queued ∙ {why}");
             assert_eq!(app.pending_row(ulid::Ulid(1)), Some(whole), "the ticket page's row");

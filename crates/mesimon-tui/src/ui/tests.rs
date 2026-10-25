@@ -13323,7 +13323,9 @@ fn the_crown_wake_row_keeps_its_release_and_bound_on_every_card() {
 /// ordinary 29-cell column and on the 26-cell floor.
 #[test]
 fn the_queued_ask_row_keeps_its_release_and_bound_on_every_card() {
-    for reason in ["leave or 10m idle", "idle unknown ∙ leave", "after your draft"] {
+    for reason in
+        ["leave or 10m idle", "idle unknown ∙ leave", "after your draft", "box unknown ∙ leave"]
+    {
         let mut app = app_graphite(fixture(false));
         let mut p = pending_ask(1, &[]);
         p.person = Some(reason.into());

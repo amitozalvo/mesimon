@@ -34484,3 +34484,29 @@ hook road with a 5 s bound and a control-mode client on the worker's pane.
   After Enter, the ask lands on its own line.
 
 Gates: `crown_e2e` and `ask_queue_e2e` on both roads, 82 of 82 each.
+
+**Round 1, the cold read of `363b8596`.** It found four holes, and all four are fixed.
+- **The empty-box check (P1).** Both halves released past an idle client on any box that did
+  not read `Holding`. So `Composer::Absent` released them: a missing rule or prompt, a clipped
+  screen, a draft the reader did not recognise. At the edge, a failed capture released too. Both
+  halves now need a positive `Empty`: readiness (`idle_box`) on the sample that read the clients,
+  and the edge (`PaneClients::refusal`) from a capture that succeeded. `Absent`, no read and a
+  capture error hold. The edge refuses them through the same queue-preserving refusal as before,
+  with the words "its prompt box could not be read as empty". The row says `box unknown ∙
+  leave`. `after your draft` is kept for a box read `Holding`.
+- **Blank tmux rows (P2).** `client_activities` dropped blank rows, so a listing of `"\n"` read as
+  nobody attached. Every row now counts as a client. A blank or malformed row is `None`, which is
+  unknown and holds; only zero rows means no client.
+- **The row word's push (P2).** A sample that changed a queued ask's row word marked no repaint,
+  so `after your draft` could wait for an unrelated broadcast. `on_pane_sampled` now compares the
+  words before and after its absorb and repaints on a change.
+- **The e2e (P3).**
+  - "Not before the bound" is now the pane's own read time: the stub writes epoch ms per line to
+    `got-at.txt`, and the test asserts it is at or after the expiry, with no tolerance.
+  - Every delivery is asserted as a whole line, so a joined line fails both counts.
+  - The draft's word is asserted as a subscriber learns it, a snapshot only after a push. The
+    test fails with the repaint line taken out.
+  - A third phase holds an ask on a no-composer screen and delivers it once when the box comes
+    back.
+- **Unit tests** cover the client listing, `PaneClients::of`, the edge refusal (a failed capture
+  included) and `idle_box`.
