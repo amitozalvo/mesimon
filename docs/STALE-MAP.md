@@ -35322,3 +35322,61 @@ need the transcript's next call line.
 `PostToolUse` for a question carries no id into the machine (`hooks.rs`, `Signal::PostToolUse`).
 Read from the code, A's answer would end the question while B's dialog is still to be drawn,
 whatever the inputs. The live run shows that dialog standing for 6 s after A's answer.
+
+## A person's prompt ahead of a parked crown ask's paste is the person's (T-984, 2026-10-25, named by T-973's third read, T-982)
+
+**What was wrong, measured.** A crown ask to a sleeping worker wakes it and parks the words on
+the seat's owed entry. The words go in at the first press after `SessionStart`, once the composer
+reads on screen. A `UserPromptSubmit` in that gap went through `ack_owed` as the board's own ack.
+It dropped the owed entry, so the words were never pasted, and marked the turn `Asked { said:
+Sent }`. The crown was then woken at that turn's end with `ask … sent` (feed `crown_wake`, cause
+`answered`, after a user `prompt_submitted`). The turn's end released the ask. The ask stayed
+`sent` for good, and `SessionStart` afterwards pasted nothing. Staged on the hooks road with the
+recording stub, where `SessionStart` is the test's to send.
+
+**The window is real on the real claude** (2.1.310, Sonnet, in a private tmux with a logging hook
+set, idle machine). `SessionStart` came at +542 ms, the composer painted at +605 ms, and a
+person's Enter at +621 ms gave `UserPromptSubmit` at +821 ms, with the typed text as `prompt`. The
+board's earliest press is `SessionStart` + `SUBMIT_RETRY_MS` (+1042 ms), so a person has about
+half a second after the box appears, more under load or on a mod launch's bridge wait. Keys typed
+before Claude is ready stay in the box, but their Enter is swallowed, with no
+`UserPromptSubmit`. So typing ahead needs a second Enter once the box shows. On 2.1.310 the
+composer can paint before `SessionStart` (+304 ms against +452 ms on one run).
+
+**The fix decides by the entry, not by text.** On a Claude seat, a crown ask's owed entry whose
+words are still `parked` has put nothing in the box. No paste or Enter of the board's went in, so
+any prompt then is a person's. As a person's prompt supersedes a launch's words still waiting
+(T-570), `ack_owed` drops that entry. It marks that exact ask `dropped` by `person`, why "a
+person's prompt arrived before these words were pasted", and writes the feed line
+`crown_ask_dropped_by_hand` with the ask's id. Nothing is acked, marked or kept to resend, and the
+crown asks again if it still wants to. The ticket proposed comparing the hook's `prompt` with the
+pasted words. That was not done: the parked state settles the measured gap exactly. A whole-text
+compare would also mis-read a prompt after the paste, which carries the board's words whoever
+pressed Enter: a person's draft with ours appended, or a `<pasted_content>` wrap (2.1.287).
+Codex's new-turn ack is left as it was. `codex_input_waiting` admits a parked entry, so an entry
+kept past a new turn would paste again with no Enter scheduled. Keeping it there is unsafe unless
+the driver's state is rebuilt with it. It is not impossible.
+
+**Round 1 (the crown's cold read, 06:28 IST): the first fix kept the entry, and that was unsafe.**
+Round 0 kept the owed entry past the person's prompt so the words would still go. But
+`SessionRecord::pressable` admits `Running`, and the composer read is gated only by the entry's
+`screen_after`, which the person's prompt does not move. `Holding` and `Empty` both deliver, by
+`paste_text`, past the attached-person guard. So the kept entry pasted the crown's words while
+the person owned the pane, into their next draft if one stood there, and one Enter sent both.
+Round 0 also kept the ask out while the words stayed parked, and that guard ended with that very
+paste. The drop is the smaller truthful change, and the guard went with it. The drop also closes
+a limit round 0 left. A hooks-road entry whose arming `SessionStart` never came has neither
+`next_press` nor `expires`, and the person's prompt now removes it.
+
+**Not changed, noticed.** A launch's parked words are pasted into a box that reads `Holding` (a
+person's typed-ahead draft), with no T-958 check of who is at the pane. That paste joins the
+board's words to the draft, and the next Enter sends both. The crown filed it as T-987.
+
+Test: `crown_e2e::a_person_s_prompt_before_a_parked_ask_s_paste_drops_it`, on the hooks road
+with a painted composer that reads its input. The barrier before the board's first paste is the
+wake's `SessionStart`, held back (2.1.310 painted its box before it). The person's line goes
+through the tty, and their turn keeps running. No byte of the crown's and no retry Enter follows,
+even after the late `SessionStart`. The ask reads `dropped`, and the feed says so. A Bash
+`PreToolUse` then carries the person's turn on, as the resume's `SessionStart` reads as idle. The
+next ask is admitted while that turn runs: queued, its words kept out of W until the turn's end. Two controls check that a prompt after the board's paste takes the ack road: a live
+pane's ask, and a wake's parked words. On main's daemon the test fails at `sent`.

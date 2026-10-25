@@ -238,6 +238,8 @@ const SUBSCRIBER_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// to spend before giving up. T-5 measured the `UserPromptSubmit` ack at
 /// ~94 ms, so 500 ms is a wide margin, and 10 attempts covers ~5 s of Claude
 /// startup — well past the ~1 s at which a fresh pane starts reading.
+/// Why a crown ask still parked is dropped by a person's prompt (T-984).
+const PROMPT_AHEAD_OF_ASK: &str = "a person's prompt arrived before these words were pasted";
 const SUBMIT_RETRY_MS: u64 = 500;
 const SUBMIT_ATTEMPTS: u8 = 10;
 /// How long after a shell line's Enter a sample of the pane is believed
@@ -6442,10 +6444,30 @@ impl Daemon {
             return false;
         };
         let ticket = rec.ticket;
+        // A crown ask's words still parked on a Claude seat (T-984) are in
+        // no box: no paste or Enter of the board's went in, so the prompt is
+        // a person's, typed ahead of them, and it supersedes the words still
+        // waiting, as it does a launch's (T-570). The entry goes and the ask
+        // is dropped by the person: no ack, no mark, nothing kept to resend.
+        let ahead = (rec.kind == SessionKind::Claude)
+            .then(|| self.owed.get(&id).filter(|o| o.parked.is_some()).and_then(|o| o.ask))
+            .flatten();
         // Words a launch could not deliver (T-570) are moot once the agent
         // takes a prompt, whoever typed it.
         let mut changed = !command && rec.unsent.take().is_some();
-        if let Some(owed) = self.drop_owed(id) {
+        if let Some(ask) = ahead {
+            self.drop_owed(id);
+            self.crown_ask_dropped(ticket, Some(ask), "person", PROMPT_AHEAD_OF_ASK);
+            self.feed.board_ask(
+                "local",
+                "crown_ask_dropped_by_hand",
+                Some(ticket),
+                None,
+                Some(ask),
+                &[],
+            );
+            changed = true;
+        } else if let Some(owed) = self.drop_owed(id) {
             // A Codex crown's turn began while its wake was owed (T-918).
             // The board's own Enter tells the wake as it presses it
             // (`wake_entered`), so a wake still entering here met a

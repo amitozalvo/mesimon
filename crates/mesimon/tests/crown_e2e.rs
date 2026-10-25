@@ -15286,3 +15286,223 @@ fn an_expectation_behind_a_rebuild_is_its_own_words_alone() {
     assert_eq!(lines_with(&overrun), 0, "a failed replay times nothing");
     assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
 }
+
+/// T-984: a person's prompt into a worker the crown's ask is waking, before
+/// the board's first paste of the ask, is the person's, and it drops the
+/// ask. The pane's composer is painted and reading; the barrier is the
+/// wake's `SessionStart`, held back (Claude Code 2.1.310 can paint its box
+/// before that hook fires), so the parked words have not gone in when the
+/// person types and presses Enter in the pane. The ask reads `dropped`, by
+/// the person, with why; no byte of the crown's and no retry Enter follow,
+/// the hook arriving after it included. The person's turn then goes on
+/// with a tool call (the resume's `SessionStart` reads as idle), and the
+/// crown's next ask is admitted while it runs, queued, its words held until
+/// that turn's end. The controls: that ask, and one
+/// more on a wake's parked road, each followed by a prompt AFTER the
+/// board's paste, take the ack road and speak of their ask at the turn end.
+#[test]
+fn a_person_s_prompt_before_a_parked_ask_s_paste_drops_it() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_ask_parked_prompt",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_CLAUDE_ROAD", "hooks"),
+            ("MESIMON_COMPOSER_WAIT_MS", "60000"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let tmux_sock = h.paths.tmux_sock();
+    let mut c = h.client("crown_ask_parked_prompt");
+    let feed = h.paths.state_dir.join("activity.jsonl");
+    let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
+    let start_with = |c: &mut TestClient, sid: uuid::Uuid, prompt: &str| {
+        let payload = json!({ "prompt": prompt }).to_string();
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", &payload);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| start_with(c, sid, "go");
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
+
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-984 worker");
+    let (ka, kw) = (key_of(&mut c, a), key_of(&mut c, w));
+    let head = format!("{kw} \"mesimon-probe-984 worker\"");
+    let got_w = h.dir.join(format!("got-{kw}.txt"));
+    let in_w = || read_file(&got_w);
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("shared_checkout".into()),
+            expect_secs: None,
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    let ws = c.board().live_agent(w).expect("W holds a seat").id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let got_crown = h.dir.join(format!("got-{ka}.txt"));
+    let crown_said = || read_file(&got_crown);
+    let taken = std::cell::Cell::new(0);
+    let crown_takes = |c: &mut TestClient| {
+        wait_until(std::time::Duration::from_secs(10), "a wake in the crown's pane", || {
+            crown_said().lines().count() > taken.get()
+        });
+        taken.set(crown_said().lines().count());
+        start(c, sa);
+        stop(c, sa);
+    };
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "W's finish on the crown", || {
+        crown_said().contains(&format!("{head} finished its turn"))
+    });
+    crown_takes(&mut c);
+
+    let asked = |c: &mut TestClient| read(c, sa, &kw).unwrap().asked.expect("an ask on W");
+    let ask = |c: &mut TestClient, text: &str| {
+        let v = read(c, sa, &kw).unwrap();
+        match c.send(
+            Principal::Agent { session: sa },
+            Command::AgentAskTicket {
+                key: kw.clone(),
+                text: text.into(),
+                seen: v.seen,
+                plan: false,
+                deliver: Deliver::Idle,
+                expect_secs: None,
+            },
+        ) {
+            Response::AgentAsked { asked, .. } => asked.expect("the record rides the receipt"),
+            other => panic!("ask_agent {text}: {other:?}"),
+        }
+    };
+    let park_w = |c: &mut TestClient| {
+        let v = read(c, sa, &kw).unwrap();
+        match c.send(
+            Principal::Agent { session: sa },
+            Command::AgentSleepTicket { key: kw.clone(), seen: v.seen },
+        ) {
+            Response::AgentTicket { .. } => {}
+            other => panic!("sleep_agent: {other:?}"),
+        }
+        c.await_state(ws, "sleeping", |s| *s == SessionState::Sleeping);
+    };
+    let woken = |c: &mut TestClient| {
+        wait_until(std::time::Duration::from_secs(15), "W woken", || {
+            c.board().sessions.iter().any(|s| s.id == ws && s.state.has_pane())
+        });
+    };
+    let wake_for = |id: &str| {
+        let line = format!("{head} ended a turn after ask {id} was sent; receipt unconfirmed");
+        wait_until(std::time::Duration::from_secs(20), "the wake for the ask", || {
+            crown_said().contains(&line)
+        });
+    };
+
+    // ---- the race: the person's Enter before the board's first paste ----
+    park_w(&mut c);
+    let first = ask(&mut c, "mesimon-probe-9841 the crown's words");
+    assert_eq!(first.status, "sent", "{first:?}");
+    woken(&mut c);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(!in_w().contains("mesimon-probe-9841"), "parked until SessionStart");
+    let sid = c.board().sessions.iter().find(|s| s.id == ws).unwrap().sid16();
+    let before = in_w();
+    let fed_before = read_file(&feed).len();
+    let person = "mesimon-probe-9842 the person's words";
+    assert!(tmux(&tmux_sock)
+        .args(["send-keys", "-t", &sid, "-l", person])
+        .status()
+        .unwrap()
+        .success());
+    assert!(tmux(&tmux_sock).args(["send-keys", "-t", &sid, "Enter"]).status().unwrap().success());
+    wait_until(std::time::Duration::from_secs(5), "the person's line in W", || {
+        in_w().contains(person)
+    });
+    // The stub fires no hook: the prompt's, as Claude Code would send it.
+    start_with(&mut c, ws, person);
+    settle();
+    let dropped = asked(&mut c);
+    assert_eq!(
+        (dropped.status.as_str(), dropped.ask.as_str(), dropped.by.as_str()),
+        ("dropped", first.ask.as_str(), "person"),
+        "{dropped:?}"
+    );
+    assert_eq!(dropped.why, "a person's prompt arrived before these words were pasted");
+    let fed = read_file(&feed)[fed_before..].to_string();
+    assert!(
+        fed.lines().any(|l| l.contains("\"crown_ask_dropped_by_hand\"") && l.contains(&first.ask)),
+        "{fed}"
+    );
+    assert!(!fed.contains("\"prompt_submitted\""), "no ack of the board's words: {fed}");
+    // The arming hook comes late: nothing of the crown's, and no Enter.
+    hook_send(&hook_sock, &ws.to_string(), "SessionStart", r#"{"source":"resume"}"#);
+    settle();
+    settle();
+    assert_eq!(in_w(), format!("{before}{person}\n"), "only the person's line reached W");
+    // A resume's `SessionStart` reads as idle; the person's turn goes on
+    // with a tool call of its own, no prompt, so W is working again.
+    hook_send(
+        &hook_sock,
+        &ws.to_string(),
+        "PreToolUse",
+        r#"{"tool_name":"Bash","tool_input":{"command":"grep -n x"}}"#,
+    );
+    c.await_state(ws, "running again", |s| *s == SessionState::Running);
+
+    // The crown asks again while the person's turn runs: admitted, queued
+    // behind that turn by the ordinary guard, then pasted at its end, and
+    // the prompt after the paste takes the ack road.
+    let said = crown_said().len();
+    let second = ask(&mut c, "mesimon-probe-9843 asked again");
+    assert_ne!(second.ask, first.ask);
+    assert_eq!(second.status, "queued", "{second:?}");
+    assert_eq!(asked(&mut c).status, "queued");
+    settle();
+    assert!(!in_w().contains("mesimon-probe-9843"), "held while the turn runs");
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(15), "the second ask in W", || {
+        in_w().contains("mesimon-probe-9843")
+    });
+    assert!(!crown_said()[said..].contains(&format!("ask {}", first.ask)), "{}", crown_said());
+    start_with(&mut c, ws, "mesimon-probe-9843 asked again");
+    assert_eq!(asked(&mut c).status, "sent");
+    stop(&mut c, ws);
+    wake_for(&second.ask);
+    crown_takes(&mut c);
+
+    // ---- the control on the wake's parked road ----
+    park_w(&mut c);
+    let third = ask(&mut c, "mesimon-probe-9844 after the box");
+    woken(&mut c);
+    hook_send(&hook_sock, &ws.to_string(), "SessionStart", r#"{"source":"resume"}"#);
+    wait_until(std::time::Duration::from_secs(15), "the parked words pasted", || {
+        in_w().contains("mesimon-probe-9844")
+    });
+    start_with(&mut c, ws, "mesimon-probe-9844 after the box");
+    settle();
+    let acked = asked(&mut c);
+    assert_eq!((acked.status.as_str(), acked.ask.as_str()), ("sent", third.ask.as_str()));
+    stop(&mut c, ws);
+    wake_for(&third.ask);
+}
