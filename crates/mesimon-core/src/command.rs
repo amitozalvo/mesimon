@@ -697,6 +697,16 @@ pub enum Command {
     SetCrownWatches {
         on: bool,
     },
+    /// Whether the crown's `get_ticket` carries a session's context fill
+    /// (`Board::crown_context`, T-969). Local only, as every crown switch.
+    SetCrownContext {
+        on: bool,
+    },
+    /// Whether the crown's `get_ticket` carries a ticket's cost
+    /// (`Board::crown_cost`, T-969). Local only, as every crown switch.
+    SetCrownCost {
+        on: bool,
+    },
     /// Whether a pull request someone else opened is a ticket's when its
     /// agent reviewed it or a note's `Summary` names it
     /// (`Board::reviewed_prs`, T-859). Local only: whose pull requests a
@@ -1666,6 +1676,8 @@ impl Command {
             | SetBoardWorkspace { .. }
             | SetCrownArchives { .. }
             | SetCrownWatches { .. }
+            | SetCrownContext { .. }
+            | SetCrownCost { .. }
             | SetReviewedPrs { .. }
             | SetSystemPrompt { .. }
             | SetFollowUpMode { .. }
@@ -2627,6 +2639,24 @@ pub struct AgentTicketView {
     /// board shows, never the pane. Absent when the ticket has no agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<AgentStateView>,
+    /// How full the ticket's agent's context window is (T-969), on the
+    /// crown's reads while `Board::crown_context` is on: the transcript's
+    /// last request against its model's window (`core::context`). Absent
+    /// with no transcript read, or where the window is unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<AgentContextView>,
+    /// What `context` is read from and what it is not (`mcp::CONTEXT_ABOUT`),
+    /// beside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_about: Option<String>,
+    /// What the ticket has cost (T-969), as its card says, on the crown's
+    /// reads while `Board::crown_cost` is on. Absent with nothing counted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<AgentCostView>,
+    /// That `cost.usd` is the board's price-table estimate
+    /// (`mcp::COST_ABOUT`), beside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_about: Option<String>,
     /// What the stop is, while the agent is `needs-you` (T-566): the reason,
     /// and for a question the dialog as the board saw it. A crown reading a
     /// worker otherwise knew only that it waited, and guessed. `get_ticket`
@@ -2689,6 +2719,41 @@ pub struct AgentStateView {
     /// words, while the state is `failed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed: Option<String>,
+}
+
+/// A session's context fill (T-969): `tokens` of its model's `window` the
+/// last request took, and `pct` the share. `compacted` while the last thing
+/// the transcript says is a compaction: the reply after it is what measures
+/// the conversation again, so `tokens` and `pct` are absent until then.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentContextView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
+    pub window: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pct: Option<u64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub compacted: bool,
+}
+
+/// A ticket's account (T-969), as its card and the Usage dialog say it:
+/// `usd` the priced part in `cost::usd_word`'s words, every token counted,
+/// and the tokens by how they are billed. `unpriced` is the part of models
+/// this build has no price for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentCostView {
+    pub usd: String,
+    pub tokens: u64,
+    pub input: u64,
+    pub output: u64,
+    pub cache_write: u64,
+    pub cache_read: u64,
+    #[serde(default, skip_serializing_if = "is_no_tokens")]
+    pub unpriced: u64,
+}
+
+fn is_no_tokens(n: &u64) -> bool {
+    *n == 0
 }
 
 /// An agent idle with background tasks still running (T-599): `tasks` the
@@ -4227,6 +4292,10 @@ mod tests {
             under_crown: None,
             background: None,
             state: None,
+            context: None,
+            context_about: None,
+            cost: None,
+            cost_about: None,
             needs_you: None,
             asked: None,
             told_hand: None,

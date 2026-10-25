@@ -350,7 +350,10 @@ fn agent_board_tools_tier_and_collisions() {
     );
 
     // ---- no tool reads a session, at any tier ---------------------------
-    let listed = shim.call_ok("list_board", json!({}));
+    let mut listed = shim.call_ok("list_board", json!({}));
+    // The daemon's binary path (T-941) is the checkout's, whose folder a
+    // ticket worktree names after its title (T-969's says "session").
+    listed["daemon"]["path"] = json!("<binary>");
     let raw = serde_json::to_string(&listed).unwrap();
     for leak in ["session", "argv", "transcript", "cwd", "pid", "claude_session_id"] {
         assert!(!raw.contains(leak), "list_board leaked {leak:?}: {raw}");

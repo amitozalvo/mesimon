@@ -5,9 +5,9 @@
   │  Mode               ● autonomous   ○ supervised      │
   │  Archives tickets   ○ off                            │
   │  Watches tickets    ● on                             │
+  │  Reads context      ● on                             │
+  │  Reads cost         ○ off                            │
   │  Reaches boards     none ›                           │
-  │                                                      │
-  │                                                      │
   │                                                      │
   │                                                      │
   │                                                      │

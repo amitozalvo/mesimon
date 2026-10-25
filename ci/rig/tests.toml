@@ -119,6 +119,10 @@
 #              fresh, and the wake went in
 #              once with the person still attached, between the bound and
 #              the bound plus 10 s after their attach),
+#              context_nearer:<prefix> (T-969: the crown read every one of
+#              the test's tickets' context off get_ticket since the test
+#              began, and its last line beginning <prefix> names the one
+#              whose reading stood nearest its window, and no other),
 #              held_for_person (T-918: the crown's wake waited the whole of
 #              `person_leaves`' stay, its row `leave or 10m idle`, and
 #              went in
@@ -1585,3 +1589,26 @@ checks = ["road:mod", "fed:prompt_by_mod", "crown:ask_agent=1", "prompts:2", "he
   crown = "A2, {key}'s agent is in a long command: call ask_agent for {key} with deliver now and the text: Reply with the single word mango and end your turn. Read no file and run no command. Then call ask_agent for {key} once more, with the seen that first receipt returned, deliver immediately and the text: Reply with the single word papaya and end your turn. Then end your turn with two lines: A2 asked, followed by the asked status the first receipt gave; and A2 second, followed by refused or accepted, as the second call answered, and its reason. When the board wakes you for {key}, end your turn with the single line: A2 seen."
   until = { stops = 2, state = "idle" }
   wake = true
+
+# ------------------------------------------------------- the crown's reads
+# T-969: a session's context fill rides the crown's get_ticket (Settings →
+# Agents → Crown reads context, on by default), read off its transcript.
+
+[[test]]
+id = "CX1"
+title = "CX1 · two workers"
+blind = true
+siblings = ["CX1 · the long one of two workers"]
+workspace = "worktree"
+brief = "If this ticket's title holds the word long, read the first 2000 lines of docs/STALE-MAP.md with the Read tool; otherwise read no file. Then reply with the single word done and end your turn. Run no command."
+expect = "asked in a person's words which of two workers is nearer its context limit, the crown reads each one's context off get_ticket (T-969) and names the one that read the long file, reading no transcript or pane of its own."
+checks = ["road:mod", "started_by_crown", "reply:done", "context_nearer:CX1 nearer", "crown_never:.jsonl,capture-pane,.claude/projects"]
+
+  [[test.steps]]
+  crown = "CX1: call start_agent for {key} and then for {key2}, each with workspace worktree, no tier and no plan, then end your turn with the single line: CX1 started. When the board wakes you for them, end your turn with the single line: CX1 seen."
+  until = { stops = 1, state = "idle", all = true }
+  wake = true
+
+  [[test.steps]]
+  crown = "CX1: which of {key} and {key2} is nearer its context limit? End your turn with one line: CX1 nearer: <its key>."
+  until = { crown_only = true }

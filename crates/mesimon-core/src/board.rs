@@ -2400,6 +2400,20 @@ pub struct Board {
     /// schema bump.
     #[serde(default = "yes")]
     pub crown_watches: bool,
+    /// The crown reads a session's context fill (T-969): `get_ticket`'s
+    /// `context` on the crown's reads, absent while this is off. ON by
+    /// default (the author, 2026-10-25): a fact the daemon already holds,
+    /// read off a transcript, that sends nothing anywhere. An absent key
+    /// reads on; a build that drops it has no such field to give, so no
+    /// schema bump.
+    #[serde(default = "yes")]
+    pub crown_context: bool,
+    /// The crown reads what a ticket has cost (T-969): `get_ticket`'s
+    /// `cost`, the card's estimate, on the crown's reads. OFF by default
+    /// (the author, 2026-10-25); an absent key reads off, which is what a
+    /// build without it answers, so no schema bump.
+    #[serde(default)]
+    pub crown_cost: bool,
     /// Reviewed pull requests (T-859): a pull request someone else opened is
     /// a ticket's when its agent acted on it through the forge's CLI (a
     /// review, a comment, an approval, a checkout) or named it in a note's
@@ -2612,6 +2626,8 @@ impl Default for Board {
             merge_into: MergeInto::default(),
             crown_archives: false,
             crown_watches: true,
+            crown_context: true,
+            crown_cost: false,
             reviewed_prs: true,
             next_key: 0,
             tags: Vec::new(),
@@ -3632,6 +3648,8 @@ impl Board {
             merge_into: self.merge_into,
             crown_archives: self.crown_archives,
             crown_watches: self.crown_watches,
+            crown_context: self.crown_context,
+            crown_cost: self.crown_cost,
             reviewed_prs: self.reviewed_prs,
             next_key: self.next_key,
             tags: self.tags.clone(),
@@ -3851,6 +3869,24 @@ mod tests {
         assert!(serde_json::from_value::<Board>(wire.clone()).unwrap().crown_watches);
         wire["crown_watches"] = serde_json::json!(false);
         assert!(!serde_json::from_value::<Board>(wire).unwrap().crown_watches);
+    }
+
+    /// T-969: a fresh board and one from before the fields let the crown
+    /// read a session's context and not a ticket's cost, and a board that
+    /// turned either the other way keeps it.
+    #[test]
+    fn crown_context_defaults_on_crown_cost_off_and_a_change_is_kept() {
+        let b = Board::default();
+        assert!(b.crown_context && !b.crown_cost);
+        let mut wire = serde_json::to_value(Board::default()).unwrap();
+        wire.as_object_mut().unwrap().remove("crown_context");
+        wire.as_object_mut().unwrap().remove("crown_cost");
+        let old: Board = serde_json::from_value(wire.clone()).unwrap();
+        assert!(old.crown_context && !old.crown_cost);
+        wire["crown_context"] = serde_json::json!(false);
+        wire["crown_cost"] = serde_json::json!(true);
+        let turned: Board = serde_json::from_value(wire).unwrap();
+        assert!(!turned.crown_context && turned.crown_cost);
     }
 
     /// T-859: reviewed pull requests are a ticket's on every board that

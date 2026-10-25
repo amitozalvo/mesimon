@@ -34530,3 +34530,84 @@ wording only, and confirmed the round-1 fixes.
 - **The e2e.** Its claims are now what it shows. The stub's stamp is a receiver's, taken after
   the read, and `client_hold`'s unit is the boundary proof. A snapshot after any push is the
   integration exercise for the row's words, not the proof of a repaint.
+
+## The crown reads a session's context fill and a ticket's cost on get_ticket (T-969, 2026-10-25, asked by the person: T-957's worker stood at ~80 % of its window and the crown learned it from the person)
+
+**What the crown lacked.** `get_ticket` said nothing of how full a worker's context window
+was, and nothing of what a ticket had cost, though the daemon reads both off the transcripts
+for the card. The crown could not pick the moment of a compaction (between a delivery and the
+next round, not mid-round at the engine's choice), nor weigh another round against the quota.
+
+**Measured first (Claude Code 2.1.310, Codex 0.164.0, 2026-10-25).**
+- **Claude's fill.** A reply's input (`input_tokens` + `cache_read_input_tokens` + the cache
+  writes) is the whole prompt the model read. Across ten transcripts on this machine, a
+  `compact_boundary` is followed by a reply whose input drops: manual `/compact` at
+  736,597 → 92,957 and 750,505 → 94,059 (2.1.310); automatic 516,216 → 101,837 and 658,074 →
+  96,245 (2.1.310). An auto-compaction also writes replies with all-zero usage, timestamped
+  before the boundary and written after it.
+- **No reply between the boundary and the next turn.** The last reply's usage then predates
+  the compaction. The boundary's `postTokens` is no stand-in: it counts the kept messages
+  without the system prompt and tools. A fresh two-message Sonnet session compacted at
+  49,286 (`postTokens` 12,693), and its next reply read 50,651, more than before.
+- **`/compact` from the paste road runs on Claude Code.** A bracketed paste of `/compact`,
+  then a separate Enter, into a 2.1.310 pane writes `compact_boundary` with `trigger: manual`.
+  A plain pane is the hook set's keys. On the mod road a `/` text takes the same paste
+  (`takes_by_submit`; `$.prompt.submit` refuses a leading `/`, T-575). The e2e proves the mod
+  sees no `submit` for it; `compact_e2e` (T-894) already covers the board's own road.
+- **Codex.** Every `token_count` carries `last_token_usage` and the engine's own
+  `model_context_window` (258,400 for gpt-6-astra and gpt-6-luna). A compaction writes a
+  `compacted` line, then one `token_count` whose last input is 0; the next reads about 25k
+  (from about 244k, six compactions on 2026-10-24). A bracketed paste of `/compact` opens
+  Codex's command popup with the command selected; a separate Enter 600 ms later runs it
+  ("Context compacted"), as the Codex road's own paste and Enter do. So no key-by-key typing
+  is needed, and the clause names both engines.
+- **Windows.** Claude Code 2.1.310's model table, read out of the binary: 1M natively for the
+  five line, Opus 4.7/4.8 and Sonnet 5; 200k for the older lines. Of those, the ones whose
+  table names a 1M maximum (Sonnet 4/4.5/4.6, Opus 4.6, 3.7 Sonnet) are 1M under a `[1m]`
+  model.
+
+**What shipped.**
+- **Two board switches.** `Board::crown_context` (on by default) and `Board::crown_cost` (off),
+  T-712's shape: `#[serde(default)]`, written either way in `columns.toml`, no schema bump.
+  `Command::SetCrownContext` / `SetCrownCost` are local only (`agent_allows` false). They are
+  the Settings › Crown rows **Reads context** and **Reads cost** under Watches tickets, and
+  `doctor`'s `crown reads context` / `crown reads cost` lines.
+- **Where the fields ride.** On the crown's reads only: the keyed `get_ticket`, and the
+  crowned ticket's own. A worker reads neither of its own ticket.
+- **`context`.** `{tokens, window, pct}` from the cost ledger's cursor (`Cursor::fill`,
+  `core::context::Fill`). The cursor keeps the last main-chain reply's input. A sidechain
+  line, a subagent's transcript and a zero-usage reply are not readings. A
+  `compact_boundary` (or Codex's `compacted`) marks the reading `compacted` until the next
+  reply, and the field then says `{window, compacted: true}` with no tokens. The window is
+  `core::context::claude_window` (the table above, wide where the session's argv
+  `--model` ends `[1m]`), or Codex's own figure. The field is absent before any reading and
+  where the window is unknown. It comes from the same 30 s / turn-end pass as the card, so it
+  trails a request in flight; `mcp::CONTEXT_ABOUT` says that and nothing of what to do at any
+  number.
+- **`cost`.** The card's figure: `usd` in `usd_word`'s words, every token, and the tokens by
+  kind (`Ledger::account`). `mcp::COST_ABOUT` says it is the board's estimate at API list
+  prices, not a bill.
+- **`ask_agent`'s `text`.** Gains "one led by / is typed and entered as a command". To stay
+  under the 820-byte cap, the description loses "on this session's ticket" (the first
+  sentence already says another ticket's) and "whose ticket it watches" becomes "or
+  watches". `get_ticket` gains "context and cost (crown only: Crown reads context / cost)"
+  and loses "(worktree_init)" and "(first note)": `write_note` says the first note is the
+  description.
+
+**Tests.**
+- Unit: `context::tests` (the window table, the arithmetic, the compacted shape),
+  `cost::tests::the_lines_a_context_reading_is_made_of`,
+  `daemon cost::tests::a_pass_keeps_the_last_reading_of_a_conversation_and_its_compactions`,
+  the switch defaults in `board.rs` and `store.rs`, `app.rs`'s rows and doctor's lines.
+- E2e: `crown_reads_e2e` on both roads. It checks context, compaction, cost and both switches
+  over the wire; `/compact` through `ask_agent` typed and entered in a Claude worker's pane
+  (on the mod road, no `submit` for it, while the next words are one); and pasted then entered
+  in a Codex worker's box on the synthetic runtime.
+- Rig: `CX1` (blind) asks the crown which of two workers is nearer its context limit; one of
+  them read 2000 lines of this file. `context_nearer:` checks the crown read both off
+  `get_ticket` and named the fuller one. It passed on its first run (2026-10-25, Sonnet
+  workers on the mod road, Opus crown): the crown read 83,830 and 147,020 of 1,000,000, named
+  the second, and ran no Bash.
+- **A collision in `mcp_e2e`.** Its leak scan read `list_board`'s `daemon.path` (T-941), the
+  binary's path. In a worktree whose title says "session" (this one) that path holds the
+  word, so the scan sees a false leak. The test now leaves that one path out of the scan.

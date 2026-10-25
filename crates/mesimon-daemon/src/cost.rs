@@ -31,7 +31,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use mesimon_core::command::Notice;
-use mesimon_core::cost::{claude_turn, codex_line, delta, CodexLine, TicketCost, Tokens, FAST};
+use mesimon_core::context::Fill;
+use mesimon_core::cost::{
+    claude_compacted, claude_turn, codex_line, delta, CodexLine, TicketCost, Tokens, FAST,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::paths::Paths;
@@ -80,6 +83,12 @@ pub struct Cursor {
     /// reads it once (`backfill`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub backfilled: bool,
+    /// What the transcript last said about its conversation's size (T-969):
+    /// the last main-chain request's input, or a compaction after it.
+    /// Never on a subagent's transcript. A build before it drops it, and
+    /// the next line read writes it again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<Fill>,
 }
 
 /// The two counts of a ticket's mod-reported turns (T-581), in tokens: the
@@ -466,6 +475,27 @@ impl Ledger {
         self.tickets.len() != before
     }
 
+    /// What the transcript at `path` last said about its conversation's
+    /// size (T-969), as the last pass read it.
+    pub fn fill(&self, ticket: ulid::Ulid, path: &str) -> Option<&Fill> {
+        self.tickets.get(&ticket)?.conversations.get(path)?.fill.as_ref()
+    }
+
+    /// One ticket's account as of `now_ms` (T-969): the snapshot's figure
+    /// and its tokens by kind, or `None` with nothing counted.
+    pub fn account(&self, ticket: ulid::Ulid, now_ms: u64) -> Option<(TicketCost, Tokens)> {
+        let t = self.tickets.get(&ticket)?;
+        let mut c = TicketCost { ticket, ..TicketCost::default() };
+        let mut kinds = Tokens::default();
+        for (hour, models) in &t.hours {
+            for (model, tokens) in models {
+                c.fold(model, tokens, *hour, now_ms);
+                kinds.add(tokens);
+            }
+        }
+        (c.tokens > 0).then_some((c, kinds))
+    }
+
     /// Each ticket's account as of `now_ms`, for the snapshot. A model's
     /// price is looked up once per view (T-688): every snapshot folds every
     /// (ticket, hour, model) bucket, and the lookup is a scan.
@@ -559,6 +589,8 @@ fn read(job: Job, now_ms: u64) -> Option<Done> {
         });
     };
     let text = String::from_utf8_lossy(&buf[..end]);
+    // A subagent's transcript is no reading of its session's context.
+    let own = !job.path.contains("/subagents/");
     let mut added = Vec::new();
     let mut pr_urls = Vec::new();
     let mut pr_acted = Vec::new();
@@ -569,15 +601,35 @@ fn read(job: Job, now_ms: u64) -> Option<Done> {
         if cursor.codex {
             match codex_line(line) {
                 Some(CodexLine::Model(m)) => cursor.model = Some(m),
-                Some(CodexLine::Totals { at_ms, tokens }) => {
+                Some(CodexLine::Totals { at_ms, tokens, last_input, window }) => {
                     let grew = delta(&cursor.totals.unwrap_or_default(), &tokens);
                     cursor.totals = Some(tokens);
                     let model = cursor.model.clone().unwrap_or_else(|| "codex".into());
+                    // The `token_count` after a compaction reads no input.
+                    if last_input > 0 {
+                        let window = window.or(cursor.fill.as_ref().and_then(|f| f.window));
+                        let model = model.clone();
+                        cursor.fill =
+                            Some(Fill { tokens: last_input, model, window, compacted: false });
+                    }
                     added.push((stamp(at_ms, now_ms), model, grew));
+                }
+                Some(CodexLine::Compacted) => {
+                    cursor.fill.get_or_insert_with(Fill::default).compacted = true;
                 }
                 None => {}
             }
+        } else if own && claude_compacted(line) {
+            cursor.fill.get_or_insert_with(Fill::default).compacted = true;
         } else if let Some(turn) = claude_turn(line) {
+            // A reply's input is the whole prompt the model read; an
+            // auto-compaction's own requests are written with none.
+            let input =
+                turn.tokens.input + turn.tokens.read + turn.tokens.write_5m + turn.tokens.write_1h;
+            if own && !turn.sidechain && input > 0 {
+                let model = turn.model.clone();
+                cursor.fill = Some(Fill { tokens: input, model, window: None, compacted: false });
+            }
             if cursor.recent.contains(&turn.id) {
                 continue;
             }
@@ -1161,5 +1213,104 @@ mod tests {
         std::fs::write(paths.costs_file(), "{not json").unwrap();
         let (fresh, notices, barred) = load_or_recover(&paths);
         assert!(!barred && fresh.tickets.is_empty() && notices[0].text.contains("set aside"));
+    }
+
+    fn append(path: &Path, text: &str) {
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+        f.write_all(text.as_bytes()).unwrap();
+    }
+
+    /// One Claude reply line whose input is `fill` tokens, split the way
+    /// Claude Code writes it.
+    fn fill_line(id: &str, fill: u64, sidechain: bool) -> String {
+        format!(
+            r#"{{"type":"assistant","isSidechain":{sidechain},"requestId":"r","timestamp":"2026-10-01T16:04:00.000Z","message":{{"id":"{id}","model":"claude-opus-5-5","usage":{{"input_tokens":2,"cache_read_input_tokens":{},"cache_creation_input_tokens":10,"cache_creation":{{"ephemeral_1h_input_tokens":10}},"output_tokens":5}}}}}}"#,
+            fill - 12
+        )
+    }
+
+    /// T-969: a pass keeps what each transcript last said about its
+    /// conversation's size. The last main-chain reply's input is the
+    /// reading; a subagent's message, in the session's transcript or in its
+    /// own, is not; a compaction marks it until the next reply, and the
+    /// auto-compaction's empty replies do not clear the mark. Codex's
+    /// reading is its last request's input with the window it names, and
+    /// its compaction marks it the same way.
+    #[test]
+    fn a_pass_keeps_the_last_reading_of_a_conversation_and_its_compactions() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("abc.jsonl");
+        let compact = r#"{"isSidechain":false,"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"auto","preTokens":966557,"postTokens":48532}}"#;
+        let empty = r#"{"type":"assistant","isSidechain":false,"message":{"id":"z","model":"claude-opus-5-5","usage":{"input_tokens":0,"output_tokens":0}}}"#;
+        std::fs::write(
+            &main,
+            format!("{}\n{}\n", fill_line("m1", 500_000, false), fill_line("s1", 9_000, true)),
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("abc/subagents")).unwrap();
+        let sub = dir.path().join("abc/subagents/agent-1.jsonl");
+        std::fs::write(&sub, format!("{}\n", fill_line("a1", 7_000, false))).unwrap();
+        let t = ulid::Ulid::new();
+        let path = main.display().to_string();
+        let mut ledger = Ledger::default();
+        ledger.learn(t, &path, false, false);
+        assert!(ledger.fill(t, &path).is_none(), "nothing read yet");
+        ledger.apply(scan(ledger.jobs(), NOW));
+        let fill = ledger.fill(t, &path).unwrap();
+        assert_eq!(
+            (fill.tokens, fill.model.as_str(), fill.compacted),
+            (500_000, "claude-opus-5-5", false)
+        );
+        assert!(ledger.fill(t, &sub.display().to_string()).is_none(), "a subagent's is no reading");
+        append(&main, &format!("{compact}\n{empty}\n"));
+        ledger.apply(scan(ledger.jobs(), NOW));
+        let fill = ledger.fill(t, &path).unwrap();
+        assert!(fill.compacted, "{fill:?}");
+        assert_eq!(fill.tokens, 500_000, "the reading before it is kept, and not said");
+        append(&main, &format!("{}\n", fill_line("m2", 90_000, false)));
+        ledger.apply(scan(ledger.jobs(), NOW));
+        let fill = ledger.fill(t, &path).unwrap();
+        assert_eq!((fill.tokens, fill.compacted), (90_000, false));
+
+        let rollout = dir.path().join("rollout.jsonl");
+        let tc = |input: u64| {
+            format!(
+                r#"{{"timestamp":"2026-10-01T16:01:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":{input},"cached_input_tokens":0,"output_tokens":10}},"last_token_usage":{{"input_tokens":{input},"output_tokens":10}},"model_context_window":258400}}}}}}"#
+            )
+        };
+        std::fs::write(
+            &rollout,
+            format!(
+                "{}\n{}\n",
+                r#"{"timestamp":"2026-10-01T16:00:00Z","type":"turn_context","payload":{"model":"gpt-6-astra"}}"#,
+                tc(244_733)
+            ),
+        )
+        .unwrap();
+        let x = ulid::Ulid::new();
+        let rpath = rollout.display().to_string();
+        ledger.learn(x, &rpath, true, false);
+        ledger.apply(scan(ledger.jobs(), NOW));
+        let fill = ledger.fill(x, &rpath).unwrap();
+        assert_eq!(
+            (fill.tokens, fill.window, fill.model.as_str()),
+            (244_733, Some(258_400), "gpt-6-astra")
+        );
+        let compacted =
+            r#"{"timestamp":"2026-10-01T16:02:00Z","type":"compacted","payload":{"message":""}}"#;
+        append(&rollout, &format!("{compacted}\n{}\n", tc(0)));
+        ledger.apply(scan(ledger.jobs(), NOW));
+        let fill = ledger.fill(x, &rpath).unwrap();
+        assert!(fill.compacted && fill.window == Some(258_400), "{fill:?}");
+        append(&rollout, &format!("{}\n", tc(24_769)));
+        ledger.apply(scan(ledger.jobs(), NOW));
+        assert_eq!(ledger.fill(x, &rpath).unwrap().tokens, 24_769);
+        assert!(!ledger.fill(x, &rpath).unwrap().compacted);
+        // The account by kind is the hours' sum, as the card's figure is.
+        let (c, kinds) = ledger.account(t, NOW).unwrap();
+        assert_eq!(c.tokens, kinds.total());
+        assert_eq!((kinds.input, kinds.write_1h), (2 * 4, 10 * 4), "four replies counted");
+        assert!(ledger.account(ulid::Ulid::new(), NOW).is_none());
     }
 }

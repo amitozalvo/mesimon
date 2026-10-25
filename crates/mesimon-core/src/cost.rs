@@ -136,7 +136,7 @@ pub fn price(model: &str) -> Option<Price> {
 /// `id` exactly, or `id` followed by a `-` and more (a version or a date);
 /// `claude-opus-4` matches `claude-opus-4-20250514` but `claude-opus-5`
 /// does not match `claude-opus-5-5` (the longer id sorts first and wins).
-fn matches_id(model: &str, id: &str) -> bool {
+pub(crate) fn matches_id(model: &str, id: &str) -> bool {
     model == id || model.strip_prefix(id).is_some_and(|rest| rest.starts_with('-'))
 }
 
@@ -180,6 +180,9 @@ pub struct Turn {
     pub model: String,
     pub at_ms: u64,
     pub tokens: Tokens,
+    /// A subagent's message written into the session's own transcript
+    /// (`isSidechain`): counted, and no reading of the session's context.
+    pub sidechain: bool,
 }
 
 /// One transcript line, read as an assistant message's usage — `None` for
@@ -221,7 +224,20 @@ pub fn claude_turn(line: &str) -> Option<Turn> {
     let at_ms =
         v.get("timestamp").and_then(Value::as_str).and_then(crate::usage::rfc3339_ms).unwrap_or(0);
     let model = if fast { format!("{model}{FAST}") } else { model.to_string() };
-    Some(Turn { id, model, at_ms, tokens })
+    let sidechain = v.get("isSidechain").and_then(Value::as_bool).unwrap_or(false);
+    Some(Turn { id, model, at_ms, tokens, sidechain })
+}
+
+/// A Claude Code transcript line that is a compaction of the session's own
+/// conversation (`compact_boundary`, T-969), manual or automatic.
+pub fn claude_compacted(line: &str) -> bool {
+    if !line.contains("\"compact_boundary\"") {
+        return false;
+    }
+    let Ok(v) = serde_json::from_str::<Value>(line) else { return false };
+    v.get("type").and_then(Value::as_str) == Some("system")
+        && v.get("subtype").and_then(Value::as_str) == Some("compact_boundary")
+        && !v.get("isSidechain").and_then(Value::as_bool).unwrap_or(false)
 }
 
 /// A turn's count as a session's mod reports it (T-581): `turn.complete`'s
@@ -251,14 +267,21 @@ pub fn mod_turn(usage: &Value) -> Option<(String, Tokens)> {
 pub enum CodexLine {
     /// The model the next turns run on (`turn_context`).
     Model(String),
-    /// The thread's running totals so far (`token_count`), and when.
-    Totals { at_ms: u64, tokens: Tokens },
+    /// The thread's running totals so far (`token_count`), and when; with
+    /// the last request's input, cached or not, and the window the engine
+    /// names (T-969).
+    Totals { at_ms: u64, tokens: Tokens, last_input: u64, window: Option<u64> },
+    /// The thread was compacted (T-969).
+    Compacted,
 }
 
 /// One Codex rollout line, or `None`. Codex counts cached input inside
 /// `input_tokens`; it is moved to `read` here, the way it is billed.
 pub fn codex_line(line: &str) -> Option<CodexLine> {
-    if !line.contains("turn_context") && !line.contains("token_count") {
+    if !line.contains("turn_context")
+        && !line.contains("token_count")
+        && !line.contains("\"type\":\"compacted\"")
+    {
         return None;
     }
     let v: Value = serde_json::from_str(line).ok()?;
@@ -267,10 +290,18 @@ pub fn codex_line(line: &str) -> Option<CodexLine> {
         "turn_context" => {
             p.get("model").and_then(Value::as_str).map(|m| CodexLine::Model(m.into()))
         }
+        "compacted" => Some(CodexLine::Compacted),
         "event_msg" if p.get("type")?.as_str()? == "token_count" => {
-            let t = p.get("info")?.get("total_token_usage")?;
+            let info = p.get("info")?;
+            let t = info.get("total_token_usage")?;
             let n = |k: &str| t.get(k).and_then(Value::as_u64).unwrap_or(0);
             let cached = n("cached_input_tokens");
+            let last_input = info
+                .get("last_token_usage")
+                .and_then(|l| l.get("input_tokens"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let window = info.get("model_context_window").and_then(Value::as_u64);
             Some(CodexLine::Totals {
                 at_ms: v
                     .get("timestamp")
@@ -283,6 +314,8 @@ pub fn codex_line(line: &str) -> Option<CodexLine> {
                     read: cached,
                     ..Tokens::default()
                 },
+                last_input,
+                window,
             })
         }
         _ => None,
@@ -509,7 +542,7 @@ mod tests {
         let model = r#"{"timestamp":"2026-09-24T09:26:14.228Z","type":"turn_context","payload":{"model":"gpt-6-astra"}}"#;
         assert_eq!(codex_line(model), Some(CodexLine::Model("gpt-6-astra".into())));
         let totals = r#"{"timestamp":"2026-09-24T09:26:14.228Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":2711816,"cached_input_tokens":2499712,"output_tokens":12965,"reasoning_output_tokens":3223,"total_tokens":2724781}}}}"#;
-        let Some(CodexLine::Totals { tokens, at_ms }) = codex_line(totals) else { panic!() };
+        let Some(CodexLine::Totals { tokens, at_ms, .. }) = codex_line(totals) else { panic!() };
         assert_eq!(at_ms, 1_790_241_974_228);
         assert_eq!((tokens.input, tokens.read, tokens.output), (212_104, 2_499_712, 12_965));
         let later = Tokens { input: 212_200, read: 2_500_000, output: 13_000, ..Tokens::default() };
@@ -519,6 +552,28 @@ mod tests {
         );
         let fresh = Tokens { input: 5, ..Tokens::default() };
         assert_eq!(delta(&tokens, &fresh), fresh, "a fall is a new count");
+    }
+
+    /// T-969: the lines a context reading is made of. Claude's subagent
+    /// message is no reading of the session's own; a compaction is its own
+    /// line; Codex names the last request's input and its window beside the
+    /// totals, and its compaction is a line of its own.
+    #[test]
+    fn the_lines_a_context_reading_is_made_of() {
+        let side = r#"{"type":"assistant","isSidechain":true,"message":{"id":"m","model":"claude-opus-5-5","usage":{"input_tokens":1}}}"#;
+        assert!(claude_turn(side).unwrap().sidechain);
+        let main = r#"{"type":"assistant","isSidechain":false,"message":{"id":"m","model":"claude-opus-5-5","usage":{"input_tokens":1}}}"#;
+        assert!(!claude_turn(main).unwrap().sidechain);
+        let boundary = r#"{"parentUuid":null,"isSidechain":false,"type":"system","subtype":"compact_boundary","content":"Conversation compacted","compactMetadata":{"trigger":"manual","preTokens":49286,"postTokens":12693}}"#;
+        assert!(claude_compacted(boundary));
+        assert!(!claude_compacted(main));
+        let said = r#"{"type":"user","message":{"content":"the \"compact_boundary\" line"}}"#;
+        assert!(!claude_compacted(said), "a mention is not the line");
+        let tc = r#"{"timestamp":"2026-10-25T00:10:09.223Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":9016293,"cached_input_tokens":8754304,"output_tokens":29773},"last_token_usage":{"input_tokens":54857,"cached_input_tokens":54528,"output_tokens":54},"model_context_window":258400}}}"#;
+        let Some(CodexLine::Totals { last_input, window, .. }) = codex_line(tc) else { panic!() };
+        assert_eq!((last_input, window), (54_857, Some(258_400)));
+        let compacted = r#"{"timestamp":"2026-10-25T00:26:50.065Z","type":"compacted","payload":{"message":"","replacement_history":[]}}"#;
+        assert_eq!(codex_line(compacted), Some(CodexLine::Compacted));
     }
 
     #[test]

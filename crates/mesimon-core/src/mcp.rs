@@ -404,6 +404,26 @@ pub const DAEMON_ABOUT: &str = "binary compares the file at path now with the on
      which code is newer. A rebuild or an install replaces the file and the running daemon \
      keeps the code it started with until it restarts.";
 
+/// What `get_ticket`'s `context` is (T-969), beside it: where the number
+/// is read and what it is not. A crown learned a worker stood at 80% of
+/// its window from the person; this says the source and the limit of the
+/// fact, nothing of what to do at any number (T-930).
+pub const CONTEXT_ABOUT: &str = "tokens is the input of the agent's last request, cached or \
+     not, against its model's context window (window, pct its share): read off the session's \
+     transcript every 30 seconds and at each turn's end, not the engine's own counter, so it \
+     trails a request in flight. compacted: the transcript's last word is a compaction, and \
+     the next reply measures what it kept. Absent where no transcript was read or the window \
+     is unknown.";
+
+/// What `get_ticket`'s `cost` is (T-969), beside it: the board's
+/// price-table estimate, said as the card's own words say it (T-327), and
+/// nothing of what to weigh it against (T-930).
+pub const COST_ABOUT: &str = "usd is the board's estimate, not a bill: every token the \
+     ticket's sessions spent, read off their transcripts and their mods' turn reports, at the \
+     model's published API list price; on a subscription plan it is what the work would have \
+     cost on the API. tokens counts all of them, by kind beside it; unpriced is the part of \
+     models with no price here.";
+
 /// What a worker the crown started is told about the board it works on
 /// (T-599), on its own `get_ticket` view: `CROWN_WAKES`'s counterpart. A
 /// worker under a crown addressed "the author" with four commands, two of
@@ -464,7 +484,10 @@ pub fn lint_tool_text(s: &str) -> Result<(), String> {
 
 /// The complete tool surface. Eight tools for every agent, and there is
 /// deliberately no tool to spawn a session, kill a session, delete a ticket,
-/// read a transcript, read a cost, or grant anything. A tool that does not
+/// read a transcript, or grant anything, and the one cost an agent reads is
+/// the card's own, on the crown's `get_ticket` where a person turns Crown
+/// reads cost on (T-969), beside a context fill the daemon reads off the
+/// transcript for it. A tool that does not
 /// exist cannot be granted by accident at 11pm, and cannot be talked into
 /// firing by injected ticket text. The crown's keyed tools (T-411 and after)
 /// are the named exceptions — archive, rename, workspace, start, sleep, ask,
@@ -512,14 +535,14 @@ pub fn tools() -> Vec<Value> {
             "name": "get_ticket",
             "description": "Returns this session's ticket, or with key another (crown \
                             only): key, title, column, workspace, branch, merge state per \
-                            repo, who merges (merge), pull requests (prs), the init script \
-                            (worktree_init), the columns move_ticket accepts and what each \
-                            is for, the board's moves and why it last held it (automove), \
-                            tags, the board's tags (allowed_tags), the description (first \
-                            note), each note's id, name, author, the summary, the agent's \
-                            state and the seen stamp edits need. The prompt is often the \
-                            title alone; the description and notes are the rest of the \
-                            brief.",
+                            repo, who merges (merge), pull requests (prs), the init script, \
+                            the columns move_ticket accepts and what each is for, the \
+                            board's moves and why it last held it (automove), tags, the \
+                            board's (allowed_tags), the description, each note's id, name, \
+                            author, the summary, the agent's state, context and cost (crown \
+                            only: Crown reads context / cost) and the seen stamp edits need. \
+                            The prompt is often the title alone; the description and notes \
+                            are the rest of the brief.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -893,15 +916,18 @@ pub fn tools() -> Vec<Value> {
             "name": "ask_agent",
             "description": "Queues words on another ticket's card for its agent (crown \
                             only). A person sends (^y) or takes back (^u); if the crown is \
-                            autonomous, an agent it started or whose ticket it watches gets them \
+                            autonomous, an agent it started or watches gets them \
                             as deliver says (asked says where they stand). Refused with no agent, \
-                            on this session's ticket, at once at a dialog, or while its last ask \
-                            is still outstanding. A turn ending after them wakes this session.",
+                            at once at a dialog, or while its last ask is still outstanding. A \
+                            turn ending after them wakes this session.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "key": { "type": "string" },
-                    "text": { "type": "string", "description": "Words a person would type." },
+                    // T-969: a `/` text is the box's (`road::is_command`),
+                    // measured with `/compact` on Claude Code 2.1.310 and
+                    // Codex 0.164.0.
+                    "text": { "type": "string", "description": "Words a person types; one led by / is typed and entered as a command." },
                     "seen": { "type": "string" },
                     "plan": { "type": "boolean", "description": "Optional. True: plan mode." },
                     "deliver": { "type": "string", "description": "Optional: idle (default), now, immediately." },
@@ -1872,6 +1898,10 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // T-712: the crown spending its turns on a person's tickets is the
         // person's to allow, per board.
         | Command::SetCrownWatches { .. }
+        // T-969: what the crown reads of a session and of a ticket's
+        // spend is the person's to allow, per board.
+        | Command::SetCrownContext { .. }
+        | Command::SetCrownCost { .. }
         // T-859: whose pull requests a ticket carries is the team's
         // workflow, as the merge setting is.
         | Command::SetReviewedPrs { .. }
@@ -3266,6 +3296,38 @@ mod tests {
         assert!(serde_json::to_string(hold).unwrap().len() <= MAX_TOOL_BYTES);
     }
 
+    /// T-969: `get_ticket` names the crown's two reads and the switches
+    /// that gate them, its `about` lines say what each number is and what
+    /// it is not, and `ask_agent` says what a `/` text becomes; all facts,
+    /// inside the cap and the lint, and none says when to act on a number.
+    #[test]
+    fn the_crown_reads_context_and_cost_and_a_slash_is_a_command() {
+        let registry = tools();
+        let get = registry.iter().find(|t| t["name"] == "get_ticket").unwrap();
+        let description = get["description"].as_str().unwrap();
+        assert!(description.contains("context and cost (crown only: Crown reads context / cost)"));
+        let ask = registry.iter().find(|t| t["name"] == "ask_agent").unwrap();
+        let text = ask["inputSchema"]["properties"]["text"]["description"].as_str().unwrap();
+        assert!(text.contains("one led by / is typed and entered as a command"), "{text}");
+        lint_tool_text(text).unwrap();
+        for (about, words) in [
+            (CONTEXT_ABOUT, ["not the engine's own counter", "compacted", "window is unknown"]),
+            (COST_ABOUT, ["the board's estimate, not a bill", "list price", "unpriced"]),
+        ] {
+            lint_tool_text(about).unwrap();
+            for w in words {
+                assert!(about.contains(w), "{w:?} in {about:?}");
+            }
+            for advice in ["compact", "worth", "budget", "stop", "spend less", "before"] {
+                let lower = about.to_lowercase().replace("compacted", "").replace("compaction", "");
+                assert!(!lower.contains(advice), "{advice:?} reads as advice in {about:?}");
+            }
+        }
+        for t in [get, ask] {
+            assert!(serde_json::to_vec(t).unwrap().len() <= MAX_TOOL_BYTES);
+        }
+    }
+
     /// T-712: the crown watches a ticket it did not start only where a person
     /// lets it. The tool parses like its keyed siblings, says it is gated and
     /// what it wakes for, and `CROWN_WAKES` says a loop that polls holds the
@@ -3785,6 +3847,8 @@ mod tests {
             },
             Command::SetCrownArchives { on: true },
             Command::SetCrownWatches { on: true },
+            Command::SetCrownContext { on: true },
+            Command::SetCrownCost { on: true },
             Command::SetTicketTier { id: t, tier: Some("claude".into()) },
             Command::SaveTier {
                 scope: crate::tier::TierScope::Machine,

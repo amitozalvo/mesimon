@@ -512,6 +512,26 @@ def measures_line(m):
             + (f", receipts {'/'.join(str(b) for b in m['receipt_bytes'])} bytes" if m["receipt_bytes"] else ""))
 
 
+def tool_uses(rows):
+    """(tool name, its input, its result text or None) for every tool use in
+    a transcript, in order: `tool_calls` and `tool_inputs` side by side."""
+    return [(n, i, (r or {}).get("text")) for (n, i), (_, r)
+            in zip(tool_inputs(rows), tool_calls(rows))]
+
+
+def context_read(text):
+    """`get_ticket`'s `context` in a tool result's text (T-969): (tokens,
+    window), or None where the answer carries none or no tokens."""
+    m = re.search(r'"context"\s*:\s*\{([^}]*)\}', text or "")
+    if not m:
+        return None
+    tokens = re.search(r'"tokens"\s*:\s*(\d+)', m.group(1))
+    window = re.search(r'"window"\s*:\s*(\d+)', m.group(1))
+    if not tokens or not window:
+        return None
+    return int(tokens.group(1)), int(window.group(1))
+
+
 def tool_inputs(rows):
     """(tool name, its input) for every tool use in a transcript, in order."""
     out = []
@@ -2926,6 +2946,38 @@ Reply with the single word ready and end your turn."""
                 bad += [f"<{n}>" for n, _ in calls if n == "Monitor"]
                 check(c, not bad, " → ".join(repr(b[:60]) for b in bad)
                       or f"{len(ran)} bash calls, none of {words}")
+            elif name == "context_nearer":
+                # T-969: the crown read each of the test's workers' context
+                # off get_ticket since the test began, and its last line
+                # beginning `arg` names the one whose reading there stood
+                # nearest its window.
+                crown = self.agent_of(board, self.crown)
+                since = record.get("t0_ms", 0)
+                crown_rows = [r for r in (transcript(crown) if crown else [])
+                              if (iso_ms(r.get("timestamp") or "") or 0) >= since]
+                keys = [k for _, k, _ in self.test_tickets(test)]
+                read = {}
+                for n, i, text in tool_uses(crown_rows):
+                    if (n or "").endswith("get_ticket") and i.get("key") in keys:
+                        got = context_read(text)
+                        if got:
+                            read[i["key"]] = got
+                line = ""
+                for r in reversed(replies(transcript(crown)) if crown else []):
+                    said = [l.strip().strip("*`").strip() for l in r.splitlines()]
+                    at = next((j for j in reversed(range(len(said)))
+                               if said[j].startswith(arg)), None)
+                    if at is not None:
+                        line = " ".join(l for l in said[at:] if l)
+                        break
+                if len(read) < len(keys):
+                    check(c, False, f"context read off get_ticket for {sorted(read)} of {keys}")
+                else:
+                    nearest = max(keys, key=lambda k: read[k][0] / read[k][1])
+                    others = [k for k in keys if k != nearest]
+                    ok = nearest in line and not any(k in line for k in others)
+                    check(c, ok, f"read {read}; said {line[:120]!r}" if line
+                          else f"read {read}; no line {arg!r}")
             elif name == "filed":
                 # T-916: every ticket the crown started an agent on was filed
                 # by the crown's own session from its ticket, its agent is the

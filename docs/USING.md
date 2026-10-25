@@ -563,6 +563,16 @@ you, and the crown cannot answer, park or merge it. The crown is told that a loo
 session busy, which holds the merge train and the watch's own wake. While the row is off, the
 crown is refused in words that name it, and says so to you. Turned off, every watch ends.
 
+**Settings › Crown › Reads context** (on by default) puts each agent's context fill on the
+crown's `get_ticket` of its ticket: the input of the agent's last request against its
+model's context window, read off the session's transcript every 30 seconds and at each turn's
+end, so it trails a request in flight. After a compaction it says `compacted` until the next
+reply measures the conversation again. **Settings › Crown › Reads cost** (off by default) puts
+the ticket's cost there, the figure its card shows: an estimate at the models' API list
+prices, not a bill. A crown's `ask_agent` text that begins with `/` is typed into the agent's
+box and entered as a command, so `/compact` sent that way compacts a Claude Code or a Codex
+agent's conversation.
+
 **Settings › Crown › Reaches boards** links this board with another mesimon board on the same
 machine, so the two crowns can talk. The list shows the boards whose daemon is up right now, by
 name and folder, with who wears the crown there; Enter on one links it, and a board that is not

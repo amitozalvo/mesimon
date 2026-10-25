@@ -7409,6 +7409,8 @@ impl App {
             merge_into: self.board.merge_into,
             crown_archives: self.board.crown_archives,
             crown_watches: self.board.crown_watches,
+            crown_context: self.board.crown_context,
+            crown_cost: self.board.crown_cost,
             reviewed_prs: self.board.reviewed_prs,
             column_agents: self.column_agents,
             col_naming: matches!(self.mode, Mode::ColumnSettings { naming: Some(_), .. }),
@@ -8897,6 +8899,44 @@ impl App {
                                 .into()
                         } else {
                             "crown watches off ∙ it hears only of the agents it started".into()
+                        };
+                    }
+                }
+            }
+            Verb::CrownContext => {
+                if !self.catch_up()? {
+                    return Ok(());
+                }
+                let on = !self.board.crown_context;
+                match self.client.request(Command::SetCrownContext { on })? {
+                    Response::Err { message } => self.status = message,
+                    _ => {
+                        self.refresh_soon()?;
+                        // What its get_ticket carries (T-969).
+                        self.status = if on {
+                            "crown reads context on ∙ its get_ticket says how full an agent's \
+                             context is"
+                                .into()
+                        } else {
+                            "crown reads context off".into()
+                        };
+                    }
+                }
+            }
+            Verb::CrownCost => {
+                if !self.catch_up()? {
+                    return Ok(());
+                }
+                let on = !self.board.crown_cost;
+                match self.client.request(Command::SetCrownCost { on })? {
+                    Response::Err { message } => self.status = message,
+                    _ => {
+                        self.refresh_soon()?;
+                        self.status = if on {
+                            "crown reads cost on ∙ its get_ticket says what a ticket has cost"
+                                .into()
+                        } else {
+                            "crown reads cost off".into()
                         };
                     }
                 }
@@ -16423,6 +16463,14 @@ pub(crate) mod test_support {
                     self.board.crown_watches = on;
                     Ok(Response::Ok)
                 }
+                Command::SetCrownContext { on } => {
+                    self.board.crown_context = on;
+                    Ok(Response::Ok)
+                }
+                Command::SetCrownCost { on } => {
+                    self.board.crown_cost = on;
+                    Ok(Response::Ok)
+                }
                 Command::SetReviewedPrs { on } => {
                     self.board.reviewed_prs = on;
                     Ok(Response::Ok)
@@ -20894,7 +20942,34 @@ mod tests {
         assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownWatches")).count(), 2);
     }
 
-    /// The Reaches boards door (T-733) sits under the watches row and opens
+    /// The crown's two reads (T-969) sit under the watches row, context on
+    /// and cost off on a fresh board, and each toggles through its own
+    /// board command without touching the other.
+    #[test]
+    fn crown_reads_settings_toggle_through_their_board_commands() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
+        app.settings_section = keymap::SettingsSection::Crown;
+        let context = app.settings_row(Verb::CrownContext);
+        let cost = app.settings_row(Verb::CrownCost);
+        assert_eq!(context, app.settings_row(Verb::CrownWatches) + 1, "under the watches row");
+        assert_eq!(cost, context + 1, "under the context row");
+        assert!(app.ctx().crown_context && !app.ctx().crown_cost, "the defaults");
+        app.mode = Mode::Settings { idx: context };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!app.board.crown_context && !app.ctx().crown_context);
+        assert!(!app.board.crown_cost, "the cost switch is its own");
+        assert_eq!(app.status, "crown reads context off");
+        app.mode = Mode::Settings { idx: cost };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.board.crown_cost && app.ctx().crown_cost);
+        assert!(!app.board.crown_context, "the context switch is its own");
+        assert!(app.status.contains("what a ticket has cost"), "{}", app.status);
+        let sent = sent.borrow();
+        assert_eq!(sent.iter().filter(|r| r.contains("SetCrownContext")).count(), 1);
+        assert_eq!(sent.iter().filter(|r| r.contains("SetCrownCost")).count(), 1);
+    }
+
+    /// The Reaches boards door (T-733) sits under the crown's reads and opens
     /// the boards list; with no walk (a test app) the list is the folder row
     /// alone, a typed folder links through the board command, the linked row
     /// unlinks on its second press, and Esc lands back on the door, which
@@ -20906,7 +20981,7 @@ mod tests {
         let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
         app.settings_section = keymap::SettingsSection::Crown;
         let idx = app.settings_row(Verb::CrownLinks);
-        assert_eq!(idx, app.settings_row(Verb::CrownWatches) + 1, "under the watches row");
+        assert_eq!(idx, app.settings_row(Verb::CrownCost) + 1, "under the cost row");
         app.mode = Mode::Settings { idx };
         assert_eq!(keymap::value(Verb::CrownLinks, &app.ctx()), Some(Value::Door("none".into())));
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();

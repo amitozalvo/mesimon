@@ -6,9 +6,9 @@
       │                      Mode               ● autonomous   ○ supervised                                      │
    Key│  Appearance          Archives tickets   ○ off                                                            │
       │                      Watches tickets    ● on                                                             │
-      │  Notifications       Reaches boards     none ›                                                           │
-      │                                                                                                          │
-      │  Behaviour                                                                                               │
+      │  Notifications       Reads context      ● on                                                             │
+      │                      Reads cost         ○ off                                                            │
+      │  Behaviour           Reaches boards     none ›                                                           │
       │                                                                                                          │
       │  Agents                                                                                                  │
       │                                                                                                          │

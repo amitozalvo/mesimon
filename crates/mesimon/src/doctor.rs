@@ -777,6 +777,8 @@ fn agents(repo: &Path, verbose: bool) -> Section {
 
         records.push(crown_archives(cols.crown_archives));
         records.push(crown_watches(cols.crown_watches));
+        records.push(crown_context(cols.crown_context));
+        records.push(crown_cost(cols.crown_cost));
 
         // The columns and what each one DOES (T-117): every automation is a
         // column setting now, so this line is the whole answer to "why did
@@ -878,6 +880,30 @@ fn crown_watches(on: bool) -> Record {
     } else {
         rec(Level::Ok, "crown watches", "off - the crown hears only of the agents it started")
             .advice("A crown asked to wait for a ticket you started cannot be woken for it; it is refused in words naming the row. Settings > Agents > Crown watches tickets lets it watch such a ticket.")
+    }
+}
+
+/// Whether the crown's get_ticket carries an agent's context fill (T-969):
+/// on by default, printed either way.
+fn crown_context(on: bool) -> Record {
+    if on {
+        rec(Level::Ok, "crown reads context", "on - the crown's get_ticket says how full each agent's context window is")
+            .advice("The number is the input of the agent's last request against its model's window, read off its transcript every 30 seconds and at each turn's end. Settings > Crown > Reads context turns it off.")
+    } else {
+        rec(Level::Ok, "crown reads context", "off - the crown's get_ticket says nothing of an agent's context")
+            .advice("Settings > Crown > Reads context lets the crown read how full each agent's context window is.")
+    }
+}
+
+/// Whether the crown's get_ticket carries a ticket's cost (T-969): off by
+/// default, printed either way.
+fn crown_cost(on: bool) -> Record {
+    if on {
+        rec(Level::Note, "crown reads cost", "on - the crown's get_ticket says what each ticket has cost")
+            .advice("The figure is the card's: the tokens the ticket's sessions spent, at the models' API list prices, an estimate and not a bill. Settings > Crown > Reads cost turns it off.")
+    } else {
+        rec(Level::Ok, "crown reads cost", "off - the crown's get_ticket says nothing of a ticket's cost")
+            .advice("Settings > Crown > Reads cost lets the crown read each ticket's estimate, as its card shows it.")
     }
 }
 
@@ -1722,6 +1748,29 @@ mod tests {
         for r in [off, on] {
             let advice = r.advice.unwrap();
             assert!(advice.contains("Settings > Agents > Crown watches tickets"), "{advice}");
+        }
+    }
+
+    /// T-969: and the crown's two reads.
+    #[test]
+    fn the_crown_reads_lines_name_their_rows() {
+        for (line, label, row) in [
+            (
+                super::crown_context as fn(bool) -> super::Record,
+                "crown reads context",
+                "Settings > Crown > Reads context",
+            ),
+            (super::crown_cost, "crown reads cost", "Settings > Crown > Reads cost"),
+        ] {
+            let off = line(false);
+            assert_eq!(off.label, label);
+            assert!(off.value.starts_with("off - "), "{}", off.value);
+            let on = line(true);
+            assert!(on.value.starts_with("on - "), "{}", on.value);
+            for r in [off, on] {
+                let advice = r.advice.unwrap();
+                assert!(advice.contains(row), "{advice}");
+            }
         }
     }
 

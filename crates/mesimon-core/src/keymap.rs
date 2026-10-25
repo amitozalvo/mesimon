@@ -821,6 +821,14 @@ pub enum Verb {
     /// them. Board state like `CrownArchives`, off by default; Enter
     /// toggles it.
     CrownWatches,
+    /// The Settings row under it (T-969): whether the crown's `get_ticket`
+    /// carries a session's context fill. Board state like `CrownWatches`,
+    /// on by default; Enter toggles it.
+    CrownContext,
+    /// The Settings row under it (T-969): whether the crown's `get_ticket`
+    /// carries a ticket's cost. Board state like `CrownArchives`, off by
+    /// default; Enter toggles it.
+    CrownCost,
     /// The Behaviour row under Merge into (T-859): whether a pull request
     /// someone else opened is a ticket's when its agent reviewed it or its
     /// `Summary` names it. Board state like `MergeInto`, on by default;
@@ -1203,6 +1211,8 @@ impl SettingsSection {
             | Verb::CrownMode
             | Verb::CrownArchives
             | Verb::CrownWatches
+            | Verb::CrownContext
+            | Verb::CrownCost
             | Verb::CrownLinks => Self::Crown,
             Verb::ProjectPage | Verb::ReleaseChannel => Self::About,
             _ => Self::Theme,
@@ -1248,6 +1258,10 @@ pub struct Ctx {
     pub crown_archives: bool,
     /// `Board::crown_watches` (T-712), for the row under that.
     pub crown_watches: bool,
+    /// `Board::crown_context` and `Board::crown_cost` (T-969), for the two
+    /// rows under that.
+    pub crown_context: bool,
+    pub crown_cost: bool,
     /// `Board::reviewed_prs` (T-859): the Behaviour row under Merge into.
     pub reviewed_prs: bool,
     pub column_agents: bool,
@@ -5744,6 +5758,36 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // What the crown's `get_ticket` carries of a ticket's agent and spend
+    // (T-969). Context on by default: the transcript's last request against
+    // the model's window. Cost off by default: the card's estimate. Each
+    // row gates its one field and says nothing else.
+    MenuItem {
+        verb: Verb::CrownContext,
+        label: |_| "Reads context".into(),
+        detail: |c| {
+            if c.crown_context {
+                "how full each agent's context window is, off its transcript".into()
+            } else {
+                "it reads no agent's context fill".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::CrownCost,
+        label: |_| "Reads cost".into(),
+        detail: |c| {
+            if c.crown_cost {
+                "each ticket's estimate at API list prices, as its card shows".into()
+            } else {
+                "it reads no ticket's cost".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
     // The boards this one reaches (T-733): the door to the list that links
     // and unlinks them. The pairs are the machine's, read by every board's
     // daemon, so one link reaches both ways and the detail says so.
@@ -6197,6 +6241,8 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::CrownMode,
             Verb::CrownArchives,
             Verb::CrownWatches,
+            Verb::CrownContext,
+            Verb::CrownCost,
             Verb::CrownLinks,
         ],
         SettingsSection::Terminal => &[
@@ -6337,6 +6383,8 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
         Verb::BoardWorkspace => Value::Switch(c.board_worktree),
         Verb::CrownArchives => Value::Switch(c.crown_archives),
         Verb::CrownWatches => Value::Switch(c.crown_watches),
+        Verb::CrownContext => Value::Switch(c.crown_context),
+        Verb::CrownCost => Value::Switch(c.crown_cost),
         Verb::CrownLinks => Value::Door(or(&c.crown_links, "none").into()),
         Verb::TabTitle => Value::Choice {
             options: &["off", "project", "mesimon ∙ project"],
@@ -10863,6 +10911,8 @@ mod tests {
                     Verb::CrownMode,
                     Verb::CrownArchives,
                     Verb::CrownWatches,
+                    Verb::CrownContext,
+                    Verb::CrownCost,
                     Verb::CrownLinks,
                 ],
             ),

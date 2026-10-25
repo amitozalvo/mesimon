@@ -169,6 +169,15 @@ struct ColumnsFile {
     /// written value, never the default.
     #[serde(default = "yes")]
     crown_watches: bool,
+    /// The crown reads a session's context fill (`Board::crown_context`,
+    /// T-969). Absent means ON, written either way, so an off survives. No
+    /// bump: a build before it has no such field to hand its crown.
+    #[serde(default = "yes")]
+    crown_context: bool,
+    /// The crown reads a ticket's cost (`Board::crown_cost`, T-969). Absent
+    /// means OFF, written either way, so an on survives. No bump, as above.
+    #[serde(default)]
+    crown_cost: bool,
     /// Reviewed pull requests are a ticket's (`Board::reviewed_prs`,
     /// T-859). Absent means ON, written either way, so an off survives. No
     /// bump: a build before it reads every bound PR as the ticket's own,
@@ -631,6 +640,8 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                 merge_into: cf.merge_into,
                                 crown_archives: cf.crown_archives,
                                 crown_watches: cf.crown_watches,
+                                crown_context: cf.crown_context,
+                                crown_cost: cf.crown_cost,
                                 reviewed_prs: cf.reviewed_prs,
                                 tags: cf.tags,
                                 tags_seeded: cf.tags_seeded,
@@ -844,6 +855,9 @@ pub struct ColumnsScalars {
     pub crown_archives: bool,
     /// `Board::crown_watches` (T-712).
     pub crown_watches: bool,
+    /// `Board::crown_context` and `Board::crown_cost` (T-969).
+    pub crown_context: bool,
+    pub crown_cost: bool,
     /// `Board::reviewed_prs` (T-859).
     pub reviewed_prs: bool,
     /// `Board::mcp_tools` (T-217).
@@ -873,6 +887,8 @@ impl Default for ColumnsScalars {
             merge_into: MergeInto::default(),
             crown_archives: false,
             crown_watches: true,
+            crown_context: true,
+            crown_cost: false,
             reviewed_prs: true,
             mcp_tools: true,
             system_prompt: true,
@@ -918,6 +934,8 @@ pub fn read_columns_scalars(paths: &Paths) -> ColumnsScalars {
         merge_into: cf.merge_into,
         crown_archives: cf.crown_archives,
         crown_watches: cf.crown_watches,
+        crown_context: cf.crown_context,
+        crown_cost: cf.crown_cost,
         reviewed_prs: cf.reviewed_prs,
         mcp_tools: cf.mcp_tools,
         system_prompt: brief,
@@ -956,6 +974,8 @@ fn columns_text(board: &Board) -> Result<String> {
         merge_into: board.merge_into,
         crown_archives: board.crown_archives,
         crown_watches: board.crown_watches,
+        crown_context: board.crown_context,
+        crown_cost: board.crown_cost,
         reviewed_prs: board.reviewed_prs,
         tags_seeded: board.tags_seeded,
         mcp_tools: board.mcp_tools,
@@ -1414,6 +1434,42 @@ mod tests {
         save_columns(&paths, &on).unwrap();
         let text = std::fs::read_to_string(&cols).unwrap();
         assert!(text.contains("crown_archives = false"), "written either way: {text}");
+        cleanup(&dir, &paths);
+    }
+
+    /// T-969: the crown's two reads — absent, context reads on and cost
+    /// off, in the daemon and in doctor; a change either way survives a save.
+    #[test]
+    fn crown_context_is_on_and_crown_cost_off_unless_the_file_says_otherwise() {
+        let (dir, paths) = scratch("crownreads");
+        let cols = dir.join(".mesimon/board/columns.toml");
+        write(
+            &cols,
+            &format!(
+                "schema_version = {COLUMNS_SCHEMA}\nnext_key = 2\n\n\
+                 [[columns]]\nname = \"TODO\"\norder = \"a0\"\n"
+            ),
+        );
+        let scalars = read_columns_scalars(&paths);
+        assert!(scalars.crown_context && !scalars.crown_cost, "doctor reads the defaults");
+        let mut b = load(&paths).unwrap().board;
+        assert!(b.crown_context && !b.crown_cost, "an older file reads the defaults");
+        b.crown_context = false;
+        b.crown_cost = true;
+        save_columns(&paths, &b).unwrap();
+        let text = std::fs::read_to_string(&cols).unwrap();
+        assert!(text.contains("crown_context = false"), "{text}");
+        assert!(text.contains("crown_cost = true"), "{text}");
+        let back = load(&paths).unwrap().board;
+        assert!(!back.crown_context && back.crown_cost, "a change is kept");
+        let scalars = read_columns_scalars(&paths);
+        assert!(!scalars.crown_context && scalars.crown_cost);
+        b.crown_context = true;
+        b.crown_cost = false;
+        save_columns(&paths, &b).unwrap();
+        let text = std::fs::read_to_string(&cols).unwrap();
+        assert!(text.contains("crown_context = true"), "written either way: {text}");
+        assert!(text.contains("crown_cost = false"), "written either way: {text}");
         cleanup(&dir, &paths);
     }
 
@@ -2497,6 +2553,8 @@ order = "a0"
             merge_into: MergeInto::PullRequests,
             crown_archives: true,
             crown_watches: true,
+            crown_context: false,
+            crown_cost: true,
             reviewed_prs: true,
             tags_seeded: true,
             mcp_tools: false,
@@ -2599,6 +2657,8 @@ order = "a0"
         // T-712: and the crown's watch switch.
         assert!(back.crown_watches, "{text}");
         assert!(text.find("crown_watches").unwrap() < text.find("[[columns]]").unwrap());
+        assert!(!back.crown_context && back.crown_cost, "{text}");
+        assert!(text.find("crown_cost").unwrap() < text.find("[[columns]]").unwrap());
         assert!(text.find("agent_provider").unwrap() < text.find("[[columns]]").unwrap());
 
         let scalars = text.find("mcp_tools").expect("mcp_tools on disk");

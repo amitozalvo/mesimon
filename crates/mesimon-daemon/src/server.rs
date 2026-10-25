@@ -20,11 +20,12 @@ use mesimon_core::board::{
     Tag, TagRef, Ticket, UnknownReason, WorkspaceStrategy, PICKED_AT_DESK, PICKED_BY_AGENT,
 };
 use mesimon_core::command::{
-    AgentAutomoveView, AgentBackgroundView, AgentBoardView, AgentMergeView, AgentNeedsYouView,
-    AgentQuestionView, AgentRepoView, AgentStateView, AgentTagView, AgentTicketRow,
-    AgentTicketView, AskRoad, AskWake, Command, CrownTouch, Deliver, DiffTarget, Envelope, Event,
-    ExternalItem, GraceItem, MergeOutcome, Notice, Pending, PendingAction, Resources, Response,
-    StartPrompt, TerminalItem, WorktreeItem, WorktreeRepoItem, PROTOCOL_VERSION,
+    AgentAutomoveView, AgentBackgroundView, AgentBoardView, AgentContextView, AgentCostView,
+    AgentMergeView, AgentNeedsYouView, AgentQuestionView, AgentRepoView, AgentStateView,
+    AgentTagView, AgentTicketRow, AgentTicketView, AskRoad, AskWake, Command, CrownTouch, Deliver,
+    DiffTarget, Envelope, Event, ExternalItem, GraceItem, MergeOutcome, Notice, Pending,
+    PendingAction, Resources, Response, StartPrompt, TerminalItem, WorktreeItem, WorktreeRepoItem,
+    PROTOCOL_VERSION,
 };
 use mesimon_core::crown;
 use mesimon_core::mcp;
@@ -3303,6 +3304,8 @@ impl Daemon {
             }
             Command::SetCrownArchives { on } => self.set_crown_archives(on),
             Command::SetCrownWatches { on } => self.set_crown_watches(on),
+            Command::SetCrownContext { on } => self.set_board_switch(|b| &mut b.crown_context, on, |_| {}),
+            Command::SetCrownCost { on } => self.set_board_switch(|b| &mut b.crown_cost, on, |_| {}),
             Command::SetReviewedPrs { on } => self.set_reviewed_prs(on),
             Command::SetStatusLine { top } => self.set_status_line(top),
             Command::SetUsageWants { claude, codex } => {
@@ -7425,6 +7428,11 @@ impl Daemon {
                             .iter()
                             .any(|s| s.id == session && crowned && s.started_by.is_some())
                             .then(|| mesimon_core::mcp::WORKER_UNDER_CROWN.to_string());
+                        // The crown reading its own ticket reads what it
+                        // reads of a worker's (T-969).
+                        if self.board.is_crowned(ticket) {
+                            self.crown_reads(&mut view, ticket);
+                        }
                         // The agent read its ticket: the page stops saying
                         // it has not (T-224). A persisted fact, and a real
                         // delta for the page to draw, so it is broadcast.
@@ -7461,6 +7469,7 @@ impl Daemon {
                             view.crowned = Some(self.board.is_crowned(ticket));
                         }
                         view.watched = target != ticket && self.crown_watched.contains(&target);
+                        self.crown_reads(&mut view, target);
                         Response::AgentTicket { ticket: view }
                     }
                     None => no_such_ticket(),
@@ -10543,11 +10552,55 @@ impl Daemon {
             under_crown: None,
             background: self.agent_background(id),
             state: self.agent_state_view(id),
+            context: None,
+            context_about: None,
+            cost: None,
+            cost_about: None,
             needs_you: self.agent_needs_you(id),
             asked: None,
             told_hand: None,
             seen: Some(self.seen_token(id)),
         })
+    }
+
+    /// What the crown reads of `ticket` beyond the card (T-969), each behind
+    /// its board switch: its agent's context fill, read off the transcript
+    /// the session points at as the cost ledger's last pass left it, and the
+    /// ticket's account as the card shows it. Facts with their `about`
+    /// lines; an absent fact is absent with its line.
+    fn crown_reads(&self, view: &mut AgentTicketView, ticket: ulid::Ulid) {
+        if self.board.crown_context {
+            view.context = self.agent_context_view(ticket);
+            view.context_about =
+                view.context.is_some().then(|| mesimon_core::mcp::CONTEXT_ABOUT.to_string());
+        }
+        if self.board.crown_cost {
+            view.cost = self.costs.account(ticket, now_ms()).map(|(c, kinds)| AgentCostView {
+                usd: mesimon_core::cost::usd_word(c.usd),
+                tokens: c.tokens,
+                input: kinds.input,
+                output: kinds.output,
+                cache_write: kinds.write_5m + kinds.write_1h,
+                cache_read: kinds.read,
+                unpriced: c.unpriced,
+            });
+            view.cost_about =
+                view.cost.is_some().then(|| mesimon_core::mcp::COST_ABOUT.to_string());
+        }
+    }
+
+    /// The ticket's agent's context fill (T-969): its transcript's last
+    /// reading against its model's window — Claude Code's table, wide where
+    /// the session's `--model` names `[1m]`, or the window Codex names.
+    fn agent_context_view(&self, ticket: ulid::Ulid) -> Option<AgentContextView> {
+        let rec = self.board.live_agent(ticket)?;
+        let (path, codex) = crate::cost::transcript_of(rec)?;
+        let fill = self.costs.fill(ticket, &path.display().to_string())?;
+        if codex {
+            return mesimon_core::context::codex_view(fill);
+        }
+        let model = rec.argv.windows(2).find(|w| w[0] == "--model").map(|w| w[1].as_str());
+        mesimon_core::context::claude_view(fill, model)
     }
 
     /// The ticket's agent idle at its composer with background tasks running

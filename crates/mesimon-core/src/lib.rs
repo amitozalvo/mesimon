@@ -20,6 +20,7 @@ pub mod claudemd;
 pub mod clock;
 pub mod command;
 pub mod content;
+pub mod context;
 pub mod cost;
 pub mod crown;
 pub mod diff;
