@@ -36778,6 +36778,11 @@ test's own stub. Nothing in the daemon changed.
   nobody saw (`got.txt`: `coordinate T-2 … raised its hand`). The test now sends the title out of
   the box first, as `an_idle_client_and_a_draft_hold_…` already did, and its wait for the
   typed wake prints the pending rows when it times out.
+- **`attachments_e2e::a_prompt_with_a_picture_keeps_it_with_the_ticket_and_links_it_in_the_words`
+  (ubuntu-24.04, first reached once the runner got that far).** The start's title was echoed in
+  the middle of `COMPOSER`'s paint, onto its top rule (`────…pictured ask`), and a rule with
+  text on it reads as no composer, so the prompt waited for one. `COMPOSER` turns the tty's
+  echo off while it paints; keys typed then are still read, and only their echo is lost.
 - **The harness.** A failing e2e now echoes every pane of the fixture's tmux servers: the screen,
   cursor, modes, the pane's processes and tty modes, and the `.txt` files its stubs write
   (`Fixture::echo_panes` in `ci/test_support.rs`). That dump is what found all three.

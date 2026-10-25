@@ -715,9 +715,12 @@ pub fn feed_count(h: &Harness, cmd: &str, ticket: ulid::Ulid) -> usize {
 /// It names itself in the pane's title first, as Claude Code does (T-1002):
 /// a pane that printed and has no such title is what the startup probe
 /// reads, 10 s into a spawn no hook ended, as a modal Claude Code is
-/// holding, and the flip stales every stamp read before it.
-pub const COMPOSER: &str = "printf '\\033]0;✳ Claude Code\\007\\033[999;1H\\033[3A────────────────────\\n❯ \\n\
-                            ────────────────────\\n  ? for shortcuts\\033[H'\n";
+/// holding, and the flip stales every stamp read before it. The tty echoes
+/// nothing while it paints: a start's title typed at that moment was echoed
+/// between its writes, onto the top rule, and a rule with text on it reads
+/// as no composer (T-1019, dash on the Ubuntu runner).
+pub const COMPOSER: &str = "stty -echo 2>/dev/null\nprintf '\\033]0;✳ Claude Code\\007\\033[999;1H\\033[3A────────────────────\\n❯ \\n\
+                            ────────────────────\\n  ? for shortcuts\\033[H'\nstty echo 2>/dev/null\n";
 
 /// T-961's stand-in for Claude Code's box, as 2.1.310 behaves around it.
 /// While `nopaint` exists beside it the pane is a cooked tty with no box:
