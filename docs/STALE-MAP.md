@@ -34906,3 +34906,62 @@ stand. Two corrections and one assertion; no production logic changes.
   `a_held_submit_entered_after_a_steer_takes_the_turn_it_starts` proves that state settles: a
   handed own-turn ask under another's mark is taken at a proven end. The mod relays its reports
   one at a time, so the two submits' `entered`s arrive in turn.
+
+## The close-on-exec gap on the daemon's own sockets, measured: real, under one a day, held by a child for at most 72 ms; no code change (T-981, 2026-10-25, named by T-971's worker)
+
+**The gap.** macOS has no `accept4` and no `SOCK_CLOEXEC`, so std's `UnixListener::accept` makes
+the fd and only then sets `FD_CLOEXEC`. T-971 found the same in `UnixStream::pair`. A spawn on
+another thread inside that gap hands the child a copy. The daemon's accept loops (`orch.sock`
+and `hook.sock`, `server.rs`) run on threads of their own, so they do overlap the spawns of the
+writer and its workers. The ticket's premise, that the writer serialises them, does not hold.
+
+**The copy is the daemon's own end, and that decides who waits.** The daemon still reads EOF
+the moment its client closes, because no child ever holds the client's end. It is the
+*client* that waits past the daemon's close, until the child exits. A shutdown acts on the
+socket, not the fd, so a `shutdown(Write)` before the drop gives the client its EOF beside any
+copies (`a_child_holding_the_daemons_end_delays_the_client_not_the_daemon`, ignored, 3/3).
+
+**Measured** (`cloexec_probe`, ignored, `cargo test -p mesimon-daemon --lib cloexec_probe --
+--ignored --nocapture`, debug build, load average 6 to 10). One thread accepts and drops each
+connection. The client then asks whether its peer is gone 10 ms later (a fork child holds the
+fd until its exec; an exec'd `/bin/sleep 0.05` holds it for 50 ms). Every held end read EOF
+once the children were reaped, so each one was a child's copy.
+- No spawner: 0 of 100,000.
+- `/bin/sleep` spawned flat out (~1,800 a second): 94 of 100,000. A release-build scratch run
+  of the same probe gave 130, 164 and 249.
+- At the board daemon's own rate, 6 spawns a second: 7 of 3,000,000 (2.3e-6 per accept). A
+  release scratch run gave 5 of 3,000,000.
+- std's `io::pipe` has the same gap: 50 of 100,000 writers held beside the spawner.
+
+**The daemon's shape.** A 1 ms sampler of the board daemon's children (`proc_listchildpids`) saw
+5.7 spawns a second over 60 s. Over 120 s it saw 285 `git`, 178 `tmux` and 67 `ps`, and none
+lived past 72 ms (medians 7.7, 3.1 and 25.5 ms). The tmux server is spawned with
+`POSIX_SPAWN_CLOEXEC_DEFAULT` (`disclaim::spawn`), so it never inherits an end. The children that
+live longer are event-driven, a few an hour: the worktree init script, the login shell that
+captures the environment, `claude plugin` probes, `git fetch`, `gh`. The accept rate was not
+measured, because the sampler missed every sub-millisecond hook connection. At an estimated 1 to 5
+accepts a second, that is 0.2 to 1 held end a day, and almost every one is held by a `git`, `tmux`
+or `ps` child for at most 72 ms.
+
+**Who would notice.** `mesimon hook` writes its frame and exits; it never reads. Every
+`orch.sock` client (the TUI, `mesimon mcp`, `mod-bridge`) reads line-framed replies, and the daemon
+closes a connection only after its client did, or when it exits. A TUI's notice of a daemon's exit
+would come late by the child's life. The one reader that waits on the daemon's close is
+`mesimon approve`: it reads to EOF with a 45 s hold, and the daemon's "no opinion" is a drop. A
+72 ms hold delays that dialog by 72 ms. A hold past 45 s turns a decision into a lost round, and
+that needs a long-lived child spawned in the sub-microsecond window of that connection's accept.
+
+**Why no change.** The gap is not the accept's alone (`pair`, `connect`, `io::pipe`), and
+every fix that closes it sits on the spawn side, across the 94 call sites (83 in the daemon, 11
+in the tmux backend):
+- **A spawn lock**: every spawn and every fd the daemon makes under one mutex, the accept by
+  `poll` and then a non-blocking accept under the lock (an accepted socket inherits
+  `O_NONBLOCK` on macOS, so it is set back). Not measured.
+- **A sweep**: `pre_exec` marks every fd above 2 close-on-exec in the forked child. Measured: 0
+  of 300,000 held. It costs 0.83 → 1.54 ms a spawn beside 48 MiB of touched ballast, and it trades
+  `posix_spawn` for `fork` in a multi-threaded daemon.
+Either one costs more than a hold of at most 72 ms on readers that do not wait for the close.
+**Revisit** if a long-lived child is spawned on the tick, or a reader starts waiting on the
+daemon's close with a short budget. The guard for a single reader is `shutdown(Write)` on the
+daemon's end before the drop, measured above. Not checked: whether T-971's `LEAK` (a child still
+held the output pipes 2 s after the test returned) was this pipe gap.
