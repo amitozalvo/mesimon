@@ -34211,6 +34211,19 @@ belongs to a later turn.
   - Unit `mesophon::an_interaction_s_print_is_its_tool_and_its_whole_input`.
   - Round 11's words control now waits for the `PermissionRequest` decision in the feed before
     its restart, instead of a 500 ms sleep.
+- **Round 13: the print for a record from before it.** A record held on a dialog by an older
+  build has no print. After the upgrade's restart, T-933's rebuild brought the dialog back from
+  its open call but seeded only the projection. So the dialog's genuine id-less repeat read as a
+  replacement: its request became a generated one, and the person's later refusal of it was
+  dropped as another dialog's. Where the rebuild restores a dialog from a verified open call and
+  the record has no print, it now seeds and persists that call's print (`interaction_print` of
+  its input) before the projection shows. A print a hook set is never overwritten, and a missing
+  print is never a repeat. Test
+  `plan_accept_e2e::a_dialog_rebuilt_for_an_older_record_keeps_its_request_through_a_repeat`:
+  the record's call and print are stripped from `sessions.json` while the daemon is down. A is
+  rebuilt; its identical id-less `PermissionRequest` keeps `toolu_a`, and its result and Esc end
+  it `Interrupted`, no `needs_you`. Without the seed, the request turns generated. The control,
+  another input, replaces A's request.
 - **After a restart** a dialog this daemon never projected counts from the daemon's start.
 - **In the read:** a person's prompt (`adopt::user_prompt`) after an interrupt in the same read
   drops the interrupted end and every `AbortedMidStream` read before it.

@@ -1563,3 +1563,71 @@ fn a_question_too_big_to_draw_keeps_its_call_through_an_id_less_repeat() {
     decided(&b, "PermissionRequest", 2);
     assert_eq!(held_call(&b), None);
 }
+
+/// T-957 round 13: a record held on a dialog from before the print. Plan A
+/// is named and projected, and the daemon restarts with the record as an
+/// older build left it, no call and no print. T-933's rebuild brings A back
+/// from its open call and seeds A's print with it, so A's identical id-less
+/// `PermissionRequest` reads as the repeat it is: A keeps its own request,
+/// and A's result and Esc end it, `Interrupted`, no `needs_you`. Control: an
+/// id-less `PermissionRequest` with another input replaces A's request.
+#[test]
+fn a_dialog_rebuilt_for_an_older_record_keeps_its_request_through_a_repeat() {
+    const STOP: &str =
+        "The user doesn't want to proceed with this tool use. STOP what you are doing.";
+    let interrupted =
+        SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Interrupted };
+    let needs = |b: &mut Bed| match b
+        .c
+        .send(mesimon_core::Principal::Agent { session: b.sid }, Command::AgentGetTicket)
+    {
+        Response::AgentTicket { ticket } => ticket.needs_you,
+        other => panic!("get_ticket: {other:?}"),
+    };
+    for (n, same) in [true, false].into_iter().enumerate() {
+        let Some(mut b) = Bed::boot(&format!("planolder{n}")) else { return };
+        b.start();
+        b.call("ExitPlanMode", "toolu_a");
+        b.stop_on("ExitPlanMode", "toolu_a");
+        // The record as a build before the print and the call wrote it.
+        let sessions = b.h.paths.sessions_file();
+        b.h.restart_after(|| {
+            let text = std::fs::read_to_string(&sessions).unwrap();
+            let mut v: serde_json::Value = serde_json::from_str(&text).unwrap();
+            for s in v["sessions"].as_array_mut().unwrap() {
+                let s = s.as_object_mut().unwrap();
+                s.remove("dialog_call");
+                s.remove("dialog_print");
+            }
+            std::fs::write(&sessions, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+        });
+        b.c = b.h.client(&format!("planolder{n}_2"));
+        wait_until(Duration::from_secs(10), "A rebuilt from its open call", || {
+            needs(&mut b).and_then(|n| n.request).as_deref() == Some("toolu_a")
+        });
+        let input = if same {
+            Bed::input("ExitPlanMode")
+        } else {
+            serde_json::json!({"plan": "# Another plan"})
+        };
+        let frame = serde_json::json!({"tool_name": "ExitPlanMode", "tool_input": input});
+        b.hook("PermissionRequest", &frame.to_string());
+        wait_until(Duration::from_secs(10), "the PermissionRequest decided", || {
+            b.decisions().iter().any(|d| d["source"] == "PermissionRequest")
+        });
+        let request = needs(&mut b).and_then(|n| n.request);
+        if !same {
+            assert_ne!(request.as_deref(), Some("toolu_a"), "another input replaces A");
+            continue;
+        }
+        assert_eq!(request.as_deref(), Some("toolu_a"), "the repeat keeps A's request");
+        b.append_all(&[
+            Bed::result_of("toolu_a", true, STOP),
+            serde_json::json!({"uuid": "esc-a", "type": "user", "timestamp": now_iso(),
+                "message": {"content": [{"type": "text",
+                    "text": "[Request interrupted by user for tool use]"}]}}),
+        ]);
+        b.c.await_state(b.sid, "off A by its own Esc", |s| *s == interrupted);
+        assert!(needs(&mut b).is_none(), "no dialog stands");
+    }
+}

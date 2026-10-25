@@ -1357,6 +1357,15 @@ impl Daemon {
                 continue;
             }
             let Some(content) = dialog_content(tool, &open.input) else { continue };
+            // A record from before the print (T-957 round 13) gets the
+            // rebuilt call's own, before the projection shows, so that
+            // dialog's id-less repeat reads as one; one a hook set stays.
+            if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                if rec.dialog_print.is_none() {
+                    rec.dialog_print = Some(interaction_print(tool, &open.input));
+                    self.persist_sessions();
+                }
+            }
             self.control.dialogs.insert(id, api::Dialog { request: open.id, content });
             self.control_changed();
         }
