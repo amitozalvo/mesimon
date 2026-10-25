@@ -34390,3 +34390,33 @@ belongs to a later turn.
   - The composer reader's `Absent` for the question and permission dialogs rested on their shape
     and had no test. The question screen is now tested on a capture; the permission screen is
     still not from one.
+
+## The clock's test asks what the code promises, not a round trip (T-972, 2026-10-25, found by T-957's full run inside Israel's repeated hour)
+
+**What failed.** `localtime::tests::the_clock_round_trips_and_the_presets_land_ahead` asserted
+`to_epoch(local_of(now)) == now`. Between 01:00 and 02:00 on 25 October in `Asia/Jerusalem`,
+two instants share every wall time, and `mktime` with `tm_isdst = -1` named the other one, an
+hour off. Any branch's run fails in that hour, once a year per zone with a fall-back.
+
+**Which was wrong: the test.** Production asks `mktime` for one thing: the nine o'clock of a
+calendar rung (`snooze::target`). That wall time is never in a repeated or missing hour.
+`tm_isdst = -1` is right for it: the target day may sit on the other side of a transition from
+now, so carrying now's `tm_isdst` would put "tomorrow 9:00" at 08:00 or 10:00 across one. The
+relative rungs are seconds and never reach the wall clock. No code changed.
+
+**The test now asserts:**
+- `mktime` names an instant whose wall clock reads as the one asked
+  (`local_of(to_epoch(local)) == local`).
+- `1h` and `4h` land ahead by exactly their offset in instants.
+- A calendar rung lands at nine, on the week's first day for the last rung.
+
+**Two pinned cases.** `the_presets_hold_across_a_repeated_and_a_missing_hour` runs the ignored
+`zone_child` in a child of the test binary under `TZ`, so no other test in the process reads
+the zone. The zone is Israel's 2026 rule as a POSIX string (`IST-2IDT,M3.5.5,M10.5.0`), which
+needs no tzdata on a Linux image. It agrees with `Asia/Jerusalem` for these instants (checked by
+running the child under both).
+- **Repeated hour:** 01:30 on 25 October is read from 22:30Z and 23:30Z. `mktime` names one of
+  the two. From either, `tomorrow 9:00` is the same instant (26 October 07:00Z).
+- **Missing hour:** 01:30 plus 30 minutes on 27 March reads 03:00. `mktime` on a 02:30 that
+  never was answers an hour either side. `tomorrow 9:00` is 28 March 06:00Z.
+Under `TZ=UTC` the child fails at its first assertion ("the zone took").
