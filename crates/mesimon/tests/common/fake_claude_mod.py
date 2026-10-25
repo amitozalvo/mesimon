@@ -39,7 +39,7 @@ and tmux's `TMUX`/`TMUX_PANE`. It does what `register.ts`'s bridge loop does:
   a submit's result as Claude Code 2.1.309 holds a plugin's prompt to the
   running turn's end (T-938): the words are typed as ever, and `entered` is
   relayed only once a `mod-release` file appears (reading `dropped`, a late
-  refusal instead); and `mod-late` one whose
+  refusal instead: read at once, so a test writes it whole); and `mod-late` one whose
   bridge first polls the milliseconds its text names after the engine
   starts (T-879);
 - respawns a bridge that died, with the mod's backoff, and not one that was

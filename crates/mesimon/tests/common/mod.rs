@@ -673,6 +673,16 @@ pub fn launch_tools(tmux_sock: &Path, rec: &mesimon_core::board::SessionRecord) 
     Some(args[i + 1].as_str().unwrap().to_string())
 }
 
+/// A file a stand-in reads the moment it exists (`fake_claude_mod.py`'s
+/// `mod-release`, whose words are the engine's outcome), written beside it
+/// and renamed in: a plain write creates it empty first, and a poll between
+/// the two read `entered` for a `dropped` (T-1002).
+pub fn write_whole(path: &Path, text: &str) {
+    let part = path.with_extension("part");
+    std::fs::write(&part, text).unwrap();
+    std::fs::rename(&part, path).unwrap();
+}
+
 pub fn kill_tmux(sock: &Path) {
     let _ = tmux(sock).arg("kill-server").output();
 }
@@ -702,7 +712,11 @@ pub fn feed_count(h: &Harness, cmd: &str, ticket: ulid::Ulid) -> usize {
 /// goes home, so whatever the stub echoes or prints starts on row 0 as it
 /// did before. The daemon pastes a launch's words only into a pane showing
 /// one (`agents::claude::composer`), so every stand-in for Claude paints it.
-pub const COMPOSER: &str = "printf '\\033[999;1H\\033[3A────────────────────\\n❯ \\n\
+/// It names itself in the pane's title first, as Claude Code does (T-1002):
+/// a pane that printed and has no such title is what the startup probe
+/// reads, 10 s into a spawn no hook ended, as a modal Claude Code is
+/// holding, and the flip stales every stamp read before it.
+pub const COMPOSER: &str = "printf '\\033]0;✳ Claude Code\\007\\033[999;1H\\033[3A────────────────────\\n❯ \\n\
                             ────────────────────\\n  ? for shortcuts\\033[H'\n";
 
 /// T-961's stand-in for Claude Code's box, as 2.1.310 behaves around it.

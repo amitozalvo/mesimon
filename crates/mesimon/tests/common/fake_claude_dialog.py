@@ -393,6 +393,12 @@ def main():
                     typed += text or " "
                 continue
             ended = dialog.key(kind, text)
+            kept = ended == "change" and os.path.exists(os.path.join(HERE, f"keep-{TICKET}"))
+            # The dialog file goes before any word of how it ended: a test
+            # that reads one writes the next dialog, which a remove after
+            # it would take with it (T-1002).
+            if ended and not kept:
+                os.remove(DIALOG)
             if ended == "accept":
                 with open(os.path.join(HERE, f"accepted-{TICKET}"), "w") as f:
                     f.write(dialog.accepted)
@@ -401,7 +407,7 @@ def main():
             elif ended == "change":
                 with open(os.path.join(HERE, f"changed-{TICKET}.json"), "w") as f:
                     json.dump({"row": dialog.ROWS[2], "text": dialog.field}, f)
-                if os.path.exists(os.path.join(HERE, f"keep-{TICKET}")):
+                if kept:
                     continue
                 if record:
                     said = REFUSED + "To tell you how to proceed, the user said: " + dialog.field
@@ -424,7 +430,6 @@ def main():
                           {"uuid": f"close-{record[1]}", "type": "system",
                            "subtype": "turn_duration", "durationMs": 1})
             if ended:
-                os.remove(DIALOG)
                 dialog, source = None, None
                 break
 

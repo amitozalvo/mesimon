@@ -36698,3 +36698,25 @@ range. Each part was checked against its removal:
     the reader.
   - Goldens `tier_edit_model_{default,ring,saved,codex,codex_none,name}_120x30`;
     `tier_edit_model_name` replaces `tier_edit_model`.
+
+## crown_e2e flakes that failed alone were the fixtures' and the tests' own races (T-1002, 2026-10-25, named by T-997's runs, gap row 63 on T-925)
+
+Four tests, each stretched until it failed every time, then fixed in the test or its stand-in.
+Nothing in the daemon changed. The queue drain's retry on an old pane sample, which also showed
+here (`a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box`), is T-997's.
+
+- **`the_crown_lets_one_agent_edit_the_others`, "changed since it was read".** A shell stub's
+  composer printed and set no title. Ten seconds into a spawn no hook ended, the startup probe
+  read that as a startup modal, and the state flip staled the `seen` stamp. `COMPOSER` now names
+  itself `✳ Claude Code` (OSC 0), as Claude Code does.
+- **`a_new_plan_while_its_wake_is_owed_is_one_wake_then_the_current_request`, "the new plan
+  accepted".** `fake_claude_dialog.py` wrote how a dialog ended before removing its dialog file.
+  A test that waits on the outcome writes the next dialog, and the late remove deleted it. The
+  stand-in now removes the file first.
+- **`a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out` (mod road), "the late
+  refusal".** `std::fs::write` creates `mod-release` empty before it writes `dropped`, and the
+  mod's poll could read it empty as `entered`. `write_whole` renames a finished file in.
+- **`a_refusal_written_before_its_hooks_still_clears_the_plan`, "no plan stands".** The prompt's
+  hook alone makes W running, so `await_state(Running)` could pass before the `PreToolUse` held
+  W on the plan. The test now waits for the committed `session_state` line leaving
+  `requires_action`.

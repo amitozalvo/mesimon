@@ -6358,7 +6358,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
             unacked() > before
         });
         assert_eq!(word(&mut c).as_deref(), Some("sent"), "the mod took the frame; it waits");
-        std::fs::write(h.dir.join("mod-release"), "dropped").unwrap();
+        write_whole(&h.dir.join("mod-release"), "dropped");
         wait_until(std::time::Duration::from_secs(10), "the late refusal", || {
             word(&mut c).as_deref() == Some("dropped")
         });
@@ -9880,7 +9880,21 @@ fn a_refusal_written_before_its_hooks_still_clears_the_plan() {
                 .unwrap_or_default()
                 .contains(&format!("\"tool_use_id\": \"{request}\""))
         });
-        // Now the busy writer consumes the turn's hooks.
+        // Now the busy writer consumes the turn's hooks. The prompt's alone
+        // makes W running, so the wait is for the plan's committed leave:
+        // the hook holds W on it, and the read of the result ends it after
+        // the settle (T-1002).
+        let leaves = |b: &PlanBed| {
+            b.feed()
+                .lines()
+                .filter(|l| {
+                    l.contains("\"kind\":\"session_state\"")
+                        && l.contains(&ws.to_string())
+                        && l.contains("\"from\":\"requires_action\"")
+                })
+                .count()
+        };
+        let before = leaves(&b);
         hook_send(
             &b.h.paths.hook_sock(),
             &ws.to_string(),
@@ -9888,6 +9902,7 @@ fn a_refusal_written_before_its_hooks_still_clears_the_plan() {
             r#"{"prompt":"go"}"#,
         );
         b.hook("PreToolUse", "ExitPlanMode", request);
+        wait_until(std::time::Duration::from_secs(10), "the plan's leave", || leaves(&b) > before);
         let off = if esc { interrupted.clone() } else { SessionState::Running };
         b.c.await_state(ws, "off the plan its result on disk ended", |s| *s == off);
         let v = read(&mut b.c, b.sa, &kw).unwrap();
@@ -14337,7 +14352,7 @@ fn nine_taken_wakes_each_keep_their_refusal_and_their_pane() {
 
     // ---- the first frame's refusal: owed again, typed once -----------------
     let typed = lines("raised its hand");
-    std::fs::write(h.dir.join(format!("mod-release-{}", frames[0])), "dropped").unwrap();
+    write_whole(&h.dir.join(format!("mod-release-{}", frames[0])), "dropped");
     let refused = format!("crown wake {} in session {sa}: refused, dropped", frames[0]);
     wait_until(std::time::Duration::from_secs(10), "the first frame's refusal matched", || {
         read_file(&journal).contains(&refused)
