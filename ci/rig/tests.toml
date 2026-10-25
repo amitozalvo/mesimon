@@ -139,12 +139,14 @@
 #              ticket after it names that earlier ask at <word>, within
 #              <secs> of the earlier send when given: the turn's end spoke
 #              for the first, the long command cut short),
-#              held_steer:<word> (T-974 round 1: the same steer beside a
-#              held `sent` submit; a later answered wake names the submit
-#              taken, and a wake naming the steer before it is recorded:
-#              the board sees it only where the steer's turn ended outside
-#              the held prompt's settle; the observed line counts the
-#              worker's prompts holding <word>, the words landing twice).
+#              held_steer:<payload> (T-974 rounds 1-2: the first send
+#              `now`, a held submit; the steer `immediately`, another ask,
+#              beside it at `sent`; exactly two of the worker's prompts
+#              carry <payload>, the words landing twice; every answered
+#              wake naming the submit says taken, at least one. A wake
+#              naming the steer is not required: the board sees one only
+#              where the steer's turn ended outside the held prompt's
+#              settle; `ci/rig.py::steer_verdict`).
 #   siblings   more tickets the test files beside its own ({key2}, {key3}
 #              in a step; {crown} is the rig's crown's own key), each with
 #              the same brief and every check run on
@@ -887,7 +889,7 @@ title = "ST2 · the crown steers a worker whose turn holds its earlier ask: do t
 workspace = "worktree"
 brief = "Run the shell command `sleep 90` with the Bash tool in the foreground (never in the background) and wait for it to finish, then reply with the single word first and end your turn. Read no file and run no other command."
 expect = "T-974 round 1, measured end to end on the real mod: while the worker's first turn runs its foreground sleep (90 s: a find over /usr ended under the first ask on this machine, so the steer met an idle agent, refused), the crown's ask_agent deliver now goes down the mod as a submit Claude Code holds to the running turn's end (receipt sent). The crown then sends the same words with deliver immediately: admitted beside the held submit as an ask of its own, its receipt naming the first in earlier at sent, its words read inside the running turn. The held submit then runs as a turn of its own and its end wakes the crown naming the first ask taken; the steer's turn's end wakes the crown naming the steer only where the board saw it end apart (the engine's Stop and the held prompt can come 0.3 s apart, one stretch to the board, round 1). The same words reach the worker twice, once as the steer and once as the held submit (T-934); the observed line counts them."
-checks = ["road:mod", "fed:prompt_by_mod", "crown:ask_agent=2", "held_steer:mango"]
+checks = ["road:mod", "fed:prompt_by_mod", "crown:ask_agent=2", "held_steer:Reply with the single word mango and end your turn. Read no file and run no command."]
 
   [[test.steps]]
   crown = "ST2: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: ST2 started."

@@ -1305,9 +1305,11 @@ mod ledger_tests {
 
     /// Round 1: the steer's exception asks for a turn the board observed
     /// running. With a submit still out, `now` and `immediately` pass it at
-    /// a proven `Running` agent the crown started, and nowhere else: not a
+    /// a proven `Running` agent the crown sends to (one it started, or a
+    /// person's whose ticket it watches, T-734), and nowhere else: not a
     /// guessed run, `Failed`, `Unknown`, `Spawning`, an idle (background
-    /// tasks or not), a dialog, a parked seat, a person's agent, or `idle`.
+    /// tasks or not), a dialog, a parked seat, an unwatched person's agent,
+    /// or `idle`.
     #[test]
     fn a_steer_needs_a_turn_observed_running() {
         let mut b = bed("admits");
@@ -1346,10 +1348,14 @@ mod ledger_tests {
             assert!(!admits(&b, Deliver::Now), "{state:?}");
             assert!(!admits(&b, Deliver::Immediately), "{state:?}");
         }
-        // A person's agent the crown does not watch: held for a person.
+        // A person's agent: held for a person unless the crown watches its
+        // ticket, which sends to it as to one it started (T-734, round 2).
         set(&mut b, SessionState::Running, Confidence::High);
         b.d.board.sessions[0].started_by = None;
-        assert!(!admits(&b, Deliver::Now), "a person's agent");
+        assert!(!admits(&b, Deliver::Now), "an unwatched person's agent");
+        b.d.crown_watched.insert(b.worker);
+        assert!(admits(&b, Deliver::Now), "a watched person's agent");
+        assert!(admits(&b, Deliver::Immediately), "a watched person's agent");
     }
 
     /// A settled record is not kept; a queued one is the queue's.

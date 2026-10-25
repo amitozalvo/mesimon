@@ -1,4 +1,5 @@
-"""Offline checks of the Claude rig's readiness predicates (A3, T-945)."""
+"""Offline checks of the Claude rig's readiness predicates (A3, T-945) and
+ST2's acceptance (T-974)."""
 import importlib.util
 import os
 from pathlib import Path
@@ -86,6 +87,55 @@ class RestartEnvironmentTests(unittest.TestCase):
                 f.write("PATH=/winner\n")
             os.replace(tmp, env_file)
             self.assertTrue(landed(), "the winner's own capture")
+
+
+class SteerVerdictTests(unittest.TestCase):
+    """T-974 round 2: ST2's acceptance, `held_steer`, off a recorded feed."""
+
+    PAYLOAD = "Reply with the single word mango and end your turn. Read no file and run no command."
+    TID = "01TICKET"
+
+    def lines(self, second="immediately", second_ask="B", wake="A taken"):
+        sent = lambda at, outcome, ask, beside=None: dict(
+            kind="board", cmd="ask_agent_sent", ticket=self.TID, at_ms=at, outcome=outcome,
+            ask=ask, **({"beside": beside} if beside else {}))
+        out = [sent(1_000, "now", "A"), sent(2_000, second, second_ask, ["A sent"])]
+        if wake:
+            out.append(dict(kind="crown_wake", worker=self.TID, cause="answered", at_ms=9_000,
+                            ask=wake))
+        return out
+
+    def verdict(self, lines, prompts):
+        return rig.steer_verdict("held_steer", self.PAYLOAD, lines, self.TID, prompts)
+
+    def prompts(self, n=2):
+        return ["ST2 · the title", *[self.PAYLOAD] * n, "first"]
+
+    def test_the_measured_run_passes_with_no_wake_naming_the_steer(self):
+        ok, seen = self.verdict(self.lines(), self.prompts())
+        self.assertTrue(ok, seen)
+        self.assertIn("2 of 4", seen)
+
+    def test_a_missing_second_prompt_fails(self):
+        ok, seen = self.verdict(self.lines(), self.prompts(1))
+        self.assertFalse(ok, seen)
+
+    def test_a_second_now_fails(self):
+        ok, seen = self.verdict(self.lines(second="now"), self.prompts())
+        self.assertFalse(ok, seen)
+
+    def test_the_same_ask_twice_fails(self):
+        ok, seen = self.verdict(self.lines(second_ask="A"), self.prompts())
+        self.assertFalse(ok, seen)
+
+    def test_an_incidental_word_is_not_the_payload(self):
+        prompts = ["ST2 · the title", "mango", "a mango, please", "first"]
+        ok, seen = self.verdict(self.lines(), prompts)
+        self.assertFalse(ok, seen)
+
+    def test_no_wake_or_a_wake_short_of_taken_fails(self):
+        self.assertFalse(self.verdict(self.lines(wake=None), self.prompts())[0])
+        self.assertFalse(self.verdict(self.lines(wake="A handed"), self.prompts())[0])
 
 
 if __name__ == "__main__":

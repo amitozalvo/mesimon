@@ -34876,3 +34876,33 @@ case found.
   is back to its original line: the exception sits once, in the clause the reader found
   contradicted. `ask_agent` is 819 bytes. The rules say "into a running turn" where they said
   "to a working agent".
+
+**Round 2, the cold reader's second read of `25911509`.** The dialog, admission and own-turn fixes
+stand. Two corrections and one assertion; no production logic changes.
+- **ST2's acceptance** is now `ci/rig.py::steer_verdict`, a pure function, so it is driven offline.
+  `held_steer:<payload>` requires:
+  - the first send `now` and the steer `immediately`;
+  - two distinct ask ids, the steer beside the first at `sent`;
+  - exactly two of the worker's prompts carrying the payload (the whole payload, compared with
+    whitespace normalised);
+  - every answered wake naming the first saying `taken`, and at least one such wake.
+
+  Unchanged:
+  - No wake naming the steer is required, which is the coalesced-end allowance.
+  - The duplicate count no longer only prints; it decides.
+
+  `ci/rig_test.py` adds controls that fail on each of:
+  - a missing second prompt;
+  - a second `now`;
+  - the same ask twice;
+  - an incidental word in place of the payload;
+  - no wake, or a wake short of `taken`.
+- **The rules gain one fact** beside the "ask of its own" sentence: "A steer leaves an earlier
+  submitted prompt in place; the board has no recall for it." `earlier: sent` was a receipt stage,
+  not a statement about recall.
+- **The admission unit** also asserts a watched person's `Running` agent is admitted (T-734: the
+  crown sends to it as to one it started), beside the unwatched one refused.
+- **Limit, not measured:** two held submits plus a steer, live. The unit
+  `a_held_submit_entered_after_a_steer_takes_the_turn_it_starts` proves that state settles: a
+  handed own-turn ask under another's mark is taken at a proven end. The mod relays its reports
+  one at a time, so the two submits' `entered`s arrive in turn.

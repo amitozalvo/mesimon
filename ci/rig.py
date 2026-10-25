@@ -556,6 +556,69 @@ def user_prompts(rows, at=False):
     return out
 
 
+def steer_verdict(kind, arg, lines, tid, prompts):
+    """T-974: a steer beside the crown's ask still out, judged off the feed
+    `lines` and the worker's user `prompts`; (ok, observed).
+
+    The ticket's `ask_agent_sent` lines name their asks; the steer is the
+    first whose `beside` names an earlier send's ask at `sent` or `handed`.
+    The answered wakes after it each name the ask their turn answered and its
+    word then (round 1).
+
+    `steered:<word>[:<secs>]`: the steer is `now` or `immediately`, and the
+    first answered wake after it names the earlier ask at <word>, within
+    <secs> of that ask's send when given (the long command cut short).
+
+    `held_steer:<payload>` (round 2): the first send is `now` (a held
+    submit), the steer `immediately`, two distinct ask ids, the steer beside
+    the first at `sent`; exactly two of the worker's prompts carry the
+    payload (the same words twice, once as the steer, once as the held
+    submit, T-934); and every answered wake naming the first says `taken`,
+    at least one. No wake naming the steer is required: the engine's Stop
+    and the held prompt can come inside one settle, one stretch to the
+    board, whose end is the submit's (round 1, the first ST2 run)."""
+    sends = [l for l in lines if l.get("kind") == "board"
+             and l.get("cmd") == "ask_agent_sent" and l.get("ticket") == tid]
+    levels = ("immediately",) if kind == "held_steer" else ("now", "immediately")
+    found = None
+    for i, l in enumerate(sends):
+        if l.get("outcome") not in levels:
+            continue
+        before = {e.get("ask"): e for e in sends[:i] if e.get("ask")}
+        for b in l.get("beside") or []:
+            ask, _, word = b.partition(" ")
+            if ask in before and ask != l.get("ask") and word in ("sent", "handed"):
+                found = (l, before[ask], word)
+                break
+        if found:
+            break
+    if not found:
+        return False, ("; ".join(f"{l.get('outcome')} {l.get('ask')} beside {l.get('beside') or []}"
+                                 for l in sends) or "no ask_agent_sent line")
+    steer, first, word = found
+    wakes = [(w["at_ms"], *(w.get("ask") or "? ?").split(" ", 1)) for w in lines
+             if w.get("kind") == "crown_wake" and w.get("worker") == tid
+             and w.get("cause") == "answered" and w.get("at_ms", 0) >= steer["at_ms"]]
+    told = ", ".join(f"{'first' if a == first['ask'] else 'steer' if a == steer['ask'] else a}"
+                     f" {w} at +{(t - first['at_ms']) / 1000:.0f} s" for t, a, w in wakes)
+    observed = (f"{first.get('outcome')} first {first['ask']}, {steer['outcome']} steer "
+                f"{steer.get('ask')} beside it {word}; wakes: {told or 'none'}")
+    if kind == "steered":
+        want, _, secs = arg.partition(":")
+        ok = bool(wakes) and wakes[0][1] == first["ask"] and wakes[0][2] == want
+        if ok and secs:
+            ok = (wakes[0][0] - first["at_ms"]) / 1000 <= float(secs)
+        return ok, observed
+    payload = " ".join(arg.split())
+    carrying = [p for p in prompts if payload and payload in " ".join(p.split())]
+    first_wakes = [w for _, a, w in wakes if a == first["ask"]]
+    ok = (first.get("outcome") == "now" and steer.get("outcome") == "immediately"
+          and bool(first.get("ask")) and bool(steer.get("ask")) and first["ask"] != steer["ask"]
+          and word == "sent" and len(carrying) == 2
+          and bool(first_wakes) and all(w == "taken" for w in first_wakes))
+    return ok, f"{observed}; prompts carrying the payload: {len(carrying)} of {len(prompts)}"
+
+
 def iso_ms(stamp):
     """A transcript's ISO timestamp as epoch ms."""
     from datetime import datetime
@@ -3060,69 +3123,7 @@ Reply with the single word ready and end your turn."""
             elif name == "fed":
                 check(c, arg in fed, f"{arg}×{fed.count(arg)}")
             elif name in ("steered", "held_steer"):
-                # T-974: a steer beside the crown's ask still out. `sends`
-                # are the ticket's `ask_agent_sent` lines in order, each
-                # naming its ask; the steer is the first with deliver now or
-                # immediately whose `beside` names an earlier send's ask at
-                # `sent` or `handed`. `wakes` are the crown's answered wakes
-                # for the ticket after it, each naming the ask its turn
-                # answered and that ask's word then (round 1).
-                sends = [l for l in lines if l.get("kind") == "board"
-                         and l.get("cmd") == "ask_agent_sent" and l.get("ticket") == tid]
-                found = None
-                for i, l in enumerate(sends):
-                    if l.get("outcome") not in ("now", "immediately"):
-                        continue
-                    before = {e.get("ask"): e for e in sends[:i] if e.get("ask")}
-                    for b in l.get("beside") or []:
-                        ask, _, word = b.partition(" ")
-                        if ask in before and ask != l.get("ask") and word in ("sent", "handed"):
-                            found = (l, before[ask], word)
-                            break
-                    if found:
-                        break
-                if not found:
-                    check(c, False, "; ".join(f"{l.get('outcome')} {l.get('ask')} beside "
-                                             f"{l.get('beside') or []}" for l in sends)
-                          or "no ask_agent_sent line")
-                    continue
-                steer, first, word = found
-                wakes = [(w["at_ms"], *(w.get("ask") or "? ?").split(" ", 1)) for w in lines
-                         if w.get("kind") == "crown_wake" and w.get("worker") == tid
-                         and w.get("cause") == "answered" and w.get("at_ms", 0) >= steer["at_ms"]]
-                told = ", ".join(f"{'first' if a == first['ask'] else 'steer' if a == steer['ask'] else a}"
-                                 f" {w} at +{(t - first['at_ms']) / 1000:.0f} s" for t, a, w in wakes)
-                observed = (f"{steer['outcome']} steer {steer['ask']} beside first {first['ask']} "
-                            f"{word}; wakes: {told or 'none'}")
-                first_wakes = [(t, w) for t, a, w in wakes if a == first["ask"]]
-                if name == "steered":
-                    # `steered:<word>[:<secs>]`: the first answered wake
-                    # after the steer names the first ask at <word>, no
-                    # wake naming the steer before it, and within <secs> of
-                    # the first ask's send when given (the long command
-                    # was cut short, not waited out).
-                    want, _, secs = arg.partition(":")
-                    ok = bool(wakes) and wakes[0][1] == first["ask"] and wakes[0][2] == want
-                    if ok and secs:
-                        ok = (wakes[0][0] - first["at_ms"]) / 1000 <= float(secs)
-                    check(c, ok, observed)
-                else:
-                    # `held_steer:<word>`: the first ask a held submit, the
-                    # steer beside it at `sent`; a later answered wake names
-                    # the first taken and none names it otherwise. A wake
-                    # naming the steer comes before it only where the board
-                    # saw the steer's turn end on its own: the engine's
-                    # Stop and the held prompt can come inside one settle,
-                    # one stretch whose end is the submit's (round 1, the
-                    # first ST2 run), so it is recorded, not required. How
-                    # many of the worker's prompts hold <word> is the
-                    # measure (T-934: the same words twice, once as the
-                    # steer, once as the held submit).
-                    prompts = user_prompts(rows)
-                    held = [p for p in prompts if arg in p.lower()]
-                    ok = (word == "sent" and bool(first_wakes)
-                          and all(w == "taken" for _, w in first_wakes))
-                    check(c, ok, f"{observed}; prompts holding {arg!r}: {len(held)} of {len(prompts)}")
+                check(c, *steer_verdict(name, arg, lines, tid, user_prompts(rows)))
             elif name == "board_fed":
                 # A board line about no ticket (the road's verdict), since
                 # the test began.
