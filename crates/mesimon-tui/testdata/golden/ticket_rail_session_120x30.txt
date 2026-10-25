@@ -1,0 +1,30 @@
+ TICKET (T-3)   mesimon › kanban-tui
+
+ Fix OSC-11 detection
+ IN PROGRESS for >1y ∙ created >1y ago ∙ description unread
+
+ ▎ The rail cuts a long notes list at its height.
+ ▎
+ ▎ One note per run.
+
+
+  PREVIEW                                                                                  SESSIONS                  3
+
+                       ▀▀▀▄  ▄▄▄   ▀▀▀▄                                                   ⠋ ✻ claude               >1y
+                        ██▀▄▀▀▀▀   ▄▀▀▀                                                   ◦ $ bash                 >1y
+                       ▄▀███▀▄▄▄▄▄▄▀█▀▄    ▄▄▄▄▄▄▄▄▄                                      ◦ $ bash                 >1y
+                     ▄▀████████████████▀▄  █▀▀▀▀████                                       x sleep
+                     █████▀████████▀█████  ██▀▀▀████
+                     █████▀▀▀██████▀▀▀███  ██▀▀█████                                       NOTES                   165
+                     ▀▀▀██████▀▀██████▀▀▀▀▀▀▀███████▄
+                      ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀ ▀▀▀▀▀▀▀▀▀▀▀▀▀                                     ≡ description       you >1y
+                                                                                           ≡ run log 1       agent >1y
+    ● working                                                                              ≡ run log 2       agent >1y
+    nothing said yet ∙ the first words land when the turn does                             ≡ run log 3       agent >1y
+                                                                                           ≡ run log 4       agent >1y
+                                                                                           ≡ run log 5       agent >1y
+                                                                                           ≡ run log 6       agent >1y
+                                                                                           ≡ run log 7       agent >1y
+                                                                                           ≡ run log 8       agent >1y
+                                                                                           ↓ 156 below
+ jk select session ∙ enter focus ∙ shift+enter ask agent ∙ r rename ∙ d delete ∙ n describe                      ? keys

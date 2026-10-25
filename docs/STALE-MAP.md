@@ -35380,3 +35380,66 @@ even after the late `SessionStart`. The ask reads `dropped`, and the feed says s
 `PreToolUse` then carries the person's turn on, as the resume's `SessionStart` reads as idle. The
 next ask is admitted while that turn runs: queued, its words kept out of W until the turn's end. Two controls check that a prompt after the board's paste takes the ack road: a live
 pane's ask, and a wake's parked words. On main's daemon the test fails at `sent`.
+
+## The ticket page's rail is a scrolling list: pinned sessions, a notes window, the board's cues (T-975, 2026-10-25, after the person used T-970's: "it causes flickers when scrolling and it doesn't even look like a scrollable list")
+
+**Why T-970 flickered (read from the code).**
+1. **Its offset counted lines from `SESSIONS` and was read back from the painter's own last
+   frame** (`rail_scroll`). Anything above the notes that changed its line count slid every note
+   under a fixed offset, and nothing corrected it while the cursor's row stayed in view:
+   - the `x sleep` trailer, drawn on a session row alone;
+   - a waiting session's question line;
+   - a badge;
+   - a session a refresh added.
+
+   A step back onto a session also snapped the window to line 0 in one frame. A marquee tick
+   alone moved nothing.
+2. **The loop draws, then ticks, and `tick` pumps (`poll_notes`) before it reads the key.** So the
+   frame after a step onto an uncached note read `fetching` for up to a frame wait (100 ms). On a
+   wheel burst that was every frame.
+3. **The board's summary sweep (T-696) reads every body through `remember_note`, into the same
+   64-entry cache.** The cache evicts by first fetch, so the open page's description was soon the
+   oldest. The rail sits under its rows (`extra`), so the rail jumped up by them until the next
+   tick fetched it again.
+4. **Crossing from the sessions into the notes slid the notes up a row**, as the `x sleep` row
+   went away.
+
+**What shipped.**
+- **The sessions block and the `NOTES` heading stay put. Only the notes scroll**, in a window of
+  whole rows.
+- **`App::rail_top` holds the window: the ticket and its first shown note.**
+  - Only the rail step moves it (`j`/`k`, and the wheel, which presses them). The step starts from
+    the window on screen (`App::rail_window`) and makes the least move that keeps the cursor in.
+  - The draw reads it and writes back only a measurement, the window's rows (`rail_measure`).
+  - A cursor that got outside without a step (a resize, the prompt field opening, a return from
+    the diff) is drawn by the same function of the stored window and this frame's size.
+- **"There is more" is the board column's own cue**, dim2, `↑`/`↓` (`^`/`v` in ASCII).
+  - `↑ N above` takes the blank row under the heading, so no row shifts when the list starts
+    scrolling.
+  - `↓ N below` takes the window's last row.
+  - The heading keeps its count and never ticks. `N new note` is the list's last line.
+- **The arithmetic is `ticket::notes_window`.** It is unit-tested.
+- **Mouse rects are recorded for the drawn rows alone.**
+- **Causes 2–4 are fixed:**
+  - `App::tick` polls notes again after an event that changed the screen;
+  - `remember_note` never evicts the open page's description;
+  - the session trailer's row is kept, blank, where notes exist and no key stands in it.
+- **The kept row moved five goldens down one row above `NOTES`**, each checked by eye:
+  `ticket_note_selected`, `ticket_prompt`, `ticket_description_selected`,
+  `ticket_description_table_selected` and `ticket_new_claude`, all 120x30.
+- **`ticket_prompt_field_sticks_to_the_zone_foot` reads the left zone's columns alone.** The
+  rail's `NOTES` now shares the row with the zone's cut mark.
+- **Ten new goldens: `ticket_rail_{session,first_note,mid,wheel,last_note}_{120x30,100x24}`.**
+  The narrow ones have the prompt field open.
+
+**Weighed, not taken.**
+- A position word in the heading (`12 of 165`): it ticks on every key, and the last row still
+  reads as the list's end.
+- The preview's `~`: a document's mark, with no "above" and no count.
+- A wheel that scrolls the view away from the cursor: two positions to keep, and the cursor
+  off-screen again.
+
+**Not done (seen).**
+- At 100x24 with three sessions, the description band and the prompt field open, the window is
+  2 rows: one note and its cue. That is the page's geometry.
+- A wheel burst still re-points the zone once per notch, now each with its text.

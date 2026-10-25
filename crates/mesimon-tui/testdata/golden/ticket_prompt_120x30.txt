@@ -16,12 +16,12 @@
                                                                                           ⠋ ✻ claude               >1y
                                                                                           ◦ $ bash                 >1y
 
+
                                                                                            NOTES                     2
 
                                                                                            ≡ description       you >1y
                                                                                            ≡ Repro steps     agent >1y
                                                                                            N new note
-
 
 
 

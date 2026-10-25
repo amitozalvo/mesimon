@@ -28,6 +28,7 @@ mod transcript;
 pub(crate) mod usage;
 
 pub(crate) use card::{CrownMark, Land};
+pub(crate) use ticket::notes_window;
 
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Style;

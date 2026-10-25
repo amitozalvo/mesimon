@@ -16,12 +16,12 @@
     ticket.rs      0  the band already calls render_on                                    ⠋ ✻ claude               >1y
                                                                                           ◦ $ bash                 >1y
     tests.rs      31  this one
+
                                                                                            NOTES                     2
 
                                                                                            ≡ description       you >1y
                                                                                            ≡ Repro steps     agent >1y
                                                                                            N new note
-
 
 
 

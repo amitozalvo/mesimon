@@ -1825,7 +1825,14 @@ fn draw_rail(
     // still grow a shell (T-300), `x` only on a selected row. Both can stand
     // down, and then the rail carries no trailer at all. (`c` woke a parked
     // claude here until T-674; `enter` on its row does that.)
-    lines.extend(trailer(&[keymap::Verb::Shell, keymap::Verb::Sleep]));
+    // Under notes its row is kept when no key stands in it (T-975): `x`
+    // shows on a session row alone, and the notes slid up a row under the
+    // cursor as it crossed from the sessions into them.
+    let keys = trailer(&[keymap::Verb::Shell, keymap::Verb::Sleep]);
+    if keys.is_empty() && !notes.is_empty() {
+        lines.push(Line::default());
+    }
+    lines.extend(keys);
 
     // ---- the notes, under the sessions ------------------------------------
     // Same shape as the sessions: a heading with the count, one row each —
@@ -1839,8 +1846,30 @@ fn draw_rail(
         head.push(Span::raw(" ".repeat(w.saturating_sub(used))));
         head.push(Span::styled(right, theme.dim2()));
         lines.push(Line::from(head));
-        lines.push(Line::default());
-        for (j, n) in notes.iter().enumerate() {
+        // The notes scroll under the pinned sessions and heading (T-975),
+        // in a window the rail step moves (`App::rail_window`). The blank
+        // under the heading says what is above it once the window has left
+        // the top, and the window's last row what is below, as a board
+        // column's cues do; the `N` trailer is the list's last line.
+        let tail = trailer(&[keymap::Verb::NoteNew]);
+        let rows = (area.height as usize).saturating_sub(lines.len() + 1);
+        app.rail_measure.set((rows, tail.len()));
+        let top = app.rail_window(ticket_id, rail_idx);
+        let total = notes.len() + tail.len();
+        let cut = rows >= 2 && top + rows < total;
+        let end = (top + if cut { rows - 1 } else { rows }).min(total);
+        let cue = |count: usize, up: bool| {
+            let arrow = match (tier, up) {
+                (glyphs::Tier::Ascii, true) => '^',
+                (glyphs::Tier::Ascii, false) => 'v',
+                (_, true) => '↑',
+                (_, false) => '↓',
+            };
+            let word = if up { "above" } else { "below" };
+            Line::from(Span::styled(format!(" {arrow} {count} {word}"), theme.dim2()))
+        };
+        lines.push(if top > 0 { cue(top, true) } else { Line::default() });
+        for (j, n) in notes.iter().enumerate().take(end).skip(top) {
             let selected = notes_start + j == rail_idx;
             owners.push((lines.len(), lines.len() + 1, notes_start + j));
             let who = author_word(&n.edited_by, app);
@@ -1873,7 +1902,10 @@ fn draw_rail(
             let row_style = if selected { theme.selected_row() } else { Style::default() };
             lines.push(Line::from(spans).style(row_style));
         }
-        lines.extend(trailer(&[keymap::Verb::NoteNew]));
+        lines.extend(tail.into_iter().take(end.saturating_sub(notes.len())));
+        if cut {
+            lines.push(cue(notes.len() - end.min(notes.len()), false));
+        }
     }
 
     f.render_widget(Paragraph::new(lines), area);
@@ -1883,5 +1915,61 @@ fn draw_rail(
         let h = (to - from) as u16;
         let rect = Rect { y, height: h, ..area }.intersection(area);
         hits.record(rect, crate::mouse::Target::Rail(idx));
+    }
+}
+
+/// The rail's first shown note (T-975): `top` while the `cursor` note sits
+/// in the window of `rows` rows over `total` (the notes, then the `N`
+/// trailer), else the least move that brings it in. While more lies below,
+/// the window's last row is the `below` cue and holds no note; the `above`
+/// cue costs nothing, it takes the blank under the heading. A list that
+/// fits is home.
+pub(crate) fn notes_window(top: usize, cursor: Option<usize>, rows: usize, total: usize) -> usize {
+    if rows == 0 || total <= rows {
+        return 0;
+    }
+    let last = total - rows;
+    let mut top = top.min(last);
+    if let Some(c) = cursor {
+        let cut = rows >= 2 && top + rows < total;
+        let shown = if cut { rows - 1 } else { rows };
+        if c < top {
+            top = c;
+        } else if c >= top + shown {
+            // At its new place the window is cut again (the cue under the
+            // cursor) unless that reaches the end, which the clamp finds.
+            top = if rows >= 2 { c + 2 - rows } else { c };
+        }
+    }
+    top.min(last)
+}
+
+#[cfg(test)]
+mod rail_tests {
+    use super::notes_window;
+
+    #[test]
+    fn the_notes_window_moves_only_to_bring_the_cursor_in() {
+        // 165 notes and the trailer in ten rows: nine notes and the cue.
+        let (rows, total) = (10, 166);
+        // In view at the top, the middle and the last note row: it stays.
+        assert_eq!(notes_window(72, Some(72), rows, total), 72);
+        assert_eq!(notes_window(72, Some(76), rows, total), 72);
+        assert_eq!(notes_window(72, Some(80), rows, total), 72);
+        // One past either edge: one row. The cue's row is not a note row.
+        assert_eq!(notes_window(72, Some(81), rows, total), 73, "below");
+        assert_eq!(notes_window(72, Some(71), rows, total), 71, "above");
+        // The last note brings the trailer in, and there is no cue.
+        assert_eq!(notes_window(150, Some(164), rows, total), 156);
+        assert_eq!(notes_window(156, Some(163), rows, total), 156, "at the end, in view");
+        // A session cursor leaves the window where it was.
+        assert_eq!(notes_window(72, None, rows, total), 72);
+        // A list that fits is home, and a window left over from a longer
+        // list (or a taller rail) comes back to the end.
+        assert_eq!(notes_window(40, Some(3), rows, 9), 0);
+        assert_eq!(notes_window(300, None, rows, total), 156);
+        // A rail with one row: the cursor alone, no cue.
+        assert_eq!(notes_window(0, Some(80), 1, total), 80);
+        assert_eq!(notes_window(5, Some(80), 0, total), 0);
     }
 }

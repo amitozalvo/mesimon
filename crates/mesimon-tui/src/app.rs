@@ -1832,6 +1832,13 @@ pub struct App {
     pub marquee: Cell<Option<(ulid::Ulid, std::time::Instant)>>,
     /// Same clock for the ticket rail's selected session name.
     pub rail_marquee: Cell<Option<(uuid::Uuid, std::time::Instant)>>,
+    /// The ticket rail's first shown note, and the ticket it belongs to
+    /// (T-975). Moved by the rail step alone, from the window on screen;
+    /// the draw reads it and writes nothing back.
+    pub rail_top: (ulid::Ulid, usize),
+    /// The notes window's rows and its trailer's, as the last draw measured
+    /// them: a measurement for the step's arithmetic, never a position.
+    pub rail_measure: Cell<(usize, usize)>,
     /// Same clock for the selected menu or settings row's subtitle, keyed to
     /// the WORDS: a different row is a new sentence, and so is the same row
     /// relabelled by its own toggle, which is exactly when the pass replays.
@@ -2352,6 +2359,8 @@ impl App {
             col_window: Cell::new(0),
             marquee: Cell::new(None),
             rail_marquee: Cell::new(None),
+            rail_top: (ulid::Ulid(0), 0),
+            rail_measure: Cell::new((0, 0)),
             menu_marquee: Cell::new(None),
             scroll_row: Cell::new(0),
             peek: false,
@@ -4114,7 +4123,14 @@ impl App {
             Ok(if event::poll(wait)? { Some(event::read()?) } else { None })
         };
         match self.next_event(self.frame_wait(), read)? {
-            Some(ev) => Ok(self.on_event(ev)? || dirty),
+            Some(ev) => {
+                let changed = self.on_event(ev)?;
+                // A step onto a note fetches it before its frame (T-975):
+                // left to the next pump, the zone read `fetching` for a
+                // whole frame wait on every row a wheel walked.
+                let fetched = changed && !self.merge_in_flight() && self.poll_notes();
+                Ok(changed || fetched || dirty)
+            }
             None => Ok(dirty),
         }
     }
@@ -5445,8 +5461,22 @@ impl App {
 
     pub(crate) fn remember_note(&mut self, id: ulid::Ulid, rev: u64, text: Option<String>) {
         self.remember_summary(id, rev, text.as_deref());
+        // Never the open page's description (T-975): fetched first, it was
+        // the oldest one 63 notes down a long rail, and the rail it sits
+        // over jumped up by its rows until the next tick fetched it again.
+        let keep = self
+            .ticket_page()
+            .and_then(|t| self.board.ticket(t))
+            .and_then(|t| t.description())
+            .map(|d| d.id);
         if self.notes.len() >= NOTE_CACHE_MAX && !self.notes.contains_key(&id) {
-            if let Some(oldest) = self.notes.iter().min_by_key(|(_, n)| n.tried).map(|(k, _)| *k) {
+            if let Some(oldest) = self
+                .notes
+                .iter()
+                .filter(|(k, _)| Some(**k) != keep)
+                .min_by_key(|(_, n)| n.tried)
+                .map(|(k, _)| *k)
+            {
                 self.notes.remove(&oldest);
             }
         }
@@ -5481,6 +5511,20 @@ impl App {
     /// `cargo build` in it spin the card the way an adopted shell's would.
     pub fn terminal_busy(&self, ticket: ulid::Ulid) -> bool {
         self.terminal_of(ticket).is_some_and(|t| t.foreground.is_some())
+    }
+
+    /// The ticket rail's first shown note with the cursor on `rail_idx`
+    /// (T-975): the stored window, moved the least that keeps a note
+    /// cursor in it, at the size the last draw measured. The draw shows
+    /// exactly this and the rail step stores it, so neither reads the
+    /// other's last frame.
+    pub(crate) fn rail_window(&self, ticket: ulid::Ulid, rail_idx: usize) -> usize {
+        let notes = self.board.ticket(ticket).map_or(0, |t| t.notes.len());
+        let start = self.rail_rows(ticket).len().saturating_sub(notes);
+        let cursor = rail_idx.checked_sub(start).filter(|c| *c < notes);
+        let top = if self.rail_top.0 == ticket { self.rail_top.1 } else { 0 };
+        let (rows, trailer) = self.rail_measure.get();
+        crate::ui::notes_window(top, cursor, rows, notes + trailer)
     }
 
     /// The rail row under the ticket page's cursor.
@@ -10098,6 +10142,11 @@ impl App {
                 } else {
                     rail_idx
                 };
+                // The notes window moves from where the eye sees it (T-975):
+                // the window this cursor is drawn in, then the least move
+                // that keeps the new row in it.
+                self.rail_top = (ticket, self.rail_window(ticket, rail_idx));
+                self.rail_top = (ticket, self.rail_window(ticket, idx));
                 self.screen = Screen::Ticket { ticket, rail_idx: idx };
             }
             Scope::Menu => {
@@ -19241,6 +19290,41 @@ mod tests {
         app.board_mut().tickets[0].notes[0].rev = 2;
         assert!(app.poll_notes());
         assert_eq!(sent.borrow().iter().filter(|c| c.contains("ReadNote")).count(), 2);
+    }
+
+    /// A step onto a note fetches it inside the step's own tick (T-975):
+    /// the frame drawn after the key reads the note, never `fetching`.
+    #[test]
+    fn a_step_onto_a_note_fetches_it_before_its_frame() {
+        let (mut app, sent) = app_with_three_notes();
+        let rows = app.rail_rows(ulid::Ulid(1)).len();
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: rows - 3 };
+        // Every body is read once for the summaries, then the cache lets
+        // this one go, as it does 64 notes down a long rail.
+        assert!(app.poll_summaries());
+        let second = app.board.tickets[0].notes[1].clone();
+        app.notes.remove(&second.id);
+        app.queued_event =
+            Some(TermEvent::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE)));
+        assert!(app.tick().unwrap());
+        assert_eq!(app.screen, Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: rows - 2 });
+        assert_eq!(app.note_text(&second), Some("second"), "{:?}", sent.borrow());
+    }
+
+    /// The open page's description outlives a walk down a long rail
+    /// (T-975): the oldest fetch, it was the one the cache let go, and the
+    /// rail under it jumped by its rows until the next tick fetched it.
+    #[test]
+    fn the_open_page_keeps_its_description_cached() {
+        let (mut app, _) = app_with_note();
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        assert!(app.poll_notes());
+        let description = app.board.tickets[0].notes[0].clone();
+        for n in 0..(NOTE_CACHE_MAX as u128 + 6) {
+            app.remember_note(ulid::Ulid(1000 + n), 1, Some(format!("note {n}")));
+        }
+        assert!(app.notes.len() <= NOTE_CACHE_MAX);
+        assert!(app.note_text(&description).is_some(), "the description stays");
     }
 
     /// The board reads every note body once per revision for its cards'

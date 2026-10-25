@@ -1,0 +1,30 @@
+ TICKET (T-3)   mesimon › kanban-tui
+
+ Fix OSC-11 detection
+ IN PROGRESS for >1y ∙ created >1y ago ∙ description unread
+
+
+  NOTE
+
+    run log 83
+
+    3 passed, 1 failed                                                                     SESSIONS                  3
+
+                                                                                          ⠋ ✻ claude               >1y
+                                                                                          ◦ $ bash                 >1y
+                                                                                          ◦ $ bash                 >1y
+
+
+                                                                                           NOTES                   165
+                                                                                           ↑ 75 above
+                                                                                           ≡ run log 75      agent >1y
+                                                                                           ≡ run log 76      agent >1y
+                                                                                           ≡ run log 77      agent >1y
+                                                                                           ≡ run log 78      agent >1y
+                                                                                           ≡ run log 79      agent >1y
+                                                                                           ≡ run log 80      agent >1y
+                                                                                           ≡ run log 81      agent >1y
+                                                                                           ≡ run log 82      agent >1y
+                                                                                           ≡ run log 83      agent >1y
+                                                                                           ↓ 81 below
+ jk select session ∙ enter edit note ∙ shift+enter ask agent ∙ r rename ∙ d delete ∙ n edit note                 ? keys

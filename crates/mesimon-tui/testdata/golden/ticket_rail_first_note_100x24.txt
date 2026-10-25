@@ -1,0 +1,24 @@
+ TICKET (T-3)   mesimon › kanban-tui
+
+ Fix OSC-11 detection
+ IN PROGRESS for >1y ∙ created >1y ago ∙ description unread
+
+ ▎ The rail cuts a long notes list at its height.
+ ▎
+ ▎ One note per run.
+
+
+  SESSIONS                                                                                       3
+
+ ⠋ ✻ claude                                                                                    >1y
+ ◦ $ bash                                                                                      >1y
+ ◦ $ bash                                                                                      >1y
+
+
+  NOTES                                                                                        165
+
+  ≡ description                                                                            you >1y
+  ↓ 164 below
+   › rebase onto main
+   now  shift+tab
+ ASK  enter send ∙ esc cancel ∙ tab expand ∙ shift+tab now / queued / immediately

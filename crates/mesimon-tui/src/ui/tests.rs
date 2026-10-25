@@ -8129,10 +8129,10 @@ fn ticket_prompt_field_sticks_to_the_zone_foot() {
     // The content over the field is the description, cut at the field: the
     // zone's own cut mark closes the row over it, in the left zone.
     assert!(lines.iter().any(|l| l.contains("DESCRIPTION")), "the zone reads the description");
-    let cut = &lines[field_y - 1];
-    let cut_at = cut.trim_end().chars().count();
+    // The left zone alone: the rail beside it draws its own rows on this
+    // line (since T-975 its `NOTES` heading, a row lower than before).
+    let cut: String = lines[field_y - 1].chars().take(120 - 30).collect();
     assert!(cut.trim_end().ends_with('~'), "the row over the field is the cut row: {cut:?}");
-    assert!(cut_at < 120 - 30, "the cut mark is in the left zone, not the rail");
     // The board's field keeps the card whole; here the heading and the top
     // of the content stay, and only the tail gives way.
     assert!(lines.iter().any(|l| l.contains("What changed")), "the content's top stays");
@@ -8150,6 +8150,160 @@ fn ticket_prompt_field_sits_over_the_footer_on_a_narrow_page() {
     assert!(lines[h as usize - 2].contains("now  shift+tab"));
     assert!(lines[h as usize - 1].contains("ASK"));
     assert!(lines.iter().any(|l| l.contains("SESSIONS")), "the rail is still the screen");
+}
+
+/// T-3 with three sessions and 165 notes (T-975): the description, then
+/// `run log 1` … `run log 164`. Bodies land as a fetch would, for the rows
+/// a test reads (`seed_run_log`).
+fn app_long_rail() -> App {
+    let mut b = fixture(false);
+    b.sessions.push(session(33, ulid_n(3), SessionKind::Bash, SessionState::Running));
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
+        t.notes.push(note_meta(300, "Long rail", "local"));
+        for k in 1..165u128 {
+            t.notes.push(note_meta(300 + k, &format!("run log {k}"), "agent:0000"));
+        }
+    }
+    let mut app = app_graphite(b);
+    app.rich_keys = true;
+    app.remember_note(
+        ulid_n(300),
+        1,
+        Some("The rail cuts a long notes list at its height.\n\nOne note per run.".into()),
+    );
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    app
+}
+
+fn seed_run_log(app: &mut App, k: u128) {
+    app.remember_note(ulid_n(300 + k), 1, Some(format!("run log {k}\n\n3 passed, 1 failed")));
+}
+
+/// `key` pressed `n` times on the rail, with a frame between presses as the
+/// loop draws one: the step reads the window's size off the last frame.
+fn walk_rail(app: &mut App, key: char, n: usize, w: u16, h: u16) {
+    for _ in 0..n {
+        render(app, w, h);
+        press(app, key);
+    }
+}
+
+/// The rail's columns alone, at 120 wide (the rail is the last 30).
+fn rail_cols(lines: &[String]) -> Vec<String> {
+    lines.iter().map(|l| l.chars().skip(90).collect()).collect()
+}
+
+fn open_rail_prompt(app: &mut App) {
+    let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
+    for c in "rebase onto main".chars() {
+        buffer.insert(c);
+    }
+    app.mode = Mode::Input {
+        purpose: InputPurpose::Prompt {
+            target: crate::app::AskTarget::Ticket(ulid_n(3)),
+            walk: None,
+            queued: false,
+            immediately: false,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+        },
+        buffer,
+    };
+}
+
+/// The rail as a list (T-975): the sessions and the `NOTES` heading stay,
+/// the notes scroll in a window that moves only when the cursor leaves it,
+/// and the board column's cues say what is above and below.
+#[test]
+fn golden_ticket_rail_scrolls_as_a_list_120() {
+    use ratatui::crossterm::event::MouseEventKind;
+    let mut app = app_long_rail();
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("↓ ") && l.contains(" below")), "{lines:#?}");
+    assert!(!lines.iter().any(|l| l.contains(" above")), "{lines:#?}");
+    golden("ticket_rail_session_120x30", &lines);
+
+    // Onto the description: the rail does not move, the zone reads it.
+    walk_rail(&mut app, 'j', 3, 120, 30);
+    let first = render(&app, 120, 30);
+    assert_eq!(app.screen, Screen::Ticket { ticket: ulid_n(3), rail_idx: 3 });
+    golden("ticket_rail_first_note_120x30", &first);
+
+    // Down to run log 80: it sits on the window's last note row.
+    for k in [79, 80, 81, 82, 83] {
+        seed_run_log(&mut app, k);
+    }
+    walk_rail(&mut app, 'j', 80, 120, 30);
+    let mid = render(&app, 120, 30);
+    let at = mid.iter().position(|l| l.contains("run log 80 ")).expect("the cursor's row shows");
+    assert!(mid[at + 1].contains("↓ ") && mid[at + 1].contains(" below"), "{mid:#?}");
+    assert!(mid.iter().any(|l| l.contains("↑ ") && l.contains(" above")), "{mid:#?}");
+    assert!(mid.iter().any(|l| l.contains(" SESSIONS")), "the sessions stay");
+    golden("ticket_rail_mid_120x30", &mid);
+
+    // Up one, inside the window: every row stays where it is.
+    walk_rail(&mut app, 'k', 1, 120, 30);
+    assert_eq!(rail_cols(&render(&app, 120, 30)), rail_cols(&mid), "only the highlight moved");
+    walk_rail(&mut app, 'j', 1, 120, 30);
+
+    // A click on a shown note lands on the note it shows.
+    let lines = render(&app, 120, 30);
+    click(&mut app, spot_of(&lines, "run log 77 "));
+    assert_eq!(app.screen, Screen::Ticket { ticket: ulid_n(3), rail_idx: 3 + 77 });
+    walk_rail(&mut app, 'j', 3, 120, 30);
+
+    // Three notches of the wheel over the rail: three rows down.
+    for _ in 0..3 {
+        let lines = render(&app, 120, 30);
+        mouse(&mut app, MouseEventKind::ScrollDown, spot_of(&lines, "run log 78 "));
+    }
+    let wheel = render(&app, 120, 30);
+    assert_eq!(app.screen, Screen::Ticket { ticket: ulid_n(3), rail_idx: 3 + 83 });
+    golden("ticket_rail_wheel_120x30", &wheel);
+
+    // The last note: the trailer comes in, nothing is below.
+    seed_run_log(&mut app, 164);
+    walk_rail(&mut app, 'j', 164 - 83, 120, 30);
+    let last = render(&app, 120, 30);
+    assert!(last.iter().any(|l| l.contains("run log 164 ")), "{last:#?}");
+    assert!(last.iter().any(|l| l.contains("N new note")), "{last:#?}");
+    assert!(!last.iter().any(|l| l.contains(" below")), "{last:#?}");
+    golden("ticket_rail_last_note_120x30", &last);
+}
+
+/// The same list on the narrow page with the prompt field open (T-975):
+/// the rail is the screen and the field takes its last rows, so the window
+/// is short, and the cursor's row stays in it.
+#[test]
+fn golden_ticket_rail_scrolls_as_a_list_100_prompting() {
+    use ratatui::crossterm::event::MouseEventKind;
+    let (w, h) = (100, 24);
+    let mut app = app_long_rail();
+    let shot = |app: &mut App, name: &str| {
+        open_rail_prompt(app);
+        let lines = render(app, w, h);
+        app.mode = Mode::Normal;
+        assert!(lines[h as usize - 3].contains("› rebase onto main"), "{}", lines.join("\n"));
+        assert!(lines.iter().any(|l| l.contains(" SESSIONS")), "the sessions stay");
+        golden(name, &lines);
+        lines
+    };
+    shot(&mut app, "ticket_rail_session_100x24");
+    walk_rail(&mut app, 'j', 3, w, h);
+    shot(&mut app, "ticket_rail_first_note_100x24");
+    walk_rail(&mut app, 'j', 80, w, h);
+    let mid = shot(&mut app, "ticket_rail_mid_100x24");
+    assert!(mid.iter().any(|l| l.contains("run log 80 ")), "{}", mid.join("\n"));
+    for _ in 0..3 {
+        let lines = render(&app, w, h);
+        mouse(&mut app, MouseEventKind::ScrollDown, spot_of(&lines, "run log 80 "));
+    }
+    let wheel = shot(&mut app, "ticket_rail_wheel_100x24");
+    assert!(wheel.iter().any(|l| l.contains("run log 83 ")), "{}", wheel.join("\n"));
+    walk_rail(&mut app, 'j', 164 - 83, w, h);
+    let last = shot(&mut app, "ticket_rail_last_note_100x24");
+    assert!(last.iter().any(|l| l.contains("run log 164 ")), "{}", last.join("\n"));
 }
 
 /// The cursor on the DESCRIPTION row: the band's excerpt has gone, the zone

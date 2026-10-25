@@ -16,12 +16,12 @@
                                                                                           ⠋ ✻ claude               >1y
       cargo test -p mesimon-tui                                                           ◦ $ bash                 >1y
 
-    Still open: the --color=never path is untested covered now.                            NOTES                     2
+    Still open: the --color=never path is untested covered now.
+                                                                                           NOTES                     2
 
                                                                                            ≡ description       you >1y
                                                                                            ≡ Repro steps     agent >1y
                                                                                            N new note
-
 
 
 
