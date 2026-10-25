@@ -2404,14 +2404,16 @@ pub struct Board {
     /// `context` on the crown's reads, absent while this is off. ON by
     /// default (the author, 2026-10-25): a fact the daemon already holds,
     /// read off a transcript, that sends nothing anywhere. An absent key
-    /// reads on; a build that drops it has no such field to give, so no
-    /// schema bump.
+    /// reads on, so a person's off is saved at `COLUMNS_SCHEMA` 9, which a
+    /// build before it refuses and bars rather than dropping the off for
+    /// this build to read on again (round 1).
     #[serde(default = "yes")]
     pub crown_context: bool,
     /// The crown reads what a ticket has cost (T-969): `get_ticket`'s
     /// `cost`, the card's estimate, on the crown's reads. OFF by default
-    /// (the author, 2026-10-25); an absent key reads off, which is what a
-    /// build without it answers, so no schema bump.
+    /// (the author, 2026-10-25); an absent key reads off. It rides the v9
+    /// bump `crown_context` needs, though an older build dropping it would
+    /// only lose an opt-in.
     #[serde(default)]
     pub crown_cost: bool,
     /// Reviewed pull requests (T-859): a pull request someone else opened is
