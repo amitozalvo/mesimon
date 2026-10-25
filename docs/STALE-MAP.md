@@ -36720,3 +36720,7 @@ here (`a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box`), is T-997'
   hook alone makes W running, so `await_state(Running)` could pass before the `PreToolUse` held
   W on the plan. The test now waits for the committed `session_state` line leaving
   `requires_action`.
+
+## T-1011 — `u undo` stays out of settings dialogs
+
+`u` is a Global binding, so every dialog scope inherited it and its hint (`u undo archive` in the tier dialog) while the key undid a ticket the dialog is not about. `App::ctx()` now clears `can_undo` while the scope is a settings-style dialog (Settings, Sections, Usage, Prompts, Sharing, Tiers, TierEdit, Boards, Brief, Links, Theme, ColumnSettings, Summary, Transcript, PullRequests, Tour): the key is inert and unhinted there, by the one predicate that gates both. Board, ticket, diff, drawer, archived list, menu and releases keep it. No golden changed.

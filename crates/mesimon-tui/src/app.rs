@@ -7439,7 +7439,29 @@ impl App {
         };
         let wt = subject.and_then(|t| self.wt_item(t));
         let merge = subject.map(|t| self.merge_stage_word(t)).unwrap_or(None);
-        let undo = self.undo_target();
+        // `u` is global, so every dialog inherits it; it is offered (and
+        // works) only where a ticket is in view, never in a settings dialog.
+        let undo = self.undo_target().filter(|_| {
+            !matches!(
+                self.scope(),
+                Scope::Settings
+                    | Scope::Sections
+                    | Scope::Usage
+                    | Scope::Prompts
+                    | Scope::Sharing
+                    | Scope::Tiers
+                    | Scope::TierEdit
+                    | Scope::Boards
+                    | Scope::Brief
+                    | Scope::Links
+                    | Scope::Theme
+                    | Scope::ColumnSettings
+                    | Scope::Summary
+                    | Scope::Transcript
+                    | Scope::PullRequests
+                    | Scope::Tour
+            )
+        });
         let tag_cell = self.tag_cell();
         // The column the dialog is on, else the cursor's (T-117).
         let col = self.dialog_column().or_else(|| self.cursor_column());
@@ -27718,6 +27740,17 @@ mod tests {
         // Nothing left to undo, so the key goes quiet again.
         assert!(!app.ctx().can_undo);
         assert_eq!(keymap::hint_for(Scope::Board, Verb::Undo, &app.ctx()), None);
+    }
+
+    /// A settings dialog neither hints nor takes `u`: the undo is about a
+    /// ticket, not about the dialog (T-1011).
+    #[test]
+    fn u_is_quiet_in_a_dialog() {
+        let mut app = app_three_columns();
+        archive(&mut app);
+        assert!(app.ctx().can_undo);
+        app.mode = Mode::Tiers { idx: 0, naming: None };
+        assert!(!app.ctx().can_undo);
     }
 
     /// The archive undo is re-derived from the board, never trusted: a ticket
