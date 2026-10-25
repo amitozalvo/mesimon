@@ -98,44 +98,6 @@ pub fn turn_done_since(path: &Path, since: u64) -> bool {
     false
 }
 
-/// How far back `turn_closed_since` reads: a long turn's tool output runs
-/// past the 64 KiB the other readers take.
-const CLOSE_WINDOW: u64 = 4 * 1024 * 1024;
-
-/// How far a turn's opening prompt may sit from the moment the board marked
-/// the turn begun: the paste's ack or the mod's `entered` comes on either
-/// side of the transcript's record of the prompt by seconds, never minutes.
-const OPENING_BEFORE_MS: u64 = 30_000;
-const OPENING_AFTER_MS: u64 = 15_000;
-
-/// Did the turn the board marked begun at `began` (epoch ms) close since
-/// (T-973, round 2)? The turn is found by its own record, not by a moment:
-/// its opening prompt is the person's prompt (`adopt::user_prompt`) dated
-/// nearest `began`, within seconds of it. `Some(true)` where a close
-/// (`adopt::turn_edge`'s `Done`) or an abort follows that prompt in the file,
-/// whatever its stamp (a compaction's replies are written after records they
-/// predate); `Some(false)` where none does; `None` with no transcript, or no
-/// such prompt in the last 4 MiB (an old-only transcript, a mid-turn word the
-/// transcript does not record as a prompt): a restart keeps an expectation
-/// only on `Some(false)`.
-pub fn turn_closed_since(path: &Path, began: u64) -> Option<bool> {
-    let len = std::fs::metadata(path).ok()?.len();
-    let text = window_text(path, len, CLOSE_WINDOW)?;
-    let records: Vec<serde_json::Value> =
-        text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
-    let opening = records
-        .iter()
-        .enumerate()
-        .filter(|(_, v)| mesimon_core::adopt::user_prompt(v).is_some())
-        .filter_map(|(i, v)| record_ms(v).map(|at| (i, at)))
-        .filter(|(_, at)| at + OPENING_BEFORE_MS >= began && *at <= began + OPENING_AFTER_MS)
-        .min_by_key(|(_, at)| at.abs_diff(began))
-        .map(|(i, _)| i)?;
-    Some(records[opening + 1..].iter().any(|v| {
-        matches!(turn_edge(v), TurnEdge::Done(_)) || classify_tail_record(v) == TailEvent::Aborted
-    }))
-}
-
 /// Recover only a recent explicit cancellation when a cursor is first minted.
 /// A newer user/assistant turn record stops the search; old aborts cannot cancel
 /// a new turn just because they remain in the bounded history window. The
@@ -742,64 +704,6 @@ mod tests {
         // The names stay the last five, whatever the search found.
         let s = sample(&path).unwrap();
         assert_eq!(s.recent_tools, ["Grep", "Bash"]);
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    /// Round 2: a turn is found by its own opening prompt, the one nearest
-    /// the moment it was marked begun; a close or an abort after that prompt
-    /// in the file closes it, whatever its stamp; no such prompt says
-    /// nothing.
-    #[test]
-    fn a_turn_closed_since_is_read_from_its_own_opening_prompt() {
-        let path = tmp("closed-since");
-        let at = |ts: &str| mesimon_core::adopt::iso_ms(ts).unwrap();
-        let prompt = |id: &str, ts: &str| {
-            serde_json::json!({"uuid": id, "type": "user", "timestamp": ts,
-                "message": {"content": "go"}})
-        };
-        let tool = |id: &str, ts: &str| {
-            serde_json::json!({"uuid": id, "type": "assistant", "timestamp": ts,
-                "message": {"content": [{"type": "tool_use", "id": id, "name": "Bash", "input": {}}]}})
-        };
-        let close = |ts: &str| {
-            serde_json::json!({"uuid": format!("d-{ts}"), "type": "system",
-                "subtype": "turn_duration", "timestamp": ts})
-        };
-        let write = |lines: &[serde_json::Value]| {
-            let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
-            std::fs::write(&path, body).unwrap();
-        };
-        let began = at("2026-10-25T03:00:01Z");
-        let earlier = prompt("p0", "2026-10-25T02:59:40Z");
-        let ours = prompt("p1", "2026-10-25T03:00:00Z");
-        // The same turn: an earlier short turn closed before ours began.
-        write(&[
-            earlier.clone(),
-            close("2026-10-25T02:59:50Z"),
-            ours.clone(),
-            tool("t1", "2026-10-25T03:00:05Z"),
-        ]);
-        assert_eq!(turn_closed_since(&path, began), Some(false), "still its turn");
-        // Closed, then a record stamped earlier appended, then a new turn's tool.
-        write(&[
-            ours.clone(),
-            close("2026-10-25T03:10:00Z"),
-            tool("old", "2026-10-25T02:00:00Z"),
-            tool("t2", "2026-10-25T03:11:00Z"),
-        ]);
-        assert_eq!(turn_closed_since(&path, began), Some(true), "an older stamp after the close");
-        // Closed, and another prompt began a new turn.
-        write(&[ours.clone(), close("2026-10-25T03:10:00Z"), prompt("p2", "2026-10-25T03:11:00Z")]);
-        assert_eq!(turn_closed_since(&path, began), Some(true), "closed, and another began");
-        let abort = serde_json::json!({"uuid": "x", "type": "user",
-            "timestamp": "2026-10-25T03:10:00Z",
-            "message": {"content": "[Request interrupted by user]"}});
-        write(&[ours.clone(), abort]);
-        assert_eq!(turn_closed_since(&path, began), Some(true), "aborted");
-        // Only an old turn's records: no opening prompt near the moment.
-        write(&[prompt("old", "2026-10-25T01:00:00Z"), tool("t0", "2026-10-25T01:00:05Z")]);
-        assert_eq!(turn_closed_since(&path, began), None, "an old-only transcript");
-        assert_eq!(turn_closed_since(&path.with_file_name("absent.jsonl"), began), None);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

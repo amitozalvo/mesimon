@@ -213,8 +213,8 @@ pub const CROWN_WAKES: &str = concat!(
      expected to take: past it, with the agent still working, this session is woken once \
      (has run its turn N min, past the M it expected), and get_ticket on it carries overrun \
      (expected_secs, running_secs) until that turn ends. The board stops, parks and moves \
-     nothing for it, and the next ask's expect_secs is the next. A Codex agent's expectation \
-     does not outlive a restart of the board once its turn has begun. sample_agent reads a worker \
+     nothing for it, and the next ask's expect_secs is the next. An expectation whose turn has \
+     begun does not outlive a restart of the board, on Claude or Codex. sample_agent reads a worker \
      the crown started as the board sees it. \
      A delivered worker's get_ticket says who merges its branch (merge: by train, crown, \
      person or forge, and why), and the delivered line carries the word. The forge's — every \
@@ -3488,7 +3488,7 @@ mod tests {
             "woken once (has run its turn N min, past the M it expected)",
             "carries overrun (expected_secs, running_secs) until that turn ends",
             "The board stops, parks and moves nothing for it",
-            "A Codex agent's expectation does not outlive a restart of the board",
+            "An expectation whose turn has begun does not outlive a restart of the board, on Claude or Codex",
             "sample_agent reads a worker the crown started as the board sees it",
         ] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES says {words:?}");

@@ -14654,17 +14654,16 @@ fn stamp(ms: u64) -> String {
     )
 }
 
-/// T-973, round 1: an expectation across a restart times only the turn it
-/// began. Restarted inside its deadline on the same turn (the transcript
-/// shows no close since), it wakes the crown once, after a restart; a
-/// second restart after that wake says nothing again. A turn that closed
-/// while no daemon listened, another begun after it, takes the expectation
-/// with it: no wake, no `overrun`. On the mod pass, words down a `submit`
-/// whose `entered` comes only after a restart still begin their turn. The
-/// crown taken off, or moved to another ticket and back, takes every
-/// expectation with it.
+/// T-973, rounds 1 to 3: no begun expectation outlives a restart, on either
+/// engine, since the ledger keeps nothing that binds it to its turn's own
+/// record. Round 3's counterexample (A's close, then B's prompt and tool, in
+/// the gap) and a continuing turn whose prompt was written late both wake
+/// nobody after the restart. On the mod pass, words down a `submit` whose
+/// `entered` comes only after a restart still begin their turn. The crown
+/// taken off, or moved to another ticket and back, takes every expectation
+/// with it.
 #[test]
-fn an_expectation_across_a_restart_times_only_its_own_turn() {
+fn a_begun_expectation_does_not_outlive_a_restart() {
     let Some(h) = Harness::boot_with_env(
         "crown_overrun_restart",
         Some(RECORDING_STUB),
@@ -14795,7 +14794,10 @@ fn an_expectation_across_a_restart_times_only_its_own_turn() {
         c.await_state(sa, "the crown idle again", |s| matches!(s, SessionState::Idle { .. }));
     };
 
-    // ---- 1. restarted inside its deadline, the same turn: one late wake -----
+    // ---- 1. begun, then a restart: A's close and B's prompt in the gap ------
+    // Round 3's counterexample: A's prompt, A's close a moment after the
+    // begin, B's prompt and B's tool. No begun expectation outlives a
+    // restart, so B's turn is not timed against A's deadline.
     ask(&mut c, "mesimon-probe-973 one", 10);
     wait_until(std::time::Duration::from_secs(10), "the first ask's words", || {
         !lines_with("mesimon-probe-973 one").is_empty()
@@ -14804,57 +14806,48 @@ fn an_expectation_across_a_restart_times_only_its_own_turn() {
     send(ws, "UserPromptSubmit", r#"{"prompt":"mesimon-probe-973 one"}"#);
     c.await_state(ws, "running", |s| *s == SessionState::Running);
     drop(c);
-    h.restart();
-    let mut c = h.client("crown_overrun_restart_2");
-    after_restart(&mut c);
-    wait_until(std::time::Duration::from_secs(25), "the overrun wake after a restart", || {
-        lines_with(&overrun).len() == 1
-    });
-    let line = lines_with(&overrun).remove(0);
-    assert!(line.contains("after a restart"), "{line}");
-    crown_turn(&mut c, sa);
-
-    // ---- 2. another restart after the wake: told stays told -----------------
-    drop(c);
-    h.restart();
-    let mut c = h.client("crown_overrun_restart_3");
-    after_restart(&mut c);
-    std::thread::sleep(std::time::Duration::from_millis(4000));
-    assert_eq!(lines_with(&overrun).len(), 1, "never said twice");
-    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_some(), "the same turn, still past it");
-    send(ws, "Stop", r#"{"stop_hook_active":false}"#);
-    c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    close(epoch_ms());
-    std::thread::sleep(std::time::Duration::from_millis(2000));
-    for _ in 0..2 {
-        // The answer's and the finish's lines, if any, taken by the crown.
-        if matches!(
-            c.board().live_agent(a).map(|r| r.state.clone()),
-            Some(SessionState::Idle { .. })
-        ) {
-            crown_turn(&mut c, sa);
-        }
-    }
-    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none(), "the turn ended");
-
-    // ---- 3. a turn that closed in the gap, another begun after it -----------
-    ask(&mut c, "mesimon-probe-973 two", 10);
-    wait_until(std::time::Duration::from_secs(15), "the second ask's words", || {
-        !lines_with("mesimon-probe-973 two").is_empty()
-    });
-    prompt(epoch_ms());
-    send(ws, "UserPromptSubmit", r#"{"prompt":"mesimon-probe-973 two"}"#);
-    c.await_state(ws, "running", |s| *s == SessionState::Running);
-    drop(c);
     h.restart_after(|| {
         let now = epoch_ms();
         close(now);
         prompt(now + 1);
+        record(
+            "assistant",
+            now + 2,
+            json!({"message": {"content": [
+            {"type": "tool_use", "id": "b", "name": "Bash", "input": {}}]}}),
+        );
     });
-    let mut c = h.client("crown_overrun_restart_4");
+    let mut c = h.client("crown_overrun_restart_2");
     after_restart(&mut c);
     std::thread::sleep(std::time::Duration::from_millis(12_000));
-    assert_eq!(lines_with(&overrun).len(), 1, "the new turn is not the one it expected");
+    assert_eq!(lines_with(&overrun).len(), 0, "B's turn is not A's");
+    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+    send(ws, "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    close(epoch_ms());
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    if matches!(c.board().live_agent(a).map(|r| r.state.clone()), Some(SessionState::Idle { .. })) {
+        crown_turn(&mut c, sa);
+    }
+
+    // ---- 2. begun, then a restart: the same turn, its prompt written late ---
+    // The turn goes on and its prompt reached the transcript seconds after
+    // the begin: still no identity binds the expectation to it, so it is
+    // not kept, and says nothing.
+    ask(&mut c, "mesimon-probe-973 two", 10);
+    wait_until(std::time::Duration::from_secs(15), "the second ask's words", || {
+        !lines_with("mesimon-probe-973 two").is_empty()
+    });
+    send(ws, "UserPromptSubmit", r#"{"prompt":"mesimon-probe-973 two"}"#);
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    prompt(epoch_ms());
+    drop(c);
+    h.restart();
+    let mut c = h.client("crown_overrun_restart_3");
+    after_restart(&mut c);
+    std::thread::sleep(std::time::Duration::from_millis(12_000));
+    assert_eq!(lines_with(&overrun).len(), 0, "a begun expectation does not outlive a restart");
     assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
     send(ws, "Stop", r#"{"stop_hook_active":false}"#);
     c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
@@ -14882,7 +14875,7 @@ fn an_expectation_across_a_restart_times_only_its_own_turn() {
         send(ws, "UserPromptSubmit", r#"{"prompt":"mesimon-probe-973 three"}"#);
         c.await_state(ws, "running", |s| *s == SessionState::Running);
         wait_until(std::time::Duration::from_secs(25), "the overrun of the held submit", || {
-            lines_with(&overrun).len() == 2
+            lines_with(&overrun).len() == 1
         });
         crown_turn(&mut c, sa);
         switch("mod-hold-entered", false);
@@ -15091,4 +15084,205 @@ fn an_expectation_waits_for_its_wake_behind_a_worktree_rebuild() {
     std::thread::sleep(std::time::Duration::from_millis(4000));
     assert_eq!(lines_with(&overrun), 1, "exactly one");
     assert!(read(&mut c, sa, &kw).unwrap().overrun.is_some());
+}
+
+/// T-973, round 3: the expectation kept behind a held rebuild is the words
+/// on the resume's own: the resume carries the crown's ask id, and the
+/// replay tags that ask alone. Words a person sends while the tree is
+/// rebuilt replace the crown's on the resume, and their turn wakes nobody
+/// for the crown's ask. The crown taken off drops the expectation (an
+/// explicit drop), and a parked seat killed before the replay makes the
+/// replay fail and drop it too: no overrun in any of the three.
+#[test]
+fn an_expectation_behind_a_rebuild_is_its_own_words_alone() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_overrun_rebuild_owned",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+        ],
+    ) else {
+        return;
+    };
+    let repo = h.repo.clone();
+    init_repo(&repo, "a.txt", "hello\n");
+    let hold = h.dir.join("hold-init");
+    let script = repo.join(mesimon_core::workspace::INIT_SCRIPT);
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\nwhile [ -f '{}' ]; do sleep 0.2; done\n", hold.display()),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_overrun_rebuild_owned");
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| -> usize {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .count()
+    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-973 owned");
+    let kw = key_of(&mut c, w);
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+            expect_secs: None,
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    let tree = std::path::PathBuf::from(wait_attached(&mut c, w).path.expect("a path"));
+    let branch = wt_of(&mut c, w).unwrap().branch;
+    wait_until(std::time::Duration::from_secs(15), "W's start to land", || {
+        c.board().live_agent(w).is_some_and(|s| s.state.has_pane())
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    std::fs::write(tree.join("w.txt"), "w\n").unwrap();
+    git(&tree, &["add", "w.txt"]);
+    git(&tree, &["commit", "-qm", "w"]);
+    git(&repo, &["merge", "-q", "--squash", &branch]);
+    git(&repo, &["commit", "-qm", "w (#9)"]);
+    wait_until(std::time::Duration::from_secs(20), "the board to read the squash", || {
+        wt_of(&mut c, w).is_some_and(|wt| wt.merged)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    // Parked and archived, the landed tree is reclaimed and the branch kept,
+    // so the next wake rebuilds it (T-278); held there by the init script.
+    let reclaim = |c: &mut TestClient| {
+        let v = read(c, sa, &kw).unwrap();
+        match c.send(
+            Principal::Agent { session: sa },
+            Command::AgentSleepTicket { key: kw.clone(), seen: v.seen },
+        ) {
+            Response::AgentTicket { .. } => {}
+            other => panic!("sleep_agent: {other:?}"),
+        }
+        c.await_state(ws, "parked", |s| *s == SessionState::Sleeping);
+        assert!(matches!(c.request(Command::ArchiveTicket { id: w }), Response::Ok));
+        wait_until(std::time::Duration::from_secs(20), "the archive to reclaim W's tree", || {
+            !tree.exists() && wt_of(c, w).is_some_and(|wt| wt.status == "evicted")
+        });
+        assert!(matches!(c.request(Command::UnarchiveTicket { id: w }), Response::Ok));
+        std::fs::write(&hold, "").unwrap();
+    };
+    let ask = |c: &mut TestClient, text: &str| {
+        let v = read(c, sa, &kw).unwrap();
+        match c.send(
+            Principal::Agent { session: sa },
+            Command::AgentAskTicket {
+                key: kw.clone(),
+                text: text.into(),
+                seen: v.seen,
+                plan: false,
+                deliver: Deliver::Idle,
+                expect_secs: Some(3),
+            },
+        ) {
+            Response::AgentAsked { held_for_person: false, wake, .. } => {
+                assert_eq!(wake, Some(AskWake::Woken), "the words woke it, behind the rebuild");
+            }
+            other => panic!("ask_agent: {other:?}"),
+        }
+    };
+    // The tree back and the agent up, its words in and their turn running.
+    let replay = |c: &mut TestClient, words: &str| {
+        std::fs::remove_file(&hold).unwrap();
+        wait_until(std::time::Duration::from_secs(30), "W up in its rebuilt tree", || {
+            c.board().live_agent(w).is_some_and(|s| s.id == ws && s.state.has_pane())
+        });
+        hook_send(&hook_sock, &ws.to_string(), "SessionStart", r#"{"source":"resume"}"#);
+        c.await_state(ws, "up after the wake", |s| matches!(s, SessionState::Idle { .. }));
+        wait_until(std::time::Duration::from_secs(15), "the words to reach W", || {
+            lines_with(words) > 0
+        });
+        hook_send(
+            &hook_sock,
+            &ws.to_string(),
+            "UserPromptSubmit",
+            &format!(r#"{{"prompt":"{words}"}}"#),
+        );
+        c.await_state(ws, "running", |s| *s == SessionState::Running);
+    };
+    let worker = format!("{kw} \"mesimon-probe-973 owned\"");
+    let overrun = format!("{worker} has run its turn ");
+    let ms = |n| std::thread::sleep(std::time::Duration::from_millis(n));
+
+    // ---- a person's words replace the crown's on the resume ----------------
+    reclaim(&mut c);
+    ask(&mut c, "mesimon-probe-973 crown A");
+    ms(1500);
+    if let Response::Err { message } = c.request(Command::PromptSession {
+        ticket: w,
+        text: "mesimon-probe-973 person B".into(),
+        queued: false,
+        immediately: false,
+        accept_plan: false,
+        plan: false,
+        tier: None,
+        resend: false,
+        uploads: Vec::new(),
+    }) {
+        panic!("the person's words: {message}");
+    }
+    ms(2500);
+    replay(&mut c, "mesimon-probe-973 person B");
+    assert_eq!(lines_with("mesimon-probe-973 crown A"), 0, "the crown's words never went in");
+    ms(6000);
+    assert_eq!(lines_with(&overrun), 0, "B's turn is not A's");
+    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+    stop(&mut c, ws);
+
+    // ---- the crown taken off while the rebuild holds ------------------------
+    reclaim(&mut c);
+    ask(&mut c, "mesimon-probe-973 crown C");
+    ms(1500);
+    assert!(matches!(c.request(Command::Uncrown), Response::Ok));
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    replay(&mut c, "mesimon-probe-973 crown C");
+    ms(6000);
+    assert_eq!(lines_with(&overrun), 0, "the outgoing crown's expectation went");
+    stop(&mut c, ws);
+
+    // ---- the parked seat killed: the replay fails ---------------------------
+    reclaim(&mut c);
+    ask(&mut c, "mesimon-probe-973 crown D");
+    ms(1500);
+    assert!(matches!(c.request(Command::KillSession { id: ws }), Response::Ok));
+    std::fs::remove_file(&hold).unwrap();
+    ms(8000);
+    assert_eq!(lines_with("mesimon-probe-973 crown D"), 0, "nothing went in");
+    assert_eq!(lines_with(&overrun), 0, "a failed replay times nothing");
+    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
 }

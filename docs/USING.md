@@ -667,8 +667,8 @@ The crown may say how long it expects a turn to take when it starts an agent or 
 (`expect_secs`). When the turn those words begin runs past that, the agent still working, the
 crown is told once (`has run its turn 25 min, past the 20 min it expected`), and `get_ticket`
 on that ticket carries `overrun` until the turn ends. Nothing is stopped, parked or moved by the
-timer; the crown's next words set the next expectation. A Codex agent's expectation does not
-outlive a restart of the board once its turn has begun.
+timer; the crown's next words set the next expectation. An expectation whose turn has begun does
+not outlive a restart of the board, on Claude or Codex.
 
 ## Pull requests
 

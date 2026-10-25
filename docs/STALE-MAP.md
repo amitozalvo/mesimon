@@ -35200,7 +35200,7 @@ cleanup stood. Five corrections in the expectation and rig rules:
     `captured_at_ms`. It accepts a verdict only after that. A verdict before the result fails,
     in the call's own message or a later one.
   - `crown_never` exempts `mcp__mesimon__` alone.
-  - `ci/rig_test.py` holds the reader's four synthetic cases (two pass, two fail as they
+  - `ci/rig_test.py` holds the reader's four synthetic cases (one passes, three fail, as they
     should) plus another ticket's sample.
   - Replayed over the first live SA1 crown transcript (run 20261025-041836), the new predicate
     reads `wake → sampled → verdict`, JSON included. What SA1 proves is unchanged, so no live
@@ -35209,9 +35209,44 @@ cleanup stood. Five corrections in the expectation and rig rules:
   - An unbegun expectation whose seat has no pane yet is kept while a pending resume
     (`pending_resumes`) still owns that wake and the ask is still the crown's, not dropped. A
     failed replay drops the ask, and the expectation with it.
-  - Its pane is bound where the words actually go in: `crown_ask_retag` after the replay's
-    paste, or `crown_ask_framed` down the mod.
+  - Its pane is bound where the words actually go in: `crown_ask_retag` once the replay's
+    `park` has made their owed entry (before any paste), or `crown_ask_framed` down the mod.
   - A begun expectation, or one already bound to a pane, still goes when that pane is lost.
   - The e2e holds the rebuild with the repository's init script for five seconds of ticks, then
     sees the words' own turn wake the crown exactly once. With the round-1 rule back, it fails
     at that wake.
+
+**Round 3 (a fresh third read of round 2), the last round on the expectation mechanism.**
+- **(b1) No begun expectation outlives a restart, on either engine.**
+  - Round 2's nearest-prompt rule was a clock rule. It could bind A's deadline to B's turn:
+    A's prompt 10 s before the begin, A's close 1 s after, B's prompt and tool 2 s after.
+    B's prompt was the nearest, A's close lay before it unread, and the rule said "same turn".
+  - Nothing in the ledger binds an expectation to its turn's own record (T-957: a stamp near
+    the begin is no identity), so `tail::turn_closed_since` is gone, and so are the restored
+    flag and its turn-begin edge.
+  - `crownexpect::restore` brings back only an expectation still waiting on its mod
+    `submit`'s `entered`.
+  - One rules sentence now covers both engines, replacing round 2's Codex clause: "An
+    expectation whose turn has begun does not outlive a restart of the board, on Claude or
+    Codex." USING says the same. The identity road is a follow-up the crown files.
+  - The restart e2e's controls: the A/close/B counterexample and a continuing turn whose
+    prompt was written late both wake nobody after the restart.
+- **(e) The kept expectation is the resume's own words.**
+  - `PendingResume` carries `ask`. `crown_ask_sent` sets it on the resume whose words it
+    dispatched. `wake_with` clears it when any words take the resume, the crown re-claiming
+    its own right after.
+  - An unbegun expectation behind a rebuild is kept only while that resume carries its ask id.
+    The replay passes that id to `crown_ask_retag`, which tags it and no ask chosen by the seat
+    alone.
+  - So a person's words sent while the tree is rebuilt cancel the crown's expectation, and
+    their turn wakes nobody for it. Before, their receipt began A's expectation though A's
+    words never went in: a false overrun.
+  - e2e `an_expectation_behind_a_rebuild_is_its_own_words_alone`, both roads, has three
+    controls behind a held rebuild: a person replaces the words, the crown is taken off (an
+    explicit drop), and the parked seat is killed (the replay fails). None gives an overrun.
+    With round 2's rules back (retag by seat, any resume holds), it fails at the person's turn.
+- **Rig, once on the final build** (run 20261025-061414, `d7664d12` before this line was
+  added, Opus 5.5 crown, mod road): SA1 PASS, `wake → sampled → verdict`, `SA1 worker:
+  looping`. The crown made 2 turns and 4 tool calls; no Bash, and its one non-board call
+  (ToolSearch) named nothing banned. The Claude account's weekly quota (all models) read 59 %
+  before the run and 59 % at its end.

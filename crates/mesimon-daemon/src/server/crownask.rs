@@ -317,6 +317,15 @@ impl Daemon {
         if let Some(o) = self.owed.get_mut(&session).filter(|o| o.ticket == target) {
             o.ask = Some(id);
         }
+        // Words parked on a wake behind a rebuild (T-278) are this ask's
+        // (T-973, round 3): the replay tags it by this id alone.
+        if let Some(r) = self
+            .pending_resumes
+            .iter_mut()
+            .find(|r| r.session == session && r.ticket == target && r.prompt.is_some())
+        {
+            r.ask = Some(id);
+        }
         // Its expectation keeps the receipt that begins its turn (T-973).
         self.expect_dispatched(target, id, session, frame.filter(|_| submit));
         // A wake behind a worktree rebuild parks its words on the resume
@@ -355,20 +364,29 @@ impl Daemon {
     }
 
     /// A wake's words parked again after a rebuild: the owed entry the
-    /// replay made is the ask's, if its record waits on that seat.
-    pub(super) fn crown_ask_retag(&mut self, target: ulid::Ulid, session: uuid::Uuid) {
-        let Some(id) = self.crown_asks.get(&target).and_then(|l| {
-            l.iter()
-                .rev()
-                .find(|a| a.stage == Stage::Sent && a.session == Some(session))
-                .map(|a| a.id)
+    /// replay made is the ask's whose words those are (`ask`, carried on the
+    /// resume, T-973 round 3), if its record still waits on that seat; none
+    /// chosen by the seat alone, since a person's words may have replaced
+    /// the crown's on the resume. `park` made the entry before its paste.
+    pub(super) fn crown_ask_retag(
+        &mut self,
+        target: ulid::Ulid,
+        session: uuid::Uuid,
+        ask: Option<ulid::Ulid>,
+    ) {
+        let Some(id) = ask.filter(|id| {
+            self.crown_asks.get(&target).is_some_and(|l| {
+                l.iter()
+                    .any(|a| a.id == *id && a.stage == Stage::Sent && a.session == Some(session))
+            })
         }) else {
             return;
         };
         if let Some(o) = self.owed.get_mut(&session).filter(|o| o.ask.is_none()) {
             o.ask = Some(id);
         }
-        // The words are in the woken pane now: its expectation waits there.
+        // Its words are parked on the woken pane now: its expectation waits
+        // there.
         self.expect_bound(target, id);
     }
 

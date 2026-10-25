@@ -337,6 +337,11 @@ struct PendingResume {
     /// The receipt `prompt` is owed (T-936): a person's, or the crown's
     /// wake, which is told only at it.
     ack: Ack,
+    /// The crown's ask `prompt` is (T-973, round 3), set as `crown_ask_sent`
+    /// records it and cleared when other words take the resume: the replay
+    /// tags that ask and no other, and an expectation armed on it waits
+    /// only while this resume still carries it.
+    ask: Option<ulid::Ulid>,
 }
 
 /// What `refresh_panes` moved: a record's title, which persists, and a
@@ -7196,7 +7201,6 @@ impl Daemon {
         if snapshot.kind.is_agent() {
             if crownexpect::turn_begins(&change.from, &change.to) {
                 self.turn_since.insert(id, now);
-                self.expect_new_turn(snapshot.ticket, id);
                 self.expect_began(snapshot.ticket, None, Some(id), now);
             } else if !crownexpect::turn_open(&change.to) {
                 self.turn_since.remove(&id);
@@ -15805,6 +15809,9 @@ impl Daemon {
                     r.brief = words.brief;
                     r.plan = plan;
                     r.ack = ack;
+                    // Whose words these are is the crown's to claim
+                    // (`crown_ask_sent`), after this; any others are no ask.
+                    r.ask = None;
                 }
             }
             _ => {}
@@ -17467,7 +17474,7 @@ impl Daemon {
                             if let Some(text) = r.prompt {
                                 let words = Parked { text, brief: r.brief, title: r.brief };
                                 self.park(r.session, r.ticket, words, r.ack);
-                                self.crown_ask_retag(r.ticket, r.session);
+                                self.crown_ask_retag(r.ticket, r.session, r.ask);
                             }
                         }
                         Response::Err { message } => {
@@ -19427,6 +19434,7 @@ impl Daemon {
                             brief: false,
                             plan,
                             ack: Ack::PROMPT,
+                            ask: None,
                         });
                     }
                     self.persist_and_notify();
