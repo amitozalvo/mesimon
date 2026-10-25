@@ -174,7 +174,7 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
         Response::Err { message } => assert!(message.contains("annotate"), "{message}"),
         other => panic!("annotate admits no move: {other:?}"),
     }
-    assert_eq!(listed(&mut shim_r).len(), 5, "the shim lists what it was born with");
+    assert_eq!(listed(&mut shim_r).len(), 6, "the shim lists what it was born with");
 
     // ---- a hand move to a full column widens the session --------------------
     assert!(matches!(
