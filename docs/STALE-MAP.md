@@ -36816,6 +36816,12 @@ test's own stub. Nothing in the daemon changed.
   on both roads; green alone on the runner and here: `tail_interrupt_before_prompt` never
   written under the suite's load) and `…a_stated_end_and_a_split_read_keep_the_held_call_s_end`
   (macos-14, one full run; stuck at `RequiresAction { reason: Question }`).
+- **Left red, daemon code (Codex exit), traced on the ticket:** `crown_e2e::
+  a_codex_worker_s_failed_turns_are_told_by_turn` (ubuntu-24.04, the mod road's pass of the final
+  run; green in the earlier one). The test kills W's Codex seat, waits for it gone, and the crown
+  starts W again; the killed pane's `PaneDied` lands 1 ms after that start, and `on_hook` sets
+  `codex_stopping` on the `Exited { Killed }` record (server.rs, the `Signal::PaneDied` arm), so
+  it holds the seat again beside the new one and `live_agent` names it first.
 - **CI.** The first runs stopped at the first red binary (`cargo test` without
   `--no-fail-fast`), so each fix showed the next one. The Test step now runs `--no-fail-fast`
   under a 5,400 s deadline (job `timeout-minutes: 110`): both roads' passes take 24 + 23 min on
