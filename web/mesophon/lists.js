@@ -9,7 +9,7 @@ import { Shin } from "./shin.js";
 import { TrustAccept, answerable, requestSummary } from "./dialogs.js";
 import { startWaiting } from "./starts.js";
 import { answerBusy, receiptTick } from "./sessions.js";
-import { RECENT_MS } from "./board.js";
+import { RECENT_MS, omittedWords } from "./board.js";
 
 const clock = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 export const lastSeen = (board) => (board?.receivedAt ? clock(board.receivedAt) : "");
@@ -403,7 +403,7 @@ export function BoardList({ store, board, bp }) {
       ${bp !== "phone" && html`<button type="button" class="add-to-column" data-column=${column}
         onClick=${() => store.openComposer(column)}><${Icon} name="plus" size=${16} /><span>Add to ${column}</span></button>`}
     </section>`;
-  })}</div>`;
+  })}</div>${board.omitted > 0 && html`<p class="empty" id="omitted">${omittedWords(board.omitted)}</p>`}`;
 }
 
 const dayOf = (at) => {

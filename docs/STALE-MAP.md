@@ -36467,3 +36467,57 @@ A `SessionStart` hook wrote a timestamp, and the screen was polled every 20 ms f
 **Round 3 (T-1005's third read, the last on this mechanism).**
 - **A young-undrawn command refusal keeps a queued ask.** The refusal returned its error before any key but without the zero-key road's mark, so `ahead_of_queue` dropped an ask already queued for the ticket, which the send had taken ahead of it, and a phone read `unknown`. It now sets `refused_for_person` and feeds `prompt_not_sent` ("the prompt box is not drawn yet"), as the other zero-key refusals do. Test: `prompt_e2e::a_command_refused_for_an_undrawn_box_keeps_the_queued_ask` (a recovered young pane, an ask queued behind another agent in the same checkout, then a refused `/compact`; the ask is still queued, nothing typed, nothing owed). It fails without the line.
 - **Stated limit, no code:** "no stamp is not young" reads a genuinely young pane as old across an upgrade from a build without `launched_at`, or a downgrade and re-upgrade that dropped it, so that one inherited pane loses the gate. Recovery does not invent a birth, which would make old panes young.
+
+## The phone's board answer always fits 48 KiB, and a refused one is said (T-1008, 2026-10-25, reported by the person, measured by the crown)
+
+**Measured first, on a copy of this board's state** (`store::load` on a copy of `.mesimon/board`
+and `sessions.json`, through `control_board`, with T-951's 13 KB plan in the dialog projection).
+The answer was **56,832 bytes**, past the 49,152 `Control::answer_measured` takes, after T-688's
+trim had already dropped the agents' words: 70 cards, about 31 KB (43 DONE cards were 28 KB of
+them); the agents, 11 KB without their dialogs; the plan's dialog, 13,249 bytes (whole, inside
+T-936's 16 KiB phone head); tiers, tags, columns and descriptions, about 1.7 KB together. Without
+the plan it would have fit. So the brief's cause stood: every board answer was refused, and the
+page treated a `rejected` snapshot as nothing, and read "Loading board…" for as long as it stayed open.
+
+- **The board answer always fits** (`fit_board`, after T-688's two trims, only past the cap). A
+  board still over 48 KiB goes without, in this order, until it fits:
+  1. each plan's body past a 2 KiB head (`PHONE_PLAN_CROWDED_BYTES`), marked cut by `plan_head`.
+     The request stays, so the phone still accepts or rejects the plan; the whole plan is the
+     desk's and the conversation's (the phone's Chat reads the transcript);
+  2. cards with no agent and no queued words, from the end of the board order (the last
+     column's bottom first, DONE on the template boards);
+  3. every dialog: the card still says `needs attention`, and the question is answered at the
+     terminal;
+  4. any card, from the end of the board order.
+  The cards left out ride as `omitted` on the board reply (new, `skip_serializing_if` zero), and
+  the page says `N more tickets are on your terminal: this board is too big to send whole.
+  Archiving done tickets makes room.` under the columns. Each dropped card is measured alone
+  and subtracted with its comma; the answer is measured once more at the end, and that is the
+  number `answer_measured` judges. On this board's copy the answer is now 45,631 bytes with all
+  70 tickets and the plan's 2 KiB head.
+- **The cap stays 48 KiB** (`ANSWER_MAX_BYTES`, the number `answer_measured` already used).
+- **A refused board answer is said.** The page's `rejected` reply to a `snapshot` sets the status
+  strip to plain words (`refusedBoardWords`: an older host's `response exceeds the browser preview
+  limit` reads `Your board is too big to send to this page. Archiving done tickets on your terminal
+  makes room; the page tries again on its own.`), the loading spinner drops `Reaching your board…`,
+  and the next board that comes clears it. The page already asks for the board every tick, so it
+  recovers by itself once the host can send one.
+- **Back-compat.** An older page ignores `omitted` and draws the cards it was sent. A newer page
+  reads an older host's missing `omitted` as zero, and the older host's refusal as the words above.
+  The relay never reads the board (it is sealed end to end) and its tests destructure
+  `Reply::Board { .. }`, so neither relay fixture changes. The page keeps its no-build rule.
+- **Stated limit.** A card left out is not on the phone at all, so its page cannot be opened
+  there and search does not find it. The end of the board order is the least-wanted place on
+  the template boards; a board whose last column is not its done column loses that column's
+  bottom first all the same.
+
+Tests: `mesophon::board_fit_tests::a_board_past_the_cap_with_a_long_plan_still_lists_every_ticket`
+(80 cards and a 13 KB plan: 53,651 bytes before, under 48 KiB after, every ticket listed, the plan's
+request and head kept and marked cut, and the usual 16 KiB head shown not to fit);
+`…::a_board_whose_cards_pass_the_cap_leaves_out_its_tail_and_counts_it` (300 cards: 162,073
+bytes before; after, the board order's head with the agent's card first, `omitted` counting the
+rest, and within 2 KiB of the cap). Both fail with `fit_board` not called. `state.test.js`: the
+`omitted` count and its words, an older host's absence and odd values, a remembered board; the
+refusal's words. `ux.test.js`'s `bigBoardFlow` (Chromium and WebKit): a refused snapshot shows
+the words in the status strip with no `Reaching your board…`, then a board with `omitted: 12`
+draws and says so. With the store's refusal branch removed it times out waiting for the words.

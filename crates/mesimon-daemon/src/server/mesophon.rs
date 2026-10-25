@@ -95,6 +95,9 @@ struct Filed {
 const RETIRED_FILE: &str = "mesophon-retired.json";
 /// How many filed envelopes `Stored::filed` remembers.
 const FILED_KEEP: usize = 256;
+/// The most one answer to a browser may carry: past it, the answer is
+/// refused (`Control::answer_measured`).
+const ANSWER_MAX_BYTES: usize = 48 * 1024;
 /// Past this many bytes a board goes to the browser without its agents'
 /// words, well inside the 48 KiB an answer may carry.
 const BOARD_WORDS_BUDGET: usize = 40 * 1024;
@@ -428,7 +431,7 @@ impl Control {
     /// is measured as it is trimmed to fit, and not again here.
     fn answer_measured(&mut self, peer: &str, id: u64, reply: Reply, bytes: Option<usize>) {
         if let (Some(p), Some(keys)) = (self.peers.get_mut(peer), self.keys.as_ref()) {
-            let reply = if bytes.is_none_or(|n| n > 48 * 1024) {
+            let reply = if bytes.is_none_or(|n| n > ANSWER_MAX_BYTES) {
                 Reply::Rejected { message: "response exceeds the browser preview limit".into() }
             } else {
                 reply
@@ -3963,6 +3966,7 @@ impl Daemon {
             // A phone's own tickets, once archived (T-665): no agent, no
             // queue, since an archived ticket has neither on the board.
             archived: sent_archived(&self.board).map(|t| self.control_card(t, &book)).collect(),
+            omitted: 0,
         };
         // A transcript no live agent reads any more leaves the cache.
         let live: HashSet<&str> = self.board.sessions.iter().filter_map(preview_path).collect();
@@ -3971,6 +3975,7 @@ impl Daemon {
         // agents' words are what a crowded board goes without first, then
         // the archived tickets Sent reads. Measured once, and again only
         // after a trim (T-688): this answers every phone up to once a second.
+        // Past those, `fit_board` (T-1008).
         let mut bytes = measure(&reply);
         let over = |bytes: Option<usize>| bytes.is_some_and(|n| n > BOARD_WORDS_BUDGET);
         if over(bytes) {
@@ -3987,7 +3992,49 @@ impl Daemon {
             }
             bytes = measure(&reply);
         }
+        if bytes.is_some_and(|n| n > ANSWER_MAX_BYTES) {
+            bytes = self.fit_board(&mut reply);
+        }
         (reply, bytes)
+    }
+
+    /// A board still past the answer's cap once its words and archived
+    /// tickets are gone (T-1008) goes without, in this order, until it fits:
+    /// 1. each plan's body past a short head, marked cut (`plan_head`); the
+    ///    dialog's request stays, so the plan is still answered;
+    /// 2. the cards with no agent and no queued words, from the end of the
+    ///    board order (the last column's bottom first);
+    /// 3. every dialog: the card still reads `needs attention`, and the
+    ///    question is answered at the terminal;
+    /// 4. any card, from the end of the board order.
+    ///
+    /// The cards left out are counted in `omitted`, which the page says.
+    fn fit_board(&self, reply: &mut Reply) -> Option<usize> {
+        let Reply::Board { tickets, .. } = reply else { return measure(reply) };
+        for agent in tickets.iter_mut().filter_map(|t| t.agent.as_mut()) {
+            let Some(api::Dialog { content: api::DialogContent::Plan { .. }, .. }) = agent.dialog
+            else {
+                continue;
+            };
+            let whole = uuid::Uuid::parse_str(&agent.session)
+                .ok()
+                .and_then(|id| self.control.dialogs.get(&id));
+            if let Some(whole) = whole {
+                agent.dialog = Some(phone_dialog_within(whole, PHONE_PLAN_CROWDED_BYTES));
+            }
+        }
+        let mut bytes = measure(reply);
+        let Reply::Board { tickets, omitted, .. } = reply else { return bytes };
+        *omitted += drop_cards(tickets, &mut bytes, |t| t.agent.is_none() && t.queued.is_none());
+        if past_cap(bytes) {
+            for agent in tickets.iter_mut().filter_map(|t| t.agent.as_mut()) {
+                agent.dialog = None;
+            }
+            bytes = measure(reply);
+        }
+        let Reply::Board { tickets, omitted, .. } = reply else { return bytes };
+        *omitted += drop_cards(tickets, &mut bytes, |_| true);
+        measure(reply)
     }
 
     /// A ticket as a phone's card reads it, without its agent or its queued
@@ -6255,10 +6302,52 @@ pub(super) fn plan_head(markdown: &str, max: usize) -> String {
     )
 }
 
+/// A plan's dialog on a board too big for one answer at
+/// `PHONE_DIALOG_MAX_BYTES` (T-1008): a head a phone can still read the
+/// plan's start by, beside the request its answer binds to.
+const PHONE_PLAN_CROWDED_BYTES: usize = 2 * 1024;
+
+/// The bytes `omitted` takes on a board answer at its longest, kept free
+/// while `fit_board` counts, before the field is written.
+const OMITTED_ROOM: usize = r#","omitted":4294967295"#.len();
+
+/// Whether a board answer of `bytes` still needs `fit_board`'s next step.
+fn past_cap(bytes: Option<usize>) -> bool {
+    bytes.is_some_and(|n| n + OMITTED_ROOM > ANSWER_MAX_BYTES)
+}
+
+/// Drops the cards `may` allows, from the end of the board order, while
+/// `bytes` is past the answer's cap (T-1008), and says how many went. Each
+/// card is measured alone: a drop takes its bytes and its comma.
+fn drop_cards(
+    tickets: &mut Vec<api::Ticket>,
+    bytes: &mut Option<usize>,
+    may: impl Fn(&api::Ticket) -> bool,
+) -> u32 {
+    let mut dropped = 0;
+    let mut i = tickets.len();
+    while i > 0 && past_cap(*bytes) {
+        i -= 1;
+        if !may(&tickets[i]) {
+            continue;
+        }
+        let card = serde_json::to_vec(&tickets[i]).map_or(0, |b| b.len());
+        tickets.remove(i);
+        *bytes = bytes.map(|n| n.saturating_sub(card + 1));
+        dropped += 1;
+    }
+    dropped
+}
+
 /// A dialog as a phone's board carries it: a plan's head, as long as the
 /// dialog's JSON stays within `PHONE_DIALOG_MAX_BYTES`, marked cut, and its
 /// request the one an answer binds to.
 fn phone_dialog(dialog: &api::Dialog) -> api::Dialog {
+    phone_dialog_within(dialog, PHONE_DIALOG_MAX_BYTES)
+}
+
+/// `phone_dialog` within `max` bytes of JSON.
+fn phone_dialog_within(dialog: &api::Dialog, max: usize) -> api::Dialog {
     let api::DialogContent::Plan { markdown } = &dialog.content else { return dialog.clone() };
     let sized = |head: usize| {
         let content = api::DialogContent::Plan { markdown: plan_head(markdown, head) };
@@ -6267,14 +6356,14 @@ fn phone_dialog(dialog: &api::Dialog) -> api::Dialog {
         (cut, bytes)
     };
     let (whole, bytes) = sized(markdown.len());
-    if bytes <= PHONE_DIALOG_MAX_BYTES {
+    if bytes <= max {
         return whole;
     }
     // The longest head that fits, found by halving: its JSON grows with it.
-    let (mut fits, mut over) = (0, markdown.len().min(PHONE_DIALOG_MAX_BYTES));
+    let (mut fits, mut over) = (0, markdown.len().min(max));
     while fits + 1 < over {
         let mid = (fits + over) / 2;
-        if sized(mid).1 <= PHONE_DIALOG_MAX_BYTES {
+        if sized(mid).1 <= max {
             fits = mid;
         } else {
             over = mid;
@@ -6451,6 +6540,7 @@ mod tests {
                 allowed_tags: vec![],
                 tiers: vec![],
                 archived: vec![],
+                omitted: 0,
             };
             let answer = measure(&reply).unwrap();
             assert!(answer <= 48 * 1024, "the board answer: {answer} bytes");
@@ -8761,5 +8851,116 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         let long = "a".repeat(DIALOG_TEXT_MAX + 1);
         assert!(dialog_text_refusal("change", &long).unwrap().contains("1000"));
         assert_eq!(dialog_text_refusal("change", &"a".repeat(DIALOG_TEXT_MAX)), None);
+    }
+}
+
+/// T-1008: a board answer fits the 48 KiB a browser takes, whatever the
+/// board's size or a plan's.
+#[cfg(test)]
+mod board_fit_tests {
+    use super::*;
+    use mesimon_core::board::Reason;
+
+    fn ticket(n: u128, column: &str) -> Ticket {
+        Ticket {
+            id: ulid::Ulid(n),
+            short_key: format!("T-{n}"),
+            title: format!("ticket {n}: {}", "a title as long as the crown writes them ".repeat(7)),
+            column: column.into(),
+            order: format!("a{n:05}"),
+            created_at: "@0".into(),
+            created_by: "local".into(),
+            created_from: None,
+            entered_at: None,
+            woke_at: None,
+            manual_merge: false,
+            execution_policy: Default::default(),
+            tier: None,
+            envelope: None,
+            workspace: None,
+            import_origin: None,
+            raised: None,
+            previous_column: None,
+            picked: None,
+            tags: Vec::new(),
+            notes: Vec::new(),
+            archived: None,
+        }
+    }
+
+    /// A daemon whose board holds ticket 1 IN PROGRESS, its agent stopped
+    /// on a 13 KB plan (T-951's), and tickets 2..=`last` in DONE.
+    fn crowded(dir: &std::path::Path, last: u128) -> (Daemon, std::sync::mpsc::Receiver<Msg>) {
+        let (mut d, _, rx) = super::super::queued_person_push_tests::daemon(dir);
+        d.queued.clear();
+        d.board.tickets = std::iter::once(ticket(1, "IN PROGRESS"))
+            .chain((2..=last).map(|n| ticket(n, "DONE")))
+            .collect();
+        let seat = &mut d.board.sessions[0];
+        seat.ticket = ulid::Ulid(1);
+        seat.state = SessionState::RequiresAction { reason: Reason::Plan };
+        let id = seat.id;
+        let markdown: String = (0..246)
+            .map(|i| format!("- step {i:03}: `crates/x.rs` does one thing of the plan\n"))
+            .collect();
+        assert!(markdown.len() > 12 * 1024, "{}", markdown.len());
+        let content = api::DialogContent::Plan { markdown };
+        d.control.dialogs.insert(id, api::Dialog { request: "plan-1".into(), content });
+        (d, rx)
+    }
+
+    fn board_of(reply: &Reply) -> (&[api::Ticket], u32) {
+        let Reply::Board { tickets, omitted, .. } = reply else { panic!("{reply:?}") };
+        (tickets, *omitted)
+    }
+
+    fn plan_of(t: &api::Ticket) -> Option<(&str, &str)> {
+        let dialog = t.agent.as_ref()?.dialog.as_ref()?;
+        let api::DialogContent::Plan { markdown } = &dialog.content else { return None };
+        Some((dialog.request.as_str(), markdown.as_str()))
+    }
+
+    /// This board's case: the cards fit, the 13 KB plan beside them did
+    /// not, and every board answer was refused. The plan goes as a short
+    /// head marked cut, its request kept, and every ticket is listed.
+    #[test]
+    fn a_board_past_the_cap_with_a_long_plan_still_lists_every_ticket() {
+        let dir = tempfile::tempdir().unwrap();
+        let (d, _rx) = crowded(dir.path(), 80);
+        let (reply, bytes) = d.control_board();
+        let bytes = bytes.unwrap();
+        assert!(bytes <= ANSWER_MAX_BYTES, "the board answer: {bytes} bytes");
+        assert_eq!(measure(&reply), Some(bytes), "the bytes said are the answer's");
+        let (tickets, omitted) = board_of(&reply);
+        assert_eq!((tickets.len(), omitted), (80, 0), "every ticket, none left out");
+        let (request, markdown) = plan_of(&tickets[0]).expect("the plan still rides");
+        assert_eq!(request, "plan-1", "an answer still binds to the plan");
+        assert!(markdown.starts_with("- step 000:"), "{markdown}");
+        assert!(markdown.contains("the plan is cut here"), "{markdown}");
+        // The precondition: the plan's usual head would not have fit.
+        let mut usual = reply.clone();
+        let Reply::Board { tickets, .. } = &mut usual else { unreachable!() };
+        let agent = tickets[0].agent.as_mut().unwrap();
+        agent.dialog = Some(phone_dialog(d.control.dialogs.values().next().unwrap()));
+        assert!(measure(&usual).unwrap() > ANSWER_MAX_BYTES, "the usual head fits");
+    }
+
+    /// A board whose cards alone pass the cap goes without the end of its
+    /// board order, the agent's card kept, and says how many it left out.
+    #[test]
+    fn a_board_whose_cards_pass_the_cap_leaves_out_its_tail_and_counts_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (d, _rx) = crowded(dir.path(), 300);
+        let (reply, bytes) = d.control_board();
+        let bytes = bytes.unwrap();
+        assert!(bytes <= ANSWER_MAX_BYTES, "the board answer: {bytes} bytes");
+        let (tickets, omitted) = board_of(&reply);
+        assert!(omitted > 0, "nothing left out");
+        assert_eq!(tickets.len() + omitted as usize, 300, "every ticket listed or counted");
+        let keys: Vec<_> = tickets.iter().map(|t| t.key.clone()).collect();
+        let order: Vec<_> = (1..=tickets.len()).map(|n| format!("T-{n}")).collect();
+        assert_eq!(keys, order, "the board order's head, the tail left out");
+        assert_eq!(plan_of(&tickets[0]).map(|(r, _)| r), Some("plan-1"), "the plan rides");
+        assert!(ANSWER_MAX_BYTES - bytes < 2 * 1024, "{bytes} bytes: more left out than needed");
     }
 }

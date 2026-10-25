@@ -45,6 +45,9 @@ export class BoardState {
     // The tickets paired browsers filed that are archived now (T-665):
     // Sent's own, never on the board. Absent from an older host.
     this.archived = [];
+    // How many tickets the host left out of a board too big for one answer
+    // (T-1008): the end of its board order. Absent from an older host.
+    this.omitted = 0;
   }
   update(reply, { cached = false, at = Date.now(), shelved = false } = {}) {
     Object.assign(this, {
@@ -56,6 +59,7 @@ export class BoardState {
       allowedTags: Array.isArray(reply.allowed_tags) ? reply.allowed_tags : [],
       tiers: Array.isArray(reply.tiers) ? reply.tiers : [],
       archived: Array.isArray(reply.archived) ? reply.archived : [],
+      omitted: Number.isInteger(reply.omitted) && reply.omitted > 0 ? reply.omitted : 0,
       cached,
       shelved,
       receivedAt: at,
@@ -145,6 +149,7 @@ export class BoardState {
     return {
       // Sent's archived tickets (T-665), as their cards read: no agent.
       ...(this.archived.length && { archived: this.archived.map(card) }),
+      ...(this.omitted && { omitted: this.omitted }),
       title: this.title,
       columns: this.columns,
       default_column: this.defaultColumn,
@@ -183,4 +188,19 @@ export class BoardState {
       })),
     };
   }
+}
+
+// The line under a board the host sent without its last tickets (T-1008).
+export function omittedWords(omitted) {
+  if (!(omitted > 0)) return "";
+  const tickets = omitted === 1 ? "1 more ticket is" : `${omitted} more tickets are`;
+  return `${tickets} on your terminal: this board is too big to send whole. Archiving done tickets makes room.`;
+}
+
+// What a refused board answer says to the person (T-1008), never a wait:
+// the page asks again on its own and draws the board once one comes.
+export function refusedBoardWords(message) {
+  if (/exceeds the browser preview limit/.test(message || ""))
+    return "Your board is too big to send to this page. Archiving done tickets on your terminal makes room; the page tries again on its own.";
+  return `The board did not load: ${message || "your terminal refused it"}. The page tries again on its own.`;
 }

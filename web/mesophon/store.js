@@ -2,7 +2,7 @@
 // re-renders on `emit`; nothing here touches the DOM except history, focus
 // requests and the theme attribute. Transport stays in connection.js.
 import { Connection } from "./connection.js";
-import { BoardState } from "./board.js";
+import { BoardState, refusedBoardWords } from "./board.js";
 import { Sessions, answerBusy, dropPictures, landed } from "./sessions.js";
 import { replacedWords, sendRefused, waitsOnYou } from "./queue.js";
 import { Sent } from "./sent.js";
@@ -1883,6 +1883,7 @@ export class Store {
   openBoard(chosen) {
     this.live = false;
     this.down = false;
+    this.refused = undefined;
     this.active = chosen;
     this.board = this.boards.get(chosen.pin.board);
     this.entry = undefined;
@@ -2067,7 +2068,15 @@ export class Store {
       this.refresh();
       return;
     }
+    // A refused board answer (T-1008) is said, never waited on: the next
+    // tick asks again, and a board that comes clears it.
+    if (reply.result === "rejected" && original?.body.op === "snapshot") {
+      this.refused = this.status = refusedBoardWords(reply.message);
+      this.sync();
+      return;
+    }
     if (reply.result === "board") {
+      this.refused = undefined;
       if (!this.board) {
         this.board = new BoardState(this.active.selected);
         this.boards.set(this.active.pin.board, this.board);

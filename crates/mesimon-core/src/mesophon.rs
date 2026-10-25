@@ -789,6 +789,11 @@ pub enum Reply {
         /// older page draws on the board. Absent from an older host.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         archived: Vec<Ticket>,
+        /// How many of the board's tickets this answer leaves out (T-1008):
+        /// a board too big for one answer goes without the end of its board
+        /// order. Zero and absent otherwise, and from an older host.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        omitted: u32,
     },
     Preview {
         lines: Vec<String>,
@@ -1180,19 +1185,20 @@ mod tests {
             allowed_tags: vec![],
             tiers: vec![],
             archived: vec![],
+            omitted: 0,
         };
         let json = serde_json::to_value(&bare).unwrap();
         assert_eq!(
             json,
             serde_json::json!({"result":"board","title":"b","columns":["TODO"],"tickets":[]})
         );
-        let Reply::Board { default_column, allowed_tags, tiers, archived, .. } =
+        let Reply::Board { default_column, allowed_tags, tiers, archived, omitted, .. } =
             serde_json::from_value(json).unwrap()
         else {
             panic!("board")
         };
         assert!(default_column.is_none() && allowed_tags.is_empty() && tiers.is_empty());
-        assert!(archived.is_empty());
+        assert!(archived.is_empty() && omitted == 0);
         let created = serde_json::to_value(Reply::Created {
             ticket: "01J".into(),
             key: "T-7".into(),

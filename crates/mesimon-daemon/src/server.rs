@@ -21460,7 +21460,9 @@ mod queued_person_push_tests {
     /// A daemon assembled as `run` assembles one, on a temporary state dir
     /// and a tmux socket nothing listens on, with one idle Claude pane and an
     /// ask queued at it.
-    fn daemon(dir: &std::path::Path) -> (Daemon, String, std::sync::mpsc::Receiver<Msg>) {
+    pub(super) fn daemon(
+        dir: &std::path::Path,
+    ) -> (Daemon, String, std::sync::mpsc::Receiver<Msg>) {
         let repo = dir.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         let paths = Paths {

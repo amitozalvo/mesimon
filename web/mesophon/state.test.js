@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Sessions, answerBusy, ghostOf, landed, receiptTick, reasonText } from "./sessions.js";
 import { afterWords, modeHelp, queueWords, sendRefused, waitsOnYou } from "./queue.js";
-import { BoardState, RECENT_MS } from "./board.js";
+import { BoardState, RECENT_MS, omittedWords, refusedBoardWords } from "./board.js";
 import { crownTouch, worktreeWords } from "./lists.js";
 import { crownSentence } from "./detail.js";
 import { answerable, dialogForm, formAnswers, measured } from "./dialogs.js";
@@ -625,6 +625,33 @@ test("a ticket this browser filed is on the board, archived or gone, remembered 
   restored.update({ title: "Board", columns: ["TODO"], tickets: [] });
   assert.deepEqual(restored.whereIs("old"), {});
   assert.equal("archived" in JSON.parse(JSON.stringify(restored.snapshot())), false);
+});
+test("a board too big for one answer says what it left out, and an older host leaves nothing out (T-1008)", () => {
+  const board = new BoardState();
+  board.update({ title: "Board", columns: ["DONE"], tickets: [{ id: "a", key: "T-1", title: "A", column: "DONE" }], omitted: 12 });
+  assert.equal(board.omitted, 12);
+  assert.equal(omittedWords(board.omitted), "12 more tickets are on your terminal: this board is too big to send whole. Archiving done tickets makes room.");
+  assert.match(omittedWords(1), /^1 more ticket is on your terminal/);
+  const restored = new BoardState();
+  restored.update(JSON.parse(JSON.stringify(board.snapshot())), { cached: true });
+  assert.equal(restored.omitted, 12, "a remembered board still says so");
+  restored.update({ title: "Board", columns: ["DONE"], tickets: [] });
+  assert.equal(restored.omitted, 0);
+  assert.equal(omittedWords(restored.omitted), "");
+  assert.equal("omitted" in JSON.parse(JSON.stringify(restored.snapshot())), false);
+  for (const odd of [-1, 1.5, "3", null]) {
+    restored.update({ title: "Board", columns: [], tickets: [], omitted: odd });
+    assert.equal(restored.omitted, 0, String(odd));
+  }
+});
+test("a refused board answer is said in plain words, never waited on (T-1008)", () => {
+  // An older host refuses a board past 48 KiB in its own words.
+  assert.equal(
+    refusedBoardWords("response exceeds the browser preview limit"),
+    "Your board is too big to send to this page. Archiving done tickets on your terminal makes room; the page tries again on its own.",
+  );
+  assert.equal(refusedBoardWords("ticket unavailable"), "The board did not load: ticket unavailable. The page tries again on its own.");
+  assert.equal(refusedBoardWords(undefined), "The board did not load: your terminal refused it. The page tries again on its own.");
 });
 test("a remembered board keeps who wears the crown, never what it last did (T-623)", () => {
   const board = new BoardState();

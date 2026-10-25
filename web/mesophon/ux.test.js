@@ -255,6 +255,7 @@ function fixture() {
         columns: ["TODO", "IN PROGRESS", "DONE"],
         tickets: this.tickets,
         ...(this.archived?.length ? { archived: this.archived } : {}),
+        ...(this.omitted ? { omitted: this.omitted } : {}),
         default_column: "TODO",
         column_descriptions: { TODO: "for work that can and should be done soon" },
         allowed_tags: [
@@ -402,7 +403,8 @@ function fixture() {
           if (request.op === "foreground") answer({ result: "delivery", status: "observed" });
           if (request.op === "permission") answer({ result: "delivery", status: "decision_sent" });
           if (request.op === "dialog") answer(state.dialogReply || { result: "delivery", status: "input_sent" });
-          if (request.op === "snapshot") answer(state.snapshot());
+          if (request.op === "snapshot")
+            answer(state.refuseBoard ? { result: "rejected", message: state.refuseBoard } : state.snapshot());
           if (request.op === "preview")
             answer({ result: "preview", lines: state.lines, cols: 132 });
           if (request.op === "transcript") {
@@ -3018,6 +3020,44 @@ async function backFlow(browser, engineName) {
   }
 }
 
+// A board too big for one answer (T-1008): an older host refuses it, and
+// the page says so instead of loading forever; a newer host sends its head
+// and the count it left out, which the board says under its columns.
+async function bigBoardFlow(browser, engineName) {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, colorScheme: "dark", serviceWorkers: "block" });
+  await context.addInitScript(fixture);
+  await context.addInitScript(() => {
+    window.fixture.refuseBoard = "response exceeds the browser preview limit";
+  });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  try {
+    await page.goto(origin);
+    await until(page, () => !document.querySelector("#pair").disabled);
+    await page.getByLabel("Pairing code", { exact: true }).fill("fixture-pair-code");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await until(page, () => /too big to send to this page/.test(document.querySelector("#connection")?.textContent || ""));
+    assert.equal(await page.getByText("Reaching your board…").count(), 0, "no endless wait");
+    await page.evaluate(() => {
+      window.fixture.refuseBoard = undefined;
+      window.fixture.omitted = 12;
+      window.fixture.update();
+    });
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    await until(page, () => !/too big/.test(document.querySelector("#connection")?.textContent || ""));
+    await page.locator('button[data-mode="board"]').locator("visible=true").click();
+    assert.match(await page.locator("#omitted").textContent(), /^12 more tickets are on your terminal/);
+    assert.deepEqual(errors, []);
+    console.log(`${engineName}: a board too big for one answer is said, never waited on passed`);
+  } catch (error) {
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-big-board-failure.png`) });
+    throw error;
+  } finally {
+    await context.close();
+  }
+}
+
 // A credential the relay no longer knows (T-852): its database was reset, so
 // the relay refuses the credential this browser kept. A pairing code then
 // registers again rather than hanging on "Pairing…", and a valid credential,
@@ -4461,6 +4501,7 @@ try {
       await tabsFlow(browser, engineName);
       await keptFlow(browser, engineName);
       await refusedFlow(browser, engineName);
+      await bigBoardFlow(browser, engineName);
       await forgetFlow(browser, engineName);
     } finally {
       await browser.close();

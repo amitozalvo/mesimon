@@ -383,7 +383,7 @@ function WorkList({ store, bp }) {
           : mode === "board"
             ? html`<${BoardList} store=${store} board=${board} bp=${bp} />`
             : html`<${SentList} store=${store} board=${board} />`
-        : loading && html`<div class="loading"><${Shin} size="medium" scale=${4} mood="awake" light="dim" /><p>Reaching your board…</p></div>`}
+        : loading && html`<div class="loading"><${Shin} size="medium" scale=${4} mood="awake" light="dim" />${!store.refused && html`<p>Reaching your board…</p>`}</div>`}
     </nav>
     ${board && mode === "sent" && html`<${QuickNew} store=${store} />`}
     ${board && mode !== "sent" && bp === "phone" && html`<${NewTicketButton} store=${store} board=${board}
