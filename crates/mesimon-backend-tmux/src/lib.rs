@@ -816,6 +816,19 @@ impl TmuxBackend {
         Ok(!self.run(&["list-clients", "-t", pane, "-F", "#{client_name}"])?.trim().is_empty())
     }
 
+    /// `#{client_activity}` of every client on `target`, epoch seconds, one
+    /// fork (T-966): the last input tmux read from each. A line that does not
+    /// parse is `None`, which a caller reads as unknown, never as idle; an
+    /// empty listing is nobody attached.
+    pub fn client_activities(&self, target: &str) -> Result<Vec<Option<u64>>> {
+        let out = self.run(&["list-clients", "-t", target, "-F", "#{client_activity}"])?;
+        Ok(out
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.trim().parse::<u64>().ok())
+            .collect())
+    }
+
     pub fn capture_input_screen(&self, sid16: &str) -> Result<InputScreen> {
         // Keep physical rows (no -J and no blank-line filtering): cursor_y
         // indexes this screen. Read screen and cursor in one tmux command queue.

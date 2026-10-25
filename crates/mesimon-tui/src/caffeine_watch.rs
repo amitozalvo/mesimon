@@ -301,6 +301,7 @@ mod tests {
                     held: None,
                     plan: false,
                     deliver: mesimon_core::command::Deliver::Idle,
+                    person: None,
                 }]
             } else {
                 vec![]

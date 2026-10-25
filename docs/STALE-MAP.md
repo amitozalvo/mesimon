@@ -34420,3 +34420,67 @@ running the child under both).
 - **Missing hour:** 01:30 plus 30 minutes on 27 March reads 03:00. `mktime` on a 02:30 that
   never was answers an hour either side. `tomorrow 9:00` is 28 March 06:00Z.
 Under `TZ=UTC` the child fails at its first assertion ("the zone took").
+
+## A client idle on a worker's pane stops holding its queued ask (T-966, 2026-10-25, found by the Fable review of T-958, T-960 bundle 2: "A queued ask on the hook road waits for an attached client with no bound and no row word")
+
+**The gap.** T-958 put one attached-person guard before every key the board types into an agent's
+pane and added no timer. A queued ask whose road types (the hook set's road, a submit-only mod's
+`immediately`, a slash command) therefore waited for an attached tmux client to leave, with no
+bound. The row said only `queued`, and so did the crown's record. That is T-945's eleven-hour class
+for the crown's wake, back for asks. The mod's `submit` never touches the box and was never held.
+
+**The change.** T-945's release, given to the queued ask: a client tmux has heard nothing from
+inside the bound (`crownwake::PERSON_IDLE_MS`, ten minutes, seam `MESIMON_PERSON_IDLE_MS`) is not
+at the box. The release has two halves. They land together, or the drain refuses at its own
+dispatch on every pass.
+
+- **Readiness** (`queued_person_hold`, under `typed_under_a_person`) keeps T-958's scope: a
+  Claude pane, not `takes_by_submit`, not a relaunch. In place of the physical `attached` it reads
+  T-945's `active_clients` ({Recent | Unknown}) on the same pane sample. A pane whose clients
+  are all idle is held by its box, which T-945 requires too: it goes only once a sample that read
+  the clients also read the box holding no draft (`person_read_at`). A pane with no client holds
+  nothing, as before T-958, and a draft there is pasted onto as it always was. The drain asks the
+  sampler for a held pane once a second (`want_person`, now rate-limited per pane, so the crown's
+  wake and an ask never take each other's read). A sample that read such a pane's clients and box
+  together drains the queue as it lands, because the next sample (facts only) reads the box as
+  unread again.
+- **`paste_at`'s fresh read** (`clients_at_pane`) is one fork, `list-clients -t =<sid> -F
+  '#{client_activity}'`, with each client judged by `crownwake::client_hold` at that moment.
+  - Any client that holds, a line that does not parse, or a listing that fails: refused as T-958
+    refused (`refused_for_person`, `prompt_not_sent`, `queued_ask_kept`).
+  - All clients idle: the box is read at this edge, and a draft is refused the same way, in its
+    own words ("a person left words in its prompt box"). An unreadable screen refuses nothing,
+    as the command check above it does.
+  - No client: the keys go.
+
+  The sample's `#{session_activity}` is at least the fresh `#{client_activity}` in every row of
+  T-945's table, so the fresh read refuses a released sample only when input came in between.
+  That costs one `queued_ask_kept`, and then the next sample holds.
+- **Left alone:** `person_at_pane` and its other callers, which are the fill's send-now, the dialog
+  walk, the refused submit's paste (T-938) and the phone's dialog keys. Neither the crown's wake
+  road nor the crown's record changes. `get_ticket`'s ask still reads `queued`, and nothing an
+  agent or the crown is told changes, so no rig test was written.
+
+**The words.** `Pending::person` (new, `serde(default)`, absent from an older daemon) carries the
+crown wake's words for a queued ask that only a person holds: `leave or 10m idle`, `idle unknown ∙
+leave`, `after your draft`. `held` could not carry them, because it makes the row a person's send
+(`you send`). When the checkout is busy or the agent cannot take words, the row names that wait
+instead, since the person's leaving would not end it. A box not yet read has no word for the
+second it takes to read.
+- The ticket page reads the row whole, e.g. `queued ∙ leave or 10m idle`.
+- The card (`App::card_owed`) draws `queued` over the reason where the whole does not fit, as
+  T-945's wake row does. `ui::tests::the_queued_ask_row_keeps_its_release_and_bound_on_every_card`
+  draws all three reasons:
+  - one row on the 40-cell column (26, 29 and 25 cells of 35);
+  - two rows on the ordinary 29-cell column and on the 26-cell floor.
+
+**Tests.** `crown_e2e::a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box` runs on the
+hook road with a 5 s bound and a control-mode client on the worker's pane.
+- A key from the client renews the hold, and the row reads `leave or 5s idle` while the words
+  wait.
+- Past the bound, with the client still attached, the words land once, not before the expiry.
+  `queued_ask_kept` rises by at most one and the crown's record reads `sent`.
+- A draft typed under the idle client holds the next ask (`after your draft`) with no loop.
+  After Enter, the ask lands on its own line.
+
+Gates: `crown_e2e` and `ask_queue_e2e` on both roads, 82 of 82 each.

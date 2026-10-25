@@ -3352,6 +3352,13 @@ pub struct Pending {
     /// meant them. `idle` on every other row.
     #[serde(default)]
     pub deliver: Deliver,
+    /// Why a person at the pane holds a queued ask the queue would type
+    /// (T-966), in the crown's wake's words: `leave or 10m idle`, `idle
+    /// unknown ∙ leave`, `after your draft`. Not `held`: nobody's send is
+    /// asked for, and the ask goes when the reason does. Absent from an
+    /// older daemon parses as none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub person: Option<String>,
 }
 
 impl Pending {

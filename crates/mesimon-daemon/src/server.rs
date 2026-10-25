@@ -213,6 +213,9 @@ const PERSON_READ_MS: u64 = 1000;
 const A_PERSON_ATTACHED: &str = "a_person_attached";
 /// The same refusal in words, where a receipt or an error says why.
 const PERSON_AT_PANE: &str = "a person has its pane open, so the board typed nothing into it";
+/// The refusal past an idle client (T-966): the box holds words nobody sent.
+const DRAFT_IN_BOX: &str =
+    "a person left words in its prompt box, so the board typed nothing into it";
 /// How long a write to a subscriber's socket may block the writer thread
 /// before the subscriber is dropped (T-838). Long enough for a board
 /// answer to a client reading it under load; a client that reads nothing
@@ -666,17 +669,19 @@ pub struct Daemon {
     /// The panes whose attached client holds the crown's wake (T-945,
     /// `crownwake::client_hold`): tmux recorded activity from a client
     /// inside the bound, or its reading cannot be trusted. Read from the
-    /// sample `attached` is, and asked by the wake's two holds alone
-    /// (`person_hold`, `codex_wake_box`); everything else that asks who is
-    /// in a pane reads `attached`.
+    /// sample `attached` is, and asked by the wake's two holds
+    /// (`person_hold`, `codex_wake_box`) and a queued ask's (T-966,
+    /// `typed_under_a_person`); everything else that asks who is in a pane
+    /// reads `attached`.
     active_clients: HashMap<String, crownwake::ClientHold>,
     /// The sample time `attached` was read at (T-918): a delivery that rests
     /// on who is in a pane and what its box holds takes both from one
     /// sample (`person_read_at`).
     attached_at: u64,
-    /// When the crown's pane was last asked of the sampler for a person
-    /// (T-918, `want_person`): once a second, whatever asks.
-    person_asked_at: u64,
+    /// When each pane was last asked of the sampler for a person (T-918,
+    /// `want_person`): once a second a pane, whatever asks, so the crown's
+    /// wake and a queued ask (T-966) never take each other's read.
+    person_asked_at: HashMap<String, u64>,
     /// (bytes, sessions) currently sleepable on sleep-safe tickets — the
     /// header suggestion, recomputed on the RSS bucket.
     reclaim_cache: (u64, usize),
@@ -1457,7 +1462,7 @@ pub fn run(paths: Paths) -> Result<()> {
         attached: std::collections::HashSet::new(),
         active_clients: HashMap::new(),
         attached_at: 0,
-        person_asked_at: 0,
+        person_asked_at: HashMap::new(),
         reclaim_cache: (0, 0),
         archive_cache: 0,
         open_box_counts: Default::default(),
@@ -2381,6 +2386,40 @@ struct QueuedAsk {
     /// where it came from and the words before the template. Held for a
     /// person like a crown's ask unless `sends`; never persisted, like one.
     from_board: Option<peer::FromBoard>,
+}
+
+/// Who has a pane open as `paste_at` is about to type into it (T-966,
+/// `Daemon::clients_at_pane`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PaneClients {
+    Away,
+    Idle,
+    Here,
+}
+
+/// Why a queued ask's typed words wait for a person at its pane (T-966,
+/// `Daemon::queued_person_hold`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AskHold {
+    /// A client tmux heard from inside the bound, or one whose reading is
+    /// not to be trusted (T-945).
+    Client(crownwake::ClientHold),
+    /// Every client idle past the bound, and the box holding words (`draft`,
+    /// by its newest read) or not yet read on the sample the clients were.
+    Box { draft: bool },
+}
+
+impl AskHold {
+    /// The queued row's word for the hold, the crown's wake's words: none
+    /// for a box not yet read, which the next sample settles.
+    fn word(self) -> Option<&'static str> {
+        use crownwake::PersonHold;
+        match self {
+            AskHold::Client(hold) => Some(PersonHold::Client(hold).word()),
+            AskHold::Box { draft: true } => Some(PersonHold::Draft.word()),
+            AskHold::Box { draft: false } => None,
+        }
+    }
 }
 
 impl QueuedAsk {
@@ -8784,6 +8823,25 @@ impl Daemon {
         self.backend.has_clients(&format!("={sid}")).unwrap_or(true)
     }
 
+    /// `person_at_pane` under T-945's bound, for `paste_at`'s keys (T-966):
+    /// every client's `#{client_activity}` in one fork, judged by
+    /// `crownwake::client_hold` at this moment. Any client that holds, or a
+    /// listing the server cannot give, is `Here`; clients all idle past the
+    /// bound are `Idle`, whose box the caller reads; none is `Away`.
+    fn clients_at_pane(&self, sid: &str) -> PaneClients {
+        let Ok(clients) = self.backend.client_activities(&format!("={sid}")) else {
+            return PaneClients::Here;
+        };
+        let (now, bound) = (now_ms(), crownwake::person_idle_ms());
+        if clients.iter().any(|a| crownwake::client_hold(*a, now, bound).is_some()) {
+            PaneClients::Here
+        } else if clients.is_empty() {
+            PaneClients::Away
+        } else {
+            PaneClients::Idle
+        }
+    }
+
     /// Why words of the board's would land on a person's (T-918), as the
     /// crown's wake row says it: a tmux client has the pane open and tmux
     /// recorded activity from it inside the bound (T-945, `active_clients`:
@@ -8909,14 +8967,16 @@ impl Daemon {
     }
 
     /// The next sample reads who is in this pane and what its box holds,
-    /// once a second at most: every caller asks on each landing it sees
+    /// once a second a pane at most: every caller asks on each landing it sees
     /// (the drain's, the Codex box's), and the sampler lands four a second.
     fn want_person(&mut self, sid: &str) {
         let now = now_ms();
-        if now.saturating_sub(self.person_asked_at) < PERSON_READ_MS {
+        if self.person_asked_at.get(sid).is_some_and(|at| now.saturating_sub(*at) < PERSON_READ_MS)
+        {
             return;
         }
-        self.person_asked_at = now;
+        self.person_asked_at.retain(|_, at| now.saturating_sub(*at) < PERSON_READ_MS);
+        self.person_asked_at.insert(sid.to_string(), now);
         self.pane_due.facts = true;
         self.pane_due.screen(sid);
     }
@@ -11008,6 +11068,7 @@ impl Daemon {
                 held: q.held.map(str::to_string),
                 plan: q.plan,
                 deliver: q.deliver,
+                person: self.queued_person_word(q).map(str::to_string),
             })
             .collect();
         for o in self.owed.values() {
@@ -11025,6 +11086,7 @@ impl Daemon {
                     held: None,
                     plan: false,
                     deliver: Deliver::Idle,
+                    person: None,
                 });
             }
         }
@@ -11059,6 +11121,7 @@ impl Daemon {
                 held,
                 plan: false,
                 deliver: Deliver::Idle,
+                person: None,
             });
         }
         // What the train will do once its gate is clear — said before it
@@ -11091,6 +11154,7 @@ impl Daemon {
                     held: None,
                     plan: false,
                     deliver: Deliver::Idle,
+                    person: None,
                 });
             }
             for t in plan.rebase {
@@ -11107,6 +11171,7 @@ impl Daemon {
                     held: None,
                     plan: false,
                     deliver: Deliver::Idle,
+                    person: None,
                 });
             }
             // What the train does once a worker's own turn ends (T-822):
@@ -11135,6 +11200,7 @@ impl Daemon {
                     held: None,
                     plan: false,
                     deliver: Deliver::Idle,
+                    person: None,
                 });
             }
         }
@@ -13083,10 +13149,32 @@ impl Daemon {
         // wake is not this road's: it goes on its own sample of the pane's
         // clients and box (T-918, T-936, T-945's bound), and a refusal here
         // would read as a failed delivery and hold it until its seat moves.
-        if ack.word != Ack::CROWN_WAKE.word && self.person_at_pane(&sid) {
-            self.refused_for_person = Some(id);
-            self.feed.board_outcome("daemon", "prompt_not_sent", Some(ticket), A_PERSON_ATTACHED);
-            return Err(format!("{PERSON_AT_PANE} ∙ the words were not sent"));
+        // A client idle past T-945's bound is not at the box (T-966), and the
+        // box then decides: a draft left in it would be joined and sent.
+        if ack.word != Ack::CROWN_WAKE.word {
+            let refused = match self.clients_at_pane(&sid) {
+                PaneClients::Away => None,
+                PaneClients::Here => Some(PERSON_AT_PANE),
+                PaneClients::Idle => {
+                    use crate::agents::claude::composer::{self, Composer};
+                    // A screen that cannot be read refuses nothing, as above.
+                    let draft = self
+                        .backend
+                        .capture_input_screen(&sid)
+                        .is_ok_and(|screen| composer::read(&screen) == Composer::Holding);
+                    draft.then_some(DRAFT_IN_BOX)
+                }
+            };
+            if let Some(why) = refused {
+                self.refused_for_person = Some(id);
+                self.feed.board_outcome(
+                    "daemon",
+                    "prompt_not_sent",
+                    Some(ticket),
+                    A_PERSON_ATTACHED,
+                );
+                return Err(format!("{why} ∙ the words were not sent"));
+            }
         }
         if immediately {
             // The paste, then the send-now in its own call, as an Enter
@@ -14590,22 +14678,52 @@ impl Daemon {
 
     /// The drain's words for this pane would be typed under a person's hands
     /// (T-958), by the newest pane sample, so the queue's every-pass test
-    /// forks nothing: a Claude pane whose words take `paste_at`'s keys as the
-    /// drain sends them (never `immediately`), not the mod's `submit` nor a
-    /// relaunch, with a tmux client on it. Readiness only: the one fresh read
-    /// is `paste_at`'s, and its refusal keeps the entry.
+    /// forks nothing. Readiness only: the one fresh read is `paste_at`'s,
+    /// and its refusal keeps the entry.
     fn typed_under_a_person(&self, id: uuid::Uuid, q: &QueuedAsk) -> bool {
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id && s.state.has_pane())
-        else {
-            return false;
-        };
+        self.queued_person_hold(id, q).is_some()
+    }
+
+    /// The queued row's word for a person holding this ask (T-966,
+    /// `Pending::person`): an ask the queue would deliver, at a pane, held
+    /// by them alone. While the checkout is busy or the agent cannot take
+    /// words the row names that wait, which their leaving does not end.
+    fn queued_person_word(&self, q: &QueuedAsk) -> Option<&'static str> {
+        let QueuedSeat::Pane(id) = q.seat else { return None };
+        if q.held_for_person() || !self.ask_holders(q).is_empty() || !self.session_takes_words(id) {
+            return None;
+        }
+        self.queued_person_hold(id, q).and_then(AskHold::word)
+    }
+
+    /// What holds a queued ask for a person at its pane (T-958, T-966): a
+    /// Claude pane whose words take `paste_at`'s keys as the drain sends
+    /// them (never `immediately`), not the mod's `submit` nor a relaunch,
+    /// with a tmux client on it that holds as the crown's wake's does
+    /// (T-945, `active_clients`); or, every client idle past the bound, its
+    /// box, which goes only once the same sample read it holding no draft.
+    /// A pane with no client holds nothing, as before T-958.
+    fn queued_person_hold(&self, id: uuid::Uuid, q: &QueuedAsk) -> Option<AskHold> {
+        let rec = self.board.sessions.iter().find(|s| s.id == id && s.state.has_pane())?;
         if rec.kind != SessionKind::Claude
             || self.takes_by_submit(id, &q.text)
             || self.relaunches(id, q.plan)
         {
-            return false;
+            return None;
         }
-        self.attached.contains(&rec.sid16())
+        let sid = rec.sid16();
+        if let Some(hold) = self.active_clients.get(&sid) {
+            return Some(AskHold::Client(*hold));
+        }
+        if !self.attached.contains(&sid) {
+            return None;
+        }
+        use crate::agents::claude::composer::{self, Composer};
+        let draft = self
+            .screens
+            .get(&sid)
+            .is_some_and(|(_, screen)| composer::read(screen) == Composer::Holding);
+        (draft || self.person_read_at(&sid).is_none()).then_some(AskHold::Box { draft })
     }
 
     /// `paste_at` refused `id`'s words for a person at its pane, sending no
@@ -14645,6 +14763,22 @@ impl Daemon {
         // column's tickets, once a second.
         if self.queued.is_empty() {
             return false;
+        }
+        // An ask held for a person (T-966) has its pane read again, once a
+        // second (`want_person`): a client leaving or going idle is heard by
+        // the next read, and the box a release waits on is read at all.
+        let held: Vec<String> = self
+            .queued
+            .iter()
+            .filter(|q| !q.held_for_person())
+            .filter_map(|q| match q.seat {
+                QueuedSeat::Pane(id) => self.queued_person_hold(id, q).map(|_| id),
+                _ => None,
+            })
+            .filter_map(|id| self.board.sessions.iter().find(|s| s.id == id).map(|s| s.sid16()))
+            .collect();
+        for sid in held {
+            self.want_person(&sid);
         }
         let mut seen: Vec<String> = Vec::new();
         let mut take: Vec<usize> = Vec::new();
@@ -15235,9 +15369,13 @@ impl Daemon {
         if matches!(response, Response::Err { .. }) && self.took_person_refusal(seat_id) {
             self.queue_kept(i, kept);
             self.broadcast();
-            return Response::Err {
-                message: format!("{PERSON_AT_PANE} ∙ the words stay queued")
+            // Why, as `paste_at` said it: a client at the pane, or the
+            // draft an idle one left (T-966).
+            let why = match &response {
+                Response::Err { message } if message.starts_with(DRAFT_IN_BOX) => DRAFT_IN_BOX,
+                _ => PERSON_AT_PANE,
             };
+            return Response::Err { message: format!("{why} ∙ the words stay queued") };
         }
         // The crown's words, sent by a person or on its say-so: the record
         // reads `sent` once the dispatch went through (T-938), and the
@@ -18136,6 +18274,17 @@ impl Daemon {
         let paned: std::collections::HashSet<String> =
             self.board.sessions.iter().filter(|r| r.state.has_pane()).map(|r| r.sid16()).collect();
         self.screens.retain(|sid, _| paned.contains(sid));
+        // A queued ask's pane whose clients and box this sample read together
+        // (T-966): the box a release past an idle client waits on.
+        let read_a_box = s.facts.is_some()
+            && self.queued.iter().any(|q| match q.seat {
+                QueuedSeat::Pane(id) => self.board.sessions.iter().any(|r| {
+                    r.id == id
+                        && self.attached.contains(&r.sid16())
+                        && s.screens.contains_key(&r.sid16())
+                }),
+                _ => false,
+            });
         for (sid, screen) in s.screens {
             if paned.contains(&sid) {
                 self.screens.insert(sid, (at, screen));
@@ -18145,6 +18294,12 @@ impl Daemon {
         // (T-918), the moment it lands.
         if !self.crown_wakes.is_empty() {
             changed |= stage!(self, "drain_crown_wakes", self.drain_crown_wakes(Some(at)));
+        }
+        // A queued ask held for an idle client's box (T-966) goes on the
+        // sample that read the clients and the box together, as it lands:
+        // the next facts-only sample would read the box as unread again.
+        if read_a_box {
+            changed |= stage!(self, "drain_queue", self.drain_queue());
         }
         if changed {
             stage!(self, "persist_sessions", self.persist_sessions());

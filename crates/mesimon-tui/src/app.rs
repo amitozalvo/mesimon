@@ -6620,18 +6620,25 @@ impl App {
     ///
     /// The crown's wake held for a client in its pane (T-945) reaches the
     /// card as `crown wakes` and its reason on two lines: the card draws them
-    /// as one row where the whole fits and as two where it does not.
+    /// as one row where the whole fits and as two where it does not. A
+    /// queued ask held for a person at its pane (T-966) comes the same way,
+    /// `queued` over its reason.
     pub(crate) fn card_owed(&self, ticket: ulid::Ulid) -> (Option<String>, Option<String>) {
-        let row = self.pending_row(ticket).map(|row| match self.pending_of(ticket) {
-            Some(p) if p.action == mesimon_core::command::PendingAction::CrownWake => {
-                match p.held.as_deref().filter(|why| held_for_a_client(why)) {
-                    Some(why) if row == format!("crown wakes ∙ {why}") => {
-                        format!("crown wakes\n{why}")
-                    }
-                    _ => row,
-                }
+        use mesimon_core::command::PendingAction as A;
+        let row = self.pending_row(ticket).map(|row| {
+            let split = match self.pending_of(ticket) {
+                Some(p) if p.action == A::CrownWake => p
+                    .held
+                    .as_deref()
+                    .filter(|why| held_for_a_client(why))
+                    .map(|why| ("crown wakes", why)),
+                Some(p) if p.action == A::Ask => p.person.as_deref().map(|why| ("queued", why)),
+                _ => None,
+            };
+            match split {
+                Some((lead, why)) if row == format!("{lead} ∙ {why}") => format!("{lead}\n{why}"),
+                _ => row,
             }
-            _ => row,
         });
         let ships = !self.ticket_trust_ready(ticket)
             && self.unsent_of(ticket).is_none()
@@ -6749,6 +6756,13 @@ impl App {
         // outranks its turn, which a person's leaving does not end.
         if let (A::CrownWake, Some(why)) = (p.action, p.held.as_deref()) {
             return Some(format!("crown wakes ∙ {why}"));
+        }
+        // A queued ask held for a person at its pane (T-966): the daemon's
+        // word for why — `leave or 10m idle`, `idle unknown ∙ leave`, `after
+        // your draft` — sent only while they alone hold it, so a busy
+        // checkout still reads `after T-3`.
+        if let (A::Ask, false, Some(why)) = (p.action, p.in_flight, p.person.as_deref()) {
+            return Some(format!("queued ∙ {why}"));
         }
         Some(match (p.action, after) {
             (A::Ask, _) if p.in_flight => "queued ∙ sending".into(),
@@ -16109,6 +16123,7 @@ pub(crate) mod test_support {
                             held: held.clone(),
                             plan,
                             deliver: mesimon_core::command::Deliver::Idle,
+                            person: None,
                         });
                         return Ok(Response::Queued { behind: waits_on, asking, held });
                     }
@@ -22389,6 +22404,7 @@ mod tests {
             plan: false,
             held: None,
             deliver: mesimon_core::command::Deliver::Immediately,
+            person: None,
         }];
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         assert_eq!(level(&app), (false, true), "reopened as the crown meant it");
@@ -22974,6 +22990,7 @@ mod tests {
                 plan: false,
                 held: None,
                 deliver: mesimon_core::command::Deliver::Idle,
+                person: None,
             }];
             app.pending_row(ulid::Ulid(1))
         };
@@ -23280,6 +23297,7 @@ mod tests {
             held: Some("agent asked".into()),
             plan: false,
             deliver: mesimon_core::command::Deliver::Idle,
+            person: None,
         }];
         assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("agent asked ∙ you send"));
         assert!(app.ctx().ticket_queued, "a held ask is still edited and sent from the board");
@@ -23306,6 +23324,7 @@ mod tests {
             plan: false,
             held: None,
             deliver: mesimon_core::command::Deliver::Idle,
+            person: None,
         }];
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         let ed = editor(&app);
@@ -23343,6 +23362,7 @@ mod tests {
             plan: false,
             held: None,
             deliver: mesimon_core::command::Deliver::Idle,
+            person: None,
         }];
         assert!(app.ctx().ticket_queued);
         assert_eq!(
@@ -23476,6 +23496,7 @@ mod tests {
                 plan: false,
                 held: None,
                 deliver: mesimon_core::command::Deliver::Idle,
+                person: None,
             }];
             app.pending_row(ulid::Ulid(1)).unwrap()
         };
@@ -23501,6 +23522,7 @@ mod tests {
                 plan: false,
                 held: None,
                 deliver: mesimon_core::command::Deliver::Idle,
+                person: None,
             }];
             app.pending_row(ulid::Ulid(1)).unwrap()
         };
@@ -23527,6 +23549,7 @@ mod tests {
             plan: false,
             held: None,
             deliver: mesimon_core::command::Deliver::Idle,
+            person: None,
         }];
         assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("T-411 asks ∙ you send"));
         assert!(app.ticket_queued(ulid::Ulid(1)), "^y and ^u apply to it");
@@ -23594,6 +23617,25 @@ mod tests {
         app.pending[0].held = Some("sending".into());
         assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("crown wakes ∙ sending"));
         assert!(!app.ticket_held(ulid::Ulid(1)), "no ask to send or take back");
+        // A queued ask a person at its pane holds (T-966): the daemon's word
+        // for why, whole on the page and its subject over it on the card. It
+        // is the queue's ask still: `^y` hurries it, nothing asks a send.
+        app.pending[0].action = Ask;
+        app.pending[0].held = None;
+        app.pending[0].by = None;
+        for why in ["leave or 10m idle", "idle unknown ∙ leave", "after your draft"] {
+            app.pending[0].person = Some(why.into());
+            let whole = format!("queued ∙ {why}");
+            assert_eq!(app.pending_row(ulid::Ulid(1)), Some(whole), "the ticket page's row");
+            assert_eq!(app.card_owed(ulid::Ulid(1)).0, Some(format!("queued\n{why}")));
+            assert!(app.ticket_queued(ulid::Ulid(1)));
+            assert!(!app.ticket_held(ulid::Ulid(1)), "no send asked of the person");
+        }
+        // Pasted and waiting on its ack, the hold is behind it.
+        app.pending[0].in_flight = true;
+        assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("queued ∙ sending"));
+        app.pending[0].in_flight = false;
+        app.pending[0].person = None;
         // A merge the checkout refused (T-289): the reason travels on `text`
         // and outranks what the row waits on — quiet is not what it needs.
         // The ask's own `text` is its words, and must not read as a refusal.
@@ -23611,6 +23653,7 @@ mod tests {
                 plan: false,
                 held: None,
                 deliver: mesimon_core::command::Deliver::Idle,
+                person: None,
             }];
             app.pending_row(ulid::Ulid(1)).unwrap()
         };

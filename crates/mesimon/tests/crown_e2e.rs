@@ -1951,6 +1951,196 @@ fn an_attached_client_holds_the_crown_wake_only_while_active() {
     let _ = two.wait();
 }
 
+/// T-966: a queued ask the hook road would type into a worker's pane waits
+/// for a client attached there only while tmux has recorded activity from
+/// it inside the bound (`5 s` here), as the crown's wake does (T-945), and
+/// the row says why. Past the bound, the client still attached, the words
+/// go in once, the drain never looping on its own refusal. A second ask
+/// meets a draft left with the client idle: the draft holds it (`after your
+/// draft`), and it goes on its own line once the person sends their words.
+#[test]
+fn a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box() {
+    let Some(h) = Harness::boot_bare(
+        "crown_ask_idle_client",
+        Some(BOX_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_CLAUDE_ROAD", "hooks"),
+            ("MESIMON_PERSON_IDLE_MS", IDLE_MS),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let tmux_sock = h.paths.tmux_sock();
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    let mut c = h.client("crown_ask_idle_client");
+    let got = h.dir.join("got.txt");
+    let read_got = || std::fs::read_to_string(&got).unwrap_or_default();
+    let lines_with = |needle: &str| read_got().lines().filter(|l| l.contains(needle)).count();
+    let feed_count = |cmd: &str| {
+        std::fs::read_to_string(&feed_path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(&format!("\"cmd\":\"{cmd}\"")))
+            .count()
+    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let bound: u64 = IDLE_MS.parse().unwrap();
+
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-966 worker");
+    let kw = key_of(&mut c, w);
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
+        Response::Ok
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let crown = c.board().sessions.iter().find(|s| s.id == sa).unwrap().sid16();
+    // A launch's words left in a box go first, out of the way of what is
+    // read there below.
+    let enter = |sid: &str| {
+        assert!(tmux(&tmux_sock)
+            .args(["send-keys", "-t", sid, "Enter"])
+            .status()
+            .unwrap()
+            .success());
+    };
+    enter(&crown);
+    wait_until(std::time::Duration::from_secs(10), "the crown's title out of its box", || {
+        read_got().lines().any(|l| l.trim() == "coordinate")
+    });
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("shared_checkout".into()),
+        },
+    ) {
+        Response::AgentStarted { session_started: true, .. } => {}
+        other => panic!("start_agent {kw}: {other:?}"),
+    }
+    let ws = c.board().live_agent(w).expect("W holds a seat").id;
+    let sid = c.board().sessions.iter().find(|s| s.id == ws).unwrap().sid16();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    enter(&sid);
+    wait_until(std::time::Duration::from_secs(10), "W's launch words out of its box", || {
+        lines_with("mesimon-probe-966 worker") > 0
+    });
+    let asked = |c: &mut TestClient| read(c, sa, &kw).unwrap().asked.expect("the crown's ask");
+    let person = |c: &mut TestClient| -> Option<String> {
+        pending_of(c, Some(w))
+            .into_iter()
+            .find(|p| p.action == PendingAction::Ask && !p.in_flight)
+            .and_then(|p| p.person)
+    };
+    let ask = |c: &mut TestClient, text: &str| {
+        let v = read(c, sa, &kw).unwrap();
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentAskTicket {
+                key: kw.clone(),
+                text: text.into(),
+                seen: v.seen,
+                plan: false,
+                deliver: Deliver::Idle,
+            },
+        )
+    };
+    // W's stop wakes the crown, in the same checkout: the crown takes that
+    // wake and goes idle, so nothing but the person holds W's ask.
+    let w_stops = |c: &mut TestClient| {
+        let woken = feed_count("crown_wake_sent");
+        stop(c, ws);
+        wait_until(std::time::Duration::from_secs(10), "the crown's wake", || {
+            feed_count("crown_wake_sent") > woken
+        });
+        start(c, sa);
+        stop(c, sa);
+    };
+
+    // ---- an active client holds the ask, and the row says until when -------
+    start(&mut c, ws);
+    let (mut client, client_name) = attach_client(&tmux_sock, &sid);
+    let _ = ask(&mut c, "mesimon-probe-966a at the idle");
+    assert_eq!(asked(&mut c).status, "queued");
+    let kept_before = feed_count("queued_ask_kept");
+    // W's turn ends with the ask waiting on it, so the crown is not woken.
+    stop(&mut c, ws);
+    // A key from the client renews the hold; the pane sees nothing of it.
+    let renewed = renew_activity(&tmux_sock, &sid, &client_name);
+    let renewed_expiry = (renewed + 1) * 1000 + bound;
+    wait_until(std::time::Duration::from_secs(5), "the row names the bound", || {
+        person(&mut c).as_deref() == Some(WHEN_YOU_LEAVE_5S)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert!(epoch_ms() + 500 < renewed_expiry, "the window is still open");
+    assert_eq!(lines_with("mesimon-probe-966a"), 0, "held while active: {}", read_got());
+    assert_eq!(asked(&mut c).status, "queued");
+    assert_eq!(read_got().lines().filter(|l| l.contains("F12")).count(), 0, "no key in the box");
+
+    // ---- past the bound, the client still there: the words go, once -------
+    wait_until(std::time::Duration::from_secs(15), "the ask past the bound", || {
+        lines_with("mesimon-probe-966a") == 1
+    });
+    let at = epoch_ms();
+    assert!(at + 1000 >= renewed_expiry, "not before the bound: {at} < {renewed_expiry}");
+    assert_eq!(session_activity(&tmux_sock, &sid), renewed, "no input since the key");
+    assert!(attach_listed(&tmux_sock, &sid), "the client still attached");
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(lines_with("mesimon-probe-966a"), 1, "once");
+    assert_eq!(asked(&mut c).status, "sent");
+    let kept_now = feed_count("queued_ask_kept");
+    assert!(kept_now <= kept_before + 1, "the drain did not loop: {kept_before} → {kept_now}");
+    // The turn those words started ends.
+    start(&mut c, ws);
+    w_stops(&mut c);
+
+    // ---- a draft left under the idle client holds the next ask -------------
+    assert!(tmux(&tmux_sock)
+        .args(["send-keys", "-t", &sid, "-l", "half a thought"])
+        .status()
+        .unwrap()
+        .success());
+    let kept_before = feed_count("queued_ask_kept");
+    let _ = ask(&mut c, "mesimon-probe-966b after the draft");
+    wait_until(std::time::Duration::from_secs(10), "the draft holds the ask", || {
+        person(&mut c).as_deref() == Some("after your draft")
+    });
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    assert_eq!(lines_with("mesimon-probe-966b"), 0, "nothing pasted into their draft");
+    assert_eq!(lines_with("half a thought"), 0, "the draft is theirs to send");
+    assert_eq!(asked(&mut c).status, "queued");
+    let kept_now = feed_count("queued_ask_kept");
+    assert!(kept_now <= kept_before + 1, "the drain did not loop: {kept_before} → {kept_now}");
+    // The person sends their words; the ask then goes on its own line.
+    enter(&sid);
+    wait_until(std::time::Duration::from_secs(10), "the ask after the draft", || {
+        lines_with("mesimon-probe-966b") == 1
+    });
+    assert_eq!(lines_with("half a thought"), 1, "never joined: {}", read_got());
+    assert_eq!(asked(&mut c).status, "sent");
+    client.kill().unwrap();
+    let _ = client.wait();
+}
+
 /// A crown whose mod speaks `submit` (T-931) takes its wake at once with a
 /// person in its pane and their draft in its box: the submit goes to the
 /// model past the box (measured on Claude Code 2.1.309), so nothing holds

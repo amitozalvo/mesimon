@@ -4476,6 +4476,7 @@ fn golden_queued_start_open_120() {
         plan: false,
         held: None,
         deliver: mesimon_core::command::Deliver::Idle,
+        person: None,
     }];
     app.cursor_col = 0;
     app.cursor_row = Some(0);
@@ -4498,6 +4499,7 @@ fn pending_ask(ticket: u128, waits_on: &[&str]) -> mesimon_core::command::Pendin
         plan: false,
         held: None,
         deliver: mesimon_core::command::Deliver::Idle,
+        person: None,
     }
 }
 
@@ -4823,6 +4825,7 @@ fn golden_train_120() {
             plan: false,
             held: None,
             deliver: mesimon_core::command::Deliver::Idle,
+            person: None,
         },
         mesimon_core::command::Pending {
             ticket: ulid_n(6),
@@ -4837,6 +4840,7 @@ fn golden_train_120() {
             plan: false,
             held: None,
             deliver: mesimon_core::command::Deliver::Idle,
+            person: None,
         },
     ];
     app.cursor_col = 2;
@@ -4890,6 +4894,7 @@ fn golden_train_blocked_120() {
         plan: false,
         held: None,
         deliver: mesimon_core::command::Deliver::Idle,
+        person: None,
     }];
     app.cursor_col = 2;
     app.cursor_row = Some(0);
@@ -5406,6 +5411,7 @@ fn golden_train_manual_120() {
         plan: false,
         held: None,
         deliver: mesimon_core::command::Deliver::Idle,
+        person: None,
     };
     app.pending = vec![candidate.clone()];
     app.cursor_col = 2;
@@ -5537,6 +5543,7 @@ fn test_an_emptied_queued_ask_says_enter_drops() {
         plan: false,
         held: None,
         deliver: mesimon_core::command::Deliver::Idle,
+        person: None,
     }];
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt {
@@ -13305,6 +13312,37 @@ fn the_crown_wake_row_keeps_its_release_and_bound_on_every_card() {
         for w in [120, 109] {
             let (lead, under) = rows(w);
             assert!(lead.trim_end().ends_with("crown wakes"), "{w}: {lead}");
+            assert!(under.contains(reason), "{w}: the reason whole under it: {under}");
+        }
+    }
+}
+
+/// A queued ask a person at its pane holds (T-966) keeps its subject and its
+/// reason on the card as drawn, on the three cards T-945's wake row is drawn
+/// on: one row on a 40-cell column, `queued` over the reason on the
+/// ordinary 29-cell column and on the 26-cell floor.
+#[test]
+fn the_queued_ask_row_keeps_its_release_and_bound_on_every_card() {
+    for reason in ["leave or 10m idle", "idle unknown ∙ leave", "after your draft"] {
+        let mut app = app_graphite(fixture(false));
+        let mut p = pending_ask(1, &[]);
+        p.person = Some(reason.into());
+        app.pending = vec![p];
+        app.cursor_col = 0;
+        app.cursor_row = Some(0);
+        let rows = |w: u16| -> (String, String) {
+            let lines = render(&app, w, 30);
+            let at = lines
+                .iter()
+                .position(|l| l.contains("queued"))
+                .unwrap_or_else(|| panic!("the owed row at {w}: {lines:#?}"));
+            (lines[at].clone(), lines.get(at + 1).cloned().unwrap_or_default())
+        };
+        let (wide, _) = rows(200);
+        assert!(wide.contains(&format!("queued ∙ {reason}")), "40 cells: {wide}");
+        for w in [120, 109] {
+            let (lead, under) = rows(w);
+            assert!(lead.trim_end().ends_with("queued"), "{w}: {lead}");
             assert!(under.contains(reason), "{w}: the reason whole under it: {under}");
         }
     }
