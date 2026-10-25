@@ -17,7 +17,7 @@ use common::*;
 
 #[test]
 fn a_columns_claude_mode_rides_the_spawn_and_the_wake() {
-    const STUB: &str = "#!/bin/sh\nwhile IFS= read -r line; do :; done\n";
+    const STUB: &str = "#!/bin/sh\ncat | while IFS= read -r line; do :; done\n";
     let Some(h) = Harness::boot_with_env(
         "clmode",
         Some(STUB),

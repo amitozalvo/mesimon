@@ -25,7 +25,7 @@ use common::*;
 
 #[test]
 fn a_raised_hand_outlives_the_turn_and_is_lowered_by_the_person_or_the_next_turn() {
-    const STUB: &str = "#!/bin/sh\nwhile IFS= read -r line; do :; done\n";
+    const STUB: &str = "#!/bin/sh\ncat | while IFS= read -r line; do :; done\n";
     // The archive at the end needs a parked session, and the sleep floor is
     // a minute of wall clock this test is not going to spend.
     let Some(h) =
@@ -233,7 +233,7 @@ fn a_raised_hand_outlives_the_turn_and_is_lowered_by_the_person_or_the_next_turn
 #[test]
 fn a_raised_hand_comes_down_with_the_dialog_it_stood_for() {
     use mesimon_core::board::{Reason, SessionState};
-    const STUB: &str = "#!/bin/sh\nwhile IFS= read -r line; do :; done\n";
+    const STUB: &str = "#!/bin/sh\ncat | while IFS= read -r line; do :; done\n";
     let Some(h) = Harness::boot("raisedialog", Some(STUB)) else { return };
     let sock = h.paths.orch_sock();
     let hook_sock = h.paths.hook_sock();
@@ -328,7 +328,7 @@ fn a_raised_hand_comes_down_with_the_dialog_it_stood_for() {
 #[test]
 fn a_raised_hand_comes_down_when_the_person_steps_in_or_parks_the_agent() {
     use mesimon_core::board::SessionState;
-    const STUB: &str = "#!/bin/sh\nwhile IFS= read -r line; do :; done\n";
+    const STUB: &str = "#!/bin/sh\ncat | while IFS= read -r line; do :; done\n";
     let Some(h) =
         Harness::boot_with_env("raisefocus", Some(STUB), &[("MESIMON_SLEEP_MIN_AGE_MS", "0")])
     else {

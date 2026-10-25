@@ -79,7 +79,7 @@ fn ready(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, Pa
 /// after which the train finishes the job.
 #[test]
 fn a_ticket_taken_off_the_train_is_left_alone_until_put_back() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     let Some(h) = Harness::boot_with_env(
         "train-manual",
         Some(STUB),
@@ -144,7 +144,7 @@ fn a_ticket_taken_off_the_train_is_left_alone_until_put_back() {
 /// anywhere was mid-turn, and a busy board never merged anything.
 #[test]
 fn a_grinding_worktree_does_not_hold_another_tickets_merge() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     let Some(h) = Harness::boot_with_env(
         "train-busy",
         Some(STUB),
@@ -677,7 +677,7 @@ fn a_rebase_turn_open_across_a_restart_still_holds_the_next_ask() {
 /// never was — a stash moves neither.
 #[test]
 fn a_merge_the_checkout_refuses_says_why_and_retries_once_it_is_clean() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     let Some(h) = Harness::boot_with_env(
         "train-blocked",
         Some(STUB),
@@ -791,7 +791,7 @@ fn a_relaunched_agent_at_its_composer_does_not_hold_the_train() {
     use mesimon_core::board::{AgentProvider, StopReason};
     use mesimon_core::tier::{Effort, Tier, TierScope};
     use mesimon_core::Principal;
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     let Some(h) = Harness::boot_with_env(
         "train-relaunch",
         Some(STUB),

@@ -14,7 +14,7 @@ use common::*;
 
 #[test]
 fn an_agent_reads_what_each_column_is_for() {
-    const STUB: &str = "#!/bin/sh\nwhile IFS= read -r line; do :; done\n";
+    const STUB: &str = "#!/bin/sh\ncat | while IFS= read -r line; do :; done\n";
     let Some(h) = Harness::boot("coldesc", Some(STUB)) else { return };
     let mut c = h.client("coldesc");
 

@@ -31,7 +31,7 @@ use mesimon_core::command::{Command, Response};
 /// Claude's composer ahead of it, and what the tty echoes of a paste lands
 /// at the top of the pane, never in the box, so the box reads empty once
 /// the line is read — the receipt a real shell line leaves.
-const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                     printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
 
 fn feed(h: &Harness) -> String {
@@ -195,7 +195,7 @@ fn a_shell_line_into_a_box_holding_a_draft_is_refused() {
         printf '\\033[999;1H\\033[3A────────────────────\\n❯ a draft the person is typing\\n\
         ────────────────────\\n  ? for shortcuts\\033[2A\\033[33G'\n\
         stty -icanon 2>/dev/null\n\
-        while IFS= read -r line; do printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; \
+        cat | while IFS= read -r line; do printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; \
         done\n";
     let Some(h) = Harness::boot_bare("shell-draft", Some(DRAFT), &[]) else { return };
     let hook_sock = h.paths.hook_sock();

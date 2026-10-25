@@ -33,7 +33,7 @@ const STUB: &str = "#!/bin/sh\nd=\"$(dirname \"$0\")\"\n\
     printf '\\0337\\033[3;1H✻ Compacting conversation… (1s)\\033[K\\0338'; \
     else printf '\\0337\\033[3;1H\\033[K\\0338'; fi; sleep 0.2; done ) &\n\
     stty -icanon 2>/dev/null\n\
-    while IFS= read -r line; do printf '%s\\n' \"$line\" >> \"$d/got.txt\"; done\n";
+    cat | while IFS= read -r line; do printf '%s\\n' \"$line\" >> \"$d/got.txt\"; done\n";
 
 fn hook_sock(h: &Harness) -> std::path::PathBuf {
     h.paths.hook_sock()

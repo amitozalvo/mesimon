@@ -43,7 +43,7 @@ fn touches(c: &mut TestClient) -> Vec<CrownTouch> {
 /// A claude stub that writes every line it is given to `got.txt` beside
 /// it, so a test reads what reached the pane: the crown's wakes, a
 /// worker's asks, the train's rebase ask.
-const RECORDING_STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+const RECORDING_STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                               printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
 
 /// One commit in `repo` touching `file`.

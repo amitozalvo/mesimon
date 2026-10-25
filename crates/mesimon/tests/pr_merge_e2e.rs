@@ -59,7 +59,7 @@ fn ready(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, Pa
 /// card's mark, the DONE gate and `m` all read the one answer.
 #[test]
 fn a_squash_merged_branch_reads_merged() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     // The flags on a 1 s cadence: the squash must be seen without a wait.
     let Some(h) = Harness::boot_with_env(
         "pr-merge",

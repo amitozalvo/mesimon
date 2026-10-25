@@ -36762,9 +36762,10 @@ test's own stub. Nothing in the daemon changed.
   Linux: `Illegal seek`), so bash 3.2 (`/bin/sh` there) reads the tty in chunks and throws away
   every line after the first that one `read()` brought. Probe on the runner, three of three: a
   pasted `one\ntwo\nthree` reached a `while read` stub as `one`, and the same stub reading
-  through `cat |` got all three. `ask_queue_e2e`'s seven stubs now read through `cat |`. The
-  other `/bin/sh` `while read` stubs (73 in about 30 files) share the trap and passed on the
-  runner by timing; CLAUDE.md lists it under the measured traps.
+  through `cat |` got all three. Every `/bin/sh` `while read` stub in the e2es (73 in about
+  30 files) now reads through `cat |`: with `ask_queue_e2e` fixed, the next binary,
+  `brief_e2e`, lost lines the same way on the runner. CLAUDE.md lists it under the measured
+  traps.
 - **`crown_e2e::a_crown_wake_after_a_restart_waits_for_an_empty_box` (ubuntu-24.04).**
   `BLANKABLE_STUB` used `read -t`, and Ubuntu's `/bin/sh` is dash: the pane read `read: Illegal
   option -t` once a second and never drew a box. It is a bash script now.
@@ -36780,10 +36781,15 @@ test's own stub. Nothing in the daemon changed.
 - **The harness.** A failing e2e now echoes every pane of the fixture's tmux servers: the screen,
   cursor, modes, the pane's processes and tty modes, and the `.txt` files its stubs write
   (`Fixture::echo_panes` in `ci/test_support.rs`). That dump is what found all three.
+- **`mesimon-backend-tmux::wheel_scrolls_one_line_on_fresh_and_surviving_servers` on tmux
+  3.7c.** `list-keys -T <table> <key>` prints nothing there (exit 0); the whole table still
+  lists the binding. The test reads the key's line from its table. Nothing outside tests asks
+  for one key.
 - **Seen in passing:** tmux 3.7's `paste-buffer` vis-encodes unsafe control characters unless
   `-S` is given (`cmd_paste_buffer_paste`). It changes nothing for plain text.
 - **Runs:** the local matrix (`ask_queue_e2e`, `crown_e2e`, `prompt_e2e`, `spawn_ready_e2e` on
-  the bundled 3.6a and a source-built 3.7c) passed with no reruns. On the runners, the
+  the bundled 3.6a and a source-built 3.7c) passed with no reruns, and so did
+  `cargo nextest run --workspace` on each (3,105 tests). On the runners, the
   diagnostic branch's filtered crown runs also failed once each, before the fix, in
   `a_crown_wake_refused_while_unknown_is_owed_until_it_goes` (ubuntu, the cause above) and in
   `a_crown_wake_nobody_answers_is_retired_and_goes_again` (macos-14, "a new attempt", in one of

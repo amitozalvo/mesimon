@@ -26,7 +26,7 @@ use mesimon_core::command::{Command, PendingAction, Response};
 
 #[test]
 fn a_column_ask_reaches_every_seat_and_starts_the_empty_ones() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     let Some(h) = Harness::boot_with_env(
         "colask",

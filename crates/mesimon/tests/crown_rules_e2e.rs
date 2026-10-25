@@ -19,7 +19,7 @@ use mesimon_core::command::{Command, Response};
 use mesimon_core::mcp::crown_view;
 use mesimon_core::Principal;
 
-const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
 
 /// One `list_board` from `session`: the rules beside it, or `None`.
 fn listed(c: &mut TestClient, session: uuid::Uuid) -> Option<String> {
@@ -205,7 +205,7 @@ fn a_deferred_answer_as_the_first_call_carries_the_rules() {
     const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\n\
                         printf 'Which auth provider?\\n\\342\\235\\257 1. Okta\\n  2. Auth0\\n  \
                         3. Type something.\\nEnter to select \\302\\267 Esc to cancel\\n'\n\
-                        while IFS= read -r line; do :; done\n";
+                        cat | while IFS= read -r line; do :; done\n";
     let Some(h) = Harness::boot_with_env(
         "crown-rules-answer",
         Some(STUB),

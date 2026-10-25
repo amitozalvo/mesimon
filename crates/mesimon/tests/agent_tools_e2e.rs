@@ -36,7 +36,7 @@ fn listed(shim: &mut Shim) -> Vec<String> {
 
 #[test]
 fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
-    const STUB: &str = "#!/bin/sh\nwhile IFS= read -r line; do :; done\n";
+    const STUB: &str = "#!/bin/sh\ncat | while IFS= read -r line; do :; done\n";
     let Some(h) = Harness::boot("agtools", Some(STUB)) else { return };
     let sock = h.paths.orch_sock();
     let mut c = h.client("agtools");

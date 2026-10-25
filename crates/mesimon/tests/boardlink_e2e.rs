@@ -18,7 +18,7 @@ use mesimon_core::Principal;
 mod common;
 use common::*;
 
-const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                     printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
 
 fn links_of(c: &mut TestClient) -> Vec<LinkView> {

@@ -19,7 +19,7 @@ use serde_json::json;
 mod common;
 use common::*;
 
-const RECORDING_STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+const RECORDING_STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                               printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; \
                               printf '%s\\n' \"$line\" \
                               >> \"$(dirname \"$0\")/got-${MESIMON_TICKET:-none}.txt\"; done\n";
@@ -348,7 +348,7 @@ fn the_crown_s_slash_command_is_typed_into_a_claude_worker_s_box() {
 #[test]
 fn the_crown_s_slash_command_is_pasted_and_entered_in_a_codex_worker_s_box() {
     const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\n\
-                        while IFS= read -r line; do \
+                        cat | while IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     const FAKE_RUNTIME: &str = include_str!("common/fake_codex_runtime.py");
     let Some(h) = Harness::boot_with_env(

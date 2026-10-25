@@ -53,7 +53,7 @@ fn long_brief(bytes: usize, fact: &str) -> String {
 /// `read_note` reads — never a bare `…` a reader takes for the end.
 #[test]
 fn a_long_description_reaches_the_agent_whole_as_its_first_prompt() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     let Some(h) = Harness::boot("brief_long", Some(STUB)) else { return };
     let got = h.dir.join("got.txt");
@@ -172,7 +172,7 @@ fn a_long_description_reaches_the_agent_whole_as_its_first_prompt() {
 fn a_composed_spawn_submits_the_description_under_the_title() {
     // `stty -icanon`: the paste is longer than a canonical tty's 1 KiB line
     // would be in real use, and Claude sets raw mode; the stub stands in.
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     let Some(h) = Harness::boot("brief", Some(STUB)) else { return };
     let got = h.dir.join("got.txt");

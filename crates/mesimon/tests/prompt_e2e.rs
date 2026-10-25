@@ -33,7 +33,7 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
     // it (`MAX_CANON`), dropping the rest AND the newline that would have
     // ended `read` — measured here first, 2026-09-04. Claude sets raw mode
     // and has no such cap; the stub has to opt out to stand in for it.
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     let Some(h) = Harness::boot("prompt", Some(STUB)) else { return };
     let got = h.dir.join("got.txt");
@@ -287,7 +287,7 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
 /// start typed it; and a blank ask at it while parked wakes it on the brief.
 #[test]
 fn a_blank_ask_at_a_seat_that_never_took_a_prompt_sends_the_brief() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     let Some(h) = Harness::boot("prompt-brief", Some(STUB)) else { return };
     let got = h.dir.join("got.txt");
@@ -434,7 +434,7 @@ fn draft_stub() -> String {
     format!(
         "#!/bin/sh\nwhile [ -e \"$(dirname \"$0\")/nopaint\" ]; do sleep 0.05; done\n{COMPOSER}\
          printf '\\033[999;3H\\033[2A'\n\
-         while IFS= read -r line; do \
+         cat | while IFS= read -r line; do \
          printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n"
     )
 }

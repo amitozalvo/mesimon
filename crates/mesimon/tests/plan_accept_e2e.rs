@@ -25,7 +25,7 @@ use mesimon_core::command::{Command, Response};
 /// wipes the screen, so the same pane can then show NO dialog.
 const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\n\
 printf ' Would you like to proceed?\\n\\n ❯ 1. Yes, and use auto mode\\n   2. Yes, manually approve edits\\n   3. No, keep planning\\n   4. Tell Claude what to change\\n'\n\
-while IFS= read -r line; do \
+cat | while IFS= read -r line; do \
   case \"$line\" in clear) printf '\\033[2J\\033[H';; esac; \
   printf 'got:%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
 
@@ -216,7 +216,7 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval() {
 /// file can be told apart.
 const STUB_KEYED: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\n\
 printf ' Would you like to proceed?\\n\\n ❯ 1. Yes, and use auto mode\\n   2. Yes, manually approve edits\\n   3. No, keep planning\\n   4. Tell Claude what to change\\n'\n\
-while IFS= read -r line; do \
+cat | while IFS= read -r line; do \
   printf 'got:%s:%s\\n' \"$MESIMON_TICKET\" \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
 
 /// T-429: accepts obey the checkout. Two shared-checkout tickets, both on

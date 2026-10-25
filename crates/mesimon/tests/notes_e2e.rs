@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 
 #[test]
 fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
-    const STUB: &str = "#!/bin/sh\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" \
+    const STUB: &str = "#!/bin/sh\ncat | while IFS= read -r line; do printf '%s\\n' \"$line\" \
                         >> \"$(dirname \"$0\")/got.txt\"; done\n";
     let Some(h) = Harness::boot("notes", Some(STUB)) else { return };
     let got = h.dir.join("got.txt");

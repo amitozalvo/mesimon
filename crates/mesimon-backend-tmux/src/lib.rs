@@ -1517,10 +1517,20 @@ finally:
         let f = fixture("backend-scroll", "t.sock");
         let be = TmuxBackend::new(f.dir.join("t.sock"), &f.dir, None).unwrap();
         be.spawn("scroll", &f.dir, &["sleep".into(), "60".into()]).unwrap();
+        // A key's line from its whole table: `list-keys -T <table> <key>`
+        // prints nothing on tmux 3.7c (T-1019).
+        let binding_of = |table: &str, key: &str| {
+            let listing = be.run(&["list-keys", "-T", table]).unwrap();
+            listing
+                .lines()
+                .find(|l| l.split_whitespace().take(4).eq(["bind-key", "-T", table, key]))
+                .unwrap_or_default()
+                .to_string()
+        };
         let assert_bindings = || {
             for table in ["copy-mode", "copy-mode-vi"] {
                 for (key, direction) in [("WheelUpPane", "up"), ("WheelDownPane", "down")] {
-                    let binding = be.run(&["list-keys", "-T", table, key]).unwrap();
+                    let binding = binding_of(table, key);
                     assert!(
                         binding.contains("select-pane")
                             && binding.contains("send-keys")
@@ -1552,10 +1562,7 @@ finally:
         assert_bindings();
         // Applications still receive their mouse events through tmux's
         // root binding, rather than being forced into history scrolling.
-        assert!(be
-            .run(&["list-keys", "-T", "root", "WheelUpPane"])
-            .unwrap()
-            .contains("send-keys -M"));
+        assert!(binding_of("root", "WheelUpPane").contains("send-keys -M"));
         be.kill_server().unwrap();
     }
 

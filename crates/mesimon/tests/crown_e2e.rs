@@ -84,7 +84,7 @@ fn touches(c: &mut TestClient) -> Vec<CrownTouch> {
 fn the_crown_lets_one_agent_edit_the_others() {
     // The stub records what reaches its stdin, so the held ask can be
     // shown to land only on the person's send.
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     // No starter tags (the registry is built by hand), and the archive offer
     // prices a ticket the moment it is untouched rather than after an hour,
@@ -998,7 +998,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
 /// beside it, so the crown's sentences and the workers' words are all there,
 /// and to one per ticket (`got-<key>.txt`), so a count of what reached one
 /// pane reads that pane alone (T-937).
-const RECORDING_STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+const RECORDING_STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                               printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; \
                               printf '%s\\n' \"$line\" \
                               >> \"$(dirname \"$0\")/got-${MESIMON_TICKET:-none}.txt\"; done\n";
@@ -1567,7 +1567,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
 const BOX_STUB: &str =
     "#!/bin/sh\nstty -icanon 2>/dev/null\npaint() { printf '\\033[2J\\033[999;1H\\033[3A\
                         ────────────────────\\n❯ \\n────────────────────\\n  ? for shortcuts\
-                        \\033[999;1H\\033[2A\\033[3G'; }\npaint\nwhile IFS= read -r line; do \
+                        \\033[999;1H\\033[2A\\033[3G'; }\npaint\ncat | while IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; paint; done\n";
 
 /// The crown's wake row while a client attached to its pane holds it, at
@@ -1981,7 +1981,7 @@ stty -icanon 2>/dev/null
 paint() { printf '\033[2J\033[999;1H\033[3A────────────────────\n❯ \n────────────────────\n  ? for shortcuts\033[999;1H\033[2A\033[3G'; }
 gone() { printf '\033[2J\033[1;1HDo you want to proceed?\n  1. Yes\n  2. No\n'; }
 paint
-while IFS= read -r line; do
+cat | while IFS= read -r line; do
   printf '%s\n' "$line" >> "$(dirname "$0")/got.txt"
   printf '%s %s\n' "$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')" "$line" >> "$(dirname "$0")/got-at.txt"
   case "$line" in @absent) gone ;; *) paint ;; esac
@@ -2886,7 +2886,7 @@ fn a_crown_a_person_stopped_holds_its_wake_and_its_hand() {
 #[test]
 fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\n\
-                        while IFS= read -r line; do \
+                        cat | while IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     const FAKE_RUNTIME: &str = include_str!("common/fake_codex_runtime.py");
     let Some(h) = Harness::boot_with_env(
@@ -3452,7 +3452,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
 #[test]
 fn a_codex_crown_s_wake_goes_past_an_idle_client_and_enters_only_its_own_box() {
     const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\n\
-                        while IFS= read -r line; do \
+                        cat | while IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     const FAKE_RUNTIME: &str = include_str!("common/fake_codex_runtime.py");
     let Some(h) = Harness::boot_with_env(
@@ -7871,7 +7871,7 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
     const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\n\
                         printf 'Which auth provider?\\n\\342\\235\\257 1. Okta\\n  2. Auth0\\n  \
                         3. Type something.\\nEnter to select \\302\\267 Esc to cancel\\n'\n\
-                        while IFS= read -r line; do \
+                        cat | while IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     let Some(h) = Harness::boot_with_env(
         "crown_answer",
@@ -12563,7 +12563,7 @@ fn a_wake_s_receipt_names_what_waits_and_it_goes_once() {
 #[test]
 fn the_crown_answers_a_codex_worker_s_question() {
     const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\n\
-                        while IFS= read -r line; do \
+                        cat | while IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     const FAKE_RUNTIME: &str = include_str!("common/fake_codex_runtime.py");
     let Some(h) = Harness::boot_with_env(
@@ -12768,7 +12768,7 @@ fn the_crown_answers_a_codex_worker_s_question() {
 #[test]
 fn a_codex_worker_s_failed_turns_are_told_by_turn() {
     const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\n\
-                        while IFS= read -r line; do \
+                        cat | while IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     const FAKE_RUNTIME: &str = include_str!("common/fake_codex_runtime.py");
     let Some(h) = Harness::boot_with_env(
@@ -12898,7 +12898,7 @@ fn a_codex_worker_s_failed_turns_are_told_by_turn() {
 #[test]
 fn a_codex_seat_whose_pane_died_has_no_turn_open_after_a_restart() {
     const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\n\
-                        while IFS= read -r line; do \
+                        cat | while IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     const FAKE_RUNTIME: &str = include_str!("common/fake_codex_runtime.py");
     let Some(h) = Harness::boot_with_env(
@@ -16091,7 +16091,7 @@ fn expectation_restart(name: &str, part: Part) {
 #[test]
 fn a_codex_expectation_outlives_a_restart_by_its_turn_id() {
     const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\n\
-                        while IFS= read -r line; do \
+                        cat | while IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     const FAKE_RUNTIME: &str = include_str!("common/fake_codex_runtime.py");
     let Some(h) = Harness::boot_with_env(

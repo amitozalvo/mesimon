@@ -16,7 +16,7 @@ use mesimon_core::command::{Command, Response};
 mod common;
 use common::*;
 
-const STUB: &str = "#!/bin/sh\nwhile IFS= read -r line; do :; done\n";
+const STUB: &str = "#!/bin/sh\ncat | while IFS= read -r line; do :; done\n";
 
 #[test]
 fn plan_mode_rides_the_start_the_wake_and_an_idle_panes_relaunch() {

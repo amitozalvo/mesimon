@@ -123,7 +123,7 @@ fn pictures_survive_duplicate_delete_undo_archive_and_daemon_restart() {
 #[test]
 fn images_are_read_only_mcp_content_bound_to_the_agents_own_ticket() {
     let Some(h) =
-        Harness::boot("attachments-mcp", Some("#!/bin/sh\nwhile IFS= read -r line; do :; done\n"))
+        Harness::boot("attachments-mcp", Some("#!/bin/sh\ncat | while IFS= read -r line; do :; done\n"))
     else {
         return;
     };
@@ -241,7 +241,7 @@ fn failed_note_save_rolls_back_new_files_and_can_be_retried() {
 #[test]
 fn a_prompt_with_a_picture_keeps_it_with_the_ticket_and_links_it_in_the_words() {
     // The stub agent keeps a receipt of every line it reads (prompt_e2e).
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     let Some(h) = Harness::boot("attachments-prompt", Some(STUB)) else { return };
     let got = h.dir.join("got.txt");

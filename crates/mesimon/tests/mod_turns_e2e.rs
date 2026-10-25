@@ -32,7 +32,7 @@ const MOD: (&str, &str) = ("MESIMON_CLAUDE_ROAD", "mod");
 /// A line reader that paints no composer: on the hook set's road a launch
 /// into it would wait out the composer and fail (T-570). `stty -icanon`,
 /// because the brief is longer than a canonical tty keeps of a line.
-const READER: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+const READER: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                       printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
 
 /// A 10 KB brief, as the rig's acceptance asks: paragraphs, a list, quotes

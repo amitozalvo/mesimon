@@ -118,7 +118,7 @@ fn silent_stub_on(test: &str, account: &str) -> String {
          'plugin test') {test} ;;\n  \
          'auth status') echo '{{\"loggedIn\":true,\"subscriptionType\":\"{account}\"}}'; exit 0 ;;\n\
          esac\nenv > \"$(dirname \"$0\")/env.txt\"\n{COMPOSER}stty -icanon 2>/dev/null\n\
-         while IFS= read -r line; do printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n"
+         cat | while IFS= read -r line; do printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n"
     )
 }
 
