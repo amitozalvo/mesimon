@@ -6491,11 +6491,12 @@ impl Daemon {
         // `SessionStart` (the entry is armed), and that are not a crown ask's
         // (those took T-984's branch) nor a crown wake's (owed again below,
         // T-936): nothing of the board's is in the box, so the prompt is a
-        // person's, typed ahead of them (T-987). It is not their ack: they
-        // are kept on the seat, unsent, and nothing says they went. Before
-        // the `SessionStart` no box was up to type in, and a prompt then (a
-        // lost or late frame) keeps the ordinary ack. One entry takes one of
-        // these branches, never two.
+        // person's, typed ahead of them (T-987). It is not their ack, and it
+        // supersedes them, as it makes unsent words moot above and as T-984
+        // drops a crown ask: dropped, nothing kept, nothing said to have
+        // gone. A prompt that reaches the daemon before the pane's
+        // `SessionStart` takes the ordinary ack: a stated limit. One entry
+        // takes one of these branches, never two.
         let ahead_of_launch = self.owed.get(&id).is_some_and(|o| {
             o.parked.is_some() && o.next_press.is_some() && o.ack.word != Ack::CROWN_WAKE.word
         }) && self.session_kind(id) == SessionKind::Claude;
@@ -6512,11 +6513,10 @@ impl Daemon {
             );
             changed = true;
         } else if ahead_of_launch {
-            let words = self.drop_owed(id).and_then(|o| o.parked);
-            self.mark_unsent(id, words);
+            self.drop_owed(id);
             self.feed.board_outcome(
                 "local",
-                "prompt_unsent_by_hand",
+                "prompt_dropped_by_hand",
                 Some(ticket),
                 PROMPT_AHEAD_OF_ASK,
             );
@@ -6960,6 +6960,7 @@ impl Daemon {
                     && !owed.cleared
                     && (owed.clears_draft || ours);
                 let as_is = owed.clears_draft && owed.cleared;
+                let explicit = owed.clears_draft;
                 // A box holding anything else is no composer for the words
                 // (T-987): pasted under that text, they are one prompt with
                 // it at the next Enter, and a person at the pane owns the
@@ -6972,12 +6973,25 @@ impl Daemon {
                 // At the edge of a key, the box and its clients are read now,
                 // as `paste_at` reads them (T-958, T-966): the sample above
                 // may be older than a person's typing.
+                // A recovery's clear is decided by a fresh read of the box
+                // too: only the title takes the Ctrl+C, and an empty box
+                // takes the words with no clear (`skip`).
+                let mut skip = false;
                 let held = if composer == Composer::Absent {
                     Some(BOX_NOT_READY)
                 } else if draft {
                     Some(COMPOSER_NOT_OURS)
-                } else if clear {
+                } else if clear && explicit {
                     (self.clients_at_pane(&sid16) == PaneClients::Here).then_some(A_PERSON_ATTACHED)
+                } else if clear {
+                    launch_barrier();
+                    match self.recovery_clear(&sid16, typed.as_deref()) {
+                        Ok(title) => {
+                            skip = !title;
+                            None
+                        }
+                        Err(why) => Some(why),
+                    }
                 } else {
                     launch_barrier();
                     self.launch_refusal(&sid16, typed.as_deref(), as_is)
@@ -7005,6 +7019,7 @@ impl Daemon {
                         owed.next_press = Some(now + SUBMIT_RETRY_MS);
                         continue;
                     }
+                    None if clear && skip => owed.cleared = true,
                     None if clear => {
                         owed.cleared = true;
                         let _ = self.backend.clear_input(&sid16);
@@ -9252,6 +9267,29 @@ impl Daemon {
             }
             Composer::Holding => Some(COMPOSER_NOT_OURS),
             Composer::Absent => Some(COMPOSER_UNREAD),
+        }
+    }
+
+    /// A recovery's one Ctrl+C at `sid` (T-987 round 2), read now beside the
+    /// clients: `Ok(true)` when the box holds exactly the title the board
+    /// typed (`typed`), the only text a recovery clears; `Ok(false)` when it
+    /// is empty, so the words go with no clear. Anything else holds them: a
+    /// person at the pane, other text, no box, a screen unread.
+    fn recovery_clear(&self, sid: &str, typed: Option<&str>) -> Result<bool, &'static str> {
+        use crate::agents::claude::composer::{self, Composer};
+        if self.clients_at_pane(sid) == PaneClients::Here {
+            return Err(A_PERSON_ATTACHED);
+        }
+        let Ok(screen) = self.backend.capture_input_screen(sid) else {
+            return Err(COMPOSER_UNREAD);
+        };
+        match composer::read(&screen) {
+            Composer::Empty => Ok(false),
+            Composer::Holding if typed.is_some_and(|t| composer::holds_only(&screen, t)) => {
+                Ok(true)
+            }
+            Composer::Holding => Err(COMPOSER_NOT_OURS),
+            Composer::Absent => Err(COMPOSER_UNREAD),
         }
     }
 

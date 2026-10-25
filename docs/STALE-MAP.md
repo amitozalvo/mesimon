@@ -35558,9 +35558,11 @@ the board already had. Where round 0's lines above say otherwise, this round rep
    entry still parked and armed by its pane's `SessionStart`, crown wakes excepted (T-936's own
    road), is dropped and its words kept on the seat `unsent`. That is T-984's measured window,
    from the box painting to the board's first press.
-   - Before the `SessionStart` no box is up to type in (Claude Code fires it during startup), so
-     a prompt then is a lost or late frame, and it keeps the ordinary ack. The first draft of this
-     round dropped those too, and 19 `crown_e2e` tests on both roads went red. Their workers stand
+   - A stated limit, not a fact about the engine: a person's prompt that reaches the daemon
+     before the pane's `SessionStart` takes the ordinary ack. CLAUDE.md's measured trap has
+     `SessionStart` firing during startup, before any composer a person could type into, and no
+     trace of a real pane delivering a prompt before it is known. The first draft of this round
+     dropped those too, and 19 `crown_e2e` tests on both roads went red. Their workers stand
      in for the brief's own ack with a bare `UserPromptSubmit` and no `SessionStart`, an order a
      real pane never sends.
    - Two `crown_e2e` tests from T-973 (`a_turn_thinking_across_a_restart_is_not_heard_as_finished`,
@@ -35611,3 +35613,45 @@ at the input's first column, `(2, row)`, which is where Claude Code parks the cu
 placeholder. `composer::read` reads that box `Empty` (`composer.rs`, the cursor-at-start rule),
 so the edge pastes, and the words land before the draft and join it at the Enter. Telling the
 two apart needs the placeholder's styling, which `capture_input_screen` drops. Not changed here.
+
+**Round 2 (T-989's second read of `66f61c26`, two changes and one assertion; the crown's decision).**
+1. **A recovery's Ctrl+C reads the box at its own edge** (P1). Round 1 let the sample's title
+   decide the clear and listed only the clients fresh, so text a person added after the sample
+   could be cleared, and a box emptied after it took a Ctrl+C. `recovery_clear` reads the
+   clients and a fresh capture at the key:
+   - exactly the remembered title: the one Ctrl+C;
+   - an empty box: no clear, and the words are pasted;
+   - other text, no box, or an unreadable screen: the words stay on the bounded hold, never a
+     clear.
+
+   A person's own resend keeps its one clear (T-570), held only for an active client.
+2. **A person's prompt first drops the parked launch words** (P2). Round 1 kept them `unsent`,
+   which brought back words the same prompt makes moot a moment later (it clears `unsent` past
+   the wait, T-570), and which T-984 never keeps for a crown ask. Now they are dropped, with
+   nothing owed or kept. The feed says `prompt_dropped_by_hand`, with T-984's fact ("a person's
+   prompt arrived before these words were pasted"), and a phone's pending still reads
+   `rejected`. `prompt_unsent_by_hand` is gone.
+3. **The attached-and-empty wait ends** (the reader's question). A person attached to a launching
+   pane with an empty box holds a first brief to the composer's wait, and the wait leaves it
+   `unsent` (`prompt_submit_not_ready`) while they are still attached.
+- **Not taken:** removing the armed-only scope. It stays as the stated limit in round 1's item 3.
+
+**Round 2 tests.**
+- `spawn_ready_e2e::a_recovery_never_clears_text_after_the_title` and
+  `a_recovery_pastes_into_an_empty_box_with_no_clear` share one staging (`recovery_at_the_key`,
+  the `TITLED` stub painted by cue files). The brief waits across a restart for a box that has
+  not painted. The restart's resend samples the box holding the title, and at
+  `MESIMON_TEST_LAUNCH_BARRIER` the box changes:
+  - to the title with a draft after it: no Ctrl+C and no paste, and the wait leaves the brief
+    `unsent`;
+  - to an empty box: no Ctrl+C, and the title and brief are pasted.
+
+  With the fresh read stubbed off, both fail on the Ctrl+C the pane read.
+- `prompt_e2e::a_launch_s_words_wait_for_a_person_s_draft`: the wake's sent-first and
+  before-hold phases now assert the drop, with nothing owed or unsent.
+- `prompt_e2e::a_first_brief_gives_way_to_a_person_s_prompt_and_to_their_presence` covers a
+  first brief:
+  - held for a draft, then the person sends it: dropped, no ack, nothing pasted;
+  - before any hold (`nopaint`), then a prompt: dropped;
+  - a person attached to an empty box: held, then `unsent` at a 6 s wait, the client still
+    listed.

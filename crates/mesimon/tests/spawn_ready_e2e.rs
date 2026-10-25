@@ -27,7 +27,7 @@ use common::*;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use mesimon_core::board::{SessionKind, SessionRecord, Unsent};
+use mesimon_core::board::{SessionKind, SessionRecord, SessionState, Unsent};
 use mesimon_core::command::{Command, Response};
 use mesimon_core::Principal;
 
@@ -80,6 +80,25 @@ cat <&0 >> \"$d/got.bin\" &
 until grep -q '200~' \"$d/got.bin\" 2>/dev/null; do sleep 0.05; done
 printf '\\033[999;1H\\033[3A────────────────────\\n❯ crown). The crown guessed\\n────────────────────\\n  ? for shortcuts\\033[2A\\033[28G'
 wait
+";
+
+/// A pane that paints nothing until cued (T-987 round 2), so launch words
+/// wait for its box across a restart: `title` beside it paints the typed
+/// title `recover me`, `draft` the title with a person's text after it,
+/// `empty` an empty box. Every byte read goes to `got.bin`.
+const TITLED: &str = "#!/bin/sh
+d=\"$(dirname \"$0\")\"
+stty -icanon -echo -isig 2>/dev/null
+box() {
+  printf '\\033[?2004h\\033[999;1H\\033[3A────────────────────\\n\\033[2K❯ %s\\n────────────────────\\n  ? for shortcuts\\033[2A\\033[%sG' \"$1\" \"$2\"
+}
+cat <&0 >> \"$d/got.bin\" &
+while :; do
+  [ -e \"$d/title\" ] && rm \"$d/title\" && box 'recover me' 13
+  [ -e \"$d/draft\" ] && rm \"$d/draft\" && box 'recover me and a draft' 25
+  [ -e \"$d/empty\" ] && rm \"$d/empty\" && box '' 3
+  sleep 0.05
+done
 ";
 
 fn got(h: &Harness) -> String {
@@ -371,5 +390,86 @@ fn a_restart_s_resend_never_clears_the_text_that_held_its_brief() {
     let text = got(&h);
     assert!(!text.contains('\x03'), "no Ctrl+C into the box: {text:?}");
     assert!(pastes(&text).is_empty(), "no paste under its text: {text:?}");
+    let _ = c.request(Command::KillSession { id: sid });
+}
+
+/// T-987 round 2: a recovery's one Ctrl+C is decided at its own edge, by a
+/// fresh read of the box beside the clients. The brief waits for a box that
+/// has not painted when the daemon restarts; the restart's resend (T-722)
+/// then samples the box holding the typed title, and at a barrier between
+/// that sample and the clear the box changes: to the title with a person's
+/// text after it (no Ctrl+C, no paste, the wait leaves the brief unsent),
+/// or to an empty box (no Ctrl+C, the brief pasted).
+fn recovery_at_the_key(name: &str, cue: &str) -> Option<(Harness, ulid::Ulid, uuid::Uuid)> {
+    let dir = std::env::temp_dir().join(format!("msmn-t987-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let barrier = dir.join("barrier");
+    let reached = dir.join("barrier.reached");
+    let env = [
+        ("MESIMON_COMPOSER_WAIT_MS", "4000"),
+        ("MESIMON_TEST_LAUNCH_BARRIER", barrier.to_str().unwrap()),
+        HOOKS,
+    ];
+    let h = Harness::boot_bare(name, Some(TITLED), &env)?;
+    let hook_sock = h.paths.hook_sock();
+    let tmux_sock = h.paths.tmux_sock();
+    let mut c = h.client(name);
+    let (ticket, sid) = composed(&mut c, &h, "recover me");
+    let sid16: String = sid.simple().to_string().chars().take(16).collect();
+    let pane = || -> String {
+        tmux(&tmux_sock)
+            .args(["capture-pane", "-p", "-t", &sid16])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+    };
+    let transcript = h.dir.join(format!("{sid}.jsonl"));
+    let start = format!(
+        r#"{{"session_id":"x","transcript_path":"{}","cwd":"/tmp"}}"#,
+        transcript.display()
+    );
+    hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("startup"), &start);
+    c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    assert!(record(&mut c, sid).pending_submit, "the brief waits for a box");
+    drop(c);
+    h.restart_after(|| std::fs::write(&barrier, "").unwrap());
+    let c = h.client(&format!("{name}-2"));
+    wait_until(Duration::from_secs(10), "the restart's resend", || {
+        feed_count(&h, "prompt_resent", ticket) == 1
+    });
+    std::fs::write(h.dir.join("title"), "").unwrap();
+    wait_until(Duration::from_secs(15), "the clear's edge", || reached.exists());
+    assert!(pane().contains("❯ recover me"), "the sample read the title: {}", pane());
+    std::fs::write(h.dir.join(cue), "").unwrap();
+    wait_until(Duration::from_secs(5), "the cue painted", || !h.dir.join(cue).exists());
+    std::thread::sleep(Duration::from_millis(200));
+    std::fs::remove_file(&barrier).unwrap();
+    drop(c);
+    let _ = std::fs::remove_dir_all(&dir);
+    Some((h, ticket, sid))
+}
+
+#[test]
+fn a_recovery_never_clears_text_after_the_title() {
+    let Some((h, ticket, sid)) = recovery_at_the_key("recover-draft", "draft") else { return };
+    let mut c = h.client("recover-draft-3");
+    wait_until(Duration::from_secs(15), "the wait to run out", || {
+        feed_count(&h, "prompt_submit_not_ready", ticket) == 1
+    });
+    let text = got(&h);
+    assert!(!text.contains('\x03'), "no Ctrl+C into the draft: {text:?}");
+    assert!(pastes(&text).is_empty(), "no paste under it: {text:?}");
+    assert_eq!(record(&mut c, sid).unsent, Some(Unsent { text: String::new(), brief: true }));
+    let _ = c.request(Command::KillSession { id: sid });
+}
+
+#[test]
+fn a_recovery_pastes_into_an_empty_box_with_no_clear() {
+    let Some((h, _, sid)) = recovery_at_the_key("recover-empty", "empty") else { return };
+    let mut c = h.client("recover-empty-3");
+    wait_until(Duration::from_secs(15), "the brief's paste", || pastes(&got(&h)).len() == 1);
+    let text = got(&h);
+    assert!(!text.contains('\x03'), "no Ctrl+C into an empty box: {text:?}");
+    assert_eq!(pastes(&text)[0], format!("recover me\n\n{BRIEF}"), "title and brief: {text:?}");
     let _ = c.request(Command::KillSession { id: sid });
 }
