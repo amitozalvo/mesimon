@@ -779,6 +779,7 @@ fn agents(repo: &Path, verbose: bool) -> Section {
         records.push(crown_watches(cols.crown_watches));
         records.push(crown_context(cols.crown_context));
         records.push(crown_cost(cols.crown_cost));
+        records.push(crown_samples(cols.crown_samples));
 
         // The columns and what each one DOES (T-117): every automation is a
         // column setting now, so this line is the whole answer to "why did
@@ -904,6 +905,18 @@ fn crown_cost(on: bool) -> Record {
     } else {
         rec(Level::Ok, "crown reads cost", "off - the crown's get_ticket says nothing of a ticket's cost")
             .advice("Settings > Crown > Reads cost lets the crown read each ticket's estimate, as its card shows it.")
+    }
+}
+
+/// Whether the crown may sample an agent it started (T-973): on by
+/// default, printed either way.
+fn crown_samples(on: bool) -> Record {
+    if on {
+        rec(Level::Ok, "crown samples", "on - sample_agent reads an agent the crown started: its turn, its tools, its last text and its pane's last rows")
+            .advice("A read at the crown's call, bounded and scrubbed; nothing is sent to the agent, and an agent you started is never read. Settings > Crown > Samples agents turns it off.")
+    } else {
+        rec(Level::Ok, "crown samples", "off - the crown reads no agent's pane or transcript")
+            .advice("Settings > Crown > Samples agents lets the crown read an agent it started: its turn, its tools, its last text and its pane's last rows.")
     }
 }
 
@@ -1751,7 +1764,7 @@ mod tests {
         }
     }
 
-    /// T-969: and the crown's two reads.
+    /// T-969: and the crown's two reads; T-973: and its samples.
     #[test]
     fn the_crown_reads_lines_name_their_rows() {
         for (line, label, row) in [
@@ -1761,6 +1774,7 @@ mod tests {
                 "Settings > Crown > Reads context",
             ),
             (super::crown_cost, "crown reads cost", "Settings > Crown > Reads cost"),
+            (super::crown_samples, "crown samples", "Settings > Crown > Samples agents"),
         ] {
             let off = line(false);
             assert_eq!(off.label, label);

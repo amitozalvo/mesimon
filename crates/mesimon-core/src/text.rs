@@ -84,6 +84,16 @@ pub fn cap_bytes(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
+/// The longest suffix of `s` within `max` bytes, never split mid-character:
+/// `cap_bytes` from the other end, for a tail whose newest words are last.
+pub fn tail_bytes(s: &str, max: usize) -> &str {
+    let mut from = s.len().saturating_sub(max);
+    while !s.is_char_boundary(from) {
+        from += 1;
+    }
+    &s[from..]
+}
+
 /// At most `max` characters, cut at the last whole word and marked `…`.
 pub fn clip_words(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
@@ -152,6 +162,10 @@ mod tests {
         assert_eq!(cap_bytes("héllo", 2), "h");
         assert_eq!(cap_bytes("héllo", 3), "hé");
         assert_eq!(cap_bytes("hi", 10), "hi");
+        assert_eq!(tail_bytes("héllo", 4), "llo", "the é's second byte is not a start");
+        assert_eq!(tail_bytes("héllo", 5), "éllo");
+        assert_eq!(tail_bytes("hi", 10), "hi");
+        assert_eq!(tail_bytes("hi", 0), "");
         assert_eq!(nonblank("  "), None);
         assert_eq!(nonblank(" x "), Some("x".into()));
     }

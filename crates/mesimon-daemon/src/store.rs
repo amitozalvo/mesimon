@@ -66,7 +66,9 @@ pub(crate) mod imports;
 /// turned it off: a v8 build would drop `crown_context = false` on its next
 /// write, and this build back would read the crown's context read on again
 /// — the `mcp_tools` reason, a person's off lost. `crown_cost` rides the
-/// same bump, though dropping it only loses an opt-in.
+/// same bump, though dropping it only loses an opt-in. `crown_samples`
+/// (T-973), on unless a person turned it off, rides v9 for `crown_context`'s
+/// reason: no released build carried v9 without it.
 pub const COLUMNS_SCHEMA: u32 = 9;
 /// v2 added `[[notes]]`, on the columns file's reasoning: at v1 an older
 /// build would read the ticket, ignore the array, and on its next
@@ -184,6 +186,11 @@ struct ColumnsFile {
     /// means OFF, written either way, so an on survives; it rides v9.
     #[serde(default)]
     crown_cost: bool,
+    /// The crown samples an agent it started (`Board::crown_samples`,
+    /// T-973). Absent means ON, written either way, so an off survives; it
+    /// rides v9, as `crown_context` does.
+    #[serde(default = "yes")]
+    crown_samples: bool,
     /// Reviewed pull requests are a ticket's (`Board::reviewed_prs`,
     /// T-859). Absent means ON, written either way, so an off survives. No
     /// bump: a build before it reads every bound PR as the ticket's own,
@@ -648,6 +655,7 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                 crown_watches: cf.crown_watches,
                                 crown_context: cf.crown_context,
                                 crown_cost: cf.crown_cost,
+                                crown_samples: cf.crown_samples,
                                 reviewed_prs: cf.reviewed_prs,
                                 tags: cf.tags,
                                 tags_seeded: cf.tags_seeded,
@@ -864,6 +872,8 @@ pub struct ColumnsScalars {
     /// `Board::crown_context` and `Board::crown_cost` (T-969).
     pub crown_context: bool,
     pub crown_cost: bool,
+    /// `Board::crown_samples` (T-973).
+    pub crown_samples: bool,
     /// `Board::reviewed_prs` (T-859).
     pub reviewed_prs: bool,
     /// `Board::mcp_tools` (T-217).
@@ -895,6 +905,7 @@ impl Default for ColumnsScalars {
             crown_watches: true,
             crown_context: true,
             crown_cost: false,
+            crown_samples: true,
             reviewed_prs: true,
             mcp_tools: true,
             system_prompt: true,
@@ -942,6 +953,7 @@ pub fn read_columns_scalars(paths: &Paths) -> ColumnsScalars {
         crown_watches: cf.crown_watches,
         crown_context: cf.crown_context,
         crown_cost: cf.crown_cost,
+        crown_samples: cf.crown_samples,
         reviewed_prs: cf.reviewed_prs,
         mcp_tools: cf.mcp_tools,
         system_prompt: brief,
@@ -982,6 +994,7 @@ fn columns_text(board: &Board) -> Result<String> {
         crown_watches: board.crown_watches,
         crown_context: board.crown_context,
         crown_cost: board.crown_cost,
+        crown_samples: board.crown_samples,
         reviewed_prs: board.reviewed_prs,
         tags_seeded: board.tags_seeded,
         mcp_tools: board.mcp_tools,
@@ -1476,6 +1489,35 @@ mod tests {
         let text = std::fs::read_to_string(&cols).unwrap();
         assert!(text.contains("crown_context = true"), "written either way: {text}");
         assert!(text.contains("crown_cost = false"), "written either way: {text}");
+        cleanup(&dir, &paths);
+    }
+
+    /// T-973: the crown's sample switch — absent, it reads on, in the daemon
+    /// and in doctor; an off survives a save, and an on is written too.
+    #[test]
+    fn crown_samples_is_on_unless_the_file_says_off() {
+        let (dir, paths) = scratch("crownsamples");
+        let cols = dir.join(".mesimon/board/columns.toml");
+        write(
+            &cols,
+            &format!(
+                "schema_version = {COLUMNS_SCHEMA}\nnext_key = 2\n\n\
+                 [[columns]]\nname = \"TODO\"\norder = \"a0\"\n"
+            ),
+        );
+        assert!(read_columns_scalars(&paths).crown_samples, "doctor reads the default");
+        let mut b = load(&paths).unwrap().board;
+        assert!(b.crown_samples, "an older file reads the default");
+        b.crown_samples = false;
+        save_columns(&paths, &b).unwrap();
+        let text = std::fs::read_to_string(&cols).unwrap();
+        assert!(text.contains("crown_samples = false"), "{text}");
+        assert!(!load(&paths).unwrap().board.crown_samples, "an off is kept");
+        assert!(!read_columns_scalars(&paths).crown_samples);
+        b.crown_samples = true;
+        save_columns(&paths, &b).unwrap();
+        let text = std::fs::read_to_string(&cols).unwrap();
+        assert!(text.contains("crown_samples = true"), "written either way: {text}");
         cleanup(&dir, &paths);
     }
 
@@ -2590,6 +2632,7 @@ order = "a0"
             crown_watches: true,
             crown_context: false,
             crown_cost: true,
+            crown_samples: false,
             reviewed_prs: true,
             tags_seeded: true,
             mcp_tools: false,
@@ -2694,6 +2737,9 @@ order = "a0"
         assert!(text.find("crown_watches").unwrap() < text.find("[[columns]]").unwrap());
         assert!(!back.crown_context && back.crown_cost, "{text}");
         assert!(text.find("crown_cost").unwrap() < text.find("[[columns]]").unwrap());
+        // T-973: and the crown's sample switch.
+        assert!(!back.crown_samples, "{text}");
+        assert!(text.find("crown_samples").unwrap() < text.find("[[columns]]").unwrap());
         assert!(text.find("agent_provider").unwrap() < text.find("[[columns]]").unwrap());
 
         let scalars = text.find("mcp_tools").expect("mcp_tools on disk");

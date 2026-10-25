@@ -829,6 +829,10 @@ pub enum Verb {
     /// carries a ticket's cost. Board state like `CrownArchives`, off by
     /// default; Enter toggles it.
     CrownCost,
+    /// The Settings row under it (T-973): whether the crown may sample an
+    /// agent it started (`sample_agent`). Board state like `CrownWatches`,
+    /// on by default; Enter toggles it.
+    CrownSamples,
     /// The Behaviour row under Merge into (T-859): whether a pull request
     /// someone else opened is a ticket's when its agent reviewed it or its
     /// `Summary` names it. Board state like `MergeInto`, on by default;
@@ -1213,6 +1217,7 @@ impl SettingsSection {
             | Verb::CrownWatches
             | Verb::CrownContext
             | Verb::CrownCost
+            | Verb::CrownSamples
             | Verb::CrownLinks => Self::Crown,
             Verb::ProjectPage | Verb::ReleaseChannel => Self::About,
             _ => Self::Theme,
@@ -1262,6 +1267,8 @@ pub struct Ctx {
     /// rows under that.
     pub crown_context: bool,
     pub crown_cost: bool,
+    /// `Board::crown_samples` (T-973), for the row under those.
+    pub crown_samples: bool,
     /// `Board::reviewed_prs` (T-859): the Behaviour row under Merge into.
     pub reviewed_prs: bool,
     pub column_agents: bool,
@@ -5788,6 +5795,23 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // Whether the crown may sample an agent it started (T-973). On by
+    // default: its turn, tools, last text and pane rows, read when the
+    // crown asks, and nothing is sent to the agent. Off, `sample_agent` is
+    // refused.
+    MenuItem {
+        verb: Verb::CrownSamples,
+        label: |_| "Samples agents".into(),
+        detail: |c| {
+            if c.crown_samples {
+                "an agent it started: its turn, tools, last text, pane rows".into()
+            } else {
+                "it reads no agent's pane or transcript".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
     // The boards this one reaches (T-733): the door to the list that links
     // and unlinks them. The pairs are the machine's, read by every board's
     // daemon, so one link reaches both ways and the detail says so.
@@ -6243,6 +6267,7 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::CrownWatches,
             Verb::CrownContext,
             Verb::CrownCost,
+            Verb::CrownSamples,
             Verb::CrownLinks,
         ],
         SettingsSection::Terminal => &[
@@ -6385,6 +6410,7 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
         Verb::CrownWatches => Value::Switch(c.crown_watches),
         Verb::CrownContext => Value::Switch(c.crown_context),
         Verb::CrownCost => Value::Switch(c.crown_cost),
+        Verb::CrownSamples => Value::Switch(c.crown_samples),
         Verb::CrownLinks => Value::Door(or(&c.crown_links, "none").into()),
         Verb::TabTitle => Value::Choice {
             options: &["off", "project", "mesimon ∙ project"],
@@ -10913,6 +10939,7 @@ mod tests {
                     Verb::CrownWatches,
                     Verb::CrownContext,
                     Verb::CrownCost,
+                    Verb::CrownSamples,
                     Verb::CrownLinks,
                 ],
             ),

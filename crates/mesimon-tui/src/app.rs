@@ -7411,6 +7411,7 @@ impl App {
             crown_watches: self.board.crown_watches,
             crown_context: self.board.crown_context,
             crown_cost: self.board.crown_cost,
+            crown_samples: self.board.crown_samples,
             reviewed_prs: self.board.reviewed_prs,
             column_agents: self.column_agents,
             col_naming: matches!(self.mode, Mode::ColumnSettings { naming: Some(_), .. }),
@@ -8937,6 +8938,23 @@ impl App {
                                 .into()
                         } else {
                             "crown reads cost off".into()
+                        };
+                    }
+                }
+            }
+            Verb::CrownSamples => {
+                if !self.catch_up()? {
+                    return Ok(());
+                }
+                let on = !self.board.crown_samples;
+                match self.client.request(Command::SetCrownSamples { on })? {
+                    Response::Err { message } => self.status = message,
+                    _ => {
+                        self.refresh_soon()?;
+                        self.status = if on {
+                            "crown samples on ∙ sample_agent reads an agent it started".into()
+                        } else {
+                            "crown samples off ∙ sample_agent is refused".into()
                         };
                     }
                 }
@@ -16471,6 +16489,10 @@ pub(crate) mod test_support {
                     self.board.crown_cost = on;
                     Ok(Response::Ok)
                 }
+                Command::SetCrownSamples { on } => {
+                    self.board.crown_samples = on;
+                    Ok(Response::Ok)
+                }
                 Command::SetReviewedPrs { on } => {
                     self.board.reviewed_prs = on;
                     Ok(Response::Ok)
@@ -20969,6 +20991,24 @@ mod tests {
         assert_eq!(sent.iter().filter(|r| r.contains("SetCrownCost")).count(), 1);
     }
 
+    /// The crown's sample switch (T-973) sits under the cost row, on for a
+    /// fresh board, and toggles through its own board command.
+    #[test]
+    fn crown_samples_setting_toggles_through_its_board_command() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
+        app.settings_section = keymap::SettingsSection::Crown;
+        let idx = app.settings_row(Verb::CrownSamples);
+        assert_eq!(idx, app.settings_row(Verb::CrownCost) + 1, "under the cost row");
+        assert!(app.ctx().crown_samples, "on by default");
+        app.mode = Mode::Settings { idx };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!app.board.crown_samples && !app.ctx().crown_samples);
+        assert!(app.status.contains("sample_agent is refused"), "{}", app.status);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.board.crown_samples && app.ctx().crown_samples);
+        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownSamples")).count(), 2);
+    }
+
     /// The Reaches boards door (T-733) sits under the crown's reads and opens
     /// the boards list; with no walk (a test app) the list is the folder row
     /// alone, a typed folder links through the board command, the linked row
@@ -20981,7 +21021,7 @@ mod tests {
         let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
         app.settings_section = keymap::SettingsSection::Crown;
         let idx = app.settings_row(Verb::CrownLinks);
-        assert_eq!(idx, app.settings_row(Verb::CrownCost) + 1, "under the cost row");
+        assert_eq!(idx, app.settings_row(Verb::CrownSamples) + 1, "under the samples row");
         app.mode = Mode::Settings { idx };
         assert_eq!(keymap::value(Verb::CrownLinks, &app.ctx()), Some(Value::Door("none".into())));
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();

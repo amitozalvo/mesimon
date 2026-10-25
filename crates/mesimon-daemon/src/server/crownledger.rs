@@ -23,6 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use super::crownask::KeptAsk;
+use super::crownexpect::{self, Expect};
 use super::crownwake::{CrownWake, Entering, Heard, ToldHand, TurnAsk};
 use super::*;
 
@@ -32,7 +33,8 @@ use super::*;
 /// A schema-1 build cannot read those, and a same-schema file that fails to
 /// parse is quarantined, which would lose the whole ledger; a newer schema
 /// is left untouched with its writes barred instead. A schema-1 file reads
-/// as it is.
+/// as it is. T-973's `WakeCause::Overrun` and `expects` ride 2 for the same
+/// reason: no released build carried it.
 pub const CROWN_SCHEMA: u32 = 2;
 
 /// How long after a start the restart's look waits for a worker's agent to
@@ -95,6 +97,12 @@ pub(super) struct Ledger {
     /// ask a turn rode as `unknown`, as before, and refuses no less.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     out_asks: BTreeMap<ulid::Ulid, Vec<KeptAsk>>,
+    /// `Daemon::crown_expects` (T-973): the turns the crown expects a length
+    /// of, so a restart neither loses an overrun's wake nor says it twice.
+    /// It rides schema 2 with `WakeCause::Overrun`: no released build
+    /// carried schema 2, so none reads a wake it cannot parse.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    expects: BTreeMap<ulid::Ulid, Expect>,
 }
 
 /// Startup loader: the ledger, any notices, and whether writes are barred.
@@ -124,6 +132,7 @@ impl Daemon {
             hands: self.crown_hands.iter().map(|(w, h)| (*w, h.clone())).collect(),
             entering: (*self.crown_wake_entering).clone(),
             out_asks: self.kept_crown_asks(),
+            expects: self.crown_expects.iter().map(|(t, e)| (*t, e.clone())).collect(),
         }
     }
 
@@ -142,6 +151,7 @@ impl Daemon {
             || self.crown_hands.is_dirty()
             || self.crown_wake_entering.is_dirty()
             || self.crown_asks.is_dirty()
+            || self.crown_expects.is_dirty()
     }
 
     fn mark_ledger_clean(&mut self) {
@@ -156,6 +166,7 @@ impl Daemon {
         self.crown_hands.mark_clean();
         self.crown_wake_entering.mark_clean();
         self.crown_asks.mark_clean();
+        self.crown_expects.mark_clean();
     }
 
     /// The single write path for `crown.json`: on the tick and on the way
@@ -204,6 +215,9 @@ impl Daemon {
         let flagged = |w: &ulid::Ulid| self.board.ticket(*w).is_some_and(|t| t.manual_merge);
         self.crown_held = ledger.held.into_iter().filter(|w| *w != crown && flagged(w)).collect();
         self.turn_asks = ledger.asks.into_iter().filter(|(w, _)| on_board(w)).collect();
+        // A turn begun before the restart is timed from when it began; its
+        // wake, owed now, says it may be late.
+        self.crown_expects = crownexpect::restore(ledger.expects, crown, on_board).into();
         // An archived worker's hand was forgotten as it went (T-922); one
         // still on file came from a ledger written before that.
         let showing = |w: &ulid::Ulid| self.board.ticket(*w).is_some_and(|t| !t.is_archived());
@@ -425,6 +439,34 @@ mod tests {
             parse(&text).unwrap().asks.get(&w),
             Some(&TurnAsk::Asked { crown: c, ask, said: crownwake::Said::Taken })
         );
+    }
+
+    /// T-973: the crown's expectations ride the ledger through its own
+    /// bytes, beside the overrun wake owed for one; a schema-1 reader leaves
+    /// that ledger alone, as it does T-936's.
+    #[test]
+    fn an_expectation_and_its_overrun_wake_round_trip() {
+        let w = ulid::Ulid::from_parts(1, 7);
+        let v2 = format!(
+            r#"{{"schema_version": 2, "crown": "{c}",
+                "wakes": [{{"worker": "{w}", "cause": "overrun",
+                    "overrun": {{"expected_secs": 60, "running_secs": 75}}}}],
+                "expects": {{"{w}": {{"ask": "{a}", "expect_secs": 60, "began_ms": 5,
+                    "session": "{s}", "told": true}}}}}}"#,
+            c = ulid::Ulid::from_parts(1, 1),
+            a = ulid::Ulid::from_parts(1, 9),
+            s = uuid::Uuid::nil(),
+        );
+        let ledger = parse(&v2).unwrap();
+        assert_eq!(ledger.wakes.len(), 1);
+        let e = ledger.expects.get(&w).unwrap();
+        assert!(e.told && e.began_ms == Some(5) && e.ask == Some(ulid::Ulid::from_parts(1, 9)));
+        let text = serde_json::to_string_pretty(&ledger).unwrap();
+        assert!(text.contains(r#""cause": "overrun""#) && text.contains(r#""running_secs": 75"#));
+        assert_eq!(serde_json::to_string_pretty(&parse(&text).unwrap()).unwrap(), text);
+        assert!(parse("{\"schema_version\": 1}").unwrap().expects.is_empty());
+        let old = store::parse_versioned::<Ledger>(&text, 1);
+        assert!(matches!(old, Err((Some(2), _))), "a schema-1 reader refuses it whole");
     }
 
     /// Not an assertion about wall clock (see `search.rs`): the number in

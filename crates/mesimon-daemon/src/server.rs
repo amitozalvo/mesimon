@@ -101,10 +101,12 @@ impl Mint {
 mod attachments;
 mod bridge;
 mod crownask;
+mod crownexpect;
 mod crownhold;
 mod crownledger;
 mod crownplan;
 mod crownrules;
+mod crownsample;
 mod crownwake;
 mod mesophon;
 mod peer;
@@ -513,6 +515,9 @@ enum Msg {
     /// A pass over the tickets' transcripts landed (T-327): what each read
     /// found, to fold into the cost ledger.
     CostScanned(Vec<crate::cost::Done>),
+    /// A crown's `sample_agent` read its worker's pane and transcript off
+    /// this thread (T-973): which sample, and what it read.
+    AgentSampled(u64, Box<crownsample::SampleRead>),
 }
 
 pub struct Daemon {
@@ -976,6 +981,16 @@ pub struct Daemon {
     /// registry is empty and the park is re-entered, so the stretch is
     /// dated from there.
     tasks_since: HashMap<uuid::Uuid, u64>,
+    /// When each agent record's turn began (T-973, `crownexpect::turn_begins`),
+    /// kept through a dialog and gone when the turn ends: `sample_agent`'s
+    /// `turn_secs`. Memory only: after a restart the turn's start is not
+    /// known, and nothing is guessed.
+    turn_since: HashMap<uuid::Uuid, u64>,
+    /// The crown's expectation of a turn's length, by ticket (T-973,
+    /// `crownexpect`): armed by `start_agent`'s and `ask_agent`'s
+    /// `expect_secs`, begun with the turn their words begin, ended with it.
+    /// Kept in `crown.json`.
+    crown_expects: Tracked<std::collections::BTreeMap<ulid::Ulid, crownexpect::Expect>>,
     /// The last automatic move each ticket was refused (T-749), for its
     /// page and `get_ticket`: the gate's words, kept until the ticket moves
     /// or, for a column rule, until the rule passes. Memory only, as the
@@ -1013,6 +1028,13 @@ pub struct Daemon {
     /// registered a press for (T-582): the writer loop parks that call's
     /// reply with it (`crown_plan_park_reply`).
     plan_waits: Option<uuid::Uuid>,
+    /// The sample the `sample_agent` call in hand started (T-973): the
+    /// writer loop parks that call's reply with it (`sample_park_reply`).
+    sample_wait: Option<u64>,
+    /// Samples whose read is on a worker thread, by id, with their parked
+    /// replies. Memory only: a restart drops the read and the call with it.
+    samples: HashMap<u64, crownsample::Sampling>,
+    sample_seq: u64,
     /// The card's line after the crown answered a question (T-569),
     /// `answered by T-411: Okta`, by the session it rides in `detail`:
     /// kept through the question's own leave, which is the answer landing,
@@ -1571,6 +1593,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::Control(..) => "mesophon".into(),
             Msg::TranscriptRead(..) => "transcript read".into(),
             Msg::ShelfRead(..) => "shelf read".into(),
+            Msg::AgentSampled(..) => "agent sampled".into(),
         };
         d.tick_slowest = ("", Duration::ZERO);
         match msg {
@@ -1624,6 +1647,7 @@ pub fn run(paths: Paths) -> Result<()> {
                 d.control_transcript_read(&peer, grant, command, reply)
             }
             Msg::ShelfRead(build, pages) => d.shelf_read(*build, pages),
+            Msg::AgentSampled(id, read) => d.sample_landed(id, *read),
             Msg::CrownTold(session, gen) => d.crown_rules.acked(session, gen),
             Msg::Request(env, reply, stream) => {
                 // The mod's bridge poll is no tool call, so it tells no crown.
@@ -1640,6 +1664,11 @@ pub fn run(paths: Paths) -> Result<()> {
                     (Some(id), _) => d.control_park_reply(id, reply),
                     (None, Some(id)) => d.crown_plan_park_reply(id, reply),
                     (None, None) => Some(reply),
+                };
+                // `sample_agent` (T-973) when its read lands off this thread.
+                let reply = match (reply, d.sample_wait.take()) {
+                    (Some(reply), Some(id)) => d.sample_park_reply(id, reply),
+                    (reply, _) => reply,
                 };
                 // A bridge's poll and a ping wait with the mod road (T-574).
                 let reply = match (reply, d.mod_park.take()) {
@@ -1905,6 +1934,8 @@ impl Daemon {
             refused_for_person: None,
             lingered: Default::default(),
             tasks_since: HashMap::new(),
+            turn_since: HashMap::new(),
+            crown_expects: Default::default(),
             held: crate::movegate::HeldMoves::default(),
             crown_watched: Default::default(),
             crown_held: Default::default(),
@@ -1913,6 +1944,9 @@ impl Daemon {
             mod_park: None,
             crown_plans: HashMap::new(),
             plan_waits: None,
+            sample_wait: None,
+            samples: HashMap::new(),
+            sample_seq: 0,
             crown_answer_lines: HashMap::new(),
             prompts_heard: HashMap::new(),
             dialog_heard: HashMap::new(),
@@ -3307,6 +3341,9 @@ impl Daemon {
             Command::SetCrownWatches { on } => self.set_crown_watches(on),
             Command::SetCrownContext { on } => self.set_board_switch(|b| &mut b.crown_context, on, |_| {}),
             Command::SetCrownCost { on } => self.set_board_switch(|b| &mut b.crown_cost, on, |_| {}),
+            Command::SetCrownSamples { on } => {
+                self.set_board_switch(|b| &mut b.crown_samples, on, |_| {})
+            }
             Command::SetReviewedPrs { on } => self.set_reviewed_prs(on),
             Command::SetStatusLine { top } => self.set_status_line(top),
             Command::SetUsageWants { claude, codex } => {
@@ -3527,6 +3564,7 @@ impl Daemon {
             | Command::AgentStartTicket { .. }
             | Command::AgentSleepTicket { .. }
             | Command::AgentWatchTicket { .. }
+            | Command::AgentSampleTicket { .. }
             | Command::AgentHoldTicket { .. }
             | Command::AgentMergeTicket { .. }
             | Command::AgentAskTicket { .. }
@@ -3647,6 +3685,7 @@ impl Daemon {
             changed |= stage!(self, "drain_tier_switches", self.drain_tier_switches());
             changed |= stage!(self, "drain_queue", self.drain_queue());
             changed |= stage!(self, "hear_lingering", self.hear_lingering());
+            changed |= stage!(self, "hear_overruns", self.hear_overruns());
             changed |= stage!(self, "hear_restored", self.hear_restored());
             changed |= stage!(self, "hear_merges", self.hear_merges());
             changed |= stage!(self, "hear_deferred", self.hear_deferred());
@@ -7149,6 +7188,17 @@ impl Daemon {
             Some(at) => _ = self.tasks_since.insert(id, at),
             None => _ = self.tasks_since.remove(&id),
         }
+        // A turn's age, and the crown's expectation of it (T-973): from the
+        // edge that begins the turn to the edge that leaves it.
+        if snapshot.kind.is_agent() {
+            if crownexpect::turn_begins(&change.from, &change.to) {
+                self.turn_since.insert(id, now);
+                self.expect_began(snapshot.ticket, None, Some(id), now);
+            } else if !crownexpect::turn_open(&change.to) {
+                self.turn_since.remove(&id);
+                self.expect_left(snapshot.ticket, id);
+            }
+        }
         if snapshot.kind.is_agent() && change.from != change.to {
             // A turn that took the crown's ask and ended with background
             // tasks still running answered it (T-599): the crown asked
@@ -7584,6 +7634,9 @@ impl Daemon {
             Command::AgentRequestCloseShell { shell, key } => {
                 self.request_close_shell(session, ticket, shell, &key)
             }
+            // The crown's sample (T-973): its refusals, then a read off this
+            // thread whose reply waits for it.
+            Command::AgentSampleTicket { key } => self.agent_sample(session, ticket, &key),
             Command::AgentReadNote { note, key } => {
                 let target = match key {
                     None => ticket,
@@ -7723,7 +7776,7 @@ impl Daemon {
             // The crown's start (T-412): an ask to spawn, judged here. The
             // budget and the seat rule are the daemon's; the agent names a
             // ticket and nothing else — no kind, no prompt, no session.
-            Command::AgentAskTicket { key, text, seen, plan, deliver } => {
+            Command::AgentAskTicket { key, text, seen, plan, deliver, expect_secs } => {
                 let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
                     Ok(t) => t,
                     Err(message) => return Response::Err { message },
@@ -7869,6 +7922,12 @@ impl Daemon {
                     self.park_ask(target, seat, text, Asker::Agent(ticket), false, plan)
                 {
                     return Response::Err { message };
+                }
+                // The turn these words begin is the one `expect_secs` times
+                // (T-973), by the ask `park_ask` just minted.
+                if let Some(secs) = expect_secs {
+                    let ask = self.crown_asks.get(&target).and_then(|l| l.last()).map(|a| a.id);
+                    self.arm_expect(target, ask, secs);
                 }
                 let mut held_for_person = !sends;
                 if let Some(q) = self.queued.iter_mut().find(|q| q.ticket == target) {
@@ -8098,7 +8157,7 @@ impl Daemon {
                     Err(message) => Response::Err { message },
                 }
             }
-            Command::AgentStartTicket { key, seen, plan, tier, workspace } => {
+            Command::AgentStartTicket { key, seen, plan, tier, workspace, expect_secs } => {
                 let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
                     Ok(t) => t,
                     Err(message) => return Response::Err { message },
@@ -8208,6 +8267,10 @@ impl Daemon {
                         }
                     }
                 };
+                // The turn the start's words begin (T-973): its seat's first.
+                if let Some(secs) = expect_secs {
+                    self.arm_expect(target, None, secs);
+                }
                 self.feed.board(by.actor(), "start_agent", Some(target));
                 let seen =
                     self.crown_touched(ticket, target, if woken { "woken" } else { "started" });
@@ -10577,6 +10640,7 @@ impl Daemon {
             needs_you: self.agent_needs_you(id),
             asked: None,
             told_hand: None,
+            overrun: None,
             seen: Some(self.seen_token(id)),
         })
     }
@@ -10587,6 +10651,8 @@ impl Daemon {
     /// ticket's account as the card shows it. Facts with their `about`
     /// lines; an absent fact is absent with its line.
     fn crown_reads(&self, view: &mut AgentTicketView, ticket: ulid::Ulid) {
+        // Unswitched (T-973): the crown armed it.
+        view.overrun = self.overrun_view(ticket);
         if self.board.crown_context {
             view.context = self.agent_context_view(ticket);
             view.context_about =

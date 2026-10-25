@@ -107,6 +107,7 @@
 //! wakes no one by itself. A board no forge reads, or a turn whose look
 //! found nothing to read, holds nothing.
 
+use super::crownexpect::{overrun_clause, Overrun};
 use super::*;
 use serde::{Deserialize, Serialize};
 
@@ -316,6 +317,11 @@ impl BranchLook {
 pub(super) enum WakeCause {
     /// Idle with background tasks for `LINGER_MS` (T-599): the weakest.
     Lingering,
+    /// A turn the crown armed with `expect_secs` has run past it, the agent
+    /// still working (T-973): above lingering, which it never meets (one is
+    /// a turn, the other a park), and under a finished turn, which says the
+    /// same turn ended.
+    Overrun,
     Finished,
     /// Its pull request has news from the forge (T-739, T-744): a pipeline
     /// failed or passed, a job waits on a person, the merge reached an
@@ -351,6 +357,7 @@ impl WakeCause {
     fn clause(self) -> &'static str {
         match self {
             WakeCause::Lingering => "has been idle with background tasks",
+            WakeCause::Overrun => "has run its turn past what it expected",
             WakeCause::Finished => "finished its turn",
             WakeCause::Forge => "has news from the forge",
             WakeCause::Merged => "merged",
@@ -375,6 +382,7 @@ impl WakeCause {
     fn word(self) -> &'static str {
         match self {
             WakeCause::Lingering => "lingering",
+            WakeCause::Overrun => "overrun",
             WakeCause::Finished => "finished",
             WakeCause::Forge => "forge",
             WakeCause::Merged => "merged",
@@ -425,6 +433,9 @@ pub(super) struct CrownWake {
     /// The crown ask the turn rode, as it stood at the turn's end (T-938).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ask: Option<AskSaid>,
+    /// An overrun wake's numbers (T-973), as the turn stood when it was owed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    overrun: Option<Overrun>,
 }
 
 /// One failed turn (T-936): the seat, the turn (Codex's own turn id; on
@@ -439,10 +450,11 @@ pub(super) struct FailedTurn {
 /// What rides a wake beside its cause and delta, as `owe_wake` folds it.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Owed {
-    finished: bool,
-    linger: Option<Linger>,
-    late: bool,
-    ask: Option<AskSaid>,
+    pub(super) finished: bool,
+    pub(super) linger: Option<Linger>,
+    pub(super) late: bool,
+    pub(super) ask: Option<AskSaid>,
+    pub(super) overrun: Option<Overrun>,
 }
 
 /// What a sentence to the crown tells it (`Daemon::telling`), kept until
@@ -726,6 +738,9 @@ impl CrownWake {
     fn clause(&self) -> String {
         if let (WakeCause::Lingering, Some(l)) = (self.cause, self.linger) {
             return lingering_clause(l);
+        }
+        if let (WakeCause::Overrun, Some(o)) = (self.cause, self.overrun) {
+            return overrun_clause(o);
         }
         // An ask no receipt named (T-938): the turn ended after it went out,
         // and that is all the end proves.
@@ -1228,6 +1243,7 @@ impl Heard {
             unstarted: None,
             failed: None,
             ask: None,
+            overrun: None,
         });
         true
     }
@@ -1485,6 +1501,11 @@ impl Daemon {
 
     /// The owed words reached the agent: the turn now running is theirs.
     pub(super) fn mark_turn(&mut self, ticket: ulid::Ulid, ask: TurnAsk) {
+        // The turn the crown's ask begins is the one its `expect_secs`
+        // times (T-973).
+        if let TurnAsk::Asked { ask: id, .. } = ask {
+            self.expect_began(ticket, Some(id), None, now_ms());
+        }
         match ask {
             TurnAsk::Crown(_) | TurnAsk::Asked { .. } => {
                 self.turn_asks.insert(ticket, ask);
@@ -1856,6 +1877,7 @@ impl Daemon {
             unstarted: None,
             failed: None,
             ask,
+            overrun: None,
         };
         heard.forging = Some(Forging { wake, since_ms: now_ms() });
         self.feed.board("automation", "crown_wake_deferred:forge", Some(worker));
@@ -1909,7 +1931,7 @@ impl Daemon {
             let mut to = wake.to;
             h.land(&mut to, column);
             let owed =
-                Owed { finished: wake.finished, linger: None, late: wake.late, ask: wake.ask };
+                Owed { finished: wake.finished, late: wake.late, ask: wake.ask, ..Owed::default() };
             self.enter_wake(crown, worker, wake.cause, wake.from, to, owed);
             woke = true;
         }
@@ -2061,7 +2083,7 @@ impl Daemon {
             let column = self.board.ticket(worker).map(|t| t.column.clone());
             let Some(heard) = self.crown_heard.get_mut(&worker) else { continue };
             let Some(wake) = heard.step_over(column) else { continue };
-            let held = Owed { finished: true, linger: None, late: wake.late, ask: wake.ask };
+            let held = Owed { finished: true, late: wake.late, ask: wake.ask, ..Owed::default() };
             self.owe_wake(crown, worker, wake.cause, wake.from, wake.to, held);
             woke = true;
         }
@@ -2222,7 +2244,7 @@ impl Daemon {
     /// lingering wake's numbers (T-599), and whether it was owed across a
     /// restart (T-602) — so is any wake about a worker no look has reached
     /// since one.
-    fn owe_wake(
+    pub(super) fn owe_wake(
         &mut self,
         crown: ulid::Ulid,
         worker: ulid::Ulid,
@@ -2247,7 +2269,7 @@ impl Daemon {
         to: Option<Told>,
         owed: Owed,
     ) {
-        let Owed { finished, linger, late, ask } = owed;
+        let Owed { finished, linger, late, ask, overrun } = owed;
         let late = late || self.crown_heard.get(&worker).is_some_and(|h| h.restored);
         let landed =
             cause == WakeCause::Merged || to.as_ref().is_some_and(|t| t.merge == Some("merged"));
@@ -2257,6 +2279,7 @@ impl Daemon {
             w.linger = w.linger.or(linger);
             w.late |= late;
             w.ask = ask.or(w.ask);
+            w.overrun = overrun.or(w.overrun);
         } else {
             self.crown_wakes.push(CrownWake {
                 worker,
@@ -2269,6 +2292,7 @@ impl Daemon {
                 unstarted: None,
                 failed: None,
                 ask,
+                overrun,
             });
         }
         // A watch ends at the merge (T-712): the wait it was for is over,
@@ -2292,6 +2316,7 @@ impl Daemon {
         }
         let why = mesimon_core::text::scrub_text(&why);
         let why = mesimon_core::text::cap_bytes(&why, UNSTARTED_MAX_BYTES).to_string();
+        self.expect_unstarted(worker);
         self.enter_wake(crown, worker, WakeCause::Unstarted, None, None, Owed::default());
         if let Some(w) = self.crown_wakes.iter_mut().find(|w| w.worker == worker) {
             w.unstarted = Some(why);
@@ -2646,6 +2671,7 @@ mod tests {
             unstarted: None,
             failed: None,
             ask: Some(AskSaid { ask: old, said: Said::Handed }),
+            overrun: None,
         };
         assert_eq!(w.clause(), "ended its turn after your ask went in");
         assert_eq!(w.changed(), vec![format!("ask {old}: handed")]);
@@ -2840,6 +2866,7 @@ mod tests {
             unstarted: None,
             failed: None,
             ask: None,
+            overrun: None,
         };
         assert_eq!(w.clause(), "has been idle with 3 background tasks for 30 min");
         assert!(w.changed().is_empty(), "no delta: nothing about the work moved");
@@ -3088,6 +3115,7 @@ mod tests {
             unstarted: None,
             failed: None,
             ask: None,
+            overrun: None,
         };
         let head = checkout("1234567890abcdef", "REVIEW");
         assert_eq!(
@@ -3342,6 +3370,7 @@ mod tests {
                 reason: FailReason::Server,
             }),
             ask: None,
+            overrun: None,
         };
         assert_eq!(wake.clause(), "ended its turn on an error");
         assert_eq!(wake.changed(), ["server error"]);
@@ -3543,6 +3572,7 @@ mod tests {
             unstarted: None,
             failed: None,
             ask: None,
+            overrun: None,
         };
         assert_eq!(wake.changed(), ["column PROD", "deployed to production !11"]);
         assert_eq!(wake.sent_at("DONE").changed(), ["column DONE", "deployed to production !11"]);
@@ -3621,6 +3651,7 @@ mod tests {
             unstarted: None,
             failed: None,
             ask: None,
+            overrun: None,
         };
         let h = heard(Some(delivered.clone()), Some(delivered.clone()));
         let cause = merge_verdict(true, &h, &landed).unwrap();
@@ -3755,6 +3786,7 @@ mod tests {
             unstarted: None,
             failed: None,
             ask: None,
+            overrun: None,
         };
         assert_eq!(wake.clause(), "merged");
     }
@@ -3876,6 +3908,7 @@ mod tests {
             unstarted: None,
             failed: None,
             ask: None,
+            overrun: None,
         };
         h.judged = Some(landed.clone());
         assert_eq!(wake.changed(), ["merge_state ahead → merged", "after a restart"]);
@@ -3927,6 +3960,7 @@ mod tests {
             unstarted: None,
             failed: None,
             ask: None,
+            overrun: None,
         };
         assert_eq!(wake.changed(), ["merge_state merged", "column DONE"]);
         // Owed across the restart, it says so; a fold keeps saying it.
@@ -3964,6 +3998,7 @@ mod tests {
             unstarted: None,
             failed: None,
             ask: None,
+            overrun: None,
         };
         wake.fold(WakeCause::Forge, None, Some(news("review approved !1")));
         assert_eq!(wake.changed(), ["pipeline passed !1, review approved !1"]);
@@ -4026,6 +4061,7 @@ mod tests {
             unstarted: None,
             failed: None,
             ask: None,
+            overrun: None,
         };
         let passed = Told {
             forge: Some("pipeline passed !2".into()),

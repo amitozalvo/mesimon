@@ -209,6 +209,12 @@ pub const CROWN_WAKES: &str = concat!(
      since_secs). The wait may be the work (a long suite, a build) or a loop that will not end, \
      and the board cannot tell which, so it merges, parks and ends nothing for it; ask_agent \
      reaches the worker while its tasks run. \
+     start_agent's and ask_agent's expect_secs is how long the turn their words start is \
+     expected to take: past it, with the agent still working, this session is woken once \
+     (has run its turn N min, past the M it expected), and get_ticket on it carries overrun \
+     (expected_secs, running_secs) until that turn ends. The board stops, parks and moves \
+     nothing for it, and the next ask's expect_secs is the next. sample_agent reads a worker \
+     the crown started as the board sees it. \
      A delivered worker's get_ticket says who merges its branch (merge: by train, crown, \
      person or forge, and why), and the delivered line carries the word. The forge's — every \
      worktree ticket's on a board whose Merge into setting is pull requests — lands through its \
@@ -863,10 +869,12 @@ pub fn tools() -> Vec<Value> {
             // and the `key`, `seen` and `plan` descriptions. What a start sent
             // its agent (T-920) is the receipt's `prompt`: the description
             // says only that a turn's end, not the start, wakes the crown.
+            // `expect_secs` (T-973) is a bare property, said in `CROWN_WAKES`,
+            // paid for by the shared checkout's `checkout_held_by` clause,
+            // which `CROWN_WAKES`' workspace sentence and the refusal carry.
             "description": "Starts the board's agent on another mesimon ticket (crown only) in \
                             workspace: an unstarted ticket takes it, a worktree or parked agent \
-                            keeps its own, no shared_checkout while list_board's \
-                            checkout_held_by lists one. A parked agent the crown started is \
+                            keeps its own. A parked agent the crown started is \
                             woken, a person's refused, as is a start with a tier where a person \
                             started one. The receipt names the tier it launched on. A turn's \
                             end wakes this session, so nothing is polled.",
@@ -878,6 +886,7 @@ pub fn tools() -> Vec<Value> {
                     "workspace": { "type": "string", "description": "worktree or shared_checkout." },
                     "plan": { "type": "boolean" },
                     "tier": { "type": "string", "description": "Optional. A list_board tiers id." },
+                    "expect_secs": { "type": "integer" },
                 },
                 "required": ["key", "seen", "workspace"],
                 "additionalProperties": false,
@@ -915,12 +924,15 @@ pub fn tools() -> Vec<Value> {
         // whose crown mode is autonomous (T-610), through the queue to an
         // agent the crown started (T-550) or whose ticket it watches (T-734).
         // At the cap: `key` and `seen` read as every keyed sibling's.
+        // `expect_secs` (T-973) is a bare property, said in `CROWN_WAKES`,
+        // paid for by "(asked says where they stand)", which `CROWN_WAKES`
+        // says whole.
         json!({
             "name": "ask_agent",
             "description": "Queues words on another ticket's card for its agent (crown \
                             only). A person sends (^y) or takes back (^u); if the crown is \
                             autonomous, an agent it started or watches gets them \
-                            as deliver says (asked says where they stand). Refused with no agent, \
+                            as deliver says. Refused with no agent, \
                             at once at a dialog, or while its last ask is still outstanding, \
                             except now or immediately in a running turn. A turn ending after \
                             them wakes this session.",
@@ -935,6 +947,7 @@ pub fn tools() -> Vec<Value> {
                     "seen": { "type": "string" },
                     "plan": { "type": "boolean" },
                     "deliver": { "type": "string", "description": "Optional: idle (default), now, immediately." },
+                    "expect_secs": { "type": "integer" },
                 },
                 "required": ["key", "text", "seen"],
                 "additionalProperties": false,
@@ -1099,6 +1112,31 @@ pub fn tools() -> Vec<Value> {
                 "additionalProperties": false,
             },
         }),
+        // The crown's sample (T-973): what the board reads of an agent the
+        // crown started, at the call, off the writer thread. Says what the
+        // reading is and what it is not; never when to read or what to do
+        // with it (T-930).
+        json!({
+            "name": "sample_agent",
+            "description": "Reads another mesimon ticket's agent as the board sees it at this \
+                            moment (crown only, if the board lets it: Crown samples agents, on \
+                            unless a person turned it off): turn_secs, the tool in flight and \
+                            for how long, the last five tools, the last text it wrote, its \
+                            background tasks and the last 40 rows of its pane, each bounded. \
+                            Only an agent the crown started; a person's agent and this \
+                            session's own are refused. A reading by the board, not the \
+                            agent's own count, and not proof that it is stuck or progressing; \
+                            the agent is sent nothing.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string", "description": "The ticket's key, from list_board." },
+                },
+                "required": ["key"],
+                "additionalProperties": false,
+            },
+            "annotations": { "readOnlyHint": true }
+        }),
     ]
 }
 
@@ -1183,6 +1221,8 @@ pub enum ToolCall {
         tier: Option<String>,
         /// A word, validated by the daemon (T-583).
         workspace: String,
+        /// The turn's expected duration in seconds (T-973).
+        expect_secs: Option<u64>,
     },
     SleepAgent {
         key: String,
@@ -1192,6 +1232,10 @@ pub enum ToolCall {
     MergeTicket {
         key: String,
         seen: String,
+    },
+    /// The crown's sample of an agent it started (T-973).
+    SampleAgent {
+        key: String,
     },
     /// The crown's watch (T-712), or with `unwatch` its end.
     WatchTicket {
@@ -1214,6 +1258,8 @@ pub enum ToolCall {
         /// When the words go (T-600, T-601): the queue's idle, now, or
         /// Claude Code's send-now.
         deliver: Deliver,
+        /// The turn's expected duration in seconds (T-973).
+        expect_secs: Option<u64>,
     },
     /// Words for a linked board's crown (T-733): `board` names it as
     /// `list_board`'s `linked_boards` does.
@@ -1284,6 +1330,24 @@ fn deliver(args: &Value) -> Result<Deliver, String> {
         None => Ok(legacy),
         Some(w) => Deliver::from_word(&w)
             .ok_or_else(|| format!("deliver must be idle, now or immediately, not {w:?}")),
+    }
+}
+
+/// The most `expect_secs` takes (T-973): a day.
+pub const MAX_EXPECT_SECS: u64 = 86_400;
+
+/// `start_agent`'s and `ask_agent`'s `expect_secs` (T-973): absent or null
+/// arms nothing; a whole number of seconds from 1 to a day, else refused.
+fn expect_secs(args: &Value) -> Result<Option<u64>, String> {
+    match args.get("expect_secs") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_u64()
+            .filter(|n| (1..=MAX_EXPECT_SECS).contains(n))
+            .map(Some)
+            .ok_or_else(|| {
+                format!("expect_secs is whole seconds, 1 to {MAX_EXPECT_SECS}, not {v}")
+            }),
     }
 }
 
@@ -1419,6 +1483,7 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
             plan: flag(args, "plan")?,
             tier: opt_word(args, "tier")?,
             workspace: word(args, "workspace")?,
+            expect_secs: expect_secs(args)?,
         }),
         "sleep_agent" => {
             Ok(ToolCall::SleepAgent { key: word(args, "key")?, seen: word(args, "seen")? })
@@ -1426,6 +1491,7 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
         "merge_ticket" => {
             Ok(ToolCall::MergeTicket { key: word(args, "key")?, seen: word(args, "seen")? })
         }
+        "sample_agent" => Ok(ToolCall::SampleAgent { key: word(args, "key")? }),
         "watch_ticket" => Ok(ToolCall::WatchTicket {
             key: word(args, "key")?,
             unwatch: flag(args, "unwatch")?,
@@ -1446,6 +1512,7 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
             seen: word(args, "seen")?,
             plan: flag(args, "plan")?,
             deliver: deliver(args)?,
+            expect_secs: expect_secs(args)?,
         }),
         "ask_board" => {
             Ok(ToolCall::AskBoard { board: word(args, "board")?, text: text(args, "ask_board")? })
@@ -1685,6 +1752,11 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // `crown_watches` — judged by the daemon at each call, admitted here
         // so a refusal names the row. Nothing reaches the watched agent.
         | Command::AgentWatchTicket { .. }
+        // The crown's sample (T-973): a read of an agent the crown started,
+        // judged by the daemon through `Action::SampleAgent`, which only the
+        // crown passes, and behind the board's `crown_samples` — admitted
+        // here so a refusal names the row. Nothing reaches the agent.
+        | Command::AgentSampleTicket { .. }
         // The crown's train hold (T-919): `t` on another ticket, judged by
         // the daemon through `Action::HoldFromTrain`, which only the crown
         // passes, and a return against the board's `crown_mode` — admitted
@@ -1906,6 +1978,9 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // spend is the person's to allow, per board.
         | Command::SetCrownContext { .. }
         | Command::SetCrownCost { .. }
+        // T-973: the crown reading a worker's pane and transcript tail is
+        // the person's to allow, per board.
+        | Command::SetCrownSamples { .. }
         // T-859: whose pull requests a ticket carries is the team's
         // workflow, as the merge setting is.
         | Command::SetReviewedPrs { .. }
@@ -1996,6 +2071,7 @@ pub fn tier_needed_by(cmd: &Command) -> Option<AgentTools> {
         | Command::AgentListBoard
         | Command::AgentReadNote { .. }
         | Command::AgentReadShell { .. }
+        | Command::AgentSampleTicket { .. }
         | Command::AgentReadAttachment { .. } => AgentTools::Read,
         Command::AgentWriteNote { .. }
         | Command::AgentTagTicket { .. }
@@ -2026,9 +2102,8 @@ pub fn tier_needed_by(cmd: &Command) -> Option<AgentTools> {
 /// The same table by tool NAME, for the shim's `tools/list`.
 pub fn tier_needed_by_tool(name: &str) -> Option<AgentTools> {
     Some(match name {
-        "get_ticket" | "list_board" | "read_note" | "read_attachment" | "read_shell" => {
-            AgentTools::Read
-        }
+        "get_ticket" | "list_board" | "read_note" | "read_attachment" | "read_shell"
+        | "sample_agent" => AgentTools::Read,
         "write_note" | "tag_ticket" | "raise_hand" => AgentTools::Annotate,
         "move_ticket"
         | "create_ticket"
@@ -2141,7 +2216,7 @@ mod tests {
         assert!(names(AgentTools::Off).is_empty());
         assert_eq!(
             names(AgentTools::Read),
-            ["get_ticket", "list_board", "read_shell", "read_note", "read_attachment"]
+            ["get_ticket", "list_board", "read_shell", "read_note", "read_attachment", "sample_agent"]
         );
         assert_eq!(
             names(AgentTools::Annotate),
@@ -2153,7 +2228,8 @@ mod tests {
                 "read_attachment",
                 "write_note",
                 "tag_ticket",
-                "raise_hand"
+                "raise_hand",
+                "sample_agent"
             ]
         );
         assert_eq!(tools_for(AgentTools::Full).len(), tools().len(), "full is everything");
@@ -2213,6 +2289,7 @@ mod tests {
                     plan: false,
                     tier: None,
                     workspace: None,
+                    expect_secs: None,
                 },
                 "start_agent",
             ),
@@ -2223,6 +2300,7 @@ mod tests {
                 "watch_ticket",
             ),
             (Command::AgentHoldTicket { key: "T-1".into(), hold: true, seen: None }, "hold_ticket"),
+            (Command::AgentSampleTicket { key: "T-1".into() }, "sample_agent"),
             (
                 Command::AgentAskTicket {
                     key: "T-1".into(),
@@ -2230,6 +2308,7 @@ mod tests {
                     seen: None,
                     plan: false,
                     deliver: Deliver::Idle,
+                    expect_secs: None,
                 },
                 "ask_agent",
             ),
@@ -2298,6 +2377,7 @@ mod tests {
             "mcp__mesimon__read_shell",
             "mcp__mesimon__read_note",
             "mcp__mesimon__read_attachment",
+            "mcp__mesimon__sample_agent",
         ];
         assert!(allowed_tool_names(AgentTools::Off).is_empty());
         for tier in [AgentTools::Read, AgentTools::Annotate, AgentTools::Full] {
@@ -2327,7 +2407,7 @@ mod tests {
     #[test]
     fn exactly_twenty_two_tools() {
         let t = tools();
-        assert_eq!(t.len(), 23);
+        assert_eq!(t.len(), 24);
         let names: Vec<&str> = t.iter().filter_map(|v| v["name"].as_str()).collect();
         assert_eq!(
             names,
@@ -2354,7 +2434,8 @@ mod tests {
                 "accept_plan",
                 "merge_ticket",
                 "watch_ticket",
-                "hold_ticket"
+                "hold_ticket",
+                "sample_agent"
             ]
         );
     }
@@ -2601,7 +2682,8 @@ mod tests {
                 seen: "abc".into(),
                 plan: false,
                 tier: None,
-                workspace: "worktree".into()
+                workspace: "worktree".into(),
+                expect_secs: None,
             })
         );
         // The plan flag (T-434): absent is false, a boolean is itself, a
@@ -2616,7 +2698,8 @@ mod tests {
                 seen: "abc".into(),
                 plan: true,
                 tier: None,
-                workspace: "shared_checkout".into()
+                workspace: "shared_checkout".into(),
+                expect_secs: None,
             })
         );
         assert!(parse_tool_call(
@@ -2640,7 +2723,8 @@ mod tests {
                 text: "go".into(),
                 seen: "abc".into(),
                 plan: false,
-                deliver: Deliver::Idle
+                deliver: Deliver::Idle,
+                expect_secs: None,
             })
         );
         assert_eq!(
@@ -2653,7 +2737,8 @@ mod tests {
                 text: "go".into(),
                 seen: "abc".into(),
                 plan: true,
-                deliver: Deliver::Idle
+                deliver: Deliver::Idle,
+                expect_secs: None,
             })
         );
         // T-601: `deliver` is the level, one of three words; T-600's `now:
@@ -2763,7 +2848,8 @@ mod tests {
                 seen: "abc".into(),
                 plan: false,
                 tier: Some("01DEEP".into()),
-                workspace: "worktree".into()
+                workspace: "worktree".into(),
+                expect_secs: None,
             })
         );
         match parse_tool_call("create_ticket", &json!({ "title": "t", "tier": "quick" })) {
@@ -3336,6 +3422,76 @@ mod tests {
     /// lets it. The tool parses like its keyed siblings, says it is gated and
     /// what it wakes for, and `CROWN_WAKES` says a loop that polls holds the
     /// train and the wake; all inside the cap and the lint.
+    /// T-973: `expect_secs` is whole seconds, 1 to a day, on both keyed
+    /// starters; `sample_agent` takes a key alone, sits on the read rung,
+    /// and says what the reading is and is not; the rules say what the
+    /// expectation does, once.
+    #[test]
+    fn the_crown_expects_a_turn_and_samples_its_worker() {
+        let start = |extra: Value| {
+            let mut args = json!({ "key": "T-4", "seen": "abc", "workspace": "worktree" });
+            args.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            parse_tool_call("start_agent", &args)
+        };
+        let expect = |r: Result<ToolCall, String>| match r {
+            Ok(ToolCall::StartAgent { expect_secs, .. }) => Ok(expect_secs),
+            Ok(other) => panic!("{other:?}"),
+            Err(e) => Err(e),
+        };
+        assert_eq!(expect(start(json!({}))), Ok(None));
+        assert_eq!(expect(start(json!({ "expect_secs": null }))), Ok(None));
+        assert_eq!(expect(start(json!({ "expect_secs": 1 }))), Ok(Some(1)));
+        assert_eq!(expect(start(json!({ "expect_secs": 86_400 }))), Ok(Some(86_400)));
+        for bad in [json!(0), json!(-5), json!(1.5), json!("60"), json!(86_401)] {
+            let e = expect(start(json!({ "expect_secs": bad }))).unwrap_err();
+            assert!(e.contains("expect_secs is whole seconds, 1 to 86400"), "{e}");
+        }
+        match parse_tool_call(
+            "ask_agent",
+            &json!({ "key": "T-4", "text": "go", "seen": "abc", "expect_secs": 600 }),
+        ) {
+            Ok(ToolCall::AskAgent { expect_secs, .. }) => assert_eq!(expect_secs, Some(600)),
+            other => panic!("{other:?}"),
+        }
+        let registry = tools();
+        let tool = |name: &str| registry.iter().find(|t| t["name"] == name).unwrap().clone();
+        for name in ["start_agent", "ask_agent"] {
+            let p = &tool(name)["inputSchema"]["properties"]["expect_secs"];
+            assert_eq!(p, &json!({ "type": "integer" }), "{name}: a bare property");
+        }
+        assert_eq!(
+            parse_tool_call("sample_agent", &json!({ "key": " T-4 " })),
+            Ok(ToolCall::SampleAgent { key: "T-4".into() })
+        );
+        assert!(parse_tool_call("sample_agent", &json!({})).is_err(), "key");
+        let sample = tool("sample_agent");
+        assert_eq!(sample["inputSchema"]["required"], json!(["key"]));
+        assert_eq!(tier_needed_by_tool("sample_agent"), Some(AgentTools::Read));
+        let description = sample["description"].as_str().unwrap();
+        for words in [
+            "crown only",
+            "Crown samples agents",
+            "on unless a person turned it off",
+            "turn_secs, the tool in flight",
+            "the last 40 rows of its pane",
+            "Only an agent the crown started",
+            "not the agent's own count",
+            "not proof that it is stuck or progressing",
+            "the agent is sent nothing",
+        ] {
+            assert!(description.contains(words), "sample_agent says {words:?}");
+        }
+        for words in [
+            "expect_secs is how long the turn their words start is expected to take",
+            "woken once (has run its turn N min, past the M it expected)",
+            "carries overrun (expected_secs, running_secs) until that turn ends",
+            "The board stops, parks and moves nothing for it",
+            "sample_agent reads a worker the crown started as the board sees it",
+        ] {
+            assert!(CROWN_WAKES.contains(words), "CROWN_WAKES says {words:?}");
+        }
+    }
+
     #[test]
     fn the_crown_watches_where_a_person_lets_it() {
         assert_eq!(
@@ -3412,10 +3568,12 @@ mod tests {
             "a worktree or parked agent keeps its own",
             "A parked agent the crown started is woken",
             "a person's refused",
-            "no shared_checkout while list_board's checkout_held_by lists one",
         ] {
             assert!(description.contains(words), "start_agent says {words:?}");
         }
+        // T-973 paid for `expect_secs` with the tool's shared-checkout clause:
+        // the rules say it, and the refusal names the holder.
+        assert!(CROWN_WAKES.contains("refused while another ticket's agent holds it"));
         let create = tool("create_ticket");
         assert_eq!(create["inputSchema"]["required"], json!(["title"]), "optional for a worker");
         let field = create["inputSchema"]["properties"]["workspace"]["description"].as_str();
@@ -3505,7 +3663,7 @@ mod tests {
                 "ask_agent",
                 vec![
                     "A turn ending after them wakes this session",
-                    "gets them as deliver says (asked says where they stand)",
+                    "gets them as deliver says",
                     "while its last ask is still outstanding",
                 ],
             ),
@@ -3692,6 +3850,7 @@ mod tests {
                 plan: false,
                 tier: None,
                 workspace: None,
+                expect_secs: None,
             },
             Command::AgentSleepTicket { key: "T-1".into(), seen: None },
             Command::AgentMergeTicket { key: "T-1".into(), seen: None },
@@ -3703,6 +3862,7 @@ mod tests {
                 seen: None,
                 plan: false,
                 deliver: Deliver::Idle,
+                expect_secs: None,
             },
             Command::AgentAnswerTicket {
                 key: "T-1".into(),
@@ -3720,6 +3880,7 @@ mod tests {
                 text: "x".into(),
             },
             Command::AgentAskBoard { board: "relay".into(), text: "x".into() },
+            Command::AgentSampleTicket { key: "T-1".into() },
         ];
         for c in &allowed {
             assert!(agent_allows(c), "{c:?} should be in the tier");
@@ -3853,6 +4014,7 @@ mod tests {
             Command::SetCrownWatches { on: true },
             Command::SetCrownContext { on: true },
             Command::SetCrownCost { on: true },
+            Command::SetCrownSamples { on: true },
             Command::SetTicketTier { id: t, tier: Some("claude".into()) },
             Command::SaveTier {
                 scope: crate::tier::TierScope::Machine,

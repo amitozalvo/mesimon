@@ -8,8 +8,8 @@
       │                      Watches tickets    ● on                                                             │
       │  Notifications       Reads context      ● on                                                             │
       │                      Reads cost         ○ off                                                            │
-      │  Behaviour           Reaches boards     none ›                                                           │
-      │                                                                                                          │
+      │  Behaviour           Samples agents     ● on                                                             │
+      │                      Reaches boards     none ›                                                           │
       │  Agents                                                                                                  │
       │                                                                                                          │
       │▎ Crown                                                                                                   │

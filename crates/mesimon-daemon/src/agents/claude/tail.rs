@@ -373,6 +373,78 @@ pub fn api_error(path: &Path) -> Option<ApiError> {
     None
 }
 
+/// What `sample_agent` reads off a transcript's tail (T-973), unbounded and
+/// unscrubbed: the caller bounds and scrubs. `current_tool` is the newest
+/// tool call with no result yet (its name, and when its record was written),
+/// none where the newest call came back or a turn's end or an abort is newer
+/// than it; `recent_tools` the names of the last five calls, newest first;
+/// `last_text` the last text the agent wrote (`adopt::assistant_text`). All
+/// inside the last 64 KiB, so a long tool result may leave fewer.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct TailSample {
+    pub current_tool: Option<(String, Option<u64>)>,
+    pub recent_tools: Vec<String>,
+    pub last_text: Option<String>,
+}
+
+/// How many tool names a sample carries (T-973).
+pub const SAMPLE_TOOLS: usize = 5;
+
+/// `TailSample` of the transcript at `path`; `None` where it cannot be read.
+pub fn sample(path: &Path) -> Option<TailSample> {
+    let mut out = TailSample::default();
+    let mut answered = std::collections::HashSet::new();
+    let mut current_settled = false;
+    for v in tail_records(path)? {
+        if matches!(classify_tail_record(&v), TailEvent::TurnComplete | TailEvent::Aborted) {
+            current_settled = true;
+        }
+        let blocks = v
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let field = |b: &serde_json::Value, k: &str| {
+            b.get(k).and_then(serde_json::Value::as_str).map(str::to_string)
+        };
+        match v.get("type").and_then(serde_json::Value::as_str) {
+            Some("user") => {
+                for b in
+                    blocks.iter().filter(|b| field(b, "type").as_deref() == Some("tool_result"))
+                {
+                    answered.extend(field(b, "tool_use_id"));
+                }
+            }
+            Some("assistant") => {
+                // A record's blocks run oldest first.
+                for b in
+                    blocks.iter().rev().filter(|b| field(b, "type").as_deref() == Some("tool_use"))
+                {
+                    let name = field(b, "name").unwrap_or_else(|| "tool".into());
+                    if !current_settled {
+                        current_settled = true;
+                        if !field(b, "id").is_some_and(|id| answered.contains(&id)) {
+                            out.current_tool = Some((name.clone(), record_ms(&v)));
+                        }
+                    }
+                    if out.recent_tools.len() < SAMPLE_TOOLS {
+                        out.recent_tools.push(name);
+                    }
+                }
+            }
+            _ => {}
+        }
+        if out.last_text.is_none() {
+            out.last_text = mesimon_core::adopt::assistant_text(&v).map(str::to_string);
+        }
+        if out.last_text.is_some() && out.recent_tools.len() == SAMPLE_TOOLS {
+            break;
+        }
+    }
+    Some(out)
+}
+
 /// The records of the last 64 KiB, NEWEST first, each parsed as it is
 /// asked for (T-688): every reader above walks back from the end and stops
 /// at the first record that decides, and this runs once a second per
@@ -525,6 +597,60 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d.join("t.jsonl")
+    }
+
+    /// T-973: the sample's facts off a transcript: the call with no result
+    /// is in flight, timed from its record; the last five names, newest
+    /// first, parallel calls included; the last text; and a call that came
+    /// back, or a turn that ended after it, is in flight no more.
+    #[test]
+    fn a_sample_reads_the_tool_in_flight_the_last_tools_and_the_last_text() {
+        let path = tmp("sample");
+        let call = |id: &str, name: &str, ts: &str| {
+            serde_json::json!({"uuid": format!("a-{id}"), "type": "assistant", "timestamp": ts,
+                "message": {"content": [{"type": "tool_use", "id": id, "name": name, "input": {}}]}})
+        };
+        let result = |id: &str| {
+            serde_json::json!({"uuid": format!("r-{id}"), "type": "user",
+                "message": {"content": [{"type": "tool_result", "tool_use_id": id, "content": "ok"}]}})
+        };
+        let text = serde_json::json!({"uuid": "t", "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "Running the suite again."}]}});
+        let parallel = serde_json::json!({"uuid": "p", "type": "assistant",
+            "message": {"content": [
+                {"type": "tool_use", "id": "g1", "name": "Grep", "input": {}},
+                {"type": "tool_use", "id": "g2", "name": "Glob", "input": {}}]}});
+        let lines = [
+            call("e1", "Edit", "2026-10-25T01:00:00Z"),
+            result("e1"),
+            parallel.clone(),
+            result("g1"),
+            result("g2"),
+            call("r1", "Read", "2026-10-25T01:00:01Z"),
+            result("r1"),
+            text,
+            call("b1", "Bash", "2026-10-25T01:00:02Z"),
+        ];
+        let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        std::fs::write(&path, &body).unwrap();
+        let s = sample(&path).unwrap();
+        let at = mesimon_core::adopt::iso_ms("2026-10-25T01:00:02Z");
+        assert_eq!(s.current_tool, Some(("Bash".to_string(), at)));
+        assert_eq!(s.recent_tools, ["Bash", "Read", "Glob", "Grep", "Edit"]);
+        assert_eq!(s.last_text.as_deref(), Some("Running the suite again."));
+        // Its result lands: nothing in flight, the names unchanged.
+        std::fs::write(&path, format!("{body}{}\n", result("b1"))).unwrap();
+        let s = sample(&path).unwrap();
+        assert_eq!(s.current_tool, None);
+        assert_eq!(s.recent_tools[0], "Bash");
+        // A turn's end after an unanswered call: not in flight either.
+        let done = serde_json::json!({"uuid": "d", "type": "system", "subtype": "turn_duration"});
+        std::fs::write(&path, format!("{body}{done}\n")).unwrap();
+        assert_eq!(sample(&path).unwrap().current_tool, None);
+        assert_eq!(sample(&path.with_file_name("absent.jsonl")), None);
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(sample(&path), Some(TailSample::default()));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]

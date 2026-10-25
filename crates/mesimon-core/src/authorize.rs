@@ -13,6 +13,15 @@ pub enum Action {
         own: ulid::Ulid,
         crown: bool,
     },
+    /// Read a bounded sample of one agent session (T-973): its turn's age,
+    /// the tool in flight, its last tools and text, its pane's last rows.
+    /// `crown` is the daemon's word that the asking agent wears the crown
+    /// AND started that session (`Board::is_crowned`, `started_by`), behind
+    /// the board's `crown_samples`. The one session read an agent is ever
+    /// granted; nothing is written to the session.
+    SampleAgent {
+        crown: bool,
+    },
     Mutate,
     /// Materialize external content as a fresh, inert local ticket. There is
     /// no wire command for this seam. Existing agents and daemon automation
@@ -106,6 +115,9 @@ impl Decision {
 ///   outcomes, never sessions" is already enforced here. Explicitly shared shell
 ///   output has its own `ReadShell` capability; it grants neither a Session read
 ///   nor terminal input. The daemon checks kind, ticket, sharing and crown scope.
+///   The crown's `SampleAgent` (T-973) is the one named exception: a bounded,
+///   read-only sample of an agent the crown itself started, behind a board
+///   switch a person turns off.
 /// * **No agent mutates the board as a whole.** It may move its own ticket
 ///   between columns and append a new ticket to a column (`create_ticket`,
 ///   a `Mutate` on `Resource::Column`); it may not create, delete or reorder
@@ -125,6 +137,12 @@ impl Decision {
 /// for everyone else they are `Mutate`. `Annotate` is its note edit, on a ticket (T-532).
 pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) -> Decision {
     let deny = |reason: &str| Decision::Deny { reason: reason.to_string() };
+    if let Action::SampleAgent { crown } = action {
+        return match (principal, resource) {
+            (Principal::Agent { .. }, Resource::Session { .. }) if *crown => Decision::Allow,
+            _ => deny("sampling a session is the crown's, for an agent it started"),
+        };
+    }
     if let Action::ReadShell { own, crown } | Action::RequestCloseShell { own, crown } = action {
         return match (principal, resource) {
             (Principal::Local, Resource::Shell { .. }) => Decision::Allow,
@@ -559,6 +577,24 @@ mod tests {
         let s = Resource::Session { id: uuid::Uuid::nil() };
         assert!(authorize(&agent(), &Action::Read, &s).denied());
         assert!(authorize(&agent(), &Action::Mutate, &s).denied());
+    }
+
+    /// T-973: the crown's sample is the one session read, and only on the
+    /// daemon's word that the crown started that agent.
+    #[test]
+    fn only_the_crown_samples_an_agent_it_started() {
+        let s = Resource::Session { id: uuid::Uuid::nil() };
+        let t = Resource::Ticket { id: ulid::Ulid::nil() };
+        let yes = Action::SampleAgent { crown: true };
+        let no = Action::SampleAgent { crown: false };
+        assert_eq!(authorize(&agent(), &yes, &s), Decision::Allow);
+        assert!(authorize(&agent(), &no, &s).denied());
+        assert!(authorize(&agent(), &yes, &t).denied(), "a session, nothing else");
+        for p in [Principal::Local, Principal::Automation { rule: "x".into() }] {
+            assert!(authorize(&p, &yes, &s).denied(), "{p:?}");
+        }
+        // The floor is unchanged for every other action.
+        assert!(authorize(&agent(), &Action::Read, &s).denied());
     }
 
     #[test]

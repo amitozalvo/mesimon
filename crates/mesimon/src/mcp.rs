@@ -193,13 +193,16 @@ fn tool_result(params: &Value, sock: &std::path::Path, session: uuid::Uuid) -> V
         ToolCall::ArchiveTicket { key, restore, seen } => {
             Command::AgentArchiveTicket { key, restore, seen: Some(seen) }
         }
-        ToolCall::StartAgent { key, seen, plan, tier, workspace } => Command::AgentStartTicket {
-            key,
-            seen: Some(seen),
-            plan,
-            tier,
-            workspace: Some(workspace),
-        },
+        ToolCall::StartAgent { key, seen, plan, tier, workspace, expect_secs } => {
+            Command::AgentStartTicket {
+                key,
+                seen: Some(seen),
+                plan,
+                tier,
+                workspace: Some(workspace),
+                expect_secs,
+            }
+        }
         ToolCall::SleepAgent { key, seen } => Command::AgentSleepTicket { key, seen: Some(seen) },
         ToolCall::MergeTicket { key, seen } => Command::AgentMergeTicket { key, seen: Some(seen) },
         ToolCall::WatchTicket { key, unwatch, seen } => {
@@ -208,9 +211,10 @@ fn tool_result(params: &Value, sock: &std::path::Path, session: uuid::Uuid) -> V
         ToolCall::HoldTicket { key, hold, seen } => {
             Command::AgentHoldTicket { key, hold, seen: Some(seen) }
         }
-        ToolCall::AskAgent { key, text, seen, plan, deliver } => {
-            Command::AgentAskTicket { key, text, seen: Some(seen), plan, deliver }
+        ToolCall::AskAgent { key, text, seen, plan, deliver, expect_secs } => {
+            Command::AgentAskTicket { key, text, seen: Some(seen), plan, deliver, expect_secs }
         }
+        ToolCall::SampleAgent { key } => Command::AgentSampleTicket { key },
         ToolCall::AskBoard { board, text } => Command::AgentAskBoard { board, text },
         ToolCall::AnswerAgent { key, seen, request, index, text, answers } => {
             Command::AgentAnswerTicket { key, seen: Some(seen), request, index, text, answers }
@@ -290,6 +294,7 @@ fn start_prompt_about(key: &str, prompt: StartPrompt, running: bool) -> String {
 fn render(resp: Response) -> Value {
     match resp {
         Response::ShellOutput { output } => text(&output),
+        Response::AgentSample { sample } => text(&sample),
         Response::AgentTicket { ticket } => text(&ticket),
         Response::AgentBoard { board } => text(&board),
         Response::AgentMoved { column, board_version, replayed, seen } => {

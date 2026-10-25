@@ -2416,6 +2416,14 @@ pub struct Board {
     /// only lose an opt-in.
     #[serde(default)]
     pub crown_cost: bool,
+    /// The crown samples an agent it started (T-973): `sample_agent`, a
+    /// bounded read of its turn, its transcript's tail and its pane's last
+    /// rows, refused while this is off. ON by default (the person, gap row
+    /// 55 on T-925): the agent is sent nothing. An absent key reads on, so a
+    /// person's off is saved at `COLUMNS_SCHEMA` 9 with `crown_context`'s,
+    /// which no released build carried.
+    #[serde(default = "yes")]
+    pub crown_samples: bool,
     /// Reviewed pull requests (T-859): a pull request someone else opened is
     /// a ticket's when its agent acted on it through the forge's CLI (a
     /// review, a comment, an approval, a checkout) or named it in a note's
@@ -2630,6 +2638,7 @@ impl Default for Board {
             crown_watches: true,
             crown_context: true,
             crown_cost: false,
+            crown_samples: true,
             reviewed_prs: true,
             next_key: 0,
             tags: Vec::new(),
@@ -3652,6 +3661,7 @@ impl Board {
             crown_watches: self.crown_watches,
             crown_context: self.crown_context,
             crown_cost: self.crown_cost,
+            crown_samples: self.crown_samples,
             reviewed_prs: self.reviewed_prs,
             next_key: self.next_key,
             tags: self.tags.clone(),
@@ -3889,6 +3899,20 @@ mod tests {
         wire["crown_cost"] = serde_json::json!(true);
         let turned: Board = serde_json::from_value(wire).unwrap();
         assert!(!turned.crown_context && turned.crown_cost);
+    }
+
+    /// T-973: the crown samples on every board that never said otherwise,
+    /// and an off survives.
+    #[test]
+    fn crown_samples_defaults_on_and_an_off_is_kept() {
+        assert!(Board::default().crown_samples);
+        let mut wire = serde_json::to_value(Board::default()).unwrap();
+        wire.as_object_mut().unwrap().remove("crown_samples");
+        let old: Board = serde_json::from_value(wire.clone()).unwrap();
+        assert!(old.crown_samples);
+        wire["crown_samples"] = serde_json::json!(false);
+        let turned: Board = serde_json::from_value(wire).unwrap();
+        assert!(!turned.crown_samples);
     }
 
     /// T-859: reviewed pull requests are a ticket's on every board that

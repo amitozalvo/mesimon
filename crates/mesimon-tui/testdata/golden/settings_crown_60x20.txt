@@ -7,8 +7,8 @@
   │  Watches tickets    ● on                             │
   │  Reads context      ● on                             │
   │  Reads cost         ○ off                            │
+  │  Samples agents     ● on                             │
   │  Reaches boards     none ›                           │
-  │                                                      │
   │                                                      │
   │                                                      │
   │                                                      │

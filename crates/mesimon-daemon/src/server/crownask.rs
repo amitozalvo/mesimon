@@ -402,6 +402,12 @@ impl Daemon {
     /// another of this ticket's asks still out (T-974): a steer went into
     /// the turn that ask rode, and that turn's end is the first's.
     fn mark_ask_turn(&mut self, target: ulid::Ulid, mark: TurnAsk) {
+        // The words' own receipt begins their expectation (T-973), whichever
+        // ask the running turn stays marked with: a steer's is timed from
+        // the moment it went in.
+        if let TurnAsk::Asked { ask, .. } = mark {
+            self.expect_began(target, Some(ask), None, now_ms());
+        }
         let list = self.crown_asks.get(&target).map(Vec::as_slice).unwrap_or_default();
         if !keeps_turn(self.turn_asks.get(&target), &mark, list) {
             self.mark_turn(target, mark);

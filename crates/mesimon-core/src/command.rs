@@ -707,6 +707,12 @@ pub enum Command {
     SetCrownCost {
         on: bool,
     },
+    /// Whether the crown may sample an agent it started with
+    /// `sample_agent` (`Board::crown_samples`, T-973). Local only, as every
+    /// crown switch.
+    SetCrownSamples {
+        on: bool,
+    },
     /// Whether a pull request someone else opened is a ticket's when its
     /// agent reviewed it or a note's `Summary` names it
     /// (`Board::reviewed_prs`, T-859). Local only: whose pull requests a
@@ -1159,6 +1165,11 @@ pub enum Command {
         /// a worktree or a parked agent (`crown::judge`).
         #[serde(default)]
         workspace: Option<String>,
+        /// How long the turn the start's words begin is expected to take,
+        /// in seconds (T-973): past it, with the agent still working, the
+        /// crown is woken once. Absent arms nothing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expect_secs: Option<u64>,
     },
     /// Park another ticket's agent, by key (T-539): what `x` on its card
     /// does — the conversation kept, the pane gone, a person's `c` wakes it.
@@ -1184,6 +1195,15 @@ pub enum Command {
         unwatch: bool,
         #[serde(default)]
         seen: Option<String>,
+    },
+    /// Sample another ticket's agent, by key (T-973): its turn's age, the
+    /// tool in flight, its last tools and text, its background tasks and
+    /// its pane's last rows, read off the writer thread. Crown only, behind
+    /// `Board::crown_samples`, and only an agent the crown started
+    /// (`Action::SampleAgent`); a person's agent and the crown's own are
+    /// refused. Read-only: the agent is sent nothing.
+    AgentSampleTicket {
+        key: String,
     },
     /// Hold another ticket out of the merge train, or return it, by key
     /// (T-919): the `t` key's `Ticket::manual_merge`, with the state asked
@@ -1247,6 +1267,10 @@ pub enum Command {
         /// older shim = the queue.
         #[serde(default)]
         deliver: Deliver,
+        /// How long the turn these words begin is expected to take, in
+        /// seconds (T-973), as `AgentStartTicket`'s.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expect_secs: Option<u64>,
     },
     /// Words for the crown of another board this board reaches (T-733):
     /// `ask_board`. Crown only. `board` names a linked board by its name
@@ -1582,6 +1606,8 @@ impl Command {
             // The bridge's poll: a delivery ledger, never board state.
             | ModNext { .. } => m(Read, false, None),
             AgentReadShell { .. } => m(Read, true, None),
+            // Logged by its landing (`Daemon::sample_landed`), with the outcome.
+            AgentSampleTicket { .. } => m(Read, false, None),
             // A queued frame and a parked reply; nothing the board keeps.
             ModPing { .. } => m(Mutate, false, None),
             // The crown (T-411): a person's gesture the feed answers "who
@@ -1678,6 +1704,7 @@ impl Command {
             | SetCrownWatches { .. }
             | SetCrownContext { .. }
             | SetCrownCost { .. }
+            | SetCrownSamples { .. }
             | SetReviewedPrs { .. }
             | SetSystemPrompt { .. }
             | SetFollowUpMode { .. }
@@ -1889,6 +1916,10 @@ mod meta_tests {
 pub enum Response {
     ShellOutput {
         output: ShellOutput,
+    },
+    /// `sample_agent`'s reading (T-973).
+    AgentSample {
+        sample: AgentSampleView,
     },
     TerminalOutput {
         pane_key: String,
@@ -2668,6 +2699,11 @@ pub struct AgentTicketView {
     /// `get_ticket` with `key` only; its next ask to the ticket replaces it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asked: Option<AgentAskedView>,
+    /// The turn the crown's `expect_secs` was armed on (T-973) has run past
+    /// it and has not ended: what was expected and how long it has run.
+    /// The crown's `get_ticket` with `key` only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overrun: Option<AgentOverrunView>,
     /// The hand this ticket's agent raised that the board told the crown of
     /// and so lowered (T-861), kept for its reason (T-922): the wake names
     /// the hand and never its words, and `state.raised` is gone by the time
@@ -2754,6 +2790,52 @@ pub struct AgentCostView {
 
 fn is_no_tokens(n: &u64) -> bool {
     *n == 0
+}
+
+/// A turn past its expected duration (T-973): `expected_secs` as the crown
+/// armed it, `running_secs` since the turn its words began.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentOverrunView {
+    pub expected_secs: u64,
+    pub running_secs: u64,
+}
+
+/// What `sample_agent` read of an agent the crown started (T-973), facts
+/// first, then text, each bounded. A field the board could not read is
+/// absent: `turn_secs` before the daemon saw the turn begin (a restart), the
+/// transcript's fields with no transcript or on a Codex seat, `pane_tail`
+/// with no pane.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSampleView {
+    pub key: String,
+    /// `get_ticket`'s state word for the agent.
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_secs: Option<u64>,
+    /// The newest tool call the transcript shows with no result yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_tool: Option<AgentToolView>,
+    /// The last tool calls' names, newest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_tools: Vec<String>,
+    /// The last text the agent wrote, its end kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<AgentBackgroundView>,
+    /// The pane's last rows, its end kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_tail: Option<String>,
+    pub captured_at_ms: u64,
+}
+
+/// A tool in flight (T-973): its name, and how long since the transcript
+/// recorded the call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentToolView {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secs: Option<u64>,
 }
 
 /// An agent idle with background tasks still running (T-599): `tasks` the
@@ -4305,6 +4387,7 @@ mod tests {
             needs_you: None,
             asked: None,
             told_hand: None,
+            overrun: None,
             seen: None,
         };
         let json = serde_json::to_value(&t).unwrap();
