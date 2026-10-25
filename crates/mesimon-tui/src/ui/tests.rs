@@ -11870,6 +11870,23 @@ fn tier_app() -> App {
     app
 }
 
+/// T-1011: an archive just made does not put `u undo archive` on a tier page:
+/// the Model row's frame is the one with no archive to undo, `i type a name`
+/// in the dialog's edge at 120x30.
+#[test]
+fn tier_model_row_keeps_its_i_hint_with_an_archive_to_undo() {
+    use mesimon_core::board::AgentProvider::ClaudeCode;
+    use mesimon_core::tier::Effort;
+    let mut app = tier_app();
+    app.machine_tiers.tiers.push(tier("01BARE", "bare", ClaudeCode, "", Effort::High));
+    app.seed_archive_undo(ulid::Ulid(9999));
+    app.mode = Mode::TierEdit { id: "01BARE".into(), idx: 2, field: None, armed: false };
+    assert!(app.ctx().tier_on_model && !app.ctx().can_undo);
+    let rows = render(&mut app, 120, 30);
+    assert!(rows.iter().any(|r| r.contains("enter next ∙ i type a name ∙ esc back")), "{rows:?}");
+    assert!(!rows.iter().any(|r| r.contains("undo")), "{rows:?}");
+}
+
 /// T-951: a tier page's Model row steps over its provider's list, `default`
 /// first; a name the list lacks (typed with `i`) is its own `(saved)` stop;
 /// a provider that left no list offers `default` alone.

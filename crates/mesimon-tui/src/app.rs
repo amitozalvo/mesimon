@@ -10039,6 +10039,12 @@ impl App {
     /// What `u` would undo, or `None`. Re-derived from the board rather than
     /// trusted: a grace band expires on its own, and the ticket we remember
     /// archiving may have been restored from another client.
+    /// A test's archive to undo, without a daemon behind it.
+    #[cfg(test)]
+    pub(crate) fn seed_archive_undo(&mut self, id: ulid::Ulid) {
+        self.last_undo = Some(LastUndo::Archive(id));
+    }
+
     fn undo_target(&self) -> Option<LastUndo> {
         match self.last_undo {
             // Archived, it is off the snapshot (T-842) unless something shows
