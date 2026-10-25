@@ -285,17 +285,29 @@ def road_pass(command, jobs):
     The e2e suite again with every Claude launch on the mod road: the stub
     wrapped so the stand-in engine and the real `mesimon mod-bridge` run
     beside it, and every hook frame sent with its mod twin first, so the
-    shadow pairs the whole suite's frames."""
+    shadow pairs the whole suite's frames. A suite asked to run past its
+    first red (--no-fail-fast, as CI asks) asks the same of this pass, so
+    one run reports every red on both roads (T-1023)."""
     if command[:1] != ["cargo"] or "--workspace" not in command:
         return None
     if command[1:3] == ["nextest", "run"]:
         mod = ["cargo", "nextest", "run", "-p", "mesimon", "-E", "kind(test)"]
         if jobs:
             mod += ["--test-threads", str(jobs)]
-        return mod
-    if command[1:2] == ["test"]:
-        return ["cargo", "test", "-p", "mesimon", "--tests"]
-    return None
+    elif command[1:2] == ["test"]:
+        mod = ["cargo", "test", "-p", "mesimon", "--tests"]
+    else:
+        return None
+    if keeps_going(command):
+        mod.append("--no-fail-fast")
+    return mod
+
+
+def keeps_going(command):
+    """Whether the suite was asked to run past its first red: its own
+    flag, before any `--` that hands the rest to the test binaries."""
+    words = command[:command.index("--")] if "--" in command else command
+    return "--no-fail-fast" in words
 
 
 def stamp_pass(command, env, roads, target=None):
@@ -433,7 +445,9 @@ def run_claimed(args, command, passes, build_dirs, watched_paths, claims):
             print(f"Build output held by this run: {', '.join(map(str, build_dirs))}", flush=True)
         last_disk_check = time.monotonic()
         # One supervisor and one deadline for every pass; a failing pass ends
-        # the run.
+        # the run, unless the suite was asked to run past its first red: then
+        # the mod road's pass runs too, and the run fails if either did.
+        result = 0
         for index, (argv, extra) in enumerate(passes):
             if index:
                 claims.phase("mod road")
@@ -452,14 +466,15 @@ def run_claimed(args, command, passes, build_dirs, watched_paths, claims):
                     print(output, end="", flush=True)
                 code = request(dict(op="poll", pid=pid))
                 if code is not None:
-                    result = 0 if code == 0 else 1
+                    if code != 0:
+                        result = 1
                     check_disk_space(watched_paths, args.min_free_gib)
                     break
                 if time.monotonic() - last_disk_check >= 1:
                     check_disk_space(watched_paths, args.min_free_gib)
                     last_disk_check = time.monotonic()
                 time.sleep(0.2)
-            if interrupted or result:
+            if interrupted or (result and not keeps_going(command)):
                 break
             output = log.read()
             if output:

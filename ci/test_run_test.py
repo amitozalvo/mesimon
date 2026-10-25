@@ -34,6 +34,15 @@ class RoadPassTests(unittest.TestCase):
         self.assertEqual(runner.road_pass(["cargo", "test", "--workspace"], None),
                          ["cargo", "test", "-p", "mesimon", "--tests"])
 
+    def test_no_fail_fast_reaches_the_mod_road(self):
+        self.assertEqual(runner.road_pass(["cargo", "nextest", "run", "--workspace", "--no-fail-fast"], None),
+                         ["cargo", "nextest", "run", "-p", "mesimon", "-E", "kind(test)", "--no-fail-fast"])
+        self.assertEqual(runner.road_pass(["cargo", "test", "--workspace", "--no-fail-fast"], None),
+                         ["cargo", "test", "-p", "mesimon", "--tests", "--no-fail-fast"])
+        # Past `--` it is the test binary's word, not the suite's.
+        self.assertEqual(runner.road_pass(["cargo", "test", "--workspace", "--", "--no-fail-fast"], None),
+                         ["cargo", "test", "-p", "mesimon", "--tests"])
+
     def test_anything_narrower_runs_once(self):
         for command in (["cargo", "test", "-p", "mesimon", "--test", "hook_e2e"],
                         ["cargo", "clippy", "--workspace"], ["echo", "hello"]):
@@ -117,6 +126,57 @@ class DiskBudgetTests(unittest.TestCase):
             self.assertIn('"op":"finish"', control.getvalue())
             self.assertIn("Low disk space", errors.getvalue())
             stamp.assert_not_called()
+
+class PassTests(unittest.TestCase):
+    def passes_run(self, command, codes):
+        """The argv of every pass a fake supervisor was asked to spawn, and
+        the run's result, when each pass exits with its code in turn."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index in range(len(codes)):
+                (root / f"child-{index}.log").touch()
+            values = [str(root)]
+            for index, code in enumerate(codes):
+                values += [100 + index, code]
+            replies = "\n".join(json.dumps({"ok": value}) for value in values) + "\n"
+            guard = SimpleNamespace(stdin=io.StringIO(), stdout=io.StringIO(replies), wait=lambda timeout: 0)
+            spawned = []
+            real_write = guard.stdin.write
+            def write(text):
+                for line in text.splitlines():
+                    request = json.loads(line)
+                    if request.get("op") == "spawn":
+                        spawned.append(request["argv"])
+                return real_write(text)
+            guard.stdin.write = write
+            real_mkdtemp = tempfile.mkdtemp
+            with patch.object(runner.sys, "argv", ["test-run.py", "--min-free-gib", "0", "--", *command]), \
+                 patch.object(runner, "build_output", return_value=[]), \
+                 patch.object(runner, "lock_dir", return_value=root), \
+                 patch.object(runner.Claims, "take"), \
+                 patch.object(runner.tempfile, "mkdtemp", side_effect=lambda **kw: real_mkdtemp(dir=root, prefix=kw["prefix"])), \
+                 patch.object(runner.subprocess, "Popen", return_value=guard), \
+                 patch.object(runner.subprocess, "run"), \
+                 patch.object(runner, "stamp_pass"), \
+                 contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                return runner.main(), spawned
+
+    def test_a_red_suite_asked_past_its_first_red_still_runs_the_mod_road(self):
+        result, spawned = self.passes_run(["cargo", "test", "--workspace", "--no-fail-fast"], [1, 0])
+        self.assertEqual(result, 1)
+        self.assertEqual(spawned, [["cargo", "test", "--workspace", "--no-fail-fast"],
+                                   ["cargo", "test", "-p", "mesimon", "--tests", "--no-fail-fast"]])
+
+    def test_a_red_suite_otherwise_ends_the_run(self):
+        result, spawned = self.passes_run(["cargo", "test", "--workspace"], [1])
+        self.assertEqual(result, 1)
+        self.assertEqual(spawned, [["cargo", "test", "--workspace"]])
+
+    def test_a_red_mod_road_fails_the_run(self):
+        result, spawned = self.passes_run(["cargo", "test", "--workspace", "--no-fail-fast"], [0, 1])
+        self.assertEqual(result, 1)
+        self.assertEqual(len(spawned), 2)
 
 
 HERE = Path(__file__).resolve().parent

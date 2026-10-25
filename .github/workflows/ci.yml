@@ -17,13 +17,21 @@ on:
   workflow_dispatch:
     inputs:
       tests:
-        # Arguments for `cargo test` in place of the whole suite, e.g.
-        # `-p mesimon --test hook_e2e -- m2_attention`: a fix round's run
-        # answers in the build time plus its tests, and skips the other
-        # gates. Empty runs everything (T-1019).
-        description: "cargo test arguments to run in place of the whole suite"
+        # Arguments for `cargo nextest run` in place of the whole suite, e.g.
+        # `-p mesimon --test hook_e2e m2_attention` or
+        # `-E 'binary(crown_e2e) & test(/wake/)'`: a fix round's run answers
+        # in the build time plus its tests, and skips the other gates. Empty
+        # runs everything (T-1019; nextest since T-1023).
+        description: "cargo nextest run arguments to run in place of the whole suite"
         required: false
         default: ""
+      road:
+        # Which road a named run's Claude launches take: the mod road's reds
+        # are chased with `mod`. The whole suite always runs both.
+        description: "road for the named tests"
+        type: choice
+        options: [hooks, mod]
+        default: hooks
 
 permissions:
   contents: read
@@ -63,12 +71,23 @@ jobs:
         with:
           components: clippy
 
+      # Saved after a red run too: a red run is the one a fix round follows,
+      # and without this every such round built from nothing (T-1023).
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      # The suite runs every test in its own process, all binaries at once:
+      # `cargo test` ran the e2e binaries one after another (T-1023).
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9.143
 
       - name: Versions
         run: |
           rustc --version
           cargo --version
+          cargo nextest --version
           tmux -V
           git --version
 
@@ -91,20 +110,25 @@ jobs:
         if: inputs.tests == ''
         run: python3 -B ci/test_installer.py
 
-      # Both roads' passes, measured on 2026-10-25 (T-1019): 24 + 23 min on
-      # ubuntu-24.04, 34 + 33 min on macos-14. test-run.py's own 1200 s
-      # default is the local release gate's and stays.
+      # Both roads' passes, measured on 2026-10-25 under `cargo test` (T-1019):
+      # 24 + 23 min on ubuntu-24.04, 34 + 33 min on macos-14. --no-fail-fast
+      # carries to the mod road's pass, which runs after a red first pass
+      # too, so one run reports every red. test-run.py's own 1200 s default
+      # is the local release gate's and stays.
       - name: Test
         if: inputs.tests == ''
-        run: python3 -B ci/test-run.py --timeout 5400 -- cargo test --workspace --no-fail-fast
+        run: python3 -B ci/test-run.py --timeout 5400 -- cargo nextest run --workspace --no-fail-fast
 
       # The input rides an environment variable, never the script's text, and
-      # is split into words on purpose.
+      # is split into words as a shell would quote them (shlex), so a filter
+      # expression with spaces stays one word; nothing is evaluated.
       - name: Test (only what the dispatch names)
         if: inputs.tests != ''
         env:
           TESTS: ${{ inputs.tests }}
-        run: python3 -B ci/test-run.py --one-road -- cargo test $TESTS
+          MESIMON_TEST_ROAD: ${{ inputs.road }}
+        run: |
+          python3 -B -c 'import os, shlex, sys; os.execvp(sys.executable, [sys.executable, "-B", "ci/test-run.py", "--one-road", "--", "cargo", "nextest", "run", "--no-fail-fast", *shlex.split(os.environ["TESTS"])])'
 
       - name: Test cleanup failure paths and runner concurrency
         if: inputs.tests == ''
