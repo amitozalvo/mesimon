@@ -157,12 +157,13 @@ impl Tier {
 
     /// `Claude Code ∙ opus ∙ high` — the words a row or a status line
     /// spells a tier's launch in. Defaults are said as such, so a built-in
-    /// reads `Claude Code ∙ its own model`.
+    /// reads `Claude Code ∙ default`, the Model row's word for no model
+    /// (T-951).
     pub fn summary(&self) -> String {
         let mut parts = vec![self.provider.label().to_string()];
         match self.model_arg() {
             Some(m) => parts.push(m.to_string()),
-            None if self.effort_arg().is_none() => parts.push("its own model".into()),
+            None if self.effort_arg().is_none() => parts.push("default".into()),
             None => {}
         }
         if let Some(e) = self.effort_arg() {
@@ -545,6 +546,184 @@ pub fn check_model(model: &str) -> Result<(), String> {
     Ok(())
 }
 
+// ------------------------------------------------------------ the model ring
+
+/// One model a provider lists for this machine's account (T-951): the word a
+/// tier saves (`opus`, `gpt-6-astra`), the provider's name for it, and its
+/// one-line description, empty where the list gives none. Both words are
+/// scrubbed at the parse, since they come from another program's file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelChoice {
+    pub model: String,
+    pub name: String,
+    pub about: String,
+}
+
+/// The two providers' lists as the tier page read them when it opened;
+/// `None` where the provider left none to read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModelLists {
+    pub claude: Option<Vec<ModelChoice>>,
+    pub codex: Option<Vec<ModelChoice>>,
+}
+
+impl ModelLists {
+    pub fn of(&self, provider: AgentProvider) -> Option<&[ModelChoice]> {
+        match provider {
+            AgentProvider::ClaudeCode => self.claude.as_deref(),
+            AgentProvider::Codex => self.codex.as_deref(),
+        }
+    }
+}
+
+/// A list's words are drawn on the tier page: one line, bounded.
+const MODEL_WORDS_MAX: usize = 120;
+
+fn model_words(raw: &str) -> String {
+    use crate::text::{cap_bytes, scrub_cells};
+    let line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    cap_bytes(&scrub_cells(&line, false), MODEL_WORDS_MAX).to_string()
+}
+
+/// Claude Code's own picker catalog, `<claude home>/cache/model-catalog/
+/// <org>-<scope>-cc.json` (2.1.310): one file per account it signed in as,
+/// so of several the newest `fetchedAt` is the one it is polling. Its
+/// `main` section in the picker's order, each model saved by the alias whose
+/// default it is (`opus`), else by its id; the `overflow` (older models) is
+/// left to a typed name (person: "don't suggest older model"). `None` when
+/// no text parses or the section is empty.
+pub fn claude_models(catalogs: &[&str]) -> Option<Vec<ModelChoice>> {
+    #[derive(Deserialize, Default)]
+    #[serde(default, rename_all = "camelCase")]
+    struct File {
+        fetched_at: u64,
+        catalog: Catalog,
+    }
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct Catalog {
+        config: Config,
+    }
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct Config {
+        models: Vec<Model>,
+        provider_alias_targets: std::collections::BTreeMap<String, Alias>,
+    }
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct Alias {
+        default: String,
+    }
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct Model {
+        id: String,
+        name: String,
+        description: String,
+        section: String,
+    }
+    let file = catalogs
+        .iter()
+        .filter_map(|t| serde_json::from_str::<File>(t).ok())
+        .max_by_key(|f| f.fetched_at)?;
+    let config = file.catalog.config;
+    let alias = |id: &str| {
+        config.provider_alias_targets.iter().find(|(_, a)| a.default == id).map(|(k, _)| k.clone())
+    };
+    let list: Vec<ModelChoice> = config
+        .models
+        .iter()
+        .filter(|m| m.section == "main")
+        .filter_map(|m| {
+            let model = alias(&m.id).unwrap_or_else(|| m.id.clone());
+            (!model.is_empty() && check_model(&model).is_ok()).then(|| ModelChoice {
+                model,
+                name: model_words(&m.name),
+                about: model_words(&m.description),
+            })
+        })
+        .collect();
+    (!list.is_empty()).then_some(list)
+}
+
+/// Codex's `models_cache.json` (codex-cli 0.164): the account's models as
+/// its server sent them, in its order; the picker shows those whose
+/// `visibility` is `list`, and so does the ring. `None` when the text does
+/// not parse or lists nothing.
+pub fn codex_models(cache: &str) -> Option<Vec<ModelChoice>> {
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct File {
+        models: Vec<Model>,
+    }
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct Model {
+        slug: String,
+        display_name: String,
+        description: String,
+        visibility: String,
+    }
+    let file = serde_json::from_str::<File>(cache).ok()?;
+    let list: Vec<ModelChoice> = file
+        .models
+        .into_iter()
+        .filter(|m| m.visibility == "list" && !m.slug.is_empty() && check_model(&m.slug).is_ok())
+        .map(|m| ModelChoice {
+            name: model_words(&m.display_name),
+            about: model_words(&m.description),
+            model: m.slug,
+        })
+        .collect();
+    (!list.is_empty()).then_some(list)
+}
+
+/// What one stop of a tier's model ring is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelStopKind {
+    /// No model set, so no `--model`: the CLI picks its own. The page
+    /// calls it `default`, as it calls the effort's.
+    Default,
+    Listed(ModelChoice),
+    /// The tier's saved word, on no list the provider gave: kept, never
+    /// replaced behind the person's back.
+    Saved,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelStop {
+    pub model: String,
+    pub kind: ModelStopKind,
+}
+
+/// The tier page's model ring: `default` first, the tier's saved word
+/// next where no listed model is exactly it, then the list. An alias and
+/// the id it names today are different words — the alias follows the
+/// latest — so only an exact match is the listed stop.
+pub fn model_ring(list: Option<&[ModelChoice]>, saved: &str) -> Vec<ModelStop> {
+    let list = list.unwrap_or_default();
+    let mut ring = vec![ModelStop { model: String::new(), kind: ModelStopKind::Default }];
+    if !saved.is_empty() && !list.iter().any(|m| m.model == saved) {
+        ring.push(ModelStop { model: saved.to_string(), kind: ModelStopKind::Saved });
+    }
+    ring.extend(
+        list.iter()
+            .map(|m| ModelStop { model: m.model.clone(), kind: ModelStopKind::Listed(m.clone()) }),
+    );
+    ring
+}
+
+/// The word after (or before) `current` on its ring, wrapping, as
+/// [`Effort::step`] steps a level.
+pub fn step_model(ring: &[ModelStop], current: &str, forward: bool) -> String {
+    let n = ring.len();
+    match ring.iter().position(|s| s.model == current) {
+        Some(i) => ring[if forward { (i + 1) % n } else { (i + n - 1) % n }].model.clone(),
+        None => ring.first().map(|s| s.model.clone()).unwrap_or_default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -863,7 +1042,7 @@ mod tests {
         assert_eq!(codex.effort_arg(), Some("ultra"));
         let bad = tier("A", "x", claude_code(), "--dangerously-skip-permissions", Effort::Default);
         assert_eq!(bad.model_arg(), None, "a hand-edited flag never reaches argv");
-        assert_eq!(Tier::builtin(claude_code()).summary(), "Claude Code ∙ its own model");
+        assert_eq!(Tier::builtin(claude_code()).summary(), "Claude Code ∙ default");
         assert_eq!(t.summary(), "Claude Code ∙ sonnet ∙ high");
     }
 
@@ -901,5 +1080,83 @@ mod tests {
         assert!(check_model("-x").is_err());
         assert!(check_model("a\"b").is_err());
         assert!(check_model("a b").is_err());
+    }
+
+    /// T-951: Claude Code's picker catalog, in the shape 2.1.310 keeps it.
+    const CLAUDE_CATALOG: &str = r#"{"version":2,"fetchedAt":200,"staleAt":300,"catalog":{
+        "surface":"cc","config":{"id":"cc","models":[
+          {"id":"claude-opus-5-5","name":"Opus 5.5","short_name":"Opus","description":"For complex work","section":"main","runtime":{"effort_levels":["low"]}},
+          {"id":"claude-opus-4-8","name":"Opus 4.8","section":"overflow"},
+          {"id":"claude-fable-5-1","name":"Fable 5.1","description":"For your toughest\nchallenges","section":"main"},
+          {"id":"bad model","name":"Bad","section":"main"}],
+        "provider_alias_targets":{"opus":{"default":"claude-opus-5-5","per_provider":{"vertex":"x"}},
+          "fable":{"default":"claude-fable-5-1"}},
+        "settings_vocabulary":{}},"state":{"model":"claude-fable-5-1"}}}"#;
+
+    const CODEX_CACHE: &str = r#"{"fetched_at":"2026-10-25T11:00:11Z","etag":"W/x","client_version":"0.164.0",
+        "identity":"3e12","models":[
+          {"slug":"gpt-6.1-sol","display_name":"GPT-6.1-Sol","description":"Latest workhorse.","visibility":"list","priority":1},
+          {"slug":"gpt-reserve","display_name":"GPT-Reserve","visibility":"hide"},
+          {"slug":"gpt-6-astra","display_name":"GPT-6-Astra","description":"Frontier.","visibility":"list","supported_reasoning_levels":[{"effort":"low"}]}]}"#;
+
+    fn words(list: &[ModelChoice]) -> Vec<&str> {
+        list.iter().map(|m| m.model.as_str()).collect()
+    }
+
+    #[test]
+    fn claudes_list_is_its_pickers_main_section_by_alias() {
+        let list = claude_models(&[CLAUDE_CATALOG]).unwrap();
+        // The overflow's older model is not offered; a refused word is dropped.
+        assert_eq!(words(&list), ["opus", "fable"]);
+        assert_eq!(list[0].name, "Opus 5.5");
+        assert_eq!(list[1].about, "For your toughest challenges", "one line");
+        let unaliased =
+            r#"{"catalog":{"config":{"models":[{"id":"claude-new-6","section":"main"}]}}}"#;
+        let list = claude_models(&[unaliased]).unwrap();
+        assert_eq!((list[0].model.as_str(), list[0].about.as_str()), ("claude-new-6", ""));
+        // Of two accounts' catalogs, the newest fetched is the one in use.
+        let older = r#"{"fetchedAt":100,"catalog":{"config":{"models":[
+            {"id":"claude-old","section":"main"}]}}}"#;
+        let list = claude_models(&[older, CLAUDE_CATALOG]).unwrap();
+        assert_eq!(list[0].model, "opus");
+        assert_eq!(claude_models(&[]), None);
+        assert_eq!(claude_models(&["not json"]), None);
+        assert_eq!(claude_models(&[r#"{"catalog":{"config":{"models":[]}}}"#]), None);
+    }
+
+    #[test]
+    fn codexs_list_is_its_listed_slugs_in_order() {
+        let list = codex_models(CODEX_CACHE).unwrap();
+        assert_eq!(words(&list), ["gpt-6.1-sol", "gpt-6-astra"], "a hidden slug is not offered");
+        assert_eq!(list[1].name, "GPT-6-Astra");
+        assert_eq!(list[1].about, "Frontier.");
+        assert_eq!(codex_models(""), None);
+        assert_eq!(codex_models(r#"{"models":[]}"#), None);
+    }
+
+    #[test]
+    fn the_model_ring_keeps_a_saved_word_off_the_list() {
+        let list = codex_models(CODEX_CACHE).unwrap();
+        let ring = |saved: &str| model_ring(Some(&list), saved);
+        let stops = |r: &[ModelStop]| r.iter().map(|s| s.model.clone()).collect::<Vec<_>>();
+        assert_eq!(stops(&ring("")), ["", "gpt-6.1-sol", "gpt-6-astra"]);
+        assert_eq!(stops(&ring("gpt-6-astra")), ["", "gpt-6.1-sol", "gpt-6-astra"]);
+        // A hidden slug, or a typed name: its own stop after `default`,
+        // kept until another is picked.
+        let r = ring("gpt-reserve");
+        assert_eq!(stops(&r), ["", "gpt-reserve", "gpt-6.1-sol", "gpt-6-astra"]);
+        assert_eq!(r[1].kind, ModelStopKind::Saved);
+        assert_eq!(step_model(&r, "", true), "gpt-reserve");
+        assert_eq!(step_model(&r, "gpt-reserve", true), "gpt-6.1-sol");
+        assert_eq!(step_model(&r, "gpt-6-astra", true), "", "wraps");
+        assert_eq!(step_model(&r, "", false), "gpt-6-astra", "back wraps too");
+        // An alias and the id it names today are different words.
+        let claude = claude_models(&[CLAUDE_CATALOG]).unwrap();
+        let r = model_ring(Some(&claude), "claude-opus-5-5");
+        assert_eq!(r[1], ModelStop { model: "claude-opus-5-5".into(), kind: ModelStopKind::Saved });
+        // No list: `default`, and the saved word.
+        assert_eq!(stops(&model_ring(None, "")), [""]);
+        assert_eq!(stops(&model_ring(None, "opus")), ["", "opus"]);
+        assert_eq!(step_model(&model_ring(None, ""), "", true), "");
     }
 }

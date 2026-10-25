@@ -15,6 +15,6 @@
   │                                                      │
   │                                                      │
   │                                                      │
-  │ set on this board ∙ machine: claude ∙ Codex ∙ its o~ │
+  │ set on this board ∙ machine: claude ∙ Codex ∙ defau~ │
   ╰──────────── jk select ∙ enter change ∙ b this board ─╯
  SETTINGS                                            ? keys

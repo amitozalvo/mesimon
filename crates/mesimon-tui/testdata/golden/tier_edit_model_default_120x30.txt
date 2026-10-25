@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui   7 tickets
+
+   TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
+
+   Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y    z Painted accent bar  >1y
+
+   Keymap validator       >1y    ⠋ Adopt drawer import  >1y    x Flaky e2e on runner  >1y
+
+
+
+                           ╭─ TIER ∙ BARE ──────────────────────────────────────────────────╮
+                           │   Name: bare                                                   │
+                           │   Provider: Claude Code                                        │
+                           │   Model: default                                               │
+                           │   Effort: high                                                 │
+                           │   Description: none                                            │
+                           │   Delete tier                                                  │
+                           │                                                                │
+                           │     Claude Code picks its own ∙ 4 models on its list           │
+                           ╰─ jk select ∙ h l step ∙ enter next ∙ i type a name ∙ esc back ─╯
+
+
+
+
+
+
+
+
+
+ TIER  jk select ∙ h l step ∙ enter next ∙ i type a name ∙ esc back                                              ? keys

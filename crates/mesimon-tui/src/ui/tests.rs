@@ -11840,13 +11840,86 @@ fn tier_app() -> App {
             ),
         ],
     };
+    // The two lists as this machine's CLIs keep them (T-951, measured
+    // 2026-10-25): Claude Code's picker's main section, Codex's listed slugs.
+    let choice = |model: &str, name: &str, about: &str| mesimon_core::tier::ModelChoice {
+        model: model.into(),
+        name: name.into(),
+        about: about.into(),
+    };
+    app.tier_models = mesimon_core::tier::ModelLists {
+        claude: Some(vec![
+            choice("opus", "Opus 5.5", "For complex work and everyday tasks"),
+            choice("fable", "Fable 5.1", "For your toughest challenges"),
+            choice("sonnet", "Sonnet 5.5", "Most efficient for simpler tasks"),
+            choice("haiku", "Haiku 5.5", "Fastest for quick answers"),
+        ]),
+        codex: Some(vec![
+            choice(
+                "gpt-6.1-sol",
+                "GPT-6.1-Sol",
+                "Latest workhorse model for coding and everyday work.",
+            ),
+            choice(
+                "gpt-6-astra",
+                "GPT-6-Astra",
+                "Frontier intelligence for the most demanding work.",
+            ),
+        ]),
+    };
     app
+}
+
+/// T-951: a tier page's Model row steps over its provider's list, `default`
+/// first; a name the list lacks (typed with `i`) is its own `(saved)` stop;
+/// a provider that left no list offers `default` alone.
+#[test]
+fn golden_tier_model_ring() {
+    use mesimon_core::board::AgentProvider::{ClaudeCode, Codex};
+    use mesimon_core::tier::Effort;
+    let mut app = tier_app();
+    app.machine_tiers.tiers.push(tier("01OLD", "old", ClaudeCode, "claude-opus-4-8", Effort::High));
+    app.machine_tiers.tiers.push(tier("01BARE", "bare", ClaudeCode, "", Effort::High));
+    app.machine_tiers.tiers.push(tier("01CDX", "cdx", Codex, "gpt-6-astra", Effort::High));
+    let page = |app: &mut App, id: &str| {
+        app.mode = Mode::TierEdit { id: id.into(), idx: 2, field: None, armed: false };
+        render(app, 120, 30)
+    };
+    let has = |rows: &[String], words: &str| {
+        assert!(rows.iter().any(|r| r.contains(words)), "{words:?}: {rows:?}");
+    };
+    let rows = page(&mut app, "01BARE");
+    has(&rows, "Model: default");
+    has(&rows, "Claude Code picks its own ∙ 4 models on its list");
+    has(&rows, "h l step ∙ enter next ∙ i type a name");
+    golden("tier_edit_model_default_120x30", &rows);
+    let rows = page(&mut app, "01CODER");
+    has(&rows, "Model: opus ");
+    has(&rows, "Opus 5.5 ∙ For complex work and everyday tasks");
+    golden("tier_edit_model_ring_120x30", &rows);
+    let rows = page(&mut app, "01OLD");
+    has(&rows, "Model: claude-opus-4-8 (saved)");
+    has(&rows, "not on Claude Code's list ∙ kept until another is picked");
+    golden("tier_edit_model_saved_120x30", &rows);
+    let rows = page(&mut app, "01CDX");
+    has(&rows, "Model: gpt-6-astra");
+    has(&rows, "GPT-6-Astra ∙ Frontier intelligence");
+    golden("tier_edit_model_codex_120x30", &rows);
+    app.tier_models.codex = None;
+    let rows = page(&mut app, "01CDX");
+    has(&rows, "Model: gpt-6-astra (saved)");
+    app.machine_tiers.tiers.last_mut().unwrap().model.clear();
+    let rows = page(&mut app, "01CDX");
+    has(&rows, "no model list from codex ∙ default");
+    assert!(!rows.iter().any(|r| r.contains("enter next")), "a ring of one: {rows:?}");
+    has(&rows, "i type a name");
+    golden("tier_edit_model_codex_none_120x30", &rows);
 }
 
 /// The tiers list in both scopes — the machine's own, then this board's
 /// view with where each comes from — and a tier's page: the board's version
-/// of a machine tier offers the way back, and the model row is a field in
-/// place.
+/// of a machine tier offers the way back, and `i` opens the model row as a
+/// field in place (T-951).
 #[test]
 fn golden_tiers_list_both_scopes_and_a_page() {
     let mut app = tier_app();
@@ -11925,7 +11998,8 @@ fn golden_tiers_list_both_scopes_and_a_page() {
     };
     let rows = render(&app, 120, 30);
     assert!(rows.iter().any(|r| r.contains("Model: sonnet")), "{rows:?}");
-    golden("tier_edit_model_120x30", &rows);
+    assert!(rows.iter().any(|r| r.contains("any model claude --model takes")), "{rows:?}");
+    golden("tier_edit_model_name_120x30", &rows);
 }
 
 /// The ticket page says what the ticket runs on, beside the key that picks

@@ -10,7 +10,9 @@
 use super::*;
 use mesimon_core::board::{AgentProvider, SessionRecord};
 use mesimon_core::text::scrub_cells;
-use mesimon_core::tier::{self, Book, Effort, Source, Tier, TierScope};
+use mesimon_core::tier::{self, Book, Effort, ModelLists, ModelStopKind, Source, Tier, TierScope};
+use std::io::Read;
+use std::path::PathBuf;
 
 /// One row of the tiers list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +34,49 @@ pub enum TierField {
     /// Delete the tier — or, for this board's own version of a machine
     /// tier, drop the version and inherit the machine's again.
     Remove,
+}
+
+/// Where Claude Code and Codex keep the model lists their pickers show
+/// (T-951): Claude Code's home (`census::claude_home`) and Codex's
+/// (`codex_home`). Read when a tier page opens, never in `App::new`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelHomes {
+    pub claude: PathBuf,
+    pub codex: PathBuf,
+}
+
+/// Codex's cache is ~400 KB; a file past this is not a list we read.
+const MODEL_FILE_MAX: u64 = 2 * 1024 * 1024;
+/// Claude Code keeps one catalog per account it signed in as.
+const CATALOGS_MAX: usize = 16;
+
+fn read_capped(path: &std::path::Path) -> Option<String> {
+    let mut text = String::new();
+    std::fs::File::open(path).ok()?.take(MODEL_FILE_MAX).read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
+impl ModelHomes {
+    /// Both lists as the providers left them: Claude Code's account
+    /// catalogs (`cache/model-catalog/*-cc.json`, 2.1.310) and Codex's
+    /// `models_cache.json`. A missing or unreadable file is no list.
+    pub fn read(&self) -> ModelLists {
+        let dir = self.claude.join("cache").join("model-catalog");
+        let catalogs: Vec<String> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with("-cc.json"))
+            .take(CATALOGS_MAX)
+            .filter_map(|e| read_capped(&e.path()))
+            .collect();
+        let catalogs: Vec<&str> = catalogs.iter().map(String::as_str).collect();
+        ModelLists {
+            claude: tier::claude_models(&catalogs),
+            codex: read_capped(&self.codex.join("models_cache.json"))
+                .and_then(|t| tier::codex_models(&t)),
+        }
+    }
 }
 
 /// The tier id a record launched on; a record from before tiers ran its
@@ -352,10 +397,18 @@ impl App {
             }
             Mode::TierEdit { idx, field: None, armed, .. } => {
                 let field = self.tier_fields().get(*idx).copied();
-                c.tier_on_step = matches!(field, Some(TierField::Provider | TierField::Effort));
+                let model_steps = self.model_ring().len() > 1;
+                c.tier_on_step = match field {
+                    Some(TierField::Provider | TierField::Effort) => true,
+                    Some(TierField::Model) => model_steps,
+                    _ => false,
+                };
+                c.tier_on_model = field == Some(TierField::Model);
                 c.tier_edit_enter_word = match field {
-                    Some(TierField::Name | TierField::Model | TierField::Description) => "edit",
+                    Some(TierField::Name | TierField::Description) => "edit",
                     Some(TierField::Provider) => "switch",
+                    Some(TierField::Model) if model_steps => "next",
+                    Some(TierField::Model) => "",
                     Some(TierField::Effort) => "next",
                     Some(TierField::Remove) if *armed => "confirm",
                     Some(TierField::Remove) => match self.edited_tier().map(|(_, s)| s) {
@@ -464,9 +517,7 @@ impl App {
     pub(super) fn tiers_act(&mut self) -> Result<()> {
         let Mode::Tiers { idx, naming: None } = self.mode else { return Ok(()) };
         match self.tier_rows().get(idx).cloned() {
-            Some(TierRow::Tier(t, _)) => {
-                self.mode = Mode::TierEdit { id: t.id, idx: 0, field: None, armed: false };
-            }
+            Some(TierRow::Tier(t, _)) => self.open_tier_page(t.id, 0),
             Some(TierRow::New) => {
                 self.mode = Mode::Tiers { idx, naming: Some(EditBuffer::new(tier::NAME_MAX)) };
                 self.status = "a short name ∙ letters, digits, - and _".into();
@@ -474,6 +525,44 @@ impl App {
             None => {}
         }
         Ok(())
+    }
+
+    /// A tier's page, on row `idx`. The providers' model lists are read
+    /// again here, so a list the CLI refreshed meanwhile is the one the ring
+    /// steps, and the tier's model word is the one the page keeps.
+    fn open_tier_page(&mut self, id: String, idx: usize) {
+        if let Some(homes) = &self.model_homes {
+            self.tier_models = homes.read();
+        }
+        self.mode = Mode::TierEdit { id, idx, field: None, armed: false };
+        self.tier_kept_model = self.edited_tier().map(|(t, _)| t.model).unwrap_or_default();
+    }
+
+    /// The page's Model ring: `default` first, the word no list offers —
+    /// the tier's own, else the one the page opened with or was typed —
+    /// then the provider's list.
+    pub(crate) fn model_ring(&self) -> Vec<tier::ModelStop> {
+        let Some((t, _)) = self.edited_tier() else { return Vec::new() };
+        let list = self.tier_models.of(t.provider);
+        let listed = |w: &str| list.is_some_and(|l| l.iter().any(|m| m.model == w));
+        let saved = if t.model.is_empty() || listed(&t.model) {
+            self.tier_kept_model.as_str()
+        } else {
+            t.model.as_str()
+        };
+        tier::model_ring(list, saved)
+    }
+
+    /// `i` on the Model row (T-951): a name typed in place, for a model the
+    /// provider's list does not offer. The daemon's `check_model` guards it.
+    pub(super) fn type_tier_model(&mut self) {
+        let Mode::TierEdit { id, idx, field: None, .. } = self.mode.clone() else { return };
+        if self.tier_fields().get(idx) != Some(&TierField::Model) {
+            return;
+        }
+        let Some((t, _)) = self.edited_tier() else { return };
+        let buf = EditBuffer::from_text(t.model, tier::MODEL_MAX);
+        self.mode = Mode::TierEdit { id, idx, field: Some(buf), armed: false };
     }
 
     /// A tier name or a model being typed: the raw key edits the buffer,
@@ -534,7 +623,7 @@ impl App {
                         self.refresh()?;
                         self.status =
                             format!("{} made ∙ now its provider, model and effort", t.name);
-                        self.mode = Mode::TierEdit { id: t.id, idx: 1, field: None, armed: false };
+                        self.open_tier_page(t.id, 1);
                     }
                 }
             }
@@ -544,13 +633,19 @@ impl App {
                     return Ok(());
                 };
                 let text = buf.as_str().trim().to_string();
-                match self.tier_fields().get(idx) {
-                    Some(TierField::Name) => t.name = text,
-                    Some(TierField::Model) => t.model = text,
-                    Some(TierField::Description) => t.description = text,
+                let field = self.tier_fields().get(idx).copied();
+                match field {
+                    Some(TierField::Name) => t.name = text.clone(),
+                    Some(TierField::Model) => t.model = text.clone(),
+                    Some(TierField::Description) => t.description = text.clone(),
                     _ => {}
                 }
+                // A refused name (`check_model`) leaves the field open with
+                // the daemon's words, and never joins the ring.
                 if self.save_edited(t)? {
+                    if field == Some(TierField::Model) {
+                        self.tier_kept_model = text;
+                    }
                     self.mode = Mode::TierEdit { id, idx, field: None, armed: false };
                 }
             }
@@ -611,14 +706,7 @@ impl App {
                 format!("Provider: {}", t.provider.label()),
                 "h l switches ∙ a model is its provider's own, so it is cleared".into(),
             ),
-            TierField::Model => (
-                format!("Model: {}", if t.model.is_empty() { "its own" } else { &t.model }),
-                if claude {
-                    "claude --model ∙ an alias (fable, opus, sonnet) or a full name ∙ empty leaves Claude Code's own".into()
-                } else {
-                    "codex -c model=… ∙ empty leaves Codex's own".into()
-                },
-            ),
+            TierField::Model => self.model_words(&t),
             TierField::Effort => (
                 format!("Effort: {}", t.effort.word()),
                 if claude {
@@ -653,6 +741,53 @@ impl App {
         }
     }
 
+    /// The Model row's label and detail: the stop the tier is on, and the
+    /// one fact its word lacks — the provider's name for it, or where the
+    /// list came from.
+    fn model_words(&self, t: &Tier) -> (String, String) {
+        let label = t.provider.label();
+        let list = self.tier_models.of(t.provider);
+        let no_list = || format!("no model list from {}", label.to_lowercase());
+        // `i`'s field: what the name is handed to.
+        let typing = matches!(self.mode, Mode::TierEdit { idx, field: Some(_), .. }
+            if self.tier_fields().get(idx) == Some(&TierField::Model));
+        if typing {
+            let takes = match t.provider {
+                AgentProvider::ClaudeCode => "claude --model",
+                AgentProvider::Codex => "codex -c model=…",
+            };
+            return (String::new(), format!("any model {takes} takes ∙ kept as saved"));
+        }
+        let stop = self.model_ring().into_iter().find(|s| s.model == t.model);
+        match stop.map(|s| s.kind) {
+            Some(ModelStopKind::Listed(m)) => {
+                let detail = match (m.name.is_empty(), m.about.is_empty()) {
+                    (true, _) => m.about,
+                    (false, true) => m.name,
+                    (false, false) => format!("{} ∙ {}", m.name, m.about),
+                };
+                (format!("Model: {}", t.model), detail)
+            }
+            Some(ModelStopKind::Saved) => (
+                format!("Model: {} (saved)", scrub_cells(&t.model, false)),
+                match list {
+                    Some(_) => format!("not on {label}'s list ∙ kept until another is picked"),
+                    None => format!("{} ∙ kept until another is picked", no_list()),
+                },
+            ),
+            _ => (
+                "Model: default".into(),
+                match list {
+                    Some(l) if l.len() == 1 => {
+                        format!("{label} picks its own ∙ 1 model on its list")
+                    }
+                    Some(l) => format!("{label} picks its own ∙ {} models on its list", l.len()),
+                    None => format!("{} ∙ default", no_list()),
+                },
+            ),
+        }
+    }
+
     /// Enter on the page: a field opens in place, a step steps, the removal
     /// arms and then acts.
     pub(super) fn tier_edit_act(&mut self) -> Result<()> {
@@ -665,15 +800,13 @@ impl App {
                 let buf = EditBuffer::from_text(t.name, tier::NAME_MAX);
                 self.mode = Mode::TierEdit { id, idx, field: Some(buf), armed: false };
             }
-            Some(TierField::Model) => {
-                let buf = EditBuffer::from_text(t.model, tier::MODEL_MAX);
-                self.mode = Mode::TierEdit { id, idx, field: Some(buf), armed: false };
-            }
             Some(TierField::Description) => {
                 let buf = EditBuffer::from_text(t.description, tier::DESCRIPTION_MAX);
                 self.mode = Mode::TierEdit { id, idx, field: Some(buf), armed: false };
             }
-            Some(TierField::Provider | TierField::Effort) => self.tier_edit_step(true)?,
+            Some(TierField::Provider | TierField::Model | TierField::Effort) => {
+                self.tier_edit_step(true)?
+            }
             Some(TierField::Remove) if !armed => {
                 self.mode = Mode::TierEdit { id, idx, field: None, armed: true };
             }
@@ -703,7 +836,7 @@ impl App {
         Ok(())
     }
 
-    /// `h`/`l` (and Enter) on the provider or the effort.
+    /// `h`/`l` (and Enter) on the provider, the model or the effort.
     pub(super) fn tier_edit_step(&mut self, forward: bool) -> Result<()> {
         let Mode::TierEdit { idx, .. } = self.mode else { return Ok(()) };
         let Some((mut t, _)) = self.edited_tier() else { return Ok(()) };
@@ -711,9 +844,17 @@ impl App {
             Some(TierField::Provider) => {
                 t.provider = t.provider.next();
                 t.model.clear();
+                self.tier_kept_model.clear();
                 if !Effort::ring(t.provider).contains(&t.effort) {
                     t.effort = Effort::Default;
                 }
+            }
+            Some(TierField::Model) => {
+                let ring = self.model_ring();
+                if ring.len() < 2 {
+                    return Ok(());
+                }
+                t.model = tier::step_model(&ring, &t.model, forward);
             }
             Some(TierField::Effort) => t.effort = t.effort.step(t.provider, forward),
             _ => return Ok(()),

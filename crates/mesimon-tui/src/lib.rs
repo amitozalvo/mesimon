@@ -261,6 +261,12 @@ pub fn run(repo_root: &Path) -> Result<()> {
     app.clock = localtime::at;
     // Whether a ticket may grow its own shell (T-300) — same rule again.
     app.ticket_shells = ticket_shells();
+    // Where the tier page reads each provider's model list (T-951) — same
+    // rule: a test app reads none.
+    app.model_homes = Some(app::ModelHomes {
+        claude: mesimon_daemon::census::claude_home(),
+        codex: mesimon_daemon::agents::codex::discovery::codex_home(),
+    });
     // How long the board waits for a key before its snake comes out
     // (T-870): an hour, or `MESIMON_IDLE_SNAKE_MS` for whoever wants to
     // see it sooner. Read here, so no test app reads the environment.

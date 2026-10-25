@@ -16,7 +16,7 @@
                            │   Description: docs, renames, one-file fixes                   │
                            │   Delete tier                                                  │
                            │                                                                │
-                           │     claude --model ∙ an alias (fable, opus, sonnet) or a full~ │
+                           │     any model claude --model takes ∙ kept as saved             │
                            ╰────────────────────────────────────── enter save ∙ esc cancel ─╯
 
 

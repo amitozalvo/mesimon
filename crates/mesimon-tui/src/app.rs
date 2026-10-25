@@ -9,7 +9,7 @@ mod summary;
 mod tiers;
 
 pub use summary::{NoteSummary, SummaryPulse, SummaryRow, TicketSummary};
-pub use tiers::{TierField, TierRow};
+pub use tiers::{ModelHomes, TierField, TierRow};
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -1663,6 +1663,16 @@ pub struct App {
     /// The machine's agent tiers (T-443), off the snapshot: the layer under
     /// `board.tiers`. Read through `App::tiers()`, never alone.
     pub machine_tiers: mesimon_core::tier::MachineTiers,
+    /// Where the two providers keep their model lists (T-951), set in
+    /// `lib.rs::run`; a test app has none, so no test or golden reads a
+    /// developer's `~/.claude` or `~/.codex`.
+    pub(crate) model_homes: Option<tiers::ModelHomes>,
+    /// The lists as a tier page read them when it opened: its Model ring.
+    pub(crate) tier_models: mesimon_core::tier::ModelLists,
+    /// The model word the open tier page keeps on its ring though no list
+    /// offers it (a typed name): stepping past it saves another word, and
+    /// it stays a stop until the page closes.
+    pub(crate) tier_kept_model: String,
     /// Subscription quota (T-327), off the snapshot: each provider's reading,
     /// what the daemon reads for, and what is in flight.
     pub usage: mesimon_core::usage::Usage,
@@ -2386,6 +2396,9 @@ impl App {
             boards_rx: None,
             board_scanner: None,
             machine_tiers: Default::default(),
+            model_homes: None,
+            tier_models: Default::default(),
+            tier_kept_model: String::new(),
             usage: Default::default(),
             costs: Vec::new(),
             usage_pushed: None,
@@ -7888,6 +7901,7 @@ impl App {
             crown_links: String::new(),
             boards_enter_word: "",
             tier_on_step: false,
+            tier_on_model: false,
             tier_can_nudge: false,
         };
         // Agent tiers (T-443): the rows, the dialogs' Enter words and `^n`.
@@ -8828,6 +8842,7 @@ impl App {
             // `^n` on the board or the ticket page; the fields take theirs
             // in `key_input` and `key_editor`.
             Verb::TierNext => self.cycle_tier()?,
+            Verb::TierModelName => self.type_tier_model(),
             Verb::CrownBudget => {
                 if !self.catch_up()? {
                     return Ok(());
@@ -21558,18 +21573,68 @@ mod tests {
         press(&mut app, 'j');
         press(&mut app, 'l');
         assert!(app_tier(&sent).contains("Low"), "{}", app_tier(&sent));
-        // The model is a field in place; the provider flip clears it.
+        // T-951: the model steps over the provider's list, `default` first,
+        // as the effort steps; `i` types a name the list lacks.
+        let choice = |model: &str, name: &str| mesimon_core::tier::ModelChoice {
+            model: model.into(),
+            name: name.into(),
+            about: String::new(),
+        };
+        app.tier_models = mesimon_core::tier::ModelLists {
+            claude: Some(vec![choice("opus", "Opus 5.5"), choice("sonnet", "Sonnet 5.5")]),
+            codex: None,
+        };
+        let model = |app: &App| app.tier_field_words(TierField::Model, false);
         press(&mut app, 'k');
+        assert_eq!(model(&app).0, "Model: default");
+        assert_eq!(app.ctx().tier_edit_enter_word, "next");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        for c in "opus".chars() {
+        assert!(app_tier(&sent).contains("model: \"opus\""), "{}", app_tier(&sent));
+        assert_eq!(model(&app), ("Model: opus".into(), "Opus 5.5".into()));
+        press(&mut app, 'l');
+        assert!(app_tier(&sent).contains("model: \"sonnet\""), "{}", app_tier(&sent));
+        press(&mut app, 'h');
+        assert!(app_tier(&sent).contains("model: \"opus\""), "{}", app_tier(&sent));
+        press(&mut app, 'i');
+        assert!(app.text_field(), "a name typed in place");
+        for _ in 0.."opus".len() {
+            app.handle_key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
+        }
+        for c in "claude-opus-4-8".chars() {
             app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
         }
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app_tier(&sent).contains("model: \"claude-opus-4-8\""), "{}", app_tier(&sent));
+        assert_eq!(model(&app).0, "Model: claude-opus-4-8 (saved)");
+        // The typed name is its own stop after `default`: the ring steps
+        // past it and back while the page is open, and once another pick
+        // is saved, the page opened again no longer offers it.
+        press(&mut app, 'h');
+        assert!(app_tier(&sent).contains("model: \"\""), "{}", app_tier(&sent));
+        press(&mut app, 'l');
+        assert!(app_tier(&sent).contains("model: \"claude-opus-4-8\""), "{}", app_tier(&sent));
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(app_tier(&sent).contains("model: \"opus\""), "{}", app_tier(&sent));
+        assert_eq!(app.model_ring().len(), 4, "default, the typed name, opus, sonnet");
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        press(&mut app, 'j');
+        press(&mut app, 'j');
+        assert_eq!(app.model_ring().len(), 3, "default, opus, sonnet");
+        // The provider flip clears it; Codex here left no list, so its ring
+        // is `default` alone and the row neither steps nor takes Enter.
         press(&mut app, 'k');
         press(&mut app, 'l');
         let last = app_tier(&sent);
         assert!(last.contains("Codex") && last.contains("model: \"\""), "{last}");
+        press(&mut app, 'j');
+        let ctx = app.ctx();
+        assert!(!ctx.tier_on_step && ctx.tier_edit_enter_word.is_empty() && ctx.tier_on_model);
+        assert_eq!(
+            model(&app),
+            ("Model: default".into(), "no model list from codex ∙ default".into())
+        );
+        press(&mut app, 'k');
         // T-584: the person's words on when to use it, a field in place too,
         // and a paste into it is one line.
         for _ in 0..3 {
@@ -21589,6 +21654,37 @@ mod tests {
         // Esc goes back to the list, on the tier.
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Tiers { idx: 0, naming: None });
+    }
+
+    /// T-951: the tier page reads Claude Code's account catalogs (the
+    /// `-cc` files alone) and Codex's cache; an absent home is no list.
+    #[test]
+    fn model_homes_read_the_two_providers_files() {
+        let root = std::env::temp_dir().join(format!("msmn-model-homes-{}", uuid::Uuid::new_v4()));
+        let catalogs = root.join("claude/cache/model-catalog");
+        std::fs::create_dir_all(&catalogs).unwrap();
+        std::fs::create_dir_all(root.join("codex")).unwrap();
+        let cc = r#"{"fetchedAt":5,"catalog":{"config":{"models":[
+            {"id":"claude-opus-5-5","name":"Opus 5.5","section":"main"}],
+            "provider_alias_targets":{"opus":{"default":"claude-opus-5-5"}}}}}"#;
+        std::fs::write(catalogs.join("org-scope-cc.json"), cc).unwrap();
+        let other = cc.replace("\"fetchedAt\":5", "\"fetchedAt\":9").replace("opus\":", "x\":");
+        std::fs::write(catalogs.join("published-abc.json"), other).unwrap();
+        std::fs::write(
+            root.join("codex/models_cache.json"),
+            r#"{"models":[{"slug":"gpt-6-astra","display_name":"GPT-6-Astra","visibility":"list"}]}"#,
+        )
+        .unwrap();
+        let homes = ModelHomes { claude: root.join("claude"), codex: root.join("codex") };
+        let lists = homes.read();
+        let words = |l: &Option<Vec<mesimon_core::tier::ModelChoice>>| {
+            l.as_ref().map(|l| l.iter().map(|m| m.model.clone()).collect::<Vec<_>>())
+        };
+        assert_eq!(words(&lists.claude), Some(vec!["opus".to_string()]), "not the published one");
+        assert_eq!(words(&lists.codex), Some(vec!["gpt-6-astra".to_string()]));
+        let gone = ModelHomes { claude: root.join("none"), codex: root.join("none") };
+        assert_eq!(gone.read(), mesimon_core::tier::ModelLists::default());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// T-562 (user: "reorder tiers in settings just like reordering tickets

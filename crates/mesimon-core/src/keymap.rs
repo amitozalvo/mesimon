@@ -801,6 +801,9 @@ pub enum Verb {
     /// ticket page at once, in the composer and the ask field as a pick
     /// that rides the draft or the words, like `^p`.
     TierNext,
+    /// `i` on a tier page's Model row (T-951): a model name typed in place,
+    /// for one the provider's list does not offer (an older model).
+    TierModelName,
     /// The Settings row for the crown's spawn budget (T-412): how many agent
     /// seats the crowned agent may have started at once. Board state like
     /// `McpTools`, in `columns.toml`; Enter cycles it.
@@ -1599,10 +1602,12 @@ pub struct Ctx {
     pub codex_in_use: bool,
     /// The tiers list's Enter word for the row under the cursor, and the
     /// tier page's; empty is inert. `tier_on_step` is the page's cursor on
-    /// a row `h`/`l` steps (provider, effort).
+    /// a row `h`/`l` steps (provider, effort, a model ring of more than one
+    /// stop); `tier_on_model` on the Model row, where `i` types a name.
     pub tiers_enter_word: &'static str,
     pub tier_edit_enter_word: &'static str,
     pub tier_on_step: bool,
+    pub tier_on_model: bool,
     /// The tiers list's cursor is on a tier its scope orders, beside another
     /// one (T-562): the machine's tiers, or a board's own.
     pub tier_can_nudge: bool,
@@ -4734,8 +4739,9 @@ static BOARDS: &[Binding] = &[
 ];
 
 /// One tier's page (T-443): the column dialog's shapes — `h`/`l` step the
-/// provider and the effort both ways, Enter steps forward, edits a field in
-/// place, or deletes on the second press.
+/// provider, the model and the effort both ways, Enter steps forward, edits
+/// a field in place, or deletes on the second press; `i` types a model the
+/// provider's list lacks (T-951).
 static TIER_EDIT: &[Binding] = &[
     Binding {
         keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
@@ -4769,6 +4775,17 @@ static TIER_EDIT: &[Binding] = &[
         group: Group::Navigate,
         mutates: true,
         prio: 20,
+    },
+    Binding {
+        keys: &[Key::Char('i')],
+        verb: Verb::TierModelName,
+        show: "i",
+        hint: |_| "type a name",
+        avail: |c| c.tier_on_model,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: true,
+        prio: 25,
     },
     Binding {
         keys: &[Key::Char('q'), Key::Esc],
@@ -8651,7 +8668,7 @@ mod tests {
         let ctx = Ctx {
             settings_section: SettingsSection::Agents,
             tier_default: "claude".into(),
-            tier_default_summary: "Claude Code ∙ its own model".into(),
+            tier_default_summary: "Claude Code ∙ default".into(),
             ..Ctx::default()
         };
         let row = settings_items(&ctx).into_iter().find(|r| r.verb == Verb::DefaultTier).unwrap();

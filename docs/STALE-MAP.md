@@ -36622,3 +36622,79 @@ range. Each part was checked against its removal:
 - Without the fold's `finished`, the busy-crown test fails on a bare `merged`.
 - Without the mark's removal, the second and third time out on the turn's `finished`.
 - Without `restored_step`, all three lose `after a restart`.
+
+## A tier's model is picked from the provider's own list, cycled like the effort; `i` types a name (T-951, 2026-10-25, the person: "Tier model shouldn't be free text should be predefined list taken from user available models of the provider cycled with enter like effort level")
+
+- **What shipped:** the tier page's Model row is a ring that `h`/`l` and Enter step and save at
+  once, as the Effort row does (`enter next`, `h l step`, no new step key):
+  - The first stop is `default`: no model set, so no `--model`, and the CLI picks its own.
+  - Then comes the provider's list for this machine's account.
+  - `i` on the row (new `Verb::TierModelName`, gated on `Ctx::tier_on_model`; `i` was bound
+    nowhere) opens it as a text field, for a model the list does not offer. The daemon's
+    `check_model` still guards what is saved, and a refused name leaves the field open with
+    its words.
+  - The wire is unchanged: `Tier.model` stays a `String`.
+- **The lists, measured 2026-10-25:**
+  - **Claude Code 2.1.310** keeps its signed `/model` picker catalog at
+    `<claude home>/cache/model-catalog/<orgUuid>-<accountScope>-cc.json`, 14 KB, polled every
+    5–15 min. The path is the binary's `Eut`; its org half is `~/.claude.json`'s
+    `organizationUuid`.
+    - `tok-`, `key-`, `prof-` and `fed-` prefixes are other auth kinds. `published-*.json` is the
+      global document, alongside `masked-ids.json`.
+    - The shape: `{version, fetchedAt, staleAt, catalog: {surface: "cc", config: {models,
+      provider_alias_targets, settings_vocabulary}, state}}`.
+    - Each model is `{id, name, short_name, description?, section: main|overflow,
+      quick_select, runtime: {effort_levels, default_effort, …}, min_claude_code_version?}`.
+    - `provider_alias_targets` maps `fable/opus/sonnet/haiku` to `{default: <id>, per_provider}`.
+    - On the author's account the main section is `claude-opus-5-5` (opus), `claude-fable-5-1`
+      (fable), `claude-sonnet-5-5` (sonnet) and `claude-haiku-5-5` (haiku).
+    - The overflow, 8 older models: `claude-haiku-4-5-20251001, claude-sonnet-5, claude-opus-5,
+      claude-fable-5, claude-opus-4-8, claude-opus-4-7, claude-opus-4-6, claude-sonnet-4-6`.
+    - `claude auth status --json` names no models. The brief's "no list file" was wrong.
+  - **Codex 0.164.0** keeps `<codex home>/models_cache.json`, ~400 KB.
+    - The shape: `{fetched_at, etag, client_version, identity (a 64-hex account hash), models}`.
+    - 9 models in `priority` order, each with `slug`, `display_name`, `description`,
+      `visibility: list|hide`, `supported_reasoning_levels` and ~35 more fields.
+    - Listed: `gpt-6.1-sol, gpt-6-astra, gpt-6-sol, gpt-6-luna, gpt-5.6-sol, gpt-5.6-terra,
+      gpt-5.6-luna`. Hidden: `gpt-reserve`, `codex-auto-review`.
+- **The rings** (`tier::claude_models`, `codex_models`, `model_ring` and `step_model`; pure):
+  - Claude Code is `default` plus the main section only, each saved as the alias whose
+    `default` it is, else by id. Of several `-cc` catalogs, the newest `fetchedAt` wins. The
+    overflow is not offered (the person: "Don't suggest older model and let a user write the
+    model name"); an older model is typed with `i`.
+  - Codex is `default` plus the `list` slugs in file order.
+  - Every word passes `check_model`, or it is dropped. Names and descriptions come from another
+    program's file and are flattened to one line, scrubbed and capped at the parse.
+  - A word no list offers (a typed name, a hidden slug, a slug the cache dropped) is its own
+    `(saved)` stop, right after `default`. Only an exact match counts as listed: a saved
+    `claude-opus-5-5` is `(saved)` and is never folded into `opus`, because the alias follows
+    the latest model.
+  - A step saves at once, so the page keeps that word (`App::tier_kept_model`, set when the
+    page opens and when a name is typed) as a stop while it stays open. The word leaves the
+    ring when the page is opened again on another pick.
+  - With no list (missing, unreadable, unparseable, or past 2 MB), the ring is `default` and
+    the saved word. The detail then says `no model list from codex ∙ default`, and Enter and
+    `h l` are not offered on a ring of one.
+- **The word is `default` everywhere a tier with no model is named** (the person): the Model
+  row's first stop, its no-list detail, and `Tier::summary` (`Claude Code ∙ default`, on the
+  tiers list, the Default tier row, the status line, `doctor` and the phone's tier list).
+- **Where the files are read:** `ModelHomes::read`, from `census::claude_home` and
+  `codex_home`. The read happens when a tier page opens, so a list the CLI refreshed meanwhile
+  is the one used. `lib.rs::run` sets `App::model_homes`, never `App::new`, so no test or
+  golden reads a developer's files.
+- **Limits:**
+  - The catalog's `min_claude_code_version`, its `masked-ids.json` and a managed
+    `availableModels` setting are not read.
+  - API-key, Bedrock and other auth kinds count only through a `-cc` file of their own.
+- **Follow-up:** both lists carry per-model effort levels: `gpt-6-luna` and `gpt-5.6-luna`
+  have no `ultra`, and Claude's `runtime.effort_levels` stop at `max`. The Effort ring could
+  follow the picked model; `Effort::ring(provider)` stays for now.
+- **Tests:**
+  - core: `claudes_list_is_its_pickers_main_section_by_alias`,
+    `codexs_list_is_its_listed_slugs_in_order`, `the_model_ring_keeps_a_saved_word_off_the_list`,
+    and `names_and_models_are_checked` unchanged.
+  - TUI: `the_tiers_dialog_makes_and_edits_a_tier` covers Enter, `l`, `h`, `i`, the `(saved)`
+    stop, the reopen, and Codex with no list; `model_homes_read_the_two_providers_files` covers
+    the reader.
+  - Goldens `tier_edit_model_{default,ring,saved,codex,codex_none,name}_120x30`;
+    `tier_edit_model_name` replaces `tier_edit_model`.

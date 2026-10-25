@@ -24,7 +24,7 @@
       │                                                                                                          │
       │                                                                                                          │
       │                                                                                                          │
-      │                     what a ticket starts on unless ^n picks its own ∙ Claude Code ∙ its own model        │
+      │                     what a ticket starts on unless ^n picks its own ∙ Claude Code ∙ default              │
       ╰───────────────────────────────────────────────── jk select ∙ enter change ∙ b this board ∙ esc sections ─╯
 
  SETTINGS                                                                                                        ? keys
