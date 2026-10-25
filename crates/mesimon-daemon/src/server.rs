@@ -220,7 +220,9 @@ const DRAFT_IN_BOX: &str =
 /// as an empty composer, so nothing says the words would land on nobody's.
 const BOX_UNKNOWN: &str =
     "its prompt box could not be read as empty, so the board typed nothing into it";
-/// The queued row's word for that hold: leaving is the release a person has.
+/// The queued row's word for a box a sample read as no composer
+/// (`BoxRead::Unknown`): leaving is the release a person has. A box no
+/// sample read (`BoxRead::Unread`) has no word.
 const BOX_UNKNOWN_WORD: &str = "box unknown ∙ leave";
 /// The tail `paste_at` puts on a refusal before any key.
 const NOT_SENT: &str = " ∙ the words were not sent";
@@ -1414,185 +1416,36 @@ pub fn run(paths: Paths) -> Result<()> {
     let modroad = bridge::ModRoad::start(&paths);
     let git_fetch_every = crate::gitstatus::fetch_every_resolved(&paths);
 
-    let mut d = Daemon {
+    let mut d = Daemon::assemble(Seed {
         paths,
         board,
         backend,
-        grace: HashMap::new(),
-        uploads: Default::default(),
-        subscribers: Vec::new(),
-        focus: None,
-        shutting_down: false,
         journal,
-        clients: HashMap::new(),
-        stop_started: None,
-        tick_slowest: ("", Duration::ZERO),
         notices,
         exe_stamp,
         own_exe,
         started_at,
-        detached: std::env::var_os("MESIMON_DETACHED").is_some(),
-        columns_barred: columns_write_barred,
-        sessions_barred: sessions_write_barred,
         worktrees_barred,
         queue_barred,
         started_barred,
         costs_barred,
         machines,
-        owed: HashMap::new(),
         queued,
-        plan_accept: HashMap::new(),
-        plan_accept_tries: HashMap::new(),
-        train: Default::default(),
         train_barred,
-        train_written: String::new(),
         forge_barred,
-        forge_written: String::new(),
-        columns_written: String::new(),
-        sessions_written: String::new(),
-        ticks: 0,
         feed,
-        external: Vec::new(),
-        external_scanning: false,
-        external_rescan_wanted: false,
         started,
         costs,
-        cost_scanning: false,
-        cost_due: true,
-        recovery: HashMap::new(),
-        cleanup_resume_offers: HashMap::new(),
-        reaping: HashMap::new(),
-        server_restart: None,
-        rss_cache: (0, 0),
-        rss_by: HashMap::new(),
-        foregrounds: HashMap::new(),
-        terminals: terminals_in(&snap),
-        attached: std::collections::HashSet::new(),
-        active_clients: HashMap::new(),
-        attached_at: 0,
-        person_asked_at: HashMap::new(),
-        reclaim_cache: (0, 0),
-        archive_cache: 0,
-        open_box_counts: Default::default(),
-        summary_prs: Default::default(),
-        archive_due: true,
-        archive_bytes: 0,
-        tree_sizes: HashMap::new(),
-        trees_sizing: false,
-        pty_cache: crate::resources::pty_figures(),
-        last_status_left: None,
-        focus_label: String::new(),
-        hostname: std::process::Command::new("hostname")
-            .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_default(),
-        pane_due: Default::default(),
-        pane_inflight: false,
-        pane_gen: 0,
-        pane_slow_said: None,
-        unreaped_said: std::collections::HashSet::new(),
-        screens: HashMap::new(),
-        compaction_clear: HashMap::new(),
-        crown_rules: crownrules::CrownRules::default(),
         worktrees,
-        pending_spawns: Vec::new(),
-        pending_resumes: Vec::new(),
-        wt_agg: HashMap::new(),
-        wt_repos: HashMap::new(),
-        wt_progress: HashMap::new(),
-        wt_init: std::collections::HashSet::new(),
-        wt_conflicts: Vec::new(),
-        wt_gen: 0,
-        wt_inflight: false,
-        wt_seq: 0,
-        wt_inflight_seq: 0,
-        wt_fresh: HashMap::new(),
-        ticket_looks: HashMap::new(),
-        awaiting_looks: HashMap::new(),
-        base_branch: None,
-        upstreams: HashMap::new(),
-        forge: Default::default(),
-        pending_teardown: Vec::new(),
-        tearing_down: Default::default(),
-        tx: tx.clone(),
-        team: teamglue::TeamCtx::new(tx.clone()),
-        control: mesophon::Control::new(tx.clone()),
-        codex_polling: false,
-        codex_observer: None,
-        codex_ready: std::collections::HashSet::new(),
-        codex_native_ready: HashMap::new(),
-        codex_input_due: HashMap::new(),
-        codex_steers: HashMap::new(),
-        codex_modes: HashMap::new(),
-        codex_plan_typed: HashMap::new(),
-        codex_held_logged: HashMap::new(),
-        codex_releases: HashMap::new(),
-        codex_orphan_due: HashMap::new(),
-        codex_orphan_checking: false,
-        moves: MoveGate::new(),
-        board_version: 0,
-        agent_replay: HashMap::new(),
-        crown_touches: HashMap::new(),
-        crown_said: HashMap::new(),
-        crown_asks: HashMap::new(),
-        links: peer::MachineLinksCache::new(crate::paths::machine_links_file().ok()),
-        board_touches: Vec::new(),
-        asks_out: HashMap::new(),
-        asks_in: HashMap::new(),
-        crown_wakes: Default::default(),
-        crown_wake_entering: Default::default(),
-        crown_heard: Default::default(),
-        crown_hands: Default::default(),
-        crown_recheck: HashMap::new(),
-        crown_recheck_until: 0,
         crown_barred,
-        crown_written: String::new(),
-        crown_written_for: None,
-        crown_landed: Vec::new(),
-        turn_asks: Default::default(),
-        turns_open: Default::default(),
-        failing: HashMap::new(),
-        crown_submit_refused: Default::default(),
-        crown_wake_failed_on: None,
-        refused_for_person: None,
-        lingered: Default::default(),
-        tasks_since: HashMap::new(),
-        held: crate::movegate::HeldMoves::default(),
-        crown_watched: Default::default(),
-        crown_held: Default::default(),
-        answer_waits: None,
         modroad,
-        mod_park: None,
-        crown_plans: HashMap::new(),
-        plan_waits: None,
-        crown_answer_lines: HashMap::new(),
-        prompts_heard: HashMap::new(),
-        dialog_heard: HashMap::new(),
-        machine_tiers: tiers::MachineTierCache::new(crate::paths::machine_tiers_file().ok()),
-        usage: crate::usage::UsageState::new(crate::usage::shared_file()),
-        tier_set_at: HashMap::new(),
-        shell_env: crate::shellenv::ShellEnv::default(),
-        shell_env_capturing: false,
-        shell_env_error: None,
-        self_exe: hook_bin.clone(),
-        git_cache: mesimon_core::command::RepoGit::default(),
-        claude_md: crate::claudemd::Sampler::default(),
-        git_inflight: false,
-        git_wanted: false,
-        git_fetch_wanted: false,
-        git_fetching: false,
         git_fetch_every,
-        git_last_fetch: None,
-        git_fetched_at_ms: 0,
-        git_fetch_error: None,
-        git_fetch_nested_wanted: false,
-        backfill_inflight: false,
-        train_acted_ms: 0,
-        forge_acted_ms: 0,
-        git_fetching_repos: std::collections::HashSet::new(),
-        git_nested_fetch: HashMap::new(),
-    };
+        columns_barred: columns_write_barred,
+        sessions_barred: sessions_write_barred,
+        terminals: terminals_in(&snap),
+        tx: tx.clone(),
+        self_exe: hook_bin.clone(),
+    });
     // The crown's ledger (T-602): what it was told, and what it is owed.
     d.restore_crown(crown_ledger);
     d.resume_crown_entering();
@@ -1838,6 +1691,254 @@ macro_rules! stage {
         $self.note_stage($name, t.elapsed());
         r
     }};
+}
+
+/// What `run` hands the daemon it assembles from the disk and the process
+/// (`Daemon::assemble`); every other field starts empty. A unit test
+/// assembles one the same way (T-966, round 2).
+struct Seed {
+    paths: Paths,
+    board: Board,
+    backend: TmuxBackend,
+    journal: crate::journal::Journal,
+    notices: Vec<mesimon_core::command::Notice>,
+    exe_stamp: Option<mesimon_core::command::ExeStamp>,
+    own_exe: Option<std::path::PathBuf>,
+    started_at: String,
+    worktrees_barred: bool,
+    queue_barred: bool,
+    started_barred: bool,
+    costs_barred: bool,
+    machines: HashMap<uuid::Uuid, Machine>,
+    queued: Vec<QueuedAsk>,
+    train_barred: bool,
+    forge_barred: bool,
+    feed: FeedWriter,
+    started: std::collections::HashSet<String>,
+    costs: crate::cost::Ledger,
+    worktrees: worktree::Bindings,
+    crown_barred: bool,
+    modroad: bridge::ModRoad,
+    git_fetch_every: Duration,
+    columns_barred: bool,
+    sessions_barred: bool,
+    terminals: std::collections::BTreeMap<Option<ulid::Ulid>, Option<String>>,
+    tx: Sender<Msg>,
+    self_exe: std::path::PathBuf,
+}
+
+impl Daemon {
+    fn assemble(seed: Seed) -> Daemon {
+        let Seed {
+            paths,
+            board,
+            backend,
+            journal,
+            notices,
+            exe_stamp,
+            own_exe,
+            started_at,
+            worktrees_barred,
+            queue_barred,
+            started_barred,
+            costs_barred,
+            machines,
+            queued,
+            train_barred,
+            forge_barred,
+            feed,
+            started,
+            costs,
+            worktrees,
+            crown_barred,
+            modroad,
+            git_fetch_every,
+            columns_barred,
+            sessions_barred,
+            terminals,
+            tx,
+            self_exe,
+        } = seed;
+        Daemon {
+            paths,
+            board,
+            backend,
+            grace: HashMap::new(),
+            uploads: Default::default(),
+            subscribers: Vec::new(),
+            focus: None,
+            shutting_down: false,
+            journal,
+            clients: HashMap::new(),
+            stop_started: None,
+            tick_slowest: ("", Duration::ZERO),
+            notices,
+            exe_stamp,
+            own_exe,
+            started_at,
+            detached: std::env::var_os("MESIMON_DETACHED").is_some(),
+            columns_barred,
+            sessions_barred,
+            worktrees_barred,
+            queue_barred,
+            started_barred,
+            costs_barred,
+            machines,
+            owed: HashMap::new(),
+            queued,
+            plan_accept: HashMap::new(),
+            plan_accept_tries: HashMap::new(),
+            train: Default::default(),
+            train_barred,
+            train_written: String::new(),
+            forge_barred,
+            forge_written: String::new(),
+            columns_written: String::new(),
+            sessions_written: String::new(),
+            ticks: 0,
+            feed,
+            external: Vec::new(),
+            external_scanning: false,
+            external_rescan_wanted: false,
+            started,
+            costs,
+            cost_scanning: false,
+            cost_due: true,
+            recovery: HashMap::new(),
+            cleanup_resume_offers: HashMap::new(),
+            reaping: HashMap::new(),
+            server_restart: None,
+            rss_cache: (0, 0),
+            rss_by: HashMap::new(),
+            foregrounds: HashMap::new(),
+            terminals,
+            attached: std::collections::HashSet::new(),
+            active_clients: HashMap::new(),
+            attached_at: 0,
+            person_asked_at: HashMap::new(),
+            reclaim_cache: (0, 0),
+            archive_cache: 0,
+            open_box_counts: Default::default(),
+            summary_prs: Default::default(),
+            archive_due: true,
+            archive_bytes: 0,
+            tree_sizes: HashMap::new(),
+            trees_sizing: false,
+            pty_cache: crate::resources::pty_figures(),
+            last_status_left: None,
+            focus_label: String::new(),
+            hostname: std::process::Command::new("hostname")
+                .output()
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default(),
+            pane_due: Default::default(),
+            pane_inflight: false,
+            pane_gen: 0,
+            pane_slow_said: None,
+            unreaped_said: std::collections::HashSet::new(),
+            screens: HashMap::new(),
+            compaction_clear: HashMap::new(),
+            crown_rules: crownrules::CrownRules::default(),
+            worktrees,
+            pending_spawns: Vec::new(),
+            pending_resumes: Vec::new(),
+            wt_agg: HashMap::new(),
+            wt_repos: HashMap::new(),
+            wt_progress: HashMap::new(),
+            wt_init: std::collections::HashSet::new(),
+            wt_conflicts: Vec::new(),
+            wt_gen: 0,
+            wt_inflight: false,
+            wt_seq: 0,
+            wt_inflight_seq: 0,
+            wt_fresh: HashMap::new(),
+            ticket_looks: HashMap::new(),
+            awaiting_looks: HashMap::new(),
+            base_branch: None,
+            upstreams: HashMap::new(),
+            forge: Default::default(),
+            pending_teardown: Vec::new(),
+            tearing_down: Default::default(),
+            tx: tx.clone(),
+            team: teamglue::TeamCtx::new(tx.clone()),
+            control: mesophon::Control::new(tx.clone()),
+            codex_polling: false,
+            codex_observer: None,
+            codex_ready: std::collections::HashSet::new(),
+            codex_native_ready: HashMap::new(),
+            codex_input_due: HashMap::new(),
+            codex_steers: HashMap::new(),
+            codex_modes: HashMap::new(),
+            codex_plan_typed: HashMap::new(),
+            codex_held_logged: HashMap::new(),
+            codex_releases: HashMap::new(),
+            codex_orphan_due: HashMap::new(),
+            codex_orphan_checking: false,
+            moves: MoveGate::new(),
+            board_version: 0,
+            agent_replay: HashMap::new(),
+            crown_touches: HashMap::new(),
+            crown_said: HashMap::new(),
+            crown_asks: HashMap::new(),
+            links: peer::MachineLinksCache::new(crate::paths::machine_links_file().ok()),
+            board_touches: Vec::new(),
+            asks_out: HashMap::new(),
+            asks_in: HashMap::new(),
+            crown_wakes: Default::default(),
+            crown_wake_entering: Default::default(),
+            crown_heard: Default::default(),
+            crown_hands: Default::default(),
+            crown_recheck: HashMap::new(),
+            crown_recheck_until: 0,
+            crown_barred,
+            crown_written: String::new(),
+            crown_written_for: None,
+            crown_landed: Vec::new(),
+            turn_asks: Default::default(),
+            turns_open: Default::default(),
+            failing: HashMap::new(),
+            crown_submit_refused: Default::default(),
+            crown_wake_failed_on: None,
+            refused_for_person: None,
+            lingered: Default::default(),
+            tasks_since: HashMap::new(),
+            held: crate::movegate::HeldMoves::default(),
+            crown_watched: Default::default(),
+            crown_held: Default::default(),
+            answer_waits: None,
+            modroad,
+            mod_park: None,
+            crown_plans: HashMap::new(),
+            plan_waits: None,
+            crown_answer_lines: HashMap::new(),
+            prompts_heard: HashMap::new(),
+            dialog_heard: HashMap::new(),
+            machine_tiers: tiers::MachineTierCache::new(crate::paths::machine_tiers_file().ok()),
+            usage: crate::usage::UsageState::new(crate::usage::shared_file()),
+            tier_set_at: HashMap::new(),
+            shell_env: crate::shellenv::ShellEnv::default(),
+            shell_env_capturing: false,
+            shell_env_error: None,
+            self_exe,
+            git_cache: mesimon_core::command::RepoGit::default(),
+            claude_md: crate::claudemd::Sampler::default(),
+            git_inflight: false,
+            git_wanted: false,
+            git_fetch_wanted: false,
+            git_fetching: false,
+            git_fetch_every,
+            git_last_fetch: None,
+            git_fetched_at_ms: 0,
+            git_fetch_error: None,
+            git_fetch_nested_wanted: false,
+            backfill_inflight: false,
+            train_acted_ms: 0,
+            forge_acted_ms: 0,
+            git_fetching_repos: std::collections::HashSet::new(),
+            git_nested_fetch: HashMap::new(),
+        }
+    }
 }
 
 impl Daemon {
@@ -20590,6 +20691,192 @@ mod queued_person_tests {
         assert_eq!(AskHold::Box(BoxRead::Draft).word(), Some("after your draft"));
         assert_eq!(AskHold::Box(BoxRead::Unknown).word(), Some("box unknown ∙ leave"));
         assert_eq!(AskHold::Box(BoxRead::Unread).word(), None);
+    }
+}
+
+/// T-966, round 2: the row word's push, at the daemon. A pane sample that
+/// changes a queued ask's word for a person broadcasts `BoardChanged` though
+/// nothing else it absorbs changed; the same sample again broadcasts nothing.
+#[cfg(test)]
+mod queued_person_push_tests {
+    use super::*;
+    use std::io::{BufRead, BufReader};
+
+    const RULE: &str = "────────────────────";
+
+    fn screen(lines: &[&str]) -> mesimon_backend_tmux::InputScreen {
+        mesimon_backend_tmux::InputScreen {
+            lines: lines.iter().map(|l| l.to_string()).collect(),
+            cursor: None,
+        }
+    }
+
+    /// A daemon assembled as `run` assembles one, on a temporary state dir
+    /// and a tmux socket nothing listens on, with one idle Claude pane and an
+    /// ask queued at it.
+    fn daemon(dir: &std::path::Path) -> (Daemon, String, std::sync::mpsc::Receiver<Msg>) {
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let paths = Paths {
+            repo_root: repo.clone(),
+            proj16: "0966096609660966".into(),
+            rt_dir: dir.join("rt"),
+            state_dir: dir.join("state"),
+            board_dir: repo.join(".mesimon"),
+        };
+        paths.ensure_dirs().unwrap();
+        let (tx, rx) = channel();
+        let backend = TmuxBackend::new(dir.join("tmux.sock"), &paths.state_dir, None).unwrap();
+        let mut board = Board::with_default_columns();
+        let ticket = ulid::Ulid::new();
+        let id = uuid::Uuid::new_v4();
+        let cwd = repo.display().to_string();
+        board.sessions.push(SessionRecord::new(
+            id,
+            SessionKind::Claude,
+            ticket,
+            vec!["claude".into()],
+            cwd.clone(),
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+        ));
+        let sid = board.sessions[0].sid16();
+        let queued = vec![QueuedAsk {
+            ticket,
+            seat: QueuedSeat::Pane(id),
+            cwd,
+            text: "mesimon-probe-966 words".into(),
+            queued_at: now_ms(),
+            by: None,
+            sends: false,
+            accept_plan: false,
+            send_on_accept: false,
+            held: None,
+            plan: false,
+            deliver: Deliver::Idle,
+            from_board: None,
+        }];
+        let feed = FeedWriter::open(&paths.activity_log()).unwrap();
+        let journal = crate::journal::Journal::open(&paths.daemon_log());
+        let d = Daemon::assemble(Seed {
+            board,
+            backend,
+            journal,
+            notices: Vec::new(),
+            exe_stamp: None,
+            own_exe: None,
+            started_at: String::new(),
+            worktrees_barred: false,
+            queue_barred: false,
+            started_barred: false,
+            costs_barred: false,
+            machines: HashMap::new(),
+            queued,
+            train_barred: false,
+            forge_barred: false,
+            feed,
+            started: Default::default(),
+            costs: Default::default(),
+            worktrees: Default::default(),
+            crown_barred: false,
+            modroad: bridge::ModRoad::start(&paths),
+            git_fetch_every: Duration::from_secs(60),
+            columns_barred: false,
+            sessions_barred: false,
+            terminals: Default::default(),
+            tx,
+            self_exe: dir.join("mesimon"),
+            paths,
+        });
+        (d, sid, rx)
+    }
+
+    /// The pane's facts: one client attached, idle past the bound by an hour.
+    fn facts(sid: &str, at: u64) -> Vec<mesimon_backend_tmux::PaneFacts> {
+        vec![mesimon_backend_tmux::PaneFacts {
+            session_name: sid.to_string(),
+            pane_pid: 0,
+            pane_dead: false,
+            reaped: false,
+            server_pid: 1,
+            current_command: "claude".into(),
+            attached: true,
+            activity: Some(at / 1000 - 3600),
+            title: String::new(),
+        }]
+    }
+
+    fn sample(
+        gen: u64,
+        sid: &str,
+        at: u64,
+        box_read: Option<mesimon_backend_tmux::InputScreen>,
+    ) -> crate::panes::Sample {
+        crate::panes::Sample {
+            gen,
+            at,
+            facts: Some(facts(sid, at)),
+            activity: None,
+            startup: Vec::new(),
+            screens: box_read.map(|b| (sid.to_string(), b)).into_iter().collect(),
+            rss: None,
+            rows: None,
+            alive: None,
+            access: None,
+            took: Duration::ZERO,
+            forks: 0,
+        }
+    }
+
+    /// Every `BoardChanged` the subscriber holds now.
+    fn pushes(sub: &mut BufReader<UnixStream>) -> usize {
+        sub.get_ref().set_nonblocking(true).unwrap();
+        let mut n = 0;
+        let mut line = String::new();
+        while matches!(sub.read_line(&mut line), Ok(k) if k > 0) {
+            assert!(line.contains("board_changed"), "{line}");
+            n += 1;
+            line.clear();
+        }
+        n
+    }
+
+    #[test]
+    fn a_sample_that_changes_a_queued_ask_s_person_word_pushes_and_the_same_one_does_not() {
+        let dir = std::env::temp_dir().join(format!("msmn-t966-push-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (mut d, sid, _rx) = daemon(&dir);
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        d.subscribers.push(Arc::new(Mutex::new(ours)));
+        let mut sub = BufReader::new(theirs);
+        let words = |d: &Daemon| d.queued_person_words();
+        let gen = d.pane_gen;
+        let t0 = now_ms();
+        // A known old box (empty, from before the client's facts) and the
+        // client's facts landed alone: the box is unread on this sample.
+        d.screens.insert(sid.clone(), (t0 - 60_000, screen(&[RULE, "❯ ", RULE])));
+        d.on_pane_sampled(sample(gen, &sid, t0, None));
+        assert_eq!(words(&d), vec![None], "held, no word: the box is unread");
+        let _ = pushes(&mut sub);
+        // The same facts with the box read holding words: the word moves to
+        // `after your draft`, and that alone pushes.
+        let draft = screen(&[RULE, "❯ half a thought", RULE]);
+        d.on_pane_sampled(sample(gen, &sid, t0 + 1_000, Some(draft.clone())));
+        assert_eq!(words(&d), vec![Some("after your draft")]);
+        assert_eq!(pushes(&mut sub), 1, "the learned draft pushes");
+        assert_eq!(d.queued.len(), 1, "the ask still waits");
+        // The identical sample again: nothing moved, nothing pushes.
+        d.on_pane_sampled(sample(gen, &sid, t0 + 2_000, Some(draft)));
+        assert_eq!(words(&d), vec![Some("after your draft")]);
+        assert_eq!(pushes(&mut sub), 0, "the same sample pushes nothing");
+        // The box read as no composer: `box unknown ∙ leave`, pushed.
+        let dialog = screen(&["Do you want to proceed?", "  1. Yes", "  2. No"]);
+        d.on_pane_sampled(sample(gen, &sid, t0 + 3_000, Some(dialog.clone())));
+        assert_eq!(words(&d), vec![Some("box unknown ∙ leave")]);
+        assert_eq!(pushes(&mut sub), 1, "the unreadable box pushes");
+        d.on_pane_sampled(sample(gen, &sid, t0 + 4_000, Some(dialog)));
+        assert_eq!(pushes(&mut sub), 0, "and again, nothing");
+        assert_eq!(d.queued.len(), 1, "the ask still waits");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

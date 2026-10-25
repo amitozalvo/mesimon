@@ -34492,8 +34492,9 @@ Gates: `crown_e2e` and `ask_queue_e2e` on both roads, 82 of 82 each.
   halves now need a positive `Empty`: readiness (`idle_box`) on the sample that read the clients,
   and the edge (`PaneClients::refusal`) from a capture that succeeded. `Absent`, no read and a
   capture error hold. The edge refuses them through the same queue-preserving refusal as before,
-  with the words "its prompt box could not be read as empty". The row says `box unknown ∙
-  leave`. `after your draft` is kept for a box read `Holding`.
+  with the words "its prompt box could not be read as empty". On the row, a box a sample read
+  as `Absent` says `box unknown ∙ leave`; a box no sample has read yet (`Unread`) has no
+  word. `after your draft` is kept for a box read `Holding`.
 - **Blank tmux rows (P2).** `client_activities` dropped blank rows, so a listing of `"\n"` read as
   nobody attached. Every row now counts as a client. A blank or malformed row is `None`, which is
   unknown and holds; only zero rows means no client.
@@ -34501,12 +34502,31 @@ Gates: `crown_e2e` and `ask_queue_e2e` on both roads, 82 of 82 each.
   so `after your draft` could wait for an unrelated broadcast. `on_pane_sampled` now compares the
   words before and after its absorb and repaints on a change.
 - **The e2e (P3).**
-  - "Not before the bound" is now the pane's own read time: the stub writes epoch ms per line to
-    `got-at.txt`, and the test asserts it is at or after the expiry, with no tolerance.
+  - The stub writes an epoch ms per line to `got-at.txt`, and the test asserts it is at or after
+    the expiry, with no tolerance. That stamp is taken after the line is read and recorded
+    (round 2), so it proves the words were not recorded early. It is not when the paste went;
+    the boundary itself is `crownwake::client_hold`'s unit.
   - Every delivery is asserted as a whole line, so a joined line fails both counts.
-  - The draft's word is asserted as a subscriber learns it, a snapshot only after a push. The
-    test fails with the repaint line taken out.
+  - The draft's word is read from a snapshot after a push. Any push counts there, the enqueue's
+    included, so this does not prove that the sample's change pushed (round 2: the daemon's
+    unit does).
   - A third phase holds an ask on a no-composer screen and delivers it once when the box comes
     back.
 - **Unit tests** cover the client listing, `PaneClients::of`, the edge refusal (a failed capture
   included) and `idle_box`.
+
+**Round 2, the cold reader's second read of `f847a32c`.** The reader asked for tests and
+wording only, and confirmed the round-1 fixes.
+- **The push, at the daemon.** `queued_person_push_tests` assembles a daemon the way `run` does.
+  To make that possible, `run`'s struct literal moved unchanged into `Daemon::assemble(Seed)`;
+  four fields are filled at the call site. The test starts with an ask queued at an idle Claude
+  pane, an old empty box and an idle client's facts, and lands samples through
+  `on_pane_sampled` with a socket-pair subscriber:
+  - a `Holding` box pushes one `BoardChanged`;
+  - the identical sample pushes none;
+  - an `Absent` box pushes one, and again none.
+
+  With the repaint line taken out, the first assertion fails.
+- **The e2e.** Its claims are now what it shows. The stub's stamp is a receiver's, taken after
+  the read, and `client_hold`'s unit is the boundary proof. A snapshot after any push is the
+  integration exercise for the row's words, not the proof of a repaint.

@@ -1952,9 +1952,10 @@ fn an_attached_client_holds_the_crown_wake_only_while_active() {
 }
 
 /// `BOX_STUB`, with two things more for T-966: each line read is also
-/// written to `got-at.txt` after the epoch ms it was read at, so a test can
-/// say when words reached the pane, and a line `@absent` paints a screen with
-/// no composer on it (a dialog's shape, `Composer::Absent`) until the next
+/// written to `got-at.txt` after an epoch ms taken once the line was read
+/// and recorded (a receiver's stamp, later than the read and the paste it
+/// dates, never earlier), and a line `@absent` paints a screen with no
+/// composer on it (a dialog's shape, `Composer::Absent`) until the next
 /// line, which paints the box again.
 const BOX_AT_STUB: &str = r#"#!/bin/sh
 stty -icanon 2>/dev/null
@@ -1972,13 +1973,15 @@ done
 /// for a client attached there only while tmux has recorded activity from
 /// it inside the bound (`5 s` here), as the crown's wake does (T-945), and
 /// the row says why. Past the bound, the client still attached, the words
-/// go in once, read by the pane no earlier than the bound, the drain never
-/// looping on its own refusal. A second ask meets a draft left with the
-/// client idle: the draft holds it (`after your draft`, pushed to a
-/// subscriber as the sample learns it), and it goes on its own line once the
-/// person sends their words. A third meets a box that reads as no composer
-/// (round 1): it holds (`box unknown ∙ leave`), and goes once the box reads
-/// empty again, once.
+/// go in once, the drain never looping on its own refusal; the stub's stamp
+/// of them is at or after the expiry, a receiver's stamp and no proof of
+/// when the paste went, which `crownwake::client_hold`'s unit pins to the
+/// millisecond. A second ask meets a draft left with the client idle: the
+/// draft holds it (`after your draft`), and it goes on its own line once the
+/// person sends their words. A third meets a box read as no composer (round
+/// 1): it holds (`box unknown ∙ leave`), and goes once the box reads empty
+/// again, once. The integration of the row's words; that a sample's own
+/// change of them pushes is `queued_person_push_tests` in the daemon (round 2).
 #[test]
 fn a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box() {
     let Some(h) = Harness::boot_bare(
@@ -2092,7 +2095,9 @@ fn a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box() {
             .find(|p| p.action == PendingAction::Ask && !p.in_flight)
             .and_then(|p| p.person)
     };
-    // The row word as a TUI learns it: a snapshot only after a push.
+    // The row word as a TUI would read it, a snapshot after a push: any
+    // push, the enqueue's included, so this does not tell which change
+    // pushed (the daemon's `queued_person_push_tests` does).
     let pushed = |sub: &mut TestClient, c: &mut TestClient, word: &str| {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while std::time::Instant::now() < deadline {
@@ -2154,9 +2159,11 @@ fn a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box() {
     wait_until(std::time::Duration::from_secs(15), "the ask past the bound", || {
         read_at(first).is_some()
     });
-    // The pane's own clock, the same one the bound's stamp was taken on.
+    // The stub's stamp, taken after it read the line: at or after the expiry
+    // says the words were not recorded early; the release's own boundary is
+    // `crownwake::client_hold`'s unit.
     let at = read_at(first).unwrap();
-    assert!(at >= renewed_expiry, "read before the bound: {at} < {renewed_expiry}");
+    assert!(at >= renewed_expiry, "stamped before the bound: {at} < {renewed_expiry}");
     assert_eq!(session_activity(&tmux_sock, &sid), renewed, "no input since the key");
     assert!(attach_listed(&tmux_sock, &sid), "the client still attached");
     std::thread::sleep(std::time::Duration::from_millis(1500));
@@ -2178,8 +2185,8 @@ fn a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box() {
     while sub.next_event(std::time::Duration::from_millis(300)).is_some() {}
     let kept_before = feed_count("queued_ask_kept");
     let _ = ask(&mut c, second);
-    // The enqueue's push has no word yet (no sample has read the box since
-    // the clients went idle); the sample that reads the draft pushes it.
+    // No sample has read the box since the clients went idle, so the
+    // enqueue's row has no word yet; a later snapshot has the draft's.
     pushed(&mut sub, &mut c, "after your draft");
     std::thread::sleep(std::time::Duration::from_millis(2000));
     assert_eq!(lines_with("mesimon-probe-966b"), 0, "nothing pasted into their draft");
