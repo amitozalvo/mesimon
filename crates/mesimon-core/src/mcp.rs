@@ -213,8 +213,9 @@ pub const CROWN_WAKES: &str = concat!(
      expected to take: past it, with the agent still working, this session is woken once \
      (has run its turn N min, past the M it expected), and get_ticket on it carries overrun \
      (expected_secs, running_secs) until that turn ends. The board stops, parks and moves \
-     nothing for it, and the next ask's expect_secs is the next. An expectation whose turn has \
-     begun does not outlive a restart of the board, on Claude or Codex. sample_agent reads a worker \
+     nothing for it, and the next ask's expect_secs is the next. A restart of the board keeps an \
+     expectation whose turn has begun only where it finds that same turn still running by the \
+     engine's own id for it; one it cannot find goes. sample_agent reads a worker \
      the crown started as the board sees it. \
      A delivered worker's get_ticket says who merges its branch (merge: by train, crown, \
      person or forge, and why), and the delivered line carries the word. The forge's — every \
@@ -1362,13 +1363,11 @@ pub const MAX_EXPECT_SECS: u64 = 86_400;
 fn expect_secs(args: &Value) -> Result<Option<u64>, String> {
     match args.get("expect_secs") {
         None | Some(Value::Null) => Ok(None),
-        Some(v) => v
-            .as_u64()
-            .filter(|n| (1..=MAX_EXPECT_SECS).contains(n))
-            .map(Some)
-            .ok_or_else(|| {
+        Some(v) => {
+            v.as_u64().filter(|n| (1..=MAX_EXPECT_SECS).contains(n)).map(Some).ok_or_else(|| {
                 format!("expect_secs is whole seconds, 1 to {MAX_EXPECT_SECS}, not {v}")
-            }),
+            })
+        }
     }
 }
 
@@ -2243,7 +2242,14 @@ mod tests {
         assert!(names(AgentTools::Off).is_empty());
         assert_eq!(
             names(AgentTools::Read),
-            ["get_ticket", "list_board", "read_shell", "read_note", "read_attachment", "sample_agent"]
+            [
+                "get_ticket",
+                "list_board",
+                "read_shell",
+                "read_note",
+                "read_attachment",
+                "sample_agent"
+            ]
         );
         assert_eq!(
             names(AgentTools::Annotate),
@@ -3544,7 +3550,7 @@ mod tests {
             "woken once (has run its turn N min, past the M it expected)",
             "carries overrun (expected_secs, running_secs) until that turn ends",
             "The board stops, parks and moves nothing for it",
-            "An expectation whose turn has begun does not outlive a restart of the board, on Claude or Codex",
+            "A restart of the board keeps an expectation whose turn has begun only where it finds that same turn still running by the engine's own id for it; one it cannot find goes",
             "sample_agent reads a worker the crown started as the board sees it",
         ] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES says {words:?}");

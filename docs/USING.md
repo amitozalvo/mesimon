@@ -667,8 +667,15 @@ The crown may say how long it expects a turn to take when it starts an agent or 
 (`expect_secs`). When the turn those words begin runs past that, the agent still working, the
 crown is told once (`has run its turn 25 min, past the 20 min it expected`), and `get_ticket`
 on that ticket carries `overrun` until the turn ends. Nothing is stopped, parked or moved by the
-timer; the crown's next words set the next expectation. An expectation whose turn has begun does
-not outlive a restart of the board, on Claude or Codex.
+timer; the crown's next words set the next expectation. A restart of the board keeps an
+expectation whose turn has begun only where it finds that same turn still running, by Claude's
+prompt id or Codex's turn id, and a wake owed after it says `after a restart`. One it cannot
+find goes. On Claude under a Team or Enterprise account or managed settings, a turn's prompt id
+reaches the board only with a permission prompt, so turns without a permission prompt are not
+found again. With no turn id on that road, a late report that the crown's words went in
+(`entered`) can begin their expectation during the next turn. The crown is told once, except
+that an abrupt stop of the board between a wake's delivery and its save can repeat that wake
+after the restart.
 
 ## Pull requests
 

@@ -15012,18 +15012,74 @@ fn stamp(ms: u64) -> String {
     )
 }
 
-/// T-973, rounds 1 to 3: no begun expectation outlives a restart, on either
-/// engine, since the ledger keeps nothing that binds it to its turn's own
-/// record. Round 3's counterexample (A's close, then B's prompt and tool, in
-/// the gap) and a continuing turn whose prompt was written late both wake
-/// nobody after the restart. On the mod pass, words down a `submit` whose
-/// `entered` comes only after a restart still begin their turn. The crown
-/// taken off, or moved to another ticket and back, takes every expectation
-/// with it.
+/// T-983 (after T-973's rounds 1 to 3): a begun expectation outlives a
+/// restart only by its turn's own prompt id, found again in the worker's
+/// transcript: the turn still running under it is timed from its begin, once,
+/// `after a restart`. Round 3's counterexample (A's close, then B's prompt
+/// and tool, in the gap) and a turn whose prompt record was not yet written
+/// at the restart wake nobody. The crown taken off, or moved to another
+/// ticket and back, takes every expectation with it.
 #[test]
-fn a_begun_expectation_does_not_outlive_a_restart() {
+fn a_begun_expectation_outlives_a_restart_by_its_own_prompt() {
+    expectation_restart("crown_overrun_restart", Part::Restart);
+}
+
+/// T-983, round 1: words typed mid-turn ride the running turn's prompt id,
+/// so a frame from the worker's pane under another prompt id is another
+/// turn, and it retires the begun expectation whether the board saw the
+/// first turn end or not: live, A then B with no idle between; and after a
+/// restart that found A open in the transcript, B's hook arriving before
+/// B's record. And a begin whose frame carries no id stays unbound, never
+/// taking the id an earlier turn left in the cache: its own permission
+/// prompt's id binds it, and a restart then finds that turn.
+#[test]
+fn another_prompt_s_id_retires_a_begun_expectation() {
+    expectation_restart("crown_overrun_retire", Part::Retire);
+}
+
+/// T-983, the mod pass: words down a `submit` whose `entered` comes only
+/// after a restart still begin their turn, bound to the prompt relayed
+/// before it; an `entered` that comes after another prompt has run (T-982's
+/// fourth read: A, A's end, B, then A's report), with or without a restart
+/// between, begins nothing.
+#[test]
+fn a_held_entered_begins_only_its_own_prompt_s_turn() {
+    if test_road() != "mod" {
+        return;
+    }
+    expectation_restart("crown_overrun_entered", Part::Entered);
+}
+
+/// T-983, round 2, the mod pass: a submit dispatched while the board has
+/// heard no prompt id from its seat (right after a restart) counts every
+/// id it hears, and two before its `entered` drop it: a missed overrun,
+/// never a wrong one. The reader's trace (A's prompt, A's end, B's, then
+/// A's late report), with and without a restart between, begins nothing;
+/// and a dispatch into a running R whose id was never heard (R's id, then
+/// A's, then A's report) does not begin either, the stated limit. A frame
+/// from a pane the seat left is heard by nothing.
+#[test]
+fn an_unknown_baseline_counts_every_prompt_id() {
+    if test_road() != "mod" {
+        return;
+    }
+    expectation_restart("crown_overrun_unheard", Part::Unheard);
+}
+
+/// Which part of the restart cases one test runs (each under nextest's
+/// 120 s limit).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Restart,
+    Entered,
+    Retire,
+    Unheard,
+}
+
+fn expectation_restart(name: &str, part: Part) {
+    let entered = part == Part::Entered;
     let Some(h) = Harness::boot_with_env(
-        "crown_overrun_restart",
+        name,
         Some(RECORDING_STUB),
         &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
     ) else {
@@ -15031,7 +15087,7 @@ fn a_begun_expectation_does_not_outlive_a_restart() {
     };
     init_repo(&h.repo, "a.txt", "hello\n");
     let hook_sock = h.paths.hook_sock();
-    let mut c = h.client("crown_overrun_restart");
+    let mut c = h.client(name);
     let got = h.dir.join("got.txt");
     let lines_with = |needle: &str| -> Vec<String> {
         std::fs::read_to_string(&got)
@@ -15068,7 +15124,34 @@ fn a_begun_expectation_does_not_outlive_a_restart() {
         use std::io::Write;
         writeln!(f, "{r}").unwrap();
     };
-    let prompt = |at: u64| record("user", at, json!({"message": {"content": "go"}}));
+    let prompt = |at: u64, pid: &str| {
+        record("user", at, json!({"promptId": pid, "message": {"content": "go"}}))
+    };
+    // A frame under a prompt, as Claude Code sends every one (T-983), from
+    // the worker's own pane: this test may run inside another tmux pane,
+    // whose key a plain `hook_send` carries, and a frame from a pane the
+    // seat left speaks for nothing (round 2).
+    let wpane: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
+    let from = |sid: uuid::Uuid, event: &str, pid: &str, rest: serde_json::Value, pane: &str| {
+        let mut body = rest;
+        body["prompt_id"] = json!(pid);
+        hook_send_from_pane(
+            &hook_sock,
+            &sid.to_string(),
+            event,
+            None,
+            Some(pane),
+            &body.to_string(),
+        );
+    };
+    let under = |sid: uuid::Uuid, event: &str, pid: &str, rest: serde_json::Value| {
+        let pane = wpane.borrow().clone().expect("the worker's pane key");
+        from(sid, event, pid, rest, &pane);
+    };
+    // The same frame from a pane no seat has.
+    let elsewhere = |sid: uuid::Uuid, event: &str, pid: &str, rest: serde_json::Value| {
+        from(sid, event, pid, rest, "99999:%99");
+    };
     let close = |at: u64| record("system", at, json!({"subtype": "turn_duration"}));
 
     let a = c.create_ticket("coordinate");
@@ -15107,12 +15190,60 @@ fn a_begun_expectation_does_not_outlive_a_restart() {
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).unwrap().id;
+    wait_until(std::time::Duration::from_secs(15), "the worker's pane key", || {
+        c.board().sessions.iter().any(|s| s.id == ws && s.pane_key.is_some())
+    });
+    *wpane.borrow_mut() =
+        c.board().sessions.iter().find(|s| s.id == ws).and_then(|s| s.pane_key.clone());
+    // The ledger's expectation for W, as the daemon last wrote it: the
+    // facts this test waits on, never a clock.
+    let ledger = h.paths.state_dir.join("crown.json");
+    let expect_of = || -> Option<serde_json::Value> {
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&ledger).ok()?).ok()?;
+        v["expects"].get(w.to_string()).cloned()
+    };
+    let bound_to = |pid: &str| {
+        let pid = pid.to_string();
+        wait_until(
+            std::time::Duration::from_secs(15),
+            &format!("begun and bound to {pid}"),
+            || expect_of().is_some_and(|e| e["began_ms"].is_u64() && e["turn"]["id"] == json!(pid)),
+        );
+    };
+    let begun_unbound = || {
+        wait_until(std::time::Duration::from_secs(15), "begun and unbound", || {
+            expect_of().is_some_and(|e| e["began_ms"].is_u64() && e.get("turn").is_none())
+        });
+    };
+    let gone = |what: &str| {
+        wait_until(std::time::Duration::from_secs(15), what, || expect_of().is_none());
+    };
+    // How many of W's frames of `event` the daemon has handled: it writes
+    // each to the feed as it takes it, so a count past one sent is the
+    // frame handled.
+    let activity = h.paths.state_dir.join("activity.jsonl");
+    let handled = |event: &str| -> usize {
+        std::fs::read_to_string(&activity)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|v| {
+                v["kind"] == "hook" && v["event"] == event && v["session"] == ws.to_string()
+            })
+            .count()
+    };
+    let after = |event: &str, n: usize| {
+        wait_until(std::time::Duration::from_secs(15), &format!("{event} handled"), || {
+            handled(event) > n
+        });
+    };
     let start = format!(
         r#"{{"session_id":"x","transcript_path":"{}","cwd":"/tmp"}}"#,
         transcript.display()
     );
     let t0 = epoch_ms();
-    prompt(t0 - 60_000);
+    prompt(t0 - 60_000, "P0");
     close(t0 - 30_000);
     hook_send_with(&hook_sock, &ws.to_string(), "SessionStart", Some("startup"), &start);
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -15133,7 +15264,7 @@ fn a_begun_expectation_does_not_outlive_a_restart() {
     });
     crown_turn(&mut c, sa);
     let overrun = format!("{worker} has run its turn ");
-    let ask = |c: &mut TestClient, text: &str, secs: u64| {
+    let ask_by = |c: &mut TestClient, text: &str, secs: u64, deliver: Deliver| {
         let v = read(c, sa, &kw).unwrap();
         match c.send(
             Principal::Agent { session: sa },
@@ -15142,7 +15273,7 @@ fn a_begun_expectation_does_not_outlive_a_restart() {
                 text: text.into(),
                 seen: v.seen,
                 plan: false,
-                deliver: Deliver::Idle,
+                deliver,
                 expect_secs: Some(secs),
             },
         ) {
@@ -15150,102 +15281,18 @@ fn a_begun_expectation_does_not_outlive_a_restart() {
             other => panic!("ask_agent: {other:?}"),
         }
     };
-    // Back from a restart, the worker's next frame says it works, and the
-    // crown's that it is idle.
-    let after_restart = |c: &mut TestClient| {
-        send(ws, "PostToolUse", r#"{"tool_name":"Read","tool_response":{}}"#);
+    let ask = |c: &mut TestClient, text: &str, secs: u64| ask_by(c, text, secs, Deliver::Idle);
+    // Back from a restart, the worker's next frame says it works, under the
+    // prompt it runs, and the crown's that it is idle.
+    let after_restart = |c: &mut TestClient, pid: &str| {
+        under(ws, "PostToolUse", pid, json!({"tool_name": "Read", "tool_response": {}}));
         c.await_state(ws, "the worker running again", |s| *s == SessionState::Running);
         send(sa, "Stop", r#"{"stop_hook_active":false}"#);
         c.await_state(sa, "the crown idle again", |s| matches!(s, SessionState::Idle { .. }));
     };
 
-    // ---- 1. begun, then a restart: A's close and B's prompt in the gap ------
-    // Round 3's counterexample: A's prompt, A's close a moment after the
-    // begin, B's prompt and B's tool. No begun expectation outlives a
-    // restart, so B's turn is not timed against A's deadline.
-    ask(&mut c, "mesimon-probe-973 one", 10);
-    wait_until(std::time::Duration::from_secs(10), "the first ask's words", || {
-        !lines_with("mesimon-probe-973 one").is_empty()
-    });
-    prompt(epoch_ms());
-    send(ws, "UserPromptSubmit", r#"{"prompt":"mesimon-probe-973 one"}"#);
-    c.await_state(ws, "running", |s| *s == SessionState::Running);
-    drop(c);
-    h.restart_after(|| {
-        let now = epoch_ms();
-        close(now);
-        prompt(now + 1);
-        record(
-            "assistant",
-            now + 2,
-            json!({"message": {"content": [
-            {"type": "tool_use", "id": "b", "name": "Bash", "input": {}}]}}),
-        );
-    });
-    let mut c = h.client("crown_overrun_restart_2");
-    after_restart(&mut c);
-    std::thread::sleep(std::time::Duration::from_millis(12_000));
-    assert_eq!(lines_with(&overrun).len(), 0, "B's turn is not A's");
-    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
-    send(ws, "Stop", r#"{"stop_hook_active":false}"#);
-    c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    close(epoch_ms());
-    std::thread::sleep(std::time::Duration::from_millis(2000));
-    if matches!(c.board().live_agent(a).map(|r| r.state.clone()), Some(SessionState::Idle { .. })) {
-        crown_turn(&mut c, sa);
-    }
-
-    // ---- 2. begun, then a restart: the same turn, its prompt written late ---
-    // The turn goes on and its prompt reached the transcript seconds after
-    // the begin: still no identity binds the expectation to it, so it is
-    // not kept, and says nothing.
-    ask(&mut c, "mesimon-probe-973 two", 10);
-    wait_until(std::time::Duration::from_secs(15), "the second ask's words", || {
-        !lines_with("mesimon-probe-973 two").is_empty()
-    });
-    send(ws, "UserPromptSubmit", r#"{"prompt":"mesimon-probe-973 two"}"#);
-    c.await_state(ws, "running", |s| *s == SessionState::Running);
-    std::thread::sleep(std::time::Duration::from_millis(1500));
-    prompt(epoch_ms());
-    drop(c);
-    h.restart();
-    let mut c = h.client("crown_overrun_restart_3");
-    after_restart(&mut c);
-    std::thread::sleep(std::time::Duration::from_millis(12_000));
-    assert_eq!(lines_with(&overrun).len(), 0, "a begun expectation does not outlive a restart");
-    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
-    send(ws, "Stop", r#"{"stop_hook_active":false}"#);
-    c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    close(epoch_ms());
-    std::thread::sleep(std::time::Duration::from_millis(2000));
-    if matches!(c.board().live_agent(a).map(|r| r.state.clone()), Some(SessionState::Idle { .. })) {
-        crown_turn(&mut c, sa);
-    }
-
-    // ---- 4. the mod pass: a submit whose entered comes after a restart ------
-    let mut c = if mod_road {
-        switch("mod-hold-entered", true);
-        ask(&mut c, "mesimon-probe-973 three", 4);
-        wait_until(std::time::Duration::from_secs(15), "the third ask's words", || {
-            !lines_with("mesimon-probe-973 three").is_empty()
-        });
-        drop(c);
-        h.restart();
-        let mut c = h.client("crown_overrun_restart_5");
-        send(sa, "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sa, "the crown idle again", |s| matches!(s, SessionState::Idle { .. }));
-        prompt(epoch_ms());
-        switch("mod-release", true);
-        std::thread::sleep(std::time::Duration::from_millis(1000));
-        send(ws, "UserPromptSubmit", r#"{"prompt":"mesimon-probe-973 three"}"#);
-        c.await_state(ws, "running", |s| *s == SessionState::Running);
-        wait_until(std::time::Duration::from_secs(25), "the overrun of the held submit", || {
-            lines_with(&overrun).len() == 1
-        });
-        crown_turn(&mut c, sa);
-        switch("mod-hold-entered", false);
-        switch("mod-release", false);
-        send(ws, "Stop", r#"{"stop_hook_active":false}"#);
+    let tidy = |c: &mut TestClient, pid: &str| {
+        under(ws, "Stop", pid, json!({"stop_hook_active": false}));
         c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
         close(epoch_ms());
         std::thread::sleep(std::time::Duration::from_millis(2000));
@@ -15253,13 +15300,377 @@ fn a_begun_expectation_does_not_outlive_a_restart() {
             c.board().live_agent(a).map(|r| r.state.clone()),
             Some(SessionState::Idle { .. })
         ) {
-            crown_turn(&mut c, sa);
+            crown_turn(c, sa);
         }
-        c
-    } else {
-        c
     };
-    let base = lines_with(&overrun).len();
+
+    let mut base = 0;
+    if part == Part::Retire {
+        // Held reports (mod): the receipt comes only once released, so the
+        // begin is the injected prompt's, in the order this test sets.
+        let hold = |on: bool| {
+            if mod_road {
+                switch("mod-hold-entered", on);
+            }
+        };
+        let release = || {
+            if mod_road {
+                let n = handled("ModSubmit");
+                switch("mod-release", true);
+                after("ModSubmit", n);
+                switch("mod-release", false);
+                switch("mod-hold-entered", false);
+            }
+        };
+
+        // ---- R1. live: A, then a frame under B with no idle between --------
+        hold(true);
+        ask(&mut c, "mesimon-probe-983 retire live", 600);
+        wait_until(std::time::Duration::from_secs(10), "R1's words", || {
+            !lines_with("mesimon-probe-983 retire live").is_empty()
+        });
+        under(ws, "UserPromptSubmit", "RA", json!({"prompt": "mesimon-probe-983 retire live"}));
+        c.await_state(ws, "A running", |s| *s == SessionState::Running);
+        release();
+        bound_to("RA");
+        under(ws, "UserPromptSubmit", "RB", json!({"prompt": "a person's words"}));
+        gone("A retired by B's id");
+        assert_eq!(lines_with(&overrun).len(), 0, "B is not timed for A");
+        assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+        tidy(&mut c, "RB");
+
+        // ---- R1b. the late receipt (mod): the `entered` before the prompt ---
+        if mod_road {
+            hold(true);
+            ask(&mut c, "mesimon-probe-983 receipt first", 600);
+            wait_until(std::time::Duration::from_secs(10), "R1b's words", || {
+                !lines_with("mesimon-probe-983 receipt first").is_empty()
+            });
+            release();
+            begun_unbound();
+            // From a pane the seat left, an id binds nothing (round 2): had
+            // RX bound it, RA2 would retire it, and it would not stand.
+            elsewhere(ws, "PostToolUse", "RX", json!({"tool_name": "Read", "tool_response": {}}));
+            under(
+                ws,
+                "UserPromptSubmit",
+                "RA2",
+                json!({"prompt": "mesimon-probe-983 receipt first"}),
+            );
+            bound_to("RA2");
+            tidy(&mut c, "RA2");
+        }
+
+        // ---- R2. a restart finds A open; B's hook comes before B's record --
+        hold(true);
+        ask(&mut c, "mesimon-probe-983 retire restart", 600);
+        wait_until(std::time::Duration::from_secs(10), "R2's words", || {
+            !lines_with("mesimon-probe-983 retire restart").is_empty()
+        });
+        prompt(epoch_ms(), "RC");
+        under(ws, "UserPromptSubmit", "RC", json!({"prompt": "mesimon-probe-983 retire restart"}));
+        c.await_state(ws, "A running", |s| *s == SessionState::Running);
+        release();
+        bound_to("RC");
+        drop(c);
+        h.restart();
+        c = h.client("crown_overrun_retire_2");
+        // The restore found RC open and kept it (rewritten, as restored).
+        let _ = c.board();
+        bound_to("RC");
+        under(ws, "UserPromptSubmit", "RD", json!({"prompt": "a person's words"}));
+        c.await_state(ws, "B running", |s| *s == SessionState::Running);
+        gone("the restored A retired by B's id");
+        assert_eq!(lines_with(&overrun).len(), 0, "the restored A is not B's");
+        send(sa, "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sa, "the crown idle again", |s| matches!(s, SessionState::Idle { .. }));
+        tidy(&mut c, "RD");
+
+        // ---- R3. an id-less begin binds its own permission prompt's id ------
+        // The cache holds RD's id; the begin's frame carries none, so it
+        // stays unbound, a stale pane's id binds nothing, and the
+        // permission prompt's id is the turn's. A restart then finds that
+        // turn open and times it from its begin.
+        hold(true);
+        ask(&mut c, "mesimon-probe-983 idless", 8);
+        wait_until(std::time::Duration::from_secs(10), "R3's words", || {
+            !lines_with("mesimon-probe-983 idless").is_empty()
+        });
+        send(ws, "UserPromptSubmit", r#"{"prompt":"mesimon-probe-983 idless"}"#);
+        c.await_state(ws, "running", |s| *s == SessionState::Running);
+        let begun = epoch_ms();
+        release();
+        begun_unbound();
+        let permission = json!({"tool_name": "Bash", "tool_input": {"command": "true"}});
+        // Had the stale pane's RX bound it, RE would retire it.
+        elsewhere(ws, "PermissionRequest", "RX", permission.clone());
+        prompt(begun, "RE");
+        under(ws, "PermissionRequest", "RE", permission);
+        bound_to("RE");
+        drop(c);
+        h.restart();
+        c = h.client("crown_overrun_retire_3");
+        after_restart(&mut c, "RE");
+        wait_until(std::time::Duration::from_secs(25), "the bound turn's overrun", || {
+            lines_with(&overrun).len() == 1
+        });
+        assert!(epoch_ms() >= begun + 8_000, "timed from the begin before the restart");
+        assert!(lines_with(&overrun)[0].contains("after a restart"), "{:?}", lines_with(&overrun));
+        return;
+    }
+    if part == Part::Unheard && mod_road {
+        // A submit dispatched after a restart, before any id is heard: the
+        // daemon's cache is empty, and the dispatch says the baseline is
+        // unknown.
+        let dispatch_unheard = |words: &str, name: &str| -> TestClient {
+            h.restart();
+            let mut c = h.client(name);
+            send(sa, "Stop", r#"{"stop_hook_active":false}"#);
+            c.await_state(sa, "the crown idle again", |s| matches!(s, SessionState::Idle { .. }));
+            switch("mod-hold-entered", true);
+            ask_by(&mut c, words, 600, Deliver::Now);
+            wait_until(std::time::Duration::from_secs(15), "the words", || {
+                !lines_with(words).is_empty()
+            });
+            wait_until(std::time::Duration::from_secs(15), "unknown baseline", || {
+                expect_of().is_some_and(|e| e.get("base").is_none() && e["frame"].is_string())
+            });
+            // Its report is held until the release; the crown's own wakes
+            // go through at once (the switch holds every pane's submit).
+            switch("mod-hold-entered", false);
+            c
+        };
+        let release = || {
+            let n = handled("ModSubmit");
+            switch("mod-release", true);
+            after("ModSubmit", n);
+            switch("mod-release", false);
+        };
+
+        // ---- U1. A's prompt first, A's end, B's, then A's late report ------
+        for restart in [false, true] {
+            drop(c);
+            c = dispatch_unheard(
+                &format!("mesimon-probe-983 unheard {restart}"),
+                "crown_overrun_unheard_1",
+            );
+            // From a pane the seat left, an id is heard by nothing: A's is
+            // then the only one (below).
+            elsewhere(ws, "PostToolUse", "UX", json!({"tool_name": "Read", "tool_response": {}}));
+            if restart {
+                drop(c);
+                h.restart();
+                c = h.client("crown_overrun_unheard_2");
+                send(sa, "Stop", r#"{"stop_hook_active":false}"#);
+                c.await_state(sa, "the crown idle again", |s| {
+                    matches!(s, SessionState::Idle { .. })
+                });
+            }
+            let (pa, pb) = (format!("UA{restart}"), format!("UB{restart}"));
+            prompt(epoch_ms(), &pa);
+            under(ws, "UserPromptSubmit", &pa, json!({"prompt": "A"}));
+            c.await_state(ws, "A running", |s| *s == SessionState::Running);
+            wait_until(std::time::Duration::from_secs(15), "A's id heard alone", || {
+                expect_of().is_some_and(|e| e["heard"] == json!([pa]))
+            });
+            under(ws, "Stop", &pa, json!({"stop_hook_active": false}));
+            c.await_state(ws, "A idle", |s| matches!(s, SessionState::Idle { .. }));
+            close(epoch_ms());
+            prompt(epoch_ms(), &pb);
+            under(ws, "UserPromptSubmit", &pb, json!({"prompt": "a person's words"}));
+            c.await_state(ws, "B running", |s| *s == SessionState::Running);
+            release();
+            gone(&format!("A's report begins nothing in B ({restart})"));
+            assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+            tidy(&mut c, &pb);
+        }
+
+        // ---- U2. the stated limit: R's id, then A's, then A's report -------
+        // R runs under an id this daemon never heard; the words go down a
+        // submit held to R's end, and a second restart takes the owed
+        // entry, so only the report could begin A. R's id and A's are both
+        // new: ambiguous, and A does not begin.
+        prompt(epoch_ms(), "UR");
+        under(ws, "UserPromptSubmit", "UR", json!({"prompt": "a long one"}));
+        c.await_state(ws, "R running", |s| *s == SessionState::Running);
+        drop(c);
+        c = dispatch_unheard("mesimon-probe-983 unheard R", "crown_overrun_unheard_4");
+        drop(c);
+        h.restart();
+        c = h.client("crown_overrun_unheard_5");
+        send(sa, "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sa, "the crown idle again", |s| matches!(s, SessionState::Idle { .. }));
+        under(ws, "PostToolUse", "UR", json!({"tool_name": "Read", "tool_response": {}}));
+        under(ws, "Stop", "UR", json!({"stop_hook_active": false}));
+        c.await_state(ws, "R idle", |s| matches!(s, SessionState::Idle { .. }));
+        close(epoch_ms());
+        prompt(epoch_ms(), "UA");
+        under(ws, "UserPromptSubmit", "UA", json!({"prompt": "mesimon-probe-983 unheard R"}));
+        c.await_state(ws, "A running", |s| *s == SessionState::Running);
+        wait_until(std::time::Duration::from_secs(15), "both ids new", || {
+            expect_of().is_some_and(|e| e["heard"] == json!(["UR", "UA"]))
+        });
+        release();
+        gone("ambiguous: A does not begin");
+        return;
+    }
+    if !entered {
+        // ---- 0. begun, then a restart: the same turn runs on under its prompt ----
+        // Its prompt id is in the transcript with nothing after it that ends the
+        // turn, so the expectation comes back with its count and wakes the crown
+        // once, saying it may be late.
+        ask(&mut c, "mesimon-probe-973 zero", 6);
+        wait_until(std::time::Duration::from_secs(10), "the zeroth ask's words", || {
+            !lines_with("mesimon-probe-973 zero").is_empty()
+        });
+        under(ws, "UserPromptSubmit", "Z", json!({"prompt": "mesimon-probe-973 zero"}));
+        c.await_state(ws, "running", |s| *s == SessionState::Running);
+        let begun = epoch_ms();
+        prompt(begun, "Z");
+        drop(c);
+        h.restart();
+        c = h.client("crown_overrun_restart_1");
+        after_restart(&mut c, "Z");
+        wait_until(std::time::Duration::from_secs(25), "the restored turn's overrun", || {
+            lines_with(&overrun).len() == 1
+        });
+        assert!(epoch_ms() >= begun + 6_000, "timed from the begin before the restart");
+        assert_eq!(
+            lines_with(&overrun).iter().filter(|l| l.contains("after a restart")).count(),
+            1,
+            "{:?}",
+            lines_with(&overrun)
+        );
+        assert!(read(&mut c, sa, &kw).unwrap().overrun.is_some());
+        std::thread::sleep(std::time::Duration::from_millis(2000));
+        assert_eq!(lines_with(&overrun).len(), 1, "once");
+        tidy(&mut c, "Z");
+        base = lines_with(&overrun).len();
+
+        // ---- 1. begun, then a restart: A's close and B's prompt in the gap ------
+        // Round 3's counterexample: A's prompt, A's close a moment after the
+        // begin, B's prompt and B's tool. A's prompt id is followed by a close
+        // and another prompt's, so B's turn is not timed against A's deadline.
+        ask(&mut c, "mesimon-probe-973 one", 3);
+        wait_until(std::time::Duration::from_secs(10), "the first ask's words", || {
+            !lines_with("mesimon-probe-973 one").is_empty()
+        });
+        prompt(epoch_ms(), "A");
+        under(ws, "UserPromptSubmit", "A", json!({"prompt": "mesimon-probe-973 one"}));
+        c.await_state(ws, "running", |s| *s == SessionState::Running);
+        drop(c);
+        h.restart_after(|| {
+            let now = epoch_ms();
+            close(now);
+            prompt(now + 1, "B");
+            record(
+                "assistant",
+                now + 2,
+                json!({"message": {"content": [
+                {"type": "tool_use", "id": "b", "name": "Bash", "input": {}}]}}),
+            );
+        });
+        c = h.client("crown_overrun_restart_2");
+        after_restart(&mut c, "B");
+        std::thread::sleep(std::time::Duration::from_millis(6_000));
+        assert_eq!(lines_with(&overrun).len(), base, "B's turn is not A's");
+        assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+        tidy(&mut c, "B");
+
+        // ---- 2. begun, then a restart before its prompt's record is written ----
+        // The record lands 80-180 ms after the hook (measured, 2.1.310): a
+        // restart inside that finds no record of the turn, and keeps nothing.
+        ask(&mut c, "mesimon-probe-973 two", 3);
+        wait_until(std::time::Duration::from_secs(15), "the second ask's words", || {
+            !lines_with("mesimon-probe-973 two").is_empty()
+        });
+        under(ws, "UserPromptSubmit", "C", json!({"prompt": "mesimon-probe-973 two"}));
+        c.await_state(ws, "running", |s| *s == SessionState::Running);
+        drop(c);
+        h.restart();
+        c = h.client("crown_overrun_restart_3");
+        // The socket is up before the ledger is read; the writer answers only
+        // after it, so a snapshot dates the record past the restore.
+        let _ = c.board();
+        prompt(epoch_ms(), "C");
+        after_restart(&mut c, "C");
+        std::thread::sleep(std::time::Duration::from_millis(6_000));
+        assert_eq!(lines_with(&overrun).len(), base, "a turn not found is not kept");
+        assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+        tidy(&mut c, "C");
+    }
+
+    // ---- 4. the mod pass: a submit whose entered comes after a restart ------
+    // Its prompt is relayed before its `entered`, in the engine's order: the
+    // turn begins at the report, bound to that prompt.
+    if entered && mod_road {
+        switch("mod-hold-entered", true);
+        ask(&mut c, "mesimon-probe-973 three", 4);
+        wait_until(std::time::Duration::from_secs(15), "the third ask's words", || {
+            !lines_with("mesimon-probe-973 three").is_empty()
+        });
+        drop(c);
+        h.restart();
+        c = h.client("crown_overrun_restart_5");
+        send(sa, "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sa, "the crown idle again", |s| matches!(s, SessionState::Idle { .. }));
+        prompt(epoch_ms(), "T3");
+        under(ws, "UserPromptSubmit", "T3", json!({"prompt": "mesimon-probe-973 three"}));
+        c.await_state(ws, "running", |s| *s == SessionState::Running);
+        switch("mod-release", true);
+        bound_to("T3");
+        // Read where it stands, not by its wake: a wake still owed takes
+        // the overrun into its own line (the higher cause).
+        wait_until(std::time::Duration::from_secs(25), "the overrun of the held submit", || {
+            read(&mut c, sa, &kw).unwrap().overrun.is_some()
+        });
+        crown_turn(&mut c, sa);
+        switch("mod-hold-entered", false);
+        switch("mod-release", false);
+        tidy(&mut c, "T3");
+
+        // ---- 4b. an entered that comes after another prompt has run ---------
+        // The addendum (T-982's fourth read): A's turn runs and ends without
+        // its report, B begins, and A's `entered` comes then. Two prompts new
+        // since the dispatch: A's words' turn is not B's, and nothing begins.
+        for restart in [false, true] {
+            switch("mod-hold-entered", true);
+            let words = format!("mesimon-probe-973 late {restart}");
+            ask(&mut c, &words, 4);
+            wait_until(std::time::Duration::from_secs(15), "the late ask's words", || {
+                !lines_with(&words).is_empty()
+            });
+            if restart {
+                drop(c);
+                h.restart();
+                c = h.client("crown_overrun_restart_late");
+                send(sa, "Stop", r#"{"stop_hook_active":false}"#);
+                c.await_state(sa, "the crown idle again", |s| {
+                    matches!(s, SessionState::Idle { .. })
+                });
+            }
+            let (pa, pb) = (format!("LA{restart}"), format!("LB{restart}"));
+            prompt(epoch_ms(), &pa);
+            under(ws, "UserPromptSubmit", &pa, json!({"prompt": words}));
+            c.await_state(ws, "A running", |s| *s == SessionState::Running);
+            under(ws, "Stop", &pa, json!({"stop_hook_active": false}));
+            c.await_state(ws, "A idle", |s| matches!(s, SessionState::Idle { .. }));
+            close(epoch_ms());
+            prompt(epoch_ms(), &pb);
+            under(ws, "UserPromptSubmit", &pb, json!({"prompt": "a person's words"}));
+            c.await_state(ws, "B running", |s| *s == SessionState::Running);
+            let n = handled("ModSubmit");
+            switch("mod-release", true);
+            after("ModSubmit", n);
+            gone(&format!("B is not timed for A ({restart})"));
+            assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+            switch("mod-hold-entered", false);
+            switch("mod-release", false);
+            tidy(&mut c, &pb);
+        }
+
+        return;
+    }
 
     // ---- 5. the crown taken off, or moved and back, takes them --------------
     for transfer in [false, true] {
@@ -15267,7 +15678,7 @@ fn a_begun_expectation_does_not_outlive_a_restart() {
         wait_until(std::time::Duration::from_secs(15), "the fourth ask's words", || {
             !lines_with(&format!("mesimon-probe-973 four {transfer}")).is_empty()
         });
-        send(ws, "UserPromptSubmit", r#"{"prompt":"four"}"#);
+        under(ws, "UserPromptSubmit", "F", json!({"prompt": "four"}));
         c.await_state(ws, "running", |s| *s == SessionState::Running);
         if transfer {
             assert!(matches!(c.request(Command::CrownTicket { id: b }), Response::Ok));
@@ -15289,6 +15700,213 @@ fn a_begun_expectation_does_not_outlive_a_restart() {
             crown_turn(&mut c, sa);
         }
     }
+}
+
+/// T-983: a Codex worker's begun expectation outlives a restart by the
+/// runtime's turn id. A start's launch turn whose id comes one observation
+/// after the edge into `Running` (Codex 0.164.0 sends `turn/started` a frame
+/// after `thread/status/changed`) takes that id; after a restart it is owed
+/// nothing until the runtime names its turn again, the same id, and then
+/// wakes the crown once, `after a restart`. An ask's turn the runtime has
+/// replaced by another during the restart wakes nobody.
+#[test]
+fn a_codex_expectation_outlives_a_restart_by_its_turn_id() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\n\
+                        while IFS= read -r line; do \
+                        printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+    const FAKE_RUNTIME: &str = include_str!("common/fake_codex_runtime.py");
+    let Some(h) = Harness::boot_with_env(
+        "crown_codex_expect",
+        Some(STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let runtime = h.dir.join("fake-codex-runtime.py");
+    std::fs::write(&runtime, FAKE_RUNTIME).unwrap();
+    std::fs::set_permissions(&runtime, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+        .unwrap();
+    h.set_env("MESIMON_CODEX_RUNTIME_BIN", &runtime);
+    h.set_env("MESIMON_CODEX_BIN", h.dir.join("must-not-launch-real-codex"));
+    h.set_env("MESIMON_CODEX_HOME", h.dir.join("synthetic-codex-home"));
+    h.set_env("MESIMON_SLEEP_MIN_AGE_MS", "0");
+    h.restart();
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_codex_expect");
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let draws = std::cell::Cell::new(0u32);
+    let control = |id: uuid::Uuid, mut value: serde_json::Value| {
+        // Each instruction differs from the last, or the runtime skips it.
+        draws.set(draws.get() + 1);
+        value["n"] = json!(draws.get());
+        let path = mesimon_daemon::agents::codex::snapshot_path(&h.paths, id);
+        let control = std::path::PathBuf::from(format!("{}.control", path.display()));
+        mesimon_daemon::agents::codex::write_json(&control, &value).unwrap();
+    };
+    let running = json!({"state": "running"});
+    let idle = json!({"state": "idle", "stop_reason": "end_turn"});
+
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-983 codex");
+    let kw = key_of(&mut c, w);
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    assert!(matches!(
+        c.request(Command::SetAgentProvider {
+            provider: mesimon_core::board::AgentProvider::Codex
+        }),
+        Response::Ok
+    ));
+    let v = read(&mut c, sa, &kw).unwrap();
+    assert!(matches!(
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket {
+                key: kw.clone(),
+                seen: v.seen,
+                plan: false,
+                tier: None,
+                workspace: Some("worktree".into()),
+                expect_secs: Some(8),
+            },
+        ),
+        Response::AgentStarted { .. }
+    ));
+    wait_until(std::time::Duration::from_secs(20), "W's Codex seat", || {
+        c.board().live_agent(w).is_some_and(|s| s.kind == SessionKind::Codex)
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    c.await_state(ws, "the synthetic Codex at its composer", |s| {
+        matches!(s, SessionState::Idle { .. })
+    });
+    let worker = format!("{kw} \"mesimon-probe-983 codex\"");
+    let overrun = format!("{worker} has run its turn ");
+
+    // ---- 1. the launch turn, its id a frame late, then a restart -----------
+    control(ws, json!({"state": running}));
+    c.await_state(ws, "the launch turn running", |s| *s == SessionState::Running);
+    let begun = epoch_ms();
+    control(ws, json!({"state": running, "turn_id": "launch-turn"}));
+    wait_until(std::time::Duration::from_secs(10), "the turn id observed", || {
+        c.board()
+            .sessions
+            .iter()
+            .any(|s| s.id == ws && s.codex_turn_id.as_deref() == Some("launch-turn"))
+    });
+    drop(c);
+    h.restart();
+    let mut c = h.client("crown_codex_expect_2");
+    stop(&mut c, sa);
+    wait_until(std::time::Duration::from_secs(25), "the restored launch turn's overrun", || {
+        lines_with(&overrun).len() == 1
+    });
+    assert!(epoch_ms() >= begun + 8_000, "timed from the begin before the restart");
+    assert!(lines_with(&overrun)[0].contains("after a restart"), "{:?}", lines_with(&overrun));
+    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_some());
+    control(ws, json!({"state": idle, "turn_id": "launch-turn"}));
+    c.await_state(ws, "the launch turn over", |s| matches!(s, SessionState::Idle { .. }));
+    wait_until(std::time::Duration::from_secs(10), "overrun gone with its turn", || {
+        read(&mut c, sa, &kw).unwrap().overrun.is_none()
+    });
+    if matches!(c.board().live_agent(a).map(|r| r.state.clone()), Some(SessionState::Idle { .. })) {
+        start(&mut c, sa);
+        stop(&mut c, sa);
+    }
+
+    // ---- 2. an ask's turn, replaced by another while no daemon listened ----
+    let probe = "mesimon-probe-983 replaced";
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentAskTicket {
+            key: kw.clone(),
+            text: probe.into(),
+            seen: v.seen,
+            plan: false,
+            deliver: Deliver::Idle,
+            expect_secs: Some(6),
+        },
+    ) {
+        Response::AgentAsked { held_for_person: false, .. } => {}
+        other => panic!("ask_agent: {other:?}"),
+    }
+    let input = h.dir.join(format!("{ws}.input"));
+    wait_until(std::time::Duration::from_secs(15), "the ask's words in W's pane", || {
+        String::from_utf8_lossy(&std::fs::read(&input).unwrap_or_default()).contains(probe)
+    });
+    control(ws, json!({"state": running, "turn_id": "ask-turn"}));
+    c.await_state(ws, "the ask's turn running", |s| *s == SessionState::Running);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    drop(c);
+    h.restart_after(|| control(ws, json!({"state": running, "turn_id": "another-turn"})));
+    let mut c = h.client("crown_codex_expect_3");
+    stop(&mut c, sa);
+    std::thread::sleep(std::time::Duration::from_millis(10_000));
+    assert_eq!(lines_with(&overrun).len(), 1, "another turn is not the ask's");
+    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+    control(ws, json!({"state": idle, "turn_id": "another-turn"}));
+    c.await_state(ws, "the other turn over", |s| matches!(s, SessionState::Idle { .. }));
+    if matches!(c.board().live_agent(a).map(|r| r.state.clone()), Some(SessionState::Idle { .. })) {
+        start(&mut c, sa);
+        stop(&mut c, sa);
+    }
+
+    // ---- 3. verified after a restart, then the runtime names another turn --
+    // Round 1: A's end and B's start fell between two polls, so the seat
+    // never left `Running`; B's id ends A's expectation, verified or not.
+    let probe = "mesimon-probe-983 verified";
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentAskTicket {
+            key: kw.clone(),
+            text: probe.into(),
+            seen: v.seen,
+            plan: false,
+            deliver: Deliver::Idle,
+            expect_secs: Some(8),
+        },
+    ) {
+        Response::AgentAsked { held_for_person: false, .. } => {}
+        other => panic!("ask_agent: {other:?}"),
+    }
+    wait_until(std::time::Duration::from_secs(15), "the third ask's words in W's pane", || {
+        String::from_utf8_lossy(&std::fs::read(&input).unwrap_or_default()).contains(probe)
+    });
+    control(ws, json!({"state": running, "turn_id": "turn-a"}));
+    c.await_state(ws, "A running", |s| *s == SessionState::Running);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    drop(c);
+    h.restart();
+    let mut c = h.client("crown_codex_expect_4");
+    stop(&mut c, sa);
+    // The runtime names A again (verified), then B, with no idle between.
+    control(ws, json!({"state": running, "turn_id": "turn-a", "again": true}));
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    control(ws, json!({"state": running, "turn_id": "turn-b"}));
+    std::thread::sleep(std::time::Duration::from_millis(10_000));
+    assert_eq!(lines_with(&overrun).len(), 1, "B is not timed for A");
+    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
 }
 
 /// T-973, round 2: an expectation armed on words a wake carries, while the

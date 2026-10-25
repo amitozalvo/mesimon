@@ -1005,6 +1005,16 @@ pub struct Daemon {
     /// `turn_secs`. Memory only: after a restart the turn's start is not
     /// known, and nothing is guessed.
     turn_since: HashMap<uuid::Uuid, u64>,
+    /// Each Claude seat's last `prompt_id`, from any frame that carries one
+    /// (T-983): the engine's id of the prompt its turn runs under, the one
+    /// the transcript's `user` records carry as `promptId`. A crown
+    /// expectation waiting on its `submit` takes it as its baseline; absent
+    /// (not heard since this daemon started), the baseline is unknown.
+    /// Memory only.
+    prompt_ids: HashMap<uuid::Uuid, String>,
+    /// The `prompt_id` of the hook frame being handled, and its seat
+    /// (T-983, round 1): the one id a begin inside that frame binds.
+    frame_prompt: Option<(uuid::Uuid, String)>,
     /// The crown's expectation of a turn's length, by ticket (T-973,
     /// `crownexpect`): armed by `start_agent`'s and `ask_agent`'s
     /// `expect_secs`, begun with the turn their words begin, ended with it.
@@ -1955,6 +1965,8 @@ impl Daemon {
             lingered: Default::default(),
             tasks_since: HashMap::new(),
             turn_since: HashMap::new(),
+            prompt_ids: HashMap::new(),
+            frame_prompt: None,
             crown_expects: Default::default(),
             held: crate::movegate::HeldMoves::default(),
             crown_watched: Default::default(),
@@ -4626,6 +4638,10 @@ impl Daemon {
             // A new thread or a compaction is a context the crown's rules
             // may not be in (T-930).
             self.crown_rules.codex_context(id, snapshot.thread_id.clone(), snapshot.compactions);
+            // The crown's expectation of this seat's turn, by the runtime's
+            // turn id (T-983): an already observed snapshot too, which is
+            // what a restart's first one is.
+            self.expect_observed(id, snapshot.turn_id.as_deref(), &snapshot.state);
             let rec = &mut self.board.sessions[at];
             // T-845: a steer the running turn took is acked by its count,
             // which moves without a new sequence.
@@ -5386,6 +5402,15 @@ impl Daemon {
 
     /// One hook frame off the ingest socket (Claude hook or tmux pane-died).
     fn on_hook(&mut self, frame: HookFrame) {
+        // The frame's own `prompt_id` is what a begin inside it may bind
+        // (T-983, round 1), and only while it is handled: a begin anywhere
+        // else is id-less, never the cache's earlier turn.
+        self.frame_prompt = None;
+        self.hook_frame(frame);
+        self.frame_prompt = None;
+    }
+
+    fn hook_frame(&mut self, frame: HookFrame) {
         // Every received frame is feed-logged by NAME only — never its
         // payload (D11: prompt text is read, never stored).
         // A hook-set frame for a session whose pane reports through the mod
@@ -5407,6 +5432,7 @@ impl Daemon {
         }
         self.feed.hook_event_by(&frame.session, &frame.event, frame.reason.as_deref(), frame.road);
         let Some(id) = self.resolve_session(&frame.session) else { return };
+        self.hear_prompt_id(id, &frame);
         // A conversation that starts again holds none of the crown's rules
         // (T-930): a startup, a `/clear` or a compaction's new start. A
         // resume keeps the history it read them in.
@@ -7183,6 +7209,29 @@ impl Daemon {
         (theirs != ours).then(|| (theirs.to_string(), ours.to_string()))
     }
 
+    /// A frame's `prompt_id` (T-983), kept as the seat's last, the id a
+    /// begin inside this frame binds, and heard by the seat's expectation.
+    /// A frame from a pane the seat left (a wake's previous tenant, its
+    /// late hooks) is none of these.
+    fn hear_prompt_id(&mut self, id: uuid::Uuid, frame: &HookFrame) {
+        let Some(pid) = frame.payload.get("prompt_id").and_then(serde_json::Value::as_str) else {
+            return;
+        };
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id && s.kind.is_agent()) else {
+            return;
+        };
+        // A frame from a pane the seat left moves nothing (round 2): not
+        // the cache, not the frame's begin, not an expectation.
+        if !crownexpect::speaks_for_seat(frame.pane.as_deref(), rec.pane_key.as_deref()) {
+            return;
+        }
+        let board = &self.board;
+        self.prompt_ids.retain(|s, _| board.sessions.iter().any(|r| r.id == *s));
+        self.prompt_ids.insert(id, pid.to_string());
+        self.frame_prompt = Some((id, pid.to_string()));
+        self.expect_heard(id, pid);
+    }
+
     /// The pid of the record's own pane while tmux lists it alive and not
     /// dead — `None` for a dead, remain-on-exit pane and for no pane at all.
     /// The pane's process IS the agent's (`mesimon exec` execs), so this is
@@ -7357,6 +7406,7 @@ impl Daemon {
         if snapshot.kind.is_agent() {
             if crownexpect::turn_begins(&change.from, &change.to) {
                 self.turn_since.insert(id, now);
+                self.expect_new_turn(snapshot.ticket, id);
                 self.expect_began(snapshot.ticket, None, Some(id), now);
             } else if !crownexpect::turn_open(&change.to) {
                 self.turn_since.remove(&id);

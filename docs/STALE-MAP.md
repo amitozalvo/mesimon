@@ -35843,3 +35843,227 @@ equal the whole's UTF-8 length for the same request. The six counterexamples sti
 read that carried the whole plan fails, while the round-2 run's order (no head, the whole, the
 accept) and a head whose size differs from the whole have fixtures of their own. The first passes
 and the second fails.
+
+## A begun crown expectation outlives a restart by the engine's own id of its turn (T-983, 2026-10-25, named by T-973's third and fourth reads, T-982)
+
+**Why.** Since T-973's round 3, an `expect_secs` whose turn had begun was dropped at every daemon
+restart, on Claude and on Codex. The ledger kept nothing that tied it to its turn's own record.
+Round 2's "prompt nearest the begin" was a clock rule: it bound A's deadline to B's turn (A at
+−10 s, A's close at +1 s, B at +2 s). T-957's rule stands: engine order or identity, never a
+clock or text.
+
+**Measured first** (Claude Code 2.1.310 on Sonnet, codex-cli 0.164.0, load average about 42).
+T-976's harness was used: the parity hook set beside the spike mod, in one session, with a
+transcript watcher dating each record's first appearance on disk. The driver, the timelines
+and the findings live in `<state>/t983/`, not in this repository.
+- **Claude's `prompt_id` is on every hook frame, and it is the transcript's `promptId` on every
+  `user` record of the turn**: the prompt, each `tool_result`, a compaction's summary.
+  - Assistant, system and attachment records carry none.
+  - The classic mod relays `UserPromptSubmit`, `PostToolUse`, `Stop`, `PermissionRequest` and
+    `SessionEnd` with it, but not `PreToolUse`.
+  - The native road's `UserPromptSubmit`, built from `turn.start` (`{text, turnId}`), has none.
+    `turnId` is not in the transcript.
+- **Repeated words are told apart.** Six identical prompts had six ids.
+- **The delayed writer.** A prompt's record reached disk 80–180 ms after its `UserPromptSubmit`
+  (9 of 9 prompts). So at receipt, the newest prompt record on disk is the previous prompt's.
+- **Words typed into a running turn** fire `UserPromptSubmit` under the running turn's id.
+  - The transcript writes a `queue-operation` and a `queued_command` attachment.
+  - The turn's later `tool_result`s keep that id.
+  - So a steer never mints a new id.
+- **A mod `submit` made mid-turn** fires no `UserPromptSubmit` until its own turn starts, after
+  the running turn's `Stop`, and then under a new id.
+  - `$.prompt.submit` resolves to `{text, origin}`: no id.
+  - The mod relays one frame after another (`runAfter`), so the submit's `UserPromptSubmit`
+    reaches the daemon before its `entered`.
+- **The corpus** (2,555 transcripts, 2.1.239 to 2.1.310): 7,380 prompt changes, 159 of them
+  with no close before the new prompt.
+  - These are a killed or exited process's next prompt, and back-to-back prompts.
+  - A turn cut off by the next prompt writes its last `tool_result` under the new id.
+- **Compaction.** A mid-turn auto-compaction's summary carries the running prompt's id, with no
+  close between. One made at the next prompt's submit carries the new prompt's id (18
+  boundaries).
+- **Codex.** A real app-server sent `thread/status/changed active` 0–1 ms before `turn/started`
+  (the id), on three turns of three. The edge into `Running` can be projected a frame before
+  the id. `thread/read` names an in-progress turn by its id.
+
+**What it does.**
+- **The binding.** `Expect.turn: Option<TurnKey { by: prompt | codex, id }>` rides `crown.json`
+  with `serde(default)`, so there is no schema bump. An older reader ignores it, and round 3's
+  build drops begun expectations anyway.
+  - **Claude:** `Daemon::prompt_ids`, each seat's last `prompt_id`, is set from every frame that
+    carries one (`hear_prompt_id`, at the top of `on_hook`, so before the ack it begins). The
+    begin reads it: on the hook set the ack is the `UserPromptSubmit` itself; on the mod road
+    the submit's relay comes just before its `entered`.
+  - **Codex:** the begin reads `rec.codex_turn_id`, which the absorb sets before `ack_owed`.
+  - **An expectation begun before any id was heard** takes the first new one while it stands:
+    `expect_heard` for Claude, `expect_observed` for Codex. A begun expectation stands only while
+    its turn is open (`expect_left`). Only an id from a later turn could bind wrongly, and every
+    frame of its own turn would have to be lost for that.
+  - **Binding an earlier turn's id is safe:** that turn's close or the next prompt's id follows it,
+    so the restore drops.
+- **The restore** (`crownexpect::restore`, with the predicate in `restore_crown`):
+  - Claude: `tail::prompt_still_open` reads the last 4 MiB. The expectation is kept only where a
+    `user` record under its id is there and nothing after the first one says the turn is over: no
+    close (`turn_edge`'s `Done`), no abort, and no `user` record under another id. No stamp is
+    read. Not found (the delayed writer, or long gone) drops it.
+  - Codex: the expectation comes back `unverified`, owed nothing and showing no `overrun`. The
+    seat's first observation decides it: the same id in an open turn verifies it; another id, or
+    no open turn, drops it.
+  - Either way the count is kept, told stays told, and a wake owed now says `after a restart`
+    (`restored` feeds `Owed.late`). `expect_new_turn` drops a restored expectation at its seat's
+    next turn-begin edge, as round 1 did.
+- **The late `entered`** (the addendum on this ticket). An expectation waiting on its `submit`
+  keeps `base`, its seat's last `prompt_id` at the dispatch, and the new ids heard since (at most
+  two).
+  - `expect_entered` begins it bound to the one new id.
+  - Two new ids mean another prompt ran first (A, A's end, B, then A's report). That expectation
+    goes.
+  - None heard begins it unbound, for `expect_heard`.
+  - Both fields persist, so a restart between the dispatch and the report holds.
+  - **Residual:** every frame of A's turn lost, then B's id heard, then A's report.
+- **Text.**
+  - `CROWN_WAKES`: "A restart of the board keeps an expectation whose turn has begun only where it
+    finds that same turn still running by the engine's own id for it; one it cannot find goes."
+  - USING names both ids, and says that on Claude under a Team or Enterprise account or managed
+    settings (the native road) a turn's id reaches the board only with a permission prompt, so
+    most turns there are not found again.
+  - CLAUDE.md's traps gain the `prompt_id` line.
+  - The stale comments at `crownexpect.rs:17` and `:40` are corrected.
+
+**Tests.**
+- Units:
+  - `crownexpect`: the restore by id, Codex unverified and owed nothing, no id dropped whatever the
+    transcript says, the new-id rule, and the round trip with `turn`, `base` and `heard` (the
+    restart flags never written);
+  - `tail`: the case matrix, by id alone with one stamp throughout. It covers repeated words, A/close/B,
+    a turn cut off with no close, a cut-off result written under the next id, the delayed writer,
+    a mid-turn compaction (kept), a submit-time compaction (dropped), a steer's attachment (kept),
+    an Esc, and no file;
+  - core's `mcp`: the sentence.
+- `crown_e2e`, both roads:
+  - `a_begun_expectation_outlives_a_restart_by_its_own_prompt`:
+    - a turn still running under its prompt wakes the crown once, `after a restart`, timed from
+      the begin before it;
+    - A/close/B wakes nobody;
+    - a prompt record written only after the restore (the writer's delay) wakes nobody;
+    - the crown taken off, or moved, still takes them.
+  - `a_held_entered_begins_only_its_own_prompt_s_turn` (mod pass):
+    - a held `entered` released after a restart begins its turn, bound to the relayed prompt;
+    - the addendum's A, A's end, B, then A's `entered`, with and without a restart, begins
+      nothing. With the fence switched off, it fails at that assertion (an `overrun` stands for
+      B).
+  - `a_codex_expectation_outlives_a_restart_by_its_turn_id`, on the synthetic runtime:
+    - a launch turn whose id comes a frame late, restored and named again, wakes once, `after a
+      restart`, and its end takes `overrun` away;
+    - an ask's turn the runtime replaced during the restart wakes nobody. With the same id
+      named instead, it wakes: the control.
+  - The restart test was split in two so that neither nears nextest's 120 s limit (it ran 114 s
+    whole under load 60).
+
+**Round 1 (T-995's cold read of `5d6e40da`; the crown took three corrections and two stated limits).**
+- **Another turn's id retires a begun expectation.** Words typed mid-turn ride the running turn's
+  id, so any frame of the seat, from its session and pane, carrying an engine turn id other than
+  the bound one means another turn. This holds whether the expectation is restored, unverified or
+  verified, and whether the board saw the first turn end or not. The expectation goes before any
+  overrun decision; the same id keeps it.
+  - Claude: `hearing` → `Retire` in `expect_heard`. A frame from a pane the seat left is no
+    evidence; a frame or an expectation with no pane key is trusted.
+  - Codex: `expect_observed` compares ids first, verified or not.
+  - Before this, a bound Claude expectation ignored a new id, and a verified Codex one did too.
+    A restored A then timed B when A's end and B's start fell between two observations (no
+    projected idle, and `Unknown → Running` begins nothing).
+- **An unknown baseline is unknown.** A submit dispatched when this daemon has heard no id from
+  its seat records `unheard`, and the first id after it becomes the baseline, not a new prompt.
+  The case: a running R whose id was not yet heard, then A's own id, then A's `entered`, which
+  begins A. Before, R counted as new, A second, and A's valid `entered` was refused.
+- **An id-less begin stays unbound.** The begin binds only the `prompt_id` of the frame being
+  handled (`Daemon::frame_prompt`, set and cleared around `on_hook`), never the cache. The turn's
+  own id binds it when it comes: the first id heard after the begin, a permission prompt's
+  included. Before, the cache could hand it an earlier turn's id, which the right one could not
+  replace.
+- **The found record is checked too.** `prompt_still_open` reads the first record under the id
+  as it reads the rest. With the opening prompt past the window, that record may be the Esc that
+  ended the turn: dropped.
+- **Stated limits, unchanged:**
+  - The native road: with no turn id on that road, a late `entered` can begin an expectation
+    during the next turn, as on main before this ticket. There, turns without a permission prompt
+    are not found again. USING says both.
+  - The crash window: a daemon killed between a wake's delivery and the ledger write can repeat
+    that wake after a restart. That is the wake ledger's deliver-before-persist order (T-602)
+    for every crown wake, not this ticket's; the crown logs it as a gap of its own.
+  - A restored Codex expectation stays unverified, with no wake and no `overrun`, for as long as
+    its pane lives and no observation comes.
+- **Tests:**
+  - Unit `a_frame_s_prompt_id_retires_binds_or_is_heard`, and the `tail` fixture of an Esc as the
+    window's first record of the turn.
+  - `crown_e2e::another_prompt_s_id_retires_a_begun_expectation`, both roads:
+    - A, then a frame under B from the worker's pane with no idle between: no wake;
+    - a restart that finds A open, then B's hook before B's record: no wake;
+    - an id-less begin with RD's id in the cache, then its own permission prompt's id, then a
+      restart: one wake, `after a restart`.
+  - `a_held_entered_begins_only_its_own_prompt_s_turn` gains 4c (mod pass): R running and unheard
+    after a restart, a send-now submit, a second restart taking the owed entry, then R's frames,
+    A's prompt and A's `entered`: A's overrun.
+  - `a_codex_expectation_outlives_a_restart_by_its_turn_id` gains section 3: A verified after a
+    restart, then `turn-b` with no idle between: no wake.
+  - Controls, each red as it should be, then restored:
+    - retire off fails R1 ("B is not timed for A");
+    - the cached-id begin fails R3 (no overrun);
+    - the baseline off fails 4c ("A's overrun");
+    - Codex's id rule held to unverified alone (round 0) fails section 3.
+  - 4c first released the fake mod's global `mod-hold-entered` only at the end, which also held
+    the crown's own wake submits. Under a parallel pair at load about 13, the crown's wake missed
+    the 20 s wait. The switch now goes off once A's words are down; A's report still waits for
+    its release.
+
+**Round 2 (T-995's second read of `a8b681c5`; findings 1 and 4 closed).**
+- **An unknown baseline stays unknown: round 1's promotion is taken back.** Round 1 made the first
+  id after an unheard dispatch the baseline. On the ordinary classic mod road, with no frame lost,
+  that bound A's late `entered` to B:
+  - dispatch A after a restart, before any id is heard;
+  - A's prompt arrives (`base = A`);
+  - A ends (the unbegun expectation stays);
+  - B's prompt (`heard = [B]`);
+  - A's late `entered` begins, bound to B: a false overrun on another turn.
+
+  Now every distinct id heard after the dispatch counts, with a known baseline or without one
+  (`unheard` and `Hear::Base` are gone). Two before the `entered` drop the expectation, a missed
+  overrun and never a wrong one. One, then the `entered`, binds that id.
+- **Stated limit:** a submit dispatched into a turn already running whose id this daemon never
+  heard (right after a restart) hears that turn's id and its own, and does not begin.
+- **A known wrong pane is no evidence at all.** When both the frame's pane key and the seat's are
+  present and differ, `hear_prompt_id` returns before anything: no `prompt_ids`, no `frame_prompt`,
+  no `expect_heard` (`crownexpect::speaks_for_seat`). Round 1 checked the pane only in the bound
+  branch, and wrote the cache and the frame's id before any check. A missing key is still trusted.
+- **The tests wait on facts.**
+  - Every injected `prompt_id` frame comes from the worker's explicit pane key (the test may run
+    inside another tmux pane, whose key a plain `hook_send` carries).
+  - The worker's `entered` is held with the existing seam (`mod-hold-entered`, `mod-release`), and
+    its release is waited on in the feed.
+  - Each step waits on the expectation in `crown.json` (begun and bound to an id, begun and
+    unbound, an exact `heard`, gone). The crown ledger is saved on the tick, so a read right after
+    a frame can be a tick stale; a wait for the state it must reach cannot.
+  - A wrong-pane frame is checked by what follows: had it bound the expectation, the next
+    right-pane id would retire it, and the bound state waited on would never come.
+  - The late receipt (the `entered` before the prompt) is its own case (R1b).
+  - The new tests sleep nowhere.
+- **USING:** the crown is told once, except that an abrupt stop of the board between a wake's
+  delivery and its save can repeat it (the T-602 ledger's crash window, the crown's gap 67).
+- **Tests:**
+  - Unit `a_frame_s_prompt_id_retires_binds_or_is_heard`: an unknown baseline counts R, and
+    `speaks_for_seat`'s four cases.
+  - `crown_e2e::another_prompt_s_id_retires_a_begun_expectation` (both roads):
+    - R1, live A then B;
+    - R1b (mod), the late receipt, with a wrong-pane id that binds nothing;
+    - R2, a restart that keeps A, then B's id retires it;
+    - R3, the id-less begin, a wrong-pane permission id, then its own; one wake after a restart.
+  - `an_unknown_baseline_counts_every_prompt_id` (mod pass):
+    - U1, the reader's trace, with and without a restart: gone;
+    - a wrong-pane id is heard by nothing, so `heard` is `[A]` exactly;
+    - U2, the R-then-A limit: `heard` is `[R, A]`, then gone.
+  - Round 1's 4c in `a_held_entered_begins_only_its_own_prompt_s_turn` is moved there as U2 with
+    the outcome reversed. That test's section 4 now waits for its expectation bound and its
+    `overrun` on `get_ticket`, and 4b waits for gone.
+  - Controls, each red, then restored:
+    - round 1's promotion put back fails U1 ("A's id heard alone");
+    - the pane gate off fails U1 (`heard` takes UX) and R1b ("begun and bound to RA2").

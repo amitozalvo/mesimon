@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use super::crownask::KeptAsk;
-use super::crownexpect::{self, Expect};
+use super::crownexpect::{self, Engine, Expect, Found};
 use super::crownwake::{CrownWake, Entering, Heard, ToldHand, TurnAsk};
 use super::*;
 
@@ -226,10 +226,30 @@ impl Daemon {
         let flagged = |w: &ulid::Ulid| self.board.ticket(*w).is_some_and(|t| t.manual_merge);
         self.crown_held = ledger.held.into_iter().filter(|w| *w != crown && flagged(w)).collect();
         self.turn_asks = ledger.asks.into_iter().filter(|(w, _)| on_board(w)).collect();
-        // Only an expectation still waiting on its submit's `entered` comes
-        // back (T-973, round 3): one whose turn had begun is not known to be
-        // timing the turn running now.
-        self.crown_expects = crownexpect::restore(ledger.expects, crown, on_board).into();
+        // A begun expectation comes back only where the engine's own id of
+        // its turn finds that turn still open (T-983): Claude's prompt id in
+        // its seat's transcript, read here; a Codex turn id, named again by
+        // the runtime's first observation. One still waiting on its submit's
+        // `entered` comes back as before.
+        let found = |e: &Expect| {
+            let seat = e.session.and_then(|id| self.board.sessions.iter().find(|s| s.id == id));
+            match (e.turn.as_ref().map(|k| k.by), seat) {
+                (Some(Engine::Codex), Some(s)) if s.kind == SessionKind::Codex => Found::Unverified,
+                (Some(Engine::Prompt), Some(s)) if s.kind == SessionKind::Claude => {
+                    let id = e.turn.as_ref().map(|k| k.id.as_str()).unwrap_or_default();
+                    let open = s.transcript_path.as_deref().and_then(|p| {
+                        crate::agents::claude::tail::prompt_still_open(std::path::Path::new(p), id)
+                    });
+                    if open == Some(true) {
+                        Found::Open
+                    } else {
+                        Found::Gone
+                    }
+                }
+                _ => Found::Gone,
+            }
+        };
+        self.crown_expects = crownexpect::restore(ledger.expects, crown, on_board, found).into();
         // An archived worker's hand was forgotten as it went (T-922); one
         // still on file came from a ledger written before that.
         let showing = |w: &ulid::Ulid| self.board.ticket(*w).is_some_and(|t| !t.is_archived());

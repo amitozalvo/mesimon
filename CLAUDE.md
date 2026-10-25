@@ -642,6 +642,9 @@ will not show up in our tests until they break something.
   T-934): held to the running turn's end and run as a turn of its own, its `entered` is that
   turn starting, an hour later in T-930's case. A crown ask down the mod reads `sent` until then
   (`crownask`, T-938); a composer Enter's `UserPromptSubmit` is its enqueue, not its absorption.
+- **Claude's `prompt_id` names the turn, not the words** (2.1.310, T-983): it is on every hook
+  frame and is every `user` record's `promptId`. Words typed mid-turn fire `UserPromptSubmit`
+  under the running turn's id, and a prompt's own record lands 80–180 ms after its hook.
 - **A mod's `$` call in flight fails with its dispatch when that dispatch is abandoned**
   (interrupt, a hook above settled first, budget), and the first read rides the first event's:
   the mod keeps a value only once read whole and never caches a failed read (T-594), and no

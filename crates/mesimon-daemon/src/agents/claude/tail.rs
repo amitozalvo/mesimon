@@ -98,6 +98,41 @@ pub fn turn_done_since(path: &Path, since: u64) -> bool {
     false
 }
 
+/// How far back `prompt_still_open` reads: a long turn's tool output runs
+/// past the 64 KiB the other readers take.
+const TURN_WINDOW: u64 = 4 * 1024 * 1024;
+
+/// Is the turn that runs under `prompt_id` still open in the transcript
+/// (T-983)? Found by identity, never by a stamp: every `user` record of a
+/// turn carries its prompt's `promptId` (a mid-turn word rides the running
+/// turn's, a mid-turn compaction's summary too). `Some(true)` where a
+/// record of it is in the last 4 MiB and nothing from the first on says
+/// the turn is over: no close (`turn_edge`'s `Done`), no abort, and no `user`
+/// record under another prompt (a turn cut off by the next one, a killed
+/// process's next prompt, writes no close: 159 of 7,380 prompt changes on
+/// this machine). `None` where none is in the window: its record not yet
+/// written (it lands 80-180 ms after the `UserPromptSubmit`), or long gone.
+pub fn prompt_still_open(path: &Path, prompt_id: &str) -> Option<bool> {
+    let len = std::fs::metadata(path).ok()?.len();
+    let text = window_text(path, len, TURN_WINDOW)?;
+    let mut records =
+        text.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok());
+    let pid = |v: &serde_json::Value| {
+        (v.get("type").and_then(serde_json::Value::as_str) == Some("user"))
+            .then(|| v.get("promptId").and_then(serde_json::Value::as_str))
+            .flatten()
+            .map(str::to_owned)
+    };
+    let first = records.find(|v| pid(v).as_deref() == Some(prompt_id))?;
+    // The first one found is read as the rest are (round 1): with its
+    // opening prompt past the window, it may be the Esc that ended it.
+    Some(std::iter::once(first).chain(records).all(|v| {
+        !matches!(turn_edge(&v), TurnEdge::Done(_))
+            && classify_tail_record(&v) != TailEvent::Aborted
+            && pid(&v).is_none_or(|p| p == prompt_id)
+    }))
+}
+
 /// Recover only a recent explicit cancellation when a cursor is first minted.
 /// A newer user/assistant turn record stops the search; old aborts cannot cancel
 /// a new turn just because they remain in the bounded history window. The
@@ -612,6 +647,83 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d.join("t.jsonl")
+    }
+
+    /// T-983: a turn is found again by its prompt's id alone, on the shapes
+    /// measured on 2.1.310 and in the machine's corpus. No stamp is read:
+    /// every record here has the same one.
+    #[test]
+    fn a_turn_is_found_by_its_prompt_id_and_ends_at_a_close_or_another_prompt() {
+        let path = tmp("prompt-open");
+        let ts = "2026-10-25T08:00:00.000Z";
+        let prompt = |pid: &str, n: u32| {
+            serde_json::json!({"uuid": format!("u-{pid}-{n}"), "type": "user", "timestamp": ts,
+                "promptId": pid, "message": {"content": "Reply OK and nothing else."}})
+        };
+        let call = |n: u32| {
+            serde_json::json!({"uuid": format!("a-{n}"), "type": "assistant", "timestamp": ts,
+                "message": {"content": [{"type": "tool_use", "id": format!("t{n}"), "name": "Bash", "input": {}}]}})
+        };
+        let result = |pid: &str, n: u32| {
+            serde_json::json!({"uuid": format!("r-{n}"), "type": "user", "timestamp": ts, "promptId": pid,
+                "message": {"content": [{"type": "tool_result", "tool_use_id": format!("t{n}"), "content": "ok"}]}})
+        };
+        let end = |n: u32| {
+            serde_json::json!({"uuid": format!("e-{n}"), "type": "assistant", "timestamp": ts,
+                "message": {"stop_reason": "end_turn", "content": [{"type": "text", "text": "OK"}]}})
+        };
+        let boundary = serde_json::json!({"uuid": "cb", "type": "system", "subtype": "compact_boundary", "timestamp": ts});
+        let summary = |pid: &str| {
+            serde_json::json!({"uuid": format!("s-{pid}"), "type": "user", "timestamp": ts, "promptId": pid,
+                "isCompactSummary": true, "message": {"content": "This session is being continued"}})
+        };
+        let queued = serde_json::json!({"type": "attachment", "uuid": "q", "timestamp": ts,
+            "attachment": {"type": "queued_command", "prompt": "Also say STEERED."}});
+        let interrupt = |pid: &str| {
+            serde_json::json!({"uuid": "i", "type": "user", "timestamp": ts, "promptId": pid,
+                "message": {"content": [{"type": "text", "text": "[Request interrupted by user]"}]}})
+        };
+        let open = |lines: &[serde_json::Value], pid: &str| {
+            let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+            std::fs::write(&path, body).unwrap();
+            prompt_still_open(&path, pid)
+        };
+        // Repeated words: the same text twice, two ids; the second runs on.
+        let repeated = [prompt("P1", 1), end(1), prompt("P2", 2), call(2), result("P2", 2)];
+        assert_eq!(open(&repeated, "P2"), Some(true));
+        assert_eq!(open(&repeated, "P1"), Some(false), "P1 closed before P2");
+        // T-973 round 3's counterexample: A, A's close, B's prompt and tool.
+        let a_close_b = [prompt("A", 1), end(1), prompt("B", 2), call(2)];
+        assert_eq!(open(&a_close_b, "A"), Some(false));
+        // A turn cut off with no close (a killed process, back-to-back
+        // prompts), and one cut off by the next prompt, whose last result
+        // the engine writes under the new id.
+        assert_eq!(
+            open(&[prompt("A", 1), call(1), result("A", 1), prompt("B", 2)], "A"),
+            Some(false)
+        );
+        assert_eq!(
+            open(&[prompt("A", 1), call(1), result("B", 1), prompt("B", 2)], "A"),
+            Some(false)
+        );
+        // The delayed writer: the prompt's record not on disk yet.
+        assert_eq!(open(&[prompt("A", 1), end(1)], "B"), None);
+        // A mid-turn compaction's summary carries the running prompt's id.
+        let compacted =
+            [prompt("A", 1), call(1), result("A", 1), boundary.clone(), summary("A"), call(2)];
+        assert_eq!(open(&compacted, "A"), Some(true));
+        // One at the next prompt's submit carries the new prompt's.
+        let at_submit = [prompt("A", 1), end(1), boundary, summary("B"), prompt("B", 2)];
+        assert_eq!(open(&at_submit, "A"), Some(false));
+        // Words typed into the running turn ride its id, as an attachment.
+        let steered = [prompt("A", 1), call(1), queued, result("A", 1), call(2)];
+        assert_eq!(open(&steered, "A"), Some(true));
+        // An Esc ends it, and so does one that is the first record of the
+        // turn the window holds (its opening prompt read past, round 1).
+        assert_eq!(open(&[prompt("A", 1), call(1), interrupt("A")], "A"), Some(false));
+        assert_eq!(open(&[end(0), interrupt("A")], "A"), Some(false));
+        assert_eq!(prompt_still_open(&path.with_file_name("none.jsonl"), "A"), None);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     /// T-973: the sample's facts off a transcript: the call with no result
