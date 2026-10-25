@@ -3086,6 +3086,16 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     std::thread::sleep(std::time::Duration::from_millis(1500));
     assert_eq!(wakes(&pastes()), 1, "nothing pasted while they are in");
     draw(sa, "half a thought", idle.clone());
+    // The draft on screen before the person goes: a sample between the two
+    // reads an empty box with nobody there, where the wake rightly goes
+    // (T-1019, the macOS runner: `sending`).
+    let crown_sid = sa.simple().to_string()[..16].to_string();
+    wait_until(std::time::Duration::from_secs(10), "the draft on screen", || {
+        tmux(&tmux_sock)
+            .args(["capture-pane", "-p", "-t", &crown_sid])
+            .output()
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("half a thought"))
+    });
     client.kill().unwrap();
     let _ = client.wait();
     wait_until_says(
