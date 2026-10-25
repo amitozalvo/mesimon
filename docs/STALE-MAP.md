@@ -35558,13 +35558,13 @@ the board already had. Where round 0's lines above say otherwise, this round rep
    entry still parked and armed by its pane's `SessionStart`, crown wakes excepted (T-936's own
    road), is dropped and its words kept on the seat `unsent`. That is T-984's measured window,
    from the box painting to the board's first press.
-   - A stated limit, not a fact about the engine: a person's prompt that reaches the daemon
-     before the pane's `SessionStart` takes the ordinary ack. CLAUDE.md's measured trap has
-     `SessionStart` firing during startup, before any composer a person could type into, and no
-     trace of a real pane delivering a prompt before it is known. The first draft of this round
-     dropped those too, and 19 `crown_e2e` tests on both roads went red. Their workers stand
-     in for the brief's own ack with a bare `UserPromptSubmit` and no `SessionStart`, an order a
-     real pane never sends.
+   - A stated limit for ordinary Claude launch words: the branch requires an armed entry
+     (`next_press` set). A person's prompt arriving while those words are still parked but unarmed
+     takes the ordinary ack. The crown kept this scope. CLAUDE.md records SessionStart during
+     startup before raw mode; no real hook-arrival trace establishes the opposite ordering. An
+     earlier draft also dropped unarmed entries, which broke 19 crown e2es whose stubs supplied a
+     bare UserPromptSubmit without SessionStart; that is a fixture ordering, not proof of an
+     engine guarantee.
    - Two `crown_e2e` tests from T-973 (`a_turn_thinking_across_a_restart_is_not_heard_as_finished`,
      `a_begun_expectation_does_not_outlive_a_restart`) sent the worker's `SessionStart` and then,
      at once or after a fixed 500 ms, its brief's ack, ahead of the board's paste. They now wait
