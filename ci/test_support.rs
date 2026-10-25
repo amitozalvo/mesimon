@@ -58,6 +58,8 @@ pub struct Fixture {
     pub dir: PathBuf,
     control: Arc<Mutex<Control>>,
     finished: bool,
+    tmux: String,
+    socks: Mutex<Vec<PathBuf>>,
 }
 
 impl Fixture {
@@ -82,10 +84,17 @@ impl Fixture {
             child,
         };
         let dir = PathBuf::from(control.receive().as_str().expect("fixture root"));
-        Self { dir, control: Arc::new(Mutex::new(control)), finished: false }
+        Self {
+            dir,
+            control: Arc::new(Mutex::new(control)),
+            finished: false,
+            tmux: tmux.to_string(),
+            socks: Mutex::new(Vec::new()),
+        }
     }
 
     pub fn register(&self, repo: &Path, state: Option<&Path>, runtime: Option<&Path>, sock: &Path) {
+        self.socks.lock().unwrap_or_else(|e| e.into_inner()).push(sock.to_path_buf());
         self.control.lock().unwrap().request(json!({
             "op": "register", "repo": repo, "state": state, "runtime": runtime, "sock": sock,
         }));
@@ -166,6 +175,38 @@ impl Fixture {
         daemon_logs.sort();
         for log in daemon_logs {
             echo(&log, KEEP);
+        }
+        self.echo_panes();
+    }
+
+    /// Every pane of the fixture's tmux servers as the daemon reads it, on a
+    /// failing test (T-1019): the screen, the cursor and the modes, so a
+    /// wait for words that never went in shows the box the daemon judged.
+    fn echo_panes(&self) {
+        let socks = self.socks.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let tmux = |sock: &Path, args: &[&str]| {
+            Command::new(&self.tmux)
+                .arg("-S")
+                .arg(sock)
+                .args(args)
+                .stderr(Stdio::null())
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                .unwrap_or_default()
+        };
+        for sock in socks.iter().filter(|s| s.exists()) {
+            let format = "#{pane_id} #{session_name} dead=#{pane_dead} \
+                          cmd=#{pane_current_command} cursor=#{cursor_flag}:#{cursor_x},#{cursor_y} \
+                          mode=#{pane_in_mode} size=#{pane_width}x#{pane_height}";
+            let panes = tmux(sock, &["list-panes", "-a", "-F", format]);
+            eprintln!("--- {} panes ({}) ---", sock.display(), tmux(sock, &["-V"]).trim());
+            for row in panes.lines() {
+                eprintln!("{row}");
+                let Some(pane) = row.split(' ').next() else { continue };
+                for line in tmux(sock, &["capture-pane", "-p", "-t", pane]).lines() {
+                    eprintln!("  |{line}");
+                }
+            }
         }
     }
 }
