@@ -15427,6 +15427,13 @@ fn expectation_restart(name: &str, part: Part) {
             let mut c = h.client(name);
             send(sa, "Stop", r#"{"stop_hook_active":false}"#);
             c.await_state(sa, "the crown idle again", |s| matches!(s, SessionState::Idle { .. }));
+            // The worker's bridge polls this daemon on its own backoff (up to
+            // 2 s after the restart): words sent now before it has go down
+            // the paste road, with no frame. A pong comes back only through
+            // a bridge that polled.
+            wait_until(std::time::Duration::from_secs(15), "the worker's bridge", || {
+                matches!(c.request(Command::ModPing { session: ws }), Response::ModPonged { .. })
+            });
             switch("mod-hold-entered", true);
             ask_by(&mut c, words, 600, Deliver::Now);
             wait_until(std::time::Duration::from_secs(15), "the words", || {
