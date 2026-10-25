@@ -1829,8 +1829,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("msmn-doctor-tree-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("target/debug")).unwrap();
-        std::fs::write(dir.join("a.txt"), vec![b'a'; 64 * 1024]).unwrap();
-        std::fs::write(dir.join("target/debug/b.o"), vec![b'b'; 64 * 1024]).unwrap();
+        // Each file is synced before the walk (T-971): APFS's private size of
+        // a file just written can read 0 for a moment while other writes run
+        // (its blocks already say 64 KiB), and the walk takes that count.
+        // 10 of 120 runs of this binary's tests read one 0; synced, 0 of 120.
+        for (file, byte) in [("a.txt", b'a'), ("target/debug/b.o", b'b')] {
+            let mut f = std::fs::File::create(dir.join(file)).unwrap();
+            std::io::Write::write_all(&mut f, &[byte; 64 * 1024]).unwrap();
+            f.sync_all().unwrap();
+        }
         let later = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let mut total = 0;
         assert!(mesimon_daemon::resources::tree_bytes(&dir, Some(later), &mut total));

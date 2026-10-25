@@ -20944,13 +20944,18 @@ mod crown_rules_write_tests {
 
     /// T-930's review (b): a reply whose write fails acknowledges nothing,
     /// and one that is written acknowledges its session under its count.
+    /// The write fails because this end's own sending is shut (T-971): a
+    /// dropped peer is not a closed one on macOS, where `UnixStream::pair`
+    /// marks the pair close-on-exec only after `socketpair`, and a test
+    /// beside it that forks in that gap leaves a child holding the peer
+    /// open, so the write lands (11 in 100,000 beside 200 spawns).
     #[test]
     fn only_a_written_reply_tells_the_crown() {
         let (tx, rx) = channel();
         let s = uuid::Uuid::new_v4();
-        let (ours, theirs) = UnixStream::pair().unwrap();
-        drop(theirs);
-        assert!(!write_reply(&Mutex::new(ours), "{}", Some((s, 7)), &tx), "a closed peer");
+        let (ours, _theirs) = UnixStream::pair().unwrap();
+        ours.shutdown(std::net::Shutdown::Write).unwrap();
+        assert!(!write_reply(&Mutex::new(ours), "{}", Some((s, 7)), &tx), "a failed write");
         assert!(rx.try_recv().is_err(), "nothing acknowledged");
         let (ours, _theirs) = UnixStream::pair().unwrap();
         assert!(write_reply(&Mutex::new(ours), "{}", Some((s, 7)), &tx));

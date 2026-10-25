@@ -34648,3 +34648,74 @@ next round, not mid-round at the engine's choice), nor weigh another round again
 - **A collision in `mcp_e2e`.** Its leak scan read `list_board`'s `daemon.path` (T-941), the
   binary's path. In a worktree whose title says "session" (this one) that path holds the
   word, so the scan sees a false leak. The test now leaves that one path out of the scan.
+
+## Four load reds named by stretching one step: three races in the tests, one budget on a timer (T-971, 2026-10-25, gap row 53 on T-925 and the crown's two addenda)
+
+T-937's method on each: find the step that load stretches, stretch only that step on purpose until
+the test fails on every run, then fix the cause. Each stretch was a temporary seam (a sleep in the
+stand-in engine, in the stub's start, in the pane-sample worker), and none is kept. No daemon code
+changed.
+
+**1. `crown_e2e::the_board_wakes_the_crown_when_a_started_worker_delivers`: the words were read as
+the receipt.** On the mod road the stand-in engine (`fake_claude_mod.py`) first types a `submit` into
+its pane. Only after that does it relay `ModSubmit` `entered`, through a `mesimon hook` process of
+its own. The crown's wake row stays owed until that report lands. The test waited for the sentence
+in the crown's pane and then asserted at once that nothing was owed, and, later, that the told
+hand was down. A load that stretches the relay's exec opens that window. Holding `entered` 300 ms
+after the paste failed 3 of 3 at `delivered, so nothing is owed`, and 1 s failed 3 of 3. These
+stretches reproduced nothing: the pane sample delayed 1 s, the bridge's first poll delayed 2 s, the
+stub's start delayed 1.5 s. Each mod frame delayed 500 ms only slowed the run. **Fix (test):**
+`received` waits for the wake row to leave, which is the daemon's own record of the receipt. It
+runs after each wake the test reads in the pane (four places), and before the hand-down assertion.
+
+**2. `crown_e2e::a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out`: half its
+length was the daemon's ack window, waited out.** Alone on the mod road it ran 112 s against
+nextest's 120 s kill (`slow-timeout` 30 s × 4), and the person's red was that kill. The feed of a
+passing run showed five `submit_unacked` and one `paste_unacked` for the crown: about 50 s spent
+waiting on `INFLIGHT_MS`. The test acked the crown's wakes with a fixed `start(sa); stop(sa)`. That
+fixed point often came before the wake arrived, or a turn end woke the crown and nothing acked it.
+An unacked wake holds the shared checkout's queue for 10 s (T-936). The next ask to W therefore
+waited out that window, and the test's 20 s and 25 s budgets had been sized to cover it. With each
+mod frame delayed 1 s, one run hit the kill (TIMEOUT at 120 s). The other failed `this send's owed
+window to close`: the crown's wake held 10 s, then its paste fallback (the switch `mod-drop-submit`
+refuses every mod's submit, the crown's too) held another 10 s, so W's own deliberate window
+began 20 s late. **Fix (test, case b):** `crown_takes` waits for a new line in the crown's own pane
+file (`got-<key>.txt`, T-937) and then takes one turn on it, as a crown would. It is called at every
+turn end that wakes the crown, so no wake is left owed. The only 10 s window left is the one the
+test asserts (W's `submit_unacked`, correction 4). The run takes 79 s on the mod road and 27 s on
+the hooks road. With every frame delayed 1 s it takes 101 s and passes. The budgets stay as they
+were, as backstops only.
+
+**3. `server::crown_rules_write_tests::only_a_written_reply_tells_the_crown`: a dropped peer is not a
+closed one on macOS.** `UnixStream::pair` has no `SOCK_CLOEXEC` there: std calls `socketpair` and
+only then sets `FD_CLOEXEC` on each end. A test in the same process that forks in that gap (the
+daemon's units spawn `git`, `tmux` and `ps` in parallel) leaves the child holding `theirs`. Dropping
+the test's copy then closes nothing, and the write the test expects to fail succeeds. A probe that
+made 100,000 pairs (drop the peer, write) beside a thread spawning `/bin/sleep` saw the write succeed
+11, 23 and 51 times. Without the spawner, 0 times in 3.2 million pairs at load average 8. The
+crown's guess, that the kernel takes a write before it sees the close, was not it. Shutting down
+`theirs` does not help either (51 in 100,000): XNU does not fail the writer on a peer's shutdown.
+The window is microseconds wide, so 60 runs of the daemon's units, three at once at load 19, did not
+catch it in place. **Fix (test):** the end being written to has its own sending shut, so the write
+fails by construction (0 in 100,000 beside the spawner). The test is about a write that fails, not
+about how its peer goes away.
+
+**4. `doctor::tests::tree_bytes_sums_a_tree_and_owns_up_to_a_spent_budget`: not a time budget.** Its
+spent budget is `Instant::now()`, so that half cannot depend on time. The red is `both files
+counted: 65536`: one of two fresh 64 KiB files counted 0. APFS's private size
+(`ATTR_CMNEXT_PRIVATESIZE`) of a file just written can read 0 for a moment while other writes run,
+though its `st_blocks` already reads 128. `tree_bytes` takes the private size where the volume
+gives one. The stretch was the binary's own parallel tests: 10 of 120 runs of the `mesimon` unit
+binary failed, and 0 of 200 runs of the test alone. **Fix (test):** each file is `sync_all`ed
+before the walk (0 of 120). `tree_bytes` itself is unchanged. The trees that doctor and the archive offer
+size are long settled, and a file written a moment before the walk can count 0 until APFS catches
+up, which is within the floor the walk already says it reports.
+
+**Verified.** `cargo ut`, `git diff --check`, and clippy `-D warnings` on `mesimon` and
+`mesimon-daemon`, all targets. Tests 1 and 2 ran 10 times each, alone, on the mod road: 10/10 green
+for each, at 52–54 s and 78–80 s. The whole `crown_e2e` on the mod road, beside a cold
+`cargo build --release -p mesimon` into a separate target directory (load average 12 to 17):
+73/73. On the hooks road, two runs gave 73/73 each. The first run reported test 2 `LEAK` (a child
+still held the output pipes 2 s after the test returned). Six runs of test 2 alone and the second
+whole-file run had no leak. No full suite: no line of daemon, wire, schema, tmux or harness code
+changed, only four test bodies.

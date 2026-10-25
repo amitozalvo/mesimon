@@ -1054,6 +1054,15 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     // The probe of a turn's end runs off the writer; give it time to land
     // before asserting that nothing did.
     let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
+    // The words in the crown's pane are not the wake's receipt: on the mod
+    // road the stand-in engine types them and only then relays its
+    // `entered`, through a `mesimon hook` of its own, and the row is owed
+    // until that lands (T-971).
+    let received = |c: &mut TestClient, t: ulid::Ulid| {
+        wait_until(std::time::Duration::from_secs(10), "the wake's receipt", || {
+            wake_rows(c, t).is_empty()
+        });
+    };
 
     let a = c.create_ticket("coordinate");
     let w1 = c.create_ticket("mesimon-probe-71 worker");
@@ -1116,7 +1125,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
          and notes"
     );
     assert_eq!(lines_with(&sentence), 1, "{}", std::fs::read_to_string(&got).unwrap());
-    assert!(wake_rows(&mut c, a).is_empty(), "delivered, so nothing is owed");
+    received(&mut c, a);
     assert_eq!(
         touches(&mut c).iter().find(|t| t.ticket == a).map(|t| t.action.as_str()),
         Some("woke"),
@@ -1151,7 +1160,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     assert_eq!(c.board().ticket(w1).unwrap().column, column);
     let sentence = format!("{delivered1} (commit {h1}) ∙ get_ticket key={kw1} for state and notes");
     assert_eq!(lines_with(&sentence), 1, "{}", std::fs::read_to_string(&got).unwrap());
-    assert!(wake_rows(&mut c, a).is_empty(), "delivered, so nothing is owed");
+    received(&mut c, a);
     // The crown's card says the news, its titles left to the cards (T-783).
     assert_eq!(said_on(&mut c, a), Some(format!("{kw1} delivered (commit {h1})")));
     // The feed names both tickets and the cause, never the sentence.
@@ -1279,7 +1288,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     wait_until(std::time::Duration::from_secs(10), "the coalesced wake to land", || {
         lines_with(&both) == 1
     });
-    assert!(wake_rows(&mut c, a).is_empty());
+    received(&mut c, a);
 
     // ---- a hand: the sentence says a hand went up, never why ----------------
     start(&mut c, sa);
@@ -1304,6 +1313,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     assert_eq!(lines_with("mesimon-secret-73"), 0, "the reason never reaches the crown's pane");
     // Told, the crown holds the question and the worker's hand is down
     // (T-861): one card asks a person one thing, never two.
+    received(&mut c, a);
     assert!(!c.board().ticket(w1).unwrap().hand_raised(), "the hand the crown was told of is down");
     // …and the reason is the crown's to read where the sentence sent it
     // (T-922): `told_hand` on its keyed `get_ticket`.
@@ -5666,7 +5676,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-938 worker");
-    let kw = key_of(&mut c, w);
+    let (ka, kw) = (key_of(&mut c, a), key_of(&mut c, w));
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     assert!(matches!(
@@ -5692,13 +5702,28 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
     }
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
     std::thread::sleep(std::time::Duration::from_millis(500));
+    // Each wake that reaches the crown's own pane (T-937's file) is taken as
+    // a crown takes one, a turn on it, once it is there (T-971). A wake left
+    // untaken is owed for the daemon's 10 s ack window and holds this shared
+    // checkout's queue (T-936): W's next ask waited it out on a timer, five
+    // times a run, and the run's length sat at nextest's kill.
+    let got_crown = h.dir.join(format!("got-{ka}.txt"));
+    let crown_lines = || std::fs::read_to_string(&got_crown).unwrap_or_default().lines().count();
+    let taken = std::cell::Cell::new(0);
+    let crown_takes = |c: &mut TestClient| {
+        wait_until(std::time::Duration::from_secs(10), "a wake in the crown's pane", || {
+            crown_lines() > taken.get()
+        });
+        taken.set(crown_lines());
+        start(c, sa);
+        stop(c, sa);
+    };
     start(&mut c, ws);
     stop(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "W's finish on the crown", || {
         landed(&format!("{kw} \"mesimon-probe-938 worker\" finished its turn"))
     });
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    crown_takes(&mut c);
 
     let asked = |c: &mut TestClient| read(c, sa, &kw).unwrap().asked;
     let word = |c: &mut TestClient| asked(c).map(|a| a.status);
@@ -5757,6 +5782,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         refused(ask(&mut c, "mesimon-probe-9382 again", Deliver::Now), &first.ask);
         start(&mut c, ws);
         stop(&mut c, ws);
+        crown_takes(&mut c);
         settle();
         assert_eq!(word(&mut c).as_deref(), Some("sent"), "an unrelated prompt hands nothing");
         refused(ask(&mut c, "mesimon-probe-9382 again", Deliver::Now), &first.ask);
@@ -5783,8 +5809,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
     settle();
     assert!(!landed("mesimon-probe-9382"), "a refused ask sent nothing");
     assert_eq!(copies("mesimon-probe-9381 now"), 1, "one copy reached the agent");
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    crown_takes(&mut c);
 
     // ---- a person's prompt in the paste's ack window ---------------------------
     if !mod_road {
@@ -5817,8 +5842,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         stop(&mut c, ws);
         settle();
         assert_eq!(word(&mut c).as_deref(), Some("sent"), "the last word the board saw");
-        start(&mut c, sa);
-        stop(&mut c, sa);
+        crown_takes(&mut c);
     }
 
     // ---- a restart: an ask still `sent` leaves nothing ---------------------------
@@ -5867,11 +5891,13 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
 
     // ---- the mod's refusals drop it, by the agent ------------------------------
     if mod_road {
+        crown_takes(&mut c);
         wait_until(std::time::Duration::from_secs(10), "the idle ask's turn", || {
             landed("mesimon-probe-9388")
         });
         start(&mut c, ws);
         stop(&mut c, ws);
+        crown_takes(&mut c);
         switch("mod-draft", true);
         start(&mut c, ws);
         let over = receipt(ask(&mut c, "mesimon-probe-9389 over a draft", Deliver::Immediately));
@@ -5892,6 +5918,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         );
         switch("mod-draft", false);
         stop(&mut c, ws);
+        crown_takes(&mut c);
         switch("mod-drop-submit", true);
         let _ = receipt(ask(&mut c, "mesimon-probe-9390 refused", Deliver::Idle));
         wait_until(std::time::Duration::from_secs(10), "the refused submit", || {
@@ -5928,8 +5955,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         switch("mod-release", false);
         start(&mut c, ws);
         stop(&mut c, ws);
-        start(&mut c, sa);
-        stop(&mut c, sa);
+        crown_takes(&mut c);
 
         // ---- a prompt's mark, then a late confirmed refusal (round 2, B) ----
         // The fill's words went in, an unrelated prompt hook marked the turn
@@ -5971,17 +5997,13 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
             "no turn end speaks for a dropped ask: {}",
             read_got()
         );
-        start(&mut c, sa);
-        stop(&mut c, sa);
+        crown_takes(&mut c);
 
         // ---- handed, then the pane replaced before its turn ends (round 2, B)
         // A submit the mod entered, at a worker then parked and woken into a
         // new pane: the successor's turn end is not the ask's, the ask is
         // unknown, and nothing blocks for good.
         let handed = receipt(ask(&mut c, "mesimon-probe-9393 before a new pane", Deliver::Idle));
-        // The crown's wake went down its mod a moment ago, and the stub
-        // sends no `UserPromptSubmit` for it: its owed entry holds the shared
-        // checkout's queue for its 10 s window (T-936) before this ask goes.
         wait_until(std::time::Duration::from_secs(25), "the mod's entered", || {
             word(&mut c).as_deref() == Some("handed")
         });
@@ -5993,6 +6015,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         }
         start(&mut c, ws);
         stop(&mut c, ws);
+        crown_takes(&mut c);
         settle();
         let gone = asked(&mut c).unwrap();
         assert_eq!((gone.status.as_str(), gone.ask.as_str()), ("unknown", handed.ask.as_str()));
@@ -6010,8 +6033,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         start(&mut c, ws);
         stop(&mut c, ws);
         wake_for(&next.ask, "taken");
-        start(&mut c, sa);
-        stop(&mut c, sa);
+        crown_takes(&mut c);
 
         // ---- a submit refused after a stop goes in by paste (item 10) -----
         // Claude Code holds a plugin's input after a person's Esc (T-894),
@@ -6033,6 +6055,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         start(&mut c, ws);
         stop(&mut c, ws);
         wake_for(&pasted.ask, "sent");
+        crown_takes(&mut c);
         let after = receipt(ask(&mut c, "mesimon-probe-9397 next", Deliver::Idle));
         assert_ne!(after.ask, pasted.ask, "the paste's turn end lifted the block");
         assert!(!landed("mesimon-probe-9396"), "the refused words reach nobody");
@@ -6042,8 +6065,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         start(&mut c, ws);
         stop(&mut c, ws);
         wake_for(&after.ask, "taken");
-        start(&mut c, sa);
-        stop(&mut c, sa);
+        crown_takes(&mut c);
 
         // ---- that paste's Enter fails after the words went in (round 3, 2)
         // The refused submit's words are pasted and the Enter after them
