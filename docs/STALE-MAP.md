@@ -36781,8 +36781,10 @@ test's own stub. Nothing in the daemon changed.
 - **`attachments_e2e::a_prompt_with_a_picture_keeps_it_with_the_ticket_and_links_it_in_the_words`
   (ubuntu-24.04, first reached once the runner got that far).** The start's title was echoed in
   the middle of `COMPOSER`'s paint, onto its top rule (`────…pictured ask`), and a rule with
-  text on it reads as no composer, so the prompt waited for one. `COMPOSER` turns the tty's
-  echo off while it paints; keys typed then are still read, and only their echo is lost.
+  text on it reads as no composer, so the prompt waited for one. A Linux pty's output stops at
+  each newline to translate it, and a pending echo is written there. `COMPOSER` now places its
+  rows by cursor moves with no newline, so the echo lands before or after the paint, at home.
+  (Turning echo off for the paint, tried first, hid the title `hook_e2e` reads on screen.)
 - **The harness.** A failing e2e now echoes every pane of the fixture's tmux servers: the screen,
   cursor, modes, the pane's processes and tty modes, and the `.txt` files its stubs write
   (`Fixture::echo_panes` in `ci/test_support.rs`). That dump is what found all three.
