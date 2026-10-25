@@ -36792,6 +36792,36 @@ test's own stub. Nothing in the daemon changed.
   3.7c.** `list-keys -T <table> <key>` prints nothing there (exit 0); the whole table still
   lists the binding. The test reads the key's line from its table. Nothing outside tests asks
   for one key.
+- **`spawn_ready_e2e::a_give_up_is_marked_…` and `…a_recovery_pastes_into_an_empty_box_…`
+  (ubuntu-24.04).** `LATE_STRAY` and `TITLED` read with `cat <&0 >> got.bin &`. POSIX gives a
+  background job `/dev/null` as stdin before its redirections, and dash does so literally, so
+  `<&0` named `/dev/null`: the pane had no `cat` and `got.bin` stayed empty. They take
+  `exec 3<&0` first and read fd 3.
+- **`crown_e2e::a_crown_wake_nobody_answers_is_retired_and_goes_again` (macos-14).** The daemon
+  tells the wake at the bridge's take (T-990); the stand-in mod records the frame once it has
+  read it. The test looked for the new frame the moment the telling landed, and now waits for it.
+- **`crown_e2e::a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words`
+  (macos-14).** The test drew the person's draft and killed their client in one breath; the
+  runner's next sample read an empty box with nobody there, the daemon rightly pasted
+  (`sending`), and the draft landed after. The test waits for the draft on screen first.
+- **`plan_accept_e2e::a_stop_heard_before_the_dialog_s_result_is_read_keeps_its_turn_end`
+  (macos-14).** It retries until a tail read lands inside a `Stop`'s settle, three tries in four
+  here and two in eleven on the runner; it takes 24 tries under `MESIMON_CI`, 8 elsewhere.
+- **Left red, daemon code (T-957), traced on the ticket:** `plan_accept_e2e::
+  a_repeated_prompt_heard_before_its_line_leaves_the_new_turn_running` (macos-14, every full run
+  on both roads; green alone on the runner and here: `tail_interrupt_before_prompt` never
+  written under the suite's load) and `…a_stated_end_and_a_split_read_keep_the_held_call_s_end`
+  (macos-14, one full run; stuck at `RequiresAction { reason: Question }`).
+- **CI.** The first runs stopped at the first red binary (`cargo test` without
+  `--no-fail-fast`), so each fix showed the next one. The Test step now runs `--no-fail-fast`
+  under a 5,400 s deadline (job `timeout-minutes: 110`): both roads' passes take 24 + 23 min on
+  ubuntu-24.04 and 34 + 33 min on macos-14, past `test-run.py`'s 1,200 s default, which a cut
+  run reported as `[Errno 32] Broken pipe`. A dispatch's `tests` input runs only the `cargo test`
+  arguments it names and skips the other gates, about 4 minutes a round.
+- **Docker (`ci/test-linux.sh`, Debian 12, tmux 3.3a, dash):** on main `ba8e1091` it reproduced
+  `restart_box`, `refused_while_unknown` and both `spawn_ready` reds, and not
+  `refused_at_end_turn` or `attachments` (races the runner's timing wins); on this branch all
+  seven passed.
 - **Seen in passing:** tmux 3.7's `paste-buffer` vis-encodes unsafe control characters unless
   `-S` is given (`cmd_paste_buffer_paste`). It changes nothing for plain text.
 - **Runs:** the local matrix (`ask_queue_e2e`, `crown_e2e`, `prompt_e2e`, `spawn_ready_e2e` on

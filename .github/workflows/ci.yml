@@ -51,7 +51,7 @@ jobs:
         # the event picks the matrix instead.)
         os: ${{ github.event_name == 'workflow_dispatch' && fromJSON('["ubuntu-24.04", "macos-14"]') || fromJSON('["ubuntu-24.04"]') }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    timeout-minutes: 110
     steps:
       - uses: actions/checkout@v5
 
@@ -91,9 +91,12 @@ jobs:
         if: inputs.tests == ''
         run: python3 -B ci/test_installer.py
 
+      # Both roads' passes, measured on 2026-10-25 (T-1019): 24 + 23 min on
+      # ubuntu-24.04, 34 + 33 min on macos-14. test-run.py's own 1200 s
+      # default is the local release gate's and stays.
       - name: Test
         if: inputs.tests == ''
-        run: python3 -B ci/test-run.py --timeout 4200 -- cargo test --workspace --no-fail-fast
+        run: python3 -B ci/test-run.py --timeout 5400 -- cargo test --workspace --no-fail-fast
 
       # The input rides an environment variable, never the script's text, and
       # is split into words on purpose.
@@ -102,12 +105,6 @@ jobs:
         env:
           TESTS: ${{ inputs.tests }}
         run: python3 -B ci/test-run.py --one-road -- cargo test $TESTS
-
-      - name: MEASURE the mod road's pass (T-1019, to be removed)
-        if: always() && inputs.tests == ''
-        env:
-          MESIMON_TEST_ROAD: mod
-        run: python3 -B ci/test-run.py --timeout 4200 --one-road -- cargo test -p mesimon --tests --no-fail-fast
 
       - name: Test cleanup failure paths and runner concurrency
         if: inputs.tests == ''

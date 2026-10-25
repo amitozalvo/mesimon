@@ -13507,7 +13507,7 @@ fn a_crown_wake_nobody_answers_is_retired_and_goes_again() {
     wait_until_says(
         std::time::Duration::from_secs(5),
         "a new attempt",
-        || submits(),
+        submits,
         |s| s.iter().any(|(id, _)| *id != old),
     );
     let again = submits().into_iter().find(|(id, _)| *id != old).expect("a new attempt").1;
