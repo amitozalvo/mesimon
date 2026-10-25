@@ -34391,6 +34391,45 @@ belongs to a later turn.
     and had no test. The question screen is now tested on a capture; the permission screen is
     still not from one.
 
+**A state-only rule was tried in place of the fence, and refuted (T-968, 2026-10-25).** The
+Fable review of T-957 proposed a smaller shape, built in `e1522d44` and never merged:
+- the adapter holds a non-interrupted end one poll for its interrupt;
+- the machine takes `DialogEnded` from `RequiresAction{Plan|Question}` alone, never over any
+  pending leave;
+- `prompts_heard`, `dialog_heard`, `spoken_since` and the `Running` arm go.
+
+The premise was that a prompt heard before an old Esc has already moved the record, so state
+alone refuses the Esc. The cold read traced two orderings it does not hold. Each is now a
+regression that passes on the shipped fence, and each fails on `e1522d44`'s production files:
+
+- **A pending `Running` is cancellable** —
+  `plan_accept_e2e::a_same_print_repeat_inside_a_prompt_s_settle_keeps_the_newer_dialog`.
+  1. A is held, with its call and print on the record. The person Escs and speaks: the prompt's
+     `Running` settles.
+  2. Inside that settle, the newer turn's plan B (same tool, same input) arrives as an id-less
+     `PermissionRequest` alone. The print reads it as A's repeat and keeps A's call
+     (`mesophon.rs`, round 12).
+  3. Its `PreToolUse` signal (`hooks.rs`) re-affirms the plan, and the re-affirmation arm
+     cancels the pending leave.
+  4. A's result and interrupt are then read at the plan, with nothing settling.
+
+  Only the prompt count knows a prompt came after A. Under the state-only rule, B ends
+  `Idle{Interrupted}`. A Low restatement of A's still-open call cancels the leave the same way.
+- **"Any pending leave" refuses a genuine Esc** —
+  `plan_accept_e2e::an_esc_inside_an_accept_s_settle_rests_interrupted`.
+  1. The plan's acceptance `PostToolUse` settles `Running`.
+  2. The person Escs before the model writes anything.
+  3. One read holds the accepted call's result and the interrupt inside that settle. The adapter
+     attributes the end correctly and drops its Low hint.
+
+  The fence's pending-`Running` exception takes it at High. The state-only rule refused it and
+  left the seat `Running`.
+
+The two pending `Running`s, a prompt's and an acceptance's, look the same to the machine. Only
+the order of the hooks tells them apart, so the fence, the exception and the `Running` arm stay
+as T-957 shipped them. The reader also noted that the slow-road e2e built with the hold proved
+only an idle stamped after the release committed. That test went with the rule.
+
 ## The clock's test asks what the code promises, not a round trip (T-972, 2026-10-25, found by T-957's full run inside Israel's repeated hour)
 
 **What failed.** `localtime::tests::the_clock_round_trips_and_the_presets_land_ahead` asserted

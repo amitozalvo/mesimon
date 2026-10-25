@@ -1631,3 +1631,118 @@ fn a_dialog_rebuilt_for_an_older_record_keeps_its_request_through_a_repeat() {
         assert!(needs(&mut b).is_none(), "no dialog stands");
     }
 }
+
+/// T-968, refuted: the reader's first ordering. A state-only rule (the
+/// machine taking a dialog's end from the dialog alone, nothing settling)
+/// cannot stand in for the prompt-order fence, because the prompt's pending
+/// `Running` is cancellable. A is held, its call and print on the record;
+/// the person Escs it and speaks; the newer turn's plan B, the same tool's
+/// same input, arrives as an id-less `PermissionRequest` alone (its
+/// `PreToolUse` lost) inside the prompt's settle. The print reads it as A's
+/// repeat, so A's call is kept, and its `PreToolUse` signal re-affirms the
+/// plan and cancels the pending leave. Then the tail reads A's result and
+/// interrupt with the record on the plan and nothing settling. Only the
+/// fence (`spoken_since`) knows a prompt came after A: B stands.
+#[test]
+fn a_same_print_repeat_inside_a_prompt_s_settle_keeps_the_newer_dialog() {
+    const STOP: &str =
+        "The user doesn't want to proceed with this tool use. STOP what you are doing.";
+    let Some(mut b) = Bed::boot("planrepeatsettle") else { return };
+    b.start();
+    // A tail read while running mints the cursor, so A's Esc is read live.
+    std::thread::sleep(Duration::from_millis(2500));
+    b.call("ExitPlanMode", "toolu_a");
+    b.stop_on("ExitPlanMode", "toolu_a");
+    let asked = b.decisions().len();
+    b.hook("UserPromptSubmit", r#"{"prompt":"Plan it again."}"#);
+    let frame = serde_json::json!({"tool_name": "ExitPlanMode",
+        "tool_input": Bed::input("ExitPlanMode")});
+    b.hook("PermissionRequest", &frame.to_string());
+    // Both hooks decided, the second inside the first's settle: the plan
+    // re-affirmed, nothing pending.
+    wait_until(Duration::from_secs(5), "the id-less repeat decided", || {
+        b.decisions().iter().skip(asked).any(|d| d["source"] == "PermissionRequest")
+    });
+    let repeat = b.decisions().into_iter().skip(asked).find(|d| d["source"] == "PermissionRequest");
+    let repeat = repeat.unwrap();
+    assert!(repeat["decision"]["before"]["pending"]["state"]["state"] == "running", "{repeat}");
+    assert!(repeat["decision"]["after"]["pending"].is_null(), "the settle cancelled: {repeat}");
+    // A's result and Esc, in one write.
+    b.append_all(&[
+        Bed::result_of("toolu_a", true, STOP),
+        serde_json::json!({"uuid": "esc-a", "type": "user", "timestamp": now_iso(),
+            "message": {"content": [{"type": "text",
+                "text": "[Request interrupted by user for tool use]"}]}}),
+    ]);
+    // Past the settle and two reads: B still needs the person, and the
+    // fence took A's Esc.
+    std::thread::sleep(Duration::from_millis(4500));
+    assert_eq!(
+        b.state(),
+        Some(SessionState::RequiresAction { reason: Reason::Plan }),
+        "B stands: {:?}",
+        b.decisions().iter().rev().take(4).collect::<Vec<_>>()
+    );
+    assert!(
+        std::fs::read_to_string(b.h.paths.state_dir.join("activity.jsonl"))
+            .unwrap_or_default()
+            .contains("\"cmd\":\"tail_interrupt_before_prompt\""),
+        "the fence took A's Esc"
+    );
+}
+
+/// T-968, refuted: the reader's second ordering. A rule that refuses a
+/// dialog's end over any pending leave also refuses a genuine same-turn
+/// Esc. The person accepts the plan (its `PostToolUse` schedules
+/// `Running`) and Escs at once, before the model writes anything; the tail
+/// reads the accepted call's result and the interrupt right after it inside
+/// that settle. The end is the dialog's own, no prompt came between, and it
+/// replaces the pending `Running`: the seat rests `Idle{Interrupted}` at
+/// High. The poll's phase is not the test's to set, so a fresh seat each
+/// try (the flap pin off) repeats, staggered, until a read lands inside the
+/// settle; every try must rest interrupted at High.
+#[test]
+fn an_esc_inside_an_accept_s_settle_rests_interrupted() {
+    let interrupted =
+        SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Interrupted };
+    let mut met = false;
+    for n in 0..8u64 {
+        let Some(mut b) = Bed::boot(&format!("planacceptesc{n}")) else { return };
+        b.start();
+        // A tail read while running mints the cursor; then the phase stagger.
+        std::thread::sleep(Duration::from_millis(2500 + n * 700 % 2000));
+        b.call("ExitPlanMode", "toolu_ok");
+        b.stop_on("ExitPlanMode", "toolu_ok");
+        let accept = serde_json::json!({"tool_name": "ExitPlanMode", "tool_use_id": "toolu_ok",
+            "tool_input": Bed::input("ExitPlanMode")});
+        b.hook("PostToolUse", &accept.to_string());
+        b.append_all(&[
+            Bed::result_of("toolu_ok", false, "User has approved your plan."),
+            serde_json::json!({"uuid": "esc-ok", "type": "user", "timestamp": now_iso(),
+                "message": {"content": [{"type": "text", "text": "[Request interrupted by user]"}]}}),
+        ]);
+        b.c.await_state(b.sid, "interrupted by the Esc after the accept", |s| *s == interrupted);
+        let rec = board_of(b.c.request(Command::Snapshot))
+            .sessions
+            .iter()
+            .find(|s| s.id == b.sid)
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            rec.confidence,
+            mesimon_core::board::Confidence::High,
+            "the dialog's own end, try {n}"
+        );
+        // Met: the end read while the accept's `Running` was settling, and
+        // it replaced that leave.
+        met = b.departures().iter().any(|d| {
+            d["decision"]["before"]["pending"]["state"]["state"] == "running"
+                && d["decision"]["after"]["pending"]["state"]
+                    == serde_json::to_value(&interrupted).unwrap()
+        });
+        if met {
+            break;
+        }
+    }
+    assert!(met, "no read of the Esc landed inside the accept's settle in eight tries");
+}
