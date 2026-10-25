@@ -102,28 +102,38 @@ pub fn turn_done_since(path: &Path, since: u64) -> bool {
 /// past the 64 KiB the other readers take.
 const CLOSE_WINDOW: u64 = 4 * 1024 * 1024;
 
-/// Did the turn under way at `since` (epoch ms) close since then (T-973,
-/// round 1)? `Some(true)` for a close (`adopt::turn_edge`'s `Done`) or an
-/// abort dated at or after it, whatever opened after; `Some(false)` where
-/// the walk back reaches a record dated before `since` with neither; `None`
-/// with no transcript, or a window that ends first: a restart asks it of an
-/// expectation, which it keeps only on `Some(false)`.
-pub fn turn_closed_since(path: &Path, since: u64) -> Option<bool> {
+/// How far a turn's opening prompt may sit from the moment the board marked
+/// the turn begun: the paste's ack or the mod's `entered` comes on either
+/// side of the transcript's record of the prompt by seconds, never minutes.
+const OPENING_BEFORE_MS: u64 = 30_000;
+const OPENING_AFTER_MS: u64 = 15_000;
+
+/// Did the turn the board marked begun at `began` (epoch ms) close since
+/// (T-973, round 2)? The turn is found by its own record, not by a moment:
+/// its opening prompt is the person's prompt (`adopt::user_prompt`) dated
+/// nearest `began`, within seconds of it. `Some(true)` where a close
+/// (`adopt::turn_edge`'s `Done`) or an abort follows that prompt in the file,
+/// whatever its stamp (a compaction's replies are written after records they
+/// predate); `Some(false)` where none does; `None` with no transcript, or no
+/// such prompt in the last 4 MiB (an old-only transcript, a mid-turn word the
+/// transcript does not record as a prompt): a restart keeps an expectation
+/// only on `Some(false)`.
+pub fn turn_closed_since(path: &Path, began: u64) -> Option<bool> {
     let len = std::fs::metadata(path).ok()?.len();
     let text = window_text(path, len, CLOSE_WINDOW)?;
-    let end = text.len();
-    for v in (TailRecords { text, end }) {
-        let at = record_ms(&v);
-        let closed = matches!(turn_edge(&v), TurnEdge::Done(_))
-            || classify_tail_record(&v) == TailEvent::Aborted;
-        if closed && at.is_none_or(|at| at >= since) {
-            return Some(true);
-        }
-        if at.is_some_and(|at| at < since) {
-            return Some(false);
-        }
-    }
-    None
+    let records: Vec<serde_json::Value> =
+        text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    let opening = records
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| mesimon_core::adopt::user_prompt(v).is_some())
+        .filter_map(|(i, v)| record_ms(v).map(|at| (i, at)))
+        .filter(|(_, at)| at + OPENING_BEFORE_MS >= began && *at <= began + OPENING_AFTER_MS)
+        .min_by_key(|(_, at)| at.abs_diff(began))
+        .map(|(i, _)| i)?;
+    Some(records[opening + 1..].iter().any(|v| {
+        matches!(turn_edge(v), TurnEdge::Done(_)) || classify_tail_record(v) == TailEvent::Aborted
+    }))
 }
 
 /// Recover only a recent explicit cancellation when a cursor is first minted.
@@ -408,7 +418,8 @@ pub fn api_error(path: &Path) -> Option<ApiError> {
 /// than it; `recent_tools` the names of the last five calls, newest first;
 /// `last_text` the last text the agent wrote (`adopt::assistant_text`). All
 /// inside the last 64 KiB, so a long tool result may leave fewer, and a call
-/// whose start lies further back is not seen in flight.
+/// whose start lies further back, or behind a compaction, is not seen in
+/// flight.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct TailSample {
     pub current_tool: Option<(String, Option<u64>)>,
@@ -425,7 +436,16 @@ pub fn sample(path: &Path) -> Option<TailSample> {
     let mut answered = std::collections::HashSet::new();
     let mut current_settled = false;
     for v in tail_records(path)? {
-        if matches!(classify_tail_record(&v), TailEvent::TurnComplete | TailEvent::Aborted) {
+        // A turn's end, an abort, or a compaction (its boundary or the
+        // summary under it, round 2): no call older than it is in flight as
+        // far as this transcript knows. A compaction ends no turn and moves
+        // no clock; it only bounds what the tail can say of a call.
+        let compaction = v.get("subtype").and_then(serde_json::Value::as_str)
+            == Some("compact_boundary")
+            || mesimon_core::adopt::is_compact_summary(&v);
+        if compaction
+            || matches!(classify_tail_record(&v), TailEvent::TurnComplete | TailEvent::Aborted)
+        {
             current_settled = true;
         }
         let blocks = v
@@ -725,39 +745,88 @@ mod tests {
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
-    /// Round 1: a turn under way at a moment closed since only on a close
-    /// or an abort dated after it; a record from before it with neither
-    /// says open; a transcript that cannot reach it says nothing.
+    /// Round 2: a turn is found by its own opening prompt, the one nearest
+    /// the moment it was marked begun; a close or an abort after that prompt
+    /// in the file closes it, whatever its stamp; no such prompt says
+    /// nothing.
     #[test]
-    fn a_turn_closed_since_reads_back_to_its_moment() {
+    fn a_turn_closed_since_is_read_from_its_own_opening_prompt() {
         let path = tmp("closed-since");
         let at = |ts: &str| mesimon_core::adopt::iso_ms(ts).unwrap();
-        let prompt = serde_json::json!({"uuid": "u", "type": "user",
-            "timestamp": "2026-10-25T03:00:00Z", "message": {"content": "go"}});
-        let tool = serde_json::json!({"uuid": "t", "type": "assistant",
-            "timestamp": "2026-10-25T03:00:05Z", "message": {"content": [
-                {"type": "tool_use", "id": "b", "name": "Bash", "input": {}}]}});
-        let close = serde_json::json!({"uuid": "d", "type": "system", "subtype": "turn_duration",
-            "timestamp": "2026-10-25T03:10:00Z"});
-        let again = serde_json::json!({"uuid": "u2", "type": "user",
-            "timestamp": "2026-10-25T03:11:00Z", "message": {"content": "next"}});
-        let abort = serde_json::json!({"uuid": "x", "type": "user",
-            "timestamp": "2026-10-25T03:10:00Z",
-            "message": {"content": "[Request interrupted by user]"}});
-        let write = |lines: &[&serde_json::Value]| {
+        let prompt = |id: &str, ts: &str| {
+            serde_json::json!({"uuid": id, "type": "user", "timestamp": ts,
+                "message": {"content": "go"}})
+        };
+        let tool = |id: &str, ts: &str| {
+            serde_json::json!({"uuid": id, "type": "assistant", "timestamp": ts,
+                "message": {"content": [{"type": "tool_use", "id": id, "name": "Bash", "input": {}}]}})
+        };
+        let close = |ts: &str| {
+            serde_json::json!({"uuid": format!("d-{ts}"), "type": "system",
+                "subtype": "turn_duration", "timestamp": ts})
+        };
+        let write = |lines: &[serde_json::Value]| {
             let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
             std::fs::write(&path, body).unwrap();
         };
-        let since = at("2026-10-25T03:00:01Z");
-        write(&[&prompt, &tool]);
-        assert_eq!(turn_closed_since(&path, since), Some(false), "still the same turn");
-        write(&[&prompt, &tool, &close, &again]);
-        assert_eq!(turn_closed_since(&path, since), Some(true), "closed, and another began");
-        write(&[&prompt, &tool, &abort, &again]);
-        assert_eq!(turn_closed_since(&path, since), Some(true), "aborted, and another began");
-        write(&[&tool]);
-        assert_eq!(turn_closed_since(&path, at("2026-10-25T02:00:00Z")), None, "never reaches it");
-        assert_eq!(turn_closed_since(&path.with_file_name("absent.jsonl"), since), None);
+        let began = at("2026-10-25T03:00:01Z");
+        let earlier = prompt("p0", "2026-10-25T02:59:40Z");
+        let ours = prompt("p1", "2026-10-25T03:00:00Z");
+        // The same turn: an earlier short turn closed before ours began.
+        write(&[
+            earlier.clone(),
+            close("2026-10-25T02:59:50Z"),
+            ours.clone(),
+            tool("t1", "2026-10-25T03:00:05Z"),
+        ]);
+        assert_eq!(turn_closed_since(&path, began), Some(false), "still its turn");
+        // Closed, then a record stamped earlier appended, then a new turn's tool.
+        write(&[
+            ours.clone(),
+            close("2026-10-25T03:10:00Z"),
+            tool("old", "2026-10-25T02:00:00Z"),
+            tool("t2", "2026-10-25T03:11:00Z"),
+        ]);
+        assert_eq!(turn_closed_since(&path, began), Some(true), "an older stamp after the close");
+        // Closed, and another prompt began a new turn.
+        write(&[ours.clone(), close("2026-10-25T03:10:00Z"), prompt("p2", "2026-10-25T03:11:00Z")]);
+        assert_eq!(turn_closed_since(&path, began), Some(true), "closed, and another began");
+        let abort = serde_json::json!({"uuid": "x", "type": "user",
+            "timestamp": "2026-10-25T03:10:00Z",
+            "message": {"content": "[Request interrupted by user]"}});
+        write(&[ours.clone(), abort]);
+        assert_eq!(turn_closed_since(&path, began), Some(true), "aborted");
+        // Only an old turn's records: no opening prompt near the moment.
+        write(&[prompt("old", "2026-10-25T01:00:00Z"), tool("t0", "2026-10-25T01:00:05Z")]);
+        assert_eq!(turn_closed_since(&path, began), None, "an old-only transcript");
+        assert_eq!(turn_closed_since(&path.with_file_name("absent.jsonl"), began), None);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    /// Round 2: a compaction bounds what the tail knows of a call: an
+    /// unanswered call before it is not in flight after it, and a call made
+    /// after it is.
+    #[test]
+    fn a_compaction_bounds_the_call_in_flight() {
+        let path = tmp("sample-compact");
+        let call = |id: &str| {
+            serde_json::json!({"uuid": format!("a-{id}"), "type": "assistant",
+                "message": {"content": [{"type": "tool_use", "id": id, "name": "Bash", "input": {}}]}})
+        };
+        let boundary =
+            serde_json::json!({"uuid": "c", "type": "system", "subtype": "compact_boundary"});
+        let summary = serde_json::json!({"uuid": "s", "type": "user", "isCompactSummary": true,
+            "message": {"content": "This session is being continued"}});
+        let write = |lines: &[serde_json::Value]| {
+            let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+            std::fs::write(&path, body).unwrap();
+        };
+        write(&[call("old"), boundary.clone(), summary.clone()]);
+        let s = sample(&path).unwrap();
+        assert_eq!(s.current_tool, None, "nothing after the boundary");
+        assert_eq!(s.recent_tools, ["Bash"], "the names still reach back");
+        write(&[call("old"), boundary, summary, call("new")]);
+        assert!(sample(&path).unwrap().current_tool.is_some(), "a call made after it");
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

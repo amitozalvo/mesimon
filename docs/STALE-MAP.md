@@ -35170,3 +35170,48 @@ panes and transcripts by hand, logged as a gap each time.
   every shipped reader. A downgrade to an unshipped intermediate 9 or 2 build (one before T-973
   on main) is not protected: it would drop `crown_samples = false` and `expects`, and quarantine
   a ledger that holds an `overrun` wake.
+
+**Round 2 (the cold reader's second read of `0a55c6de`).** The landing gate and the crown
+cleanup stood. Five corrections in the expectation and rig rules:
+- **(b1) A restored turn is found by its own record.**
+  - `tail::turn_closed_since` no longer answers at the first record older than the begin. It
+    finds the turn's opening prompt: the person's prompt (`adopt::user_prompt`) dated nearest
+    the moment the board marked it begun, within 30 s before or 15 s after.
+  - Any close or abort after that prompt in the file closes the turn, whatever its stamp. A
+    compaction's replies are written after records they predate.
+  - No such prompt within the last 4 MiB answers nothing, and nothing is kept: an old-only
+    transcript, or a mid-turn word the transcript does not record as a prompt.
+  - Fixtures: the same-turn positive, a post-close appended older record, a close then a new
+    prompt, an abort, an old-only transcript.
+- **(b2) Codex: the limitation, stated.**
+  - The record does carry `codex_turn_id`, but Codex's turn id reaches the daemon with the next
+    observation, not at the mark. Keeping a Codex expectation across a restart would need a
+    second begin road (bind the id when it arrives), a clear when the id changes, and a
+    synthetic-runtime restart e2e: a new mechanism, past this round's bar.
+  - So a begun Codex expectation does not survive a restart, and `CROWN_WAKES`, USING and this
+    block say so. Offered as a follow-up.
+- **(c) A compaction bounds `current_tool`.** A `compact_boundary` record, or the summary under
+  it, settles the search for a call in flight: no unanswered call before it is current. It ends
+  no turn and moves no clock. The five names still reach back.
+- **(d) `sampled_before` reads in order.**
+  - It is now a module-level `ci/rig.py::sampled_before`. It walks records and their blocks in
+    order and records the matching `mcp__mesimon__sample_agent` call ids. It advances only at
+    one of those ids' successful result, whose JSON names the key with `state` and
+    `captured_at_ms`. It accepts a verdict only after that. A verdict before the result fails,
+    in the call's own message or a later one.
+  - `crown_never` exempts `mcp__mesimon__` alone.
+  - `ci/rig_test.py` holds the reader's four synthetic cases (two pass, two fail as they
+    should) plus another ticket's sample.
+  - Replayed over the first live SA1 crown transcript (run 20261025-041836), the new predicate
+    reads `wake → sampled → verdict`, JSON included. What SA1 proves is unchanged, so no live
+    rerun.
+- **(e) Words parked on a wake behind a worktree rebuild keep their expectation.**
+  - An unbegun expectation whose seat has no pane yet is kept while a pending resume
+    (`pending_resumes`) still owns that wake and the ask is still the crown's, not dropped. A
+    failed replay drops the ask, and the expectation with it.
+  - Its pane is bound where the words actually go in: `crown_ask_retag` after the replay's
+    paste, or `crown_ask_framed` down the mod.
+  - A begun expectation, or one already bound to a pane, still goes when that pane is lost.
+  - The e2e holds the rebuild with the repository's init script for five seconds of ticks, then
+    sees the words' own turn wake the crown exactly once. With the round-1 rule back, it fails
+    at that wake.

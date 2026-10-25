@@ -262,6 +262,24 @@ impl Daemon {
         }
     }
 
+    /// A wake's parked words were dispatched at last, into the pane the wake
+    /// made (`crown_ask_retag`, round 2): that pane is the one the
+    /// expectation waits in from here.
+    pub(super) fn expect_bound(&mut self, ticket: ulid::Ulid, ask: ulid::Ulid) {
+        let Some(session) = self
+            .crown_expects
+            .get(&ticket)
+            .filter(|e| e.began_ms.is_none() && e.ask == Some(ask) && e.pane.is_none())
+            .and_then(|e| e.session)
+        else {
+            return;
+        };
+        let pane = self.pane_of(session);
+        if let Some(e) = self.crown_expects.get_mut(&ticket).filter(|_| pane.is_some()) {
+            e.pane = pane;
+        }
+    }
+
     /// `session` left its turn (`turn_open` false): a begun expectation on
     /// it ends, told or not.
     pub(super) fn expect_left(&mut self, ticket: ulid::Ulid, session: uuid::Uuid) {
@@ -302,13 +320,24 @@ impl Daemon {
         if self.board.ticket(ticket).is_none() {
             return false;
         }
-        let in_its_pane = e.session.is_none_or(|id| {
-            self.board.sessions.iter().any(|s| {
-                s.id == id && s.state.has_pane() && (e.pane.is_none() || s.pane_key == e.pane)
-            })
-        });
-        if !in_its_pane {
-            return false;
+        if let Some(id) = e.session {
+            let Some(seat) = self.board.sessions.iter().find(|s| s.id == id) else {
+                return false;
+            };
+            if seat.state.has_pane() {
+                // In a pane: the one it was given, once one was.
+                if e.pane.is_some() && seat.pane_key != e.pane {
+                    return false;
+                }
+            } else if e.began_ms.is_some() || e.pane.is_some() {
+                // It lost the pane its words went to, or its turn ran in.
+                return false;
+            } else if !self.pending_resumes.iter().any(|p| p.session == id) {
+                // Words parked on a wake that is no longer coming (round 2):
+                // only an accepted wake still on its way (a worktree being
+                // rebuilt) holds them.
+                return false;
+            }
         }
         if e.began_ms.is_some() {
             return true;

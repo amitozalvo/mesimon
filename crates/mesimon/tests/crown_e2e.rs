@@ -14932,3 +14932,163 @@ fn an_expectation_across_a_restart_times_only_its_own_turn() {
         }
     }
 }
+
+/// T-973, round 2: an expectation armed on words a wake carries, while the
+/// wake waits for its worktree to be rebuilt (T-278), waits with it: held
+/// across several ticks by the repository's init script, it is neither
+/// lost nor begun, no `overrun` stands, and once the tree is back and the
+/// words go in, the turn they begin wakes the crown exactly once.
+#[test]
+fn an_expectation_waits_for_its_wake_behind_a_worktree_rebuild() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_overrun_rebuild",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+        ],
+    ) else {
+        return;
+    };
+    let repo = h.repo.clone();
+    init_repo(&repo, "a.txt", "hello\n");
+    let hold = h.dir.join("hold-init");
+    let script = repo.join(mesimon_core::workspace::INIT_SCRIPT);
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\nwhile [ -f '{}' ]; do sleep 0.2; done\n", hold.display()),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_overrun_rebuild");
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| -> usize {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .count()
+    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-973 rebuilt");
+    let kw = key_of(&mut c, w);
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+            expect_secs: None,
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    let tree = std::path::PathBuf::from(wait_attached(&mut c, w).path.expect("a path"));
+    let branch = wt_of(&mut c, w).unwrap().branch;
+    wait_until(std::time::Duration::from_secs(15), "W's start to land", || {
+        c.board().live_agent(w).is_some_and(|s| s.state.has_pane())
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    std::fs::write(tree.join("w.txt"), "w\n").unwrap();
+    git(&tree, &["add", "w.txt"]);
+    git(&tree, &["commit", "-qm", "w"]);
+    git(&repo, &["merge", "-q", "--squash", &branch]);
+    git(&repo, &["commit", "-qm", "w (#9)"]);
+    wait_until(std::time::Duration::from_secs(20), "the board to read the squash", || {
+        wt_of(&mut c, w).is_some_and(|wt| wt.merged)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    // Parked and archived, the landed tree is reclaimed and the branch kept,
+    // so the next wake rebuilds the tree first (T-278).
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentSleepTicket { key: kw.clone(), seen: v.seen },
+    ) {
+        Response::AgentTicket { .. } => {}
+        other => panic!("sleep_agent: {other:?}"),
+    }
+    c.await_state(ws, "parked", |s| *s == SessionState::Sleeping);
+    assert!(matches!(c.request(Command::ArchiveTicket { id: w }), Response::Ok));
+    wait_until(std::time::Duration::from_secs(20), "the archive to reclaim W's tree", || {
+        !tree.exists() && wt_of(&mut c, w).is_some_and(|wt| wt.status == "evicted")
+    });
+    assert!(matches!(c.request(Command::UnarchiveTicket { id: w }), Response::Ok));
+
+    // ---- the words ride a wake held behind the rebuild ---------------------
+    std::fs::write(&hold, "").unwrap();
+    let probe = "mesimon-probe-973 behind the rebuild";
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentAskTicket {
+            key: kw.clone(),
+            text: probe.into(),
+            seen: v.seen,
+            plan: false,
+            deliver: Deliver::Idle,
+            expect_secs: Some(3),
+        },
+    ) {
+        Response::AgentAsked { held_for_person: false, wake, .. } => {
+            assert_eq!(wake, Some(AskWake::Woken), "the words woke it, behind the rebuild");
+        }
+        other => panic!("ask_agent: {other:?}"),
+    }
+    let worker = format!("{kw} \"mesimon-probe-973 rebuilt\"");
+    let overrun = format!("{worker} has run its turn ");
+    // Several ticks (each look runs every second) with the rebuild held.
+    std::thread::sleep(std::time::Duration::from_millis(5000));
+    assert!(!c.board().live_agent(w).is_some_and(|s| s.state.has_pane()), "still rebuilding");
+    assert_eq!(lines_with(&overrun), 0, "nothing begun, nothing past");
+    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+
+    // ---- the tree back, the words in, their turn timed ----------------------
+    std::fs::remove_file(&hold).unwrap();
+    wait_until(std::time::Duration::from_secs(30), "W up in its rebuilt tree", || {
+        c.board().live_agent(w).is_some_and(|s| s.id == ws && s.state.has_pane())
+    });
+    hook_send(&hook_sock, &ws.to_string(), "SessionStart", r#"{"source":"resume"}"#);
+    c.await_state(ws, "up after the wake", |s| matches!(s, SessionState::Idle { .. }));
+    wait_until(std::time::Duration::from_secs(15), "the words to reach W", || {
+        lines_with(probe) > 0
+    });
+    hook_send(
+        &hook_sock,
+        &ws.to_string(),
+        "UserPromptSubmit",
+        &format!(r#"{{"prompt":"{probe}"}}"#),
+    );
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+    wait_until(std::time::Duration::from_secs(20), "the overrun of the words' own turn", || {
+        lines_with(&overrun) == 1
+    });
+    std::thread::sleep(std::time::Duration::from_millis(4000));
+    assert_eq!(lines_with(&overrun), 1, "exactly one");
+    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_some());
+}

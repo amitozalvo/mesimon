@@ -368,6 +368,8 @@ impl Daemon {
         if let Some(o) = self.owed.get_mut(&session).filter(|o| o.ask.is_none()) {
             o.ask = Some(id);
         }
+        // The words are in the woken pane now: its expectation waits there.
+        self.expect_bound(target, id);
     }
 
     /// A refused `submit` whose words went in by the paste road after a

@@ -532,6 +532,64 @@ def context_read(text):
     return int(tokens.group(1)), int(window.group(1))
 
 
+def sampled_before(rows, key, prefix):
+    """`sampled_before:<prefix>` (T-973, round 2), over a crown's transcript
+    in order, record by record and block by block: the board's overrun line
+    for `key` arrives as a prompt; in that turn a `sample_agent` call of
+    `key` is made, and its own result comes back, not an error, its JSON
+    naming `key` with `state` and `captured_at_ms`; only then a reply line
+    beginning `prefix`. A verdict before that result fails, in the call's
+    own message or a later one; another prompt before the verdict starts
+    over. (passed, what was seen)."""
+    stage, calls, seen = "wake", set(), []
+    for r in rows:
+        blocks = (r.get("message") or {}).get("content")
+        blocks = blocks if isinstance(blocks, list) else [{"type": "text", "text": blocks or ""}]
+        results = [b for b in blocks if isinstance(b, dict) and b.get("type") == "tool_result"]
+        if r.get("type") == "user" and not r.get("isMeta") and not results:
+            said = "\n".join(texts(r)).strip()
+            if not said or said.startswith("<task-notification>"):
+                continue
+            if f"{key} " in said and "has run its turn" in said:
+                stage, calls = "sample", set()
+                seen.append("wake")
+            elif stage in ("sample", "verdict"):
+                stage = "wake"
+                seen.append("a prompt before the verdict")
+            continue
+        for b in blocks:
+            if not isinstance(b, dict):
+                continue
+            kind = b.get("type")
+            if kind == "tool_use" and stage == "sample" and b.get("name") == "mcp__mesimon__sample_agent" \
+                    and (b.get("input") or {}).get("key") == key:
+                calls.add(b.get("id"))
+            elif kind == "tool_result" and stage == "sample" and b.get("tool_use_id") in calls:
+                body = b.get("content")
+                text = body if isinstance(body, str) else " ".join(
+                    x.get("text", "") for x in body or [] if isinstance(x, dict))
+                try:
+                    reading = json.loads(text)
+                except ValueError:
+                    reading = None
+                good = not b.get("is_error") and isinstance(reading, dict) \
+                    and reading.get("key") == key and "state" in reading and "captured_at_ms" in reading
+                if good:
+                    stage = "verdict"
+                    seen.append("sampled")
+                else:
+                    seen.append(f"sample refused: {text[:80]!r}")
+            elif kind == "text" and r.get("type") == "assistant" and any(
+                    l.strip().strip("*`").startswith(prefix) for l in (b.get("text") or "").splitlines()):
+                if stage == "verdict":
+                    seen.append("verdict")
+                    return True, " → ".join(seen)
+                if stage == "sample":
+                    seen.append("a verdict before the reading")
+                    return False, " → ".join(seen)
+    return False, " → ".join(seen) or "no overrun line reached the crown"
+
+
 def tool_inputs(rows):
     """(tool name, its input) for every tool use in a transcript, in order."""
     out = []
@@ -3005,10 +3063,11 @@ Reply with the single word ready and end your turn."""
                 words = [w for w in arg.split(",") if w]
                 calls = tool_inputs(crown_rows)
                 ran = [i.get("command", "") for n, i in calls if n == "Bash"]
-                # T-973, round 1: every tool's input but the board's own, so
+                # T-973, rounds 1-2: every tool's input but the board's own
+                # (`mcp__mesimon__` alone), so
                 # a Read, Grep or Glob of a transcript counts as a Bash `cat`.
                 hand = [f"<{n}> {json.dumps(i)}" for n, i in calls
-                        if not (n or "").startswith("mcp__") and n != "Bash"]
+                        if not (n or "").startswith("mcp__mesimon__") and n != "Bash"]
                 bad = [r for r in ran + hand if any(w in r for w in words)]
                 bad += [f"<{n}>" for n, _ in calls if n == "Monitor"]
                 check(c, not bad, " → ".join(repr(b[:60]) for b in bad)
@@ -3469,52 +3528,13 @@ Reply with the single word ready and end your turn."""
                           and l.get("worker") == tid]
                 check(c, arg in causes, f"wakes {causes}" if causes else "no wake")
             elif name == "sampled_before":
-                # `sampled_before:<prefix>` (T-973, round 1): in the crown's
-                # own transcript, the board's overrun line for this ticket
-                # comes in as a prompt, then in that same turn (no other
-                # prompt between) a `sample_agent` of this key answers with
-                # a reading (not an error, its fields there), then the reply
-                # beginning <prefix>: the judgement came after the reading.
+                # `sampled_before:<prefix>` (T-973): see `sampled_before`.
                 crown = self.agent_of(board, self.crown)
                 since = record.get("t0_ms", 0)
                 crown_rows = [r for r in (transcript(crown) if crown else [])
                               if (iso_ms(r.get("timestamp") or "") or 0) >= since]
-                results_by = {}
-                for r in crown_rows:
-                    for b in (r.get("message") or {}).get("content") or []:
-                        if isinstance(b, dict) and b.get("type") == "tool_result":
-                            body = b.get("content")
-                            results_by[b.get("tool_use_id")] = (bool(b.get("is_error")), body if isinstance(body, str)
-                                else " ".join(x.get("text", "") for x in body or [] if isinstance(x, dict)))
-                stage, seen = "wake", []
-                for r in crown_rows:
-                    said = "\n".join(texts(r))
-                    if r.get("type") == "user" and not r.get("isMeta") and said.strip() \
-                            and not said.startswith("<task-notification>"):
-                        if f"{key} " in said and "has run its turn" in said:
-                            stage, seen = "sample", ["wake"]
-                        elif stage != "wake":
-                            stage, seen = "wake", seen + ["a prompt before the verdict"]
-                        continue
-                    if stage == "sample" and r.get("type") == "assistant":
-                        for b in (r.get("message") or {}).get("content") or []:
-                            if not (isinstance(b, dict) and b.get("type") == "tool_use"):
-                                continue
-                            if (b.get("name") or "").endswith("sample_agent") \
-                                    and (b.get("input") or {}).get("key") == key:
-                                err, text = results_by.get(b.get("id"), (True, ""))
-                                fields = all(f'"{f}"' in text for f in ("state", "captured_at_ms"))
-                                if not err and fields:
-                                    stage = "verdict"
-                                    seen.append("sampled")
-                                else:
-                                    seen.append(f"sample refused: {text[:80]!r}")
-                    if stage == "verdict" and r.get("type") == "assistant" \
-                            and any(l.strip().strip("*`").startswith(arg) for l in said.splitlines()):
-                        stage = "done"
-                        seen.append("verdict")
-                        break
-                check(c, stage == "done", " → ".join(seen) or "no overrun line reached the crown")
+                ok, seen = sampled_before(crown_rows, key, arg)
+                check(c, ok, seen)
             elif name == "after_wake":
                 # `after_wake:<cmd>:<cause>` (T-973): the crown's first <cmd>
                 # board line for the ticket follows the board's first wake of

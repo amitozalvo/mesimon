@@ -1,6 +1,7 @@
 """Offline checks of the Claude rig's readiness predicates (A3, T-945) and
 ST2's acceptance (T-974)."""
 import importlib.util
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -54,6 +55,55 @@ class SuiteTests(unittest.TestCase):
                 f.write('[[test]]\nid = "A2"\n\n[[test]]\nid = "B1"\n\n[[test]]\nid = "A2"\n')
             with self.assertRaisesRegex(ValueError, "two tests are named A2"):
                 rig.load_tests(path)
+
+
+def wake(key):
+    return {"type": "user", "message": {"content": f'{key} "x" has run its turn 31 s, past the 30 s it expected'}}
+
+
+def assistant(*blocks):
+    return {"type": "assistant", "message": {"content": list(blocks)}}
+
+
+def call(key, cid="s1"):
+    return {"type": "tool_use", "id": cid, "name": "mcp__mesimon__sample_agent", "input": {"key": key}}
+
+
+def result(key, cid="s1", error=False):
+    body = "a refusal" if error else json.dumps({"key": key, "state": "working", "captured_at_ms": 1})
+    return {"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": cid, "is_error": error, "content": body}]}}
+
+
+def verdict():
+    return {"type": "text", "text": "SA1 worker: looping"}
+
+
+class SampledBeforeTests(unittest.TestCase):
+    """T-973, round 2: the verdict counts only after the sample's own
+    successful result, read in order."""
+
+    def judge(self, rows):
+        return rig.sampled_before(rows, "T-1", "SA1 worker")[0]
+
+    def test_a_call_its_result_then_the_verdict_passes(self):
+        self.assertTrue(self.judge([wake("T-1"), assistant(call("T-1")), result("T-1"), assistant(verdict())]))
+
+    def test_a_verdict_before_the_call_in_one_message_fails(self):
+        rows = [wake("T-1"), assistant(verdict(), call("T-1")), result("T-1")]
+        self.assertFalse(self.judge(rows))
+
+    def test_a_verdict_before_the_result_fails(self):
+        rows = [wake("T-1"), assistant(call("T-1")), assistant(verdict()), result("T-1")]
+        self.assertFalse(self.judge(rows))
+
+    def test_a_refused_sample_then_the_verdict_fails(self):
+        rows = [wake("T-1"), assistant(call("T-1")), result("T-1", error=True), assistant(verdict())]
+        self.assertFalse(self.judge(rows))
+
+    def test_another_tickets_sample_counts_for_nothing(self):
+        rows = [wake("T-1"), assistant(call("T-2")), result("T-2"), assistant(verdict())]
+        self.assertFalse(self.judge(rows))
 
 
 class RestartEnvironmentTests(unittest.TestCase):
