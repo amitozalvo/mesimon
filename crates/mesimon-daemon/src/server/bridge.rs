@@ -129,6 +129,14 @@ impl ModRoad {
         let recheck = probe.as_ref().is_some_and(Probe::claude_off);
         ModRoad { probe, recheck, born: now_ms(), ..Default::default() }
     }
+
+    /// A bridge that has polled for `session`, speaking `speaks`, as its
+    /// first poll seats one: for a test that needs a mod up.
+    #[cfg(test)]
+    pub(super) fn seat_bridge(&mut self, session: uuid::Uuid, speaks: &[&str]) {
+        let speaks = speaks.iter().map(|k| k.to_string()).collect();
+        self.bridges.insert(session, Bridge { pane: None, speaks, since: now_ms() });
+    }
 }
 
 /// Why a mod launch is judged silent (`relaunch_silent_mods`): its mod never

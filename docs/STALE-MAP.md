@@ -36266,3 +36266,52 @@ build before round 1:
   and that re-read re-affirms the dialog: it cancels a `Stop` settling while the call's line is
   the transcript's last word. The engine writes a dialog's result before its turn's `Stop`, so
   only a staged transcript meets it; the e2e lets that first look pass before its `Stop`.
+
+## A queued ask refused for a person waits for a sample from after its refusal (T-997, 2026-10-25, named by the crown from T-991's and T-988's delivery notes)
+
+**What was wrong, measured.** `crown_e2e::a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box`
+failed at its first `the drain did not loop` check on branches whose diffs did not reach it, once
+alone at load 7.7. The race was in the daemon, not the test. The drain decides that a queued ask's
+pane is free from the newest pane sample, whose facts are asked on the tail-poll bucket (every 2 s)
+or by `want_person` for an ask already held. `paste_at` then reads the pane's clients and box
+afresh, and a refusal there puts the entry back (`queue_kept`). Nothing marked that refusal as
+newer than the sample. Every drain pass after it (the 1 s bucket, every `apply_change`) tried the
+pane again on the same old sample, and each try wrote one more `prompt_not_sent` and
+`queued_ask_kept`. That lasted until a facts sample landed that saw the client. In the test, a
+client attaches, the ask is queued, and W's turn ends within about a second. When the next facts
+sample was more than about a second out, two passes refused, and the check read `n → n+2`. Load
+lengthens that gap. Stretched to name it: with `TAIL_POLL_TICKS` at 40 (a facts sample every 10 s),
+the test wrote 7 kept lines in 7 s on every run.
+
+**The fix.** `queue_kept` stamps the pane's refusal (`person_refused_at`, by sid16, `now_ms()`)
+and asks the sampler for the pane (`want_person`). `typed_under_a_person` also holds while
+`refused_unsampled`, so the drain does not try again, and it keeps asking for the read, as for a
+held ask. A facts sample begun at or before the refusal does not clear the stamp. The first one
+begun after it does, and the drain then judges the pane on that sample. That sample sees the
+client, so the ask is held, and the row names why. The refusal is still `paste_at`'s alone. The
+stamp only stops the drain from trying again on information older than the refusal. The test was
+not changed.
+
+Test: `queued_person_push_tests::a_refused_queued_ask_waits_for_a_sample_from_after_its_refusal`.
+Its tmux socket has no server, so `paste_at`'s fresh `list-clients` fails, which counts as a
+person. One sample (client idle an hour, box empty) gives one refusal. Two more drain passes, and
+a sample begun before the refusal, add no line. A sample begun after it lets the drain try again.
+Without the hold the count is 4, not 1.
+
+**Proof.** The e2e passed 30 times in a row alone (load 3.7 to 21). It also passed in 3 full
+`crown_e2e` runs on each road, with `cargo ut` looping beside them (load 30 to 50). Other tests
+in those full runs failed at that load, a different set each run, and none of their feeds holds a
+`queued_ask_kept` line, which is the only thing that sets the new hold. They are named in the
+ticket's delivery note.
+
+**Round 1 (T-1001's cold read): the stamp held words no person meets.** `typed_under_a_person`
+read the stamp outside `queued_person_hold`'s scope, which leaves out an ask the mod submits
+(and a relaunch), since a submit goes past the box. So an `immediately` ask on a mod pane that
+speaks `submit` but not `fill`, refused on the paste road, would wait at its turn's end for a
+fresh sample. That wait is unbounded if the sampler stalls, and the row names no person while it
+lasts. The scope is now one function, `person_holds_words` (an extant Claude pane, words not
+submitted, no relaunch). Both the hold and the stamp go through it. An ask outside it neither
+reads nor clears the stamp. Inside it, a stamp still holds when the cached sample shows no
+client. Test: `queued_person_push_tests::a_refusal_holds_a_typed_ask_and_not_one_the_mod_submits`.
+On a stamped mod pane that speaks `submit`, a plain ask is not held and a `/` command is. With
+the stamp read outside the scope, it fails on the plain ask.

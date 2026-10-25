@@ -712,6 +712,12 @@ pub struct Daemon {
     /// `want_person`): once a second a pane, whatever asks, so the crown's
     /// wake and a queued ask (T-966) never take each other's read.
     person_asked_at: HashMap<String, u64>,
+    /// When `paste_at` last refused a queued ask's words for a person at
+    /// each pane (T-997): its read is fresher than any sample before it, so
+    /// the drain tries that pane again only once a sample begun after the
+    /// refusal read who is there (`refused_unsampled`), never once a second
+    /// on the older one that let it try.
+    person_refused_at: HashMap<String, u64>,
     /// (bytes, sessions) currently sleepable on sleep-safe tickets — the
     /// header suggestion, recomputed on the RSS bucket.
     reclaim_cache: (u64, usize),
@@ -1887,6 +1893,7 @@ impl Daemon {
             active_clients: HashMap::new(),
             attached_at: 0,
             person_asked_at: HashMap::new(),
+            person_refused_at: HashMap::new(),
             reclaim_cache: (0, 0),
             archive_cache: 0,
             open_box_counts: Default::default(),
@@ -15367,9 +15374,33 @@ impl Daemon {
     /// The drain's words for this pane would be typed under a person's hands
     /// (T-958), by the newest pane sample, so the queue's every-pass test
     /// forks nothing. Readiness only: the one fresh read is `paste_at`'s,
-    /// and its refusal keeps the entry.
+    /// and its refusal keeps the entry, and holds it until a sample from
+    /// after it has read the pane (T-997).
     fn typed_under_a_person(&self, id: uuid::Uuid, q: &QueuedAsk) -> bool {
-        self.queued_person_hold(id, q).is_some()
+        self.queued_person_hold(id, q).is_some() || self.refused_unsampled(id, q)
+    }
+
+    /// `paste_at` refused words for a person at this pane after the newest
+    /// sample of who is there began (T-997, `person_refused_at`), and these
+    /// words would meet a person there (`person_holds_words`): words the
+    /// mod submits, or a relaunch, go as they did.
+    fn refused_unsampled(&self, id: uuid::Uuid, q: &QueuedAsk) -> bool {
+        self.person_holds_words(id, q).is_some_and(|sid| self.person_refused_at.contains_key(&sid))
+    }
+
+    /// The pane, by sid16, whose person a queued ask's words wait for (T-958,
+    /// T-966): a Claude pane they would be typed into by `paste_at`'s keys,
+    /// not the mod's `submit` nor a relaunch. `None` is an ask no person
+    /// holds.
+    fn person_holds_words(&self, id: uuid::Uuid, q: &QueuedAsk) -> Option<String> {
+        let rec = self.board.sessions.iter().find(|s| s.id == id && s.state.has_pane())?;
+        if rec.kind != SessionKind::Claude
+            || self.takes_by_submit(id, &q.text)
+            || self.relaunches(id, q.plan)
+        {
+            return None;
+        }
+        Some(rec.sid16())
     }
 
     /// The queued row's word for a person holding this ask (T-966,
@@ -15392,14 +15423,7 @@ impl Daemon {
     /// box, which goes only once the same sample read it an empty composer
     /// (`idle_box`). A pane with no client holds nothing, as before T-958.
     fn queued_person_hold(&self, id: uuid::Uuid, q: &QueuedAsk) -> Option<AskHold> {
-        let rec = self.board.sessions.iter().find(|s| s.id == id && s.state.has_pane())?;
-        if rec.kind != SessionKind::Claude
-            || self.takes_by_submit(id, &q.text)
-            || self.relaunches(id, q.plan)
-        {
-            return None;
-        }
-        let sid = rec.sid16();
+        let sid = self.person_holds_words(id, q)?;
         if let Some(hold) = self.active_clients.get(&sid) {
             return Some(AskHold::Client(*hold));
         }
@@ -15463,7 +15487,7 @@ impl Daemon {
             .iter()
             .filter(|q| !q.held_for_person())
             .filter_map(|q| match q.seat {
-                QueuedSeat::Pane(id) => self.queued_person_hold(id, q).map(|_| id),
+                QueuedSeat::Pane(id) => self.typed_under_a_person(id, q).then_some(id),
                 _ => None,
             })
             .filter_map(|id| self.board.sessions.iter().find(|s| s.id == id).map(|s| s.sid16()))
@@ -16015,6 +16039,14 @@ impl Daemon {
     /// the sender's, and the crown's record still reads `queued`.
     fn queue_kept(&mut self, i: usize, entry: QueuedAsk) {
         let ticket = entry.ticket;
+        // The refusal read the pane afresh; the drain waits for a sample as
+        // fresh (T-997), and asks for one.
+        if let QueuedSeat::Pane(id) = entry.seat {
+            if let Some(sid) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.sid16()) {
+                self.person_refused_at.insert(sid.clone(), now_ms());
+                self.want_person(&sid);
+            }
+        }
         self.queued.insert(i.min(self.queued.len()), entry);
         self.persist_queue();
         self.feed.board_outcome("daemon", "queued_ask_kept", Some(ticket), A_PERSON_ATTACHED);
@@ -18957,6 +18989,8 @@ impl Daemon {
                 stage!(self, "refresh_panes", self.absorb_panes(facts, s.rows.as_deref(), at));
             changed |= panes.changed;
             repaint |= panes.repaint;
+            // A refusal at or after this sample began still waits for the next.
+            self.person_refused_at.retain(|_, refused| *refused >= at);
             stage!(self, "nudge_unreaped", self.nudge_unreaped(facts));
             if let Some(rss) = &s.rss {
                 changed |= stage!(self, "refresh_rss", self.absorb_rss(facts, rss));
@@ -21429,6 +21463,66 @@ mod queued_person_push_tests {
         d.on_pane_sampled(sample(gen, &sid, t0 + 4_000, Some(dialog)));
         assert_eq!(pushes(&mut sub), 0, "and again, nothing");
         assert_eq!(d.queued.len(), 1, "the ask still waits");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-997: `paste_at`'s refusal for a person reads the pane afresh (here
+    /// a server that answers no `list-clients`, which counts as a person),
+    /// so the drain does not try the pane again on the sample that let it
+    /// try, once a pass, a kept line each time; it tries again on a sample
+    /// begun after the refusal.
+    #[test]
+    fn a_refused_queued_ask_waits_for_a_sample_from_after_its_refusal() {
+        let dir = std::env::temp_dir().join(format!("msmn-t997-kept-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (mut d, sid, _rx) = daemon(&dir);
+        let feed = d.paths.activity_log();
+        let kept = |d: &mut Daemon| {
+            d.feed.flush().unwrap();
+            std::fs::read_to_string(&feed)
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| l.contains("\"cmd\":\"queued_ask_kept\""))
+                .count()
+        };
+        let gen = d.pane_gen;
+        let empty = screen(&[RULE, "❯ ", RULE]);
+        let t0 = now_ms();
+        // The client idle an hour and the box read empty on one sample: the
+        // drain tries, and the fresh read refuses.
+        d.on_pane_sampled(sample(gen, &sid, t0, Some(empty.clone())));
+        assert_eq!(kept(&mut d), 1, "the refusal keeps the ask");
+        assert_eq!(d.queued.len(), 1);
+        // Pass after pass on that sample, and on one begun before the
+        // refusal: no second try.
+        d.drain_queue();
+        d.drain_queue();
+        d.on_pane_sampled(sample(gen, &sid, t0, Some(empty.clone())));
+        assert_eq!(kept(&mut d), 1, "the drain did not loop on an older sample");
+        // A sample begun after the refusal: the drain tries again.
+        d.on_pane_sampled(sample(gen, &sid, now_ms() + 1, Some(empty)));
+        assert_eq!(kept(&mut d), 2, "a fresh sample lets it try");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-997, round 1: the refusal's stamp holds only the words a person at
+    /// the pane would meet. On a mod pane that speaks `submit`, a stamped
+    /// pane's plain ask goes by the submit, past the box, and is not held;
+    /// a `/` command for the same pane is typed, and is.
+    #[test]
+    fn a_refusal_holds_a_typed_ask_and_not_one_the_mod_submits() {
+        let dir = std::env::temp_dir().join(format!("msmn-t997-submit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (mut d, sid, _rx) = daemon(&dir);
+        let id = d.board.sessions[0].id;
+        d.board.sessions[0].road = Road::Mod;
+        d.modroad.seat_bridge(id, &["submit"]);
+        d.person_refused_at.insert(sid, now_ms());
+        let submitted = d.queued[0].clone();
+        assert!(d.takes_by_submit(id, &submitted.text), "the mod submits these words");
+        assert!(!d.typed_under_a_person(id, &submitted), "a submit is held by no refusal");
+        let typed = QueuedAsk { text: "/compact".into(), ..submitted };
+        assert!(d.typed_under_a_person(id, &typed), "typed words wait for a fresh read");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
