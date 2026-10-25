@@ -31,24 +31,34 @@
 //!   read, a pane replaced or gone under the words, a restart. Never
 //!   resent.
 //!
-//! A second ask is refused while the first reads `sent` or `handed`
-//! (`blocks`), so a resend never puts in a second copy behind the board's
-//! back. It lifts only at an edge the board saw: `taken`, `dropped`,
-//! `unknown`, or the end of the turn the words went into, for words that
-//! did not start a turn of their own; a mod `submit` always starts its own.
-//! Without a request key a lost receipt, or a retry after a restart, can
-//! still run twice: the rule refuses a second ask while the first is out,
-//! and claims no more.
+//! A second ask with `deliver: idle` is refused while the first reads
+//! `sent` or `handed` (`blocks`), so a resend never puts in a second copy
+//! behind the board's back. It lifts only at an edge the board saw:
+//! `taken`, `dropped`, `unknown`, or the end of the turn the words went
+//! into, for words that did not start a turn of their own; a mod `submit`
+//! always starts its own. Without a request key a lost receipt, or a retry
+//! after a restart, can still run twice: the rule refuses a second ask while
+//! the first is out, and claims no more.
 //!
-//! Memory only, as every crown ask is (T-550): a restart keeps nothing but
-//! the turn the crown's ask rode (`TurnAsk::Asked` in `crown.json`), which
-//! comes back as `unknown`. A `sent` ask whose ack marked its turn is in
-//! that ledger; an unmarked one (a held `submit`, a paste not yet acked) may
-//! leave no trace, so no `asked` after a restart is no evidence, not proof
-//! that nothing was sent.
+//! **A steer goes beside it (T-974).** `now` or `immediately` to a working
+//! agent the crown may send to is a person's send-now made on the crown's
+//! say-so, and a person's is not refused for words still out: it is
+//! admitted, a record of its own beside the one still out, and replaces
+//! nothing. So a ticket holds a list, oldest first: the latest is what
+//! `asked` reads, the others ride it as `earlier`, each with its own word,
+//! and every receipt finds its record by id. The turn running keeps the ask
+//! that rode it (`keeps_turn`): a steer's mark never takes the turn from
+//! the ask still out on it, so that turn's end speaks of the first.
+//!
+//! `crown.json` keeps the asks still out (`KeptAsk`, T-974): a restart
+//! brings each back at its own word, fenced by the seat, pane and frame it
+//! went to, and the restart's look owns its next end. An ask a turn rode
+//! but no kept record names (a ledger an older build wrote) comes back
+//! `unknown`, as before.
 
 use super::*;
 use crownwake::Said;
+use serde::{Deserialize, Serialize};
 
 /// Where the crown's last ask to a ticket stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,7 +84,7 @@ impl Stage {
     }
 }
 
-/// The crown's last ask to one ticket's agent.
+/// One of the crown's asks to a ticket's agent.
 #[derive(Clone, Debug)]
 pub(super) struct CrownAsk {
     pub(super) id: ulid::Ulid,
@@ -137,6 +147,7 @@ impl CrownAsk {
             since_secs: Some(now.saturating_sub(self.since_ms) / 1000),
             ask: self.id.to_string(),
             why,
+            earlier: Vec::new(),
         }
     }
 
@@ -165,17 +176,109 @@ impl CrownAsk {
 pub(super) const RESTORED_WHY: &str =
     "an earlier crown ask is recorded; its outcome was not retained";
 
-impl Daemon {
-    /// The crown's ask on `target`, while it is the latest one.
-    fn crown_ask_mut(&mut self, target: ulid::Ulid, ask: ulid::Ulid) -> Option<&mut CrownAsk> {
-        self.crown_asks.get_mut(&target).filter(|a| a.id == ask)
+/// An ask still out, as `crown.json` keeps it (T-974): what its receipts
+/// and its turn's end are fenced by, and whether a receipt handed it. Only
+/// `sent` and `handed` are kept; the rest settle nothing after a restart.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct KeptAsk {
+    pub(super) id: ulid::Ulid,
+    pub(super) crown: ulid::Ulid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) session: Option<uuid::Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) pane: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) frame: Option<String>,
+    #[serde(default)]
+    pub(super) submit: bool,
+    #[serde(default)]
+    pub(super) own_turn: bool,
+    #[serde(default)]
+    pub(super) released: bool,
+    #[serde(default)]
+    pub(super) handed: bool,
+    #[serde(default)]
+    pub(super) since_ms: u64,
+}
+
+impl KeptAsk {
+    /// The record as the ledger keeps it, if it is out.
+    pub(super) fn of(a: &CrownAsk) -> Option<KeptAsk> {
+        let handed = match a.stage {
+            Stage::Sent => false,
+            Stage::Handed => true,
+            _ => return None,
+        };
+        Some(KeptAsk {
+            id: a.id,
+            crown: a.crown,
+            session: a.session,
+            pane: a.pane.clone(),
+            frame: a.frame.clone(),
+            submit: a.submit,
+            own_turn: a.own_turn,
+            released: a.released,
+            handed,
+            since_ms: a.since_ms,
+        })
     }
 
-    /// A new ask parked on the board: the record starts over.
+    /// The record back, at the word it was kept at.
+    pub(super) fn record(self) -> CrownAsk {
+        CrownAsk {
+            id: self.id,
+            crown: self.crown,
+            session: self.session,
+            pane: self.pane,
+            frame: self.frame,
+            submit: self.submit,
+            own_turn: self.own_turn,
+            released: self.released,
+            stage: if self.handed { Stage::Handed } else { Stage::Sent },
+            since_ms: self.since_ms,
+        }
+    }
+}
+
+impl Daemon {
+    /// The crown's ask `ask` on `target`, while the board holds it.
+    fn crown_ask_mut(&mut self, target: ulid::Ulid, ask: ulid::Ulid) -> Option<&mut CrownAsk> {
+        self.crown_asks.get_mut(&target)?.iter_mut().find(|a| a.id == ask)
+    }
+
+    /// The ticket's latest ask.
+    fn crown_ask_latest(&mut self, target: ulid::Ulid) -> Option<&mut CrownAsk> {
+        self.crown_asks.get_mut(&target)?.last_mut()
+    }
+
+    /// Every ask the board holds, with its ticket.
+    fn all_crown_asks(&self) -> impl Iterator<Item = (ulid::Ulid, &CrownAsk)> {
+        self.crown_asks.iter().flat_map(|(t, list)| list.iter().map(move |a| (*t, a)))
+    }
+
+    /// A new ask parked on the board: the latest from here. One still out
+    /// stays beside it (a steer's, T-974); one settled or replaced on the
+    /// queue goes.
     pub(super) fn crown_ask_queued(&mut self, target: ulid::Ulid, crown: ulid::Ulid) {
         let board = &self.board;
         self.crown_asks.retain(|t, _| board.ticket(*t).is_some());
-        self.crown_asks.insert(target, CrownAsk::queued(crown, now_ms()));
+        let list = self.crown_asks.entry(target).or_default();
+        list.retain(CrownAsk::blocks);
+        list.push(CrownAsk::queued(crown, now_ms()));
+    }
+
+    /// A record `take_queued` took, put back as it was (T-958).
+    pub(super) fn crown_ask_restore(&mut self, target: ulid::Ulid, ask: CrownAsk) {
+        let list = self.crown_asks.entry(target).or_default();
+        match list.iter_mut().find(|a| a.id == ask.id) {
+            Some(a) => *a = ask,
+            None => list.push(ask),
+        }
+    }
+
+    /// The ticket's latest ask, as `take_queued` keeps it to put back.
+    pub(super) fn crown_ask_latest_clone(&self, target: ulid::Ulid) -> Option<CrownAsk> {
+        self.crown_asks.get(&target).and_then(|l| l.last()).cloned()
     }
 
     /// The queued words were dispatched: into `session`'s pane, down its
@@ -201,8 +304,7 @@ impl Daemon {
             .iter()
             .find(|s| s.id == session && s.state.has_pane())
             .and_then(|s| s.pane_key.clone());
-        let Some(ask) = self.crown_asks.get_mut(&target).filter(|a| a.stage == Stage::Queued)
-        else {
+        let Some(ask) = self.crown_ask_latest(target).filter(|a| a.stage == Stage::Queued) else {
             return;
         };
         ask.session = Some(session);
@@ -253,12 +355,12 @@ impl Daemon {
     /// A wake's words parked again after a rebuild: the owed entry the
     /// replay made is the ask's, if its record waits on that seat.
     pub(super) fn crown_ask_retag(&mut self, target: ulid::Ulid, session: uuid::Uuid) {
-        let Some(id) = self
-            .crown_asks
-            .get(&target)
-            .filter(|a| a.stage == Stage::Sent && a.session == Some(session))
-            .map(|a| a.id)
-        else {
+        let Some(id) = self.crown_asks.get(&target).and_then(|l| {
+            l.iter()
+                .rev()
+                .find(|a| a.stage == Stage::Sent && a.session == Some(session))
+                .map(|a| a.id)
+        }) else {
             return;
         };
         if let Some(o) = self.owed.get_mut(&session).filter(|o| o.ask.is_none()) {
@@ -274,6 +376,7 @@ impl Daemon {
         let Some(a) = self
             .crown_asks
             .values_mut()
+            .flatten()
             .find(|a| a.id == ask && a.stage == Stage::Sent && a.session == Some(session))
         else {
             return;
@@ -283,15 +386,26 @@ impl Daemon {
         a.own_turn = true;
     }
 
-    /// The agent's own edge for the words: its turn now carries the ask.
+    /// The agent's own edge for the words: its turn now carries the ask,
+    /// unless another ask still out rides it (`keeps_turn`).
     fn crown_ask_handed(&mut self, target: ulid::Ulid, ask: ulid::Ulid) -> bool {
         let Some(a) = self.crown_ask_mut(target, ask).filter(|a| a.stage == Stage::Sent) else {
             return false;
         };
         a.set(Stage::Handed, now_ms());
         let crown = a.crown;
-        self.mark_turn(target, TurnAsk::Asked { crown, ask, said: Said::Handed });
+        self.mark_ask_turn(target, TurnAsk::Asked { crown, ask, said: Said::Handed });
         true
+    }
+
+    /// Mark the running turn with a crown ask, unless it already carries
+    /// another of this ticket's asks still out (T-974): a steer went into
+    /// the turn that ask rode, and that turn's end is the first's.
+    fn mark_ask_turn(&mut self, target: ulid::Ulid, mark: TurnAsk) {
+        let list = self.crown_asks.get(&target).map(Vec::as_slice).unwrap_or_default();
+        if !keeps_turn(self.turn_asks.get(&target), &mark, list) {
+            self.mark_turn(target, mark);
+        }
     }
 
     /// The owed entry tagged with `ask` was acked: `session`'s prompt hook,
@@ -315,7 +429,7 @@ impl Daemon {
                 self.crown_ask_handed(target, ask);
             }
             AckEdge::Mark => {
-                self.mark_turn(target, TurnAsk::Asked { crown, ask, said: Said::Sent });
+                self.mark_ask_turn(target, TurnAsk::Asked { crown, ask, said: Said::Sent });
             }
             AckEdge::Nothing => {}
         }
@@ -338,10 +452,9 @@ impl Daemon {
         frame: &str,
     ) -> Option<(ulid::Ulid, ulid::Ulid)> {
         let pane = self.pane_of(session);
-        self.crown_asks
-            .iter()
+        self.all_crown_asks()
             .find(|(_, a)| reports_to(a, session, frame, pane.as_deref()))
-            .map(|(target, a)| (*target, a.id))
+            .map(|(target, a)| (target, a.id))
     }
 
     /// A parked seat's words went down its mod as `frame`, in the pane its
@@ -349,7 +462,7 @@ impl Daemon {
     /// of its own (round 3: bound at dispatch, never by a later report).
     pub(super) fn crown_ask_framed(&mut self, session: uuid::Uuid, ask: ulid::Ulid, frame: String) {
         let pane = self.pane_of(session);
-        if let Some(a) = self.crown_asks.values_mut().find(|a| a.id == ask) {
+        if let Some(a) = self.crown_asks.values_mut().flatten().find(|a| a.id == ask) {
             a.frame = Some(frame);
             a.submit = true;
             a.own_turn = true;
@@ -361,7 +474,7 @@ impl Daemon {
     /// by the same fence `crown_ask_by_frame` keeps, binding nothing.
     pub(super) fn crown_ask_owns(&self, session: uuid::Uuid, frame: &str) -> bool {
         let pane = self.pane_of(session);
-        self.crown_asks.values().any(|a| reports_to(a, session, frame, pane.as_deref()))
+        self.all_crown_asks().any(|(_, a)| reports_to(a, session, frame, pane.as_deref()))
     }
 
     /// The pane `session` lives in now, if it has one.
@@ -400,8 +513,12 @@ impl Daemon {
         by: &'static str,
         why: &str,
     ) -> bool {
-        let Some(a) = self.crown_asks.get_mut(&target) else { return false };
-        if ask.is_some_and(|id| id != a.id) || !matches!(a.stage, Stage::Queued | Stage::Sent) {
+        let a = match ask {
+            Some(id) => self.crown_ask_mut(target, id),
+            None => self.crown_ask_latest(target),
+        };
+        let Some(a) = a else { return false };
+        if !matches!(a.stage, Stage::Queued | Stage::Sent) {
             return false;
         }
         a.set(Stage::Dropped { by, why: why.to_string() }, now_ms());
@@ -416,10 +533,12 @@ impl Daemon {
         ask: Option<ulid::Ulid>,
         why: &str,
     ) -> bool {
-        let Some(a) = self.crown_asks.get_mut(&target) else { return false };
-        if ask.is_some_and(|id| id != a.id)
-            || !matches!(a.stage, Stage::Queued | Stage::Sent | Stage::Handed)
-        {
+        let a = match ask {
+            Some(id) => self.crown_ask_mut(target, id),
+            None => self.crown_ask_latest(target),
+        };
+        let Some(a) = a else { return false };
+        if !matches!(a.stage, Stage::Queued | Stage::Sent | Stage::Handed) {
             return false;
         }
         a.set(Stage::Unknown { why: why.to_string() }, now_ms());
@@ -430,10 +549,11 @@ impl Daemon {
     /// `asked`. For the ask whose id it carries, the word at this end is the
     /// record's own (`end_said`): `taken` only where real evidence handed
     /// words that started this turn, nothing at all for one dropped. Any
-    /// other ask out on the ticket went into the turn that just ended and
-    /// no longer blocks; a mod `submit` waits for its own turn. The end of
-    /// a turn in a pane the ask did not go to is not its: the ask is
-    /// unknown from here, and the replacement's turn carries none of it.
+    /// other ask out on the ticket (a steer beside it, T-974) went into the
+    /// turn that just ended and no longer blocks; a mod `submit` waits for
+    /// its own turn. The end of a turn in a pane an ask did not go to is not
+    /// its: that ask is unknown from here, and the replacement's turn
+    /// carries none of it.
     pub(super) fn crown_ask_turn_ended(
         &mut self,
         worker: ulid::Ulid,
@@ -441,35 +561,39 @@ impl Daemon {
     ) -> Option<TurnAsk> {
         let now = now_ms();
         let seat = self.board.live_agent(worker).map(|s| (s.id, s.pane_key.clone()));
-        let Some(a) = self.crown_asks.get_mut(&worker) else { return asked };
-        let mine = matches!(asked, Some(TurnAsk::Asked { ask, .. }) if ask == a.id);
-        let same_seat = seat.as_ref().is_some_and(|(id, pane)| {
-            a.session.is_none_or(|s| s == *id) && bind_pane(a, pane.as_deref())
-        });
-        if a.session.is_some() && !same_seat {
-            if matches!(a.stage, Stage::Sent | Stage::Handed) {
-                a.set(
-                    Stage::Unknown {
-                        why: "the pane it went to was replaced before the turn it went into ended"
-                            .into(),
-                    },
-                    now,
-                );
+        let Some(list) = self.crown_asks.get_mut(&worker) else { return asked };
+        let mut said = asked;
+        for a in list.iter_mut() {
+            let mine = matches!(asked, Some(TurnAsk::Asked { ask, .. }) if ask == a.id);
+            let same_seat = seat.as_ref().is_some_and(|(id, pane)| {
+                a.session.is_none_or(|s| s == *id) && bind_pane(a, pane.as_deref())
+            });
+            if a.session.is_some() && !same_seat {
+                if matches!(a.stage, Stage::Sent | Stage::Handed) {
+                    a.set(
+                        Stage::Unknown {
+                            why: "the pane it went to was replaced before the turn it went into \
+                                  ended"
+                                .into(),
+                        },
+                        now,
+                    );
+                }
+                if mine {
+                    said = None;
+                }
+                continue;
             }
-            return if mine { None } else { asked };
-        }
-        let said = match asked {
-            Some(TurnAsk::Asked { crown, ask, .. }) if mine => {
-                let said = end_said(&a.stage, a.own_turn);
-                if said == Some(Said::Taken) {
+            if let (true, Some(TurnAsk::Asked { crown, ask, .. })) = (mine, asked) {
+                let word = end_said(&a.stage, a.own_turn);
+                if word == Some(Said::Taken) {
                     a.set(Stage::Taken, now);
                 }
-                said.map(|said| TurnAsk::Asked { crown, ask, said })
+                said = word.map(|said| TurnAsk::Asked { crown, ask, said });
             }
-            other => other,
-        };
-        if a.blocks() && !a.submit {
-            a.released = true;
+            if a.blocks() && !a.submit {
+                a.released = true;
+            }
         }
         said
     }
@@ -487,15 +611,18 @@ impl Daemon {
     ///
     /// Neither says whether the agent read the words first: `unknown`.
     pub(super) fn settle_crown_asks(&mut self) -> bool {
+        // A worker the restart has yet to look at (T-602) is left to that
+        // look: its kept ask's owed entry was memory, and the turn's end
+        // that settles it is the look's (T-974).
         let gone: Vec<(ulid::Ulid, ulid::Ulid, &'static str)> = self
-            .crown_asks
-            .iter()
+            .all_crown_asks()
+            .filter(|(t, _)| !self.crown_recheck.contains_key(t))
             .filter_map(|(t, a)| {
-                let live = self.board.live_agent(*t).filter(|s| s.state.has_pane());
+                let live = self.board.live_agent(t).filter(|s| s.state.has_pane());
                 let owed =
                     a.session.and_then(|s| self.owed.get(&s)).is_some_and(|o| o.ask == Some(a.id));
                 let parked = self.pending_resumes.iter().any(|r| Some(r.session) == a.session);
-                settle_why(a, live, owed, parked).map(|why| (*t, a.id, why))
+                settle_why(a, live, owed, parked).map(|why| (t, a.id, why))
             })
             .collect();
         let mut changed = false;
@@ -505,11 +632,24 @@ impl Daemon {
         changed
     }
 
-    /// A restored ledger's crown asks (T-938): the turn each rode is back,
-    /// what became of it is not.
-    pub(super) fn restore_crown_asks(&mut self) {
+    /// A restored ledger's crown asks: each kept one at its own word
+    /// (T-974); an ask a turn rode that no kept record names, from a ledger
+    /// an older build wrote, comes back `unknown` (T-938). Kept for the crown
+    /// worn now and tickets on the board alone (`restore_crown` filtered
+    /// them).
+    pub(super) fn restore_crown_asks(
+        &mut self,
+        kept: std::collections::BTreeMap<ulid::Ulid, Vec<KeptAsk>>,
+    ) {
         let now = now_ms();
         let worn = self.board.crown;
+        for (worker, list) in kept {
+            let list: Vec<CrownAsk> =
+                list.into_iter().filter(|k| Some(k.crown) == worn).map(KeptAsk::record).collect();
+            if !list.is_empty() {
+                self.crown_asks.insert(worker, list);
+            }
+        }
         let asks: Vec<(ulid::Ulid, ulid::Ulid, ulid::Ulid)> = self
             .turn_asks
             .iter()
@@ -521,26 +661,79 @@ impl Daemon {
             })
             .collect();
         for (worker, crown, ask) in asks {
+            if self.all_crown_asks().any(|(_, a)| a.id == ask) {
+                continue;
+            }
             let mut a = CrownAsk::queued(crown, now);
             a.id = ask;
             a.set(Stage::Unknown { why: RESTORED_WHY.into() }, now);
-            self.crown_asks.insert(worker, a);
+            self.crown_asks.entry(worker).or_default().push(a);
         }
     }
 
-    /// `get_ticket`'s `asked` for `target`: the record, whichever crown
-    /// wears the crown now.
+    /// The asks still out, as `crown.json` keeps them (T-974).
+    pub(super) fn kept_crown_asks(&self) -> std::collections::BTreeMap<ulid::Ulid, Vec<KeptAsk>> {
+        self.crown_asks
+            .iter()
+            .map(|(t, list)| (*t, list.iter().filter_map(KeptAsk::of).collect::<Vec<_>>()))
+            .filter(|(_, list)| !list.is_empty())
+            .collect()
+    }
+
+    /// `get_ticket`'s `asked` for `target`: the latest record, and the
+    /// others the board holds as `earlier` (T-974), whichever crown wears
+    /// the crown now.
     pub(super) fn crown_asked_view(
         &self,
         target: ulid::Ulid,
     ) -> Option<mesimon_core::command::AgentAskedView> {
-        self.crown_asks.get(&target).map(|a| a.view(now_ms()))
+        let now = now_ms();
+        let (latest, earlier) = self.crown_asks.get(&target)?.split_last()?;
+        let mut view = latest.view(now);
+        view.earlier = earlier.iter().map(|a| a.view(now)).collect();
+        Some(view)
     }
 
-    /// The second ask's refusal, while the first is out.
-    pub(super) fn crown_ask_blocks(&self, target: ulid::Ulid, key: &str) -> Option<String> {
-        self.crown_asks.get(&target).filter(|a| a.blocks()).map(|a| a.refusal(key, now_ms()))
+    /// The ticket's other asks still out, beside its latest, as a feed line
+    /// names them (`<id> <word>`, T-974).
+    pub(super) fn crown_asks_beside(&self, target: ulid::Ulid) -> Vec<String> {
+        let Some((_, earlier)) = self.crown_asks.get(&target).and_then(|l| l.split_last()) else {
+            return Vec::new();
+        };
+        earlier
+            .iter()
+            .filter(|a| a.blocks())
+            .map(|a| format!("{} {}", a.id, a.stage.word()))
+            .collect()
     }
+
+    /// The ticket's latest ask's id, once it is sent (the feed's `ask`).
+    pub(super) fn crown_ask_sent_id(&self, target: ulid::Ulid) -> Option<ulid::Ulid> {
+        self.crown_asks
+            .get(&target)
+            .and_then(|l| l.last())
+            .filter(|a| !matches!(a.stage, Stage::Queued))
+            .map(|a| a.id)
+    }
+
+    /// The second ask's refusal, while the first is out: the oldest ask
+    /// that still blocks is the one it names.
+    pub(super) fn crown_ask_blocks(&self, target: ulid::Ulid, key: &str) -> Option<String> {
+        let list = self.crown_asks.get(&target)?;
+        list.iter().find(|a| a.blocks()).map(|a| a.refusal(key, now_ms()))
+    }
+}
+
+/// Whether the running turn's mark `current` stays over `mark` (T-974): it
+/// names another of the ticket's asks still out (`list`), whose turn this
+/// is; a steer that went into it does not take it over. Any other mark
+/// gives way, as `mark_turn` decides.
+pub(super) fn keeps_turn(current: Option<&TurnAsk>, mark: &TurnAsk, list: &[CrownAsk]) -> bool {
+    let (Some(TurnAsk::Asked { ask: rode, .. }), TurnAsk::Asked { ask, .. }) = (current, mark)
+    else {
+        return false;
+    };
+    rode != ask && list.iter().any(|a| a.id == *rode && a.blocks())
 }
 
 /// What an owed entry's ack proves for the crown's ask it carries.
@@ -838,5 +1031,246 @@ mod tests {
         assert!(r.contains("when the running turn ends"), "{r}");
         assert!(!r.contains("never"), "no promise the rule cannot keep: {r}");
         assert!(!r.to_lowercase().contains("you"), "words about the board, not to its reader: {r}");
+    }
+}
+
+/// T-974: the ledger as the daemon holds it, on a daemon assembled as `run`
+/// assembles one (a temporary state dir, a tmux socket nothing listens on)
+/// with one working Claude seat on the worker's ticket.
+#[cfg(test)]
+mod ledger_tests {
+    use super::*;
+
+    fn ticket(n: u128, key: &str) -> Ticket {
+        Ticket {
+            id: ulid::Ulid(n),
+            short_key: key.into(),
+            title: key.into(),
+            column: "TODO".into(),
+            order: "a0".into(),
+            created_at: "@0".into(),
+            created_by: String::new(),
+            created_from: None,
+            entered_at: None,
+            woke_at: None,
+            manual_merge: false,
+            execution_policy: Default::default(),
+            tier: None,
+            envelope: None,
+            workspace: None,
+            import_origin: None,
+            raised: None,
+            previous_column: None,
+            picked: None,
+            tags: Vec::new(),
+            notes: Vec::new(),
+            archived: None,
+        }
+    }
+
+    struct Bed {
+        d: Daemon,
+        crown: ulid::Ulid,
+        worker: ulid::Ulid,
+        seat: uuid::Uuid,
+        _dir: std::path::PathBuf,
+    }
+
+    fn bed(name: &str) -> Bed {
+        let dir = std::env::temp_dir().join(format!("msmn-crownask-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let paths = Paths {
+            repo_root: repo.clone(),
+            proj16: "0974097409740974".into(),
+            rt_dir: dir.join("rt"),
+            state_dir: dir.join("state"),
+            board_dir: repo.join(".mesimon"),
+        };
+        paths.ensure_dirs().unwrap();
+        let (tx, _rx) = channel();
+        let backend = TmuxBackend::new(dir.join("tmux.sock"), &paths.state_dir, None).unwrap();
+        let mut board = Board::with_default_columns();
+        let (crown, worker) = (ulid::Ulid(1), ulid::Ulid(2));
+        board.tickets.push(ticket(1, "T-1"));
+        board.tickets.push(ticket(2, "T-2"));
+        board.tickets.push(ticket(3, "T-3"));
+        board.crown = Some(crown);
+        let seat = uuid::Uuid::from_u128(974);
+        let mut rec = SessionRecord::new(
+            seat,
+            SessionKind::Claude,
+            worker,
+            vec!["claude".into()],
+            repo.display().to_string(),
+            SessionState::Running,
+        );
+        rec.pane_key = Some("100:%1".into());
+        board.sessions.push(rec);
+        let feed = FeedWriter::open(&paths.activity_log()).unwrap();
+        let journal = crate::journal::Journal::open(&paths.daemon_log());
+        let d = Daemon::assemble(Seed {
+            board,
+            backend,
+            journal,
+            notices: Vec::new(),
+            exe_stamp: None,
+            own_exe: None,
+            started_at: String::new(),
+            worktrees_barred: false,
+            queue_barred: false,
+            started_barred: false,
+            costs_barred: false,
+            machines: HashMap::new(),
+            queued: Vec::new(),
+            train_barred: false,
+            forge_barred: false,
+            feed,
+            started: Default::default(),
+            costs: Default::default(),
+            worktrees: Default::default(),
+            crown_barred: false,
+            modroad: bridge::ModRoad::start(&paths),
+            git_fetch_every: Duration::from_secs(60),
+            columns_barred: false,
+            sessions_barred: false,
+            terminals: Default::default(),
+            tx,
+            self_exe: dir.join("mesimon"),
+            paths,
+        });
+        Bed { d, crown, worker, seat, _dir: dir }
+    }
+
+    impl Bed {
+        /// A new ask, sent into the seat as `stage`, starting a turn of its
+        /// own or not: its id.
+        fn ask(&mut self, stage: Stage, own_turn: bool) -> ulid::Ulid {
+            self.d.crown_ask_queued(self.worker, self.crown);
+            let a = self.d.crown_ask_latest(self.worker).unwrap();
+            a.session = Some(self.seat);
+            a.pane = Some("100:%1".into());
+            a.own_turn = own_turn;
+            a.stage = stage;
+            a.id
+        }
+
+        fn word_of(&self, ask: ulid::Ulid) -> &'static str {
+            let list = &self.d.crown_asks[&self.worker];
+            list.iter().find(|a| a.id == ask).unwrap().stage.word()
+        }
+    }
+
+    /// A steer beside the ask out: both records held, the idle rule still
+    /// refuses naming the first, the steer's ack leaves the turn the
+    /// first's, and that turn's end takes the first and releases the steer.
+    #[test]
+    fn a_steer_rides_beside_the_ask_out_and_the_turn_s_end_is_the_first_s() {
+        let mut b = bed("steer");
+        let first = b.ask(Stage::Handed, true);
+        let crown = b.crown;
+        b.d.mark_turn(b.worker, TurnAsk::Asked { crown, ask: first, said: Said::Handed });
+        let steer = b.ask(Stage::Sent, false);
+        assert_eq!(b.d.crown_asks[&b.worker].len(), 2, "the first stays beside the steer");
+        let refusal = b.d.crown_ask_blocks(b.worker, "T-2").unwrap();
+        assert!(refusal.contains(&first.to_string()), "the oldest out is named: {refusal}");
+        // The steer's prompt hook: a mark, which leaves the turn the first's.
+        b.d.crown_ask_acked(b.worker, b.seat, steer);
+        assert_eq!(
+            b.d.turn_asks.get(&b.worker),
+            Some(&TurnAsk::Asked { crown, ask: first, said: Said::Handed })
+        );
+        let v = b.d.crown_asked_view(b.worker).unwrap();
+        assert_eq!((v.ask.as_str(), v.status.as_str()), (steer.to_string().as_str(), "sent"));
+        let earlier: Vec<_> = v.earlier.iter().map(|e| (e.ask.clone(), e.status.clone())).collect();
+        assert_eq!(earlier, [(first.to_string(), "handed".to_string())]);
+        assert_eq!(b.d.crown_asks_beside(b.worker), [format!("{first} handed")]);
+        // The turn's end: the first's word is `taken`, and nothing blocks.
+        let asked = b.d.turn_asks.remove(&b.worker);
+        let said = b.d.crown_ask_turn_ended(b.worker, asked);
+        assert_eq!(said, Some(TurnAsk::Asked { crown, ask: first, said: Said::Taken }));
+        assert_eq!((b.word_of(first), b.word_of(steer)), ("taken", "sent"));
+        assert_eq!(b.d.crown_ask_blocks(b.worker, "T-2"), None, "the steer went into that turn");
+        // The next ask drops what no longer blocks.
+        let next = b.ask(Stage::Queued, false);
+        let ids: Vec<_> = b.d.crown_asks[&b.worker].iter().map(|a| a.id).collect();
+        assert_eq!(ids, [next]);
+    }
+
+    /// The asks still out ride `crown.json` at their word and come back so
+    /// after a restart; one a turn rode that no kept record names is
+    /// `unknown`, as from a ledger an older build wrote.
+    #[test]
+    fn a_kept_ask_comes_back_at_its_word_and_an_unkept_one_unknown() {
+        let mut b = bed("kept");
+        let first = b.ask(Stage::Handed, true);
+        let steer = b.ask(Stage::Sent, false);
+        let kept = b.d.kept_crown_asks();
+        assert_eq!(kept[&b.worker].len(), 2);
+        let text = serde_json::to_string(&kept).unwrap();
+        let kept: std::collections::BTreeMap<ulid::Ulid, Vec<KeptAsk>> =
+            serde_json::from_str(&text).unwrap();
+        // A second daemon on the same board, seat and pane: the restart.
+        let mut again = bed("kept-again");
+        let (w, c) = (again.worker, again.crown);
+        let lost = ulid::Ulid::new();
+        let other = ulid::Ulid(3);
+        again.d.turn_asks.insert(w, TurnAsk::Asked { crown: c, ask: first, said: Said::Handed });
+        again.d.turn_asks.insert(other, TurnAsk::Asked { crown: c, ask: lost, said: Said::Sent });
+        again.d.restore_crown_asks(kept);
+        assert_eq!((again.word_of(first), again.word_of(steer)), ("handed", "sent"));
+        let v = again.d.crown_asked_view(other).unwrap();
+        assert_eq!((v.ask.as_str(), v.status.as_str()), (lost.to_string().as_str(), "unknown"));
+        assert_eq!(v.why, RESTORED_WHY);
+        // The restart's look owns a kept ask's end: the tick settles nothing
+        // for a worker it has yet to look at.
+        again.d.board.sessions[0].state = SessionState::Idle { stop_reason: StopReason::EndTurn };
+        again.d.crown_recheck.insert(w, Default::default());
+        assert!(!again.d.settle_crown_asks());
+        assert_eq!(again.word_of(steer), "sent");
+        again.d.crown_recheck.remove(&w);
+        assert!(again.d.settle_crown_asks(), "an untracked paste at an idle agent settles");
+        assert_eq!(again.word_of(steer), "unknown");
+        assert_eq!(again.word_of(first), "handed", "handed in its own pane waits for its end");
+    }
+
+    /// A settled record is not kept; a queued one is the queue's.
+    #[test]
+    fn only_an_ask_out_is_kept() {
+        let mut a = CrownAsk::queued(ulid::Ulid::new(), 7);
+        assert_eq!(KeptAsk::of(&a), None);
+        a.stage = Stage::Handed;
+        a.frame = Some("F1".into());
+        a.submit = true;
+        let k = KeptAsk::of(&a).unwrap();
+        let back = k.record();
+        assert_eq!(
+            (back.id, back.stage, back.frame, back.submit),
+            (a.id, Stage::Handed, a.frame.clone(), true)
+        );
+        for stage in [Stage::Taken, Stage::Unknown { why: "x".into() }] {
+            a.stage = stage;
+            assert_eq!(KeptAsk::of(&a), None);
+        }
+    }
+
+    /// The turn keeps the ask that rode it while that one is out; any other
+    /// mark gives way as before.
+    #[test]
+    fn the_turn_keeps_the_ask_that_rode_it_only_while_it_is_out() {
+        let c = ulid::Ulid::new();
+        let mut first = CrownAsk::queued(c, 1);
+        first.stage = Stage::Handed;
+        let rode = TurnAsk::Asked { crown: c, ask: first.id, said: Said::Handed };
+        let steer = TurnAsk::Asked { crown: c, ask: ulid::Ulid::new(), said: Said::Sent };
+        let list = [first.clone()];
+        assert!(keeps_turn(Some(&rode), &steer, &list));
+        assert!(!keeps_turn(Some(&rode), &rode, &list), "its own mark");
+        assert!(!keeps_turn(Some(&TurnAsk::Merge), &steer, &list));
+        assert!(!keeps_turn(None, &steer, &list));
+        assert!(!keeps_turn(Some(&rode), &steer, &[]), "the board no longer holds it");
+        first.released = true;
+        assert!(!keeps_turn(Some(&rode), &steer, &[first]), "no longer out");
     }
 }

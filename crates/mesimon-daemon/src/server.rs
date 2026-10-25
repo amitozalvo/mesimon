@@ -876,11 +876,12 @@ pub struct Daemon {
     /// (T-783), by the receiving ticket, for the card's line under its
     /// title. In memory, like the touches: the transcript is the record.
     crown_said: HashMap<ulid::Ulid, mesimon_core::command::CrownSaid>,
-    /// The crown's last ask to each ticket's agent (T-568, T-938), by the
-    /// ticket it was for: one record the ask's receipt and the crown's
-    /// `get_ticket` on it (`asked`) both read (`crownask`). In memory, like
-    /// the asks themselves (T-413, T-550).
-    crown_asks: HashMap<ulid::Ulid, crownask::CrownAsk>,
+    /// The crown's asks to each ticket's agent (T-568, T-938), by the
+    /// ticket they were for, oldest first: the latest is the record the
+    /// ask's receipt and the crown's `get_ticket` on it (`asked`) both read,
+    /// and the others are asks still out beside a steer (T-974,
+    /// `crownask`). The ones out ride `crown.json`.
+    crown_asks: Tracked<HashMap<ulid::Ulid, Vec<crownask::CrownAsk>>>,
     /// The machine's board links (T-733), `links.toml` as last read: which
     /// boards this one reaches. Every board's daemon shares the file.
     links: peer::MachineLinksCache,
@@ -1881,7 +1882,7 @@ impl Daemon {
             agent_replay: HashMap::new(),
             crown_touches: HashMap::new(),
             crown_said: HashMap::new(),
-            crown_asks: HashMap::new(),
+            crown_asks: Tracked::default(),
             links: peer::MachineLinksCache::new(crate::paths::machine_links_file().ok()),
             board_touches: Vec::new(),
             asks_out: HashMap::new(),
@@ -7842,16 +7843,24 @@ impl Daemon {
                         };
                     }
                 }
-                // A second ask while the first is out with the agent (T-938):
-                // refused, naming it, so a resend never puts a second copy in
-                // behind the board's back. One still on the queue is replaced.
-                if let Some(message) = self.crown_ask_blocks(target, &key) {
-                    return Response::Err { message };
-                }
                 // The road (T-550): held for a person's send, unless the
                 // board lets the crown send and the crown started this agent.
                 let held_because = self.crown_ask_hold(ticket, target, &seat);
                 let sends = held_because.is_none();
+                // A second ask while the first is out with the agent (T-938):
+                // refused, naming it, so a resend never puts a second copy in
+                // behind the board's back. One still on the queue is replaced.
+                // A steer is not a resend (T-974): `now` or `immediately` to a
+                // working agent the crown sends to is a person's send-now on
+                // its say-so, admitted beside the ask still out as its own.
+                let steer = sends
+                    && deliver.at_once()
+                    && matches!(seat, QueuedSeat::Pane(id) if !self.session_idle(id));
+                if !steer {
+                    if let Some(message) = self.crown_ask_blocks(target, &key) {
+                        return Response::Err { message };
+                    }
+                }
                 let replaced =
                     self.queued.iter().any(|q| q.ticket == target && q.by == Some(ticket));
                 let asleep = match seat {
@@ -7905,11 +7914,17 @@ impl Daemon {
                         if let err @ Response::Err { .. } = self.send_queued_ask(target) {
                             return err;
                         }
-                        self.feed.board_outcome(
+                        // The ask by its id, and any still out beside it
+                        // (T-974): the feed says which record went.
+                        let ask = self.crown_ask_sent_id(target);
+                        let beside = self.crown_asks_beside(target);
+                        self.feed.board_ask(
                             "agent",
                             "ask_agent_sent",
                             Some(target),
-                            deliver.word(),
+                            Some(deliver.word()),
+                            ask,
+                            &beside,
                         );
                         self.crown_touched(ticket, target, "sent");
                     }
@@ -15100,10 +15115,11 @@ impl Daemon {
                 // `♛ sent`, and the turn that takes them is the crown's
                 // answer (T-469), as after a person's `^y`.
                 Some(crown) => {
-                    self.feed.board("agent", "ask_agent_sent", Some(ticket));
                     if let Some(seat_id) = seat_id {
                         self.crown_ask_sent(ticket, seat_id, working);
                     }
+                    let ask = self.crown_ask_sent_id(ticket);
+                    self.feed.board_ask("agent", "ask_agent_sent", Some(ticket), None, ask, &[]);
                     self.crown_touched(crown, ticket, "sent");
                     if let Some(words) = &words {
                         self.crown_said(ticket, words);
@@ -15224,7 +15240,7 @@ impl Daemon {
     /// save are the caller's.
     fn take_queued(&mut self, ticket: ulid::Ulid, dropped_by: &'static str) -> Option<Forgotten> {
         let i = self.queued.iter().position(|q| q.ticket == ticket)?;
-        let ask = self.crown_asks.get(&ticket).cloned();
+        let ask = self.crown_ask_latest_clone(ticket);
         if self.queued[i].by.is_some() {
             let why = match dropped_by {
                 "person" => "a person took them back, or talked to the agent ahead of them",
@@ -15263,7 +15279,7 @@ impl Daemon {
             if self.refused_for_person.is_some() {
                 let i = self.queued.len();
                 if let Some(ask) = f.ask {
-                    self.crown_asks.insert(ticket, ask);
+                    self.crown_ask_restore(ticket, ask);
                 }
                 if let Some(c) = f.control {
                     self.control_restore(c);

@@ -250,8 +250,10 @@ pub const CROWN_WAKES: &str = concat!(
      where the words stand: queued, sent (out, no receipt of the agent's yet), handed (the \
      agent's own receipt named them), taken (the turn they started ended), dropped (by a \
      person, the agent's side or the board, with why) or unknown (with why), none of \
-     them resent. A new ask replaces the crown's last on that ticket while it is queued, and is \
-     refused while that one is out: sent or handed, before the turn it went into ends. \
+     them resent. A new ask replaces the crown's last on that ticket while it is queued; with \
+     deliver idle it is refused while that one is out (sent or handed, before the turn it went \
+     into ends), and with deliver now or immediately to a working agent it goes beside it as an \
+     ask of its own, asked then reading it and earlier the one still out. \
      A ticket a person started wakes this session only once watch_ticket watches it or \
      hold_ticket holds it. A ticket with no agent that carries a pull request (one \
      this session opened and named under its Summary) wakes this session for the forge's news \
@@ -929,8 +931,8 @@ pub fn tools() -> Vec<Value> {
                     // Codex 0.164.0.
                     "text": { "type": "string", "description": "Words a person types; one led by / is typed and entered as a command." },
                     "seen": { "type": "string" },
-                    "plan": { "type": "boolean", "description": "Optional. True: plan mode." },
-                    "deliver": { "type": "string", "description": "Optional: idle (default), now, immediately." },
+                    "plan": { "type": "boolean" },
+                    "deliver": { "type": "string", "description": "Optional: idle (default), now, immediately; now and immediately pass an out ask mid-turn." },
                 },
                 "required": ["key", "text", "seen"],
                 "additionalProperties": false,

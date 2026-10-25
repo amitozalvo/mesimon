@@ -2824,6 +2824,12 @@ pub struct AgentAskedView {
     /// What dropped it, or why the board cannot say.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub why: String,
+    /// The crown's other asks to this ticket's agent the board still holds,
+    /// oldest first (T-974): an ask still out when a steer (`now` or
+    /// `immediately` to a working agent) went beside it keeps its own word
+    /// here. Empty for a single ask, and then not written.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub earlier: Vec<AgentAskedView>,
 }
 
 /// A raised hand the crown was told of (T-922): the reason as the agent
@@ -4337,6 +4343,7 @@ mod tests {
             since_secs: Some(4),
             ask: "01J".into(),
             why: String::new(),
+            earlier: Vec::new(),
         });
         let json = serde_json::to_value(&t).unwrap();
         assert_eq!(
@@ -4359,6 +4366,7 @@ mod tests {
             since_secs: Some(0),
             ask: "01J".into(),
             why: String::new(),
+            earlier: Vec::new(),
         };
         let old: OldView = serde_json::from_value(serde_json::to_value(&sent).unwrap()).unwrap();
         assert_eq!((old.status.as_str(), old.by.as_str()), ("sent", ""));

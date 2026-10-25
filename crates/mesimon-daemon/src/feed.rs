@@ -177,6 +177,37 @@ impl FeedWriter {
         }));
     }
 
+    /// The crown's ask sent (T-974): `ask` is its record's id, and
+    /// `beside` the ticket's other asks still out when it went, each
+    /// `<id> <word>`, written only where there are any. `outcome` is the
+    /// deliver word where one was asked for.
+    pub fn board_ask(
+        &mut self,
+        actor: &str,
+        cmd: &str,
+        ticket: Option<ulid::Ulid>,
+        outcome: Option<&str>,
+        ask: Option<ulid::Ulid>,
+        beside: &[String],
+    ) {
+        let mut line = json!({
+            "kind": "board",
+            "actor": actor,
+            "cmd": cmd,
+            "ticket": ticket,
+        });
+        if let Some(outcome) = outcome {
+            line["outcome"] = json!(outcome);
+        }
+        if let Some(ask) = ask {
+            line["ask"] = json!(ask.to_string());
+        }
+        if !beside.is_empty() {
+            line["beside"] = json!(beside);
+        }
+        self.push(line);
+    }
+
     /// A board line that carries the decision itself (T-569): the crown's
     /// answer to a worker's question is a person-visible decision, unlike
     /// an ask's words, so the option label or the text rides the line. A

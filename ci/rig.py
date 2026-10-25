@@ -3059,6 +3059,38 @@ Reply with the single word ready and end your turn."""
                       "checkout as the test found it")
             elif name == "fed":
                 check(c, arg in fed, f"{arg}×{fed.count(arg)}")
+            elif name == "steered":
+                # T-974: a steer beside the crown's ask still out. The
+                # ticket's sends in order; one with deliver now or
+                # immediately whose `beside` names an earlier send's ask at
+                # `sent` or `handed`, its own ask another, and after it a
+                # crown wake for the ticket, cause answered: that turn's end
+                # spoke for the earlier ask, the steer took nothing from it.
+                sent = [l for l in lines if l.get("kind") == "board"
+                        and l.get("cmd") == "ask_agent_sent" and l.get("ticket") == tid]
+                found = None
+                for i, l in enumerate(sent):
+                    if l.get("outcome") not in ("now", "immediately"):
+                        continue
+                    before = {e.get("ask") for e in sent[:i] if e.get("ask")}
+                    for b in l.get("beside") or []:
+                        ask, _, word = b.partition(" ")
+                        if ask in before and ask != l.get("ask") and word in ("sent", "handed"):
+                            found = (l, ask, word)
+                            break
+                    if found:
+                        break
+                if not found:
+                    check(c, False, "; ".join(f"{l.get('outcome')} {l.get('ask')} beside "
+                                             f"{l.get('beside') or []}" for l in sent)
+                          or "no ask_agent_sent line")
+                else:
+                    l, ask, word = found
+                    woke = [w for w in lines if w.get("kind") == "crown_wake"
+                            and w.get("worker") == tid and w.get("cause") == "answered"
+                            and w.get("at_ms", 0) >= l.get("at_ms", 0)]
+                    check(c, woke, f"{l['outcome']} {l.get('ask')} beside {ask} {word}; "
+                          + ("answered wake after" if woke else "no answered wake after it"))
             elif name == "board_fed":
                 # A board line about no ticket (the road's verdict), since
                 # the test began.

@@ -34719,3 +34719,102 @@ for each, at 52–54 s and 78–80 s. The whole `crown_e2e` on the mod road, bes
 still held the output pipes 2 s after the test returned). Six runs of test 2 alone and the second
 whole-file run had no leak. No full suite: no line of daemon, wire, schema, tmux or harness code
 changed, only four test bodies.
+
+## A crown steer goes beside its ask still out, and a restart keeps an ask's word (T-974, 2026-10-25, gap row 54 on T-925)
+
+**The gap.** T-957's worker spent about 20 minutes on an e2e pass outside its diff. The crown's
+`ask_agent` with `deliver: immediately` is the road that reaches a working Claude agent inside its
+turn. T-938's one-ask rule refused it, because the crown's round-10 ask was `handed` and stayed out
+until that turn ended. The steer went through only because the person's `U` had restarted the
+daemon. A restart kept nothing of the ledger but the turn's `TurnAsk::Asked`, so the ask came back
+`unknown` ("its outcome was not retained") and no longer blocked.
+
+**Measured before the change.** The refusal at the arm's `crown_ask_blocks` ran for every
+`deliver` level, after the dialog, plan-mode and send-now checks. T-938's e2e asserted it for
+`immediately` mid-turn behind a `sent` `now` (`crown_e2e`, the T-930 sequence) and for `now`
+mid-turn behind a raced paste.
+
+**The change.**
+- **A steer is admitted.** `now` or `immediately`, at a `QueuedSeat::Pane` whose agent is not
+  `session_idle`, on a road the crown sends (`crown_ask_hold` is `None`), is a person's send-now
+  made on the crown's say-so. It skips the one-ask refusal. Everything before that refusal still
+  stands: the dialog refusal, plan mode mid-turn, `immediate_refusal`. T-958's person-at-pane
+  path in `send_queued_ask` is untouched. `idle` keeps the rule, and so does a `now` to an idle or
+  parked agent, where there is no running turn to steer and a second copy would be just that.
+- **The ledger holds a list per ticket.** `crown_asks` is now `Tracked<HashMap<Ulid,
+  Vec<CrownAsk>>>`, oldest first.
+  - A new ask keeps the records that still block and drops the rest; under the idle rule that
+    leaves one record, as before.
+  - Every receipt finds its record by id, across the list (`crown_ask_mut`, `_by_frame`,
+    `_framed`, `_repasted`).
+  - `None` in `crown_ask_dropped` / `crown_ask_unknown` means the latest.
+  - The refusal names the oldest record that blocks.
+  - `crown_ask_turn_ended` and `settle_crown_asks` run over every record.
+  - `take_queued` / `ahead_of_queue` put the latest back by id (`crown_ask_restore`).
+- **The turn keeps the ask that rode it** (`keeps_turn`, through `mark_ask_turn`). A steer's prompt
+  hook (a `Mark`) or its Codex count (a `Hand`) never replaces an `Asked` mark naming another of
+  the ticket's asks that is still out. That turn's end therefore takes the first ask (`taken`, or
+  `sent` on a paste) and wakes the crown naming it. The steer went into that turn, so it is
+  released with its own word. With one record nothing changes.
+- **What the crown reads.**
+  - `AgentAskedView.earlier` (defaulted, not written when empty) carries the ticket's other
+    records, each with its own word. `asked` is the latest.
+  - The `ask_agent_sent` feed lines gain `ask`, the record's id, and on a steer `beside`: the
+    other asks still out, as `<id> <word>`. `outcome` is unchanged, so existing readers still
+    hold.
+- **The crown's text.**
+  - The rules' sentence on a new ask now says: idle is refused while one is out; now or
+    immediately to a working agent goes beside it as an ask of its own, `asked` reading it and
+    `earlier` the one still out.
+  - The tool's `deliver` property says now and immediately pass an out ask mid-turn.
+  - `plan`'s property lost its description ("Optional. True: plan mode."), as `start_agent`'s has
+    none, to keep `ask_agent` under the 820-byte cap. The pinned "while its last ask is still
+    outstanding" stays in the description.
+- **A restart keeps an ask's word.** `crown.json` gains `out_asks` (`KeptAsk`): the `sent` and
+  `handed` records, each with the id, crown, seat, pane, frame, `submit`, `own_turn`,
+  `released`, `handed` and `since_ms` that its receipts and its turn's end are fenced by.
+  - `restore_crown_asks` brings each back at its word for the crown worn now and tickets still on
+    the board. A `TurnAsk::Asked` that no kept record names (a ledger written by an older build)
+    still comes back `unknown` with `RESTORED_WHY`.
+  - Workers with kept records join the restart's look (`crown_recheck`). `settle_crown_asks`
+    skips a worker still in it: the owed entry was memory, so without the skip a restored paste
+    at an agent still reading `Unknown` would turn `unknown` on the first tick. The look's end
+    settles it through the usual `turn_ended`.
+  - Same schema, no bump: a build without the field ignores it (no `deny_unknown_fields`) and
+    reads today's `unknown`, which narrows nothing.
+
+**Refuted / not done.**
+- A cap on steers per turn. A person's send-now has none, and each steer is its own record, with
+  the earlier ones visible beside it.
+- Keeping settled records (`taken`, `dropped`, `unknown`) across a restart. Only the out words
+  matter to the rule and the wake, and `Stage::Dropped`'s `&'static str` would need a mapping
+  for nothing.
+
+**Tests.**
+- **crownask `ledger_tests`**, on a daemon assembled as `run` assembles one:
+  - a steer beside a handed ask: both records are held, the idle refusal names the first, the
+    steer's ack leaves the turn the first's, the view's `earlier`, `beside`, the turn's end
+    taking the first and releasing the steer, and the next ask dropping what no longer blocks;
+  - a kept ask comes back at its word, and an unkept one `unknown`;
+  - the tick leaves a kept ask to the restart's look;
+  - only out asks are kept;
+  - `keeps_turn`'s cases.
+- **crownledger:** `out_asks` round-trips, and a ledger without it reads empty.
+- **crown_e2e** `a_crown_steer_goes_beside_its_ask_out_and_a_restart_keeps_the_ask`, on both
+  roads: the first ask `handed` (mod) or `sent` (hooks) in a running turn; `immediately` admitted
+  with its own id and `earlier` naming the first; the words and send-now recorded mid-turn by the
+  raw stub; the feed's `ask` and `beside`; `idle` refused naming the first; the steer's prompt
+  hook moving nothing; the stop waking the crown for the first. Then a restart between the ask
+  going out and the turn's end keeps the word, the tick leaves it, the stop settles it and wakes
+  the crown, and nothing is resent.
+- **T-938's e2e:**
+  - its resends mid-turn are now `idle`, so they are still refused;
+  - its two restart sections now read the kept word (`sent`, `handed`) where they read `None` and
+    `unknown`;
+  - the held submit across the restart is released, handed and taken.
+- **Rig.** `ST1` (blind) is new. The crown's worker is mid-turn on an earlier ask (a foreground
+  `sleep 240`); told in a bare ask that the worker is spending its time outside its brief, the
+  crown should steer with `now` or `immediately` rather than wait for the turn's end. The
+  `steered` check reads the feed's `ask` and `beside` and the answered wake after them. A2's
+  second ask became `deliver: idle`, a resend, which the rule still refuses; its steer case is
+  ST1's.

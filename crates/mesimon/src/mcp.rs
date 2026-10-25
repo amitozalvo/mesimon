@@ -815,6 +815,7 @@ mod tests {
                 since_secs: Some(0),
                 ask: "01JASK".into(),
                 why: String::new(),
+                earlier: Vec::new(),
             }),
         });
         let body: Value = serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();

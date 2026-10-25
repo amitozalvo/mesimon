@@ -22,6 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use super::crownask::KeptAsk;
 use super::crownwake::{CrownWake, Entering, Heard, ToldHand, TurnAsk};
 use super::*;
 
@@ -87,6 +88,13 @@ pub(super) struct Ledger {
     /// box is cleared. It sends nothing a person wrote, which is the bar.
     #[serde(skip_serializing_if = "Option::is_none")]
     entering: Option<Entering>,
+    /// `Daemon::crown_asks` (T-974): the crown's asks still out, `sent` or
+    /// `handed`, each with the seat, pane and frame its receipts are fenced
+    /// by, so a restart keeps their word and the turn's end still settles
+    /// them. Same schema, no bump: a build that drops the field reads an
+    /// ask a turn rode as `unknown`, as before, and refuses no less.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    out_asks: BTreeMap<ulid::Ulid, Vec<KeptAsk>>,
 }
 
 /// Startup loader: the ledger, any notices, and whether writes are barred.
@@ -115,6 +123,7 @@ impl Daemon {
             held: self.crown_held.iter().copied().collect(),
             hands: self.crown_hands.iter().map(|(w, h)| (*w, h.clone())).collect(),
             entering: (*self.crown_wake_entering).clone(),
+            out_asks: self.kept_crown_asks(),
         }
     }
 
@@ -132,6 +141,7 @@ impl Daemon {
             || self.crown_held.is_dirty()
             || self.crown_hands.is_dirty()
             || self.crown_wake_entering.is_dirty()
+            || self.crown_asks.is_dirty()
     }
 
     fn mark_ledger_clean(&mut self) {
@@ -145,6 +155,7 @@ impl Daemon {
         self.crown_held.mark_clean();
         self.crown_hands.mark_clean();
         self.crown_wake_entering.mark_clean();
+        self.crown_asks.mark_clean();
     }
 
     /// The single write path for `crown.json`: on the tick and on the way
@@ -239,16 +250,23 @@ impl Daemon {
             self.crown_recheck.insert(worker, owed);
             self.crown_heard.insert(worker, heard);
         }
-        let open: Vec<ulid::Ulid> =
-            self.turns_open.iter().chain(self.turn_asks.keys()).copied().collect();
+        let out_asks: BTreeMap<ulid::Ulid, Vec<KeptAsk>> =
+            ledger.out_asks.into_iter().filter(|(w, _)| *w != crown && on_board(w)).collect();
+        let open: Vec<ulid::Ulid> = self
+            .turns_open
+            .iter()
+            .chain(self.turn_asks.keys())
+            .chain(out_asks.keys())
+            .copied()
+            .collect();
         for worker in open.into_iter().filter(|w| *w != crown) {
             self.crown_recheck.entry(worker).or_default();
             self.crown_heard.entry(worker).or_default().restored = true;
         }
         self.crown_recheck_until = now_ms() + RECHECK_MS;
-        // The crown's asks the turns rode come back `unknown` (T-938): the
-        // record was memory, what became of the words was not kept.
-        self.restore_crown_asks();
+        // The crown's asks still out come back at their word (T-974); one a
+        // turn rode that no kept record names comes back `unknown` (T-938).
+        self.restore_crown_asks(out_asks);
     }
 }
 
@@ -284,9 +302,25 @@ mod tests {
             expires_ms: Some(9),
             parked: false,
         });
+        ledger.out_asks.insert(
+            w,
+            vec![KeptAsk {
+                id: ulid::Ulid::from_parts(1, 12),
+                crown: ulid::Ulid::from_parts(1, 1),
+                session: Some(uuid::Uuid::from_u128(5)),
+                pane: Some("123:%4".into()),
+                frame: Some("01SUBMIT".into()),
+                submit: true,
+                own_turn: true,
+                released: false,
+                handed: true,
+                since_ms: 9,
+            }],
+        );
         let text = serde_json::to_string_pretty(&ledger).unwrap();
         let back = parse(&text).unwrap();
         assert_eq!(serde_json::to_string_pretty(&back).unwrap(), text);
+        assert_eq!(back.out_asks, ledger.out_asks, "T-974: the asks out keep their word");
         let newer = format!("{{\"schema_version\": {}}}", CROWN_SCHEMA + 1);
         assert!(matches!(parse(&newer), Err((Some(_), _))));
         assert!(matches!(parse("{"), Err((None, _))));
@@ -296,6 +330,7 @@ mod tests {
         assert!(parse("{\"schema_version\": 1}").unwrap().held.is_empty());
         assert!(parse("{\"schema_version\": 1}").unwrap().hands.is_empty());
         assert!(parse("{\"schema_version\": 1}").unwrap().entering.is_none());
+        assert!(parse("{\"schema_version\": 2}").unwrap().out_asks.is_empty());
     }
 
     /// T-936: a schema-1 ledger reads as it was under schema 2, its wakes
