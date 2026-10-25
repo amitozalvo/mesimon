@@ -50,7 +50,9 @@ workspace of and start an agent on the other tickets, archive them where you tur
 started to sleep, merge a worktree branch where the merge train will not, under autonomous
 mode, and watch a ticket you started where *Settings › Crown › Watches tickets* lets it
 (on by default), which sends that ticket's news to the crown and lets the crown's words
-reach its agent as they reach one the crown started, each edit checked against the ticket
+reach its agent as they reach one the crown started, and read an agent it started (how long
+its turn has run, its tools, its last text and its pane's last rows) where *Settings › Crown ›
+Samples agents* lets it (on by default), each edit checked against the ticket
 as the agent last read it and lit on the card as it happens. Starts are capped by a per-board budget (Settings › Crown, three by default),
 a ticket the crown started can never itself be crowned, and an agent you started is yours
 alone to sleep. *Settings › Crown › Mode* is autonomous by default: words the crown

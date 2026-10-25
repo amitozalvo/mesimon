@@ -35004,3 +35004,123 @@ Either one costs more than a hold of at most 72 ms on readers that do not wait f
 daemon's close with a short budget. The guard for a single reader is `shutdown(Write)` on the
 daemon's end before the drop, measured above. Not checked: whether T-971's `LEAK` (a child still
 held the output pipes 2 s after the test returned) was this pipe gap.
+
+## The crown expects a turn's length and samples an agent it started (T-973, 2026-10-25, proposed by the person, gap row 55 on T-925)
+
+**Why.** The crown could not tell a long job from a stuck or needless one. T-957's worker spent
+about 20 minutes on a third e2e pass the crown would have stopped, its round 9 ran 29 minutes
+unseen, and T-599's worker looped on `pgrep` for ten hours. The crown had the 30-minute
+lingering wake, `read_shell` for a shared shell only, and the person's standing allowance to read
+panes and transcripts by hand, logged as a gap each time.
+
+**1. `expect_secs` and the overrun wake.**
+- `start_agent` and `ask_agent` take an optional `expect_secs`, whole seconds from 1 to 86400.
+  Absent arms nothing, and there is no tier default.
+- The expectation (`crownexpect::Expect`, one per ticket, the latest) begins with the turn its
+  words begin:
+  - an ask's at `mark_turn` with that ask's id (the paste's ack on the hook set, the mod's
+    `entered`);
+  - a start's at its seat's first edge into `Running` (`turn_begins`: from no turn, or from the
+    launch).
+- On the tick (`hear_overruns`, beside `hear_lingering`), a turn past its expectation whose seat
+  reads `Running` wakes the crown once (`WakeCause::Overrun`, ranked just above `Lingering`,
+  never held): `T-12 "…" has run its turn 25 min, past the 20 min it expected`.
+  - The clause gives the turn's whole length, not the excess, which reads `0 min` at the moment
+    the wake is owed.
+  - Units: `s` under 2 minutes, `min` under 2 hours, then `h`.
+- A dialog, a question or a plan waits on someone and has its own wake, so the overrun waits
+  until the seat is `Running` again.
+- The crown's `get_ticket` carries `overrun {expected_secs, running_secs}` while it stands.
+- It ends when:
+  - the turn ends (`turn_open` false: any idle, a park on tasks included; failed; parked;
+    exited);
+  - the seat that began it loses its pane;
+  - the armed ask is replaced or dropped before it went in;
+  - the start could not be made.
+- An ask without `expect_secs` leaves an existing expectation alone: it belongs to its own words.
+- Nothing is stopped, parked or moved.
+- It rides `crown.json` (`expects`), on schema 2 with the new wake cause, since no released build
+  carried schema 2 (T-936's argument). A told expectation stays told across a restart. One
+  begun before the restart and owed after it says `after a restart`. A seat re-read after a
+  restart (`Unknown` → `Running`) dates no turn.
+- **Not decided:** the daemon judges nothing about "stuck".
+
+**2. `sample_agent`.**
+- Crown only, an agent the crown started, on the read rung (`readOnlyHint`, an allow rule on the
+  hook set's argv), behind `Board::crown_samples` (on by default; Settings › Crown › Samples
+  agents; doctor's `crown samples`).
+- `Action::SampleAgent { crown }` is the one `Resource::Session` read an agent is ever granted,
+  the daemon's word that the caller wears the crown and the seat's `started_by` is set.
+- Refused, in words:
+  - the crown's own ticket;
+  - a ticket with no agent;
+  - a person's agent, watched or not;
+  - an uncrowned caller (the crown refusal);
+  - the switch off, naming the row.
+- The reply, facts first:
+  - `state`;
+  - `turn_secs`, from a new in-memory `Daemon::turn_since`, kept through dialogs. After a restart
+    it is absent until the next turn: nothing is guessed;
+  - `current_tool {name, secs}`;
+  - `recent_tools` (five names, newest first);
+  - `last_text` (scrubbed, its last 1 KiB);
+  - `background` (the linger wake's numbers);
+  - `pane_tail` (the last 40 rows through `scrub_text`, the newest 4 KiB);
+  - `captured_at_ms`.
+- The pane capture and the transcript read run on a worker thread (`Msg::AgentSampled`). The
+  call's reply is parked (`sample_park_reply`, as `accept_plan`'s is) and answered when the read
+  lands. A seat that changed meanwhile (gone, or another pane) is refused rather than answered
+  with another agent's pane.
+- The feed has `sample_agent` with `ok`, `refused` or `changed`.
+- **Refuted: the tool from the hook stream.** The brief asked for `current_tool` from "a
+  `PreToolUse` with no `PostToolUse`, from the hook stream the daemon already keeps". No broad
+  `PreToolUse` reaches the daemon:
+  - the hook set leaves it out on purpose (11 §11.2.5);
+  - the classic mod road relays only `AskUserQuestion,ExitPlanMode`;
+  - only the native mod road sends one per tool.
+
+  The transcript tail (`tail::sample`, the last 64 KiB) is the same truth on every road: a
+  `tool_use` with no `tool_result`, timed from its record. The same walk gives `recent_tools`
+  and `last_text` (`adopt::assistant_text`). A newer turn's end or abort settles an unanswered
+  call. A Codex seat gets no transcript fields.
+- The tool text says what the reading is (the board's, at one moment) and what it is not (the
+  agent's own count, a proof of stuck or progress), never when to read it (T-930).
+
+**The 820-byte cap held (the person's call).**
+- `expect_secs` is a bare `{type: integer}` on both tools, and its meaning is one sentence in
+  `CROWN_WAKES`, in the lingering sentence's register.
+- To pay for it:
+  - `start_agent` loses "no shared_checkout while list_board's checkout_held_by lists one"
+    (`CROWN_WAKES`' workspace sentence and the refusal carry it);
+  - `ask_agent` loses "(asked says where they stand)" (`CROWN_WAKES` says it whole).
+- No blind A/B was run for the two cuts, as T-969's same-day trim of `ask_agent`. `DL1` is the
+  blind case a workspace choice rides.
+
+**Tests.**
+- Units:
+  - `crownexpect` (the arithmetic, the clause, `turn_open`/`turn_begins`, the restore, the
+    round trip);
+  - `crownledger` (an overrun wake and an expectation through schema 2's bytes, refused by a
+    schema-1 reader);
+  - `tail::sample` (in flight, parallel calls, answered, a turn's end);
+  - `crownsample` (pane and text bounds);
+  - core's `mcp` (the parse, the bare property, the tool's words, the rules' sentence);
+  - `authorize` (`only_the_crown_samples_an_agent_it_started`);
+  - the switch in `board.rs`, `store.rs`, doctor and the TUI (goldens `settings_crown_*`
+    reminted);
+  - `agent_tools_e2e` and `mcp_e2e` read the new tool on the read rung.
+- `crown_e2e`, both roads:
+  - `a_turn_past_its_expect_secs_wakes_the_crown_once`: a start's launch turn past its 3 s wakes
+    once, `overrun` on `get_ticket`, nothing more as it runs on, gone at the turn's end; an ask
+    re-arms and wakes again; an ask whose turn ends inside its expectation wakes nobody for it.
+  - `the_crown_samples_an_agent_it_started`: every field off a fabricated transcript and the
+    stub's composer, and the refusals.
+- Rig `SA1` (blind), with its new `after_wake:<cmd>:<cause>` check. A Sonnet worker runs
+  `until [ -f <never> ]; do sleep 5; done` in the foreground. The crown starts it with
+  `expect_secs 30` and is told only to say, when next woken, whether the worker is on a long
+  job or looping; `sample_agent` is not named. It passed on its first run (2026-10-25, Claude
+  Code 2.1.310, mod road, Opus 5.5 crown at high effort, run 20261025-041836):
+  - the overrun wake came 30.0 s after the worker's turn began;
+  - the crown called `sample_agent` once, after the wake, and said `SA1 worker: looping`;
+  - it ran no Bash and read no transcript or pane by hand;
+  - the crown's spend: 2 turns, 5 tool calls.

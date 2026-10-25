@@ -303,6 +303,7 @@ fn an_agent_s_shell_line_and_shell_title_are_refused() {
                 seen: seen.clone(),
                 plan: false,
                 deliver,
+                expect_secs: None,
             },
         ) {
             Response::Err { message } => {

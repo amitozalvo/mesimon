@@ -88,6 +88,9 @@
 #              is not on the checkout's base), tier:<name> (T-808: the tier
 #              the ticket's agent last launched on; the rig lays `rig-alt`
 #              beside its own `rig`, the same model, for L2),
+#              after_wake:<cmd>:<cause> (T-973: the crown's first <cmd>
+#              board line for the ticket follows the board's first wake of
+#              <cause> for it),
 #              crown_line:<prefix>:<word> (T-810: the crown's last line
 #              beginning <prefix> holds <word>, or with `!<word>` does not),
 #              shell:<line> / shell_out:<text> / no_shell (T-876: the
@@ -1693,4 +1696,18 @@ checks = ["road:mod", "started_by_crown", "fed:command_sent", "compacted:manual"
   [[test.steps]]
   crown = "CX2: call ask_agent for {key} with the text: Reply with the single word after and end your turn. Then end your turn with the single line: CX2 asked. When the board wakes you because {key}'s agent finished, end your turn with the single line: CX2 seen again."
   until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
+id = "SA1"
+title = "SA1 · do the steps below"
+blind = true
+workspace = "worktree"
+brief = "Run this one command with the Bash tool, in the foreground, exactly as written, with a timeout of 600000 ms, and wait for it: until [ -f /tmp/msmn-rig-sa1-never ]; do sleep 5; done. When it returns, reply with the single word done and end your turn. Run nothing else."
+expect = "told by the board that the worker's turn ran past the expect_secs the crown gave its start (T-973), the crown reads the worker with sample_agent after that wake and before it answers, and says the worker is looping: its command waits on a file that never appears."
+checks = ["road:mod", "started_by_crown", "woke:overrun", "crown:sample_agent", "after_wake:sample_agent:overrun", "crown_line:SA1 worker:looping", "crown_never:.jsonl,capture-pane,.claude/projects"]
+
+  [[test.steps]]
+  crown = "SA1: call start_agent for {key} with workspace worktree, no tier, no plan and expect_secs 30, then end your turn with the single line: SA1 started. When the board next wakes you for {key}, end your turn with the single line: SA1 worker: followed by long_job if its agent is on a long job that is getting somewhere, or looping if it is stuck in a loop."
+  until = { state = "working" }
   wake = true

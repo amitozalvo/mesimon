@@ -162,6 +162,7 @@ fn crown_and_worker(c: &mut TestClient, h: &Harness) -> (uuid::Uuid, uuid::Uuid,
                 plan: false,
                 tier: None,
                 workspace: Some("worktree".into()),
+                expect_secs: None,
             },
         ),
         Response::AgentStarted { .. }

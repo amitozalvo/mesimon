@@ -265,7 +265,8 @@ fn agent_board_tools_tier_and_collisions() {
             "accept_plan",
             "merge_ticket",
             "watch_ticket",
-            "hold_ticket"
+            "hold_ticket",
+            "sample_agent"
         ]
     );
 

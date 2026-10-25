@@ -1657,6 +1657,7 @@ fn a_codex_question_is_carried_to_the_board_and_answered_by_keys_until_resolved(
                 plan: false,
                 tier: None,
                 workspace: Some("worktree".into()),
+                expect_secs: None,
             },
         ),
         Response::AgentStarted { .. }

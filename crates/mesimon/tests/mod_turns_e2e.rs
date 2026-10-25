@@ -478,6 +478,7 @@ fn the_crown_answers_down_the_worker_s_mod_and_the_person_first_wins() {
                 plan: false,
                 tier: None,
                 workspace: Some("shared_checkout".into()),
+                expect_secs: None,
             },
         ),
         Response::AgentStarted { .. }

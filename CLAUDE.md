@@ -515,8 +515,9 @@ exceptions; its `archive_ticket` is further gated by a board switch a person tur
 (`Board::crown_archives`, T-590, off by default), and its `watch_ticket` by one a person may
 turn off (`Board::crown_watches`, T-712, on by default since T-732), which has the board wake
 the crown for a person's ticket and lets the crown's `ask_agent` reach its agent as one it
-started (T-734). `authorize()` is real for `Agent`: `Resource::Session` is denied outright and
-so is `Mutate` on `Resource::Board`.
+started (T-734); its `sample_agent` (T-973), the one session read, by one it may also turn off
+(`Board::crown_samples`, on by default). `authorize()` is real for `Agent`: `Resource::Session`
+is denied outright but for `Action::SampleAgent`, and so is `Mutate` on `Resource::Board`.
 
 **Schema evolution.** Every new `SessionRecord` field must be `#[serde(default)]` — the defaults
 *are* the migration (back-compat fixture test in `core/src/board.rs`). A parse error

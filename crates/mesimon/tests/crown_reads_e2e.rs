@@ -260,6 +260,7 @@ fn the_crown_s_slash_command_is_typed_into_a_claude_worker_s_box() {
                 plan: false,
                 tier: None,
                 workspace: Some("worktree".into()),
+                expect_secs: None,
             },
         ),
         Response::AgentStarted { .. }
@@ -288,6 +289,7 @@ fn the_crown_s_slash_command_is_typed_into_a_claude_worker_s_box() {
             seen: v.seen,
             plan: false,
             deliver: Deliver::Idle,
+            expect_secs: None,
         },
     ) {
         Response::AgentAsked { held_for_person, .. } => assert!(!held_for_person),
@@ -314,6 +316,7 @@ fn the_crown_s_slash_command_is_typed_into_a_claude_worker_s_box() {
             seen: v.seen,
             plan: false,
             deliver: Deliver::Idle,
+            expect_secs: None,
         },
     ) {
         Response::AgentAsked { held_for_person, .. } => assert!(!held_for_person),
@@ -395,6 +398,7 @@ fn the_crown_s_slash_command_is_pasted_and_entered_in_a_codex_worker_s_box() {
                 plan: false,
                 tier: None,
                 workspace: Some("worktree".into()),
+                expect_secs: None,
             },
         ),
         Response::AgentStarted { .. }
@@ -432,6 +436,7 @@ fn the_crown_s_slash_command_is_pasted_and_entered_in_a_codex_worker_s_box() {
             seen: v.seen,
             plan: false,
             deliver: Deliver::Idle,
+            expect_secs: None,
         },
     ) {
         Response::AgentAsked { held_for_person, .. } => assert!(!held_for_person),

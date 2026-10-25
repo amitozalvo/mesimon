@@ -926,7 +926,8 @@ pub fn tools() -> Vec<Value> {
         // At the cap: `key` and `seen` read as every keyed sibling's.
         // `expect_secs` (T-973) is a bare property, said in `CROWN_WAKES`,
         // paid for by "(asked says where they stand)", which `CROWN_WAKES`
-        // says whole.
+        // says whole; beside T-974's steer clause, `deliver`'s "Optional: "
+        // went too, its "(default)" saying the same.
         json!({
             "name": "ask_agent",
             "description": "Queues words on another ticket's card for its agent (crown \
@@ -946,7 +947,7 @@ pub fn tools() -> Vec<Value> {
                     "text": { "type": "string", "description": "Words a person types; one led by / is typed and entered as a command." },
                     "seen": { "type": "string" },
                     "plan": { "type": "boolean" },
-                    "deliver": { "type": "string", "description": "Optional: idle (default), now, immediately." },
+                    "deliver": { "type": "string", "description": "idle (default), now, immediately." },
                     "expect_secs": { "type": "integer" },
                 },
                 "required": ["key", "text", "seen"],

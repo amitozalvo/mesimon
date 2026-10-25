@@ -901,6 +901,7 @@ fn the_crown_hears_the_forges_edges() {
             plan: false,
             tier: None,
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -1483,6 +1484,7 @@ fn a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_co
             plan: false,
             tier: None,
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -1713,6 +1715,7 @@ fn a_two_repo_tickets_first_merge_and_its_wait_are_said() {
             plan: false,
             tier: None,
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -2430,6 +2433,7 @@ fn crowned(h: &Harness, c: &mut TestClient) -> Crowned {
             plan: false,
             tier: None,
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}

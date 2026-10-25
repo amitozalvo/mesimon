@@ -488,6 +488,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
                 plan: false,
                 tier: None,
                 workspace: Some(workspace.into()),
+                expect_secs: None,
             },
         )
     };
@@ -520,6 +521,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
             plan: false,
             tier: None,
             workspace: None,
+            expect_secs: None,
         },
     ) {
         Response::Err { message } => assert!(message.contains("needs workspace"), "{message}"),
@@ -709,6 +711,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
                     seen,
                     plan: false,
                     deliver: Deliver::Idle,
+                    expect_secs: None,
                 },
             )
         };
@@ -1085,6 +1088,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
                 plan: false,
                 tier: None,
                 workspace: Some(workspace.into()),
+                expect_secs: None,
             },
         )
     };
@@ -1635,6 +1639,7 @@ fn the_crown_wake_waits_for_a_person_at_the_crown_s_box() {
             plan: false,
             tier: None,
             workspace: Some("shared_checkout".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { session_started: true, .. } => {}
@@ -1861,6 +1866,7 @@ fn an_attached_client_holds_the_crown_wake_only_while_active() {
             plan: false,
             tier: None,
             workspace: Some("shared_checkout".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { session_started: true, .. } => {}
@@ -2086,6 +2092,7 @@ fn a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box() {
             plan: false,
             tier: None,
             workspace: Some("shared_checkout".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { session_started: true, .. } => {}
@@ -2129,6 +2136,7 @@ fn a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box() {
                 seen: v.seen,
                 plan: false,
                 deliver: Deliver::Idle,
+                expect_secs: None,
             },
         )
     };
@@ -2315,6 +2323,7 @@ fn a_mod_road_crown_takes_its_wake_with_a_person_at_its_box() {
             plan: false,
             tier: None,
             workspace: Some("shared_checkout".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { session_started: true, .. } => {}
@@ -2448,6 +2457,7 @@ fn a_mod_road_crown_s_refused_wake_is_never_pasted_under_a_person() {
             plan: false,
             tier: None,
             workspace: Some("shared_checkout".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { session_started: true, .. } => {}
@@ -2578,6 +2588,7 @@ fn a_refused_mod_wake_goes_past_an_idle_client_only_into_an_empty_box() {
             plan: false,
             tier: None,
             workspace: Some("shared_checkout".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { session_started: true, .. } => {}
@@ -2738,6 +2749,7 @@ fn a_crown_a_person_stopped_holds_its_wake_and_its_hand() {
             plan: false,
             tier: None,
             workspace: Some("shared_checkout".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { session_started: true, .. } => {}
@@ -3005,6 +3017,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
             plan: false,
             tier: None,
             workspace: Some("shared_checkout".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { session_started: true, .. } => {}
@@ -3568,6 +3581,7 @@ fn a_codex_crown_s_wake_goes_past_an_idle_client_and_enters_only_its_own_box() {
             plan: false,
             tier: None,
             workspace: Some("shared_checkout".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { session_started: true, .. } => {}
@@ -3781,6 +3795,7 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
             plan: false,
             tier: None,
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -3825,6 +3840,7 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
             seen: v.seen,
             plan: false,
             deliver: Deliver::Idle,
+            expect_secs: None,
         },
     ) {
         Response::AgentAsked { .. } => {}
@@ -4060,6 +4076,7 @@ fn a_hand_merge_wakes_the_crown_that_started_the_worker() {
             plan: false,
             tier: None,
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -4229,6 +4246,7 @@ fn a_merge_while_the_daemon_is_down_wakes_the_crown_after_the_restart() {
             plan: false,
             tier: None,
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -4370,6 +4388,7 @@ fn owed_across_a_restart(name: &str, took: bool) {
             plan: false,
             tier: None,
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -4484,6 +4503,7 @@ fn a_turn_thinking_across_a_restart_is_not_heard_as_finished() {
             plan: false,
             tier: None,
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -4618,6 +4638,7 @@ fn a_worker_mid_turn_across_a_restart_delivers_at_its_real_end() {
             plan: false,
             tier: None,
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -4746,6 +4767,7 @@ fn a_held_delivery_waits_for_a_worker_unknown_across_a_restart() {
             plan: false,
             tier: None,
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -4894,6 +4916,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
                 plan: false,
                 tier: None,
                 workspace: Some(workspace.into()),
+                expect_secs: None,
             },
         )
     };
@@ -4920,6 +4943,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
                 seen: v.seen,
                 plan: false,
                 deliver,
+                expect_secs: None,
             },
         ) {
             Response::AgentAsked { held_for_person, held_because, wake, .. } => {
@@ -5039,6 +5063,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
             seen: v.seen,
             plan: false,
             deliver: Deliver::Idle,
+            expect_secs: None,
         },
     ) {
         Response::Err { message } => assert!(message.contains("asking a question"), "{message}"),
@@ -5281,6 +5306,7 @@ fn the_crown_sends_now_into_a_working_turn() {
             plan: false,
             tier: None,
             workspace: Some("shared_checkout".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -5310,6 +5336,7 @@ fn the_crown_sends_now_into_a_working_turn() {
                 seen: v.seen.clone(),
                 plan: false,
                 deliver: Deliver::Idle,
+                expect_secs: None,
             },
         ) {
             Response::Err { message } => {
@@ -5332,6 +5359,7 @@ fn the_crown_sends_now_into_a_working_turn() {
                 seen: v.seen,
                 plan: false,
                 deliver: Deliver::Idle,
+                expect_secs: None,
             },
         ) {
             Response::AgentAsked { .. } => {}
@@ -5361,6 +5389,7 @@ fn the_crown_sends_now_into_a_working_turn() {
                 seen: v.seen,
                 plan: false,
                 deliver,
+                expect_secs: None,
             },
         )
     };
@@ -5557,6 +5586,7 @@ fn an_ask_whose_turn_fails_settles_and_the_next_ask_goes() {
             plan: false,
             tier: None,
             workspace: Some("shared_checkout".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -5582,6 +5612,7 @@ fn an_ask_whose_turn_fails_settles_and_the_next_ask_goes() {
                 seen: v.seen,
                 plan: false,
                 deliver: Deliver::Idle,
+                expect_secs: None,
             },
         ) {
             Response::AgentAsked { asked: Some(a), .. } => a,
@@ -5696,6 +5727,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
             plan: false,
             tier: None,
             workspace: Some("shared_checkout".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -5738,6 +5770,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
                 seen: v.seen,
                 plan: false,
                 deliver,
+                expect_secs: None,
             },
         )
     };
@@ -6234,6 +6267,7 @@ fn a_crown_steer_goes_beside_its_ask_out_and_a_restart_keeps_the_ask() {
             plan: false,
             tier: None,
             workspace: Some("shared_checkout".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -6260,6 +6294,7 @@ fn a_crown_steer_goes_beside_its_ask_out_and_a_restart_keeps_the_ask() {
                 seen: v.seen,
                 plan: false,
                 deliver,
+                expect_secs: None,
             },
         )
     };
@@ -6543,6 +6578,7 @@ fn the_crown_sends_immediately_into_a_working_turn() {
             plan: false,
             tier: None,
             workspace: Some("shared_checkout".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -6569,6 +6605,7 @@ fn the_crown_sends_immediately_into_a_working_turn() {
                 seen: v.seen,
                 plan: false,
                 deliver,
+                expect_secs: None,
             },
         )
     };
@@ -6901,6 +6938,7 @@ fn a_submit_only_mod_s_immediately_ask_is_kept_under_a_person() {
             plan: false,
             tier: None,
             workspace: Some("shared_checkout".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -6922,6 +6960,7 @@ fn a_submit_only_mod_s_immediately_ask_is_kept_under_a_person() {
             seen: v.seen,
             plan: false,
             deliver: Deliver::Immediately,
+            expect_secs: None,
         },
     ) {
         Response::Err { message } => {
@@ -7020,6 +7059,7 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
             plan: false,
             tier: None,
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -7188,6 +7228,7 @@ fn the_merged_wake_waits_for_the_notice_turn() {
             plan: false,
             tier: None,
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -7354,6 +7395,7 @@ fn the_crown_reads_a_worker_s_question_and_cannot_talk_over_it() {
                 seen: v.seen,
                 plan: false,
                 deliver: Deliver::Idle,
+                expect_secs: None,
             },
         )
     };
@@ -7541,6 +7583,7 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
                 plan: false,
                 tier: None,
                 workspace: Some("worktree".into()),
+                expect_secs: None,
             },
         ),
         Response::AgentStarted { .. }
@@ -7814,6 +7857,7 @@ fn the_crown_answers_a_batch_one_answer_per_question() {
                 plan: false,
                 tier: None,
                 workspace: Some("shared_checkout".into()),
+                expect_secs: None,
             },
         ),
         Response::AgentStarted { .. }
@@ -8008,6 +8052,7 @@ fn the_crown_s_answer_types_nothing_under_a_person_s_hands() {
                 plan: false,
                 tier: None,
                 workspace: Some("shared_checkout".into()),
+                expect_secs: None,
             },
         ),
         Response::AgentStarted { .. }
@@ -8200,6 +8245,7 @@ fn the_crown_accepts_a_plan_by_default() {
                 plan: true,
                 tier: None,
                 workspace: Some("worktree".into()),
+                expect_secs: None,
             },
         ),
         Response::AgentStarted { .. }
@@ -8293,6 +8339,7 @@ fn the_crown_accepts_a_plan_by_default() {
         seen: v.seen,
         plan: false,
         deliver: Deliver::Idle,
+        expect_secs: None,
     };
     match c.send(Principal::Agent { session: sa }, ask) {
         Response::Err { message } => assert!(
@@ -8452,6 +8499,7 @@ impl PlanBed {
                     plan: true,
                     tier: None,
                     workspace: Some("worktree".into()),
+                    expect_secs: None,
                 },
             ),
             Response::AgentStarted { .. }
@@ -8933,6 +8981,7 @@ fn a_refused_ask_and_a_plan_sent_back_are_not_the_outstanding_ask() {
                 seen: v.seen,
                 plan: false,
                 deliver: Deliver::Now,
+                expect_secs: None,
             },
         )
     };
@@ -9315,6 +9364,7 @@ fn a_plan_sent_back_leaves_needs_you_only_on_a_screen_without_it() {
             seen: v.seen,
             plan: false,
             deliver: Deliver::Idle,
+            expect_secs: None,
         },
     ) {
         Response::AgentAsked { .. } => {}
@@ -9348,6 +9398,7 @@ fn a_plan_a_person_sends_back_in_the_pane_leaves_needs_you() {
                 seen: v.seen,
                 plan: false,
                 deliver: Deliver::Idle,
+                expect_secs: None,
             },
         ) {
             Response::AgentAsked { .. } => {}
@@ -9466,6 +9517,7 @@ fn a_refusal_written_before_its_hooks_still_clears_the_plan() {
                 seen: v.seen,
                 plan: false,
                 deliver: Deliver::Idle,
+                expect_secs: None,
             },
         ) {
             Response::AgentAsked { .. } => {}
@@ -9640,6 +9692,7 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
                 plan: true,
                 tier: None,
                 workspace: Some("worktree".into()),
+                expect_secs: None,
             },
         ),
         Response::AgentStarted { .. }
@@ -9977,6 +10030,7 @@ fn the_crown_picks_a_tier_by_the_persons_words() {
                 plan: false,
                 tier: pick.map(str::to_string),
                 workspace: Some("worktree".into()),
+                expect_secs: None,
             },
         )
     };
@@ -10119,6 +10173,7 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
             plan: false,
             tier: None,
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -10179,6 +10234,7 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
             seen: v.seen,
             plan: false,
             deliver: Deliver::Idle,
+            expect_secs: None,
         },
     ) {
         Response::AgentAsked { held_for_person: false, .. } => {}
@@ -10289,6 +10345,7 @@ fn a_demoted_park_on_a_background_command_lingers_from_its_turn_end() {
             plan: false,
             tier: None,
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -10464,6 +10521,7 @@ fn the_crown_merges_where_the_train_will_not() {
             plan: false,
             tier: None,
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -10784,6 +10842,7 @@ fn a_hand_merge_of_a_crown_started_worker_tells_it_by_itself() {
             plan: false,
             tier: None,
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -11186,6 +11245,7 @@ fn the_crown_watches_a_ticket_a_person_started() {
                 seen: v.seen,
                 plan: false,
                 deliver,
+                expect_secs: None,
             },
         ) {
             Response::AgentAsked { road, held_because, .. } => {
@@ -11282,6 +11342,7 @@ fn a_crown_start_whose_worktree_cannot_be_cut_wakes_the_crown_with_why() {
             plan: false,
             tier: None,
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { session_started: false, .. } => {}
@@ -11348,6 +11409,7 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
                 plan: false,
                 tier: None,
                 workspace: Some("worktree".into()),
+                expect_secs: None,
             },
         ),
         Response::AgentStarted { .. }
@@ -11424,6 +11486,7 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
             plan: false,
             tier: Some("deep".into()),
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         // T-920: the wake sent nothing, and the receipt says so.
@@ -11470,6 +11533,7 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
             seen: v.seen,
             plan: false,
             deliver: Deliver::Idle,
+            expect_secs: None,
         },
     ) {
         Response::AgentAsked { held_for_person: false, wake: None, .. } => {}
@@ -11513,6 +11577,7 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
             seen: v.seen,
             plan: false,
             deliver: Deliver::Idle,
+            expect_secs: None,
         },
     ) {
         Response::AgentAsked { held_for_person: true, wake: Some(AskWake::WhenSent), .. } => {}
@@ -11527,6 +11592,7 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
             plan: false,
             tier: None,
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { woken: true, prompt, .. } => {
@@ -11601,6 +11667,7 @@ fn a_failed_turn_wakes_the_crown_once_with_why() {
                 plan: false,
                 tier: None,
                 workspace: Some("worktree".into()),
+                expect_secs: None,
             },
         ),
         Response::AgentStarted { .. }
@@ -11730,6 +11797,7 @@ fn a_told_worker_parked_in_done_is_not_news_after_a_restart() {
                 plan: false,
                 tier: None,
                 workspace: Some(workspace.into()),
+                expect_secs: None,
             },
         ) {
             Response::AgentStarted { .. } => {}
@@ -11911,6 +11979,7 @@ fn a_wake_s_receipt_names_what_waits_and_it_goes_once() {
                 plan: false,
                 tier: None,
                 workspace: Some(workspace.into()),
+                expect_secs: None,
             },
         )
     };
@@ -11924,6 +11993,7 @@ fn a_wake_s_receipt_names_what_waits_and_it_goes_once() {
                 seen: v.seen,
                 plan: false,
                 deliver: Deliver::Idle,
+                expect_secs: None,
             },
         ) {
             Response::AgentAsked { held_for_person, road, wake, .. } => {
@@ -12155,6 +12225,7 @@ fn the_crown_answers_a_codex_worker_s_question() {
                 plan: false,
                 tier: None,
                 workspace: Some("worktree".into()),
+                expect_secs: None,
             },
         ),
         Response::AgentStarted { .. }
@@ -12343,6 +12414,7 @@ fn a_codex_worker_s_failed_turns_are_told_by_turn() {
                     plan: false,
                     tier: None,
                     workspace: Some("worktree".into()),
+                    expect_secs: None,
                 },
             ),
             Response::AgentStarted { .. }
@@ -12475,6 +12547,7 @@ fn a_codex_seat_whose_pane_died_has_no_turn_open_after_a_restart() {
                 plan: false,
                 tier: None,
                 workspace: Some("worktree".into()),
+                expect_secs: None,
             },
         ),
         Response::AgentStarted { .. }
@@ -12583,6 +12656,7 @@ fn kill_beside_a_running_agent(name: &str, corpse: bool) {
                 plan: false,
                 tier: None,
                 workspace: Some("worktree".into()),
+                expect_secs: None,
             },
         ) {
             Response::AgentStarted { .. } => {}
@@ -12705,6 +12779,7 @@ fn refused_crown_wake(name: &str, restart: bool) {
             plan: false,
             tier: None,
             workspace: Some("shared_checkout".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { session_started: true, .. } => {}
@@ -12885,6 +12960,7 @@ fn a_crown_wake_nobody_answers_is_retired_and_goes_again() {
                 plan: false,
                 tier: None,
                 workspace: Some("worktree".into()),
+                expect_secs: None,
             },
         ) {
             Response::AgentStarted { .. } => {}
@@ -13049,6 +13125,7 @@ fn a_wake_parked_on_a_crown_s_launch_outlives_two_restarts() {
                 plan: false,
                 tier: None,
                 workspace: Some("worktree".into()),
+                expect_secs: None,
             },
         ),
         Response::AgentStarted { .. }
@@ -13178,6 +13255,7 @@ fn a_duplicate_wake_receipt_leaves_unrelated_unsent_words() {
                 plan: false,
                 tier: None,
                 workspace: Some("worktree".into()),
+                expect_secs: None,
             },
         ),
         Response::AgentStarted { .. }
@@ -13315,6 +13393,7 @@ fn a_retired_wake_frame_leaves_the_outbox() {
                 plan: false,
                 tier: None,
                 workspace: Some("worktree".into()),
+                expect_secs: None,
             },
         ),
         Response::AgentStarted { .. }
@@ -13426,6 +13505,7 @@ fn a_person_s_prompt_before_a_parked_wake_s_paste_leaves_it_owed() {
                 plan: false,
                 tier: None,
                 workspace: Some("worktree".into()),
+                expect_secs: None,
             },
         ),
         Response::AgentStarted { .. }
@@ -13539,6 +13619,7 @@ fn a_wake_offered_before_a_restart_retires_unconfirmed() {
                 plan: false,
                 tier: None,
                 workspace: Some("worktree".into()),
+                expect_secs: None,
             },
         ),
         Response::AgentStarted { .. }
@@ -13633,6 +13714,7 @@ fn crown_woken_with_its_wake_parked(
                 plan: false,
                 tier: None,
                 workspace: Some("worktree".into()),
+                expect_secs: None,
             },
         ),
         Response::AgentStarted { .. }
@@ -14115,4 +14197,308 @@ fn a_crown_wake_after_a_restart_waits_for_an_empty_box() {
     });
     std::thread::sleep(std::time::Duration::from_millis(1000));
     assert_eq!(typed(), 1, "once");
+}
+
+/// T-973: a turn the crown armed with `expect_secs` that runs past it, the
+/// agent still working, wakes the crown once with the turn's length and the
+/// expectation, and the crown's `get_ticket` carries `overrun` until the
+/// turn ends. The same turn running on says nothing more, nothing is
+/// stopped, and the turn's end takes `overrun` away. The crown's next ask
+/// arms the next expectation, and a turn that ends inside its own wakes
+/// nobody for it. A start's launch turn and an ask's turn are both timed.
+#[test]
+fn a_turn_past_its_expect_secs_wakes_the_crown_once() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_overrun",
+        Some(RECORDING_STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_overrun");
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    let send = |sid: uuid::Uuid, event: &str, body: &str| {
+        hook_send(&hook_sock, &sid.to_string(), event, body);
+    };
+    // The crown takes the line it was woken with: one turn, then idle.
+    let crown_turn = |c: &mut TestClient, sa: uuid::Uuid| {
+        send(sa, "UserPromptSubmit", r#"{"prompt":"wake"}"#);
+        c.await_state(sa, "the crown running", |s| *s == SessionState::Running);
+        send(sa, "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sa, "the crown idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-973 runs long");
+    let kw = key_of(&mut c, w);
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
+        Response::Ok
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    crown_turn(&mut c, sa);
+
+    // ---- 1. the start's launch turn runs past its 3 s ----------------------
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+            expect_secs: Some(3),
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    wait_attached(&mut c, w);
+    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    send(ws, "UserPromptSubmit", r#"{"prompt":"the brief"}"#);
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+    let worker = format!("{kw} \"mesimon-probe-973 runs long\"");
+    let overrun = format!("{worker} has run its turn ");
+    wait_until(std::time::Duration::from_secs(20), "the overrun wake", || {
+        lines_with(&overrun).len() == 1
+    });
+    let line = lines_with(&overrun).remove(0);
+    assert!(line.contains(", past the 3 s it expected"), "{line}");
+    let o = read(&mut c, sa, &kw).unwrap().overrun.expect("overrun on get_ticket");
+    assert_eq!(o.expected_secs, 3);
+    assert!(o.running_secs >= 3, "{o:?}");
+    crown_turn(&mut c, sa);
+
+    // ---- 2. the same turn runs on: no second wake, nothing stopped ---------
+    std::thread::sleep(std::time::Duration::from_millis(4500));
+    assert_eq!(lines_with(&overrun).len(), 1, "one wake per expectation");
+    assert_eq!(c.board().live_agent(w).unwrap().state, SessionState::Running, "nothing stopped");
+    let o = read(&mut c, sa, &kw).unwrap().overrun.expect("still past it");
+    assert!(o.running_secs >= 7, "{o:?}");
+
+    // ---- 3. the turn ends: overrun gone ------------------------------------
+    send(ws, "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    let finished = format!("{worker} finished its turn");
+    wait_until(std::time::Duration::from_secs(15), "the finished wake", || {
+        !lines_with(&finished).is_empty()
+    });
+    crown_turn(&mut c, sa);
+    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none(), "the turn ended");
+
+    // ---- 4. the crown's next ask arms the next expectation -----------------
+    let answered = |lines_with: &dyn Fn(&str) -> Vec<String>| {
+        ask_ends(&worker).iter().map(|l| lines_with(l).len()).sum::<usize>()
+    };
+    let ask = |c: &mut TestClient, text: &str| {
+        let v = read(c, sa, &kw).unwrap();
+        match c.send(
+            Principal::Agent { session: sa },
+            Command::AgentAskTicket {
+                key: kw.clone(),
+                text: text.into(),
+                seen: v.seen,
+                plan: false,
+                deliver: Deliver::Idle,
+                expect_secs: Some(3),
+            },
+        ) {
+            Response::AgentAsked { held_for_person: false, .. } => {}
+            other => panic!("ask_agent: {other:?}"),
+        }
+    };
+    ask(&mut c, "mesimon-probe-973 ask one");
+    wait_until(std::time::Duration::from_secs(10), "the first ask's words", || {
+        !lines_with("mesimon-probe-973 ask one").is_empty()
+    });
+    send(ws, "UserPromptSubmit", r#"{"prompt":"mesimon-probe-973 ask one"}"#);
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+    wait_until(std::time::Duration::from_secs(20), "the second overrun wake", || {
+        lines_with(&overrun).len() == 2
+    });
+    crown_turn(&mut c, sa);
+    send(ws, "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    wait_until(std::time::Duration::from_secs(15), "the answer's wake", || {
+        answered(&lines_with) == 1
+    });
+    crown_turn(&mut c, sa);
+
+    // ---- 5. a turn that ends inside its expectation wakes nobody for it ----
+    ask(&mut c, "mesimon-probe-973 ask two");
+    wait_until(std::time::Duration::from_secs(10), "the second ask's words", || {
+        !lines_with("mesimon-probe-973 ask two").is_empty()
+    });
+    send(ws, "UserPromptSubmit", r#"{"prompt":"mesimon-probe-973 ask two"}"#);
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+    send(ws, "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    wait_until(std::time::Duration::from_secs(15), "the second answer's wake", || {
+        answered(&lines_with) == 2
+    });
+    crown_turn(&mut c, sa);
+    std::thread::sleep(std::time::Duration::from_millis(4500));
+    assert_eq!(lines_with(&overrun).len(), 2, "a turn inside its expectation is no overrun");
+    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+}
+
+/// `sample_agent`, the crown's way in (T-973).
+fn sample(
+    c: &mut TestClient,
+    session: uuid::Uuid,
+    key: &str,
+) -> Result<mesimon_core::command::AgentSampleView, String> {
+    match c.send(Principal::Agent { session }, Command::AgentSampleTicket { key: key.into() }) {
+        Response::AgentSample { sample } => Ok(sample),
+        Response::Err { message } => Err(message),
+        other => panic!("sample {key}: {other:?}"),
+    }
+}
+
+/// T-973: the crown samples an agent it started: the turn's age, the tool
+/// in flight (a call the transcript shows with no result), the last tools,
+/// the last text and the pane's last rows (the stub's composer). Refused
+/// on the crown's own ticket, for a person's agent, to an uncrowned worker
+/// and with Settings › Crown › Samples agents off; nothing reaches the
+/// sampled agent.
+#[test]
+fn the_crown_samples_an_agent_it_started() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_sample",
+        Some(RECORDING_STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_sample");
+    let send = |sid: uuid::Uuid, event: &str, body: &str| {
+        hook_send(&hook_sock, &sid.to_string(), event, body);
+    };
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-973 sampled");
+    let p = c.create_ticket("mesimon-probe-973 a person's");
+    let (ka, kw, kp) = (key_of(&mut c, a), key_of(&mut c, w), key_of(&mut c, p));
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    send(sa, "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sa, "running", |s| *s == SessionState::Running);
+    send(sa, "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    assert!(sample(&mut c, sa, &kw).unwrap_err().contains("has no agent"));
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+            expect_secs: None,
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    wait_attached(&mut c, w);
+    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    // The transcript: an edit and a read came back, a word to the person,
+    // then a command still running.
+    let transcript = h.dir.join("sampled.jsonl");
+    let call = |id: &str, name: &str| {
+        json!({"uuid": format!("a-{id}"), "type": "assistant",
+            "timestamp": "2026-10-25T00:00:00Z",
+            "message": {"content": [{"type": "tool_use", "id": id, "name": name, "input": {}}]}})
+    };
+    let result = |id: &str| {
+        json!({"uuid": format!("r-{id}"), "type": "user",
+            "message": {"content": [{"type": "tool_result", "tool_use_id": id, "content": "ok"}]}})
+    };
+    let text = json!({"uuid": "t", "type": "assistant", "message": {"content": [
+        {"type": "text", "text": "mesimon-probe-973 waiting on the loop"}]}});
+    let records = [
+        call("e1", "Edit"),
+        result("e1"),
+        call("r1", "Read"),
+        result("r1"),
+        text,
+        call("b1", "Bash"),
+    ];
+    let body: String = records.iter().map(|r| format!("{r}\n")).collect();
+    std::fs::write(&transcript, body).unwrap();
+    let start = format!(
+        r#"{{"session_id":"x","transcript_path":"{}","cwd":"/tmp"}}"#,
+        transcript.display()
+    );
+    hook_send_with(&hook_sock, &ws.to_string(), "SessionStart", Some("startup"), &start);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    send(ws, "UserPromptSubmit", r#"{"prompt":"the brief"}"#);
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+    let mut s = None;
+    wait_until(std::time::Duration::from_secs(15), "a sample with the pane's rows", || {
+        s = sample(&mut c, sa, &kw).ok();
+        s.as_ref().and_then(|s| s.pane_tail.as_deref()).is_some_and(|t| t.contains("for shortcuts"))
+    });
+    let s = s.unwrap();
+    assert_eq!(s.key, kw);
+    assert_eq!(s.state, "working");
+    assert!(s.turn_secs.is_some(), "{s:?}");
+    let tool = s.current_tool.as_ref().expect("the call with no result");
+    assert_eq!(tool.name, "Bash");
+    assert!(tool.secs.is_some_and(|secs| secs > 0), "{tool:?}");
+    assert_eq!(s.recent_tools, ["Bash", "Read", "Edit"]);
+    assert_eq!(s.last_text.as_deref(), Some("mesimon-probe-973 waiting on the loop"));
+    assert!(s.background.is_none());
+    assert!(s.pane_tail.as_ref().unwrap().len() <= 4096);
+    let got = std::fs::read_to_string(h.dir.join(format!("got-{w}.txt"))).unwrap_or_default();
+    assert!(!got.contains("sample"), "nothing reaches the sampled agent: {got}");
+
+    // ---- the refusals ------------------------------------------------------
+    let own = sample(&mut c, sa, &ka).unwrap_err();
+    assert!(own.contains("this session's own ticket"), "{own}");
+    c.spawn_claude(p);
+    wait_until(std::time::Duration::from_secs(10), "the person's agent", || {
+        c.board().live_agent(p).is_some()
+    });
+    let persons = sample(&mut c, sa, &kp).unwrap_err();
+    assert!(persons.contains("a person started"), "{persons}");
+    let worker = sample(&mut c, ws, &ka).unwrap_err();
+    assert!(worker.contains("only the crown"), "{worker}");
+    assert!(matches!(c.request(Command::SetCrownSamples { on: false }), Response::Ok));
+    assert!(!c.board().crown_samples);
+    let off = sample(&mut c, sa, &kw).unwrap_err();
+    assert!(off.contains("Settings → Crown → Samples agents is off"), "{off}");
+    assert!(matches!(c.request(Command::SetCrownSamples { on: true }), Response::Ok));
+    assert!(sample(&mut c, sa, &kw).is_ok(), "on again");
 }

@@ -170,6 +170,7 @@ fn the_crown_holds_a_ticket_out_of_the_train_for_review() {
             plan: false,
             tier: None,
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -241,6 +242,7 @@ fn the_crown_holds_a_ticket_out_of_the_train_for_review() {
             seen: v.seen,
             plan: false,
             deliver: Deliver::Idle,
+            expect_secs: None,
         },
     ) {
         Response::AgentAsked { .. } => {}
@@ -545,6 +547,7 @@ fn a_hold_inside_the_trains_rebase_turn_lets_the_turn_run_and_merges_nothing() {
             plan: false,
             tier: None,
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -673,6 +676,7 @@ fn a_new_crown_hears_the_old_crown_s_workers_and_the_tickets_it_holds() {
             plan: false,
             tier: None,
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { .. } => {}
@@ -921,6 +925,7 @@ fn a_hold_and_a_start_take_each_other_s_stamp() {
             plan: false,
             tier: None,
             workspace: Some("worktree".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { seen, .. } => seen,

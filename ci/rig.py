@@ -3464,6 +3464,19 @@ Reply with the single word ready and end your turn."""
                 causes = [l.get("cause") for l in lines if l.get("kind") == "crown_wake"
                           and l.get("worker") == tid]
                 check(c, arg in causes, f"wakes {causes}" if causes else "no wake")
+            elif name == "after_wake":
+                # `after_wake:<cmd>:<cause>` (T-973): the crown's first <cmd>
+                # board line for the ticket follows the board's first wake of
+                # <cause> for it; the wake turn's last line is the crown's
+                # judgement, so a read here came before that judgement.
+                cmd, _, cause = arg.partition(":")
+                woke_at = next((i for i, l in enumerate(lines) if l.get("kind") == "crown_wake"
+                                and l.get("worker") == tid and l.get("cause") == cause), None)
+                read_at = next((i for i, l in enumerate(lines) if l.get("kind") == "board"
+                                and l.get("actor") == "agent" and l.get("ticket") == tid
+                                and l.get("cmd") == cmd), None)
+                check(c, woke_at is not None and read_at is not None and read_at > woke_at,
+                      f"{cause} wake at {woke_at}, first {cmd} at {read_at}")
             elif name == "reviewed":
                 # T-859: the feed says PR <arg> bound to the ticket as
                 # someone else's, reviewed here. The feed, not the snapshot:

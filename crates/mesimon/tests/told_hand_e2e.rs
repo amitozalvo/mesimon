@@ -95,6 +95,7 @@ fn the_crown_reads_the_reason_of_a_hand_it_was_told_of() {
             plan: false,
             tier: None,
             workspace: Some("shared_checkout".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { session_started: true, .. } => {}
@@ -252,6 +253,7 @@ fn an_answer_read_against_one_told_hand_is_refused_for_the_next() {
                 plan: false,
                 tier: None,
                 workspace: Some(workspace.into()),
+                expect_secs: None,
             },
         ) {
             Response::AgentStarted { .. } => {}
@@ -267,6 +269,7 @@ fn an_answer_read_against_one_told_hand_is_refused_for_the_next() {
                 seen,
                 plan: false,
                 deliver: mesimon_core::command::Deliver::Idle,
+                expect_secs: None,
             },
         )
     };
@@ -457,6 +460,7 @@ fn a_prompt_while_the_daemon_was_down_takes_the_told_hand() {
             plan: false,
             tier: None,
             workspace: Some("shared_checkout".into()),
+            expect_secs: None,
         },
     ) {
         Response::AgentStarted { session_started: true, .. } => {}

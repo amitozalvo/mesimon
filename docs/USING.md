@@ -573,6 +573,13 @@ prices, not a bill. A crown's `ask_agent` text that begins with `/` is typed int
 box and entered as a command, so `/compact` sent that way compacts a Claude Code or a Codex
 agent's conversation.
 
+**Settings › Crown › Samples agents** (on by default) lets the crown read an agent it started,
+at the moment it asks: how long its turn has run, the tool it is running and for how long (the
+call its transcript shows with no result yet), its last five tools, the last text it wrote, its
+background tasks and the last 40 rows of its pane. Each is bounded and scrubbed, nothing is
+sent to the agent, and an agent you started is never read, watched or not. While the row is
+off, the crown is refused in words that name it.
+
 **Settings › Crown › Reaches boards** links this board with another mesimon board on the same
 machine, so the two crowns can talk. The list shows the boards whose daemon is up right now, by
 name and folder, with who wears the crown there; Enter on one links it, and a board that is not
@@ -655,6 +662,12 @@ the crown's, and its card reads `idle ∙ 3 tasks ∙ 2h`. After 30 minutes the 
 (`has been idle with 3 background tasks for 30 min`) and `get_ticket` on that ticket carries the
 count. Nothing is merged, parked or ended by time, because the wait may be the work (a long
 suite) and the board cannot tell.
+
+The crown may say how long it expects a turn to take when it starts an agent or sends it words
+(`expect_secs`). When the turn those words begin runs past that, the agent still working, the
+crown is told once (`has run its turn 25 min, past the 20 min it expected`), and `get_ticket`
+on that ticket carries `overrun` until the turn ends. Nothing is stopped, parked or moved by the
+timer; the crown's next words set the next expectation.
 
 ## Pull requests
 
