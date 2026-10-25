@@ -66,6 +66,16 @@ DIALOG = os.path.join(HERE, f"dialog-{TICKET}.json")
 RULE = "─" * 60
 
 
+def put_whole(path, text):
+    """`text` at `path`, there whole or not at all: a test that waits for
+    the file to exist reads it at once, and an open file is empty until its
+    write (T-1019, `the_crown_sends_a_plan_back_with_words` on ubuntu)."""
+    part = path + ".part"
+    with open(part, "w") as f:
+        f.write(text)
+    os.replace(part, path)
+
+
 def append(name, text):
     with open(os.path.join(HERE, name), "a") as f:
         f.write(text)
@@ -400,13 +410,12 @@ def main():
             if ended and not kept:
                 os.remove(DIALOG)
             if ended == "accept":
-                with open(os.path.join(HERE, f"accepted-{TICKET}"), "w") as f:
-                    f.write(dialog.accepted)
+                put_whole(os.path.join(HERE, f"accepted-{TICKET}"), dialog.accepted)
                 if record:
                     write(record[0], result(record[1], "User has approved your plan.", False))
             elif ended == "change":
-                with open(os.path.join(HERE, f"changed-{TICKET}.json"), "w") as f:
-                    json.dump({"row": dialog.ROWS[2], "text": dialog.field}, f)
+                put_whole(os.path.join(HERE, f"changed-{TICKET}.json"),
+                          json.dumps({"row": dialog.ROWS[2], "text": dialog.field}))
                 if kept:
                     continue
                 if record:
@@ -414,8 +423,7 @@ def main():
                     write(record[0], result(record[1], said, True))
             elif ended == "submit":
                 answers = {q["question"]: dialog.answer(i) for i, q in enumerate(dialog.qs)}
-                with open(os.path.join(HERE, f"answered-{TICKET}.json"), "w") as f:
-                    json.dump(answers, f)
+                put_whole(os.path.join(HERE, f"answered-{TICKET}.json"), json.dumps(answers))
                 if record:
                     write(record[0], result(record[1], "Your questions have been answered.", False))
             elif ended == "decline":

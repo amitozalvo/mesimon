@@ -36807,6 +36807,10 @@ test's own stub. Nothing in the daemon changed.
 - **`plan_accept_e2e::a_stop_heard_before_the_dialog_s_result_is_read_keeps_its_turn_end`
   (macos-14).** It retries until a tail read lands inside a `Stop`'s settle, three tries in four
   here and two in eleven on the runner; it takes 24 tries under `MESIMON_CI`, 8 elsewhere.
+- **`crown_e2e::the_crown_sends_a_plan_back_with_words` (ubuntu-24.04, the first bar run).** The
+  test waits for `changed-<ticket>.json` to exist and parses it; `fake_claude_dialog.py` opened it
+  before writing, so it read empty (`EOF while parsing a value`). Its three outcome files are
+  written beside and renamed in (`put_whole`), as T-1002's `write_whole` does from the test side.
 - **Left red, daemon code (T-957), traced on the ticket:** `plan_accept_e2e::
   a_repeated_prompt_heard_before_its_line_leaves_the_new_turn_running` (macos-14, every full run
   on both roads; green alone on the runner and here: `tail_interrupt_before_prompt` never
