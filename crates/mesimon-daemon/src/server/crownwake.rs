@@ -310,8 +310,10 @@ impl BranchLook {
 /// merge — a merge folded into any other line is said in its delta
 /// (`merge_state merged`), so a delivery and its merge between two crown
 /// turns are one line — and a merge a finished turn (T-591), the weakest
-/// news: every other line about the worker already says its turn ended,
-/// and says what it left.
+/// news: every other line about the worker says what it left. A merge told
+/// alone does not say its turn ended (T-1004: let go on no proven end past
+/// a restart), so a finished turn folding into a merge or a delivery owed
+/// keeps its end in the line (`finished`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum WakeCause {
@@ -1248,6 +1250,24 @@ impl Heard {
         true
     }
 
+    /// Read back from `crown.json` (T-1004): a landing held for its merge
+    /// step is told after the restart, at that step's end, and says so.
+    pub(super) fn restored_step(&mut self) {
+        if let Some(w) = self.stepped.as_mut() {
+            w.late = true;
+        }
+    }
+
+    /// A merge step's mark taken on an edge that proves no end (T-1004,
+    /// round 2): a guess, a dialog, a seat gone. The held landing will say
+    /// the merge alone, and the turn's real end, if one comes, says it
+    /// finished.
+    fn unproven_step(&mut self) {
+        if let Some(w) = self.stepped.as_mut() {
+            w.finished = false;
+        }
+    }
+
     /// The merge step is over: the landing it held, with the column the
     /// turn left the card in (`None`: the ticket is gone, and takes what
     /// was held with it), which is also what the crown has now heard.
@@ -1554,6 +1574,12 @@ impl Daemon {
                 ) && !guessed(s)
             });
         let asked = self.turn_asks.remove(&worker);
+        // A merge step's mark taken on no end (T-1004, round 2) loses the
+        // fact that its turn was never seen to end, so the held landing
+        // keeps it.
+        if (dialog || !ended) && asked == Some(TurnAsk::Merge) {
+            self.unproven_step(worker);
+        }
         // The ask kept for the end that is one is this edge's no longer
         // (T-974, round 1): a look or a probe here answers nothing with it,
         // or the real end would answer it a second time.
@@ -1633,6 +1659,20 @@ impl Daemon {
             } else {
                 (self.turn_asks.remove(&worker), self.turns_open.remove(&worker))
             };
+            // A look that is no committed end (a dialog, a seat parked or
+            // gone) takes a merge step's mark without proving its turn over
+            // (T-1004, round 2).
+            let ended = self.board.live_agent(worker).is_some_and(|s| {
+                matches!(
+                    s.state,
+                    SessionState::Idle {
+                        stop_reason: StopReason::EndTurn | StopReason::Interrupted
+                    } | SessionState::Failed { .. }
+                )
+            });
+            if asked == Some(TurnAsk::Merge) && (dialog || !ended) {
+                self.unproven_step(worker);
+            }
             let u = owed.join(Unjudged { asked, fresh });
             self.probe_turn(worker, ProbeWhy::Restart { asked: u.asked, fresh: u.fresh });
         }
@@ -1665,10 +1705,23 @@ impl Daemon {
                 .values()
                 .any(|o| o.ticket == worker && (o.asked == Some(TurnAsk::Merge)) == merge)
         };
+        // The turn that took the merge flow's words runs until an end that is
+        // one (T-1004): across a restart its seat reads `Unknown`, then the
+        // tail's guess, neither of them working, and the merge's wake went
+        // out a second after the restart while the notice's turn ran. The
+        // restart's look bounds that reading: a seat still unproven when it
+        // settles (`RECHECK_MS`) lets the step go, as an idle one sends no
+        // hook to end it, and `hear_stepped` then tells the merge alone.
+        let stepping = agent.is_some_and(|s| {
+            working
+                || (s.state.has_pane()
+                    && (rederiving(s) || guessed(s))
+                    && self.crown_recheck.contains_key(&worker))
+        });
         Pending {
             train: look.is_some_and(|look| self.train_takes(worker, look)),
             merge_step: owed(true)
-                || (working && self.turn_asks.get(&worker) == Some(&TurnAsk::Merge)),
+                || (stepping && self.turn_asks.get(&worker) == Some(&TurnAsk::Merge)),
             // A launch's words that reached no agent (T-570) are still owed
             // to it, by the seat's resend or the restart's (T-722).
             words: owed(false)
@@ -1947,6 +2000,13 @@ impl Daemon {
         }
     }
 
+    /// `Heard::unproven_step` on the worker's landing held for its step.
+    fn unproven_step(&mut self, worker: ulid::Ulid) {
+        if let Some(h) = self.crown_heard.get_mut(&worker) {
+            h.unproven_step();
+        }
+    }
+
     /// Whether the merge train will land this branch from here (T-554),
     /// judged on `look`: it is armed, and the ticket is in a turn — the
     /// rebase the train asked for, or any other, whose own end is judged
@@ -2064,8 +2124,11 @@ impl Daemon {
 
     /// Landings held for a merge step (T-596) whose step is over: the words
     /// were taken and their turn ended, or they never reached the agent (a
-    /// paste given up on, a pane that died), on the tick. Each wakes the
-    /// crown as it was held, saying the worker finished its turn, with the
+    /// paste given up on, a pane that died), or its mark survives to the
+    /// release, a seat the restart's look never saw end (T-1004), on the
+    /// tick. Each wakes the crown as it was held, saying the worker finished
+    /// its turn unless no end was proven (a surviving mark, or one taken on
+    /// no end: `unproven_step`), with the
     /// column the turn left the card in. Not while a probe is out: the
     /// turn that just ended is still being looked at. A ticket gone from
     /// the board takes what was held with it.
@@ -2080,10 +2143,23 @@ impl Daemon {
             .collect();
         let mut woke = false;
         for worker in over {
+            // A surviving mark (T-1004): the step is let go with its mark
+            // still on, so no end took it and the seat was never seen to end
+            // (the restart's look bounded it). The board knows the merge and
+            // not the end, so the line says the merge alone, and the turn
+            // stays open for its real end to say it finished. The mark goes,
+            // or it would read that end, or the next turn's, as this merge's
+            // step and silence it.
+            let surviving = self.turn_asks.get(&worker) == Some(&TurnAsk::Merge);
+            if surviving {
+                self.turn_asks.remove(&worker);
+            }
             let column = self.board.ticket(worker).map(|t| t.column.clone());
             let Some(heard) = self.crown_heard.get_mut(&worker) else { continue };
-            let Some(wake) = heard.step_over(column) else { continue };
-            let held = Owed { finished: true, late: wake.late, ask: wake.ask, ..Owed::default() };
+            let Some(mut wake) = heard.step_over(column) else { continue };
+            wake.finished &= !surviving;
+            let held =
+                Owed { finished: wake.finished, late: wake.late, ask: wake.ask, ..Owed::default() };
             self.owe_wake(crown, worker, wake.cause, wake.from, wake.to, held);
             woke = true;
         }
@@ -2274,6 +2350,15 @@ impl Daemon {
         let landed =
             cause == WakeCause::Merged || to.as_ref().is_some_and(|t| t.merge == Some("merged"));
         if let Some(w) = self.crown_wakes.iter_mut().find(|w| w.worker == worker) {
+            // A proven end folding into merge news owed ahead of it (T-1004,
+            // round 3): the merge was told alone, its turn not seen to end,
+            // and this is that end. Not the other way: merge news after a
+            // finished turn is no end of its own.
+            if cause == WakeCause::Finished
+                && matches!(w.cause, WakeCause::Merged | WakeCause::Delivered)
+            {
+                w.finished = true;
+            }
             w.fold(cause, from, to);
             w.finished |= finished;
             w.linger = w.linger.or(linger);

@@ -25,7 +25,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use mesimon_core::board::{
-    CrownMode, FailReason, MergeInto, SessionKind, SessionState, WorkspaceStrategy,
+    Confidence, CrownMode, FailReason, MergeInto, SessionKind, SessionState, WorkspaceStrategy,
 };
 use mesimon_core::command::{
     AgentTicketView, AskRoad, AskWake, Command, CrownTouch, Deliver, PendingAction, Response,
@@ -4851,6 +4851,341 @@ fn a_held_delivery_waits_for_a_worker_unknown_across_a_restart() {
     assert!(said[0].contains(&format!("{worker} delivered")), "{said:?}");
     assert!(said[0].contains("needs_rebase"), "{said:?}");
     assert!(said[0].contains("after a restart"), "{said:?}");
+}
+
+/// A merge's wake waits for the merge notice's turn across a restart
+/// (T-1004): the crown merged, the notice went in and its turn began, and
+/// the daemon went down in that turn. The new daemon read the worker
+/// `Unknown`, which no reading of `working` takes, let the held landing go,
+/// and told the crown `merged and finished its turn (…, after a restart)`
+/// a second after it started, while the turn ran; the turn's real end then
+/// found the merge told and said nothing. The landing waits for that end:
+/// one line, at the `Stop`, still `after a restart`.
+#[test]
+fn a_merge_notice_turn_across_a_restart_wakes_once_at_its_end() {
+    merge_notice_across_a_restart("crown_notice_restart", After::RunsOn);
+}
+
+/// The bound on that wait (T-1004): a notice turn whose end fell in the
+/// restart's gap leaves a seat no hook will ever speak for (an idle agent
+/// sends none) and nothing in its transcript to date the close. Read
+/// `Unknown` when the restart's look settles (`MESIMON_RECHECK_MS`), the
+/// board knows the merge and not the end: the crown hears `merged (…, after
+/// a restart)` once, inside the window, with no `finished`, and the next
+/// turn's end is a finished turn, not the merge step's.
+#[test]
+fn a_merge_notice_turn_ended_in_the_restart_s_gap_wakes_once_in_the_window() {
+    merge_notice_across_a_restart("crown_notice_gap", After::NextPrompt);
+}
+
+/// The same bound on a seat that was only silent (T-1006's cold read): the
+/// notice turn ran on past the window with no hook, and the window told the
+/// merge alone. That turn's own `Stop`, with no prompt between, is its end:
+/// one `finished its turn`, and no second `merged`.
+#[test]
+fn a_merge_notice_turn_silent_past_the_window_finishes_once_at_its_stop() {
+    merge_notice_across_a_restart("crown_notice_silent", After::SameStop);
+}
+
+/// A merge mark taken on no end loses nothing (T-1006's second read): the
+/// notice turn reads `running` (the tail's seed, at Low) when the window
+/// settles, so the landing stays held; then the tail reads an abort record
+/// as an idle at Low, which takes the mark on no proven end. The crown hears
+/// the merge alone there, and the turn going on to its real `Stop` says
+/// `finished its turn` once, with no second `merged`.
+#[test]
+fn a_merge_notice_turn_guessed_idle_after_the_window_finishes_once_at_its_stop() {
+    merge_notice_across_a_restart("crown_notice_guessed", After::GuessedIdle);
+}
+
+/// A merge told alone and its turn's end, owed together, are one line
+/// (T-1006's third read): the crown is busy while the window lets the merge
+/// go and while that turn's own `Stop` lands, so both wait for it. Freed,
+/// it hears one `merged and finished its turn`, never a bare `merged`.
+#[test]
+fn a_merge_and_its_end_owed_to_a_busy_crown_are_one_line() {
+    merge_notice_across_a_restart("crown_notice_busy", After::CrownBusy);
+}
+
+/// What the notice's turn does after the restart.
+#[derive(Clone, Copy, PartialEq)]
+enum After {
+    /// As `SameStop`, with the crown working from before the window settles
+    /// until after the `Stop`.
+    CrownBusy,
+    /// Running off its transcript past the window, then a Low idle guess,
+    /// then on to its `Stop`.
+    GuessedIdle,
+    /// A tool call, then its `Stop`, inside the window.
+    RunsOn,
+    /// Nothing until the window settles, then a new prompt and its `Stop`.
+    NextPrompt,
+    /// Nothing until the window settles, then its own `Stop`.
+    SameStop,
+}
+
+fn merge_notice_across_a_restart(name: &str, after: After) {
+    let Some(h) = Harness::boot_with_env(
+        name,
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_RECHECK_MS", "8000"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client(name);
+    let got = h.dir.join("got.txt");
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+
+    let a = c.create_ticket("coordinate");
+    let title = "mesimon-probe-1004 merge notice across a restart";
+    let w = c.create_ticket(title);
+    let kw = key_of(&mut c, w);
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+            expect_secs: None,
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    let path = std::path::PathBuf::from(wait_attached(&mut c, w).path.expect("a path"));
+    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    let branch = read(&mut c, sa, &kw).unwrap().branch.expect("a branch");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let worker = format!("{kw} \"{title}\"");
+    let notice = format!("Your branch {branch} has been merged into main");
+    // The seat's transcript, for the case the tail reads after the restart.
+    let transcript = h.dir.join(format!("{ws}.jsonl"));
+    let append = |line: serde_json::Value| {
+        use std::io::Write;
+        let mut f = std::fs::File::options().create(true).append(true).open(&transcript).unwrap();
+        writeln!(f, "{line}").unwrap();
+    };
+    if after == After::GuessedIdle {
+        append(json!({"uuid":"p", "type":"user", "message":{"content":"brief"}}));
+        let start = format!(
+            r#"{{"session_id":"x","transcript_path":"{}","cwd":"/tmp"}}"#,
+            transcript.display()
+        );
+        hook_send_with(&hook_sock, &ws.to_string(), "SessionStart", Some("startup"), &start);
+        c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    }
+
+    // ---- 1. delivered, then merged by the crown: the notice goes ----------
+    commit(&path, "one.txt");
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
+        lines_with(&worker).len() == 1
+    });
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    wait_until(std::time::Duration::from_secs(10), "the flags to read the branch ahead", || {
+        read(&mut c, sa, &kw).unwrap().merge_state.as_deref() == Some("ahead")
+    });
+    let seen = read(&mut c, sa, &kw).unwrap().seen;
+    match c
+        .send(Principal::Agent { session: sa }, Command::AgentMergeTicket { key: kw.clone(), seen })
+    {
+        Response::AgentMerged { notice, .. } => assert_eq!(notice, "sent"),
+        other => panic!("merge_ticket: {other:?}"),
+    }
+    wait_until(std::time::Duration::from_secs(10), "the merged notice", || {
+        lines_with(&notice).len() == 1
+    });
+    // The notice's turn takes the words, and the landing waits for it.
+    start(&mut c, ws);
+    if after == After::GuessedIdle {
+        // It calls a tool, in flight across the restart.
+        append(json!({"uuid":"n", "type":"user", "message":{"content":"merged"}}));
+        append(json!({"uuid":"c", "type":"assistant", "message":{"stop_reason":"tool_use",
+            "content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}));
+    }
+    wait_until(std::time::Duration::from_secs(5), "the hold in the feed", || {
+        std::fs::read_to_string(&feed_path)
+            .is_ok_and(|f| f.contains("\"crown_wake_deferred:merge_step\""))
+    });
+    assert_eq!(lines_with(&worker).len(), 1, "held while the notice turn runs");
+    drop(c);
+
+    // ---- 2. the daemon restarts in that turn: Unknown, no word ------------
+    h.restart_after(|| {});
+    let mut c = h.client(&format!("{name}_2"));
+    std::thread::sleep(std::time::Duration::from_millis(3000));
+    let seat = c.board().live_agent(w).unwrap().clone();
+    if after == After::GuessedIdle {
+        // The tail seeds the tool in flight: running, at Low.
+        assert!(
+            seat.state == SessionState::Running && seat.confidence == Confidence::Low,
+            "{:?} {:?}",
+            seat.state,
+            seat.confidence
+        );
+    } else {
+        assert!(matches!(seat.state, SessionState::Unknown { .. }), "{:?}", seat.state);
+    }
+    assert_eq!(lines_with(&worker).len(), 1, "{}", std::fs::read_to_string(&got).unwrap());
+    let merged = format!("{worker} merged and finished its turn (merge_state ahead → merged");
+    let bare = format!("{worker} merged (merge_state ahead → merged");
+
+    if after == After::GuessedIdle {
+        // ---- 3. running when the window settles (8 s): still held ---------
+        std::thread::sleep(std::time::Duration::from_millis(7000));
+        assert_eq!(c.board().live_agent(w).unwrap().state, SessionState::Running);
+        assert_eq!(lines_with(&worker).len(), 1, "held while it reads running");
+        // ---- 4. an abort record read as idle at Low: the merge alone -------
+        append(json!({"uuid":"a", "type":"user",
+            "message":{"content":"[Request interrupted by user]"}}));
+        wait_until(std::time::Duration::from_secs(10), "the merge at the guess", || {
+            lines_with(&worker).len() == 2
+        });
+        let seat = c.board().live_agent(w).unwrap().clone();
+        assert!(matches!(seat.state, SessionState::Idle { .. }), "{:?}", seat.state);
+        assert_eq!(seat.confidence, Confidence::Low);
+        let said = lines_with(&worker);
+        assert!(said[1].starts_with(&bare), "the merge, not the end: {said:?}");
+        assert!(!said[1].contains("finished"), "{said:?}");
+        assert!(said[1].contains("after a restart"), "{said:?}");
+        // ---- 5. the turn goes on and ends: finished, once -----------------
+        start(&mut c, sa);
+        stop(&mut c, sa);
+        hook_send(&hook_sock, &ws.to_string(), "PostToolUse", r#"{"tool_name":"Bash"}"#);
+        c.await_state(ws, "running", |s| *s == SessionState::Running);
+        stop(&mut c, ws);
+        wait_until(std::time::Duration::from_secs(10), "the turn's finish", || {
+            lines_with(&worker).len() == 3
+        });
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let said = lines_with(&worker);
+        assert_eq!(said.len(), 3, "{said:?}");
+        assert!(said[2].starts_with(&format!("{worker} finished its turn")), "{said:?}");
+        assert_eq!(said.iter().filter(|l| l.contains(&format!("{worker} merged"))).count(), 1);
+        return;
+    }
+
+    if after == After::RunsOn {
+        // ---- 3. the turn goes on and ends: that is the wake, once ---------
+        hook_send(&hook_sock, &ws.to_string(), "PostToolUse", r#"{"tool_name":"Bash"}"#);
+        c.await_state(ws, "running", |s| *s == SessionState::Running);
+        std::thread::sleep(std::time::Duration::from_millis(2000));
+        assert_eq!(lines_with(&worker).len(), 1, "held while the turn runs on");
+        stop(&mut c, ws);
+        wait_until(std::time::Duration::from_secs(10), "the wake at the turn's end", || {
+            lines_with(&worker).len() == 2
+        });
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let said = lines_with(&worker);
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert!(said[1].starts_with(&merged), "{said:?}");
+        assert!(said[1].contains("after a restart"), "{said:?}");
+        return;
+    }
+
+    if after == After::CrownBusy {
+        // The crown at work: the wakes are owed and wait for it.
+        let wakes = |cause: &str| {
+            std::fs::read_to_string(&feed_path)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+                .filter(|e| {
+                    e["kind"] == "crown_wake" && e["worker"] == w.to_string() && e["cause"] == cause
+                })
+                .count()
+        };
+        start(&mut c, sa);
+        // ---- 3. the window lets the merge go, owed to the busy crown ------
+        wait_until(std::time::Duration::from_secs(15), "the merge owed", || wakes("merged") == 1);
+        // ---- 4. the same turn's Stop: its end folds into the merge --------
+        stop(&mut c, ws);
+        wait_until(std::time::Duration::from_secs(10), "the finish owed", || {
+            wakes("finished") == 1
+        });
+        assert_eq!(lines_with(&worker).len(), 1, "nothing reached the busy crown");
+        // ---- 5. the crown is free: one line, the merge and its end --------
+        stop(&mut c, sa);
+        wait_until(std::time::Duration::from_secs(10), "the one line", || {
+            lines_with(&worker).len() == 2
+        });
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let said = lines_with(&worker);
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert!(said[1].starts_with(&merged), "{said:?}");
+        assert!(said[1].contains("after a restart"), "{said:?}");
+        return;
+    }
+
+    // ---- 3. no hook comes: the window's end tells the merge alone ---------
+    // The stub writes no transcript, so the seat stays `Unknown`; the
+    // restart's look settles 8 s after the start.
+    wait_until(std::time::Duration::from_secs(15), "the wake at the window's end", || {
+        lines_with(&worker).len() == 2
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let said = lines_with(&worker);
+    assert_eq!(said.len(), 2, "{said:?}");
+    assert!(said[1].starts_with(&bare), "the merge, not the end: {said:?}");
+    assert!(!said[1].contains("finished"), "{said:?}");
+    assert!(said[1].contains("after a restart"), "{said:?}");
+    assert!(
+        matches!(c.board().live_agent(w).unwrap().state, SessionState::Unknown { .. }),
+        "let go on the window, not on an end: {:?}",
+        c.board().live_agent(w).unwrap().state
+    );
+
+    // ---- 4. the turn's end, its own or the next prompt's: finished, once ---
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    if after == After::NextPrompt {
+        start(&mut c, ws);
+    }
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the turn's finish", || {
+        lines_with(&worker).len() == 3
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let said = lines_with(&worker);
+    assert_eq!(said.len(), 3, "{said:?}");
+    assert!(said[2].starts_with(&format!("{worker} finished its turn")), "{said:?}");
+    assert_eq!(said.iter().filter(|l| l.contains(&format!("{worker} merged"))).count(), 1);
 }
 
 /// The crown sends its own asks (T-550), where the person lets it: in

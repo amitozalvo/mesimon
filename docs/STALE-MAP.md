@@ -36521,3 +36521,104 @@ rest, and within 2 KiB of the cap). Both fail with `fit_board` not called. `stat
 refusal's words. `ux.test.js`'s `bigBoardFlow` (Chromium and WebKit): a refused snapshot shows
 the words in the status strip with no `Reaching your board…`, then a board with `omitted: 12`
 draws and says so. With the store's refusal branch removed it times out waiting for the words.
+
+## A merge's wake waits for the merge notice's turn across a restart, bounded by the restart's look (T-1004, 2026-10-25, gap row 66 on T-925)
+
+**Measured.** The crown merges (`merge_ticket`, notice `sent`), builds, and SIGTERMs the daemon.
+On the author's board, from `activity.jsonl` and `daemon.log`, all three sightings had one shape,
+T-988's included (its early wake reached the crown only after the turn had ended):
+
+| ticket | restart | `crown_wake merged` | worker then | real end | wake at the end |
+|---|---|---|---|---|---|
+| T-962 | 11:10:07.7Z | 11:10:10.0Z | `Unknown{DaemonRestarted}` | 11:10:48.8Z | none |
+| T-988 | 11:16:08.7Z | 11:16:11.5Z | `Unknown` | 11:17:06.9Z | none |
+| T-997 | 11:28:24.5Z | 11:28:26.0Z | `Unknown` | 11:29:03.9Z | none |
+
+**Why it was early.** The merge was held for its step (`crown_wake_deferred:merge_step`,
+`Heard::stepped`, kept in `crown.json`). `hear_stepped` lets it go once `pending_on`'s
+`merge_step` reads false, and that was `owed(Merge) || (working && turn_asks == Merge)`. After a
+restart, `owed` (memory-only) is empty and a Claude seat at `Unknown` is not `is_working`, so the
+first tick let the landing go while the notice's turn ran.
+
+**Why the real end said nothing.** The landing's one wake was spent. At the `Stop`, the restart's
+look (`ProbeWhy::Restart`, asked `Merge`) found a merge step (`verdict` None) and the merge
+already told at that tip (`merge_verdict` None): silent. It was not T-663's gap close, a pre-notice
+turn's close or the ledger's dedupe.
+
+**The fix: a proven end, or bounded merge news.** `merge_step`'s turn leg also holds while the
+seat has a pane and reads `rederiving` or `guessed` and the worker is still in `crown_recheck`.
+- **A proven end inside the window** (a hook's `Stop`, or T-663's Medium close) lets the step go
+  as before: one `merged and finished its turn (…, after a restart)`.
+- **The window's end** (`RECHECK_MS`, a minute; seam `MESIMON_RECHECK_MS`, refused outside
+  `1..=RECHECK_MS`) is no end (T-756). A seat still unproven then lets the step go so an idle
+  agent, which sends no hook, cannot hold the wake for good. The board knows the merge and not
+  the end. `hear_stepped` finds **a surviving mark** (`TurnAsk::Merge` still on at the release:
+  no edge took it), tells `merged (…, after a restart)` with no `finished`, and passes the wake's
+  own `finished` flag where it forced `true`. It drops the mark, and leaves `turns_open` for the
+  turn's real end. That end, its own `Stop` or the next prompt's, says `finished its turn` once,
+  and no second `merged`. Without dropping the mark, that end would read as the merge's step and
+  stay silent.
+- **A mark taken on no end** (round 2) is the same fact. Mark absence is no proof: a seat
+  `Running` at the window's end keeps the step held, and a later Low idle guess's `turn_ended`
+  takes the mark on no end. So the held landing's `finished` is cleared where the mark is
+  consumed unproven (`Heard::unproven_step`):
+  - in `turn_ended` on an edge that is no end (`!ended`, or a dialog);
+  - in `hear_restored` when its settled look is no committed end (a dialog, a seat parked or
+    gone).
+
+  A proven end (a hook's `Stop`, the probe, T-663's Medium close, a High or Medium interrupt or
+  failure) keeps the combined `merged and finished`.
+- `restore_crown` marks a held landing `late` (`Heard::restored_step`), so it keeps `after a
+  restart` once let go after the look.
+
+The guard the crown reviewed as (2), `hear_stepped` skipping `crown_recheck` as `hear_deferred`
+does, was not needed: the probe out at the real end (`looks`) already holds the step until its
+look lands. No new wording (`merged` alone is an existing line), no feed change, no rig test.
+
+**Round 1 (T-1006's cold read).** The first cut let the step go at the window's end as `merged
+and finished its turn`, a finished turn the board had not seen end. Its real `Stop` then read
+`turns_open` and said `finished` a second time. The first cut's seam also took any positive value,
+which a large enough one overflows when added to the clock.
+
+**Round 2 (T-1006's second read).** Round 1 read a missing mark at the release as a proven end.
+In the reader's trace (`Running` at the window's end, then a Low idle, then the real `Stop`),
+the guess's `turn_ended` took the mark, the release said `merged and finished its turn`, and the
+`Stop` said `finished` again. The restart look's dialog branch took the mark the same way.
+
+**Round 3 (T-1006's third read, the last on this mechanism).** A merge told alone and owed to a
+busy crown met that turn's real end owed after it. `CrownWake::fold` kept the stronger `Merged`
+and OR-ed two false `finished` flags, so the freed crown heard a bare `merged` and lost the end.
+Now, when a `Finished` folds into a queued `Merged` or `Delivered`, `enter_wake` sets that wake's
+`finished`, and the stronger cause wins. It works in that direction only: merge news after a
+finished turn is no end of its own. `WakeCause`'s doctrine said every stronger line says the turn
+ended; it now says a merge told alone does not.
+
+**Stated limit.** A seat still `Unknown` or guessed after the window hears its merge without
+`finished`, and its end's `finished its turn` comes only at a proven end. A turn whose `Stop`
+was lost for good (the hook fails open) gets no `finished` line until its next turn ends.
+
+**Tests.** In `crown_e2e`, both roads:
+- `a_merge_notice_turn_across_a_restart_wakes_once_at_its_end`: no wake while `Unknown` or
+  `running`, one at the `Stop`, `after a restart`.
+- `a_merge_notice_turn_ended_in_the_restart_s_gap_wakes_once_in_the_window`: no hook, no
+  transcript. `merged`, with no `finished`, when the 8 s window settles, then one `finished its
+  turn` at the next prompt's end.
+- `a_merge_notice_turn_silent_past_the_window_finishes_once_at_its_stop`: the same, then the same
+  turn's `Stop` with no prompt between. One `finished its turn`, one `merged` in all.
+- `a_merge_and_its_end_owed_to_a_busy_crown_are_one_line`: as the silent case, with the crown
+  working through the window's release and the `Stop`. Freed, it hears one `merged and finished
+  its turn`.
+- `a_merge_notice_turn_guessed_idle_after_the_window_finishes_once_at_its_stop`: the tail seeds
+  `running` at Low, held past the window, then an abort record read as idle at Low gives `merged`
+  with no `finished`. The turn goes on (`PostToolUse`) to its `Stop`: one `finished its turn`,
+  one `merged` in all.
+
+The unit test `crownledger::tests::the_recheck_seam_only_shortens_the_window` covers the seam's
+range. Each part was checked against its removal:
+- With the old `merge_step`, the first two fail on the early wake.
+- With `finished` forced, the third fails on `merged and finished its turn` at the window.
+- Without `turn_ended`'s `unproven_step`, the guessed-idle test fails on `merged and finished its
+  turn` at the guess.
+- Without the fold's `finished`, the busy-crown test fails on a bare `merged`.
+- Without the mark's removal, the second and third time out on the turn's `finished`.
+- Without `restored_step`, all three lose `after a restart`.

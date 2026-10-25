@@ -41,6 +41,18 @@ pub const CROWN_SCHEMA: u32 = 2;
 /// settle (`hear_restored`) before letting it go to its turn's end.
 pub(super) const RECHECK_MS: u64 = 60_000;
 
+/// The window, shortened by an e2e (`MESIMON_RECHECK_MS`, T-1004); a value
+/// outside `1..=RECHECK_MS`, or unreadable, is refused and the default stands.
+fn recheck_ms() -> u64 {
+    recheck_bound(std::env::var("MESIMON_RECHECK_MS").ok().as_deref())
+}
+
+fn recheck_bound(seam: Option<&str>) -> u64 {
+    seam.and_then(|v| v.trim().parse().ok())
+        .filter(|ms| (1..=RECHECK_MS).contains(ms))
+        .unwrap_or(RECHECK_MS)
+}
+
 /// The file. Every field defaults, so a ledger from an older build of this
 /// schema reads as what it held.
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -304,6 +316,7 @@ impl Daemon {
                 continue;
             }
             heard.restored = true;
+            heard.restored_step();
             let owed = heard.unjudged.unwrap_or_default();
             self.crown_recheck.insert(worker, owed);
             self.crown_heard.insert(worker, heard);
@@ -321,7 +334,7 @@ impl Daemon {
             self.crown_recheck.entry(worker).or_default();
             self.crown_heard.entry(worker).or_default().restored = true;
         }
-        self.crown_recheck_until = now_ms() + RECHECK_MS;
+        self.crown_recheck_until = now_ms() + recheck_ms();
         // The crown's asks still out come back at their word (T-974); one a
         // turn rode that no kept record names comes back `unknown` (T-938).
         self.restore_crown_asks(out_asks);
@@ -331,6 +344,20 @@ impl Daemon {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The seam only shortens the window (T-1004): a zero, a value past the
+    /// default (which would overflow the clock's sum) or one unreadable is
+    /// the default.
+    #[test]
+    fn the_recheck_seam_only_shortens_the_window() {
+        assert_eq!(recheck_bound(Some("8000")), 8000);
+        assert_eq!(recheck_bound(Some(" 1 ")), 1);
+        assert_eq!(recheck_bound(Some(&RECHECK_MS.to_string())), RECHECK_MS);
+        for bad in ["0", "60001", "18446744073709551615", "soon", ""] {
+            assert_eq!(recheck_bound(Some(bad)), RECHECK_MS, "{bad:?}");
+        }
+        assert_eq!(recheck_bound(None), RECHECK_MS);
+    }
 
     fn parse(text: &str) -> std::result::Result<Ledger, (Option<u32>, String)> {
         store::parse_versioned(text, CROWN_SCHEMA)
