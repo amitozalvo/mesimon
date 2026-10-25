@@ -160,6 +160,32 @@ pub fn capture(dump: &Path) -> Result<ShellEnv, String> {
     })
 }
 
+/// The last capture a daemon wrote (`Paths::shell_env_file`), read back at
+/// a daemon's start as a provisional one (T-962). The runtime dir outlives a
+/// restart, a `U` and a SIGTERM alike, and this is the very file every pane
+/// is launched with (`mesimon exec --env`) until the fresh capture rewrites
+/// it, so its `PATH` is the one a launch in that window really runs on.
+/// `None` where there is none (a machine's first start, a reboot); an
+/// unreadable file, or one naming no `PATH`, is an error for the journal and
+/// seeds nothing. The names pass `select` again, as a capture's do; the
+/// stamp is 0, so a provisional environment never reads as stale.
+pub fn read_last(file: &Path) -> Result<Option<ShellEnv>, String> {
+    let bytes = match std::fs::read(file) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("reading {}: {e}", file.display())),
+    };
+    let entries = mesimon_core::shellenv::parse_env0(&bytes);
+    let Some(path) = mesimon_core::shellenv::path_of(&entries) else {
+        return Err(format!("{} names no PATH", file.display()));
+    };
+    Ok(Some(ShellEnv {
+        vars: mesimon_core::shellenv::select(&entries),
+        path: Some(path),
+        rc_stamp: 0,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,5 +225,27 @@ mod tests {
         assert!(files.iter().any(|p| p.ends_with(".zshrc")));
         assert!(files.iter().any(|p| p.ends_with(".bashrc")));
         assert!(files.iter().any(|p| p.ends_with(".profile")));
+    }
+
+    #[test]
+    fn the_last_capture_seeds_a_provisional_environment() {
+        let dir = std::env::temp_dir().join(format!("msmn-shellenv-last-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("shellenv.env");
+        assert_eq!(read_last(&file).unwrap().map(|e| e.path), None, "no file seeds nothing");
+
+        std::fs::write(&file, "HOME=/h\0PATH=/opt/bin:/usr/bin\0MESIMON_TICKET=bogus\0ZED=1\0")
+            .unwrap();
+        let env = read_last(&file).unwrap().expect("a seed");
+        assert_eq!(env.path.as_deref(), Some("/opt/bin:/usr/bin"));
+        assert!(env.vars.iter().any(|(k, v)| k == "HOME" && v == "/h"), "{:?}", env.vars);
+        assert!(env.vars.iter().any(|(k, _)| k == "ZED"), "{:?}", env.vars);
+        assert!(!env.vars.iter().any(|(k, _)| k == "PATH"), "PATH is carried by name");
+        assert!(!env.vars.iter().any(|(k, _)| k == "MESIMON_TICKET"), "the filter holds again");
+        assert_eq!(env.rc_stamp, 0, "a provisional environment never reads as stale");
+
+        std::fs::write(&file, "HOME=/h\0").unwrap();
+        assert!(read_last(&file).unwrap_err().contains("names no PATH"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

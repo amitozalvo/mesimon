@@ -36067,3 +36067,67 @@ and the findings live in `<state>/t983/`, not in this repository.
   - Controls, each red, then restored:
     - round 1's promotion put back fails U1 ("A's id heard alone");
     - the pane gate off fails U1 (`heard` takes UX) and R1b ("begun and bound to RA2").
+
+## A restarted daemon starts on the last shell-environment capture, so a launch before the fresh one takes the mod (T-962, 2026-10-25, found by T-945's rig run, named by T-960 bundle 1's Fable read)
+
+**The bug.** `auto_road` finds the Claude binary on the captured `PATH`
+(`modroad::claude_binary(self.shell_env.path)`). A daemon used to start with `shell_env` empty,
+so until `on_shell_env` landed every Claude launch read `no claude on the captured PATH` and took
+the hook set for that session's whole life. That covered the crown's wake replayed after a `U`,
+a queued start and a worker the train woke. The probe cached in `mod/probe.json` could not help,
+because its key is the binary that same `PATH` names. The e2es never saw the bug: `TestFixture`
+names the stub by absolute path, and `claude_binary` then reads no `PATH`.
+
+**Measured.**
+- The capture's own command (`$SHELL -l -i -c 'env -0'` from a clean base) took 0.23, 0.23 and
+  0.25 s warm.
+- The author's board rewrote `<rt_dir>/shellenv.env` at 09:08:43.0Z, after the daemon that
+  stopped on SIGTERM at 09:08:41.7Z and started at 09:08:41.9Z. So a restarted daemon there took
+  about 1.1 s.
+- Nothing in mesimon removes the runtime dir or that file. A `U` is an orderly stop and an exec,
+  a SIGTERM is the same stop, and the e2e's restart is an orderly stop too. Observed: mesimon's
+  own restart keeps the file, on the author's board (SIGTERM) and in the e2e (an orderly stop).
+- The journal now times every capture (`shell environment captured in N ms` or
+  `not captured after N ms: <why>`), so the cold number is read off `daemon.log` from here on.
+
+**The fix is a seed, not a wait.**
+- `seed_shell_env` runs right after `Daemon::assemble`, before anything can launch. It reads that
+  file back (`shellenv::read_last`: `parse_env0`, then `select` and `path_of`, as a capture is
+  filtered) as a provisional `shell_env`, with `rc_stamp` 0 so it never reads as stale. It also
+  sets the tmux client's `PATH` from it.
+- The file is the one every pane is launched with (`mesimon exec --env`) until the fresh capture
+  rewrites it. So the provisional `PATH` is the one a launch in that window really runs on, and
+  `auto` decides on it with the cached probe.
+- The fresh capture replaces the seed when it lands, as before. A capture that fails leaves the
+  seed standing, as it leaves any previous environment.
+
+**Round 1 replaced a parked wait (`2e10d58d`).** That design parked a launch on the worktree
+provisioning lists until the capture answered. T-999's cold read found four problems:
+- no checkout or seat reservation, so two queued shared-checkout starts could both replay;
+- memory-only waits that an orderly stop lost;
+- a pending Claude start that did not hold its seat against a Codex start;
+- a TUI that read the wait as provisioning.
+
+All four came from parking. The seed removes the window instead of fencing it.
+
+**Stated limits.**
+- **No file** (a machine's first start, or a runtime dir something cleared): nothing is seeded. A Claude launch before
+  the capture takes the hook set as before, and `road.json`'s probe line reads
+  `no shell environment captured yet`, or `the shell environment was not captured: <why>` once a
+  capture failed.
+- **An unreadable file, or one with no `PATH`**, is journalled (`the last capture not read`) and
+  seeds nothing.
+- **A binary that changed since the cached probe** (Claude Code updates itself) still takes the
+  hook set while its probe runs (`probing the Claude Code on PATH`). That is the same class of bug
+  on the probe's clock, not the environment's.
+
+**E2es** (`mod_auto_e2e.rs`):
+- A login shell answers only while a barrier file is absent. The Claude stub is named bare, so it
+  is found on that shell's `PATH` alone. One restart lands a capture naming the fixture's dir.
+- With the barrier up, the next restart starts on the seed: a start and a wake each answer
+  `Spawned` at once, one record each, on the mod with `--plugin-dir`. The fresh capture lands
+  after the barrier goes.
+- With the file removed in the restart's window, the start takes hooks with
+  `no shell environment captured yet`.
+- With the seed call disabled, the first test fails on the hook set's argv.
+- `shellenv::tests::the_last_capture_seeds_a_provisional_environment` covers the reader.

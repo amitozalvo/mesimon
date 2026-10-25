@@ -1095,6 +1095,8 @@ pub struct Daemon {
     /// A capture is in flight. One at a time: it forks a shell, and a second
     /// one racing the first would only decide which stale answer wins.
     shell_env_capturing: bool,
+    /// When the capture in flight was asked, for the journal's line.
+    shell_env_asked_at: u64,
     /// Why the last capture failed, if it did. The previous environment stays
     /// in force — a broken rc file must not empty a working pane env.
     shell_env_error: Option<String>,
@@ -1499,6 +1501,10 @@ pub fn run(paths: Paths) -> Result<()> {
         tx: tx.clone(),
         self_exe: hook_bin.clone(),
     });
+    // Before anything can launch (T-962): the last capture, as the panes
+    // will get it, so a launch before the fresh one lands decides its road
+    // on the `PATH` it really runs on.
+    d.seed_shell_env();
     // The crown's ledger (T-602): what it was told, and what it is owed.
     d.restore_crown(crown_ledger);
     d.resume_crown_entering();
@@ -1578,9 +1584,10 @@ pub fn run(paths: Paths) -> Result<()> {
     // The checkout's own state, off-thread; the header is blank until it lands.
     d.queue_git_sample();
     // Ask the user's shell what the environment is, immediately. Until the
-    // answer lands, spawns fall back to the daemon's own inherited env — which
-    // is what every spawn used before this existed, so the window is a
-    // regression to the old behaviour rather than to no behaviour at all.
+    // answer lands, spawns get the last capture's file (`seed_shell_env`);
+    // with none, the daemon's own inherited env — which is what every spawn
+    // used before this existed, so the window is a regression to the old
+    // behaviour rather than to no behaviour at all.
     d.queue_shell_env_capture();
 
     for msg in rx {
@@ -1987,6 +1994,7 @@ impl Daemon {
             tier_set_at: HashMap::new(),
             shell_env: crate::shellenv::ShellEnv::default(),
             shell_env_capturing: false,
+            shell_env_asked_at: 0,
             shell_env_error: None,
             self_exe,
             git_cache: mesimon_core::command::RepoGit::default(),
@@ -2130,6 +2138,25 @@ impl Daemon {
         store::write_atomic(&self.paths.shell_env_file(), &content, store::PRIVATE)
     }
 
+    /// Seed `shell_env` from the last capture's file at a daemon's start
+    /// (T-962): the runtime dir outlives a restart, and that file is what
+    /// every pane is launched with until the fresh capture rewrites it, so
+    /// its `PATH` is the one a launch in the window runs on, and `auto` reads
+    /// the binary and the cached probe off it. With no file (a machine's
+    /// first start, a reboot) nothing is seeded and a Claude launch before
+    /// the capture takes the hook set, saying so in `road.json`.
+    fn seed_shell_env(&mut self) {
+        match crate::shellenv::read_last(&self.paths.shell_env_file()) {
+            Ok(Some(env)) => {
+                self.backend.set_path(env.path.clone());
+                self.shell_env = env;
+                self.journal.line("shell environment seeded from the last capture");
+            }
+            Ok(None) => {}
+            Err(e) => self.journal.line(&format!("the last capture not read, nothing seeded: {e}")),
+        }
+    }
+
     /// Ask the user's login shell for its environment, off the writer thread.
     ///
     /// One at a time (`shell_env_capturing`): the capture forks a shell and
@@ -2140,6 +2167,7 @@ impl Daemon {
             return;
         }
         self.shell_env_capturing = true;
+        self.shell_env_asked_at = now_ms();
         let dump = self.paths.shell_env_dump();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
@@ -2157,6 +2185,13 @@ impl Daemon {
     /// session picks the new one up, and the ticket page says so.
     fn on_shell_env(&mut self, result: std::result::Result<crate::shellenv::ShellEnv, String>) {
         self.shell_env_capturing = false;
+        let took = now_ms().saturating_sub(self.shell_env_asked_at);
+        match &result {
+            Ok(_) => self.journal.line(&format!("shell environment captured in {took} ms")),
+            Err(e) => {
+                self.journal.line(&format!("shell environment not captured after {took} ms: {e}"))
+            }
+        }
         match result {
             Ok(env) => {
                 self.shell_env_error = None;

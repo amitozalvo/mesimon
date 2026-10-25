@@ -539,3 +539,150 @@ fn a_probe_that_finds_mods_off_launches_on_the_hook_set() {
     assert_eq!(rec.road, Road::Hooks);
     assert!(!rec.argv.iter().any(|a| a == "--plugin-dir"), "{:?}", rec.argv);
 }
+
+/// `stub` whose session waits for `exit-now` beside it and then exits, so a
+/// record can be left without a pane and woken (T-962).
+fn exiting_stub(version: &str) -> String {
+    format!(
+        "#!/bin/sh\ncase \"$1\" in\n  --version) echo '{version} (Claude Code)'; exit 0 ;;\n  \
+         plugin) echo '✔ Validation passed'; exit 0 ;;\n  \
+         auth) echo '{{\"subscriptionType\":\"max\"}}'; exit 0 ;;\nesac\n\
+         while [ ! -e \"$(dirname \"$0\")/exit-now\" ]; do sleep 0.1; done\n"
+    )
+}
+
+/// The person's machine, as T-962 needs it: a login shell whose `PATH`
+/// holds the fixture's dir, and the Claude binary named bare, so it is
+/// found on the captured `PATH` alone, as `claude` is. The shell answers
+/// only while `env-barrier` beside it is absent. One restart lands a capture
+/// with that `PATH` in the runtime dir's file, the probe cached against it.
+/// Returns the barrier.
+fn boot_on_a_person_s_path(name: &str) -> Option<(Harness, std::path::PathBuf)> {
+    let h = Harness::boot_bare(
+        name,
+        Some(&exiting_stub("2.1.287")),
+        // No silent-mod relaunch inside the test: the stub plays no mod.
+        &[("MESIMON_CLAUDE_ROAD", "auto"), ("MESIMON_MOD_BRIDGE_WAIT_MS", "600000")],
+    )?;
+    let barrier = h.dir.join("env-barrier");
+    let shell = h.dir.join("slow-shell");
+    std::fs::write(
+        &shell,
+        format!(
+            "#!/bin/sh\nwhile [ -e '{barrier}' ]; do sleep 0.05; done\n\
+             export PATH='{dir}':/usr/bin:/bin\nshift 3\neval \"$@\"\n",
+            barrier = barrier.display(),
+            dir = h.dir.display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&shell, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    h.set_env("SHELL", &shell);
+    h.set_env("MESIMON_CLAUDE_BIN", "claude-stub.sh");
+    h.restart();
+    // The slow shell's own `PATH`, read as the launcher reads the file: the
+    // first boot's capture already names the dir, under `HOME`.
+    let env_file = h.paths.shell_env_file();
+    let want = format!("{}:/usr/bin:/bin", h.dir.display());
+    wait_until(Duration::from_secs(30), "the slow shell's capture, and the mod verdict", || {
+        std::fs::read(&env_file).is_ok_and(|b| {
+            let entries = mesimon_core::shellenv::parse_env0(&b);
+            mesimon_core::shellenv::path_of(&entries).as_deref() == Some(want.as_str())
+        }) && road_json(&h).is_some_and(|v| v["road"] == "mod")
+    });
+    Some((h, barrier))
+}
+
+fn new_ticket(c: &mut TestClient, title: &str) -> ulid::Ulid {
+    match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: title.into(),
+        workspace: None,
+        tier: None,
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("create: {other:?}"),
+    }
+}
+
+fn spawn(c: &mut TestClient, ticket: ulid::Ulid) -> Response {
+    c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    })
+}
+
+fn agents_of(c: &mut TestClient, ticket: ulid::Ulid) -> Vec<mesimon_core::board::SessionRecord> {
+    c.board()
+        .sessions
+        .into_iter()
+        .filter(|s| s.ticket == ticket && s.kind == SessionKind::Claude)
+        .collect()
+}
+
+/// T-962: a launch after a restart, before the daemon has captured the
+/// shell environment, took the hook set for its whole life ("no claude on
+/// the captured PATH"). The runtime dir's file outlives the restart and is
+/// what the pane is launched with, so the daemon starts on it: a start and
+/// a wake, with the fresh capture held back, launch at once on the mod.
+#[test]
+fn a_launch_before_the_fresh_capture_takes_the_mod_on_the_last_one() {
+    let Some((h, barrier)) = boot_on_a_person_s_path("mod-auto-env-seed") else { return };
+    let mut c = h.client("env-seed");
+    let woken = new_ticket(&mut c, "woken");
+    assert!(matches!(spawn(&mut c, woken), Response::Spawned { .. }));
+    let sid = agents_of(&mut c, woken)[0].id;
+    std::fs::write(h.dir.join("exit-now"), "").unwrap();
+    wait_until(Duration::from_secs(10), "the first pane to end", || {
+        agents_of(&mut c, woken).iter().all(|s| !s.state.has_pane())
+    });
+    std::fs::remove_file(h.dir.join("exit-now")).unwrap();
+
+    std::fs::write(&barrier, "").unwrap();
+    h.restart();
+    let mut c = h.client("env-seed-2");
+    let started = new_ticket(&mut c, "started");
+    let resp = spawn(&mut c, started);
+    assert!(matches!(resp, Response::Spawned { .. }), "the start launches at once: {resp:?}");
+    let resp = c.request(Command::ResumeSession { id: sid, confirm: false });
+    assert!(matches!(resp, Response::Spawned { .. }), "the wake launches at once: {resp:?}");
+    for ticket in [started, woken] {
+        let recs = agents_of(&mut c, ticket);
+        assert_eq!(recs.len(), 1, "one launch each: {recs:?}");
+        assert_eq!(recs[0].road, Road::Mod, "{:?}", recs[0].argv);
+        assert!(recs[0].argv.iter().any(|a| a == "--plugin-dir"), "{:?}", recs[0].argv);
+    }
+    let journal = std::fs::read_to_string(h.paths.daemon_log()).unwrap_or_default();
+    assert!(journal.contains("seeded from the last capture"), "{journal}");
+    let fresh = journal.matches("shell environment captured in").count();
+    std::fs::remove_file(&barrier).unwrap();
+    wait_until(Duration::from_secs(10), "the fresh capture after the launches", || {
+        std::fs::read_to_string(h.paths.daemon_log())
+            .unwrap_or_default()
+            .matches("shell environment captured in")
+            .count()
+            > fresh
+    });
+}
+
+/// T-962's stated limit: with no last capture (a machine's first start, a
+/// reboot that cleared the runtime dir) a launch before the capture lands
+/// takes the hook set as before, and `road.json` says why.
+#[test]
+fn with_no_last_capture_a_launch_before_the_capture_takes_the_hook_set_and_says_why() {
+    let Some((h, barrier)) = boot_on_a_person_s_path("mod-auto-env-none") else { return };
+    std::fs::write(&barrier, "").unwrap();
+    let env_file = h.paths.shell_env_file();
+    h.restart_after(|| std::fs::remove_file(&env_file).unwrap());
+    let mut c = h.client("env-none");
+    let ticket = new_ticket(&mut c, "started");
+    assert!(matches!(spawn(&mut c, ticket), Response::Spawned { .. }));
+    let recs = agents_of(&mut c, ticket);
+    assert_eq!(recs.len(), 1, "{recs:?}");
+    assert_eq!(recs[0].road, Road::Hooks);
+    assert!(!recs[0].argv.iter().any(|a| a == "--plugin-dir"), "{:?}", recs[0].argv);
+    assert_eq!(road_json(&h).unwrap()["probe"], "no shell environment captured yet");
+    std::fs::remove_file(&barrier).unwrap();
+}

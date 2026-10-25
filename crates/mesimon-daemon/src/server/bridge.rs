@@ -288,11 +288,16 @@ impl Daemon {
         let line = match (bin, key) {
             (Some(bin), Some(key)) => {
                 self.start_road_probe(bin, key);
-                "probing the Claude Code on PATH"
+                "probing the Claude Code on PATH".to_string()
             }
-            _ => "no claude on the captured PATH",
+            // No capture yet and no last one to seed from (T-962).
+            _ => match (&self.shell_env.path, &self.shell_env_error) {
+                (None, Some(e)) => format!("the shell environment was not captured: {e}"),
+                (None, None) => "no shell environment captured yet".to_string(),
+                (Some(_), _) => "no claude on the captured PATH".to_string(),
+            },
         };
-        (Road::Hooks, Some(line.into()), false)
+        (Road::Hooks, Some(line), false)
     }
 
     /// Every Claude launch asks `auto` (T-588), so the probe is not left for
